@@ -13,7 +13,7 @@ use shards_vmm::platform::PressureWatches;
 use super::health::{Quiet, Wait};
 use super::{Daemon, RunState, TAKE_TIMEOUT, Threads, lock, log};
 use crate::containers::Disk;
-use crate::pressure::Pressure;
+use crate::pressure::{Pressure, Saying};
 
 /// What the daemon's memory pressure watcher watches besides the host and its own cgroup:
 /// each scope its microVMs are made in under a user's slice (D183), which may hold them to
@@ -38,18 +38,15 @@ pub(super) struct Watching {
 }
 
 /// What microVMs gave back since it was last said: since when, how much of files and of
-/// memory plugged, in how many passes; and when it was last said.
+/// memory plugged, in how many passes; and when it is due to be said: as a pressure begins,
+/// then each time it has gone on as long again ([`Saying`]), with all it gave back since.
 #[derive(Debug, Default)]
 struct Unsaid {
     since: Option<Instant>,
     gave: Gave,
     passes: u32,
-    said: Option<Instant>,
+    saying: Saying,
 }
-
-/// How often what microVMs gave back is said, at most: a pressure that goes on says it
-/// once in this long, with all it gave back since.
-const SAY_EVERY: Duration = Duration::from_secs(60);
 /// Where it names a FIFO (on Windows, a named pipe), the daemon's memory pressure is what
 /// is written to it, each line its host's word that it is short of memory, in place of its
 /// kernel's: so that a test tells it where no unprivileged process may raise the system's
@@ -131,6 +128,7 @@ impl<D: Disk> Daemon<D> {
             if self.closed.load(Ordering::SeqCst) {
                 return;
             }
+            lock(&self.watching.unsaid).saying.heard(Instant::now());
             self.give_back_cold(threads);
         }
     }
@@ -248,13 +246,14 @@ impl<D: Disk> Daemon<D> {
     }
 
     /// Says what microVMs gave back since it was last said, where they gave back anything,
-    /// at most once in [`SAY_EVERY`].
+    /// as the pressure is due to be said ([`Saying`]).
     fn say_given(&self) {
         let mut unsaid = lock(&self.watching.unsaid);
         if unsaid.gave.freed == 0 && unsaid.gave.unplugging == 0 {
             return;
         }
-        if unsaid.said.is_some_and(|at| at.elapsed() < SAY_EVERY) {
+        let now = Instant::now();
+        if !unsaid.saying.due(now) {
             return;
         }
         log(format!(
@@ -264,8 +263,10 @@ impl<D: Disk> Daemon<D> {
             unsaid.passes.max(1),
             unsaid.since.map_or(Duration::ZERO, |at| at.elapsed())
         ));
+        let mut saying = unsaid.saying;
+        saying.said(now);
         *unsaid = Unsaid {
-            said: Some(Instant::now()),
+            saying,
             ..Unsaid::default()
         };
     }

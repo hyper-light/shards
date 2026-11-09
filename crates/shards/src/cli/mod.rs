@@ -27,7 +27,7 @@ pub(crate) mod request;
 pub(crate) mod save;
 mod screens;
 mod shares;
-mod show;
+pub(crate) mod show;
 pub(crate) mod terminal;
 pub(crate) mod terms;
 pub(crate) mod version;

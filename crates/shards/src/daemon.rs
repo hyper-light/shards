@@ -243,7 +243,9 @@ const TAKEOVER: Duration = Duration::from_secs(20);
 /// input's meaning, not a figure of shards': a Compose file's `stop_grace_period` left out
 /// is "10 seconds for the container to exit before sending SIGKILL" (the Compose file
 /// reference, services, `stop_grace_period`), and a run's `--stop-timeout` left out is read
-/// the same, so that what its author expected of a stop holds in a microVM.
+/// the same, so that what its author expected of a stop holds in a microVM: dockerd's
+/// `defaultStopTimeout` (moby v28.5.1 container/container_unix.go l. 26, read at
+/// container/container.go l. 601).
 const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How often a listener out of descriptors looks for one again: nothing tells of one
 /// closed anywhere in the process. And how often one whose watches could not be made
@@ -9466,7 +9468,10 @@ mod tests {
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
-    /// How long a test waits for what must happen before it fails instead of hanging.
+    /// How long a test waits for what must happen before it fails instead of hanging: a
+    /// test's bound alone, no wait of the daemon's (each it tests is its own, as the
+    /// daemon sets it), and no passing test's outcome rests on it; where daemons go on
+    /// saying something, they are waited on past it (`a daemon thread outlived its test`).
     const PATIENCE: Duration = Duration::from_secs(20);
 
     /// A thread's handle, scoped or not, for [`joined`].

@@ -146,6 +146,9 @@ impl Demand {
 mod tests {
     use super::*;
 
+    /// A test's input, no setting of the daemon's: a keep past every step the test takes
+    /// (its longest, 30 s), so that only the step past it expires; `SHARDS_POOL_KEEP`'s
+    /// own default is the daemon's (daemon.rs USAGE).
     const KEEP: Duration = Duration::from_secs(600);
 
     fn ms(n: u64) -> Duration {

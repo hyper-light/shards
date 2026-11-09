@@ -14,7 +14,10 @@ use shards_sigstore::oidc::{self, Provider};
 
 use crate::keyless::exchange;
 
-/// How long the browser has to bring the code back (getCode's timer).
+/// How long the browser has to bring the code back before the code is asked for by hand, as
+/// cosign v3.1.3's flow, which this follows step for step with its texts, asks: `getCode`'s
+/// timer (sigstore v1.10.8 pkg/oauthflow/interactive.go l. 225), whose end says
+/// "error getting code from local server: timeout" and turns to the out-of-band flow.
 const BROWSER_WAIT: Duration = Duration::from_secs(120);
 
 /// The redirect for a code typed in by hand (oobRedirectURI).

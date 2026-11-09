@@ -44,10 +44,23 @@ use super::stream::{self, Stream};
 use super::{Driver, Message, Wait};
 use crate::logging::fluentd::{self, Config, From, To};
 
-/// The longest wait between tries (fluent-logger-golang's defaultMaxRetryWait).
+/// The longest wait between tries, part of what `fluentd-retry-wait` and
+/// `fluentd-max-retries` mean: dockerd's fluentd driver gives fluent-logger-golang no
+/// `MaxRetryWait` (moby v28.5.1 daemon/logger/fluentd/fluentd.go l. 263-277), whose default
+/// is this (`defaultMaxRetryWait`, fluent-logger-golang v1.9.0 fluent/fluent.go l. 34), each
+/// wait the retry wait times 1.5 to the try's power (`defaultReconnectWaitIncreRate`, l. 36;
+/// l. 496-498), so that a retry count a user sets waits as long in all as under dockerd.
 const MOST_WAIT: Duration = Duration::from_secs(60);
-/// The longest string an ack's map may hold: its key and its ID, 24 bytes of base64.
-const ACK_MOST: usize = 1024;
+/// fluent-logger-golang's `defaultReconnectWaitIncreRate` (the same file, l. 36).
+const RETRY_RATE: f64 = 1.5;
+/// A chunk's ID's bytes, as fluent-logger-golang's getUniqueID makes them ([`unique_id`]),
+/// and their length in base64 (RFC 4648 §4: four characters for each three bytes, padded).
+const ID_BYTES: usize = 16;
+const ID_LEN: usize = ID_BYTES.div_ceil(3) * 4;
+/// The longest string an ack's map may hold: its key, `ack`, and its value, the chunk's ID
+/// sent ("ack: ... the value of `chunk` option", Forward Protocol Specification v1,
+/// Response): a longer one names no chunk of this driver's.
+const ACK_MOST: usize = if ID_LEN > "ack".len() { ID_LEN } else { "ack".len() };
 /// The most of an event's bytes a receiver of Fluentd's forward protocol takes unless set
 /// otherwise, where a destination's own bound starts (learned.rs): Fluent Bit's
 /// `buffer_max_size`, "the maximum buffer memory size used to receive a Forward message",
@@ -116,7 +129,7 @@ impl Fluentd {
     /// The length of `m`'s event, its chunk's ID at its length where acks are asked for,
     /// its part in the place it goes.
     fn event_len(&self, m: &Message<'_>) -> usize {
-        let chunk = self.config.ack.then(|| "A".repeat(24));
+        let chunk = self.config.ack.then(|| "A".repeat(ID_LEN));
         fluentd::event(
             &self.config,
             &self.from,
@@ -276,7 +289,7 @@ impl Fluentd {
 /// empty one takes 1).
 fn part(config: &Config, from: &From) -> usize {
     let id = "f".repeat(64);
-    let chunk = config.ack.then(|| "A".repeat(24));
+    let chunk = config.ack.then(|| "A".repeat(ID_LEN));
     let rest = fluentd::event(
         config,
         from,
@@ -297,7 +310,7 @@ fn part(config: &Config, from: &From) -> usize {
 /// An event's chunk ID, as fluent-logger-golang's getUniqueID makes one: its time's
 /// seconds and a random number, each eight bytes little-endian, in base64.
 fn unique_id(at: u64) -> io::Result<String> {
-    let mut bytes = [0u8; 16];
+    let mut bytes = [0u8; ID_BYTES];
     bytes[..8].copy_from_slice(
         &i64::try_from(at / 1_000_000_000)
             .unwrap_or(i64::MAX)
@@ -445,7 +458,7 @@ impl Driver for Fluentd {
             if wait.pause(pause) {
                 return Err(super::stops());
             }
-            pause = pause.mul_f64(1.5).min(MOST_WAIT);
+            pause = pause.mul_f64(RETRY_RATE).min(MOST_WAIT);
         }
     }
 

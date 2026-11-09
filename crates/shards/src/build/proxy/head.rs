@@ -7,7 +7,8 @@
 
 use std::io::{self, BufRead, Read};
 
-/// The most a request's head may take (`DefaultMaxHeaderBytes` + 4096).
+/// The most a request's head may take: Go 1.26.1's `DefaultMaxHeaderBytes` (src/net/http/
+/// server.go l. 895) and the 4096 `initialReadLimitSize` adds to it (l. 904-906).
 pub const MOST: usize = (1 << 20) + 4096;
 
 /// The most of a request's body Go's server reads and drops to keep a connection after a

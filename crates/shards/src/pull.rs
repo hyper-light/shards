@@ -68,10 +68,10 @@ pub struct Out<'a> {
     pub progress: Option<&'a (dyn Fn(&Progress) + Sync)>,
 }
 
-/// How often a client on a terminal hears how much of a layer has arrived: often enough
-/// for motion at its frame rate, rarely enough that a 10 GB pull sends a few messages a
-/// layer a second, not one for each read.
-const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+/// How often a client on a terminal hears how much of a layer has arrived: once a frame it
+/// paints ([`crate::cli::show::TICK`]), so that each frame shows what came since the last
+/// and a pull sends no more than a frame's worth a layer, not one message for each read.
+const PROGRESS_EVERY: Duration = crate::cli::show::TICK;
 
 /// `shards pull image NAME[:TAG|@DIGEST]`, `-a` for every tag of the repository, as docker/cli
 /// asks for it (cli/command/image/pull.go, runPull) and dockerd's containerd store pulls

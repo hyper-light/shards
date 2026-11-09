@@ -56,6 +56,11 @@ impl Progress {
         }
     }
 
+    /// The process followed.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
     /// How long since it was last looked at.
     pub fn since(&self) -> Duration {
         self.at.elapsed()

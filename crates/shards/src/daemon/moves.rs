@@ -40,11 +40,23 @@ const LINK: u8 = 3;
 const PLAN: u8 = 4;
 /// A FIFO or a device node.
 const NODE: u8 = 5;
-/// The most a name in the stream may hold, a plan's JSON, and a file's extended attributes.
+/// The most a name in the stream may hold: a path of the guest's, Linux's `PATH_MAX`
+/// (include/uapi/linux/limits.h l. 13, Linux 6.18).
 const MAX_PATH: usize = 4096;
-const MAX_PLAN: usize = 16 << 20;
-const MAX_XATTRS: usize = 1 << 16;
+/// The most a plan's JSON may hold: the plan the other machine was given as a word of its
+/// `ready` step's request (cli/moves.rs), a frame of a context's connection at most
+/// ([`shards_remote::frame::MAX_FRAME`]); the stream's is that one.
+const MAX_PLAN: usize = shards_remote::frame::MAX_FRAME;
+/// The most of a file's extended attributes, as a Linux guest's file system holds them:
+/// an attribute's name, its value, and the list of its names (`XATTR_NAME_MAX`,
+/// `XATTR_SIZE_MAX` and `XATTR_LIST_MAX`, include/uapi/linux/limits.h l. 15-17).
+const MAX_XATTR_NAME: usize = 255;
 const MAX_XATTR: usize = 64 << 10;
+const MAX_XATTR_LIST: usize = 64 << 10;
+/// The most attributes a file holds: as many as its list holds of the shortest name, the
+/// shortest namespace's prefix (`os2.`, include/uapi/linux/xattr.h l. 33), a byte, and the
+/// NUL each name in the list ends with (listxattr(2)).
+const MAX_XATTRS: usize = MAX_XATTR_LIST / ("os2.".len() + 1 + 1);
 /// How much of a file a read or write moves at once.
 const CHUNK: usize = 1 << 20;
 /// Where a moved microVM's files that its new machine had none of, or another of, are kept
@@ -602,7 +614,7 @@ fn xattrs_of(r: &mut dyn Read) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut out = Vec::with_capacity(n.min(64));
     for _ in 0..n {
         let name_len = u32_of(r)?;
-        let name = bytes_of(r, u64::from(name_len), 255, "an attribute's name")?;
+        let name = bytes_of(r, u64::from(name_len), MAX_XATTR_NAME, "an attribute's name")?;
         let value_len = u32_of(r)?;
         let value = bytes_of(r, u64::from(value_len), MAX_XATTR, "an attribute's value")?;
         out.push((name, value));
