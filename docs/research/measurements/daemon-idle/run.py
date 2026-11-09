@@ -30,7 +30,7 @@ def shards(bin_dir, home, *args, check=True):
 
 def processes(home):
     """The daemon's pid, and its VMs' (their command lines name the home)."""
-    daemon = int(open(os.path.join(home, "daemon.pid")).read().strip())
+    daemon = int(open(os.path.join(home, "daemon.pid")).read().split()[0])
     ps = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True).stdout
     vms = [int(l.split(None, 1)[0]) for l in ps.splitlines()
            if "shards-vm" in l and home in l]

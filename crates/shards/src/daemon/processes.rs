@@ -225,7 +225,7 @@ impl<D: Disk> Daemon<D> {
         }
         // Followed as it grows: woken by an append to its last segment or a segment's
         // coming, by the run's end, or by the client's hanging up, as `logs -f` is; where
-        // no watch can be had, it reads again every RETRY, as `logs -f` does.
+        // no watch can be had, it reads again every UNWATCHED, as `logs -f` does.
         let followed = (|| -> io::Result<()> {
             let mut watch = shards_vmm::platform::FileWatch::new(&shards_vmm::platform::open_dir(&dir)?).ok();
             // The segment watched, by its number.
@@ -254,7 +254,7 @@ impl<D: Disk> Daemon<D> {
                         watch.as_ref(),
                         &end,
                         reply.0,
-                        watch.is_none().then_some(super::RETRY),
+                        watch.is_none().then_some(super::UNWATCHED),
                     )?;
                     if ready[1] {
                         for l in &read(&dir, at).0 {

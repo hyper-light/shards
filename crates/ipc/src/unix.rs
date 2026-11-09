@@ -1018,6 +1018,36 @@ pub(crate) fn alive(pid: u32) -> bool {
     alive || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// When process `pid` started ([`crate::started`]): on Linux its `/proc/<pid>/stat`
+/// starttime, field 22, which follows the last ')' (its command, field 2, may hold any byte
+/// but NUL, a ')' too).
+#[cfg(target_os = "linux")]
+pub(crate) fn started(pid: u32) -> io::Result<u64> {
+    let at = format!("/proc/{pid}/stat");
+    let stat = std::fs::read_to_string(&at)?;
+    stat.rfind(')')
+        .and_then(|i| stat.get(i.saturating_add(1)..))
+        .and_then(|fields| fields.split_ascii_whitespace().nth(19))
+        .and_then(|f| f.parse().ok())
+        .ok_or_else(|| io::Error::other(format!("{at}: no starttime in {stat:?}")))
+}
+
+/// When process `pid` started ([`crate::started`]): on macOS `proc_pid_rusage`'s
+/// `ri_proc_start_abstime`.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn started(pid: u32) -> io::Result<u64> {
+    let pid = libc::c_int::try_from(pid).map_err(io::Error::other)?;
+    // SAFETY: a rusage_info_v0, plain data, for proc_pid_rusage to fill.
+    let mut info: libc::rusage_info_v0 = unsafe { std::mem::zeroed() };
+    // SAFETY: proc_pid_rusage(3) of `pid` into a rusage_info_v0 of ours, which RUSAGE_INFO_V0
+    // names.
+    let r = unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V0, (&raw mut info).cast()) };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.ri_proc_start_abstime)
+}
+
 /// This process's peak resident set so far, in KiB; 0 where unknown. On Linux it is the
 /// address space's own high-water mark (`VmHWM`, proc(5)): `getrusage`'s `ru_maxrss`
 /// starts from the spawner's, since exec keeps the peak of the address space it

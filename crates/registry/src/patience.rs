@@ -99,7 +99,7 @@ impl Pace {
 /// adding their counts, exactly (the sketch is "fully mergeable", ibid. §2.2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(crate) struct Sketch(BTreeMap<u32, u64>);
+pub struct Sketch(BTreeMap<u32, u64>);
 
 impl Sketch {
     fn gamma() -> f64 {
@@ -207,7 +207,7 @@ impl Sketch {
 ///   any answer within twice its time (Baeza-Yates, Culberson and Rawlins 1993).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-pub(crate) struct Cutoff {
+pub struct Cutoff {
     /// The times answered.
     pub answered: Sketch,
     /// The times waited before a cut, the answer not come.
@@ -236,11 +236,11 @@ impl Step {
 }
 
 impl Cutoff {
-    pub(crate) fn answered(&mut self, took: Duration) {
+    pub fn answered(&mut self, took: Duration) {
         self.answered.add(took);
     }
 
-    pub(crate) fn cut(&mut self, waited: Duration) {
+    pub fn cut(&mut self, waited: Duration) {
         self.cut.add(waited);
     }
 
@@ -252,7 +252,7 @@ impl Cutoff {
     }
 
     /// The cutoff t, before any answer `None`.
-    pub(crate) fn base(&self) -> Option<Duration> {
+    pub fn base(&self) -> Option<Duration> {
         if self.answered.is_empty() {
             return None;
         }
@@ -313,7 +313,7 @@ impl Cutoff {
     }
 
     /// How long to wait after `timeouts` cuts in a row, `u` a uniform draw from [0, 1).
-    pub(crate) fn wait(&self, timeouts: u32, u: f64) -> Duration {
+    pub fn wait(&self, timeouts: u32, u: f64) -> Duration {
         let t = backed_off(self.base().unwrap_or(FIRST), timeouts);
         Duration::try_from_secs_f64(t.as_secs_f64() * (1.0 + u.clamp(0.0, 1.0))).unwrap_or(Duration::MAX)
     }

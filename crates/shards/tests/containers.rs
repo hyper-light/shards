@@ -2683,7 +2683,9 @@ exec "$@" </dev/null
     // The daemon, started in the delegated tree, with no bus of a manager's.
     let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
         .unwrap()
-        .trim()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or_default()
         .parse()
         .unwrap();
     let cgroup_of = |pid: u32| -> String {
@@ -8165,7 +8167,9 @@ fn a_container_outlives_a_daemon_that_dies() {
     let id = created(&gated, &home, &mut run);
     let pid: i32 = std::fs::read_to_string(home.join("daemon.pid"))
         .unwrap()
-        .trim()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or_default()
         .parse()
         .unwrap();
     common::kill_now(pid);
@@ -10140,7 +10144,9 @@ fn published_ports_are_free_at_once_while_the_daemon_makes_vms() {
     let mut asleep = start(&home, &image, &["--name", "asleep"], &["sleep"]);
     let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
         .unwrap()
-        .trim()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or_default()
         .parse()
         .unwrap();
     let children = children_of(daemon);

@@ -136,7 +136,9 @@ fn eventually(home: &Path, what: &str, mut check: impl FnMut() -> bool) {
 fn daemon_pid(home: &Path) -> Option<i32> {
     std::fs::read_to_string(home.join("daemon.pid"))
         .ok()?
-        .trim()
+        .split_ascii_whitespace()
+        .next()
+        .unwrap_or_default()
         .parse()
         .ok()
 }

@@ -133,7 +133,7 @@ struct Taker {
 #[cfg(windows)]
 impl Taker {
     fn start(listener: ApiListener, name: String, came: Came) -> io::Result<Taker> {
-        use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0};
+        use windows_sys::Win32::Foundation::WAIT_FAILED;
         use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects, WaitForSingleObject};
         let stop = shards_ipc::Event::new()?;
         let stopped = stop.try_clone()?;
@@ -148,7 +148,6 @@ impl Taker {
                     {
                         return;
                     }
-                    let mut failed = false;
                     loop {
                         match listener.accept() {
                             Ok(conn) => {
@@ -159,19 +158,24 @@ impl Taker {
                             }
                             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                            // Out of handles, say, the client is not taken and its listener's
+                            // event stays set: refused, its instance let go of and waiting for
+                            // the next (`Listener::refuse`, which makes no handle), as the
+                            // daemon's own listener refuses one (super::refuse_api).
                             Err(e) => {
-                                log(format!("context {name}: accepting its engine's client: {e}"));
-                                failed = true;
-                                break;
+                                log(format!(
+                                    "context {name}: accepting its engine's client: {e}; refused"
+                                ));
+                                if let Err(e) = listener.refuse() {
+                                    log(format!(
+                                        "context {name}: refusing its engine's client: {e}; no more taken"
+                                    ));
+                                    // SAFETY: its stop event, which this thread holds.
+                                    unsafe { WaitForSingleObject(stopped.raw(), INFINITE) };
+                                    return;
+                                }
                             }
                         }
-                    }
-                    // Out of handles, say, its listener's event may stay set: it looks
-                    // again as the daemon's own listener does (RETRY), not at once.
-                    let retry = u32::try_from(super::RETRY.as_millis()).unwrap_or(u32::MAX);
-                    // SAFETY: its stop event, which this thread holds.
-                    if failed && unsafe { WaitForSingleObject(stopped.raw(), retry) } == WAIT_OBJECT_0 {
-                        return;
                     }
                 }
             })?;
@@ -321,28 +325,35 @@ impl<D: Disk> Daemon<D> {
         }
     }
 
-    /// Relays each client waiting at a context's engine socket: false where one could not be
-    /// accepted now (out of descriptors), which the listener waits a while for.
-    pub(super) fn relay_waiting<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &Relays) -> bool {
-        // On Windows each context's taker took its clients: relayed as the context they
-        // came to is now, where it is still served.
-        #[cfg(windows)]
-        {
-            while let Ok((name, conn)) = relays.came.1.try_recv() {
-                if relays.served.contains_key(&name) {
-                    self.relay(threads, conn, name);
-                }
+    /// Relays each client waiting at a context's engine pipe: on Windows each context's taker
+    /// took its clients, relayed as the context they came to is now, where it is still
+    /// served.
+    #[cfg(windows)]
+    pub(super) fn relay_waiting<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        relays: &Relays,
+        _spare: &mut super::Spare,
+    ) -> bool {
+        while let Ok((name, conn)) = relays.came.1.try_recv() {
+            if relays.served.contains_key(&name) {
+                self.relay(threads, conn, name);
             }
-            true
         }
-        #[cfg(unix)]
-        self.relay_polled(threads, relays)
+        true
     }
 
-    /// [`relay_waiting`](Self::relay_waiting) of the listeners poll(2) said have clients.
+    /// Relays each client waiting at a context's engine socket, of the listeners poll(2) said
+    /// have clients. One no descriptor is left for is refused with `spare`, as the Engine
+    /// API's is (`super::refuse_api`): false where even that could not be done, so that the
+    /// listener waits on them no more until it is woken.
     #[cfg(unix)]
-    fn relay_polled<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &Relays) -> bool {
-        let mut ready = true;
+    pub(super) fn relay_waiting<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        relays: &Relays,
+        spare: &mut super::Spare,
+    ) -> bool {
         for (name, relay) in &relays.served {
             loop {
                 match super::accept_api(&relay.listener) {
@@ -350,26 +361,34 @@ impl<D: Disk> Daemon<D> {
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => {
-                        log(format!("context {name}: accepting its engine's client: {e}"));
-                        ready = false;
-                        break;
+                        log(format!(
+                            "context {name}: accepting its engine's client: {e}; refused"
+                        ));
+                        if !super::refuse_api(&relay.listener, spare) {
+                            return false;
+                        }
                     }
                 }
             }
         }
-        ready
+        true
     }
 
     /// As the daemon closes: no context's socket takes a client from here on, and those that
     /// reached one already are relayed, as those at its own sockets are served.
-    pub(super) fn close_relays<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, relays: &mut Relays) {
+    pub(super) fn close_relays<'s, 'e>(
+        &'s self,
+        threads: &'s Threads<'s, 'e>,
+        relays: &mut Relays,
+        spare: &mut super::Spare,
+    ) {
         if relays.served.is_empty() {
             return;
         }
         for relay in relays.served.values() {
             relay.unlink();
         }
-        let _ = self.relay_waiting(threads, relays);
+        let _ = self.relay_waiting(threads, relays, spare);
         relays.served.clear();
     }
 

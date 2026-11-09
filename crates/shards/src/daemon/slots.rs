@@ -18,7 +18,7 @@ use shards_ipc::fd::{AsFd, BorrowedFd, OwnedFd};
 use shards_ipc::kind;
 use shards_ipc::slots::{self, Asked, Frame, Requested, Requests, Session, Slot, Stopper, Waited};
 
-use super::{Daemon, RETRY, Threads, lock, log};
+use super::{Daemon, Threads, lock, log};
 use crate::containers::Disk;
 
 /// How long a slot a client took may go without its request before a sweep looks it over:
@@ -33,6 +33,79 @@ const SWEEP: Duration = Duration::from_secs(60);
 /// given, and a client taking a long answer slowly is seen to go on, as one that takes
 /// nothing is not ([`Daemon::slots_hold`]).
 const PIECE: usize = 64 << 10;
+
+/// The least a closed daemon waits on a client that takes nothing of its answer: TCP's R2,
+/// the least it retransmits to a peer that acknowledges nothing before it gives up on the
+/// connection ("R2 SHOULD correspond to at least 100 seconds", RFC 1122 §4.2.3.5), as D222
+/// rides out a registry's trouble at least as long.
+const R2: Duration = Duration::from_secs(100);
+
+/// What the daemon has seen of its clients, which its waits on them follow (D185's
+/// admission), never a figure picked:
+/// - **The rest of a request**, from its first byte, is waited for as long as makes requests
+///   come whole soonest when a cut one is asked again (D222's restart cutoff, crates/registry
+///   `Cutoff`: Luby, Sinclair and Zuckerman 1993, over its clients' own times, Kaplan and
+///   Meier 1958; a second at least and before any, RFC 6298 §2.1 and §2.4; doubled for each
+///   cut in a row, §5.5; drawn from [t, 2t)). A request cut is a restart: its client is told
+///   RESTART, or finds its slot's `say` gone as it writes (BrokenPipe), and asks again
+///   through the next slot, its request not begun anywhere. What a cut costs until the
+///   request comes again is not measured (a client's next asking is not told from
+///   another's), so the estimator takes asking again as a fresh draw, as Luby's does.
+/// - **A client that takes nothing of its answer** holds a closed daemon twice the longest
+///   a client of it has taken a piece in (a doubling search past what is known, Baeza-Yates,
+///   Culberson and Rawlins 1993), at least [`R2`]: the daemon cannot tell it to ask again,
+///   its command done.
+#[derive(Debug)]
+pub(crate) struct Seen {
+    /// The times requests' rests took, and the times waited before a cut.
+    requests: shards_registry::Cutoff,
+    /// Requests cut in a row.
+    pub(super) cuts: u32,
+    /// The longest a client took a piece of its answer in.
+    longest_take: Duration,
+    /// The least a closed daemon waits on a client that takes nothing ([`R2`]; less in tests).
+    pub(super) least: Duration,
+}
+
+impl Default for Seen {
+    fn default() -> Seen {
+        Seen {
+            requests: shards_registry::Cutoff::default(),
+            cuts: 0,
+            longest_take: Duration::ZERO,
+            least: R2,
+        }
+    }
+}
+
+impl Seen {
+    /// How long the rest of a request is waited for, `u` a uniform draw from [0, 1).
+    pub(super) fn request_wait(&self, u: f64) -> Duration {
+        self.requests.wait(self.cuts, u)
+    }
+
+    /// A request came whole `took` after its first byte.
+    pub(super) fn whole(&mut self, took: Duration) {
+        self.requests.answered(took);
+        self.cuts = 0;
+    }
+
+    /// A request was cut, `waited` after its first byte.
+    pub(super) fn cut(&mut self, waited: Duration) {
+        self.requests.cut(waited);
+        self.cuts = self.cuts.saturating_add(1);
+    }
+
+    /// A client took a piece of its answer in `took`.
+    fn taken(&mut self, took: Duration) {
+        self.longest_take = self.longest_take.max(took);
+    }
+
+    /// How long a closed daemon waits on a client that takes nothing of its answer.
+    pub(super) fn answer_wait(&self) -> Duration {
+        self.longest_take.saturating_mul(2).max(self.least)
+    }
+}
 
 /// What the slots' maker hears.
 #[derive(Debug)]
@@ -72,6 +145,9 @@ pub(super) struct Live {
     /// When the piece of an answer being written to its client began ([`PIECE`]): what it
     /// waits on its client from.
     pub(super) writing: Option<Instant>,
+    /// Its answer's last word (`EXIT`, `END`, `RESTART`) is its client's: there in its FIFO
+    /// whether or not the daemon is (pipe(7)), and nothing its client reads comes after it.
+    answered: bool,
     /// When it last went on, or was offered.
     went_on: Instant,
 }
@@ -99,18 +175,20 @@ impl<D: Disk> Daemon<D> {
 
     /// Whether a slot holds the daemon from being quiet, and so from exiting; and, once it
     /// has closed, when the first that does lets go of it. While it serves, a slot its
-    /// client opened holds it. Once it has closed, each holds it until its serving ends, or
-    /// until its client has had the time a request has (`request_timeout`) and not gone on:
-    /// not taken the piece of its answer being written to it, since that piece's write
-    /// began, or, its request not yet gone on, not gone on at all since its last step or
-    /// the close, the later. A client reading its answer takes each piece as it comes,
-    /// however slowly it reads; one stopped, or held by a pager that waits, takes nothing,
-    /// and keeps no daemon from exiting nor the next from starting. One whose request went
-    /// on, with nothing of its answer to take yet, takes nothing it could: it holds the
-    /// daemon while the daemon has yet to answer, as an attached run its stop ends after its
+    /// client opened holds it. Once it has closed, each holds it until its serving ends, its
+    /// answer's last word is its client's, or its client has had the time a client that
+    /// takes nothing is waited for (`Seen::answer_wait`) and not gone on: not taken the
+    /// piece of its answer being written to it, since that piece's write began, or, its
+    /// request not yet gone on, not gone on at all since its last step or the close, the
+    /// later. A client reading its answer takes each piece as it comes, however slowly it
+    /// reads; one stopped, or held by a pager that waits, takes nothing, and keeps no daemon
+    /// from exiting nor the next from starting past that wait. One whose request went on,
+    /// with nothing of its answer to take yet, takes nothing it could: it holds the daemon
+    /// while the daemon has yet to answer, as an attached run its stop ends after its
     /// timeout says nothing meanwhile (PM M331).
     pub(super) fn slots_hold(&self) -> (bool, Option<Instant>) {
         let closed_at = *lock(&self.closed_at);
+        let wait = lock(&self.seen).answer_wait();
         let now = Instant::now();
         let mut held = false;
         let mut lets_go: Option<Instant> = None;
@@ -119,15 +197,16 @@ impl<D: Disk> Daemon<D> {
                 held |= live.session;
                 continue;
             };
-            let since = match (live.writing, live.passed) {
-                (Some(since), _) => since,
-                (None, true) => {
+            let since = match (live.writing, live.passed, live.answered) {
+                (Some(since), _, _) => since,
+                (None, true, _) => {
                     held = true;
                     continue;
                 }
-                (None, false) => live.went_on.max(closed_at),
+                (None, false, true) => continue,
+                (None, false, false) => live.went_on.max(closed_at),
             };
-            match since.checked_add(self.request_timeout) {
+            match since.checked_add(wait) {
                 Some(at) if at <= now => {}
                 at => {
                     held = true;
@@ -174,12 +253,18 @@ impl<D: Disk> Daemon<D> {
         heard: &mpsc::Receiver<Event>,
     ) {
         let mut offered: HashMap<u64, Offered> = HashMap::new();
-        // Out of descriptors since when: said once, and looked again every RETRY, a slot
-        // being FIFOs and their ends.
+        // Out of descriptors since when, a slot being FIFOs and their ends: said once, and
+        // offered again as the daemon is told descriptors were let go of (`Event::Room`, as a
+        // client, a run or a connection ends), never on a clock. Clients meanwhile wait on
+        // their lists, a backlog that keeps nothing of the daemon's ready, as a socket's
+        // client left in its listener's backlog does (`refuse_api`).
         let mut starved_since: Option<Instant> = None;
-        // A slot it could not offer otherwise: said once, and tried again every RETRY, as
-        // nothing else may wake it while every client waits on a list it left short.
-        let mut failing_since: Option<Instant> = None;
+        // Since when a slot could not be offered otherwise (its FIFOs not made, its thread not
+        // started), and when it is tried again: said once, and tried again after a random
+        // share of how long the trouble has lasted so far (D222's `Trouble`, full jitter: no
+        // more lost past its end than it had lasted), as nothing else may wake it while every
+        // client waits on a list it left short.
+        let mut failing: Option<(Instant, Instant)> = None;
         // Since when a slot has been taken with no request read: what the sweep's due by.
         let mut taken_since: Option<Instant> = None;
         // Whether to look at the lists: at first, and as the listener asks ([`Event::Look`]).
@@ -209,7 +294,9 @@ impl<D: Disk> Daemon<D> {
                 while untaken(&requests, &offered, streams) < slots::OFFERED
                     && self.busy.load(Ordering::SeqCst) < self.max_clients
                     && !self.closed.load(Ordering::SeqCst)
+                    && failing.is_none_or(|(_, again)| Instant::now() >= again)
                 {
+                    let tried = Instant::now();
                     match self.offer_slot(threads, &mut requests, tell, streams) {
                         Ok((n, made)) => {
                             offered.insert(n, made);
@@ -217,7 +304,7 @@ impl<D: Disk> Daemon<D> {
                                 log(format!("offering slots again, after {:?}", since.elapsed()));
                                 self.have_room();
                             }
-                            if let Some(since) = failing_since.take() {
+                            if let Some((since, _)) = failing.take() {
                                 log(format!("offering slots again, after {:?}", since.elapsed()));
                             }
                         }
@@ -227,15 +314,17 @@ impl<D: Disk> Daemon<D> {
                                     "offering a request's slot: {e}; clients wait until the daemon has room"
                                 ));
                                 starved_since = Some(Instant::now());
-                                self.starving.store(true, Ordering::SeqCst);
                             }
+                            // Said again at each failure: a wake may have said there was room.
+                            self.starving.store(true, Ordering::SeqCst);
                             break;
                         }
                         Err(e) => {
-                            if failing_since.is_none() {
+                            let since = failing.map_or(tried, |(since, _)| since);
+                            if failing.is_none() {
                                 log(format!("offering a request's slot: {e}; trying again"));
-                                failing_since = Some(Instant::now());
                             }
+                            failing = Some((since, again_after(since)));
                             break;
                         }
                     }
@@ -253,11 +342,12 @@ impl<D: Disk> Daemon<D> {
                 None
             };
             let due = taken_since.and_then(|since| since.checked_add(SWEEP));
-            let wait = match (starved_since.or(failing_since), due) {
-                (Some(_), _) => Some(RETRY),
-                (None, Some(due)) => Some(due.saturating_duration_since(Instant::now())),
-                (None, None) => None,
-            };
+            // Starved, it waits to hear of room; failing otherwise, for its next try.
+            let wait = due
+                .into_iter()
+                .chain(failing.map(|(_, again)| again))
+                .min()
+                .map(|at| at.saturating_duration_since(Instant::now()));
             let heard = match wait {
                 Some(wait) => heard.recv_timeout(wait),
                 None => heard.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
@@ -356,14 +446,28 @@ impl<D: Disk> Daemon<D> {
         };
         living.opened();
         let _ = tell.send(Event::Asked(n));
-        // The rest of its request, whole within the time a socket's client had to send its
-        // own, and no longer waited for once the daemon ends its clients.
+        // The rest of its request, whole within the wait its clients' requests have shown
+        // makes them come soonest (`Seen`), and no longer waited for once the daemon ends its
+        // clients.
+        let wait = lock(&self.seen).request_wait(super::uniform());
         let request = |opened: slots::Opened| {
-            opened.request_within(Some(self.request_timeout), Some(&self.requests_end))
+            let began = Instant::now();
+            let requested = opened.request_within(Some(wait), Some(&self.requests_end));
+            match &requested {
+                Ok(Requested::Asked(_)) => lock(&self.seen).whole(began.elapsed()),
+                Ok(Requested::Late(_)) => lock(&self.seen).cut(began.elapsed()),
+                _ => {}
+            }
+            requested
         };
         // A daemon that has closed takes no more: its client asks the next.
         let Some(counted) = self.in_hand() else {
-            if let Ok(Requested::Asked(Asked { session, .. }) | Requested::Ended(session)) = request(opened) {
+            if let Ok(
+                Requested::Asked(Asked { session, .. })
+                | Requested::Ended(session)
+                | Requested::Late(session),
+            ) = request(opened)
+            {
                 let _ = session.send(kind::RESTART, &[]);
             }
             return;
@@ -385,7 +489,14 @@ impl<D: Disk> Daemon<D> {
             }
             // Ended before its request was whole: it is gone, and its count with it.
             Ok(Requested::Gone) => {}
-            Ok(Requested::Late(_)) => log(format!("a client sent no request in {:?}", self.request_timeout)),
+            // Cut: told to ask again, as a request is cut where asking again is a restart
+            // (`Seen`). One still writing finds its `say` gone (BrokenPipe), and asks again.
+            Ok(Requested::Late(session)) => {
+                log(format!(
+                    "request slot {n}: its request not whole in {wait:?}; its client asks again"
+                ));
+                let _ = session.send(kind::RESTART, &[]);
+            }
             // Its daemon ending its clients, it asks the next, as one whose request no
             // thread had read (`end_clients`).
             Ok(Requested::Ended(session)) => {
@@ -408,13 +519,27 @@ impl<D: Disk> Daemon<D> {
         counted: InHand<'s, D>,
         living: &Living<'s, D>,
     ) -> io::Result<()> {
-        let (ours, theirs) = UnixStream::pair()?;
+        // What its serving takes besides what the slot holds, taken before it is handed on.
+        // Where no descriptor is left for them, its client is told to ask again (RESTART),
+        // on the slot's own FIFO, which holds its descriptors from its offer: a client taken
+        // is always answered, as a socket's client the daemon could not serve is refused
+        // with its spare (`refuse_api`). It asks again through the next slot, offered as
+        // there is room (`make_slots`).
+        let taken = UnixStream::pair().and_then(|(ours, theirs)| Ok((ours, theirs, crate::os::null()?)));
+        let (ours, theirs, null) = match taken {
+            Ok(taken) => taken,
+            Err(e) if crate::os::out_of_descriptors(&e) => {
+                log(format!("a request's slot: {e}; its client asks again"));
+                drop(counted);
+                return session.send(kind::RESTART, &[]);
+            }
+            Err(e) => return Err(e),
+        };
         // The daemon's handling reads the request as it is written, so it starts first: a
         // request past the pair's buffer (a run's labels: 208 KiB on Linux, net.core's
         // wmem_default, 8 KiB on macOS) would otherwise wait for ever on a reader yet to
         // come. Ended before it is sent, the request is none, and its count goes with it.
         counted.hand(threads, theirs);
-        let null = crate::os::null()?;
         // Where the daemon ended the connection before the request could go (its clients
         // ended as it steps aside, `end_clients`), what it said on it still reaches the
         // client: its RESTART, so that the client asks the next daemon rather than take
@@ -473,9 +598,13 @@ impl<D: Disk> Daemon<D> {
             #[cfg(windows)]
             let said_all = &said_all;
             // The client's messages, on to the daemon; its end, the connection's. None
-            // where the request never went: the connection has ended there, and ended here
-            // too before its last messages are read, XNU would drop them (soshutdown's
-            // sorflush).
+            // where the request never went: the connection may have ended there, and ended
+            // here both ways before its last messages are read, XNU would drop them
+            // (soshutdown's sorflush), so it ends only its writing, which the daemon's
+            // handling reads as a request that never came, and waits for no longer.
+            if sent.is_err() {
+                let _ = ours.shutdown(std::net::Shutdown::Write);
+            }
             if sent.is_ok() {
                 let onward =
                     std::thread::Builder::new()
@@ -590,6 +719,7 @@ impl<'a, D: Disk> Living<'a, D> {
             session: false,
             passed: false,
             writing: None,
+            answered: false,
             went_on: Instant::now(),
         };
         lock(&daemon.live).insert(n, live);
@@ -607,10 +737,13 @@ impl<'a, D: Disk> Living<'a, D> {
         self.step(|live| live.passed = true);
     }
 
-    /// Its answer's last word is its client's: from here it holds a closed daemon as one
-    /// whose request has yet to go on does ([`Daemon::slots_hold`]).
-    fn answered(&self) {
-        self.step(|live| live.passed = false);
+    /// Its answer's last word is its client's: from here it holds a closed daemon no more
+    /// ([`Daemon::slots_hold`]).
+    pub(super) fn answered(&self) {
+        self.step(|live| {
+            live.passed = false;
+            live.answered = true;
+        });
     }
 
     /// Its client asked for the daemon's stop, whose session the daemon holds until it
@@ -624,8 +757,11 @@ impl<'a, D: Disk> Living<'a, D> {
     pub(super) fn answer(&self, to: &slots::Line, kind: u8, payload: &[u8]) -> io::Result<()> {
         let message = slots::frame(kind, payload)?;
         let written = message.chunks(PIECE).try_for_each(|piece| {
-            self.step(|live| live.writing = Some(Instant::now()));
-            (&*to).write_all(piece)
+            let began = Instant::now();
+            self.step(|live| live.writing = Some(began));
+            (&*to).write_all(piece)?;
+            lock(&self.daemon.seen).taken(began.elapsed());
+            Ok(())
         });
         self.step(|live| live.writing = None);
         written
@@ -680,6 +816,16 @@ impl<D: Disk> Drop for InHand<'_, D> {
             self.daemon.wake_listener();
         }
     }
+}
+
+/// When a slot that could not be offered since `since` is tried again: after a random share
+/// of how long that trouble has lasted, from its first try's start (D222's `Trouble`, full
+/// jitter: the time lost past the trouble's end at most what it had lasted). The tries come
+/// as soon as the trouble is young and further apart as it lasts, a share of its length.
+fn again_after(since: Instant) -> Instant {
+    let lasted = since.elapsed();
+    let now = Instant::now();
+    now.checked_add(lasted.mul_f64(super::uniform())).unwrap_or(now)
 }
 
 /// How many slots on one list no client has taken: the records its FIFO still holds

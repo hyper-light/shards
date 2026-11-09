@@ -10,7 +10,7 @@ dir=$(mktemp -d /tmp/daemon-idle.XXXXXX)
 mkdir "$dir/config"
 export SHARDS_HOME="$dir/home" DOCKER_CONFIG="$dir/config"
 "$shards" ps > /dev/null
-daemon=$(cat "$SHARDS_HOME/daemon.pid")
+daemon=$(cut -d" " -f1 "$SHARDS_HOME/daemon.pid")
 sleep 5
 snap() {
     for t in /proc/"$daemon"/task/*; do
