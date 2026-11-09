@@ -41,7 +41,13 @@ use super::{Activation, DeviceInterrupt, VirtioDevice, feature};
 use crate::memory::{Access, GuestMemory};
 
 pub const DEVICE_ID: u32 = 23;
+/// The request ring.
 const QUEUE_SIZE: u16 = 64;
+/// The event ring: the device reports no faults, so its driver's event buffers are never
+/// written, and the least ring holds them; Linux's driver posts one for each of its free
+/// entries (drivers/iommu/virtio-iommu.c l. 1131-1138, `viommu_fill_evtq`; Linux
+/// 1590cf03), which a longer ring would only have it allocate more of.
+const EVENT_QUEUE_SIZE: u16 = 1;
 /// Features: the input and domain ranges in the configuration, MAP and UNMAP, PROBE,
 /// mappings of device memory, and the configuration's bypass. Linux maps an MSI doorbell
 /// as device memory (IOMMU_MMIO), and its driver refuses a mapping of a flag the device
@@ -71,8 +77,16 @@ pub(crate) const MAP_F_WRITE: u32 = 1 << 1;
 const MAP_F_MMIO: u32 = 1 << 2;
 const PROBE_T_RESV_MEM: u16 = 1;
 const RESV_MEM_T_MSI: u8 = 1;
-/// The buffer PROBE writes an endpoint's properties into.
-const PROBE_SIZE: u32 = 512;
+/// A reserved region's property (struct virtio_iommu_probe_resv_mem): its head (type and
+/// the length after it, 2 bytes each), subtype, three reserved bytes, and the region's
+/// first and last address (virtio 1.3 §5.13.6; include/uapi/linux/virtio_iommu.h
+/// l. 123-137, Linux 1590cf03).
+const RESV_MEM_BYTES: u16 = 2 + 2 + 1 + 3 + 8 + 8;
+/// The buffer PROBE writes an endpoint's properties into: the one property the device
+/// gives, the MSI window as a reserved region, which fills it. Linux reads properties until
+/// a NONE or the buffer's end (drivers/iommu/virtio-iommu.c l. 565-582); one without the
+/// window reads a NONE at once, its bytes all zeros.
+const PROBE_SIZE: u32 = RESV_MEM_BYTES as u32;
 /// The granule of a mapping: its addresses and length are whole 4 KiB pages.
 const PAGE: u64 = 1 << 12;
 /// Each request's device-readable part, as virtio 1.3 §5.13.6 lays it out
@@ -759,9 +773,9 @@ fn answer_request(state: &mut Translation, req: &[u8]) -> (u8, Vec<u8>) {
                 // struct virtio_iommu_probe_resv_mem: its head (type, the length after
                 // it), subtype, three reserved bytes, and the region's first and last.
                 if let Some((first, last)) = state.msi {
-                    let mut resv = Vec::with_capacity(24);
+                    let mut resv = Vec::with_capacity(usize::from(RESV_MEM_BYTES));
                     resv.extend_from_slice(&PROBE_T_RESV_MEM.to_le_bytes());
-                    resv.extend_from_slice(&20u16.to_le_bytes());
+                    resv.extend_from_slice(&(RESV_MEM_BYTES - 4).to_le_bytes());
                     resv.extend_from_slice(&[RESV_MEM_T_MSI, 0, 0, 0]);
                     resv.extend_from_slice(&first.to_le_bytes());
                     resv.extend_from_slice(&last.to_le_bytes());
@@ -899,7 +913,7 @@ impl VirtioDevice for Iommu {
     }
 
     fn queue_max_sizes(&self) -> &[u16] {
-        &[QUEUE_SIZE, QUEUE_SIZE]
+        &[QUEUE_SIZE, EVENT_QUEUE_SIZE]
     }
 
     /// struct virtio_iommu_config: the page sizes mappings take (every power of two from
@@ -1516,10 +1530,11 @@ mod tests {
     }
 
     /// PROBE answers an endpoint's reserved regions: the MSI window, of subtype MSI, where
-    /// the machine has one (x86_64's), then nothing; an endpoint it does not translate has
-    /// none.
+    /// the machine has one (x86_64's), which fills its buffer, or nothing; an endpoint it
+    /// does not translate has none.
     #[test]
     fn probe_gives_the_msi_doorbell() {
+        assert_eq!(PROBE_SIZE, 24, "struct virtio_iommu_probe_resv_mem, whole");
         let mut t = Translation::new(vec![8], MSI);
         let mut probe = vec![T_PROBE, 0, 0, 0];
         probe.extend_from_slice(&8u32.to_le_bytes());
