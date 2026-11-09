@@ -26,9 +26,13 @@ pub const EXPORTER_LABEL: &[u8] = b"EXPERIMENTAL-shards-join";
 /// The longest an invitation's name is.
 pub const NAME_MAX: usize = 63;
 
-/// The most a join carries: its invitation's name, the NUL after it, and its proof
-/// (HMAC-SHA-256's 32 bytes). The daemon waits for no more of a client it has not enrolled.
-pub const JOIN_MAX: usize = NAME_MAX + 1 + 32;
+/// A proof's bytes: an HMAC-SHA-256 tag, as long as SHA-256's digest (RFC 2104 §2, an HMAC's
+/// output is its hash's; FIPS 180-4 §1, SHA-256's message digest is 256 bits).
+pub const PROOF: usize = 32;
+
+/// The most a join carries: its invitation's name, the NUL after it, and its proof. The
+/// daemon waits for no more of a client it has not enrolled.
+pub const JOIN_MAX: usize = NAME_MAX + 1 + PROOF;
 
 /// An invitation's name: 1 to 63 ASCII letters, digits, dots, underscores or hyphens, as
 /// focal's are, and what the enrolled client is known by.
@@ -151,10 +155,10 @@ impl Invitation {
 
 /// The proof a client joining with `secret` sends over the connection whose exporter gave
 /// `exported` ([`EXPORTER_LABEL`], no context, 32 bytes).
-pub fn proof(secret: &[u8; 32], exported: &[u8; 32]) -> [u8; 32] {
+pub fn proof(secret: &[u8; 32], exported: &[u8; 32]) -> [u8; PROOF] {
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
     let tag = hmac::sign(&key, exported);
-    let mut out = [0u8; 32];
+    let mut out = [0u8; PROOF];
     out.copy_from_slice(tag.as_ref());
     out
 }

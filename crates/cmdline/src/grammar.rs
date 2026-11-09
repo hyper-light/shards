@@ -991,6 +991,29 @@ mod tests {
         rewrite(&args).map(|w| w.join(" "))
     }
 
+    /// Each form maps its action and thing alone, the words past them following as they
+    /// came: the CLI relies on it to say a form whose later words are not UTF-8 (a path's).
+    #[test]
+    fn a_forms_words_past_its_thing_pass_through_as_they_came() {
+        let tail = ["--kernel".to_string(), "/a b/k".to_string(), "x".to_string()];
+        for (_, action, takes, _) in USES {
+            for alternative in takes.split(" | ") {
+                let Some(thing) = alternative.split(' ').next() else {
+                    continue;
+                };
+                let head = vec![(*action).to_string(), thing.to_string()];
+                let Some(mapped) = rewrite(&head) else {
+                    continue;
+                };
+                let mut whole = head.clone();
+                whole.extend(tail.iter().cloned());
+                let mut expected = mapped.clone();
+                expected.extend(tail.iter().cloned());
+                assert_eq!(rewrite(&whole), Some(expected), "{action} {thing}");
+            }
+        }
+    }
+
     #[test]
     fn actions_on_things_are_said_as_shards_runs_them() {
         assert_eq!(said("stop vm web db").as_deref(), Some("stop web db"));

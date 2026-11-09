@@ -162,9 +162,10 @@ const HUGE_FILE_FL: u32 = 0x4_0000;
 const INLINE_DATA_FL: u32 = 0x1000_0000;
 const EA_INODE_FL: u32 = 0x20_0000;
 const XATTR_MAGIC: u32 = 0xEA02_0000;
-/// EXT4_MAX_EXTENT_DEPTH.
+/// EXT4_MAX_EXTENT_DEPTH (Linux v6.18.48 fs/ext4/ext4_extents.h:87).
 const MAX_DEPTH: u16 = 5;
-/// An unwritten extent's length is past this (EXT_INIT_MAX_LEN).
+/// An unwritten extent's length is past this (EXT_INIT_MAX_LEN, `1UL << 15`,
+/// ext4_extents.h:149).
 const INIT_MAX_LEN: u16 = 32768;
 
 /// The root directory's inode.

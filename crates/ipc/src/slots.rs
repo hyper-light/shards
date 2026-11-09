@@ -80,8 +80,11 @@ pub mod fds {
     pub const OUT: u8 = 1;
     pub const ERR: u8 = 2;
     pub const NULL: u8 = 3;
-    /// The most a request names: a run's stdin, stdout and stderr, and room to spare.
-    pub const MAX: usize = 8;
+    /// The most a request names: one for each of a slot's streams ([`streams`](super::
+    /// streams)), each named once or stood in for by [`NULL`], as a run's stdin, stdout and
+    /// stderr are.
+    pub const MAX: usize =
+        (super::streams::IN | super::streams::OUT | super::streams::ERR).count_ones() as usize;
 }
 
 /// A message's header: its kind, then its payload's length (big-endian u32).

@@ -124,6 +124,9 @@ fn detail(bs: &[u8], offset: usize) -> (String, usize) {
     (line, offset - begin)
 }
 
+/// OPA's `DefaultMaxParsingRecursionDepth` (OPA v1.14.1 v1/ast/parser.go:34). The policy
+/// thread's stack is sized to parse a policy this deep (crates/shards build/policy `STACK`,
+/// PM M126).
 const MAX_DEPTH: usize = 100_000;
 
 /// What `save` copies and `restore` puts back (OPA's `state`). Its errors are shared by

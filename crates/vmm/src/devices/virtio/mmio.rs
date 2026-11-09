@@ -10,6 +10,8 @@ use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 use crate::warn;
 
+/// The registers' offsets: virtio 1.3 §4.2.2, "MMIO Device Register Layout" (QueueNumMax
+/// at 0x034); include/uapi/linux/virtio_mmio.h (l. 81, `VIRTIO_MMIO_QUEUE_NUM_MAX`).
 const MAGIC: u64 = 0x000;
 const VERSION: u64 = 0x004;
 const DEVICE_ID: u64 = 0x008;

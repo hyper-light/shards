@@ -319,6 +319,7 @@ mod linux_host {
     pub const AT_FDCWD: c_int = -100;
     pub const AT_SYMLINK_NOFOLLOW: c_int = 0x100;
     pub const AT_REMOVEDIR: c_int = 0x200;
+    /// A path's bytes, its NUL included (include/uapi/linux/limits.h l. 13).
     pub const PATH_MAX: c_int = 4096;
 }
 #[cfg(windows)]

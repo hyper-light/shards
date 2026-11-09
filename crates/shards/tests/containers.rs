@@ -16532,8 +16532,8 @@ fn a_microvm_takes_its_ipc_hostname_cgroups_umask_and_writable_layer() {
             "--storage-opt size=0: a size is a number of bytes above 0",
         ),
         (
-            &["--storage-opt", "size=20t"],
-            "--storage-opt size=21990232555520: an ext4 file system of 21990232555520 bytes: at most 16 TiB",
+            &["--storage-opt", "size=70t"],
+            "--storage-opt size=76965813944320: an ext4 file system of 76965813944320 bytes: at most 70368609959936 bytes",
         ),
     ] {
         let mut all = vec!["--rm"];

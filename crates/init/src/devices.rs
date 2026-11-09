@@ -133,6 +133,80 @@ pub fn sysfs_link(path: &str) -> Option<PathBuf> {
     link_at(SYSFS.get()?.as_fd(), path).ok()
 }
 
+/// The kernel's word of its devices, from the moment it is opened: each uevent it
+/// broadcasts (NETLINK_KOBJECT_UEVENT's group 1; Linux 7.2 lib/kobject_uevent.c,
+/// `uevent_net_broadcast_untagged`), a device added, bound to its driver, changed (a disk's
+/// size, `RESIZE=1`, block/genhd.c `set_capacity_and_notify`) or removed. What a wait on a
+/// device's arrival wakes on, in place of a clock: opened before what makes the device
+/// come, so that no word of it is missed between a look and the wait.
+pub struct Uevents(OwnedFd);
+
+impl Uevents {
+    pub fn open() -> io::Result<Uevents> {
+        // SAFETY: socket(2) of the kernel's uevent family.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+                libc::NETLINK_KOBJECT_UEVENT,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the descriptor socket just made, owned here alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: an all-zero sockaddr_nl, then its family and the kernel's group.
+        let mut at: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        at.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        at.nl_groups = 1;
+        // SAFETY: bind(2) of our socket to an address of its size.
+        let rc = unsafe {
+            libc::bind(
+                fd.as_raw_fd(),
+                (&raw const at).cast(),
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Uevents(fd))
+    }
+
+    /// Waits until the kernel says anything of a device, or that it dropped what it had to
+    /// say (ENOBUFS, its socket's buffer full): either way, whatever is waited for is
+    /// looked at again. The event is taken unread, as nothing in it is needed but its
+    /// coming.
+    pub fn next(&self) -> io::Result<()> {
+        loop {
+            // SAFETY: recv(2) of no bytes, which takes the next datagram whole (netlink(7)).
+            let n = unsafe { libc::recv(self.0.as_raw_fd(), std::ptr::null_mut(), 0, 0) };
+            if n >= 0 {
+                return Ok(());
+            }
+            let e = io::Error::last_os_error();
+            match e.raw_os_error() {
+                Some(libc::EINTR) => {}
+                Some(libc::ENOBUFS) => return Ok(()),
+                _ => return Err(e),
+            }
+        }
+    }
+
+    /// What `found` finds, looked at now and again as each of the kernel's device events
+    /// comes: no wait of its own, which the one asking ends (the daemon's exec of the
+    /// built-in) where nothing comes.
+    pub fn arrival<T>(&self, mut found: impl FnMut() -> Option<T>) -> io::Result<T> {
+        loop {
+            if let Some(t) = found() {
+                return Ok(t);
+            }
+            self.next()?;
+        }
+    }
+}
+
 /// The VM's device `name` in its devtmpfs, opened `O_PATH`: a handle a process may open
 /// it through again (`/proc/self/fd/N`) wherever its root is.
 pub fn device_handle(name: &str) -> io::Result<OwnedFd> {
@@ -974,9 +1048,6 @@ fn function_rules(rules: &[Vec<u8>]) -> Result<Vec<Rule>, String> {
         .collect()
 }
 
-/// How long a function found by a rescan is waited for, its group's node made.
-const FUNCTION_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// The function at `address` on the microVM's bus, a host's plugged in as it runs (D214),
 /// `host` as its daemon named it: given to vfio-pci, as [`vfio_group`] gives a run's, and
 /// the node of it the workload opens, its group's (`/dev/vfio/G`, G the guest's number,
@@ -986,6 +1057,8 @@ pub fn vfio_function(address: &str, kind: &str, host: &str) -> Result<Node, Stri
     let sys = SYSFS
         .get()
         .ok_or_else(|| gathering(host, "no sysfs to give it to vfio-pci in"))?;
+    // Heard from before vfio-pci is given it, so that its node's coming is not missed.
+    let events = Uevents::open().map_err(|e| gathering(host, &format!("the kernel's device events: {e}")))?;
     let group = vfio_group(sys.as_fd(), host, address)?;
     let path = match kind {
         "group" => format!("/dev/vfio/{group}"),
@@ -1007,17 +1080,12 @@ pub fn vfio_function(address: &str, kind: &str, host: &str) -> Result<Node, Stri
         other => return Err(format!("{other:?}: a function is had by its group or its node")),
     };
     // devtmpfs makes a node as its device is added, before vfio-pci's probe returns
-    // (devtmpfs_create_node waits for it); waited for a while all the same.
-    let end = std::time::Instant::now() + FUNCTION_WITHIN;
-    loop {
-        if let Some(node) = vm_devices(&path).into_iter().find(|n| n.path == path) {
-            return Ok(node);
-        }
-        if std::time::Instant::now() > end {
-            return Err(gathering(host, &format!("{address}: the guest made no {path}")));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    // (drivers/base/core.c `device_add`: devtmpfs_create_node, which waits for it, before
+    // the device's KOBJ_ADD), so it is there at once; a probe the kernel defers or runs
+    // apart says so as it binds, which the wait wakes on.
+    events
+        .arrival(|| vm_devices(&path).into_iter().find(|n| n.path == path))
+        .map_err(|e| gathering(host, &format!("{address}: waiting for {path}: {e}")))
 }
 
 /// What holds the device `node`, or the VFIO device of the function at `address`, open in

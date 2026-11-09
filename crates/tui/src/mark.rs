@@ -35,11 +35,11 @@ const SHARDS: [(&[Pt], &[Pt], &[Pt]); 3] = [
     ),
 ];
 
-/// Ranks: a glint over a rim over a tick over a facet.
+/// Ranks: a glint over a rim over a tick over a facet, each the next above the one under it.
 const FACET: u8 = 1;
-const TICK: u8 = 2;
-const RIM: u8 = 3;
-const GLINT: u8 = 4;
+const TICK: u8 = FACET + 1;
+const RIM: u8 = TICK + 1;
+const GLINT: u8 = RIM + 1;
 
 /// Draws the mark at time `t` across the whole of `canvas`, centred.
 pub fn draw(canvas: &mut Canvas, t: f64) {

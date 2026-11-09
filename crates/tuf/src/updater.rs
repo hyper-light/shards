@@ -42,7 +42,8 @@ pub trait Fetch {
     fn fetch(&self, url: &str, max: u64) -> Result<Vec<u8>, FetchError>;
 }
 
-/// UpdaterConfig's limits.
+/// UpdaterConfig's limits: `config.New`'s defaults (go-tuf v2.4.2
+/// metadata/config/config.go:64-69), which sigstore-go and BuildKit's policy helpers keep.
 pub const MAX_ROOT_ROTATIONS: i64 = 256;
 pub const MAX_DELEGATIONS: usize = 32;
 pub const ROOT_MAX: u64 = 512_000;

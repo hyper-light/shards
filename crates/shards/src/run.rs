@@ -1152,8 +1152,31 @@ pub struct Origin {
 }
 
 impl Origin {
-    /// The most bytes a record may take: a path and two digests, far less.
-    const MOST: u64 = 64 << 10;
+    /// The most bytes a record may take: the longest this build writes. Each of its paths the
+    /// longest this host names, every byte of it a control character, which JSON writes in
+    /// six (RFC 8259 §7): `PATH_MAX` of its headers on Unix (4096 on Linux, 1024 on macOS),
+    /// on Windows 32,767 UTF-16 units ("Maximum Path Length Limitation", Microsoft Learn),
+    /// each at most three bytes of UTF-8; its digests the longest an image's are, sha512's
+    /// (OCI image-spec v1.1 descriptor.md, "Registered algorithms"); its stamp the longest
+    /// `rootfs_stamp` spells.
+    fn most() -> u64 {
+        #[cfg(unix)]
+        let path_max = usize::try_from(libc::PATH_MAX).unwrap_or(usize::MAX);
+        #[cfg(windows)]
+        let path_max = 3 * 32_767;
+        let path = PathBuf::from("\u{1}".repeat(path_max));
+        let digest = format!("sha512:{}", "f".repeat(2 * 64));
+        let longest = Origin {
+            rootfs: path.clone(),
+            stamp: Some(format!("{} -{}.{:09}", u64::MAX, u64::MAX, 999_999_999)),
+            kernel_digest: digest.clone(),
+            init_digest: digest,
+            server: true,
+            gpu: true,
+            emulator: Some(path),
+        };
+        serde_json::to_vec(&longest).map_or(u64::MAX, |v| u64::try_from(v.len()).unwrap_or(u64::MAX))
+    }
 
     /// Where the template `dir`'s record is: beside it, in the directory of templates,
     /// which no VM process is granted.
@@ -1227,7 +1250,7 @@ impl Origin {
     /// beside it, its newest version (platform `write_in`), never followed if it is a link.
     pub fn read(dir: &Path) -> Option<Origin> {
         let (parent, name) = Self::place(dir)?;
-        let bytes = shards_vmm::platform::read_newest_beneath(parent, &[&name], Self::MOST).ok()??;
+        let bytes = shards_vmm::platform::read_newest_beneath(parent, &[&name], Self::most()).ok()??;
         serde_json::from_slice(&bytes).ok()
     }
 

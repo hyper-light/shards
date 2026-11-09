@@ -115,6 +115,26 @@ fn sizes_out_of_reach_are_refused() {
     assert!(Geometry::of(LEAST_BLOCKS * BLOCK).is_ok());
 }
 
+/// The largest file system's inodes are as many as `s_inodes_count` counts, and a group
+/// more would hold more than it can: the bound is the field's, not one picked.
+#[test]
+fn the_most_blocks_are_as_many_groups_as_the_inode_count_holds() {
+    let g = Geometry::of(MOST_BLOCKS * BLOCK).unwrap();
+    assert_eq!(g.blocks, MOST_BLOCKS);
+    let inodes = g.groups * g.ipg;
+    assert!(inodes <= u64::from(u32::MAX), "{inodes}");
+    assert!(inodes + g.ipg > u64::from(u32::MAX), "{inodes}");
+    assert_eq!(MOST_BLOCKS * BLOCK, (64 << 40) - (128 << 20));
+    let past = (MOST_BLOCKS + GROUP) * BLOCK;
+    assert_eq!(
+        Geometry::of(past).err().map(|e| e.0),
+        Some(format!(
+            "an ext4 file system of {past} bytes: at most {} bytes",
+            MOST_BLOCKS * BLOCK
+        ))
+    );
+}
+
 #[test]
 fn superblock_copies_are_where_sparse_super_puts_them() {
     let g = Geometry::of(1 << 40).unwrap();

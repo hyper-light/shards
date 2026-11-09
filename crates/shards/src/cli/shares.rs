@@ -35,23 +35,25 @@ fn directory(dir: &OsStr, read_only: bool) -> Result<(PathBuf, bool), String> {
 type Named = (PathBuf, bool);
 
 /// `args` (a `run`'s, after `run`) with each `--share` taken out, and the shares, in order.
-/// Those after `--` are its command's.
+/// Those after `--` are its command's. Read word by word as `run` reads them
+/// (`spec::next_word`): a flag's value is its own, whatever it reads as.
 pub(super) fn take(args: &[OsString]) -> Result<(Vec<OsString>, Vec<Named>), String> {
     let mut kept = Vec::with_capacity(args.len());
     let mut shares = Vec::new();
-    let mut rest = args.iter();
-    while let Some(arg) = rest.next() {
+    let mut rest = args.iter().cloned();
+    while let Some((arg, value)) = crate::spec::next_word(&mut rest) {
         if arg == "--" {
-            kept.push(arg.clone());
-            kept.extend(rest.cloned());
+            kept.push(arg);
+            kept.extend(rest);
             break;
         }
-        if arg != "--share" {
-            kept.push(arg.clone());
+        if arg == "--share" {
+            let value = rest.next().ok_or("--share needs a value")?;
+            shares.push(parse(&value)?);
             continue;
         }
-        let value = rest.next().ok_or("--share needs a value")?;
-        shares.push(parse(value)?);
+        kept.push(arg);
+        kept.extend(value);
     }
     Ok((kept, shares))
 }
@@ -61,8 +63,16 @@ fn opened(shares: &[(PathBuf, bool)]) -> Result<Vec<std::fs::File>, String> {
     shares
         .iter()
         .map(|(dir, _)| {
+            // A directory alone (O_DIRECTORY), and never waited on (O_NONBLOCK): a FIFO
+            // named as a share is refused at once, not opened for a writer that never comes.
             #[cfg(unix)]
-            let file = std::fs::File::open(dir);
+            let file = {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_DIRECTORY | libc::O_NONBLOCK)
+                    .open(dir)
+            };
             // A directory opens on Windows only with backup semantics.
             #[cfg(windows)]
             let file = shards_vmm::platform::open_dir(dir);
@@ -104,19 +114,20 @@ fn share_args(shares: &[(PathBuf, bool)]) -> Vec<&'static OsStr> {
 }
 
 /// `args` (a `run`'s, `run` first) with its `--share`s served: a share process started on
-/// them, and each share's connection to it given as `--slates-fs-fd N`, a descriptor kept
-/// open through the exec into the VM. The share process ends as its connections close, with
-/// the VM, and the kernel reaps it (SIGCHLD stays ignored through the exec).
+/// them, and each share's connection to it given as `--slates-fs-fd N`, a descriptor
+/// returned close-on-exec, for [`inherit`] to keep open through the exec into the VM alone,
+/// right before it. The share process ends as its connections close, with the VM, and the
+/// kernel reaps it (SIGCHLD stays ignored through the exec).
 #[cfg(unix)]
-pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
-    use std::os::fd::{AsFd as _, IntoRawFd as _};
+pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::fd::OwnedFd>), String> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
     use std::os::unix::net::UnixStream;
     if args.first().is_none_or(|a| a != "run") {
-        return Ok(args.to_vec());
+        return Ok((args.to_vec(), Vec::new()));
     }
     let (mut kept, shares) = take(args.get(1..).unwrap_or_default())?;
     if shares.is_empty() {
-        return Ok(args.to_vec());
+        return Ok((args.to_vec(), Vec::new()));
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
@@ -163,7 +174,20 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
     let command = kept.split_off(at);
     let mut with: Vec<OsString> = vec!["run".into()];
     with.extend(kept);
-    for end in ends {
+    for end in &ends {
+        with.extend(["--slates-fs-fd".into(), end.as_raw_fd().to_string().into()]);
+    }
+    with.extend(command);
+    Ok((with, ends))
+}
+
+/// Keeps `fds` open through the exec that follows at once: their close-on-exec cleared, the
+/// last thing before it, so that no process started before (the grants broker, a working
+/// set's writer) inherits a share's connection (review 12).
+#[cfg(unix)]
+pub(super) fn inherit(fds: Vec<std::os::fd::OwnedFd>) -> Result<(), String> {
+    use std::os::fd::IntoRawFd as _;
+    for end in fds {
         let fd = end.into_raw_fd();
         // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns, kept
         // open through the exec, for the VM.
@@ -173,29 +197,33 @@ pub(super) fn served(args: &[OsString]) -> Result<Vec<OsString>, String> {
                 std::io::Error::last_os_error()
             ));
         }
-        with.extend(["--slates-fs-fd".into(), fd.to_string().into()]);
     }
-    with.extend(command);
-    Ok(with)
+    Ok(())
 }
 
-/// `args` with each `--share` in its served place, and the VM's ends, each named.
+/// `args` with each `--share` in its served place, the VM's ends, each named, and the share
+/// process serving them, where there are any.
 #[cfg(windows)]
-pub(super) type Served = (Vec<OsString>, Vec<(String, std::os::windows::io::OwnedHandle)>);
+pub(super) type Served = (
+    Vec<OsString>,
+    Vec<(String, std::os::windows::io::OwnedHandle)>,
+    Option<shards_ipc::Child>,
+);
 
 /// The share streams of `args`' `--share`s on Windows (D197): a share process started on
-/// the directories, given each share's server end of a duplex pipe, and the VM's ends,
+/// the directories in `job`, the direct boot's, which ends it as its client ends however
+/// that ends (D141), given each share's server end of a duplex pipe; and the VM's ends,
 /// named `share-{i}`, for the VM to be given as `--slates-fs share-{i}`, which takes the
 /// place of each `--share`.
 #[cfg(windows)]
-pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
+pub(super) fn served(args: &[OsString], job: &shards_ipc::GroupJob) -> Result<Served, String> {
     use std::os::windows::io::AsHandle as _;
     if args.first().is_none_or(|a| a != "run") {
-        return Ok((args.to_vec(), Vec::new()));
+        return Ok((args.to_vec(), Vec::new(), None));
     }
     let (kept, shares) = take(args.get(1..).unwrap_or_default())?;
     if shares.is_empty() {
-        return Ok((args.to_vec(), Vec::new()));
+        return Ok((args.to_vec(), Vec::new(), None));
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
@@ -220,8 +248,11 @@ pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
         ));
     }
     let env = crate::netproc::child_env();
-    shards_ipc::spawn_in_job(
-        None,
+    // Detached from the console, as Unix's leads a session of its own: out of reach of a
+    // Ctrl-C meant for the VM (review 11). In the direct boot's job, breaking away from
+    // none: ended with its client, as Unix's ends with its VM, the client itself.
+    let child = shards_ipc::spawn_detached(
+        Some(job),
         &exe,
         &share_args(&shares),
         &fds,
@@ -238,7 +269,7 @@ pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
         given.push((name, vm));
     }
     with.extend(kept.iter().skip(at).cloned());
-    Ok((with, given))
+    Ok((with, given, Some(child)))
 }
 
 #[cfg(test)]
@@ -258,23 +289,38 @@ mod tests {
             ("/srv/data".into(), true)
         );
         assert_eq!(parse(OsStr::new("rel/dir:ro")).unwrap(), ("rel/dir".into(), true));
-        // Colons anywhere but a trailing `:ro` are the path's, the last name's too.
+        // Colons anywhere but a trailing `:ro` are the path's, the last name's too, as
+        // `--disk`'s (review 8).
         assert_eq!(parse(OsStr::new("/a:b/c")).unwrap(), ("/a:b/c".into(), false));
-        assert_eq!(
-            parse(OsStr::new("/srv/v1:2024")).unwrap(),
-            ("/srv/v1:2024".into(), false)
-        );
+        for path in [
+            "/srv/a:b",
+            "/srv/v1:2024",
+            "/srv/data:rw",
+            "/srv/data:",
+            "/srv/data:RO",
+        ] {
+            assert_eq!(parse(OsStr::new(path)).unwrap(), (path.into(), false), "{path}");
+        }
         assert_eq!(
             parse(OsStr::new("/srv/v1:2024:ro")).unwrap(),
             ("/srv/v1:2024".into(), true)
         );
-        assert_eq!(
-            parse(OsStr::new("/srv/data:rw")).unwrap(),
-            ("/srv/data:rw".into(), false)
-        );
         for bad in [":ro", ""] {
             assert!(parse(OsStr::new(bad)).is_err(), "{bad}");
         }
+    }
+
+    /// A FIFO named as a share is refused at once as no directory, not opened for a writer
+    /// that never comes, which blocked open(2) for ever (review 10).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_as_a_share_is_refused_at_once() {
+        let dir = shards_testdir::TempDir::new("share-fifo").unwrap();
+        let fifo = dir.path().join("f");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status().unwrap();
+        assert!(made.success());
+        let e = opened(&[(fifo.clone(), false)]).unwrap_err();
+        assert!(e.contains(&fifo.display().to_string()), "{e}");
     }
 
     /// Every `--share` before `--` is taken, in order; those after it are the command's.
@@ -290,5 +336,42 @@ mod tests {
         assert_eq!(kept, ["--kernel", "k", "--", "--share", "x"]);
         assert_eq!(shares, [("/a".into(), false), ("/b".into(), true)]);
         assert!(take(&[OsString::from("--share")]).is_err());
+    }
+
+    /// A flag's value is not a flag: `--cmdline --share` keeps `--share` as the command
+    /// line's, and `--env --` keeps `--` as the variable (review 9).
+    #[test]
+    fn a_flags_value_is_not_taken_as_a_flag() {
+        let args: Vec<OsString> = [
+            "--kernel",
+            "k",
+            "--cmdline",
+            "--share",
+            "-e",
+            "--",
+            "--share",
+            "/a",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let (kept, shares) = take(&args).unwrap();
+        assert_eq!(kept, ["--kernel", "k", "--cmdline", "--share", "-e", "--"]);
+        assert_eq!(shares, [("/a".into(), false)]);
+    }
+
+    /// Every flag `run` reads a value after is one whose value `take` keeps as its own, as
+    /// `run` reads its command line (vm_run.rs `parse_run`) and not by a list beside it:
+    /// `--cpu-baseline` (D176 part 6), a flag `parse_run` takes a value for, keeps a value
+    /// that reads `--share` (integrate's review: vm_run's own parser).
+    #[test]
+    fn take_reads_values_as_run_does() {
+        let args: Vec<OsString> = ["--kernel", "k", "--cpu-baseline", "--share", "--share", "/a"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let (kept, shares) = take(&args).unwrap();
+        assert_eq!(kept, ["--kernel", "k", "--cpu-baseline", "--share"]);
+        assert_eq!(shares, [("/a".into(), false)]);
     }
 }

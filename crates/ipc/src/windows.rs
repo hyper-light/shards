@@ -196,9 +196,16 @@ impl Job {
 /// A group's job (D183, slice 3, PM M359): what a run's VM process under a group shards
 /// keeps is made in, its own Job nested under it, so that the group's `memory.max` is this
 /// job's memory limit, which refuses its processes' commits past it. A process already in
-/// a Job of its own joins none that holds another (M359), so each is made in it.
+/// a Job of its own joins none that holds another (M359), so each is made in it. Or a direct
+/// boot's job ([`GroupJob::ending_with_this_process`]), which its share process and its VM
+/// process are made in so that they end as their client does, however it ends.
 #[derive(Debug)]
-pub struct GroupJob(OwnedHandle);
+pub struct GroupJob {
+    handle: OwnedHandle,
+    /// Whether it ends its processes as its last handle closes: kept through
+    /// [`GroupJob::limit_memory`], which sets every limit at once.
+    kills_on_close: bool,
+}
 
 impl GroupJob {
     /// A job of no limit yet.
@@ -208,22 +215,49 @@ impl GroupJob {
         if raw.is_null() {
             return Err(last());
         }
-        // SAFETY: a handle just made, which nothing else owns.
-        Ok(GroupJob(unsafe { OwnedHandle::from_raw_handle(raw) }))
+        Ok(GroupJob {
+            // SAFETY: a handle just made, which nothing else owns.
+            handle: unsafe { OwnedHandle::from_raw_handle(raw) },
+            kills_on_close: false,
+        })
+    }
+
+    /// A job whose processes end as its last handle closes: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    /// which "causes all processes associated with the job to terminate when the last handle
+    /// to the job is closed" and is set through JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    /// (JOBOBJECT_BASIC_LIMIT_INFORMATION's documentation); a process in a job nested under
+    /// it is associated with it too, and a job's termination ends its child jobs' processes
+    /// ("Nested Jobs", Windows 8 and later). Its last handle is this process's: made
+    /// uninheritable (CreateJobObjectW given no security attributes), and every child given
+    /// the handles named for it alone (PROC_THREAD_ATTRIBUTE_HANDLE_LIST). So its processes
+    /// end as this one does, however it ends, TerminateProcess included, since Windows
+    /// closes an ended process's handles. A direct boot's share process and VM process are
+    /// made in it (D141, D197). Where this process is in a job (a CI runner's, kiln's), its
+    /// children are made in that one too, as no breakaway is asked, and this job nests
+    /// under it as the first is assigned ("Nested Jobs": a valid hierarchy, neither job
+    /// setting UI limits).
+    pub fn ending_with_this_process() -> io::Result<GroupJob> {
+        let mut job = GroupJob::new()?;
+        job.kills_on_close = true;
+        job.limit_memory(None)?;
+        Ok(job)
     }
 
     /// Its processes' commits held to `bytes` together from now (JOB_OBJECT_LIMIT_JOB_MEMORY),
     /// or to no limit where `None`.
     pub fn limit_memory(&self, bytes: Option<u64>) -> io::Result<()> {
         let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        if self.kills_on_close {
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        }
         if let Some(bytes) = bytes {
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+            limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
             limits.JobMemoryLimit = usize::try_from(bytes).unwrap_or(usize::MAX);
         }
         // SAFETY: limits of their own size, on our job.
         if unsafe {
             SetInformationJobObject(
-                self.0.as_raw_handle(),
+                self.handle.as_raw_handle(),
                 JobObjectExtendedLimitInformation,
                 (&raw const limits).cast(),
                 size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
@@ -250,7 +284,7 @@ impl GroupJob {
             // SAFETY: a buffer of `bytes`, aligned for the list, this function holds.
             let asked = unsafe {
                 QueryInformationJobObject(
-                    self.0.as_raw_handle(),
+                    self.handle.as_raw_handle(),
                     JobObjectBasicProcessIdList,
                     list.as_mut_ptr().cast(),
                     bytes,
@@ -286,7 +320,10 @@ impl GroupJob {
 
     /// The same job again, a handle of its own.
     pub fn try_clone(&self) -> io::Result<GroupJob> {
-        self.0.try_clone().map(GroupJob)
+        Ok(GroupJob {
+            handle: self.handle.try_clone()?,
+            kills_on_close: self.kills_on_close,
+        })
     }
 }
 
@@ -1786,6 +1823,31 @@ pub fn spawn_in_job(
     )
 }
 
+/// [`spawn_in_job`]'s child, detached from this process's console as [`spawn`]'s `detach`
+/// makes it: in no console nor process group of this process's, as a Unix child of its own
+/// session is, out of reach of a Ctrl-C meant for this one; its environment
+/// [`spawn_in_job`]'s (a direct boot's share process, as Unix's starts with setsid). Made
+/// in `group` where there is one, and then in every Job this process is in, from none of
+/// which it breaks away: what holds this process's processes holds it (a direct boot's
+/// [`GroupJob::ending_with_this_process`]); with none, out of this process's Job too,
+/// where the Job lets it go.
+pub fn spawn_detached(
+    group: Option<&GroupJob>,
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(program, args, fds, true, kept.chain(given).collect(), group, None)
+}
+
 /// Whether this process has a console: a child that would share it has none else, and is
 /// made with none of its own (CREATE_NO_WINDOW), where a console a daemon's child made would
 /// open a window.
@@ -1855,13 +1917,21 @@ fn spawn_env(
     let mut line = command_line(program, args);
     let block = environment_of(&env);
     // Made in a pseudoconsole, it holds that console alone, and none of this process's: it
-    // breaks away from this process's Job as a detached child does.
+    // breaks away from this process's Job as a detached child does. One made in a group's
+    // job breaks away from none, so that the group's job nests under this process's: a VM
+    // process made after it, in this process's Job, can join the group's only then
+    // ("Nested Jobs": a child job holds a subset of its parent's processes).
+    let breakaway = if group.is_some() {
+        0
+    } else {
+        CREATE_BREAKAWAY_FROM_JOB
+    };
     let flags = EXTENDED_STARTUPINFO_PRESENT
         | CREATE_SUSPENDED
         | CREATE_UNICODE_ENVIRONMENT
         | match (console.is_some(), detach) {
-            (true, _) => CREATE_BREAKAWAY_FROM_JOB,
-            (false, true) => DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            (true, _) => breakaway,
+            (false, true) => DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | breakaway,
             (false, false) => no_window(),
         };
     let pc = console.map(PseudoConsole::raw);
@@ -1907,7 +1977,9 @@ fn spawn_env(
     // In its group's job before it runs, as a VM process is made in one.
     if let Some(group) = group {
         // SAFETY: a job this process holds, and the child's process, suspended.
-        if unsafe { AssignProcessToJobObject(group.0.as_raw_handle(), child.process.as_raw_handle()) } == 0 {
+        if unsafe { AssignProcessToJobObject(group.handle.as_raw_handle(), child.process.as_raw_handle()) }
+            == 0
+        {
             let e = last();
             let _ = child.kill(SIGKILL);
             return Err(e);
@@ -2340,7 +2412,7 @@ fn create(
     // The group's job first, the outermost, then its own (PROC_THREAD_ATTRIBUTE_JOB_LIST).
     let jobs: Vec<HANDLE> = s
         .group
-        .map(|g| g.0.as_raw_handle())
+        .map(|g| g.handle.as_raw_handle())
         .into_iter()
         .chain(std::iter::once(job.raw()))
         .collect();
@@ -2550,6 +2622,84 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A detached child runs, its end and status seen as any child's, though it is in no
+    /// console, process group nor Job of this process's.
+    #[test]
+    fn a_detached_child_runs_and_its_end_is_seen() {
+        let shell = std::env::var_os("ComSpec").unwrap();
+        let args = [OsStr::new("/c"), OsStr::new("exit 7")];
+        let child = spawn_detached(None, Path::new(&shell), &args, &[], &[]).unwrap();
+        assert_eq!(child.ended_status().unwrap(), 7);
+    }
+
+    /// A child that runs until it is ended, detached in `job` as a direct boot's share
+    /// process is.
+    fn waiting_in(job: &GroupJob) -> Child {
+        let shell = std::env::var_os("ComSpec").unwrap();
+        // Ten minutes of pings, a second apart: ended by its job long before.
+        let args = [OsStr::new("/c"), OsStr::new("ping -n 600 127.0.0.1 >NUL")];
+        spawn_detached(Some(job), Path::new(&shell), &args, &[], &[]).unwrap()
+    }
+
+    /// A direct boot's share process, made detached in a job ending with this process, is
+    /// in it, and ends as the job's last handle, this process's, closes (D141): as Windows
+    /// closes it for a client ended by TerminateProcess. Where this test's process is in a
+    /// job (a CI runner's), the job nests under that one.
+    #[test]
+    fn a_child_of_a_job_ending_with_this_process_ends_as_its_handle_closes() {
+        let job = GroupJob::ending_with_this_process().unwrap();
+        let child = waiting_in(&job);
+        assert!(!child.ended_within(0), "it runs");
+        assert!(job.processes().unwrap().contains(&child.id()));
+        drop(job);
+        assert!(child.ended_within(60_000), "it outlived its job's last handle");
+    }
+
+    /// A VM process's own Job nested under a direct boot's job ends as the direct boot's
+    /// does: a process put in the direct boot's job, then in a job of its own (the order
+    /// PROC_THREAD_ATTRIBUTE_JOB_LIST makes a confined child in), is ended with the
+    /// outer one's last handle, while its own is still held.
+    #[test]
+    fn a_job_nested_under_one_ending_with_this_process_ends_with_it() {
+        let outer = GroupJob::ending_with_this_process().unwrap();
+        let own = GroupJob::new().unwrap();
+        let child = waiting_in(&outer);
+        // SAFETY: a job and a process this test holds.
+        let nested =
+            unsafe { AssignProcessToJobObject(own.handle.as_raw_handle(), child.process.as_raw_handle()) };
+        assert_ne!(nested, 0, "nested: {}", last());
+        assert!(own.processes().unwrap().contains(&child.id()));
+        drop(outer);
+        assert!(
+            child.ended_within(60_000),
+            "it outlived the outer job's last handle"
+        );
+        drop(own);
+    }
+
+    /// A memory limit set on a job ending with this process keeps it ending so: the limits
+    /// are set at once, and setting the one does not clear the other.
+    #[test]
+    fn a_memory_limit_keeps_a_job_ending_with_this_process() {
+        let job = GroupJob::ending_with_this_process().unwrap();
+        job.limit_memory(Some(1 << 30)).unwrap();
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        // SAFETY: limits of their own size, from our job.
+        let asked = unsafe {
+            QueryInformationJobObject(
+                job.handle.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw mut limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(asked, 0, "{}", last());
+        let flags = limits.BasicLimitInformation.LimitFlags;
+        assert_ne!(flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, 0);
+        assert_ne!(flags & JOB_OBJECT_LIMIT_JOB_MEMORY, 0);
+    }
 
     fn line(args: &[&str]) -> String {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();

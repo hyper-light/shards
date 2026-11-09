@@ -346,8 +346,25 @@ pub(super) struct Resumable {
     pub(super) engine: Option<[u8; shards_abi::run::TOKEN]>,
 }
 
-/// The most a resume record holds: its tokens, a MAC, and a network's ID and addresses.
-const MAX_RESUME: u64 = 4 << 10;
+/// The most a resume record holds: the longest this build writes, each of its fields at its
+/// longest: its tokens and its engine's in hex; a MAC as [`shards_net::Mac`] spells one; a
+/// network's ID, as [`crate::containers::new_id`] makes one; and the longest text of an IPv4
+/// address and of an IPv6 one (eight groups of four digits). A record a VM's save left past
+/// it is none of this build's.
+fn max_resume() -> u64 {
+    let token = shards_abi::run::TOKEN;
+    let longest = Resume {
+        tokens: hex(&vec![0xff; 2 * token]),
+        mac: Some(shards_net::Mac([0xff; 6]).to_string()),
+        network: Some(Address {
+            network: hex(&[0xff; crate::containers::ID_BYTES]),
+            ipv4: std::net::Ipv4Addr::BROADCAST.to_string(),
+            ipv6: std::net::Ipv6Addr::from([0xffff_u16; 8]).to_string(),
+        }),
+        engine: Some(hex(&vec![0xff; token])),
+    };
+    serde_json::to_vec(&longest).map_or(u64::MAX, |v| u64::try_from(v.len()).unwrap_or(u64::MAX))
+}
 
 /// The newest snapshot in `snapshots`, a microVM's: the one whose generation was written
 /// last, which its name says (`g-` and the time in nanoseconds, in hex).
@@ -378,7 +395,7 @@ impl<D: Disk> Daemon<D> {
         let generation = shards_vmm::snapshot::generation(&dir)
             .map_err(|_| format!("{given} has no snapshot named {name}"))?;
         let unusable = |e: &dyn std::fmt::Display| format!("{given}'s snapshot {name}: {e}");
-        let record = shards_vmm::platform::read_input(&generation.join(RESUME), MAX_RESUME)
+        let record = shards_vmm::platform::read_input(&generation.join(RESUME), max_resume())
             .map_err(|e| unusable(&e))?
             .ok_or_else(|| unusable(&"it was saved by no run"))?;
         let resume: Resume = serde_json::from_slice(&record).map_err(|e| unusable(&e))?;
@@ -822,6 +839,25 @@ impl<D: Disk> Daemon<D> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A record of a run on an IPv6 network, every field there, is within the most read, which
+    /// is a few hundred bytes, not a figure picked.
+    #[test]
+    fn a_resume_record_is_within_the_longest_this_build_writes() {
+        let resume = Resume {
+            tokens: hex(&[7; 2 * shards_abi::run::TOKEN]),
+            mac: Some(shards_net::Mac([2, 0x42, 10, 0, 0, 2]).to_string()),
+            network: Some(Address {
+                network: crate::containers::new_id().unwrap(),
+                ipv4: "172.18.0.2".into(),
+                ipv6: "fd00:dead:beef:1234:5678:9abc:def0:1".into(),
+            }),
+            engine: Some(hex(&[9; shards_abi::run::TOKEN])),
+        };
+        let written = serde_json::to_vec(&resume).unwrap().len() as u64;
+        assert!(written <= max_resume(), "{written} > {}", max_resume());
+        assert!(max_resume() < 1024, "{}", max_resume());
+    }
 
     /// A daemon's start removes the ghost files a crash left in the home's private
     /// directory, whichever host's share process made them, and nothing else there.

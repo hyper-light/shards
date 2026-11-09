@@ -148,8 +148,9 @@ enum Fail {
     Eof,
 }
 
-/// How deep encoding/json's scanner nests containers (maxNestingDepth): the next is
-/// refused.
+/// How deep encoding/json's scanner nests containers (maxNestingDepth, go1.26.1
+/// src/encoding/json/scanner.go:148): the next is refused. The containers open are a
+/// stack kept here ([`Open`]), not recursion.
 const MAX_DEPTH: usize = 10_000;
 
 /// A container being read: its values so far, an object's key for the value next, and

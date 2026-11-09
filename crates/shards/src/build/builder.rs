@@ -1365,7 +1365,9 @@ impl Builder {
     }
 }
 
-/// The longest message an SSH agent takes or sends (OpenSSH's AGENT_MAX_MSGLEN).
+/// The longest message an SSH agent takes or sends: OpenSSH's agent refuses a longer
+/// request (`AGENT_MAX_LEN`, ssh-agent.c l. 99) and its client a longer reply
+/// (`MAX_AGENT_REPLY_LEN`, authfd.c l. 64), both 256 KiB (openssh-portable V_9_9_P1).
 pub(crate) const AGENT_MAX: usize = 256 * 1024;
 
 /// What a step may ask of an agent, read-only as BuildKit's agentprovider.go lets it

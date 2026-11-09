@@ -7,6 +7,9 @@ mod common;
 
 use std::time::Duration;
 
+use shards_api::Guests as _;
+use shards_api::conformance;
+
 use common::{
     KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, run_shards_env,
     test_guest, vm_run,
@@ -14,6 +17,18 @@ use common::{
 
 const TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_RESET: i32 = 3;
+/// How long shards-api's waits here may take, side by side with this file's other boots as
+/// the suite runs them (`shards_api::record::Learned`): twice the slowest boot of the test
+/// guest to its port answering recorded under the suite on each host class
+/// (`shards_api_boot_under_the_suites_load`, docs/research/platform-measurements.md M465).
+static E2E: shards_api::record::Learned = shards_api::record::Learned::new(
+    "boot.rs E2E",
+    &[
+        ("macOS-HVF", Duration::from_nanos(230_018_375)),
+        ("Linux-KVM", Duration::from_nanos(1_206_822_260)),
+        ("Windows-WHP", Duration::from_nanos(2_406_838_900)),
+    ],
+);
 
 /// Kernel log lines that show the machine as each architecture's firmware describes it.
 fn machine_lines() -> Vec<String> {
@@ -2018,8 +2033,10 @@ fn cold_boots_profiled() {
 
 /// `run --kernel … --share DIR --share DIR:ro`: the guest mounts `shards0` and `shards1`
 /// over virtio-fs, reads what the host put in each, writes a file through the first, which
-/// the host then reads, and is refused creating one through the second, which stays
-/// without it (D38's share process, served by `run --kernel` before its VM confines itself).
+/// the host then reads, and through the second is refused EROFS creating, writing,
+/// removing, renaming and cutting a file, which stays without it; and the share process
+/// ends with its VM (D38's share process, served by `run --kernel` before its VM confines
+/// itself).
 #[test]
 fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     if cannot_run_vms() {
@@ -2056,7 +2073,14 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     );
     assert_eq!(r.status, Some(0), "{r}");
     assert!(r.stdout.contains("SHARDS-TEST PASS"), "{r}");
-    assert!(r.stdout.contains("SHARE READ-ONLY"), "{r}");
+    assert!(
+        r.stdout
+            .contains("SHARE READ-ONLY EROFS: create write unlink rename truncate"),
+        "{r}"
+    );
+    // The share process holds the run's stderr: it reached its end, so the share process
+    // ended with its VM (review 14).
+    assert!(!r.stderr.contains("still held open by another process"), "{r}");
     assert_eq!(
         std::fs::read_to_string(rw.join("from-guest")).unwrap(),
         "written by a shards guest through --share\n"
@@ -2064,37 +2088,205 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
-/// shards-api's conformance suite (`crates/api`) against real guests this build's `shards`
-/// boots (`run --kernel`), the test guest their PID 1: `echo` serves vsock port 1234 until
-/// stopped, `kmsg` powers off. Bounds refused before boot, bytes and half-closes both ways,
-/// unserved and off-list ports refused, stop, and power-off, on each host's backend. The
-/// client starts `shards` itself: `run --kernel` reads no docker config and no home, so
-/// none of this host's.
+/// `run vm --kernel … --share DIR` ended at its deadline leaves nothing it started running:
+/// the harness ends the client alone, as a killed client is ended (TerminateProcess,
+/// SIGKILL), and waits for what is under it to end by itself (`common::run_until`). On
+/// Windows its share process and VM process are in a job the client alone holds, which
+/// closes as it ends (D141); on Unix the client is the VM, and the share process ends as
+/// its connections to it close.
+#[test]
+fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("share-ended");
+    let rw = dir.join("rw");
+    std::fs::create_dir(&rw).unwrap();
+    let args = [
+        "run",
+        "vm",
+        "--kernel",
+        kernel().to_str().unwrap(),
+        "--init",
+        test_guest().to_str().unwrap(),
+        "--memory",
+        "256",
+        // The echo guest serves until it is ended: the run is still going at its deadline.
+        "--cmdline",
+        "console=ttyS0 quiet shards_test=echo",
+        "--share",
+        rw.to_str().unwrap(),
+    ];
+    let asked: Vec<String> = std::iter::once("shards").chain(args).map(String::from).collect();
+    let mut cmd = common::command();
+    cmd.args(args);
+    let Err(ended) = common::run_until(cmd, &asked, E2E.get()) else {
+        panic!("an echo guest's run ended by itself");
+    };
+    // Its share process is `shards` (its VM's, shards-vm, on Windows; on Unix the VM is
+    // the client), started before the VM.
+    let share = if cfg!(windows) { "shards.exe" } else { "shards" };
+    assert!(
+        ended
+            .started
+            .iter()
+            .any(|(_, name)| name.eq_ignore_ascii_case(share)),
+        "no share process under the run: {:?}\n{}",
+        ended.started,
+        ended.said
+    );
+    assert!(
+        ended.left.is_empty(),
+        "left running: {:?} of {:?}",
+        ended.left,
+        ended.started
+    );
+}
+
+/// shards-api's client of this build's `shards` conforms: every case of its conformance
+/// suite against real guests, the test guest as PID 1 (`echo` serves port 1234, `kmsg`
+/// powers off), each wait guarded by [`E2E`], recorded side by side with the suite's boots.
+/// A guest kernel's panic resets it at once (`panic=-1`), its case failing then, not at its
+/// patience.
 #[test]
 fn shards_api_conforms_on_real_guests() {
     if cannot_run_vms() {
         return;
     }
-    let spec = |mode: &str| shards_api::GuestSpec {
-        kernel: kernel().into(),
-        init: shards_api::Init::Executable(test_guest().into()),
-        cmdline: format!("console=ttyS0 quiet panic=-1 shards_test={mode}"),
-        vcpus: 1,
-        memory_mib: 256,
-        disks: vec![],
-        shares: vec![],
-        ports: vec![1234, 1236],
-        binary: Some(common::shards().into()),
-    };
-    let subject = shards_api::conformance::Subject {
+    let patience = E2E.get();
+    let spec = |mode: &str| api_spec(&format!("console=ttyS0 quiet panic=-1 shards_test={mode}"));
+    conformance::run(&conformance::Subject {
         guests: &shards_api::Shards,
         serving: spec("echo"),
         port: 1234,
         unserved: 1236,
         powering_off: spec("kmsg"),
-        patience: TIMEOUT,
+        patience,
+    })
+    .unwrap();
+}
+
+/// shards-api's `GuestSpec::shares`: the test guest's `share` mode writes through `shards0`
+/// and is refused through a read-only `shards1`, then powers off, seen as `End::PowerOff`.
+#[test]
+fn shards_api_shares_a_directory_and_a_read_only_one() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = common::TempDir::new("api-share");
+    let (rw, ro) = (dir.join("rw"), dir.join("ro"));
+    for d in [&rw, &ro] {
+        std::fs::create_dir(d).unwrap();
+        std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
+    }
+    let spec = shards_api::GuestSpec {
+        shares: vec![
+            shards_api::Share {
+                dir: rw.clone(),
+                read_only: false,
+            },
+            shards_api::Share {
+                dir: ro.clone(),
+                read_only: true,
+            },
+        ],
+        ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
     };
-    if let Err(e) = shards_api::conformance::run(&subject) {
-        panic!("{e}");
+    let guest = shards_api::Shards.boot(&spec).unwrap();
+    assert_eq!(
+        guest.wait_for(E2E.get()).unwrap(),
+        Some(shards_api::End::PowerOff)
+    );
+    assert_eq!(
+        std::fs::read_to_string(rw.join("from-guest")).unwrap(),
+        "written by a shards guest through --share\n"
+    );
+    assert!(!ro.join("from-guest").exists());
+}
+
+/// Measures shards-api's boot of the test guest to its echo port answering, here, side by
+/// side with this file's other boots as the suite runs them, for [`E2E`]'s records:
+/// `SHARDS_API_E2E_N` (default 5) boots, printed as n, p50 and max with `--nocapture`.
+#[test]
+fn shards_api_boot_under_the_suites_load() {
+    if cannot_run_vms() {
+        return;
+    }
+    let n: usize = std::env::var("SHARDS_API_E2E_N")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(5);
+    let mut took: Vec<Duration> = (0..n)
+        .map(|_| {
+            let start = std::time::Instant::now();
+            let guest = shards_api::Shards
+                .boot(&api_spec("console=ttyS0 quiet shards_test=echo"))
+                .unwrap();
+            drop(guest.connect(1234, Duration::MAX).unwrap());
+            let took = start.elapsed();
+            E2E.saw(took);
+            took
+        })
+        .collect();
+    let mut ended: Vec<Duration> = (0..n)
+        .map(|i| {
+            let dir = common::TempDir::new(&format!("api-e2e{i}"));
+            let (rw, ro) = (dir.join("rw"), dir.join("ro"));
+            for d in [&rw, &ro] {
+                std::fs::create_dir(d).unwrap();
+                std::fs::write(d.join("hello"), "hello through --share\n").unwrap();
+            }
+            let spec = shards_api::GuestSpec {
+                shares: vec![
+                    shards_api::Share {
+                        dir: rw.clone(),
+                        read_only: false,
+                    },
+                    shards_api::Share {
+                        dir: ro.clone(),
+                        read_only: true,
+                    },
+                ],
+                ..api_spec("console=ttyS0 quiet panic=-1 shards_test=share")
+            };
+            let start = std::time::Instant::now();
+            let guest = shards_api::Shards.boot(&spec).unwrap();
+            assert_eq!(
+                guest.wait_for(Duration::MAX).unwrap(),
+                Some(shards_api::End::PowerOff)
+            );
+            let took = start.elapsed();
+            E2E.saw(took);
+            took
+        })
+        .collect();
+    for (what, d) in [
+        ("boot to its port answering", &mut took),
+        ("a share mode's boot to its power-off", &mut ended),
+    ] {
+        d.sort();
+        if let (Some(p50), Some(max)) = (d.get(n / 2), d.last()) {
+            println!(
+                "e2e-wait shards-api {what} under the suite: n={n} p50={p50:?} max={max:?} ({})",
+                shards_api::record::CLASS
+            );
+        }
+    }
+}
+
+/// A shards-api spec of this build's `shards`, kernel and test guest: one vCPU, 256 MiB (as
+/// this file's boots), ports 1234 and 1236 (identifiers: the test guest's echo port and one
+/// it does not serve).
+fn api_spec(cmdline: &str) -> shards_api::GuestSpec {
+    shards_api::GuestSpec {
+        kernel: kernel().to_path_buf(),
+        init: shards_api::Init::Executable(test_guest().to_path_buf()),
+        cmdline: cmdline.into(),
+        vcpus: 1,
+        memory_mib: 256,
+        disks: vec![],
+        shares: vec![],
+        ports: vec![1234, 1236],
+        binary: Some(common::shards().to_path_buf()),
     }
 }

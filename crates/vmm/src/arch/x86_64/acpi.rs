@@ -109,8 +109,16 @@ fn fadt(dsdt: u64) -> Vec<u8> {
     sdt(b"FACP", 6, &b)
 }
 
+/// The most vCPUs a machine has: one for each 8-bit APIC id a MADT Local APIC entry holds
+/// (ACPI 6.5 §5.2.12.2, Table 5.22) but 0xFF, the broadcast destination (Intel SDM Vol. 3A
+/// §11.6.2.1), which Linux ignores in one (arch/x86/kernel/acpi/boot.c l. 270-272,
+/// `acpi_parse_lapic`) and which is past its xAPIC driver's highest id, 0xFE
+/// (arch/x86/kernel/apic/apic_flat_64.c l. 44; Linux 1590cf03): 255. The IOAPIC's id is
+/// another namespace's (the MADT gives it 0, as CPU 0's).
+pub const MAX_VCPUS: u32 = u8::MAX as u32;
+
 /// MADT (ACPI 6.5 §5.2.12): Local APIC address, no PC-AT dual-8259 flag, one
-/// processor Local APIC per vCPU (8-bit ids: at most 254) and the IOAPIC at GSI 0.
+/// processor Local APIC per vCPU (8-bit ids, [`MAX_VCPUS`]) and the IOAPIC at GSI 0.
 fn madt(vcpus: u32) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(&(layout::LAPIC as u32).to_le_bytes());
@@ -512,9 +520,9 @@ fn dsdt(virtio: &[MmioDevice], vmgenid: u64, pci: Option<&PciBridge>) -> Result<
 
 /// Every table, laid out from [`layout::SYSTEM`] with the RSDP at [`layout::RSDP`].
 pub fn build(vcpus: u32, virtio: &[MmioDevice], pci: Option<&PciBridge>) -> Result<Tables, String> {
-    if vcpus == 0 || vcpus > 254 {
+    if vcpus == 0 || vcpus > MAX_VCPUS {
         return Err(format!(
-            "{vcpus} vCPUs: the MADT holds 8-bit APIC ids, at most 254"
+            "{vcpus} vCPUs: the MADT holds 8-bit APIC ids, at most {MAX_VCPUS}"
         ));
     }
     // After the VM generation ID, which the VMM writes itself (devices/vmgenid.rs).
@@ -782,7 +790,9 @@ mod tests {
     #[test]
     fn refuses_what_the_madt_cannot_hold() {
         assert!(build(0, &[], None).is_err());
-        assert!(build(255, &[], None).is_err());
-        assert!(build(254, &[], None).is_ok());
+        assert!(build(MAX_VCPUS + 1, &[], None).is_err());
+        assert!(build(MAX_VCPUS, &[], None).is_ok());
+        // The last vCPU's APIC id is 0xFE, the highest Linux's xAPIC driver takes.
+        assert_eq!(MAX_VCPUS - 1, 0xfe);
     }
 }

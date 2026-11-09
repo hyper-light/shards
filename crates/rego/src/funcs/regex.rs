@@ -60,6 +60,7 @@ fn compile(pattern: &str) -> Result<Regexp, String> {
     })
 }
 
+/// OPA's `regexCacheMaxSize` (OPA v1.14.1 v1/topdown/regex.go:20).
 const CACHE_MAX: usize = 100;
 
 thread_local! {

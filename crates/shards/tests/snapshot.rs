@@ -412,8 +412,11 @@ mod storm {
             sock.as_os_str().to_owned(),
             "--cmdline".into(),
             format!(
-                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={}",
-                std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into())
+                "console=ttyS0 quiet panic=-1 shards_test=storm shards_vda_bytes={RO_BYTES} shards_vdb_bytes={RW_BYTES} shards_storm_ms={} shards_quiet_ms={}",
+                std::env::var("SHARDS_STORM_MS").unwrap_or_else(|_| "0".into()),
+                // The host's own quiet, which the guest's waits are (the test guest's
+                // `host_quiet`).
+                common::DAEMON_QUIET.as_millis()
             )
             .into(),
             "--snapshot-dir".into(),

@@ -50,7 +50,22 @@ pub const STOPPING: &str = "daemon.stopping";
 
 /// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
 pub fn exiting(home: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(home.join(STOPPING)) else {
+    named_lives(&home.join(STOPPING))
+}
+
+/// What the daemon that holds a home's lock writes in it as it takes it, before it offers
+/// any slot: its process ID.
+pub const PID: &str = "daemon.pid";
+
+/// Whether the daemon that `PID` in `home` names lives: one that has taken the home, which
+/// offers its slots or ends.
+pub fn daemon_lives(home: &Path) -> bool {
+    named_lives(&home.join(PID))
+}
+
+/// Whether the process the file at `path` names, by its ID, lives.
+fn named_lives(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
     #[cfg(unix)]
@@ -2015,8 +2030,12 @@ impl RunHead {
     }
 }
 
-/// The largest payload a message may carry.
-pub const MAX_PAYLOAD: usize = 1 << 20;
+/// The largest payload a message may carry: the largest a side sends whole, a run's request
+/// to its warm VM ([`kind::RUN`]), its head ([`RunHead::LEN`]) and its command's spec, which
+/// goes on to the guest in one frame of the run protocol (shards_abi::run::MAX_PAYLOAD, as
+/// much as Linux execs). A client's run carries what that spec is made of. Every message
+/// that may carry more (a working set, a command's output) goes in parts of this.
+pub const MAX_PAYLOAD: usize = RunHead::LEN + shards_abi::run::MAX_PAYLOAD as usize;
 
 /// `kind::WORKING_SET`'s flag on the last part.
 pub const WORKING_SET_LAST: u8 = 1;
@@ -2060,10 +2079,37 @@ pub fn working_set_part(payload: &[u8]) -> Option<(u8, &str, &[u8])> {
     let (name, part) = rest.split_at_checked(usize::from(len))?;
     Some((flags, std::str::from_utf8(name).ok()?, part))
 }
-/// The most descriptors a message may carry: a run's ([`kind::RUN`]) at most, the client's
-/// connection and stdio, the log's two files, the writable layer in and out, and the
-/// share process's connection.
-pub const MAX_FDS: usize = 9;
+/// The descriptors a run's request ([`kind::RUN`]) brings, each where its run has it, in the
+/// order a warm VM takes them (crates/shards/src/warm.rs, `receive`): the message that
+/// carries the most.
+pub mod run_fds {
+    /// The client's connection, where the run is attached.
+    pub const CLIENT: usize = 1;
+    /// The command's stdin, stdout and stderr.
+    pub const STDIO: usize = 3;
+    /// Its log's first segment and its index ([`RUN_LOG`](super::RUN_LOG)).
+    pub const LOG: usize = 2;
+    /// Its writable layer from before and its layer to keep
+    /// ([`RUN_LAYER_IN`](super::RUN_LAYER_IN), [`RUN_LAYER_OUT`](super::RUN_LAYER_OUT)).
+    pub const LAYERS: usize = 2;
+    /// Its swap ([`RUN_SWAP`](super::RUN_SWAP), D159).
+    pub const SWAP: usize = 1;
+    /// Its group's CPU budget ([`RunHead::group`](super::RunHead), D183).
+    pub const GROUP: usize = 1;
+    /// Its share process's connection (D38), on Unix.
+    pub const SHARES: usize = 1;
+}
+
+/// The most descriptors a message may carry: a run's ([`run_fds`]), whose every one may
+/// come at once (an attached restart, kept, with swap, under a group, sharing directories).
+/// Messages of more (a run's published sockets, its shares' streams) go in parts of this.
+pub const MAX_FDS: usize = run_fds::CLIENT
+    + run_fds::STDIO
+    + run_fds::LOG
+    + run_fds::LAYERS
+    + run_fds::SWAP
+    + run_fds::GROUP
+    + run_fds::SHARES;
 
 pub mod slots;
 #[cfg(unix)]
@@ -2245,6 +2291,56 @@ impl Latch {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
+    /// A run's request to its warm VM goes in one message however long its command's spec,
+    /// up to what the run protocol carries in one frame: before, a spec at that bound
+    /// could not go.
+    #[test]
+    fn a_runs_request_with_the_longest_spec_is_one_message() {
+        use super::{MAX_PAYLOAD, RunHead};
+        use shards_abi::run::{self, Spec};
+        let empty = Spec::default().encoded_len().unwrap();
+        let n = run::MAX_PAYLOAD as usize - empty - 4;
+        let spec = Spec {
+            argv: vec![vec![b'a'; n]],
+            ..Default::default()
+        };
+        assert_eq!(spec.encoded_len(), Some(run::MAX_PAYLOAD as usize));
+        let mut payload = Vec::new();
+        RunHead {
+            log_size: 1,
+            log_files: 1,
+            ..Default::default()
+        }
+        .encode_into(&mut payload);
+        spec.encode_into(&mut payload);
+        assert_eq!(payload.len(), MAX_PAYLOAD);
+        let (_, rest) = RunHead::decode(&payload).unwrap();
+        assert_eq!(rest.len(), run::MAX_PAYLOAD as usize);
+    }
+
+    /// A message carries every descriptor a run's request may bring at once: an attached
+    /// restart, kept, with swap, under a group, sharing directories. Before, nine went.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_every_descriptor_goes_in_one_message() {
+        use super::{MAX_FDS, kind, recv, run_fds, send};
+        use std::os::fd::{AsFd as _, BorrowedFd};
+        let every = run_fds::CLIENT
+            + run_fds::STDIO
+            + run_fds::LOG
+            + run_fds::LAYERS
+            + run_fds::SWAP
+            + run_fds::GROUP
+            + run_fds::SHARES;
+        assert_eq!(MAX_FDS, every);
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (_r, w) = std::io::pipe().unwrap();
+        let fds: Vec<BorrowedFd<'_>> = (0..every).map(|_| w.as_fd()).collect();
+        send(&a, kind::RUN, b"run", &fds).unwrap();
+        let got = recv(&b).unwrap().unwrap();
+        assert_eq!((got.kind, got.fds.len()), (kind::RUN, every));
+    }
+
     #[test]
     fn progress_reads_as_it_was_written() {
         let all = [

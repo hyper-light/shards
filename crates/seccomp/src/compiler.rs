@@ -49,6 +49,9 @@ pub const fn act_trace(e: u16) -> u32 {
 }
 const EPERM: u16 = 1;
 const ENOSYS: u16 = 38;
+/// The largest errno a filter's ERRNO action may carry: libseccomp's `MAX_ERRNO` (src/system.h,
+/// l. 34, which sys_chk_seccomp_action holds an action's data under, src/system.c l. 202),
+/// the kernel's own (include/linux/err.h, `MAX_ERRNO 4095`, Linux 7.2).
 const MAX_ERRNO: u32 = 4095;
 
 /// seccomp(2)'s flags (include/uapi/linux/seccomp.h).

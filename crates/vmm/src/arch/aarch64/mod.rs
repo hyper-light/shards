@@ -21,6 +21,12 @@ pub mod layout {
     /// Redistributors: one 128 KiB frame per vCPU, contiguous.
     pub const GIC_REDIST: u64 = 0x080a_0000;
     pub const GIC_REDIST_MAX_END: u64 = 0x0900_0000;
+    /// A GICv3 redistributor's frames, RD_base and SGI_base, 64 KiB each (GICv3 and GICv4
+    /// architecture specification, IHI 0069, §12.10): the least one takes.
+    pub const GIC_REDIST_SIZE: u64 = 2 * (64 << 10);
+    /// The most vCPUs a machine has: as many redistributors as the memory map has room for
+    /// from `GIC_REDIST` (123).
+    pub const MAX_VCPUS: u32 = ((GIC_REDIST_MAX_END - GIC_REDIST) / GIC_REDIST_SIZE) as u32;
     /// 16550 UART (4 KiB).
     pub const UART: u64 = 0x0900_0000;
     /// PL031 RTC (4 KiB).

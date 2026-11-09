@@ -15,8 +15,8 @@
 //! builders no room is a word of pressure, which a host whose builders idle never says
 //! (CI's ubuntu-24.04: a build idling under a budget set 256 MiB short gave back nothing
 //! for 126 s, and its read after crawled, throttled, 18 minutes); one that leaves them room,
-//! each told its share. What they gave back is said once a minute at most, as the daemon
-//! says its microVMs'. While a budget holds the build, its builders are told its room again
+//! each told its share. What they gave back is said as a pressure begins and then as it has
+//! gone on as long again (`pressure::Saying`), as the daemon says its microVMs'. While a budget holds the build, its builders are told its room again
 //! each pressure window where it has changed: their guests hold the build within what they
 //! were last told, past what it used then, and what their host gets back of them outside the
 //! build (memory they unplug, free pages reported late) the build's growth never shows, so
@@ -32,16 +32,17 @@ use std::sync::mpsc;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::pressure::Pressure;
+use crate::pressure::{Pressure, Saying};
 
 use super::builder::{Answer, Giver};
 
-/// How long builders' answers are waited for at a word of pressure: one not come by then is
-/// said to have had none, and its builder is asked again only once it has answered.
-const PATIENCE: Duration = Duration::from_secs(10);
-/// How often what builders gave back is said, at most, as the daemon says its microVMs'
-/// (daemon::reclaim's `SAY_EVERY`): a pressure that goes on says it once in this long.
-const SAY_EVERY: Duration = Duration::from_secs(60);
+/// How long builders' answers are waited for at a word of pressure: until the next word
+/// can come, a pressure window on (the window the host's pressure is measured over, which a
+/// pressure that goes on is heard again after: `platform::PRESSURE_WINDOW`). One not come by
+/// then is said to have had none, heard as it comes after ([`late`], looked for once a
+/// window), and its builder asked again only once it has answered: a pass never holds up the
+/// next word's.
+const PATIENCE: Duration = shards_vmm::platform::PRESSURE_WINDOW;
 /// Where it names a FIFO (on Windows, a named pipe), a build's memory pressure is what is
 /// written to it, each line the host's word that it is short of memory, in place of its
 /// kernel's: so that a test tells it where no unprivileged process may raise the system's
@@ -248,6 +249,7 @@ fn pass(
 ) -> Option<String> {
     held.retain_mut(|g| g.ask().is_ok());
     unsaid.since.get_or_insert(now);
+    unsaid.saying.heard(now);
     unsaid.passes += 1;
     held.retain_mut(|g| hear(g, until, unsaid));
     if let Some(r) = room() {
@@ -391,10 +393,11 @@ struct Unsaid {
     late: bool,
     /// Whether a budget over the build was written since it was last said: what its builders
     /// give back under it is said at once, where a word of its host's pressure alone, said
-    /// a moment before the budget came, held it back a minute, past the build's end (CI
+    /// a moment before the budget came, held it back (then a minute), past the build's end (CI
     /// 40925092313).
     budgeted: bool,
-    said: Option<Instant>,
+    /// When it is due to be said, as the pressure goes on.
+    saying: Saying,
     /// The room a budget left its builders as they were last told it, all of them together:
     /// none where no budget held them. Kept past what is said.
     told: Option<i64>,
@@ -402,15 +405,10 @@ struct Unsaid {
 
 impl Unsaid {
     /// What builders gave back since it was last said, where they gave back anything, or
-    /// any went unanswered or said why not, at most once in [`SAY_EVERY`]; counted afresh
-    /// after.
+    /// any went unanswered or said why not, as the pressure is due to be said ([`Saying`]);
+    /// counted afresh after.
     fn say(&mut self, now: Instant) -> Option<String> {
-        if !self.late
-            && !self.budgeted
-            && self
-                .said
-                .is_some_and(|at| now.saturating_duration_since(at) < SAY_EVERY)
-        {
+        if !self.late && !self.budgeted && !self.saying.due(now) {
             return None;
         }
         if self.freed == 0 && self.unplugging == 0 && self.unanswered == 0 && self.refused == 0 {
@@ -425,18 +423,14 @@ impl Unsaid {
             self.unplugging >> 20,
         );
         if self.passes == 0 {
-            said.push_str(&format!(
-                "answering past the {} s their pass waited",
-                PATIENCE.as_secs()
-            ));
+            said.push_str(&format!("answering past the {:?} their pass waited", PATIENCE));
         } else {
             said.push_str(&format!("in {} passes over {over:?}", self.passes));
         }
         if self.unanswered > 0 {
             said.push_str(&format!(
-                "; {} asks had no answer within {} s",
-                self.unanswered,
-                PATIENCE.as_secs()
+                "; {} asks had no answer within {:?}",
+                self.unanswered, PATIENCE
             ));
         }
         if let Some(why) = &self.why {
@@ -448,8 +442,10 @@ impl Unsaid {
                 held >> 20
             ));
         }
+        let mut saying = self.saying;
+        saying.said(now);
         *self = Unsaid {
-            said: Some(now),
+            saying,
             told: self.told,
             ..Unsaid::default()
         };
@@ -513,10 +509,11 @@ mod tests {
     /// At each word every builder is asked at once, one whose ask is still out asked nothing
     /// more; an answer late for one word is counted at the next, and a builder whose
     /// connection ended is let go of, whether as it is asked or as its answer is waited for.
-    /// What they gave back is said at once, then no sooner than a minute after, with
+    /// What they gave back is said at once, then no sooner than the pressure has gone on as
+    /// long again (a window, as it began), with
     /// everything given back since.
     #[test]
-    fn each_word_asks_every_builder_once_and_says_the_sum_once_a_minute() {
+    fn each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles() {
         let (one, one_end) = builder();
         let (two, two_end) = builder();
         let mut held = vec![one, two];
@@ -532,19 +529,16 @@ mod tests {
                 && said.contains("in 1 passes"),
             "{said}"
         );
-        assert!(said.contains("1 asks had no answer within 10 s"), "{said}");
+        assert!(
+            said.contains(&format!("1 asks had no answer within {PATIENCE:?}")),
+            "{said}"
+        );
         // The second word: the late one answers; it is asked nothing until it has, the first
-        // asked again; within the minute, nothing said.
+        // asked again; within the window, nothing said.
         gave(&two_end, &format!("{} 0", 7 * MIB));
         gave(&one_end, &format!("{} 0", MIB));
         assert_eq!(
-            pass(
-                &mut held,
-                &mut unsaid,
-                soon(),
-                t0 + Duration::from_secs(5),
-                &|| None
-            ),
+            pass(&mut held, &mut unsaid, soon(), t0 + PATIENCE / 2, &|| None),
             None
         );
         assert!(was_asked(&one_end), "the first, answered, asked again");
@@ -555,14 +549,7 @@ mod tests {
         // The first's connection ends: let go of at the next word, which says the sum since.
         drop(one_end);
         gave(&two_end, &format!("{} 0", 2 * MIB));
-        let said = pass(
-            &mut held,
-            &mut unsaid,
-            soon(),
-            t0 + Duration::from_secs(61),
-            &|| None,
-        )
-        .unwrap();
+        let said = pass(&mut held, &mut unsaid, soon(), t0 + PATIENCE, &|| None).unwrap();
         assert_eq!(held.len(), 1, "the ended builder let go of");
         assert!(was_asked(&two_end));
         assert!(
@@ -576,7 +563,7 @@ mod tests {
                 &mut held,
                 &mut unsaid,
                 soon(),
-                t0 + Duration::from_secs(62),
+                t0 + PATIENCE + Duration::from_millis(1),
                 &|| None
             ),
             None
@@ -588,7 +575,7 @@ mod tests {
                 &mut held,
                 &mut unsaid,
                 soon(),
-                t0 + Duration::from_secs(63),
+                t0 + PATIENCE + Duration::from_millis(2),
                 &|| None
             ),
             None
@@ -725,7 +712,7 @@ mod tests {
         read_room(&end);
         assert!(said.contains("gave back 100 MiB"), "{said}");
         assert!(said.contains("held within 64 MiB past what they use"), "{said}");
-        // And the minute holds again after it.
+        // And it is not said again until the pressure has gone on as long again.
         gave(&end, &format!("{} 0", MIB));
         answer_held(&end, "67108864");
         let after = t0 + Duration::from_secs(3);
@@ -752,7 +739,10 @@ mod tests {
         })
         .unwrap();
         assert_eq!(held.len(), 2, "both kept");
-        assert!(said.contains("1 asks had no answer within 10 s"), "{said}");
+        assert!(
+            said.contains(&format!("1 asks had no answer within {PATIENCE:?}")),
+            "{said}"
+        );
         assert!(
             said.contains("; 1 asks were refused, the last: nothing given back: no cgroup"),
             "{said}"
@@ -792,7 +782,10 @@ mod tests {
         let short = || Some(-(64 * MIB as i64));
         let said = pass(&mut held, &mut unsaid, soon(), Instant::now(), &short).unwrap();
         assert!(said.contains("gave back 0 MiB"), "{said}");
-        assert!(said.contains("1 asks had no answer within 10 s"), "{said}");
+        assert!(
+            said.contains(&format!("1 asks had no answer within {PATIENCE:?}")),
+            "{said}"
+        );
         assert!(was_asked(&slow_end));
         assert!(held[0].awaiting());
         assert_eq!(
@@ -806,7 +799,7 @@ mod tests {
         let said = late(&mut held, &mut unsaid, soon(), Instant::now(), &short).unwrap();
         assert!(said.contains("gave back 503 MiB"), "{said}");
         assert!(
-            said.contains("answering past the 10 s their pass waited"),
+            said.contains(&format!("answering past the {PATIENCE:?} their pass waited")),
             "{said}"
         );
         assert!(said.contains("held within 3 MiB past what they use"), "{said}");

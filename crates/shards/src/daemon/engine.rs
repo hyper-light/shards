@@ -52,10 +52,6 @@ pub(super) const SOCKET: &str = "engine.pipe";
 /// The API served, and the oldest answered (cli/version.rs).
 pub(super) const VERSION: &str = crate::cli::version::ENGINE_API.0;
 pub(super) const MIN_VERSION: &str = crate::cli::version::ENGINE_API.1;
-/// The most of a request's body the engine reads: a run is at most one message's payload
-/// (shards_ipc::MAX_PAYLOAD), and JSON's escapes take at most six bytes for each of its
-/// bytes, its names and spaces more.
-const BODY_MOST: u64 = 8 * shards_ipc::MAX_PAYLOAD as u64;
 
 thread_local! {
     /// The client of another machine's whose connection this thread serves (D228), through
@@ -679,16 +675,22 @@ impl<D: Disk> Daemon<D> {
                 Done::Close => false,
             };
         }
-        // Every other call's body is JSON, or nothing: read whole, as much as a run holds.
+        // Every other call's body is JSON, or nothing: read whole, as much as the daemon can
+        // hold now ([`crate::build::holdable`]). What it asks for is held to its own bounds
+        // after (a run to one message's payload, `shards_ipc::MAX_PAYLOAD`); dockerd decodes
+        // a call's JSON as it comes, unbounded (moby v28.5.1 api/server/httputils, ReadJSON).
+        let most = crate::build::holdable();
         let mut body = Body::new(reader, framing);
-        let read = (&mut body).take(BODY_MOST + 1).read_to_end(&mut call.body);
+        let read = (&mut body)
+            .take(most.saturating_add(1))
+            .read_to_end(&mut call.body);
         if read.is_err() {
             return false;
         }
-        if call.body.len() as u64 > BODY_MOST {
+        if call.body.len() as u64 > most {
             let answer = Answer::error(
                 413,
-                format!("a call's body is at most {BODY_MOST} bytes, which hold the largest run"),
+                format!("a call's body past {most} bytes, the memory this host has available"),
             );
             return answered_first(conn, head, answer, &mut body);
         }

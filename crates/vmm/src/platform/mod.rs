@@ -43,6 +43,16 @@ pub use windows_process::{
 #[cfg(windows)]
 pub use windows_watch::FileWatch;
 
+/// The most bytes a path of this host's has: on Unix its PATH_MAX, the NUL included (Linux
+/// include/uapi/linux/limits.h l. 13, 4096; macOS sys/syslimits.h, 1024); on Windows an
+/// extended-length path's UTF-16 units, at most a UNICODE_STRING's USHORT of bytes' worth,
+/// 32,767 ("Maximum Path Length Limitation", Win32 File I/O), each at most three bytes of
+/// UTF-8 (RFC 3629 §3; a surrogate pair's two units, four).
+#[cfg(unix)]
+pub const PATH_MOST: usize = libc::PATH_MAX as usize;
+#[cfg(windows)]
+pub const PATH_MOST: usize = (u16::MAX as usize / 2) * 3;
+
 /// AF_UNIX stream sockets, std's on Unix and shards' own on Windows (PM M199).
 #[cfg(windows)]
 pub use shards_afunix::{RawSocket, UnixListener, UnixStream, startup as winsock};

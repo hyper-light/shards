@@ -5,7 +5,7 @@
 //! GIC device is the backend's own serialization too: a snapshot restores only on the
 //! backend that took it.
 
-use super::Entry;
+use super::{Entry, layout};
 use crate::snapshot::codec::{DecodeError, Reader, Result, Writer};
 
 /// A vCPU's state as a snapshot keeps it, in its backend's terms.
@@ -52,14 +52,22 @@ pub struct MachineState<V> {
     pub vcpus: Vec<V>,
 }
 
-// Decoding limits, well above what any backend produces (HVF: ≤ 64 vCPUs, ~1500
-// distributor registers).
-const MAX_VCPUS: usize = 1024;
-const MAX_SYS: usize = 512;
-const MAX_ICC: usize = 32;
-/// HVF's GIC state is tens of KiB for 64 vCPUs.
-const MAX_GIC: usize = 16 << 20;
-const MAX_ID: usize = 64;
+// What a decoder takes: what an arm64 machine of any backend has.
+/// vCPUs: as many as its memory map has redistributors for ([`layout::MAX_VCPUS`]).
+const MAX_VCPUS: usize = layout::MAX_VCPUS as usize;
+/// System registers and the CPU interface's, each keyed by its encoding, op0:op1:CRn:CRm:op2
+/// of 2, 3, 4, 4 and 3 bits (Arm ARM, DDI 0487, C5.3, "A64 System instruction class
+/// encoding"; the MRS and MSR forms, C6.2): a list longer than the 2^16 encodings names one
+/// twice, and is no vCPU's.
+const SYS_REG_ENCODINGS: usize = 1 << 16;
+/// ID registers: the Feature ID space, op0 3, op1 0, 1 or 3, CRn 0, CRm 0 to 7, op2 0 to
+/// 7 (DDI 0487J.a, D19.2.66, as Linux arch/arm64/include/uapi/asm/kvm.h l. 536-554 quotes it,
+/// KVM_ARM_FEATURE_ID_RANGE_SIZE): 192 registers.
+const FEATURE_ID_SPACE: usize = 3 * 8 * 8;
+// The GIC's state is its backend's own serialization, as long as the input holds: each
+// backend's restore bounds it by what that backend makes (KVM's writes of its vCPUs,
+// hv::kvm::aarch64::gic; WHP's WinHvPlatformDefs.h layouts, hv::whp_arm64), and
+// Hypervisor.framework refuses a state not its own (hv_gic_set_state, hv_gic_state.h).
 
 fn put_pairs16(w: &mut Writer, v: &[(u16, u64)]) {
     w.seq(v, |w, &(k, x)| {
@@ -104,8 +112,8 @@ impl VcpuCodec for VcpuState {
             *q = r.u128()?;
         }
         let (fpcr, fpsr) = (r.u64()?, r.u64()?);
-        let sys = get_pairs16(r, MAX_SYS)?;
-        let icc = get_pairs16(r, MAX_ICC)?;
+        let sys = get_pairs16(r, SYS_REG_ENCODINGS)?;
+        let icc = get_pairs16(r, SYS_REG_ENCODINGS)?;
         let power = match r.u8()? {
             0 => Power::Off,
             1 => Power::On,
@@ -140,8 +148,8 @@ impl<V: VcpuCodec> MachineState<V> {
     pub fn decode(r: &mut Reader<'_>) -> Result<MachineState<V>> {
         Ok(MachineState {
             counter: r.u64()?,
-            cpu_id: get_pairs16(r, MAX_ID)?,
-            gic: r.bytes(MAX_GIC)?.to_vec(),
+            cpu_id: get_pairs16(r, FEATURE_ID_SPACE)?,
+            gic: r.bytes(usize::MAX)?.to_vec(),
             vcpus: r.seq(MAX_VCPUS, 1, V::decode)?,
         })
     }
@@ -206,5 +214,35 @@ mod tests {
             b[i] ^= 0xff;
             let _ = MachineState::<VcpuState>::decode(&mut Reader::new(&b));
         }
+    }
+
+    /// A state is refused past what a machine has: more vCPUs than its redistributors, more
+    /// ID registers than the Feature ID space, more system registers than their encodings.
+    #[test]
+    fn a_state_past_what_a_machine_has_is_refused() {
+        let decodes = |s: &MachineState<VcpuState>| {
+            let mut w = Writer::default();
+            s.encode(&mut w);
+            MachineState::<VcpuState>::decode(&mut Reader::new(&w.into_bytes())).is_ok()
+        };
+        assert_eq!(MAX_VCPUS, 123);
+        let mut s = sample();
+        s.vcpus = vec![s.vcpus[0].clone(); MAX_VCPUS];
+        assert!(decodes(&s));
+        s.vcpus.push(s.vcpus[0].clone());
+        assert!(!decodes(&s));
+
+        let mut s = sample();
+        s.cpu_id = vec![(0xc000, 0); FEATURE_ID_SPACE];
+        assert!(decodes(&s));
+        s.cpu_id.push((0xc000, 0));
+        assert!(!decodes(&s));
+
+        let mut s = sample();
+        s.vcpus.truncate(1);
+        s.vcpus[0].sys = vec![(0xc080, 0); SYS_REG_ENCODINGS];
+        assert!(decodes(&s));
+        s.vcpus[0].sys.push((0xc080, 0));
+        assert!(!decodes(&s));
     }
 }

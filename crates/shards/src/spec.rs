@@ -205,6 +205,64 @@ fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
     value.to_string_lossy().into_owned().into_bytes()
 }
 
+/// The flags `run` reads a value after (vm_run.rs `parse_run`, `Common::option`), on any OS
+/// (`--slates-fs` Windows', `--slates-fs-fd` and `--net-release` Unix's): the words
+/// [`next_word`] gives a value, as `parse_run` and what reads its command line ahead of it
+/// (cli/shares.rs `take`) both read it.
+pub const RUN_VALUED: &[&str] = &[
+    "--attach",
+    "--cmdline",
+    "--cpu-baseline",
+    "--cpus",
+    "--cwd",
+    "--disk",
+    "--env",
+    "-e",
+    "--grants",
+    "--hostname",
+    "--init",
+    "--initrd",
+    "--kernel",
+    "--layer",
+    "--memory",
+    "--memory-max",
+    "--net",
+    "--net-release",
+    "--pci-slots",
+    "--pci-tests",
+    "--pmem",
+    "--rootfs",
+    "--shares",
+    "--share-window",
+    "--slates-fs",
+    "--slates-fs-fd",
+    "--snapshot-dir",
+    "--snapshot-then",
+    "--swap-window",
+    "--user",
+    "-u",
+    "--vfio",
+    "--vfio-iommu",
+    "--vsock",
+    "--warm",
+    "--workdir",
+    "-w",
+];
+
+/// The next word of `run`'s command line, with the word after it as its value where
+/// [`RUN_VALUED`] lists it, whatever that reads as. `parse_run` takes every value it reads
+/// through this, so a flag it reads a value after that `RUN_VALUED` does not list is refused
+/// there as needing one, every time, and never read as a flag where the line is read ahead
+/// of it (cli/shares.rs `take`), which reads it through this too.
+pub fn next_word(
+    args: &mut impl Iterator<Item = std::ffi::OsString>,
+) -> Option<(std::ffi::OsString, Option<std::ffi::OsString>)> {
+    let word = args.next()?;
+    let valued = word.to_str().is_some_and(|w| RUN_VALUED.contains(&w));
+    let value = if valued { args.next() } else { None };
+    Some((word, value))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

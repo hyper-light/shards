@@ -62,8 +62,15 @@ const MAX_IDLE: usize = 10;
 const MAX_HEAD: usize = 10 << 20;
 /// The most of a proxy's answer to CONNECT read.
 const MAX_TUNNEL_HEAD: usize = 64 << 10;
+/// Go's chunked reader's longest line (go1.26.1 net/http/internal/chunked.go l. 19,
+/// `maxLineLength`).
 const MAX_CHUNK_LINE: usize = 4096;
+/// A trailer section ends within the transport's read buffer, as Go's does: body.readTrailer
+/// peeks no further for its end (go1.26.1 net/http/transfer.go l. 925-935), and the
+/// buffer is 4 KiB (transport.go l. 326, `readBufferSize`).
 const MAX_TRAILER: usize = 4096;
+/// Go's Client follows ten redirects (go1.26.1 net/http/client.go l. 834,
+/// defaultCheckRedirect), as containerd's resolver, on Go's client, does.
 const MAX_REDIRECTS: usize = 10;
 /// How much of a redirect's body Go reads so its connection can be reused
 /// (`maxBodySlurpSize`).
@@ -96,6 +103,10 @@ pub struct Client {
     /// How long a trouble is ridden out, where a test says, in place of what its path has
     /// shown.
     moment: Option<Duration>,
+    /// The waits it chose before asking again, in µs, all told: what a test holds its
+    /// riding out of a trouble to, apart from its round trips.
+    #[cfg(test)]
+    paused: std::sync::atomic::AtomicU64,
 }
 
 /// How long a request waits on its server: to connect, its name's lookup included; for
@@ -436,7 +447,15 @@ impl Client {
             learning: false,
             paths: Paths::default(),
             moment: None,
+            #[cfg(test)]
+            paused: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// The waits it chose before asking again ([`pause`](Self::pause)), all told.
+    #[cfg(test)]
+    pub(crate) fn paused(&self) -> Duration {
+        Duration::from_micros(self.paused.load(std::sync::atomic::Ordering::Relaxed))
     }
 
     /// This client, every wait it draws drawn as `u` in [0, 1) says (crate::patience).
@@ -489,6 +508,11 @@ impl Client {
     /// Waits `wait` before asking a registry again, or until the client is cancelled,
     /// which it then says.
     pub(crate) fn pause(&self, wait: Duration) -> Result<(), Error> {
+        #[cfg(test)]
+        self.paused.fetch_add(
+            u64::try_from(wait.as_micros()).unwrap_or(u64::MAX),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let Some(cancel) = &self.cancel else {
             std::thread::sleep(wait);
             return Ok(());

@@ -35,7 +35,19 @@ pub const DEVICE_ID: u32 = 19;
 /// The guest's vsock address. Each VM's device is its own namespace, so every VM can
 /// use the first address guests may have (VMADDR_CID_HOST is 2).
 pub const GUEST_CID: u64 = 3;
-const QUEUE_SIZE: u16 = 256;
+/// The rings' size: one guest socket's whole credit in its guest's receive buffers, so that
+/// a host stream to it waits on its credit, never on the ring before. A socket gives its
+/// peer at most its buffer's maximum, VSOCK_DEFAULT_BUFFER_MAX_SIZE, 256 KiB, unless its
+/// program raises it (net/vmw_vsock/af_vsock.c l. 200-201); each receive buffer holds less
+/// than a page, SKB_WITH_OVERHEAD(4 KiB) (include/linux/virtio_vsock.h l. 138; Linux
+/// 1590cf03), so more than 64 hold it; and a split ring's size is a power of two (virtio
+/// 1.3 §2.7): 128. Linux's driver makes its rings as large as the device offers
+/// (drivers/virtio/virtio_mmio.c l. 374-381, `vm_setup_vq`) and fills RX whole.
+const QUEUE_SIZE: u16 = {
+    const SOCKET_CREDIT: u32 = 256 << 10;
+    const PAGE: u32 = 4096;
+    (SOCKET_CREDIT / PAGE + 1).next_power_of_two() as u16
+};
 const RX: usize = 0;
 const TX: usize = 1;
 
@@ -407,6 +419,9 @@ impl VirtioDevice for Vsock {
             return Err(format!("virtio-vsock activated with {} queues", queues.len()));
         }
         let mut muxer = self.muxer.take().ok_or("virtio-vsock activated twice")?;
+        if let (Some(rx), Some(tx)) = (queues.get(RX), queues.get(TX)) {
+            muxer.set_rings(rx.size(), tx.size());
+        }
         if restored {
             // The guest's connections belong to the snapshot's host, not to this one.
             muxer.reset();
@@ -739,6 +754,15 @@ mod tests {
     struct Line;
     impl crate::devices::Interrupt for Line {
         fn set_level(&self, _: bool) {}
+    }
+
+    /// The rings hold a guest socket's 256 KiB of credit in receive buffers of less than
+    /// a page each: more than 64, a power of two.
+    #[test]
+    fn the_rings_hold_a_guest_sockets_credit() {
+        assert_eq!(QUEUE_SIZE, 128);
+        assert!(QUEUE_SIZE.is_power_of_two());
+        assert!(u32::from(QUEUE_SIZE) * 4096 > 256 << 10);
     }
 
     /// Queue `q`'s descriptor `i`, one buffer of `len` bytes, and published.

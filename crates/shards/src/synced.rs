@@ -161,7 +161,11 @@ impl<W: Write> Framed<W> {
     }
 }
 
-/// A frame's most bytes: what a read of the build's stdout takes at once.
+/// A frame's most bytes, which bounds what a [`Demux`] holds: what one read of the build's
+/// stdout, a pipe, takes at most, a pipe's capacity: 16 pages on Linux (`PIPE_DEF_BUFFERS`,
+/// include/linux/pipe_fs_i.h l. 5; pipe(7): 65536 bytes) and 64 KiB on macOS
+/// (`BIG_PIPE_SIZE`, xnu-12377.101.15 bsd/sys/pipe.h l. 80); Windows' anonymous pipes hold
+/// less. An output's bytes go in frames as large.
 const FRAME_MOST: usize = 64 << 10;
 
 fn frame(out: &mut dyn Write, tag: u8, bytes: &[u8]) -> io::Result<()> {
@@ -293,7 +297,10 @@ impl<S: Write, O: Outputs> Write for Demux<S, O> {
     }
 }
 
-/// The most of a secret a build takes: what a step's frame carries, as a build here takes.
+/// The most of a secret a build takes: what a step's frame carries, as a build here takes
+/// (`shards_abi::run::MAX_PAYLOAD`). Every secret BuildKit takes fits: its session refuses
+/// one past `MaxSecretSize`, 500 KiB (BuildKit v0.33.0 session/secrets/secretsprovider/
+/// secretsprovider.go l. 15).
 const SECRET_MAX: u64 = shards_abi::run::MAX_PAYLOAD as u64;
 
 /// The most a build file's directory sends: as much as a build reads of a Dockerfile.

@@ -184,13 +184,16 @@ pub struct PortRecord {
 
 pub use crate::spec::now;
 
+/// The random bytes of an ID ([`new_id`]): `stringid.GenerateRandomID`'s 32.
+pub const ID_BYTES: usize = 32;
+
 /// A new microVM's ID: 32 random bytes in hex, the form clients parse
 /// (`stringid.GenerateRandomID`), drawn again while the first 12 digits are all decimal:
 /// the short ID names the microVM's host, and a hostname must not look like a number
 /// (moby daemon/internal/stringid/stringid.go).
 pub fn new_id() -> io::Result<String> {
     loop {
-        let mut bytes = [0u8; 32];
+        let mut bytes = [0u8; ID_BYTES];
         shards_vmm::platform::fill_random(&mut bytes)?;
         let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         if !id.bytes().take(12).all(|b| b.is_ascii_digit()) {
@@ -216,9 +219,6 @@ pub fn valid_name(name: &str) -> bool {
 /// A microVM's record, in its directory, and the name it is written under first.
 const RECORD: &str = "config.json";
 const NEW_RECORD: &str = "config.json.new";
-/// The largest record read. A run's command arrives in one message
-/// (`shards_ipc::MAX_PAYLOAD`), and JSON writes a byte as at most 6.
-const MAX_RECORD: u64 = 8 << 20;
 
 /// What the registry does to the disk, so that a test can fail it, cut it short or lose
 /// power under it. [`Real`] is the host's filesystem.
@@ -746,7 +746,10 @@ enum Loaded {
 
 /// The record in `file` of the directory `dir`, which is named for its microVM.
 fn load(disk: &dyn Disk, dir: &Path, name: &str, file: &str) -> Loaded {
-    match disk.read(&dir.join(file), MAX_RECORD) {
+    // The daemon's own record, which no other process writes, read whole as long as it is
+    // ([`crate::build::holdable`]): one past what the daemon can hold is refused, where a
+    // figure picked would have refused a record it wrote itself.
+    match disk.read(&dir.join(file), crate::build::holdable()) {
         Ok(bytes) => match serde_json::from_slice::<Container>(&bytes) {
             Ok(c) if c.id == name => Loaded::Record(Box::new(c)),
             Ok(c) => Loaded::Unreadable(format!("its record is container {}'s", c.id)),

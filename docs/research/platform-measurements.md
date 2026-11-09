@@ -19927,7 +19927,7 @@ revision before comparing a changed API/implementation.
   against 51.0 ms at p90: under load the spawn of shards' VM process goes slower than
   Firecracker's; at load 85 its median too. The 16 VMs' host memory (MemAvailable given
   up) moves by more than the VMs' own between rounds on this host; tied, then better.
-- **Also: DAX windows on Linux 6.19.** M463 found a bind's DAX window (D189) on adacachy2
+- **Also: DAX windows on Linux 6.19.** M511 found a bind's DAX window (D189) on adacachy2
   (CachyOS, Linux 7.3.3) read 64 MiB at 9.5 MiB/s, 513 µs an open, a 4 KiB read and a
   close. The same test (`what_a_clients_bind_costs`, 3 rounds, 86e41c99) here, load 40 to
   65: the machine's own bind with DAX 111 to 201 µs at p50 an open, read 122 to 577 MiB/s;
@@ -20353,3 +20353,159 @@ revision before comparing a changed API/implementation.
   `macos-sched/launchd-run.sh` (its binary is chained fixups already, `LC_DYLD_CHAINED_
   FIXUPS` at minimum macOS 15: 27,727 fixups in `__DATA_CONST,__const`, 33 pages of 16
   KiB); Windows', whose loader applies PE base relocations, unmeasured.
+
+### M515. How long past its patience shards-api's refusal of an unserved port comes
+
+- **Question.** `shards-api`'s conformance case "an unserved port is refused" holds a
+  refusal to its patience: not before it, and not long after. How long after does it come,
+  so that the case's bound (`conformance::OVERSHOOT`) is a measured one?
+- **Method.** `docs/research/measurements/shards-api-overshoot/run.sh` (the ignored test
+  `overshoot_of_an_unserved_connect`, release): 300 connects of each kind to a port nothing
+  serves, with patience `UNSERVED_PATIENCE` (200 ms), each one's time past it: the client
+  against a stand-in `shards` that never binds its socket (its dials paced by `pause`,
+  `sqrt(2 c w)`), and the simulator against a guest that never listens there (one condition
+  variable wait). On adas-mac-studio.local-2 (macOS 26.4, arm64), a one-shot launchd job
+  (kiln's headroom guard paces none of it), at 0ccabdb1, 2026-11-06T15:18Z, load average
+  5 to 15; and the simulator's again at 15:04Z, load 40.
+- **Found** (n 300 each):
+
+  | | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | client, 15:18Z | 20.9 ms | 49.3 ms | 107.4 ms | 132.5 ms |
+  | simulator, 15:18Z | 100.0 ms | 148.5 ms | 150.1 ms | 150.1 ms |
+  | simulator, 15:04Z (load 40) | 83.3 ms | 145.5 ms | 150.1 ms | 150.9 ms |
+
+- **Reading.** A 200 ms wait on macOS ends up to 151 ms late: XNU coalesces a timed wait's
+  wake-up, so the overshoot is the platform's timer leeway, not the client's dialing (its
+  pauses are a few ms). `conformance::OVERSHOOT` is the most measured, rounded up to the next
+  10 ms: 160 ms. What would falsify it: a host where a conforming refusal comes later, which
+  is a new measurement here, not a raised bound.
+
+### M463. The waits shards-api's bounds hold, on HVF
+
+- **Question.** Each shards-api bound on a wait that can't wait on a fact alone is twice (the
+  margin) the slowest recorded run of that wait: conformance's `OVERSHOOT` (M515) and the
+  tests' hang guards. (`STOP_GRACE`, which this measured too, is gone: the VMM has no
+  host-to-guest power-off, so `stop` kills at once.) How long do those waits take?
+- **Method.** `docs/research/measurements/shards-api-waits/run.sh` (release harness): tests/sim.rs
+  `the_waits_of_these_tests`, its tests' waits each on a thread of its own as the tests run
+  side by side, a new stand-in script for each run; and tests/real.rs `the_waits_of_real_guests`,
+  real guests booted one at a time by a debug `shards` (a0cced87's, SHA-256 286f3dcd4439ac44…),
+  shards' pinned kernel Image-6.18.48 and its test guest, as tests/real.rs boots them. On
+  adas-mac-studio-2.local (Mac16,9, M4 Max, macOS 26.2), one-shot launchd jobs (kiln's
+  headroom guard paces none of it), under its own co-tenants, nothing added: run 1 at 6b7e12e9,
+  2026-11-06T18:02Z, load average 6.4 to 8.6; run 2 at 9f666412, 18:04Z, load 6.8 to 7.7 (it
+  adds the echoes); run 3 at fb082e06, 19:04Z, load 12.2 to 18.8.
+- **Found** (n 40 each; p50 and max of each run, and the slowest of all):
+
+  | wait | run 1 p50 / max | run 2 p50 / max | run 3 p50 / max | slowest |
+  |---|---|---|---|---|
+  | simulated guest listening after 100 ms, connected to | 241.8 / 252.0 ms | 244.5 / 253.5 ms | 242.8 / 252.3 ms | 253.455625 ms |
+  | simulated guest's echo of 64 KiB + 1 | | 0.28 / 1.90 ms | 0.24 / 2.13 ms | 2.130333 ms |
+  | new stand-in script ending first, its boot to its refusal | 0.750 / 1.715 s | 0.456 / 0.982 s | 0.806 / 4.373 s | 4.373059625 s |
+  | new stand-in script exiting 0, its boot to its end | 0.751 / 1.535 s | 0.443 / 0.871 s | 0.821 / 4.403 s | 4.402617625 s |
+  | running stand-in, `stop` to its end | 0.11 / 0.27 ms | 0.10 / 0.87 ms | 0.07 / 0.75 ms | 0.867667 ms |
+  | a held output's refusal after shards' end | 0.66 / 2.72 ms | 0.69 / 2.89 ms | 0.46 / 4.28 ms | 4.277875 ms |
+  | real guest, boot to its port answering | 115.6 / 207.6 ms | 107.1 / 206.3 ms | 204.8 / 248.5 ms | 248.467 ms |
+  | real guest, echo of 64 KiB + 1 | | 0.54 / 1.04 ms | 0.59 / 1.18 ms | 1.18425 ms |
+  | real guest, unserved refusal past 200 ms patience | 52.9 / 138.7 ms | 49.7 / 135.3 ms | 38.3 / 102.7 ms | 138.719291 ms |
+  | real guest, `stop` (SIGTERM to its end, as shards-api sees it) | 2.96 / 6.59 ms | 2.56 / 4.92 ms | 1.55 / 3.52 ms | 6.593416 ms |
+  | real guest, boot to power-off | 92.6 / 96.9 ms | 90.0 / 98.2 ms | 101.1 / 134.2 ms | 134.161917 ms |
+
+- **Reading.** A new script's first start on macOS takes up to 4.4 s side by side under load
+  18, where the simulator and a running process answer in ms; run 3, under twice runs 1 and
+  2's load, was slower than their records, and its numbers are the records now. The bounds,
+  each twice (the margin) its slowest record: tests/sim.rs `PATIENCE` 2 × 4.402617625 s;
+  `REFUSED_AFTER_END` 2 × 4.277875 ms; tests/real.rs's patience 2 × 248.467 ms (the slowest
+  of the waits it bounds); `OVERSHOOT` 2 × 150.85425 ms (M515), above this
+  record's real 138.7 ms. The VMM was the debug build this Mac had; a release build's runs,
+  and KVM's and WHP's, go beside these when recorded: until then those classes have no bound
+  (`shards_api::record`). What would falsify a bound: a run slower than its record, which is
+  recorded here and becomes it.
+- **Runs after the dial-cost fix** (bb79e7f1: a refused dial's cost is its own work, not its
+  wait for an answer; before it a pause could grow from a muxer's held request, so the
+  runs above of a real boot to its port answering bound a client that no longer is, and
+  only the waits no dial paces, a power-off, a stop, an echo, carry on from them). n 40:
+
+  | wait | macOS-HVF, studio-2, 2026-11-07T02:00Z, load 3.5-5.4, p50 / max | Linux-KVM, fedora (i9-14900HX, Fedora 44, 6.19.10), at 21d0ec4a 01:58Z load 14-25 and bb79e7f1 02:03Z load 33-49, the slowest's p50 / max |
+  |---|---|---|
+  | simulated guest listening after 100 ms, connected to | 240.8 ms / 250.1 ms | 100.4 ms / 100.83073 ms (first run, 33c3a40e 01:45Z, load 30-38) |
+  | simulated guest's echo of 64 KiB + 1 | 0.16 ms / 6.49 ms | 0.10 ms / 0.57 ms |
+  | new stand-in script ending first, its boot to its refusal | 1.07 s / 3.62 s | 0.81 ms / 2.02 ms |
+  | new stand-in script exiting 0, its boot to its end | 1.11 s / 3.84 s | 0.86 ms / 1.89 ms |
+  | running stand-in, `stop` to its end | 0.10 ms / 0.17 ms | 0.05 ms / 0.58 ms |
+  | a held output's refusal after shards' end | 0.73 ms / 1.52 ms | 0.14 ms / 205.294 µs |
+  | real guest, boot to its port answering | 32.4 ms / 47.0 ms | 90.8 ms / 135.9 ms |
+  | real guest, echo of 64 KiB + 1 | 0.49 ms / 0.56 ms | 0.41 ms / 16.8 ms |
+  | real guest, unserved refusal past its patience | 26.6 ms / 48.0 ms | 0.19 ms / 0.63 ms |
+  | real guest, `stop` to its end | 2.4 ms / 5.9 ms | 16.0 ms / 28.7 ms |
+  | real guest, boot to power-off | 89.3 ms / 96.7 ms | 288.9 ms / 478.557376 ms |
+
+  Linux-KVM's shards was this tree's own test-release build, its pinned x86_64 kernel and
+  test guest. The bounds now: the tests' `PATIENCE` 2 × 4.402617625 s on HVF, 2 × 100.83073
+  ms on KVM; `REFUSED_AFTER_END` 2 × 4.277875 ms and 2 × 205.294 µs; `conformance::PATIENCE`
+  2 × 134.161917 ms (HVF's slowest power-off, above its boot to its port answering since
+  the fix) and 2 × 478.557376 ms (KVM's power-off). A class with none (WHP, yet) seeds
+  from the slowest of any, and each rises with what its node sees (`record::Learned`).
+
+  `REFUSED_AFTER_END`'s Linux-KVM row, re-taken: the bound it gave, 410.6 µs, failed once on
+  fedora under load (a held output refused 456.864 µs after shards' end, Hex's c-route,
+  2026-11-08), so the 205.294 µs above was not this wait's slowest under real load. The same
+  `the_waits_of_these_tests` (n 40), at b3fe182f, fedora 2026-11-08T02:29Z, load 6.8-8.6,
+  three rounds and a fourth beside the whole shards-api suite (as CI runs it, the suite
+  passing): p50 / max 133.9 / 223.8 µs, 154.5 / 289.1 µs, 130.2 / 209.3 µs, and beside the
+  suite 145.4 / 299.915 µs. Every round passed the old row; the slowest is beside the suite,
+  and the bound is now 2 × 299.915 µs, 599.8 µs.
+
+### M464. What a refused dial costs shards-api, on HVF (`pause`'s `c`)
+
+- **Question.** `pause` waits `sqrt(2 c w)` between dials, `c` what the last refused dial
+  took, measured at run time. What is `c`?
+- **Method.** `run.sh`'s last part, `client::tests::the_cost_of_a_refused_dial` (release):
+  1000 handshakes to a socket path not bound yet (refused by this host's kernel), and 1000
+  `CONNECT`s to a port a real guest (as in M463) does not serve (refused by the guest's RST,
+  through shards' muxer). adas-mac-studio-2.local, launchd one-shot, at fb082e06,
+  2026-11-06T19:05Z, load 12.2 to 18.8.
+- **Found** (n 1000 each):
+
+  | refused dial | p50 | p90 | p99 | max |
+  |---|---|---|---|---|
+  | a socket not bound yet | 5.5 µs | 6.9 µs | 52.6 µs | 266.1 µs |
+  | a real guest's port it does not serve | 44.1 µs | 58.1 µs | 80.2 µs | 197.6 µs |
+
+- **Reading.** At 150 ms waited, `pause` is 1.3 ms with a 5.5 µs dial and 3.6 ms with a 44 µs
+  one, so dialing holds 0.4% and 1.2% of a thread, and a guest that starts to listen is
+  reached about half a pause later on average.
+- **After the fix** (`c` the dial's own work, its connect and its ask, not its wait for the
+  answer), n 1000 each: HVF (studio-2, bb79e7f1, 02:00Z) 9.1 µs p50 / 471.7 µs max to a
+  socket not bound yet and 7.9 µs / 43.3 µs to a real guest's unserved port; KVM (fedora,
+  bb79e7f1, 02:04Z, load 33-49) 5.5 µs / 35.3 µs and 6.6 µs / 60.7 µs. The table above
+  timed the whole dial, its wait for the guest's answer with it.
+
+### M465. shards-api's boots under the E2E suite's own load (boot.rs's `E2E` bound)
+
+- **Question.** boot.rs's shards-api tests run side by side with the file's other boots.
+  How long does a boot of the test guest to its echo port answering take there, and a
+  share-mode boot to its power-off, so that their bound (`E2E`, twice the slowest) is
+  recorded rather than copied?
+- **Method.** `shards_api_boot_under_the_suites_load` (5 of each), in the whole of
+  `cargo test -p shards --test boot -- --nocapture`, as CI runs it.
+- **Found.**
+
+  | host class | host, date, load, commit | boot to its port answering, p50 / max | share mode to power-off, p50 / max |
+  |---|---|---|---|
+  | macOS-HVF, before the dial-cost fix | adas-mac-studio-2 (Mac16,9, macOS 26.2), launchd one-shot, 2026-11-07T01:22Z, load 8.8-10.7, 33c3a40e + boot.rs's E2E | 186.9 ms / 6.2025 s | 47.5 ms / 78.3 ms |
+  | macOS-HVF | the same, 02:01Z, load 5.4-11.3, bb79e7f1 | 89.6 ms / 230.018375 ms | 43.5 ms / 47.3 ms |
+  | Linux-KVM, before the fix | fedora, 01:44Z, load 30-36, 33c3a40e + boot.rs's E2E | 572.8 ms / 1.9413 s | 240.6 ms / 283.7 ms |
+  | Linux-KVM | fedora, 02:03Z, load 49-51, bb79e7f1 | 344.0 ms / 1.20682226 s | 273.0 ms / 400.3 ms |
+  | Windows-WHP | jupiter (32 cores, 124 GiB), kiln background run, 2026-11-08T00:09Z, CPU 14.6-18.8%, kernel 1.9-6.4%, 938203ac | 263.7 ms / 2.4068389 s | 299.3 ms / 311.1 ms |
+  | Windows-WHP | the same, 00:10Z, CPU 13.8-15.0%, kernel 1.7-2.6%, 938203ac | 312.0 ms / 813.2 ms | 313.6 ms / 338.1 ms |
+
+- **Reading.** Before the dial-cost fix a boot under the suite waited up to 6.2 s on HVF
+  (15.2 s in one run): its pause grew from dials the muxer held while the guest's vsock
+  was not up. Since, the slowest is 230 ms on HVF and 1.21 s on KVM, and the bound is
+  twice that: 460 ms and 2.41 s. On WHP the slowest is 2.41 s, the first boot of a round, and
+  the bound 4.81 s: the seed a class without a record takes (twice the slowest of any,
+  `shards_api::record::Learned`) was 2.41 s, which that boot met with 3 ms to spare. WHP's
+  rows are from after jupiter's reboot: before it, an NTFS stall held 81-96% of its CPU in
+  the kernel and its boots took up to 134 s, a host fault the rows do not measure.

@@ -273,8 +273,8 @@ pub fn restores() -> bool {
 
 /// The most vCPUs one VM can have: as many as the hypervisor tells a partition's guest it
 /// supports (its leaf 0x40000005, Hyper-V TLFS "Implementation Limits"), read for vCPU 0
-/// of a partition of one, once a process ([`host`]); and at most 254, since the MADT
-/// carries 8-bit APIC ids. WHP sets up a partition of 1,024 (PM M198), but creates no vCPU
+/// of a partition of one, once a process ([`host`]); and at most as many as the MADT has
+/// APIC ids for ([`acpi::MAX_VCPUS`](crate::arch::x86_64::acpi::MAX_VCPUS)). WHP sets up a partition of 1,024 (PM M198), but creates no vCPU
 /// past what its guest reads there: 240 on GitHub's runners, the 241st refused
 /// (HV_STATUS_INVALID_VP_INDEX). The root partition's own leaf says more than a guest's: a
 /// VM of as many vCPUs as it said failed at its 241st (CI run 38215340140).
@@ -330,7 +330,7 @@ fn host() -> Result<&'static Host> {
     }
     let extended = std::arch::x86_64::__cpuid(0x8000_0000).eax;
     let h = Host {
-        max_vcpus: limits.Eax.min(254),
+        max_vcpus: limits.Eax.min(crate::arch::x86_64::acpi::MAX_VCPUS),
         cpuid: leaves,
         invariant_tsc: extended >= 0x8000_0007
             && std::arch::x86_64::__cpuid(0x8000_0007).edx & cpuid::INVARIANT_TSC != 0,

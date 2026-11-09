@@ -42,8 +42,44 @@ use crate::{Error, ErrorKind, printable};
 /// What shards names itself to token servers (`client_id`; distribution's oauth.md asks
 /// for "a meaningful value").
 const CLIENT_ID: &str = "shards";
-/// A token server's answer is read up to this size: tokens are a few KiB.
-const MAX_TOKEN_RESPONSE: u64 = 1 << 20;
+/// The most of a request's head a registry reads: Go's http.DefaultMaxHeaderBytes
+/// (go1.26.1 net/http/server.go l. 895), which distribution's registry is served under. A
+/// token is sent in a request's head (`Authorization: Bearer`): one longer reaches no such
+/// registry.
+const HEAD_MOST: u64 = 1 << 20;
+/// The most of a form Go's ParseForm reads (go1.26.1 net/http/request.go l. 1280,
+/// `maxFormSize`), which distribution's token servers read OAuth2's `refresh_token` grant
+/// with: a refresh token longer than it is refused where it goes back.
+const FORM_MOST: u64 = 10 << 20;
+/// The most of an `issued_at` read as a time: RFC 3339 with nanoseconds and a zone
+/// (go1.26.1 time/format.go, `RFC3339Nano`).
+const ISSUED_MOST: u64 = "2006-01-02T15:04:05.999999999Z07:00".len() as u64;
+/// The most of an `expires_in`, an i64 (`-9223372036854775808`).
+const EXPIRES_MOST: u64 = "-9223372036854775808".len() as u64;
+/// JSON's longest form of one byte of a string, `\uXXXX` (RFC 8259 §7).
+const ESCAPED: u64 = 6;
+/// What a [`TokenResponse`]'s fields take beside their values: each name quoted, a colon,
+/// the value's quotes and a comma; and the object's braces.
+const FIELDS: u64 = fields(&[
+    "token",
+    "access_token",
+    "refresh_token",
+    "expires_in",
+    "issued_at",
+]);
+
+/// What fields named `names` take beside their values, and their object's braces.
+const fn fields(names: &[&str]) -> u64 {
+    match names {
+        [first, rest @ ..] => first.len() as u64 + 6 + fields(rest),
+        [] => 2,
+    }
+}
+/// A token server's answer is read up to what its fields can usefully hold, each escaped
+/// at most: two tokens a registry takes in a head (`token`, `access_token`), a refresh
+/// token a token server takes in a form, its times, and their names. More is no answer of
+/// use: JSON's whitespace, or fields shards reads none of.
+const MAX_TOKEN_RESPONSE: u64 = ESCAPED * (2 * HEAD_MOST + FORM_MOST + ISSUED_MOST + EXPIRES_MOST) + FIELDS;
 /// distribution's `minimumTokenLifetimeSeconds`, and the spec's default.
 const MIN_LIFETIME: Duration = Duration::from_secs(60);
 
@@ -872,7 +908,9 @@ fn read_token(response: &mut Response, oauth: bool) -> Result<Token, Error> {
         .read_to_end(&mut body)
         .map_err(|e| Error::new(format!("reading the token: {e}")))?;
     if body.len() as u64 > MAX_TOKEN_RESPONSE {
-        return Err(Error::new("the token response passes 1 MiB"));
+        return Err(Error::new(format!(
+            "the token response passes {MAX_TOKEN_RESPONSE} bytes, more than its fields can hold"
+        )));
     }
     // Go's json.Decoder reads the first value and ignores what follows.
     let parsed: TokenResponse = serde_json::Deserializer::from_slice(&body)

@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+shards-abi = { path = "../abi" }
+
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 

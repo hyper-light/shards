@@ -20,10 +20,11 @@ use crate::{Error, wrap};
 
 /// fsutil's defaultDirectoryMode.
 const DEFAULT_DIR_MODE: u32 = 0o755;
-/// continuity's walkLink limit.
+/// continuity's walkLink limit (continuity v0.5.0 fs/path.go:248, `*linksWalked > 255`).
 const MAX_ROOT_LINKS: u32 = 255;
 
-/// Go's os.FileMode bits, as fsutil reads and writes modes through them.
+/// Go's os.FileMode bits, as fsutil reads and writes modes through them: `1 << (31 - n)`
+/// for io/fs's n-th mode bit (go1.26.1 src/io/fs/fs.go:192-203; `ModeSticky` the 11th).
 pub mod fm {
     pub const DIR: u32 = 1 << 31;
     pub const SYMLINK: u32 = 1 << 27;

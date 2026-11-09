@@ -116,14 +116,35 @@ pub const FORMAT: u32 = VERSION;
 /// A state file is kilobytes; anything past this is not one of ours.
 pub(crate) const MAX_STATE: u64 = 64 << 20;
 const MAX_DISKS: usize = 64;
-/// The most runs of plugged memory a state holds: one for every other 2 MiB block of 1
-/// TiB to plug.
-const MAX_PLUGGED_RUNS: usize = 1 << 18;
-/// The most runs of data a state's RAM holds: one for every other block of 1 TiB of it
-/// ([`DATA_BLOCK`](crate::memory::DATA_BLOCK)).
-const MAX_DATA_RUNS: usize = 1 << 18;
-const MAX_PATH: usize = 4096;
-const MAX_NAME: usize = 64;
+/// A generation's name as [`fresh_name`] makes it, at its longest: `g-`, then the time's
+/// nanoseconds, this process's ID and a count, in hex, each of at most its type's digits.
+const MAX_NAME: usize =
+    "g-".len() + hex_digits(u128::BITS) + 1 + hex_digits(u32::BITS) + 1 + hex_digits(u64::BITS);
+
+const fn hex_digits(bits: u32) -> usize {
+    bits.div_ceil(4) as usize
+}
+
+/// The most runs of plugged memory a state of a machine that may plug `hotplug_mib` holds:
+/// one for every other block of its plug region (whole blocks of Linux's memory,
+/// [`mem::ALIGN`](crate::devices::virtio::mem::ALIGN)), as runs that meet are one
+/// (`Hotplug::runs`). None past what a guest addresses.
+fn most_plugged_runs(hotplug_mib: u64) -> Option<usize> {
+    use crate::devices::virtio::mem::{ALIGN, BLOCK};
+    let region = hotplug_mib
+        .checked_mul(1 << 20)?
+        .checked_next_multiple_of(ALIGN)?;
+    usize::try_from((region / BLOCK).div_ceil(2)).ok()
+}
+
+/// The most runs of data a state's RAM of `memory_mib` holds: one for each of its
+/// [`DATA_BLOCK`](crate::memory::DATA_BLOCK)s, as each run is whole blocks (but at a
+/// region's end) and runs that meet are one (`blocks_of`). None past what a guest
+/// addresses.
+fn most_data_runs(memory_mib: u64) -> Option<usize> {
+    let ram = memory_mib.checked_mul(1 << 20)?;
+    usize::try_from(ram.div_ceil(crate::memory::DATA_BLOCK as u64)).ok()
+}
 /// How often a reader looks again at `current` for a generation a newer write removed
 /// between its look and its open.
 const READ_ATTEMPTS: usize = 8;
@@ -560,8 +581,9 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         .to_string();
     let vcpus = r.u32()?;
     let memory_mib = r.u64()?;
-    let disks = r.seq(MAX_DISKS, 5, |r| Ok((path_from(r.bytes(MAX_PATH)?)?, r.bool()?)))?;
-    let pmem = r.seq(MAX_DISKS, 4, |r| path_from(r.bytes(MAX_PATH)?))?;
+    let path = platform::PATH_MOST;
+    let disks = r.seq(MAX_DISKS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
+    let pmem = r.seq(MAX_DISKS, 4, |r| path_from(r.bytes(path)?))?;
     let identities = r.seq(2 * MAX_DISKS, 36, Identity::decode)?;
     if identities.len() != disks.len() + pmem.len() {
         return Err(DecodeError(format!(
@@ -597,12 +619,14 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         )));
     }
     let layer_mib = r.u64()?;
-    // At most a run for every other block of the most a guest may plug.
-    let plugged = r.seq(MAX_PLUGGED_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+    let past = |what: &str| DecodeError(format!("{what} past what a guest addresses"));
+    let plugged_most = most_plugged_runs(hotplug_mib).ok_or_else(|| past("memory to plug"))?;
+    let plugged = r.seq(plugged_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
     let pci_slots = if version >= VERSION_WITH_SLOTS { r.u8()? } else { 0 };
     let data = if version >= VERSION_WITH_DATA {
         let said = r.bool()?;
-        let runs = r.seq(MAX_DATA_RUNS, 16, |r| Ok((r.u64()?, r.u64()?)))?;
+        let data_most = most_data_runs(memory_mib).ok_or_else(|| past("guest memory"))?;
+        let runs = r.seq(data_most, 16, |r| Ok((r.u64()?, r.u64()?)))?;
         said.then_some(runs)
     } else {
         None
@@ -1623,6 +1647,8 @@ mod tests {
         // With runs of memory plugged, which the state keeps (D176), and its RAM's runs of
         // data (D151).
         let mut snap = sample(&nowhere(), 1);
+        snap.config.memory_mib = 16;
+        snap.config.hotplug_mib = 128;
         snap.plugged = vec![(1 << 32, 2 << 20), (0x1_0040_0000, 4 << 20)];
         snap.data = Some(vec![(0, 2 << 20), (6 << 20, 4 << 20)]);
         let ids = vec![Identity::default(); 3];
@@ -1682,6 +1708,35 @@ mod tests {
     }
 
     /// Backing files are named by absolute path (audit A18).
+    /// A state holds no more runs than its machine's memory makes: data runs one for each
+    /// block of its RAM, plugged runs one for every other block of its plug region; and a
+    /// generation's name is no longer than one this build makes.
+    #[test]
+    fn runs_are_bounded_by_the_machines_memory() {
+        assert_eq!(MAX_NAME, 60);
+        assert!(fresh_name().len() <= MAX_NAME);
+        assert_eq!(most_data_runs(1), Some(1));
+        assert_eq!(most_data_runs(512), Some(256));
+        assert_eq!(most_plugged_runs(0), Some(0));
+        // 2 MiB to plug, in a region of 128 MiB: 64 blocks, at most 32 apart.
+        assert_eq!(most_plugged_runs(2), Some(32));
+        assert_eq!(most_plugged_runs(u64::MAX), None);
+        assert_eq!(most_data_runs(u64::MAX), None);
+
+        let ids = vec![Identity::default(); 3];
+        let mut snap = sample(&nowhere(), 1);
+        snap.config.memory_mib = 4;
+        snap.data = Some(vec![(0, 2 << 20), (2 << 20, 2 << 20)]);
+        assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_ok());
+        snap.data = Some(vec![(0, 1), (2, 1), (4, 1)]);
+        assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_err());
+        let mut snap = sample(&nowhere(), 1);
+        snap.plugged = vec![(1 << 32, 2 << 20)];
+        assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_err());
+        snap.config.hotplug_mib = 2;
+        assert!(decode(&encode(&snap, "g-1", &ids).unwrap()).is_ok());
+    }
+
     #[test]
     fn a_relative_backing_path_is_refused() {
         let mut snap = sample(&nowhere(), 1);
@@ -1995,6 +2050,7 @@ mod tests {
             let s = Scratch::new("plug-short");
             let dir = s.0.join("snap");
             let mut snap = sample(&s.0, 1);
+            snap.config.hotplug_mib = 128;
             snap.plugged = vec![(1 << 32, 2 << 20)];
             write(&dir, &snap, &ram(1)).unwrap();
             let e = read(&dir).unwrap_err();

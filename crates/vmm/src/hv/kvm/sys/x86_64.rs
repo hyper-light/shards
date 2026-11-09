@@ -141,6 +141,7 @@ pub const IRQCHIP_IOAPIC: u32 = 2;
 pub const CAP_SET_TSS_ADDR: u64 = 4;
 pub const CAP_EXT_CPUID: u64 = 7;
 pub const CAP_SET_IDENTITY_MAP_ADDR: u64 = 37;
+/// KVM_CAP_TSC_DEADLINE_TIMER (include/uapi/linux/kvm.h l. 822, Linux 1590cf03).
 pub const CAP_TSC_DEADLINE_TIMER: u64 = 72;
 /// On the VM fd: the size of the guest's XSAVE area, 4096 or more, or 0 without XSAVE2.
 pub const CAP_XSAVE2: u64 = 208;
@@ -258,7 +259,10 @@ const _: () = {
     assert!(size_of::<kvm_cpuid_entry2>() == 40);
 };
 
-/// The most CPUID entries KVM returns (it clamps `nent` to 256).
+/// The most CPUID entries KVM returns or takes: KVM_MAX_CPUID_ENTRIES
+/// (arch/x86/include/asm/kvm_host.h l. 170), to which KVM_GET_SUPPORTED_CPUID clamps `nent`
+/// and past which KVM_SET_CPUID2 refuses one (arch/x86/kvm/cpuid.c l. 597, 641, 1992-1993;
+/// Linux 1590cf03).
 pub const MAX_CPUID_ENTRIES: usize = 256;
 
 /// `struct kvm_cpuid2` with its entries inline.
@@ -329,26 +333,45 @@ impl Kvm {
     }
 
     /// The MSRs KVM saves and restores for a VMM: those it passes through and those it
-    /// emulates (api.rst, KVM_GET_MSR_INDEX_LIST).
+    /// emulates (api.rst, KVM_GET_MSR_INDEX_LIST). Asked with room for none, KVM says how
+    /// many there are and refuses with E2BIG; asked again with room for that many, it fills
+    /// them in (arch/x86/kvm/x86.c l. 5029-5054, Linux 1590cf03). The list is KVM's own
+    /// arrays, which do not change while it is loaded.
     pub fn msr_index_list(&self) -> io::Result<Vec<u32>> {
-        const MAX: usize = 1024;
-        let mut buf = vec![0u8; 4 + 4 * MAX];
+        let ask = |buf: &mut [u8]| {
+            // SAFETY: a kvm_msr_list whose `nmsrs` is the indices `buf` has room for after
+            // it, which KVM writes no more than.
+            unsafe {
+                ioctl(
+                    self.0.as_raw_fd(),
+                    KVM_GET_MSR_INDEX_LIST,
+                    buf.as_mut_ptr() as libc::c_ulong,
+                )
+            }
+        };
+        let count = |buf: &[u8]| {
+            buf.get(..4)
+                .and_then(|b| b.try_into().ok())
+                .map_or(0, |b: [u8; 4]| u32::from_ne_bytes(b) as usize)
+        };
+        let mut head = [0u8; 4];
+        let total = match ask(&mut head) {
+            Ok(_) => return Ok(Vec::new()),
+            Err(e) if e.raw_os_error() == Some(libc::E2BIG) => count(&head),
+            Err(e) => return Err(e),
+        };
+        let len = total
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(4))
+            .ok_or_else(|| io::Error::other(format!("KVM_GET_MSR_INDEX_LIST counts {total} MSRs")))?;
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len).map_err(io::Error::other)?;
+        buf.resize(len, 0u8);
         if let Some(n) = buf.get_mut(..4) {
-            n.copy_from_slice(&(MAX as u32).to_ne_bytes());
+            n.copy_from_slice(&u32::try_from(total).map_err(io::Error::other)?.to_ne_bytes());
         }
-        // SAFETY: a kvm_msr_list with room for MAX indices.
-        unsafe {
-            ioctl(
-                self.0.as_raw_fd(),
-                KVM_GET_MSR_INDEX_LIST,
-                buf.as_mut_ptr() as libc::c_ulong,
-            )
-        }?;
-        let n = buf
-            .get(..4)
-            .and_then(|b| b.try_into().ok())
-            .map_or(0, |b: [u8; 4]| u32::from_ne_bytes(b) as usize)
-            .min(MAX);
+        ask(&mut buf)?;
+        let n = count(&buf).min(total);
         Ok(buf
             .get(4..4 + 4 * n)
             .unwrap_or_default()

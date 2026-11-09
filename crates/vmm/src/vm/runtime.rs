@@ -817,9 +817,10 @@ impl Handle {
         self.shared.released_at_us.get().copied()
     }
 
-    /// Feeds bytes to the guest console as if typed.
+    /// Feeds bytes to the guest console as if typed, waiting while its UART has no room
+    /// for them (`Serial::input`).
     pub fn console_input(&self, bytes: &[u8]) {
-        self.serial.enqueue_input(bytes);
+        self.serial.input(bytes);
     }
 
     /// The whole lines of the last page its guest wrote to its console, whoever read it:

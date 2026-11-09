@@ -22,7 +22,7 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use shards_cmdline::term::{EscapeProxy, Read as Typed};
 #[cfg(unix)]
@@ -51,10 +51,6 @@ const SIGINT: Sig = shards_ipc::signal::SIGINT;
 /// and then each it took meanwhile through a slot it had offered of the kind the client
 /// asks for (`slots::OFFERED`); one of a build from before slots, once, on its socket.
 const RESTARTS: usize = shards_ipc::slots::OFFERED + 2;
-
-/// How long a started daemon may take to listen, once the one it replaces has ended its
-/// runs (shards_ipc::exiting), which takes as long as their stop timeouts make it.
-const START_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs `request` through the daemon of `home`, whose binary is `daemon`, detaching on
 /// `detach_keys` under `-it`. Every path the request holds is absolute by now
@@ -694,7 +690,9 @@ enum Asked {
 /// `payload`, the slot's `streams` opened, and the descriptors the request stands for
 /// named (`named`, of `slots::fds`). Starts the daemon where none offers slots, unless
 /// `started` says this process has, `waiting` first, and waits for its first slot as long
-/// as a daemon takes to start.
+/// as the daemon that has taken the home lives ([`shards_ipc::daemon_lives`]), or one ends
+/// its runs before another takes it ([`shards_ipc::exiting`]): its starter returns once it
+/// serves, or once it found another that does, so that one gone without a slot has ended.
 #[allow(clippy::too_many_arguments)]
 fn ask_slot(
     home: &Path,
@@ -707,7 +705,6 @@ fn ask_slot(
     waiting: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Asked, String> {
     use shards_ipc::slots;
-    let mut deadline = Instant::now() + START_TIMEOUT;
     loop {
         // The home is this process's working directory (`enter`): its slots are named from
         // there, as its socket is.
@@ -729,13 +726,19 @@ fn ask_slot(
                 if !*started {
                     start(daemon, home)?;
                     *started = true;
-                    deadline = Instant::now() + START_TIMEOUT;
-                }
-                if shards_ipc::exiting(home) {
-                    deadline = Instant::now() + START_TIMEOUT;
-                }
-                if Instant::now() >= deadline {
-                    return Err(format!("the daemon did not start; see {}", log(home).display()));
+                } else if !shards_ipc::daemon_lives(home) && !shards_ipc::exiting(home) {
+                    // Gone without a slot: looked for once more, as one may have come as it went.
+                    if let Ok(slots::Taken::Slot(client)) = slots::take(Path::new("."), streams) {
+                        match client.ask(kind, payload, named) {
+                            Ok(()) => return Ok(Asked::Slot(client)),
+                            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {}
+                            Err(e) => return Err(format!("asking the daemon: {e}")),
+                        }
+                    }
+                    return Err(format!(
+                        "the daemon ended before it served; see {}",
+                        log(home).display()
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -1111,9 +1114,6 @@ fn unread(e: &io::Error) -> bool {
     )
 }
 
-/// How long `stop` waits for the daemon to hand over the runs in hand and exit.
-const STOP_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// Asks the daemon of `home` to exit once the runs in hand are handed over, and waits
 /// until it has: the daemon holds the request's slot open until it exits.
 pub fn stop(home: &Path) -> ExitCode {
@@ -1141,13 +1141,18 @@ pub fn stop(home: &Path) -> ExitCode {
             Err(e) => return failed(&format!("asking the daemon to stop: {e}")),
             Ok(()) => {}
         }
-        return match client.recv_within(STOP_TIMEOUT) {
+        // Its end, waited for as long as it ends its runs, each as its stop timeout says
+        // (D217): the slot is the daemon's until it exits.
+        return match client.recv() {
             // Its end. Closing already, or stepping aside for another build's client, it
             // exits all the same.
             Ok(None) => ExitCode::SUCCESS,
             Ok(Some(f)) if f.kind == kind::RESTART => ExitCode::SUCCESS,
-            Err(e) if e.kind() != io::ErrorKind::TimedOut => ExitCode::SUCCESS,
-            Ok(Some(_)) | Err(_) => failed(&format!("the daemon did not exit within {STOP_TIMEOUT:?}")),
+            Err(_) => ExitCode::SUCCESS,
+            Ok(Some(f)) => failed(&format!(
+                "the daemon answered its stop with message kind {}",
+                f.kind
+            )),
         };
     }
     failed("the daemon kept asking for a restart")
@@ -1161,17 +1166,15 @@ fn stop_socket(home: &Path) -> ExitCode {
             if let Err(e) = shards_ipc::send(&conn, kind::STOP, &[], &[]) {
                 return failed(&format!("asking the daemon to stop: {e}"));
             }
-            if let Err(e) = conn.set_read_timeout(Some(STOP_TIMEOUT)) {
-                return failed(&format!("the daemon's connection: {e}"));
-            }
             match shards_ipc::recv(&conn) {
                 // Stepping aside for another build's client, it exits all the same.
                 Ok(None) => ExitCode::SUCCESS,
                 Ok(Some(m)) if m.kind == kind::RESTART => ExitCode::SUCCESS,
-                Err(e) if !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
-                    ExitCode::SUCCESS
-                }
-                Ok(Some(_)) | Err(_) => failed(&format!("the daemon did not exit within {STOP_TIMEOUT:?}")),
+                Err(_) => ExitCode::SUCCESS,
+                Ok(Some(m)) => failed(&format!(
+                    "the daemon answered its stop with message kind {}",
+                    m.kind
+                )),
             }
         }
         // No daemon: nothing to stop.
@@ -1217,17 +1220,11 @@ fn enter(home: &Path, daemon: &Path) -> Result<bool, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("{}: {e}", home.display())),
     }
+    // Its starter makes the home before it starts the daemon, and returns once that serves.
     start(daemon, home)?;
-    let deadline = Instant::now() + START_TIMEOUT;
-    loop {
-        match std::env::set_current_dir(home) {
-            Ok(()) => return Ok(true),
-            Err(e) if Instant::now() >= deadline => {
-                return Err(format!("the daemon did not make {} ({e})", home.display()));
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
-        }
-    }
+    std::env::set_current_dir(home)
+        .map(|()| true)
+        .map_err(|e| format!("the daemon did not make {} ({e})", home.display()))
 }
 
 /// Runs `daemon daemon --detached`, which starts the daemon in the background and exits;

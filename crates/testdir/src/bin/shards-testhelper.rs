@@ -7,9 +7,9 @@
 //! - `zeros N`: N zero bytes on stdout, as `head -c N /dev/zero` writes them.
 //! - `say OUT ERR STATUS`: OUT on stdout and ERR on stderr, a line each, then exits STATUS.
 //! - `await GO [ready=FILE] [say=TEXT] [exit=STATUS]`: makes FILE, then waits until GO is
-//!   there, then says TEXT, a line, and exits STATUS (0 if none). It waits no longer than
-//!   [`AWAIT_MOST`], so that one whose test failed before it made GO is no process left
-//!   behind for long.
+//!   there, then says TEXT, a line, and exits STATUS (0 if none). It waits while GO's
+//!   directory is, a test's own (`TempDir`), which goes as its test ends, failed or killed
+//!   too: one whose test failed before it made GO is no process left behind.
 //! - Run as `docker-credential-NAME` (a copy named so), whatever its arguments: a
 //!   credential helper that never answers, its stdin never read. It adds its process ID to
 //!   `docker-credential-NAME.pids` beside itself, a line, and waits for ever.
@@ -17,10 +17,7 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
-
-/// The longest an `await` waits for its file: past any test's own deadline.
-const AWAIT_MOST: Duration = Duration::from_secs(300);
+use std::time::Duration;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args_os()
@@ -91,10 +88,19 @@ fn run(args: &[String]) -> Result<u8, String> {
                     _ => return Err(format!("await: {option}?")),
                 }
             }
-            let until = Instant::now().checked_add(AWAIT_MOST);
-            while !Path::new(go).exists() {
-                if until.is_none_or(|until| Instant::now() >= until) {
-                    return Err(format!("await: no {go} within {AWAIT_MOST:?}"));
+            let go = Path::new(go);
+            // Its test's directory, which outlives the wait only while its test does.
+            let dir = go
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .ok_or_else(|| format!("await: {}: no test's directory to wait in", go.display()))?;
+            while !go.exists() {
+                if !dir.is_dir() {
+                    return Err(format!(
+                        "await: {} went before {} came: its test ended",
+                        dir.display(),
+                        go.display()
+                    ));
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }

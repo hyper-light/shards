@@ -58,8 +58,9 @@ pub const CHUNKS: usize = 128;
 /// The most of a UDP message's data, compressed as asked, that [`CHUNKS`] chunks carry.
 pub const UDP_MOST: usize = CHUNKS * (CHUNK - CHUNK_HEAD);
 /// The most of a message's bytes a GELF TCP input takes, its NUL not counted: Graylog's
-/// `max_message_size`, 2 MiB unless set (TcpTransport.java `DEFAULT_MAX_FRAME_LENGTH`,
-/// graylog2-server 3d2aea59), past which its frame decoder drops the frame.
+/// `max_message_size`, 2 MiB unless set (graylog2-server 3d2aea59 graylog2-server/src/main/
+/// java/org/graylog2/inputs/transports/TcpTransport.java `DEFAULT_MAX_FRAME_LENGTH`, l. 50,
+/// read at l. 68), past which its frame decoder drops the frame.
 pub const TCP_MOST: usize = 2 * 1024 * 1024;
 
 /// The driver `opts` asks for, or why not, in shards' words.

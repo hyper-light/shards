@@ -145,15 +145,26 @@ pub(super) const IDENTITY: &[(u32, u32)] = &[
     (0x8000_0008, 0),
 ];
 
-/// Bounds on what a decoder takes: a state is a few pages; a host's register list is
-/// shorter than this.
 /// ERROR_MORE_DATA (234) as an HRESULT (FACILITY_WIN32).
 pub(super) const ERROR_MORE_DATA_HRESULT: u32 = 0x8007_00EA;
 
-const MAX_BLOB: usize = 64 << 10;
-const MAX_REGISTERS: usize = 256;
-const MAX_LEAVES: usize = 64;
-const MAX_VCPUS: usize = 254;
+/// The variable-range MTRRs WHP names, PhysBase0 to PhysBaseF and a mask each
+/// (WinHvPlatformDefs.h): 16, of IA32_MTRRCAP's count (bits 7:0; Intel SDM Vol. 3A
+/// §12.11.2.1).
+const VARIABLE_MTRRS: WHV_REGISTER_NAME = WHvX64RegisterMsrMtrrPhysBaseF - WHvX64RegisterMsrMtrrPhysBase0 + 1;
+
+/// What a decoder takes, each the most a save makes. Registers: every name [`kept`] takes,
+/// each once, as a save reads them ([`REGISTERS`], then this host's of [`OPTIONAL`] and of
+/// the variable MTRRs).
+const MOST_REGISTERS: usize = REGISTERS.len() + OPTIONAL.len() + 2 * VARIABLE_MTRRS as usize;
+/// CPUID: the leaves of [`IDENTITY`] the CPU has.
+const MOST_LEAVES: usize = IDENTITY.len();
+/// The local APIC's state, InterruptControllerState2: its register page, 4 KiB (Intel SDM
+/// Vol. 3A §11.4.1, "the APIC registers are mapped into a 4-KByte region"; 4,096 bytes as
+/// WHP reads it, PM M345). Its XSAVE area is as long as its CPU's components make it (CPUID
+/// leaf 0DH) and a host's WHP reads it; the input bounds it, and the partition it is set
+/// into takes it or refuses it.
+const APIC_PAGE: usize = 4096;
 
 /// A vCPU's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -201,7 +212,7 @@ fn optional(vcpu: &Vcpu) -> Result<&'static [WHV_REGISTER_NAME]> {
         return Ok(names);
     }
     // MtrrCap's count of variable ranges (bits 7:0), each a base and a mask.
-    let ranges = (vcpu.get(WHvX64RegisterMsrMtrrCap)? & 0xFF).min(16) as i32;
+    let ranges = (vcpu.get(WHvX64RegisterMsrMtrrCap)? & 0xFF).min(VARIABLE_MTRRS as u64) as i32;
     let mtrrs = (0..ranges).flat_map(|i| {
         [
             WHvX64RegisterMsrMtrrPhysBase0 + i,
@@ -394,14 +405,14 @@ impl VcpuState {
     }
 
     pub fn decode(r: &mut Reader<'_>) -> codec::Result<VcpuState> {
-        let cpuid = r.seq(MAX_LEAVES, 28, |r| {
+        let cpuid = r.seq(MOST_LEAVES, 28, |r| {
             let mut leaf = [0u32; 7];
             for v in &mut leaf {
                 *v = r.u32()?;
             }
             Ok(leaf)
         })?;
-        let registers = r.seq(MAX_REGISTERS, 20, |r| {
+        let registers = r.seq(MOST_REGISTERS, 20, |r| {
             let name = r.u32()? as WHV_REGISTER_NAME;
             if !kept(name) {
                 return Err(DecodeError(format!(
@@ -413,8 +424,8 @@ impl VcpuState {
         if !registers.iter().any(|&(n, _)| n == WHvX64RegisterApicBase) {
             return Err(DecodeError("a vCPU's state without its APIC base".into()));
         }
-        let apic = r.bytes(MAX_BLOB)?.to_vec();
-        let xsave = r.bytes(MAX_BLOB)?.to_vec();
+        let apic = r.bytes(APIC_PAGE)?.to_vec();
+        let xsave = r.bytes(usize::MAX)?.to_vec();
         Ok(VcpuState {
             cpuid,
             registers,
@@ -441,7 +452,7 @@ impl VmState {
         for v in &mut hyperv {
             *v = r.u64()?;
         }
-        let tscs = r.seq(MAX_VCPUS, 8, |r| r.u64())?;
+        let tscs = r.seq(crate::arch::x86_64::acpi::MAX_VCPUS as usize, 8, |r| r.u64())?;
         let select = r.u32()?;
         let id = r.u32()?;
         let mut entries = [0u64; ioapic::PINS];
@@ -537,5 +548,35 @@ mod tests {
         let mut w = Writer::default();
         st.encode(&mut w);
         assert!(VcpuState::decode(&mut Reader::new(&w.into_bytes())).is_err());
+    }
+
+    /// A decoder's bounds are what a save makes: as many registers as [`kept`] names, none
+    /// twice, the leaves of [`IDENTITY`], an APIC page, and a vCPU's TSC for each APIC id.
+    #[test]
+    fn a_decoders_bounds_are_what_a_save_makes() {
+        let mut names: Vec<WHV_REGISTER_NAME> = REGISTERS.iter().chain(OPTIONAL).copied().collect();
+        names.extend((0..VARIABLE_MTRRS).flat_map(|i| {
+            [
+                WHvX64RegisterMsrMtrrPhysBase0 + i,
+                WHvX64RegisterMsrMtrrPhysMask0 + i,
+            ]
+        }));
+        assert!(names.iter().all(|&n| kept(n)));
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), MOST_REGISTERS);
+        assert_eq!(VARIABLE_MTRRS, 16);
+
+        let mut st = vcpu();
+        st.apic = vec![5; APIC_PAGE + 1];
+        let mut w = Writer::default();
+        st.encode(&mut w);
+        assert!(VcpuState::decode(&mut Reader::new(&w.into_bytes())).is_err());
+
+        let mut st = vm();
+        st.tscs = vec![1; crate::arch::x86_64::acpi::MAX_VCPUS as usize + 1];
+        let mut w = Writer::default();
+        st.encode(&mut w);
+        assert!(VmState::decode(&mut Reader::new(&w.into_bytes())).is_err());
     }
 }

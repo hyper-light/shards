@@ -21,6 +21,7 @@ shards-template = { path = "../template" }
 windows-sys = { workspace = true }
 
 [dev-dependencies]
+shards-abi = { path = "../abi" }
 shards-testdir = { path = "../testdir" }
 serde_json = "1"
 shards-image = { path = "../image" }

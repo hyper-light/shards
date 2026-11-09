@@ -174,7 +174,8 @@ impl Parents {
     /// Ends every parent's spawner, and removes each leaf made in a delegated cgroup once
     /// what was made in it has ended (slice 2), as the daemon exits: a slice's scope its
     /// manager collects (`CollectMode`), a leaf no one would. One whose processes outlive
-    /// [`delegated::EMPTIED`] is left to the next daemon placing a spawner beside it.
+    /// what runs nothing for a window ([`delegated::remove`]) is left to the next daemon placing a
+    /// spawner beside it.
     pub(super) fn close(&self) {
         let placed: Vec<Group> = lock(&self.by_slice)
             .drain()
@@ -278,10 +279,13 @@ mod delegated {
     /// The start of every leaf's name, its daemon's PID after it.
     pub(super) const LEAF: &str = "shards-";
 
-    /// How long a daemon exiting waits for what was made in a leaf to end before it
-    /// leaves it: past its runs' stops (`stop_runs`), only its warm VMs, told to end
-    /// as it exits, and the spawner itself, which it has reaped by then.
-    pub(super) const EMPTIED: Duration = Duration::from_secs(10);
+    // How long a daemon exiting waits for what was made in a leaf to end before it leaves
+    // it, past its runs' stops (`stop_runs`): only its warm VMs, told to end as it exits,
+    // and the spawner itself, which it has reaped by then. Each is waited for as long as it
+    // runs its end, as a VM's start is (D209): the leaf is left once none of its processes
+    // has run more than an idle microVM does (`platform::progressed`) over a whole window of
+    // `IDLE_VM_CPU`'s, judged each such window.
+    use shards_vmm::platform::{IDLE_VM_CPU, Progress};
 
     /// The directory of the cgroup `path` names: a path from the hierarchy's root, no
     /// component of it `.` or `..`, on a cgroup v2 hierarchy.
@@ -391,10 +395,12 @@ mod delegated {
     }
 
     /// Removes `leaf` once nothing is in it (its `cgroup.events` saying `populated 0`),
-    /// waiting at most [`EMPTIED`].
+    /// waiting as long as what is in it runs (the note on `IDLE_VM_CPU`'s `use` above).
     pub(super) fn remove(leaf: &Path) -> std::io::Result<()> {
         let events = leaf.join("cgroup.events");
-        let since = Instant::now();
+        let window = IDLE_VM_CPU.1;
+        let mut followed: Vec<Progress> = Vec::new();
+        let (mut ran_last, mut judged) = (Instant::now(), Instant::now());
         loop {
             let text = match std::fs::read_to_string(&events) {
                 Ok(t) => t,
@@ -404,10 +410,31 @@ mod delegated {
             if text.lines().any(|l| l == "populated 0") {
                 return std::fs::remove_dir(leaf);
             }
-            if since.elapsed() >= EMPTIED {
-                return Err(std::io::Error::other(format!(
-                    "its processes ran on {EMPTIED:?} past the daemon's end: left for the next daemon placing beside it"
-                )));
+            if followed.is_empty() || judged.elapsed() >= window {
+                judged = Instant::now();
+                // Its processes as they are now, each followed from its first look.
+                let pids: Vec<u32> = std::fs::read_to_string(leaf.join("cgroup.procs"))
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|l| l.trim().parse().ok())
+                    .collect();
+                let mut kept = Vec::with_capacity(pids.len());
+                for pid in pids {
+                    let mut p = match followed.iter().position(|p| p.pid() == pid) {
+                        Some(at) => followed.swap_remove(at),
+                        None => Progress::of(pid),
+                    };
+                    if p.since() >= window && p.look().ran {
+                        ran_last = judged;
+                    }
+                    kept.push(p);
+                }
+                followed = kept;
+                if ran_last.elapsed() >= window {
+                    return Err(std::io::Error::other(format!(
+                        "its processes ran nothing for {window:?} past the daemon's end: left for the next daemon placing beside it"
+                    )));
+                }
             }
             std::thread::sleep(Duration::from_millis(10));
         }

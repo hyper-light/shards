@@ -8,10 +8,13 @@ use crate::fse::FseEncoder;
 use crate::util::{byte, hash_len, load32, load64, match_at, match_len};
 use crate::xxhash::Xxh64;
 
-/// `maxCompressedBlockSize`.
+/// `maxCompressedBlockSize` (klauspost/compress v1.19.2 zstd/blockdec.go:40): RFC 8878
+/// §3.1.1.2.4's Block_Maximum_Size, 128 KiB.
 pub const MAX_COMPRESSED_BLOCK_SIZE: usize = 128 << 10;
 const ZSTD_MIN_MATCH: i32 = 3;
-/// `maxMatchLength`, and the decoder's `maxMatchLen` the best encoder scores by.
+/// `maxMatchLength` (zstd/enc_fast.go:18), and the decoder's `maxMatchLen` the best
+/// encoder scores by (zstd/blockdec.go:48): RFC 8878 §3.1.1.3.2.1.1's longest match,
+/// code 52's baseline 65539 and 16 bits more.
 const MAX_MATCH_LENGTH: i32 = 131_074;
 
 /// `fastBase`: the history, its position, the checksum and the block.

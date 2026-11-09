@@ -13,12 +13,17 @@ const WINDOW_SIZE: i64 = 1 << LOG_WINDOW_SIZE;
 const WINDOW_MASK: i64 = WINDOW_SIZE - 1;
 const BASE_MATCH_LENGTH: i64 = 3;
 const MIN_MATCH_LENGTH: i64 = 4;
+/// Go's `maxMatchLength` (go1.26.1 src/compress/flate/deflate.go:45): DEFLATE's longest
+/// match (RFC 1951 §3.2.5, lengths 3..258).
 const MAX_MATCH_LENGTH: i64 = 258;
 const BASE_MATCH_OFFSET: i64 = 1;
+/// Go's `maxFlateBlockTokens` (deflate.go:51): where a block ends, which every byte of
+/// the stream depends on.
 const MAX_FLATE_BLOCK_TOKENS: usize = 1 << 14;
 const HASH_BITS: u32 = 17;
 const HASH_SIZE: usize = 1 << HASH_BITS;
 const HASH_MASK: u32 = (1 << HASH_BITS) - 1;
+/// Go's `maxHashOffset` (deflate.go:56): when the hash chains are rebased.
 const MAX_HASH_OFFSET: i64 = 1 << 24;
 const SKIP_NEVER: i64 = i32::MAX as i64;
 const HASHMUL: u32 = 0x1e35a7bd;

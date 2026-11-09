@@ -55,9 +55,13 @@ const REVISIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
 /// Where a request of the current revision says it, and the capabilities it asks with.
 const VERSION_KEY: &str = "io.modelcontextprotocol/protocolVersion";
 const CAPABILITIES_KEY: &str = "io.modelcontextprotocol/clientCapabilities";
-/// The most of a request it holds: its head, and its body.
+/// The most of a request's head it holds: Node.js's `http.maxHeaderSize` (16 KiB, its
+/// `--max-http-header-size` default; nodejs.org/api/cli.html), the head every MCP client
+/// already fits, as MCP's own TypeScript SDK serves Streamable HTTP on Node's `http`. A
+/// body is held as it comes, as long as its Content-Length says ([`request`]): the instance
+/// counts against its caller's own memory (init's `domains`, D60), whose `memory.max` is the
+/// bound of what a caller can make it hold.
 const HEAD_MAX: usize = 16 * 1024;
-const BODY_MAX: usize = 1 << 20;
 
 /// An instance, made: its caller, the socket it listens on, and its TLS.
 pub struct Prepared {
@@ -288,6 +292,10 @@ pub struct Peer {
     fd: OwnedFd,
     send: bool,
     answer: bool,
+    /// The most one message to it holds: its socket's send buffer, less what the kernel
+    /// keeps of it (Linux 7.2 net/unix/af_unix.c `unix_dgram_sendmsg`, l. 2122, which a
+    /// sequenced packet is sent by: `len > sk_sndbuf - 32` is EMSGSIZE).
+    most: usize,
     /// What was read from it and not yet taken: one at a time, so that what it sends past
     /// that waits in the kernel's buffer, whose bound is the kernel's.
     held: Option<Message>,
@@ -333,11 +341,13 @@ fn channels(spec: &str) -> Result<Vec<Peer>, String> {
             .map_err(|_| format!("a channel's descriptor: {fd:?}"))?;
         // SAFETY: init gives this process the descriptor named, for it alone.
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        let most = message_most(&fd).map_err(|e| format!("{label}'s channel: {e}"))?;
         out.push(Peer {
             label: label.to_string(),
             fd,
             send: *send == "true",
             answer: *answer == "true",
+            most,
             held: None,
             sent: Vec::new(),
             last: 0,
@@ -348,14 +358,56 @@ fn channels(spec: &str) -> Result<Vec<Peer>, String> {
     Ok(out)
 }
 
+/// What kernel keeps of a sequenced packet's send buffer: a message on `fd` holds its
+/// SO_SNDBUF less this (net/unix/af_unix.c `unix_dgram_sendmsg`, l. 2122).
+const SNDBUF_KEPT: usize = 32;
+
+/// The most one message sent on `fd` holds: its SO_SNDBUF (socket(7)), less [`SNDBUF_KEPT`].
+fn message_most(fd: &OwnedFd) -> io::Result<usize> {
+    let mut size: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt(2) of an int into one of ours, its length given.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            (&raw mut size).cast(),
+            &raw mut len,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(usize::try_from(size).unwrap_or(0).saturating_sub(SNDBUF_KEPT))
+}
+
 /// Reads what `peer` sent, if nothing of its is held: a request only where this caller
 /// answers its, an answer only to a request sent it; anything else is dropped, whatever
-/// the other instance is made to send.
+/// the other instance is made to send. Its message is read into as many bytes as it holds,
+/// which the kernel says first (recv(2), MSG_TRUNC, of a sequenced packet since Linux 3.4)
+/// and bounds by its sender's buffer.
 fn take(peer: &mut Peer) {
     if peer.held.is_some() || peer.gone {
         return;
     }
-    let mut buf = vec![0u8; 9 + BODY_MAX];
+    // SAFETY: recv(2) of no bytes, peeking: the next message's length, which stays.
+    let next = unsafe {
+        libc::recv(
+            peer.fd.as_raw_fd(),
+            std::ptr::null_mut(),
+            0,
+            libc::MSG_DONTWAIT | libc::MSG_PEEK | libc::MSG_TRUNC,
+        )
+    };
+    let Ok(next) = usize::try_from(next) else {
+        return;
+    };
+    let mut buf = Vec::new();
+    if buf.try_reserve_exact(next).is_err() {
+        return;
+    }
+    buf.resize(next, 0);
     // SAFETY: recv(2) into a buffer it owns.
     let n = unsafe {
         libc::recv(
@@ -402,16 +454,47 @@ fn take(peer: &mut Peer) {
     peer.held = Some(Message { request, id, body });
 }
 
-/// Sends `peer` a message of `kind`; false where its buffer is full.
-fn put(peer: &Peer, kind: u8, id: u64, text: &str) -> bool {
+/// A message's head: its kind, and its ID, 8 bytes.
+const MESSAGE_HEAD: usize = 1 + 8;
+
+/// What came of sending a peer a message.
+#[derive(Debug, PartialEq, Eq)]
+enum Put {
+    Sent,
+    /// Its buffer is full: what was sent it before is not yet taken.
+    Full,
+    /// Longer than a message to it holds: at most this much of the message's text.
+    Long(usize),
+}
+
+impl Put {
+    /// The tool's answer for a message to `to` that went, as `sent`, or its refusal, the
+    /// asker told to ask `again` (`send`, `answer`).
+    fn said(self, to: &str, again: &str, sent: impl FnOnce() -> String) -> Result<String, String> {
+        match self {
+            Put::Sent => Ok(sent()),
+            Put::Full => Err(format!(
+                "{to} has not taken what was sent it; {again} again later"
+            )),
+            Put::Long(most) => Err(format!("a message to {to} holds at most {most} bytes")),
+        }
+    }
+}
+
+/// Sends `peer` a message of `kind`.
+fn put(peer: &Peer, kind: u8, id: u64, text: &str) -> Put {
     put_bytes(peer, kind, id, text.as_bytes())
 }
 
-/// Sends `peer` a file handed across, named `name`, as `kind`; false where its buffer is
-/// full.
-fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> bool {
+/// What a file's message holds beside its bytes: its name's length (2 bytes) and its name.
+fn file_head(name: &str) -> usize {
+    2usize.saturating_add(name.len())
+}
+
+/// Sends `peer` a file handed across, named `name`, as `kind`.
+fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> Put {
     let Ok(len) = u16::try_from(name.len()) else {
-        return false;
+        return Put::Long(peer.most.saturating_sub(MESSAGE_HEAD + file_head(name)));
     };
     put_bytes(
         peer,
@@ -421,7 +504,10 @@ fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> bool {
     )
 }
 
-fn put_bytes(peer: &Peer, kind: u8, id: u64, payload: &[u8]) -> bool {
+fn put_bytes(peer: &Peer, kind: u8, id: u64, payload: &[u8]) -> Put {
+    if payload.len() > peer.most.saturating_sub(MESSAGE_HEAD) {
+        return Put::Long(peer.most.saturating_sub(MESSAGE_HEAD));
+    }
     let frame = [&[kind][..], &id.to_be_bytes(), payload].concat();
     // SAFETY: send(2) of a buffer it owns, on a socket of its own.
     let n = unsafe {
@@ -432,7 +518,11 @@ fn put_bytes(peer: &Peer, kind: u8, id: u64, payload: &[u8]) -> bool {
             libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL,
         )
     };
-    usize::try_from(n).is_ok_and(|n| n == frame.len())
+    if usize::try_from(n).is_ok_and(|n| n == frame.len()) {
+        Put::Sent
+    } else {
+        Put::Full
+    }
 }
 
 /// The seccomp filter init passed: its flags, 4 bytes little-endian, then its
@@ -780,11 +870,19 @@ fn run_programs(
         loop {
             match prog.socket.read(&mut buf) {
                 Ok(0) => break,
-                Ok(n) => prog.read.extend_from_slice(buf.get(..n).unwrap_or_default()),
+                Ok(n) => {
+                    let got = buf.get(..n).unwrap_or_default();
+                    if prog.read.try_reserve(got.len()).is_err() {
+                        break;
+                    }
+                    prog.read.extend_from_slice(got);
+                }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(_) => break,
             }
-            if prog.read.len() > sandbox::FRAME_MAX + 5 {
+            // A whole frame read is answered before more is: the worker waits for its
+            // answer, and a frame being read is read on.
+            if !matches!(sandbox::parse_frame(&prog.read), Ok(None)) {
                 break;
             }
         }
@@ -930,11 +1028,15 @@ fn step(p: &Prepared, peers: &mut [Peer], programs: &mut Programs, c: &mut Conn)
         loop {
             match c.tls.reader().read(&mut buf) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => c.plain.extend_from_slice(buf.get(..n).unwrap_or_default()),
-            }
-            if c.plain.len() > HEAD_MAX + BODY_MAX {
-                c.closing = true;
-                break;
+                Ok(n) => {
+                    let got = buf.get(..n).unwrap_or_default();
+                    // Past what the instance can hold, the connection ends.
+                    if c.plain.try_reserve(got.len()).is_err() {
+                        c.closing = true;
+                        break;
+                    }
+                    c.plain.extend_from_slice(got);
+                }
             }
         }
         while c.waiting.is_none()
@@ -1015,10 +1117,10 @@ fn request(
             _ => {}
         }
     }
-    if length > BODY_MAX {
+    // A body is held as its length says; one no memory addresses is refused.
+    let Some(used) = end.checked_add(4).and_then(|n| n.checked_add(length)) else {
         return now(status(413, "body too large"), plain.len(), true);
-    }
-    let used = end + 4 + length;
+    };
     let body = plain.get(end + 4..used)?;
     // No web page may reach it (Streamable HTTP, "Security"): its callers are agents, over
     // a socket of their own, which no browser opens; an origin named is none it serves.
@@ -1128,13 +1230,11 @@ fn call(
             match peers.iter_mut().find(|q| q.label == to) {
                 Some(q) if q.send => {
                     let next = q.last.wrapping_add(1);
-                    if put(q, REQUEST, next, body) {
+                    put(q, REQUEST, next, body).said(to, "send", || {
                         q.last = next;
                         q.sent.push(next);
-                        Ok(format!(r#"{{"id":{next}}}"#))
-                    } else {
-                        Err(format!("{to} has not taken what was sent it; send again later"))
-                    }
+                        format!(r#"{{"id":{next}}}"#)
+                    })
                 }
                 _ => Err(format!("{} may not send {to} requests", p.label)),
             }
@@ -1171,12 +1271,10 @@ fn call(
             let body = arg("text").and_then(Value::str).unwrap_or_default();
             match (peers.iter_mut().find(|q| q.label == to), to_id) {
                 (Some(q), Some(n)) if q.asked.contains(&n) => {
-                    if put(q, ANSWER, n, body) {
+                    put(q, ANSWER, n, body).said(to, "answer", || {
                         q.asked.retain(|a| *a != n);
-                        Ok("{}".to_string())
-                    } else {
-                        Err(format!("{to} has not taken what was sent it; answer again later"))
-                    }
+                        "{}".to_string()
+                    })
                 }
                 _ => Err(format!(
                     "{} has no request of {to}'s to answer by that ID",
@@ -1190,24 +1288,22 @@ fn call(
             let to_id = arg("id").and_then(Value::u64);
             // The grant first, as for a text: nothing is read where nothing may go.
             match (peers.iter_mut().find(|q| q.label == to), to_id) {
-                (Some(q), None) if q.send => handed(p, path).and_then(|(name, bytes)| {
+                (Some(q), None) if q.send => handed(p, path, q.most).and_then(|(name, bytes)| {
                     let next = q.last.wrapping_add(1);
-                    if put_file(q, REQUEST_FILE, next, &name, &bytes) {
+                    put_file(q, REQUEST_FILE, next, &name, &bytes).said(to, "send", || {
                         q.last = next;
                         q.sent.push(next);
-                        Ok(format!(r#"{{"id":{next}}}"#))
-                    } else {
-                        Err(format!("{to} has not taken what was sent it; send again later"))
-                    }
+                        format!(r#"{{"id":{next}}}"#)
+                    })
                 }),
-                (Some(q), Some(n)) if q.asked.contains(&n) => handed(p, path).and_then(|(name, bytes)| {
-                    if put_file(q, ANSWER_FILE, n, &name, &bytes) {
-                        q.asked.retain(|a| *a != n);
-                        Ok("{}".to_string())
-                    } else {
-                        Err(format!("{to} has not taken what was sent it; answer again later"))
-                    }
-                }),
+                (Some(q), Some(n)) if q.asked.contains(&n) => {
+                    handed(p, path, q.most).and_then(|(name, bytes)| {
+                        put_file(q, ANSWER_FILE, n, &name, &bytes).said(to, "answer", || {
+                            q.asked.retain(|a| *a != n);
+                            "{}".to_string()
+                        })
+                    })
+                }
                 (_, None) => Err(format!("{} may not send {to} requests", p.label)),
                 (_, Some(_)) => Err(format!(
                     "{} has no request of {to}'s to answer by that ID",
@@ -1223,9 +1319,10 @@ fn call(
 /// as it sees it (`/tmp/...`), opened beneath that scratch as the kernel resolves it
 /// (openat2(2): through no symbolic or magic link, onto no other mount, never above it)
 /// without waiting, so that a FIFO cannot stall it, and a regular file and no other kind,
-/// read whole within what a message to a peer holds: its name and its bytes. A link, a
-/// FIFO or a giant file the caller planted redirects, stalls and exhausts nothing.
-fn handed(p: &Prepared, path: &str) -> Result<(String, Vec<u8>), String> {
+/// read whole within what a message to the peer it goes to holds (`message`, [`Peer`]'s
+/// `most`): its name and its bytes. A link, a FIFO or a giant file the caller planted
+/// redirects, stalls and exhausts nothing.
+fn handed(p: &Prepared, path: &str, message: usize) -> Result<(String, Vec<u8>), String> {
     use std::os::unix::fs::FileTypeExt as _;
     let scratch = p
         .scratch
@@ -1236,7 +1333,7 @@ fn handed(p: &Prepared, path: &str) -> Result<(String, Vec<u8>), String> {
         .filter(|r| !r.is_empty())
         .ok_or_else(|| format!("{path} is not in /tmp, the scratch files are handed from"))?;
     let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
-    let most = BODY_MAX.saturating_sub(2 + name.len());
+    let most = message.saturating_sub(MESSAGE_HEAD + file_head(&name));
     let at = std::ffi::CString::new(rel).map_err(|_| format!("{path} holds a NUL"))?;
     // struct open_how (include/uapi/linux/openat2.h): flags, mode, resolve.
     let how: [u64; 3] = [
@@ -1822,6 +1919,7 @@ mod tests {
         };
         let peer = |fd: OwnedFd, answer: bool| Peer {
             label: "agent o".into(),
+            most: message_most(&fd).unwrap(),
             fd,
             send: true,
             answer,
@@ -1835,23 +1933,23 @@ mod tests {
         // A request from one it does not answer: dropped.
         let (mine, theirs) = pair();
         let mut p = peer(mine, false);
-        assert!(put(&other(&theirs), REQUEST, 1, "do this"));
+        assert_eq!(put(&other(&theirs), REQUEST, 1, "do this"), Put::Sent);
         take(&mut p);
         assert!(p.held.is_none());
         // From one it answers: held.
         let (mine, theirs) = pair();
         let mut p = peer(mine, true);
-        assert!(put(&other(&theirs), REQUEST, 1, "do this"));
+        assert_eq!(put(&other(&theirs), REQUEST, 1, "do this"), Put::Sent);
         take(&mut p);
         assert!(p.held.as_ref().is_some_and(|m| m.request && m.id == 1));
         // An answer to no request sent: dropped; to one sent, held, and no longer awaited.
         let (mine, theirs) = pair();
         let mut p = peer(mine, false);
-        assert!(put(&other(&theirs), ANSWER, 7, "unasked"));
+        assert_eq!(put(&other(&theirs), ANSWER, 7, "unasked"), Put::Sent);
         take(&mut p);
         assert!(p.held.is_none());
         p.sent.push(7);
-        assert!(put(&other(&theirs), ANSWER, 7, "asked"));
+        assert_eq!(put(&other(&theirs), ANSWER, 7, "asked"), Put::Sent);
         take(&mut p);
         assert!(
             p.held
@@ -1859,6 +1957,20 @@ mod tests {
                 .is_some_and(|m| !m.request && matches!(&m.body, Body::Text(t) if t == "asked"))
         );
         assert!(p.sent.is_empty());
+        // A message is as long as its socket's buffer takes, whole: one past it refused,
+        // saying how much it holds; one of it, sent and held whole.
+        let (mine, theirs) = pair();
+        let mut p = peer(mine, true);
+        let o = other(&theirs);
+        let most = o.most - MESSAGE_HEAD;
+        assert_eq!(put(&o, REQUEST, 1, &"a".repeat(most + 1)), Put::Long(most));
+        assert_eq!(put(&o, REQUEST, 1, &"a".repeat(most)), Put::Sent);
+        take(&mut p);
+        assert!(
+            p.held
+                .as_ref()
+                .is_some_and(|m| matches!(&m.body, Body::Text(t) if t.len() == most))
+        );
     }
 
     /// A file a peer hands is held as one, by the same grants as a text; one whose name runs
@@ -1873,6 +1985,7 @@ mod tests {
         let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
         let peer = |fd: OwnedFd| Peer {
             label: "agent o".into(),
+            most: message_most(&fd).unwrap(),
             fd,
             send: true,
             answer: false,
@@ -1884,13 +1997,13 @@ mod tests {
         };
         let other = peer(theirs);
         let mut p = peer(mine);
-        assert!(put_file(&other, REQUEST_FILE, 1, "x", b"y"));
+        assert_eq!(put_file(&other, REQUEST_FILE, 1, "x", b"y"), Put::Sent);
         take(&mut p);
         assert!(p.held.is_none(), "a request from one it does not answer");
-        assert!(put_bytes(&other, ANSWER_FILE, 3, &[0, 9, b'a']));
+        assert_eq!(put_bytes(&other, ANSWER_FILE, 3, &[0, 9, b'a']), Put::Sent);
         take(&mut p);
         assert!(p.held.is_none(), "a name past its message");
-        assert!(put_file(&other, ANSWER_FILE, 3, "out.txt", b"hello"));
+        assert_eq!(put_file(&other, ANSWER_FILE, 3, "out.txt", b"hello"), Put::Sent);
         take(&mut p);
         assert!(p.held.as_ref().is_some_and(|m| !m.request
             && m.id == 3
@@ -1930,14 +2043,23 @@ mod tests {
         // SAFETY: mkfifo(3) of a NUL-terminated path.
         assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
         std::fs::create_dir(tmp.join("d")).unwrap();
-        std::fs::write(tmp.join("big"), vec![b'b'; BODY_MAX]).unwrap();
+        // What a message to a peer holds: a channel's, as init makes them.
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: socketpair(2) into a two-element array.
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_SEQPACKET, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0);
+        // SAFETY: both were just made, and are owned here alone.
+        let (one, _other) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let message = message_most(&one).unwrap();
+        let most = message - MESSAGE_HEAD - file_head("big");
+        std::fs::write(tmp.join("big"), vec![b'b'; most + 1]).unwrap();
         let dir = std::fs::File::open(&*tmp).unwrap();
         p.scratch = Some(OwnedFd::from(dir));
         assert_eq!(
-            handed(&p, "/tmp/out.txt"),
+            handed(&p, "/tmp/out.txt", message),
             Ok(("out.txt".to_string(), b"hello".to_vec()))
         );
-        let refused = |path: &str| handed(&p, path).unwrap_err();
+        let refused = |path: &str| handed(&p, path, message).unwrap_err();
         assert!(
             refused("/tmp/key").contains("is a symbolic link"),
             "{}",
@@ -1948,8 +2070,8 @@ mod tests {
         assert_eq!(
             refused("/tmp/big"),
             format!(
-                "/tmp/big is {BODY_MAX} bytes, more than the {} a file handed across holds",
-                BODY_MAX - 5
+                "/tmp/big is {} bytes, more than the {most} a file handed across holds",
+                most + 1
             )
         );
         assert_eq!(refused("/tmp/../x"), "/tmp/../x lies past the caller's scratch");
@@ -1959,7 +2081,7 @@ mod tests {
         );
         p.scratch = None;
         assert_eq!(
-            handed(&p, "/tmp/out.txt").unwrap_err(),
+            handed(&p, "/tmp/out.txt", message).unwrap_err(),
             "its caller has no scratch, /tmp, to hand files from"
         );
     }
@@ -1969,8 +2091,8 @@ mod tests {
         assert_eq!(quote("a\"b\\c\n"), r#""a\"b\\c\u000a""#);
     }
 
-    /// A head past its bound, a body past its bound, and a length that is no number each
-    /// end the connection with an answer.
+    /// A head past its bound, a body longer than memory addresses, and a length that is no
+    /// number each end the connection with an answer.
     #[test]
     fn requests_past_their_bounds_are_refused() {
         let p = prepare_for_test();
@@ -1978,7 +2100,7 @@ mod tests {
         assert!(request(&p, &mut [], &mut no_programs(), 1, &long).is_some_and(
             |(a, _, close)| matches!(a, Reply::Now(a) if a.starts_with(b"HTTP/1.1 431")) && close
         ));
-        let big = format!("POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n", BODY_MAX + 1);
+        let big = format!("POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n", usize::MAX);
         assert!(
             request(&p, &mut [], &mut no_programs(), 1, big.as_bytes()).is_some_and(
                 |(a, _, close)| matches!(a, Reply::Now(a) if a.starts_with(b"HTTP/1.1 413")) && close

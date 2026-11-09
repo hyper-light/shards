@@ -57,6 +57,8 @@ const COMPACT: u64 = 32;
 const EXTENDED: u64 = 64;
 const DIRENT: u64 = 12;
 const XATTR_HEADER: u64 = 12;
+/// A name's most bytes: EROFS_NAME_LEN (Linux 7.2 fs/erofs/erofs_fs.h l. 294), which the
+/// kernel's EROFS refuses a longer dirent name past.
 const NAME_MAX: usize = 255;
 const FLAT_PLAIN: u16 = 0;
 const FLAT_INLINE: u16 = 2;
