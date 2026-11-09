@@ -24,12 +24,22 @@ pub(crate) struct Socket {
     nonblocking: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Connects to the Unix socket at `path`.
-pub(crate) fn connect(path: &Path) -> io::Result<Socket> {
+/// Connects to the Unix socket at `path`, waiting on its listener no longer than `wait`
+/// (`None`: as long as the OS's connect takes). On Unix a connect that does not wait
+/// connects or fails at once, never under way ("UNIX domain sockets failed with EAGAIN
+/// instead", connect(2)): EAGAIN where the listener's queue is full (Linux) and
+/// ECONNREFUSED where none listens or (macOS) its queue is full, so `wait` has nothing to
+/// bound there, as a blocking one waits for room for as long as its send timeout, for ever
+/// as std leaves it (unix(7)). On Windows its connect is under way until afunix.sys ends it,
+/// waited out within `wait` (`shards_afunix::UnixStream::connect_within`).
+pub(crate) fn connect(path: &Path, wait: Option<Duration>) -> io::Result<Socket> {
     #[cfg(unix)]
-    let inner = std::os::unix::net::UnixStream::connect(path)?;
+    let inner = {
+        let _ = wait;
+        unix::connect(path)?
+    };
     #[cfg(windows)]
-    let inner = shards_afunix::UnixStream::connect(path)?;
+    let inner = shards_afunix::UnixStream::connect_within(path, wait)?;
     Socket::new(inner)
 }
 
@@ -128,10 +138,72 @@ mod waits {
 #[cfg(unix)]
 mod unix {
     use std::io;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd as _, OwnedFd};
+    use std::path::Path;
 
     use super::Socket;
     use super::waits::READ;
+
+    /// `path` as a Unix socket's address, and its length: its bytes and a NUL in
+    /// `sun_path` (unix(7)), refused where they don't fit or hold a NUL of their own.
+    fn address(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
+        use std::os::unix::ffi::OsStrExt as _;
+        // SAFETY: a sockaddr_un, plain data, zeroed.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        let bytes = path.as_os_str().as_bytes();
+        if bytes.len() >= addr.sun_path.len() || bytes.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{}: no Unix socket's path", path.display()),
+            ));
+        }
+        addr.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(io::Error::other)?;
+        for (to, from) in addr.sun_path.iter_mut().zip(bytes) {
+            *to = libc::c_char::from_ne_bytes([*from]);
+        }
+        let len = std::mem::offset_of!(libc::sockaddr_un, sun_path)
+            .saturating_add(bytes.len())
+            .saturating_add(1);
+        #[cfg(target_os = "macos")]
+        {
+            addr.sun_len = u8::try_from(len).map_err(io::Error::other)?;
+        }
+        Ok((addr, libc::socklen_t::try_from(len).map_err(io::Error::other)?))
+    }
+
+    /// A connect to the Unix socket at `path` that never waits on its listener: its socket
+    /// made non-blocking and close-on-exec before its connect(2).
+    pub(super) fn connect(path: &Path) -> io::Result<std::os::unix::net::UnixStream> {
+        let (addr, len) = address(path)?;
+        #[cfg(target_os = "linux")]
+        let ty = libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC;
+        #[cfg(not(target_os = "linux"))]
+        let ty = libc::SOCK_STREAM;
+        // SAFETY: socket(2), plain arguments.
+        let fd = unsafe { libc::socket(libc::AF_UNIX, ty, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the descriptor socket(2) just made, owned from here alone.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        // macOS's socket(2) takes neither flag: set as std sets them on a socket it makes.
+        #[cfg(not(target_os = "linux"))]
+        {
+            // SAFETY: fcntl(2) of the descriptor `fd` owns, setting its close-on-exec flag.
+            if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: fcntl(2) of the descriptor `fd` owns, making it non-blocking.
+            if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        // SAFETY: connect(2) of the socket `fd` owns to an address of ours, `len` its length.
+        if unsafe { libc::connect(fd.as_raw_fd(), (&raw const addr).cast(), len) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(std::os::unix::net::UnixStream::from(fd))
+    }
 
     impl Socket {
         /// Its socket made non-blocking, its waits this value's (`waits`); and on macOS a
@@ -439,7 +511,7 @@ mod tests {
             let dir = shards_testdir::TempDir::new("sp").unwrap();
             let at = dir.path().join("s");
             let listener = std::os::unix::net::UnixListener::bind(&at).unwrap();
-            let mut connected = connect(&at).unwrap();
+            let mut connected = connect(&at, None).unwrap();
             drop(listener.accept().unwrap());
             for (what, s) in [("a pair", &mut paired), ("a connection", &mut connected)] {
                 let e = s.write(b"x").unwrap_err();

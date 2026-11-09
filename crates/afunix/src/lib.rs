@@ -262,6 +262,13 @@ impl UnixStream {
     /// says every such connect is under way (WSAEWOULDBLOCK) and ends it in microseconds
     /// where the listener has room (PM M205: 62 µs at most): it is waited out here.
     pub fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
+        UnixStream::connect_within(path, None)
+    }
+
+    /// [`Self::connect_nonblocking`], its connect's "under way" waited out no longer than
+    /// `wait` (`None`: until the kernel ends it): one still under way then fails `TimedOut`,
+    /// so a caller with a patience is never held past it.
+    pub fn connect_within(path: &Path, wait: Option<std::time::Duration>) -> io::Result<UnixStream> {
         let addr = address(path)?;
         let s = Socket::new()?;
         s.set_nonblocking(true)?;
@@ -276,10 +283,21 @@ impl UnixStream {
                 events: POLLWRNORM,
                 revents: 0,
             };
+            // In WSAPoll's unit, ms, rounded up, as a wait of 0 returns at once.
+            let ms = wait.map_or(-1, |w| {
+                i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+            });
             // SAFETY: one entry, a socket this function owns; until the connect ends, which
-            // the kernel ends without its listener's process.
-            if unsafe { WSAPoll(&raw mut fd, 1, -1) } < 0 {
+            // the kernel ends without its listener's process, or `ms` pass.
+            let polled = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+            if polled < 0 {
                 return Err(last());
+            }
+            if polled == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the connect was still under way as its wait ended",
+                ));
             }
             let stream = UnixStream::wrap(s);
             if let Some(e) = stream.take_error()? {

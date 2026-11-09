@@ -748,11 +748,19 @@ fn handshake(
     let began = Instant::now();
     // Its own work, the connect and the ask, as far as it got: not its wait for the answer.
     let done = |cost: &mut Duration| *cost = began.elapsed();
-    let mut s = stream::connect(vsock).map_err(|e| {
+    let mut s = stream::connect(vsock, wait).map_err(|e| {
         done(cost);
         match e.kind() {
-            // Not yet bound, or bound and not yet listening: the VM is starting.
-            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+            // Not yet bound, or bound and not yet listening: the VM is starting. Or its
+            // muxer's queue is full (Linux's EAGAIN) or the connect still under way at its
+            // wait's end: the VM takes no connection now.
+            io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::TimedOut => Attempt::Again(format!("dialing: {e}")),
+            // Windows' full queue, its EAGAIN (PM M205).
+            #[cfg(windows)]
+            _ if e.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS) => {
                 Attempt::Again(format!("dialing: {e}"))
             }
             _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
