@@ -15315,8 +15315,10 @@ download.
   0.05% and 3.01% of healthy answers, against RFC 6298's 0.21% and 5.09%); in the model
   first replayed, where asking again never helps, RFC 6298's lost 120.1 s and 5,110.8 s,
   fixed waits 752.0 s and 5,301.2 s (the Studio's 43 answers past 30 s, never answered
-  within them, each charged R2's 100 s; uncounted, as first replayed, 1,001.2 s), and the
-  cutoff 102.3 s and 2,344.0 s. Silences follow the same rule, since a stall cut is a
+  within them, each charged R2's 100 s: a charge chosen for the replay, not measured;
+  uncounted, as first replayed, 1,001.2 s, and then the cutoff, at 2,344.0 s, loses more
+  there), and the cutoff 102.3 s and 2,344.0 s. The decision rests on `trace`, which
+  replays real next askings rather than a charge. Silences follow the same rule, since a stall cut is a
   restart whose cost is a reconnect (a resume by range, no bytes lost): RFC 6298's
   estimator at its floor would cut dozens of a Wi-Fi download's healthy silences
   (M486). A request with a body

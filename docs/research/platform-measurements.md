@@ -4173,11 +4173,14 @@ revision before comparing a changed API/implementation.
   cuts them: it lost five times what fixed waits did. The cutoff that makes answers come
   soonest given the path's own distribution (Luby, Sinclair and Zuckerman 1993), with
   what a cut costs measured rather than assumed and RFC 6298's least second kept, loses
-  less than both in both models on both hosts, at every seed: of the better one's loss,
-  35% to 39% on Fedora in `trace` and 82% to 88% in `same`, 35% to 49% on the Studio in
-  `trace` and 46% in `same`. Against `same`'s
-  first count for fixed waits on the Studio (1,001.2 s, its 43 answers past 30 s
-  uncounted), it loses more (2,344.0 s). How long a trouble lasts is learned where troubles
+  less than both in `trace` on both hosts and in `same` on Fedora, at every seed: of the
+  better one's loss, 35% to 39% on Fedora in `trace` and 82% to 88% in `same`, 35% to
+  49% on the Studio in `trace`. On the Studio in `same` it loses less (46%) only under a
+  charge this replay chose, not one measured: each of fixed waits' 43 answers past 30 s
+  billed R2's 100 s and a failure. Uncharged, as `same` first counted them, fixed waits
+  lose 1,001.2 s and the cutoff 2,344.0 s: there the cutoff is worse. What a 30 s wait
+  that never sees its answer really costs is unmeasured; `trace`, which replays the
+  endpoint's next real asking instead of a charge, is the model the decision rests on. How long a trouble lasts is learned where troubles
   happen (D222's budget), from what each path passes. Healthy silences reach 25 s on
   Wi-Fi: RFC 6298's estimator at its floor would cut dozens of a download's, so the
   same cutoff governs them (D222).
