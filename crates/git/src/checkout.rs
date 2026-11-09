@@ -28,35 +28,25 @@ pub enum Item {
 pub type Visit<'a> = dyn FnMut(&[u8], Item) -> Result<(), String> + 'a;
 
 /// Walks the tree `tree` of `pack`, giving each path (relative, `/`-separated) and what
-/// it is to `visit`; trees nested deeper than `max_depth` are refused, as git refuses
-/// them past core.maxTreeDepth (4096 by default, git v2.51.0).
+/// it is to `visit`; a tree nested deeper than [`MAX_DEPTH`] is refused, as git refuses
+/// it. The trees open are a stack of their own, not recursion, so a repository's nesting
+/// is bounded by git's limit alone and never by the calling thread's stack.
 pub fn walk(pack: &Pack, tree: &Oid, visit: &mut Visit<'_>) -> Result<(), String> {
-    walk_in(pack, tree, &mut Vec::new(), 0, visit)
-}
-
-const MAX_DEPTH: usize = 4096;
-
-fn walk_in(
-    pack: &Pack,
-    tree: &Oid,
-    path: &mut Vec<u8>,
-    depth: usize,
-    visit: &mut Visit<'_>,
-) -> Result<(), String> {
-    if depth > MAX_DEPTH {
-        return Err("a tree nested too deep".into());
-    }
-    let (kind, data) = pack.get(tree)?;
-    if kind != Kind::Tree {
-        return Err(format!("{} is not a tree", tree.hex()));
-    }
-    for entry in object::tree(&data)? {
+    // Each tree open: its entries not yet given, and how long `path` is at it.
+    let mut open = vec![(entries(pack, tree)?.into_iter(), 0usize)];
+    let mut path = Vec::new();
+    while let Some((rest, at)) = open.last_mut() {
+        let at = *at;
+        let Some(entry) = rest.next() else {
+            open.pop();
+            continue;
+        };
         // git refuses to check out `.git` in any case and any directory (verify_path).
         if entry.name.eq_ignore_ascii_case(b".git") {
             return Err("a tree holding .git".into());
         }
-        let len = path.len();
-        if len > 0 {
+        path.truncate(at);
+        if at > 0 {
             path.push(b'/');
         }
         path.extend_from_slice(&entry.name);
@@ -68,11 +58,15 @@ fn walk_in(
         };
         match entry.mode {
             Mode::Tree => {
-                visit(path, Item::Dir)?;
-                walk_in(pack, &entry.oid, path, depth + 1, visit)?;
+                visit(&path, Item::Dir)?;
+                // The root is at depth 0, so this tree is as deep as the trees open.
+                if open.len() > MAX_DEPTH {
+                    return Err("a tree nested too deep".into());
+                }
+                open.push((entries(pack, &entry.oid)?.into_iter(), path.len()));
             }
             Mode::File | Mode::Executable => visit(
-                path,
+                &path,
                 Item::File {
                     executable: entry.mode == Mode::Executable,
                     data: blob(&entry.oid)?,
@@ -80,15 +74,29 @@ fn walk_in(
                 },
             )?,
             Mode::Symlink => visit(
-                path,
+                &path,
                 Item::Symlink {
                     target: blob(&entry.oid)?,
                     oid: entry.oid,
                 },
             )?,
-            Mode::Gitlink => visit(path, Item::Submodule { commit: entry.oid })?,
+            Mode::Gitlink => visit(&path, Item::Submodule { commit: entry.oid })?,
         }
-        path.truncate(len);
     }
     Ok(())
+}
+
+/// The deepest a tree may be, the root at 0: core.maxTreeDepth's default where BuildKit
+/// runs git, Linux (git v2.51.0 environment.c:105-106, `max_allowed_tree_depth`; 512 and
+/// 1280 only in Windows builds), checked as unpack-trees checks it before it reads a tree
+/// (tree-walk.c:445, `traverse_trees_cur_depth > max_allowed_tree_depth`).
+pub const MAX_DEPTH: usize = 2048;
+
+/// The entries of the tree `tree`.
+fn entries(pack: &Pack, tree: &Oid) -> Result<Vec<object::Entry>, String> {
+    let (kind, data) = pack.get(tree)?;
+    if kind != Kind::Tree {
+        return Err(format!("{} is not a tree", tree.hex()));
+    }
+    object::tree(&data)
 }

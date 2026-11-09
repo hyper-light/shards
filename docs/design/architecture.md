@@ -3860,6 +3860,23 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   such hosts do; mutation-checked). git's own upload-pack, speaking protocol v2, sends
   such a commit (measured, git 2.50.1), so the fallback is for hosts that do not.
 
+- **Its formats' literals are git's** (audit of picked constants, 2026-11-09). A checkout
+  refused trees past 4096 levels, a figure its comment gave as git's own: git v2.51.0's
+  core.maxTreeDepth is 2048 where BuildKit runs git, on Linux (512 and 1280 in Windows
+  builds only), and its walk recursed once a level, so a thread's stack, not git, bounded
+  a hostile repository's nesting; a pack's delta chains recursed the same way, to git's
+  4095. The walk keeps the trees open on a stack of its own, a chain is followed in a loop,
+  and the walk refuses what git refuses (`trees_nest_as_deep_as_git_checks_out_and_no_deeper`:
+  2048 levels walked on a 256 KiB thread and 2049 refused, as git's read-tree takes and
+  refuses the same trees).
+
+  | Literal | Was | Now | Source |
+  |---|---|---|---|
+  | `checkout::MAX_DEPTH` | 4096, recursion a level | 2048, iterative | git v2.51.0 environment.c:105-106 (`max_allowed_tree_depth`), tree-walk.c:445 (`traverse_trees_cur_depth > max_allowed_tree_depth`) |
+  | `pack::MAX_DEPTH` | 4095, recursion a delta | 4095, a loop: deltas kept on the way to the base, applied from it up | git v2.51.0 pack-objects.h:15 (`OE_DEPTH_BITS` 12), builtin/pack-objects.c:5033-5036 (pack.depth forced below `1 << OE_DEPTH_BITS`) |
+  | `pktline::MAX` | 65520 | kept | git v2.51.0 pkt-line.h:233 (`LARGE_PACKET_MAX`), gitprotocol-common.adoc:87-89 |
+  | `pktline::FLUSH`, `DELIMITER` | `0000`, `0001` | kept | gitprotocol-v2.adoc:45-46 |
+
 SSH remotes: D69.
 
 ### RUN steps under Docker's default seccomp profile (D49)
@@ -9591,7 +9608,8 @@ the guest keeps their metadata alone.
   own metadata, its journal and the blocks the kernel keeps back (2% or 4096 clusters)
   take is added (`shards_ext4::size_for`). A size is a template of its own (its key holds
   it). One whose page structures, a 64th of it, would take more memory as its microVM
-  boots than its host has is refused, as one past ext4's 16 TiB is.
+  boots than its host has is refused, as one past what ext4 counts the inodes of is
+  (`MOST_BLOCKS`, below).
 - **Snapshots** (format 24) keep the layer's length in MiB, its head and its file system
   beside the memory: the head's 2 MiB blocks each once, after an index of them, since all
   but a few describe sections none of whose pages is in use, alike to the byte (a 10 GiB
@@ -9964,6 +9982,21 @@ the guest keeps their metadata alone.
   give-back took 11.1 and 160.2 ms at p50 (15.3 and 303.8 at most) on Fedora's Btrfs, as
   the daemon keeps the layer, after its run's client is told it ended and before a command
   that reads the layer goes on (PM M443).
+- **Its bounds are ext4's and mke2fs's** (audit of picked constants, 2026-11-09). The most
+  a layer may be was 2^32 blocks (16 TiB), said to be what 32-bit block numbers hold; with
+  `64bit` they are 48 bits, and the count that binds is `s_inodes_count`'s 32 bits, which
+  must be the groups times their inodes (ext4_check_geometry): at one inode to 16 KiB, as
+  many whole groups as it counts (524287), 64 TiB less a group's 128 MiB. A host whose
+  file system holds no file that long refuses it as the layer's file is sized (EFBIG), an
+  error and not a panic. Held by `the_most_blocks_are_as_many_groups_as_the_inode_count_holds`;
+  containers.rs's `--storage-opt size=70t` is the refusal's E2E (owed a run).
+
+  | Literal | Was | Now | Source |
+  |---|---|---|---|
+  | `MOST_BLOCKS` (lib.rs) | 2^32 | `(u32::MAX / (GROUP * BLOCK / INODE_RATIO)) * GROUP` = 2^34 - 2^15 | Linux v6.18.48 fs/ext4/ext4.h:1327 (`__le32 s_inodes_count`), super.c:4828 and 4840-4846 (ext4_check_geometry) |
+  | `LEAST_BLOCKS` (lib.rs) | 2048 | kept | e2fsprogs v1.47.0 lib/ext2fs/mkjournal.c:359 (no journal below 2048 blocks) |
+  | `MAX_LEN` (lib.rs), `INIT_MAX_LEN` (read.rs) | 32768 | kept | Linux v6.18.48 fs/ext4/ext4_extents.h:149 (`EXT_INIT_MAX_LEN`) |
+  | `MAX_DEPTH` (read.rs) | 5 | kept | ext4_extents.h:87 (`EXT4_MAX_EXTENT_DEPTH`) |
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.

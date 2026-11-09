@@ -40,7 +40,8 @@ pub struct Pack {
 }
 
 /// How many deltas deep a chain may go: git's pack.depth defaults to 50 and allows at
-/// most 4095 (builtin/pack-objects.c); past that a pack is refused.
+/// most `(1 << OE_DEPTH_BITS) - 1`, 4095 (git v2.51.0 pack-objects.h:15,
+/// builtin/pack-objects.c:5033-5036); past that a pack is refused.
 const MAX_DEPTH: usize = 4095;
 
 impl Pack {
@@ -146,7 +147,7 @@ impl Pack {
             let mut failed = None;
             let mut waiting = Vec::new();
             for offset in pending {
-                match pack.at(offset, 0) {
+                match pack.at(offset) {
                     Ok((kind, data)) => {
                         let oid = Oid::of(kind, &data).ok_or("an object shaped as a SHA-1 collision")?;
                         pack.names.insert(oid, offset);
@@ -171,7 +172,7 @@ impl Pack {
             .names
             .get(oid)
             .ok_or_else(|| format!("object {} is not in the pack", oid.hex()))?;
-        self.at(offset, 0)
+        self.at(offset)
     }
 
     /// Whether the pack holds `oid`.
@@ -213,27 +214,37 @@ impl Pack {
         self.entries.is_empty()
     }
 
-    /// The object at `offset`, its deltas applied.
-    fn at(&self, offset: usize, depth: usize) -> Result<(Kind, Vec<u8>), String> {
-        if depth > MAX_DEPTH {
-            return Err("a delta chain too deep".into());
-        }
-        let entry = self
-            .entries
-            .get(&offset)
-            .ok_or("a delta against no object of the pack")?;
-        let body = self.bytes.get(entry.data..).unwrap_or_default();
-        let (data, _) = inflate(body, entry.size, Some(entry.size))?;
-        let base_offset = match entry.base {
-            Base::Whole(kind) => return Ok((kind, data)),
-            Base::Offset(o) => o,
-            Base::Name(oid) => *self
-                .names
-                .get(&oid)
-                .ok_or_else(|| format!("a delta against {}, which the pack does not hold", oid.hex()))?,
+    /// The object at `offset`, its deltas applied: the chain followed to its whole object,
+    /// each delta kept on the way, then applied from the base up. A loop, not recursion,
+    /// so only git's [`MAX_DEPTH`] bounds a chain, never the calling thread's stack.
+    fn at(&self, offset: usize) -> Result<(Kind, Vec<u8>), String> {
+        // The deltas met on the way to the whole object, the object asked for first.
+        let mut deltas = Vec::new();
+        let mut offset = offset;
+        let (kind, mut data) = loop {
+            if deltas.len() > MAX_DEPTH {
+                return Err("a delta chain too deep".into());
+            }
+            let entry = self
+                .entries
+                .get(&offset)
+                .ok_or("a delta against no object of the pack")?;
+            let body = self.bytes.get(entry.data..).unwrap_or_default();
+            let (data, _) = inflate(body, entry.size, Some(entry.size))?;
+            offset = match entry.base {
+                Base::Whole(kind) => break (kind, data),
+                Base::Offset(o) => o,
+                Base::Name(oid) => *self
+                    .names
+                    .get(&oid)
+                    .ok_or_else(|| format!("a delta against {}, which the pack does not hold", oid.hex()))?,
+            };
+            deltas.push(data);
         };
-        let (kind, base) = self.at(base_offset, depth + 1)?;
-        Ok((kind, apply(&base, &data, self.largest)?))
+        for delta in deltas.iter().rev() {
+            data = apply(&data, delta, self.largest)?;
+        }
+        Ok((kind, data))
     }
 }
 
