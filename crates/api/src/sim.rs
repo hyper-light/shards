@@ -313,3 +313,107 @@ impl Drop for SimGuest {
         let _ = self.stop();
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::print_stdout)]
+mod tests {
+    use super::*;
+    use crate::{Init, min_memory_mib};
+
+    /// Set in the child `past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound`
+    /// runs.
+    #[cfg(unix)]
+    const LOWERED: &str = "SHARDS_API_SIM_LOWERED";
+
+    /// Connections waiting to be accepted are bounded as shards' muxer bounds its slots: by
+    /// what this process's descriptors leave, two to a connection here, a socket pair's ends
+    /// (`shards_abi::bounds::connections`). Past them a connect is refused naming that bound,
+    /// not by the kernel (EMFILE). Run in a child of this test binary, which lowers its soft
+    /// descriptor limit (setrlimit(2)) before the guest boots, leaving room for a few
+    /// connections and a descriptor more, which no pair fits (review: connections derived,
+    /// refused typed past them).
+    #[cfg(unix)]
+    #[test]
+    fn past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound() {
+        const NAME: &str = "sim::tests::past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound";
+        const REFUSED: &str = "sim child: refused by its bound";
+        // A vsock port: an identifier, not tuning.
+        const PORT: u32 = 1234;
+        if std::env::var_os(LOWERED).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                .env(LOWERED, "1")
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && said.contains(REFUSED),
+                "{:?}\n{said}{}",
+                child.status,
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        let (done, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        // Listens, accepts nothing, and ends as the test lets it go.
+        let guests = SimGuests::new(move |host| {
+            host.listen(PORT);
+            let _ = wait.lock().unwrap_or_else(PoisonError::into_inner).recv();
+            End::PowerOff
+        });
+        let spec = GuestSpec {
+            kernel: "kernel".into(),
+            init: Init::Executable("init".into()),
+            cmdline: String::new(),
+            vcpus: 1,
+            memory_mib: min_memory_mib(std::env::consts::ARCH),
+            disks: vec![],
+            shares: vec![],
+            ports: vec![PORT],
+            binary: None,
+        };
+        // An input: room for three connections, and a descriptor more, which no pair fits.
+        let room = 3;
+        let dir = if cfg!(target_os = "linux") {
+            "/proc/self/fd"
+        } else {
+            "/dev/fd"
+        };
+        // Less the one that lists them.
+        let held = std::fs::read_dir(dir).unwrap().count() - 1;
+        let mut was = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut was) }, 0);
+        let lowered = libc::rlimit {
+            rlim_cur: libc::rlim_t::try_from(held + 2 * room + 1).unwrap(),
+            rlim_max: was.rlim_max,
+        };
+        // SAFETY: setrlimit(2) from a local, in this child alone.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) },
+            0
+        );
+        let guest = guests.boot(&spec).unwrap();
+        let mut kept = Vec::new();
+        let refused = loop {
+            match guest.connect(PORT, Duration::MAX) {
+                Ok(stream) => kept.push(stream),
+                Err(e) => break e,
+            }
+        };
+        // SAFETY: setrlimit(2) from a local: the limit as it was.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const was) }, 0);
+        drop(done);
+        assert_eq!(kept.len(), room, "{refused:?}");
+        match refused {
+            Refusal::Channel { why, .. } if why.starts_with(&format!("{room} connections wait")) => {
+                println!("{REFUSED}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
