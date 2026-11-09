@@ -167,13 +167,52 @@ fn share() -> Result<(), String> {
         file.sync_all()
             .map_err(|e| format!("fsync /mnt0/from-guest: {e}"))?;
     }
-    match std::fs::File::create("/mnt1/from-guest") {
-        Ok(_) => Err("created /mnt1/from-guest through the read-only share".into()),
-        Err(e) => {
-            let _ = writeln!(io::stdout(), "SHARE READ-ONLY {e}");
-            Ok(())
+    // Each way to change the read-only share is refused EROFS, as its server answers a
+    // change (fs/server.rs `writable`): a file made, one written, removed, renamed and cut.
+    type Change = (&'static str, Box<dyn Fn() -> io::Result<()>>);
+    let tries: [Change; 5] = [
+        (
+            "create",
+            Box::new(|| std::fs::File::create("/mnt1/from-guest").map(drop)),
+        ),
+        (
+            "write",
+            Box::new(|| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/mnt1/hello")
+                    .map(drop)
+            }),
+        ),
+        ("unlink", Box::new(|| std::fs::remove_file("/mnt1/hello"))),
+        (
+            "rename",
+            Box::new(|| std::fs::rename("/mnt1/hello", "/mnt1/moved")),
+        ),
+        (
+            "truncate",
+            Box::new(|| {
+                let path = cstr("/mnt1/hello").map_err(io::Error::other)?;
+                // SAFETY: a NUL-terminated path.
+                match unsafe { libc::truncate(path.as_ptr(), 0) } {
+                    0 => Ok(()),
+                    _ => Err(io::Error::last_os_error()),
+                }
+            }),
+        ),
+    ];
+    for (what, change) in &tries {
+        match change() {
+            Ok(()) => return Err(format!("{what} through the read-only share was let through")),
+            Err(e) if e.raw_os_error() == Some(libc::EROFS) => {}
+            Err(e) => return Err(format!("{what} through the read-only share: {e}, not EROFS")),
         }
     }
+    let _ = writeln!(
+        io::stdout(),
+        "SHARE READ-ONLY EROFS: create write unlink rename truncate"
+    );
+    Ok(())
 }
 
 /// Maps a slates file with DAX through the slates-backed share (slates' Shards part 3,

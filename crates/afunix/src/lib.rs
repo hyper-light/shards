@@ -18,11 +18,19 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use windows_sys::Win32::Networking::WinSock::{
     AF_UNIX, FIONBIO, FROM_PROTOCOL_INFO, INVALID_SOCKET, POLLRDNORM, POLLWRNORM, SD_BOTH, SD_RECEIVE,
-    SD_SEND, SO_ERROR, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN, WSA_FLAG_NO_HANDLE_INHERIT,
-    WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK, WSAGetLastError, WSAPOLLFD,
-    WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept, bind, closesocket, connect,
-    getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
+    SD_SEND, SO_ERROR, SO_RCVBUF, SO_SNDBUF, SOCK_STREAM, SOCKADDR_UN, SOCKET, SOL_SOCKET, SOMAXCONN,
+    WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSABUF, WSADATA, WSADuplicateSocketW, WSAEWOULDBLOCK,
+    WSAGetLastError, WSAPOLLFD, WSAPROTOCOL_INFOW, WSAPoll, WSARecv, WSASend, WSASocketW, WSAStartup, accept,
+    bind, closesocket, connect, getpeername, getsockopt, ioctlsocket, listen, recv, send, shutdown,
 };
+
+/// A buffer size Winsock reported, `what` naming it: zero or less is an error, not a size.
+fn buffer_size(what: &str, reported: i32) -> io::Result<usize> {
+    usize::try_from(reported)
+        .ok()
+        .filter(|&n| n > 0)
+        .ok_or_else(|| io::Error::other(format!("{what} {reported}: not a buffer size")))
+}
 
 /// A socket, as WSAPoll and WSAEventSelect name it.
 pub type RawSocket = SOCKET;
@@ -183,27 +191,34 @@ impl UnixStream {
         }
     }
 
+    /// Waits at most `ms` milliseconds (-1: for ever) for the socket to be readable or, with
+    /// `write`, writable, or to have ended: whether it is (WSAPoll).
+    pub fn ready_within(&self, write: bool, ms: i32) -> io::Result<bool> {
+        let mut fd = WSAPOLLFD {
+            fd: self.socket.0,
+            events: if write { POLLWRNORM } else { POLLRDNORM },
+            revents: 0,
+        };
+        // SAFETY: one entry, a socket this value owns.
+        let n = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+        if n < 0 {
+            return Err(last());
+        }
+        Ok(n > 0)
+    }
+
     /// A write of `buf`, waiting no longer than the stream's write timeout for room: a
     /// WSAPoll first, as a read polls before it reads (`read_into`).
     fn write_from(&self, buf: &[u8]) -> io::Result<usize> {
         let ms = self.write_ms.load(Ordering::Relaxed);
-        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
-            let mut fd = WSAPOLLFD {
-                fd: self.socket.0,
-                events: POLLWRNORM,
-                revents: 0,
-            };
-            // SAFETY: one entry, a socket this value owns.
-            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
-            if n < 0 {
-                return Err(last());
-            }
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "no room within the write timeout",
-                ));
-            }
+        if ms != 0
+            && !self.nonblocking.load(Ordering::Relaxed)
+            && !self.ready_within(true, i32::try_from(ms).unwrap_or(i32::MAX))?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no room within the write timeout",
+            ));
         }
         write_from(self.socket.0, buf)
     }
@@ -214,23 +229,14 @@ impl UnixStream {
     /// state, to be closed, where a poll that times out leaves it as it was.
     fn read_into(&self, buf: &mut [u8]) -> io::Result<usize> {
         let ms = self.read_ms.load(Ordering::Relaxed);
-        if ms != 0 && !self.nonblocking.load(Ordering::Relaxed) {
-            let mut fd = WSAPOLLFD {
-                fd: self.socket.0,
-                events: POLLRDNORM,
-                revents: 0,
-            };
-            // SAFETY: one entry, a socket this value owns.
-            let n = unsafe { WSAPoll(&raw mut fd, 1, i32::try_from(ms).unwrap_or(i32::MAX)) };
-            if n < 0 {
-                return Err(last());
-            }
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "no data within the read timeout",
-                ));
-            }
+        if ms != 0
+            && !self.nonblocking.load(Ordering::Relaxed)
+            && !self.ready_within(false, i32::try_from(ms).unwrap_or(i32::MAX))?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no data within the read timeout",
+            ));
         }
         read_into(self.socket.0, buf)
     }
@@ -256,6 +262,13 @@ impl UnixStream {
     /// says every such connect is under way (WSAEWOULDBLOCK) and ends it in microseconds
     /// where the listener has room (PM M205: 62 µs at most): it is waited out here.
     pub fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
+        UnixStream::connect_within(path, None)
+    }
+
+    /// [`Self::connect_nonblocking`], its connect's "under way" waited out no longer than
+    /// `wait` (`None`: until the kernel ends it): one still under way then fails `TimedOut`,
+    /// so a caller with a patience is never held past it.
+    pub fn connect_within(path: &Path, wait: Option<std::time::Duration>) -> io::Result<UnixStream> {
         let addr = address(path)?;
         let s = Socket::new()?;
         s.set_nonblocking(true)?;
@@ -270,10 +283,21 @@ impl UnixStream {
                 events: POLLWRNORM,
                 revents: 0,
             };
+            // In WSAPoll's unit, ms, rounded up, as a wait of 0 returns at once.
+            let ms = wait.map_or(-1, |w| {
+                i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+            });
             // SAFETY: one entry, a socket this function owns; until the connect ends, which
-            // the kernel ends without its listener's process.
-            if unsafe { WSAPoll(&raw mut fd, 1, -1) } < 0 {
+            // the kernel ends without its listener's process, or `ms` pass.
+            let polled = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+            if polled < 0 {
                 return Err(last());
+            }
+            if polled == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the connect was still under way as its wait ended",
+                ));
             }
             let stream = UnixStream::wrap(s);
             if let Some(e) = stream.take_error()? {
@@ -373,23 +397,48 @@ impl UnixStream {
         Socket::shared(info).map(UnixStream::wrap)
     }
 
-    /// The socket's pending error, taken (SO_ERROR), as std's `take_error`.
-    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        let (mut error, mut len) = (0i32, 4i32);
-        // SAFETY: an int of its own size, on a socket this value owns.
+    /// A SOL_SOCKET option of an int's size, as Winsock's getsockopt reads it.
+    fn int_option(&self, name: i32) -> io::Result<i32> {
+        let size = std::mem::size_of::<i32>();
+        let (mut value, mut len) = (0i32, i32::try_from(size).map_err(io::Error::other)?);
+        // SAFETY: getsockopt into an int of ours, its length given in `len`, which is
+        // checked on return to be that int's; on a socket this value owns.
         if unsafe {
             getsockopt(
                 self.socket.0,
                 SOL_SOCKET,
-                SO_ERROR,
-                (&raw mut error).cast(),
+                name,
+                (&raw mut value).cast(),
                 &raw mut len,
             )
         } != 0
         {
             return Err(last());
         }
+        if usize::try_from(len).ok() != Some(size) {
+            return Err(io::Error::other(format!(
+                "option {name}: {len} bytes, not an int"
+            )));
+        }
+        Ok(value)
+    }
+
+    /// The socket's pending error, taken (SO_ERROR), as std's `take_error`.
+    pub fn take_error(&self) -> io::Result<Option<io::Error>> {
+        let error = self.int_option(SO_ERROR)?;
         Ok((error != 0).then(|| io::Error::from_raw_os_error(error)))
+    }
+
+    /// Its send buffer's size in bytes (SO_SNDBUF), as Winsock reports it
+    /// (learn.microsoft.com, "SOL_SOCKET socket options"): zero or less is an error.
+    pub fn send_buffer_size(&self) -> io::Result<usize> {
+        buffer_size("SO_SNDBUF", self.int_option(SO_SNDBUF)?)
+    }
+
+    /// Its receive buffer's size in bytes (SO_RCVBUF), as Winsock reports it: zero or less
+    /// is an error.
+    pub fn recv_buffer_size(&self) -> io::Result<usize> {
+        buffer_size("SO_RCVBUF", self.int_option(SO_RCVBUF)?)
     }
 
     /// Whether it is connected: its peer named (getpeername); an AF_UNIX peer is unnamed,
@@ -500,6 +549,14 @@ impl From<std::os::windows::io::OwnedSocket> for UnixStream {
     fn from(socket: std::os::windows::io::OwnedSocket) -> UnixStream {
         use std::os::windows::io::IntoRawSocket as _;
         UnixStream::wrap(Socket(socket.into_raw_socket() as SOCKET))
+    }
+}
+
+impl std::os::windows::io::AsSocket for UnixStream {
+    /// The socket, borrowed for as long as the stream lives, for an event loop to wait on.
+    fn as_socket(&self) -> std::os::windows::io::BorrowedSocket<'_> {
+        // SAFETY: the stream owns this socket open until it drops, and the borrow ends first.
+        unsafe { std::os::windows::io::BorrowedSocket::borrow_raw(self.socket.0 as u64) }
     }
 }
 
@@ -619,6 +676,19 @@ impl UnixListener {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    /// A connected stream reports its buffer sizes, non-zero; a report of zero or less is an
+    /// error, not a size (shards-api's `Stream::buffer_sizes`).
+    #[test]
+    fn a_stream_reports_its_buffer_sizes() {
+        let (a, _b) = UnixStream::pair().unwrap();
+        let (send, receive) = (a.send_buffer_size().unwrap(), a.recv_buffer_size().unwrap());
+        println!("buffer sizes: send {send}, receive {receive}");
+        assert!(send > 0 && receive > 0);
+        assert_eq!(buffer_size("SO_SNDBUF", 65536).unwrap(), 65536);
+        assert!(buffer_size("SO_SNDBUF", 0).is_err());
+        assert!(buffer_size("SO_RCVBUF", -1).is_err());
+    }
 
     /// A stream made non-blocking says at once that a read would block, whatever its read
     /// timeout, as std's sockets do; made blocking again, a read waits out its timeout.

@@ -1786,6 +1786,26 @@ pub fn spawn_in_job(
     )
 }
 
+/// [`spawn_in_job`]'s child with no group, detached as [`spawn`]'s `detach` makes it: in no
+/// console, process group nor Job of this process's (where the Job lets it go), as a Unix
+/// child of its own session is, out of reach of a Ctrl-C meant for this one; its
+/// environment [`spawn_in_job`]'s (a run's share process, as Unix's starts with setsid).
+pub fn spawn_detached(
+    program: &Path,
+    args: &[&OsStr],
+    fds: &[(BorrowedHandle<'_>, i32)],
+    env: &[(&str, &OsStr)],
+) -> io::Result<Child> {
+    let kept = KEPT
+        .iter()
+        .filter(|k| !env.iter().any(|(n, _)| n.eq_ignore_ascii_case(k)))
+        .filter_map(|&k| std::env::var_os(k).map(|v| (OsStr::new(k).to_os_string(), v)));
+    let given = env
+        .iter()
+        .map(|(k, v)| (OsStr::new(k).to_os_string(), v.to_os_string()));
+    spawn_env(program, args, fds, true, kept.chain(given).collect(), None, None)
+}
+
 /// Whether this process has a console: a child that would share it has none else, and is
 /// made with none of its own (CREATE_NO_WINDOW), where a console a daemon's child made would
 /// open a window.
@@ -2550,6 +2570,16 @@ pub fn given(pipe: usize) -> io::Result<Vec<(String, Handed)>> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A detached child (a run's share process, review 11) runs, its end and status seen
+    /// as any child's, though it is in no console, process group nor Job of this process's.
+    #[test]
+    fn a_detached_child_runs_and_its_end_is_seen() {
+        let shell = std::env::var_os("ComSpec").unwrap();
+        let args = [OsStr::new("/c"), OsStr::new("exit 7")];
+        let child = spawn_detached(Path::new(&shell), &args, &[], &[]).unwrap();
+        assert_eq!(child.ended_status().unwrap(), 7);
+    }
 
     fn line(args: &[&str]) -> String {
         let args: Vec<&OsStr> = args.iter().map(OsStr::new).collect();

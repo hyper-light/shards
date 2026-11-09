@@ -1045,8 +1045,8 @@ fn vm(args: &[OsString]) -> ExitCode {
         return instead(args);
     }
     // Its shares served before its VM process starts, sandboxed (shares.rs).
-    let args = match shares::served(args) {
-        Ok(args) => args,
+    let (args, shared) = match shares::served(args) {
+        Ok(served) => served,
         Err(e) => return failed(&e),
     };
     let args = args.as_slice();
@@ -1104,6 +1104,9 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push("--cwd".into());
     with.push(cwd.into());
     with.extend(args.iter().skip(1).cloned());
+    if let Err(e) = shares::inherit(shared) {
+        return failed(&e);
+    }
     instead(&with)
 }
 
@@ -1115,15 +1118,21 @@ fn vm(args: &[OsString]) -> ExitCode {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
     // Its shares served before it becomes the VM, which confines itself (shares.rs).
-    let args = match shares::served(args) {
-        Ok(args) => args,
+    let (args, shared) = match shares::served(args) {
+        Ok(served) => served,
         Err(e) => return failed(&e),
     };
     let args = args.as_slice();
-    match working_set_writer(args) {
-        Ok(Some(with)) => instead(&with),
-        Ok(None) => instead(args),
-        Err(e) => failed(&e),
+    let with = match working_set_writer(args) {
+        Ok(with) => with,
+        Err(e) => return failed(&e),
+    };
+    if let Err(e) = shares::inherit(shared) {
+        return failed(&e);
+    }
+    match with {
+        Some(with) => instead(&with),
+        None => instead(args),
     }
 }
 
