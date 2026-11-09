@@ -165,7 +165,7 @@ impl Handle {
         match self.0 {}
     }
 
-    pub fn console_said(&self) -> Vec<u8> {
+    pub fn console_said(&self) -> crate::devices::serial::Said {
         match self.0 {}
     }
 

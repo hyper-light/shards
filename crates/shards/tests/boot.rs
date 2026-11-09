@@ -310,6 +310,8 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
     cfg.memory_mib = 512;
     cfg.cmdline = "console=ttyS0 panic=-1".into();
     cfg.console = Console::Discard;
+    // Its whole console kept: this test reads it as it goes (D12).
+    cfg.said = usize::MAX;
     let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -320,7 +322,7 @@ fn two_vcpus_boot_to_their_end_in_this_process() {
         None => panic!(
             "two vCPUs did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
             common::DAEMON_QUIET,
-            String::from_utf8_lossy(&handle.console_said())
+            String::from_utf8_lossy(&handle.console_said().lines)
         ),
     }
 }

@@ -294,6 +294,9 @@ impl std::fmt::Debug for Builder {
 /// steps on, in pmem order.
 #[derive(Debug)]
 pub struct Boot<'a> {
+    /// The home whose records say what its VM keeps of its console (D12), and take how its
+    /// report came out.
+    pub home: &'a Path,
     pub kernel: &'a Path,
     pub init: &'a Path,
     pub cpus: u32,
@@ -464,6 +467,14 @@ const ATTACH: &str = "4";
 #[cfg(windows)]
 const ATTACH: &str = "attach";
 
+/// Where a builder's VM process finds the pipe it tells how its console's report came out on
+/// (`--said-to`, D12): a descriptor past the others it is given on Unix, the name its
+/// spawner handed it by on Windows.
+#[cfg(unix)]
+const SAID_TO: i32 = 9;
+#[cfg(windows)]
+const SAID_TO: &str = "said-to";
+
 /// The longest socket path a host binds, less the `_<port>` the vsock muxer adds: what
 /// both Linux (108 bytes of sun_path) and macOS (104) take, and Windows' afunix (108, its
 /// NUL among them).
@@ -562,6 +573,7 @@ fn launch(
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
     attach: UnixStream,
+    said_to: io::PipeWriter,
 ) -> Result<Launched, String> {
     let (net, side) = crate::netproc::start(policy, mac, bridge, None)?;
     let grants = if cfg!(target_os = "macos") {
@@ -579,6 +591,7 @@ fn launch(
         (side.sleeps.as_fd(), crate::netproc::VM_FDS[1]),
         (side.rings.as_fd(), crate::netproc::VM_FDS[2]),
         (attach.as_fd(), 4),
+        (said_to.as_fd(), SAID_TO),
     ]
     .into_iter()
     .chain(grants.as_ref().map(|(_, theirs)| (theirs.as_fd(), 3)))
@@ -616,6 +629,7 @@ fn launch(
     drop(fds);
     drop(side);
     drop(attach);
+    drop(said_to);
     if let Some((ours, _)) = grants {
         #[cfg(target_os = "macos")]
         std::thread::Builder::new()
@@ -643,6 +657,7 @@ fn launch(
     mac: &[u8; 6],
     bridge: &shards_net::bridge::Bridge,
     attach: UnixStream,
+    said_to: io::PipeWriter,
 ) -> Result<Launched, String> {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
     let (ready, side) = crate::netproc::prepare(policy, mac, bridge)?;
@@ -674,6 +689,11 @@ fn launch(
         },
     ];
     given.extend(side.given());
+    let said_to = OwnedHandle::from(said_to);
+    given.push(shards_ipc::Given {
+        name: SAID_TO,
+        handle: said_to.as_handle(),
+    });
     let err = io::stderr();
     let env = crate::netproc::child_env();
     let vm = shards_ipc::spawn_suspended(&shards_ipc::Spawn {
@@ -705,7 +725,7 @@ fn launch(
     // Its ends are the VM's now: its exit ends its requests, and its network process,
     // which watches it, goes with it.
     drop(given);
-    drop((asks_to, answers_from, side, attach));
+    drop((asks_to, answers_from, side, attach, said_to));
     let link = crate::grant::Link {
         from: std::fs::File::from(OwnedHandle::from(asks_from)),
         to: std::fs::File::from(OwnedHandle::from(answers_to)),
@@ -717,6 +737,25 @@ fn launch(
         })
         .map_err(|e| format!("answering the builder: {e}"))?;
     Ok(Launched { vm, net, container })
+}
+
+/// Records what a builder's VM tells on `from_vm` of its console's report as it ends
+/// (said.rs), on a thread of its own; none where it ends with nothing to tell.
+fn record_said(home: &Path, said: crate::said::Learned, from_vm: io::PipeReader) {
+    let home = home.to_path_buf();
+    let recorder = std::thread::Builder::new()
+        .name("builder said".into())
+        .spawn(move || {
+            let recorded = crate::said::told(from_vm)
+                .map_err(|e| format!("the builder's pipe: {e}"))
+                .and_then(|told| crate::said::record(&home, &said.pin, said.kept, &told));
+            if let Err(e) = recorded {
+                shards_vmm::debug!("the builder's console report: {e}");
+            }
+        });
+    if let Err(e) = recorder {
+        shards_vmm::debug!("not recording the builder's console report: {e}");
+    }
 }
 
 /// Ends a builder's VM process that does not start.
@@ -816,6 +855,16 @@ impl Builder {
             crate::netproc::VmSide::arg(&mac).into(),
             "--no-console".into(),
         ];
+        // What it keeps of its console to quote as it fails, as its kernel's records say,
+        // and the pipe it tells how that report came out on (D12).
+        let said = crate::said::learn(boot.home, Some(boot.kernel));
+        let (from_vm, said_to) = io::pipe().map_err(|e| format!("the builder's console report: {e}"))?;
+        args.extend([
+            "--console-said".into(),
+            said.kept.to_string().into(),
+            "--said-to".into(),
+            SAID_TO.to_string().into(),
+        ]);
         for base in boot.bases {
             args.extend(["--pmem".into(), base.into()]);
         }
@@ -833,8 +882,9 @@ impl Builder {
         let (attach, attach_theirs) =
             UnixStream::pair().map_err(|e| format!("the builder's join disk: {e}"))?;
         args.extend(["--attach".into(), ATTACH.into()]);
-        let launched = launch(&args, policy, &mac, &bridge, attach_theirs)?;
+        let launched = launch(&args, policy, &mac, &bridge, attach_theirs, said_to)?;
         let vm = launched.vm;
+        record_said(boot.home, said, from_vm);
         let began = Instant::now();
         // Its process's CPU time when last judged, and when it last ran its boot.
         let cpu = || {

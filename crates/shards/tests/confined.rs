@@ -353,6 +353,8 @@ fn two_vcpus_boot_to_their_end_with_their_console() {
     cfg.memory_mib = 512;
     cfg.cmdline = "console=ttyS0 panic=-1".into();
     cfg.console = Console::Stdout;
+    // Its whole console kept: this test reads it as it goes (D12).
+    cfg.said = usize::MAX;
     let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

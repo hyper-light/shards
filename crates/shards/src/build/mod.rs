@@ -4168,6 +4168,7 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     };
                     let needs = needs_path(&home);
                     let boot = builder::Boot {
+                        home: &home,
                         kernel: &guest.0,
                         init: &guest.1,
                         cpus: builder_cpus(),

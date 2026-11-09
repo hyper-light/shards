@@ -27,6 +27,8 @@ fn two_vcpus_boot_to_their_end_under_acg() {
     cfg.memory_mib = 512;
     cfg.cmdline = "console=ttyS0 panic=-1".into();
     cfg.console = Console::Discard;
+    // Its whole console kept: this test reads it as it goes (D12).
+    cfg.said = usize::MAX;
     // The vCPU limit is read first, from a partition of its own (hv::whp::max_vcpus), as
     // the VM process reads it before its own partition's setup.
     vm::max_vcpus().unwrap();
@@ -41,7 +43,7 @@ fn two_vcpus_boot_to_their_end_under_acg() {
         None => panic!(
             "two vCPUs under ACG did not reach their end in {TIMEOUT:?} in this process, nor said anything new for {:?} after: {}",
             common::DAEMON_QUIET,
-            String::from_utf8_lossy(&handle.console_said())
+            String::from_utf8_lossy(&handle.console_said().lines)
         ),
     }
 }
