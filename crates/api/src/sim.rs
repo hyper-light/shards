@@ -179,6 +179,14 @@ impl Guests for SimGuests {
             pid: identity.pid,
             why,
         };
+        // As shards on Windows, where a guest's VM ends with the process that booted it (D141).
+        if cfg!(windows) {
+            return Err(gone(
+                "on Windows a guest's VM ends with the process that booted it (D141): none \
+                 outlives its client to be taken back"
+                    .into(),
+            ));
+        }
         let shared = {
             let booted = self.booted.lock().unwrap_or_else(PoisonError::into_inner);
             match booted.guests.get(&identity.pid) {

@@ -318,14 +318,23 @@ pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<()
 /// on) is taken back by `attach` of its identity: the attached guest serves its port and stops as
 /// any guest does; once it has ended, attach of it is refused `Ended` or `Gone`, and attach of an
 /// identity whose start time differs (its pid since given another process) is refused `Gone`. On
-/// Windows, where a guest's VM ends with its client's process (D141), no client survives to attach,
-/// but in one process the guest still runs, so the case holds there too.
+/// Windows a guest's VM ends with the process that booted it (D141), so none outlives its client to
+/// be taken back: attach of it answers `Gone`, the guest still its booter's.
 pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Result<(), Failure> {
     const CASE: &str = "a guest its client lost is taken back by attach";
     let guest = boot(CASE, s, &s.serving)?;
     let identity = guest
         .identity()
         .map_err(|e| fail(CASE, format!("identity: {e}")))?;
+    // On Windows a guest's VM ends with the process that booted it (D141), so none outlives
+    // its client to be taken back: attach answers Gone, and the guest stays its booter's,
+    // ended as it drops here.
+    if cfg!(windows) {
+        return match s.guests.attach(&identity, &s.serving) {
+            Err(Refusal::Gone { .. }) => Ok(()),
+            other => Err(fail(CASE, format!("attach on Windows: {:?}", other.err()))),
+        };
+    }
     // The client's crash: its handle goes without its drop, which would end the guest.
     std::mem::forget(guest);
     let other = Identity {
