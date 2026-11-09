@@ -1185,48 +1185,49 @@ mod tests {
         }
     }
 
-    /// A restored muxer saved again before it has sent the resets it owes saves them
-    /// beside its own, and a restore reads them all (review 1.15): a full snapshot's, saved
-    /// again, round-trips.
+    /// A save holds one save's worth of streams, however many saves came before it with
+    /// none of their resets sent between: its connections, then the newest resets owed, as
+    /// many as a muxer never restored holds at most, its slots and a ring's worth of resets
+    /// ([`Muxer::stray_rst`]). A restore reads whatever a save wrote, a host's with more
+    /// slots too (review 1.15).
     #[test]
-    fn a_save_before_a_restores_resets_go_out_reads_back() {
+    fn a_save_holds_one_saves_worth_however_many_came_before() {
         let dir_guard = shards_testdir::TempDir::new("vsock-resave").unwrap();
-        let dir = dir_guard.join("v");
-        let mut m = Muxer::new(VsockHost::at(dir), 3).unwrap();
-        let full = MAX_CONNECTIONS + MAX_STRAY_RSTS;
-        let ports: Vec<(u32, u32)> = (0..full as u32)
+        let (sender, _arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir_guard.join("v")),
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        // An input: few slots and small rings, which saves in a row outgrow.
+        m.slots = 3;
+        m.set_rings(4, 4);
+        let one = m.slots + m.max_stray_rsts;
+        // Restored from three saves' worth, none of whose resets went out; then the guest
+        // connects.
+        let held: Vec<(u32, u32)> = (0..3 * one as u32)
             .map(|i| (LOCAL_PORT_BASE + i, 1000 + i))
             .collect();
         m.restore(Saved {
-            ports: ports.clone(),
-            last_local_port: LOCAL_PORT_BASE + full as u32,
+            ports: held.clone(),
+            last_local_port: LOCAL_PORT_BASE + 3 * one as u32,
         });
-        // As many streams again as its own connections would hold (which a save holds
-        // beside the resets owed): past what one snapshot holds.
-        let own: Vec<(u32, u32)> = (0..MAX_CONNECTIONS as u32)
-            .map(|i| (LOCAL_PORT_BASE + 10_000 + i, 1))
-            .collect();
-        m.stray_rsts.extend(own.iter().copied());
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
         let saved = m.saved();
-        assert_eq!(saved.ports.len(), full + MAX_CONNECTIONS);
+        let mut kept = vec![(54, 49_152)];
+        kept.extend(held.iter().rev().take(one - 1));
+        assert_eq!(saved.ports, kept, "its connection, then the newest owed");
+        // A restore reads a save whole, one of a host with more slots too.
+        let bigger = Saved {
+            ports: held,
+            last_local_port: saved.last_local_port,
+        };
         let mut w = Writer::default();
-        saved.write(&mut w);
+        bigger.write(&mut w);
         let bytes = w.into_bytes();
-        let mut r = Reader::new(&bytes);
-        let read = Saved::read(&mut r).unwrap();
-        assert!(read.ports.iter().all(|p| ports.contains(p) || own.contains(p)));
-        assert_eq!(read.ports.len(), full + MAX_CONNECTIONS);
-        // Saved more than a restore reads, it keeps the newest.
-        let big_dir = shards_testdir::TempDir::new("vsock-big").unwrap();
-        let mut big = Muxer::new(VsockHost::at(big_dir.join("v")), 3).unwrap();
-        let many: Vec<(u32, u32)> = (0..(MAX_SAVED + 5) as u32).map(|i| (i, i)).collect();
-        big.stray_rsts.extend(many);
-        let saved = big.saved();
-        assert_eq!(saved.ports.len(), MAX_SAVED);
-        assert_eq!(
-            saved.ports.first(),
-            Some(&((MAX_SAVED + 4) as u32, (MAX_SAVED + 4) as u32))
-        );
+        assert_eq!(Saved::read(&mut Reader::new(&bytes)).unwrap(), bigger);
     }
 
     #[test]
