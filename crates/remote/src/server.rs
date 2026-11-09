@@ -38,8 +38,10 @@ pub struct Running {
     pub made: Option<Box<dyn Read + Send>>,
 }
 
-/// The most a command's [`Running::made`] says: an ID, 64 hex digits.
-const MADE_MOST: u64 = 4 << 10;
+/// The most a command's [`Running::made`] says: a microVM's ID alone, as `--cidfile` writes
+/// it (shards' `CidFile::write`, as docker/cli's cidfile does): two hex digits for each of
+/// the 32 random bytes of moby's stringid.GenerateRandomID (shards' `containers::new_id`).
+const MADE_MOST: u64 = 2 * 32;
 
 /// The machine a daemon serves its clients on.
 pub trait Host: Send {

@@ -217,8 +217,9 @@ pub fn valid_name(name: &str) -> bool {
 const RECORD: &str = "config.json";
 const NEW_RECORD: &str = "config.json.new";
 /// The largest record read. A run's command arrives in one message
-/// (`shards_ipc::MAX_PAYLOAD`), and JSON writes a byte as at most 6.
-const MAX_RECORD: u64 = 8 << 20;
+/// (`shards_ipc::MAX_PAYLOAD`), and JSON writes a byte as at most 6; it follows the message
+/// as the engine's `BODY_MOST` does, so that no record a run is accepted with is unreadable.
+const MAX_RECORD: u64 = 8 * shards_ipc::MAX_PAYLOAD as u64;
 
 /// What the registry does to the disk, so that a test can fail it, cut it short or lose
 /// power under it. [`Real`] is the host's filesystem.

@@ -27,20 +27,21 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT,
+    ERROR_BAD_PIPE, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, ERROR_SEM_TIMEOUT, GetLastError, HANDLE,
+    INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
 };
-use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FindCloseChangeNotification,
+    FindFirstChangeNotificationW,
+};
+use windows_sys::Win32::System::Pipes::{NMPWAIT_WAIT_FOREVER, WaitNamedPipeW};
+use windows_sys::Win32::System::Threading::{INFINITE, WaitForMultipleObjects};
 
 use super::{
     Asked, DIR, FREE, FREE_STREAMS, Frame, RECORD, Requested, Taken, Waited, fds, frame, frame_from, list,
     number, read_frame, record, streams, write_frame,
 };
 use crate::pipe::{self, Called, Event, Pipe};
-
-/// How long a client waiting for a free instance waits before it looks at its list's name
-/// again: a daemon that made its lists again (`Requests::renew`) offers on another name,
-/// which a wait on the old one, held by the clients it serves still, would not see.
-const LOOK_AGAIN: Duration = Duration::from_millis(250);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -202,8 +203,8 @@ impl Requests {
 
     /// Its lists made again where someone removed them ([`listed`](Self::listed)): new
     /// names, the directory too where it went, the next slot's number kept. What was
-    /// offered on the old lists is the caller's to remove; a client waiting on one looks
-    /// at its list's name again ([`LOOK_AGAIN`]), and finds the new.
+    /// offered on the old lists is the caller's to remove; a client waiting on one hears
+    /// its list's file change ([`wait_free`]), and finds the new.
     pub fn renew(&mut self) -> io::Result<()> {
         match std::fs::create_dir(&self.dir) {
             Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
@@ -586,25 +587,10 @@ fn take_listed(at: &Path, mut name: String, streams: u8) -> io::Result<Taken> {
                     Opening::Took(client) => return Ok(Taken::Slot(client)),
                     Opening::Again => break,
                 },
-                Err(e) if code(&e) == Some(ERROR_PIPE_BUSY) => {
-                    // SAFETY: a NUL-terminated name.
-                    if unsafe {
-                        WaitNamedPipeW(
-                            wide.as_ptr(),
-                            u32::try_from(LOOK_AGAIN.as_millis()).unwrap_or(250),
-                        )
-                    } != 0
-                    {
-                        continue;
-                    }
-                    let e = io::Error::last_os_error();
-                    match code(&e) {
-                        // Every one still taken: its name may have changed meanwhile.
-                        Some(ERROR_SEM_TIMEOUT) if listed_name(at)?.as_ref() == Some(&name) => {}
-                        Some(ERROR_SEM_TIMEOUT | ERROR_FILE_NOT_FOUND) => break,
-                        _ => return Err(e),
-                    }
-                }
+                Err(e) if code(&e) == Some(ERROR_PIPE_BUSY) => match wait_free(at, &name, &wide)? {
+                    Freed::Instance => continue,
+                    Freed::Listed => break,
+                },
                 // No instance: the daemon has gone, unless its lists are named anew.
                 Err(e) if code(&e) == Some(ERROR_FILE_NOT_FOUND) => {
                     if listed_name(at)?.is_some_and(|now| now != name) {
@@ -619,6 +605,85 @@ fn take_listed(at: &Path, mut name: String, streams: u8) -> io::Result<Taken> {
             Some(now) => name = now,
             None => return Ok(Taken::NoDaemon),
         }
+    }
+}
+
+/// What ended a wait for a free instance ([`wait_free`]).
+enum Freed {
+    /// An instance of the list's pipe is free: opened again.
+    Instance,
+    /// The list's file names another pipe, or none, or its pipe has no instance left: read
+    /// again.
+    Listed,
+}
+
+/// A change notification on a directory, closed as it drops.
+struct Change(HANDLE);
+
+impl Drop for Change {
+    fn drop(&mut self) {
+        // SAFETY: a notification FindFirstChangeNotificationW made, closed once.
+        unsafe { FindCloseChangeNotification(self.0) };
+    }
+}
+
+/// Waits until an instance of the pipe `wide` names (`name`, its list's at `at`) is free or
+/// the list names another, whichever comes first, each by its own event: a thread waits in
+/// WaitNamedPipe for as long as it takes (no handle waits for an instance, which only
+/// WaitNamedPipe does), its end an event, beside a change notification on the list's
+/// directory, armed before the list is read again, so that no renaming between is missed. A
+/// daemon that made its lists again (`Requests::renew`) offers on another name, which a
+/// wait on the old one, held by the clients it serves still, would not see. Where the list
+/// changed first, the thread is left to its wait, which ends as an instance of the old name
+/// frees or its last closes, or with this process.
+fn wait_free(at: &Path, name: &str, wide: &[u16]) -> io::Result<Freed> {
+    let done = Event::new()?;
+    let theirs = done.try_clone()?;
+    let (said, heard) = std::sync::mpsc::channel();
+    let waited = wide.to_vec();
+    std::thread::Builder::new()
+        .name("shards-slot-wait".into())
+        .spawn(move || {
+            // SAFETY: a NUL-terminated name this thread owns.
+            let free = unsafe { WaitNamedPipeW(waited.as_ptr(), NMPWAIT_WAIT_FOREVER) } != 0;
+            // SAFETY: GetLastError(3) takes no arguments.
+            let _ = said.send(if free { 0 } else { unsafe { GetLastError() } });
+            theirs.set();
+        })?;
+    let dir = at.parent().ok_or(io::ErrorKind::InvalidInput)?;
+    let dir = pipe::wide(&dir.to_string_lossy());
+    loop {
+        // SAFETY: a NUL-terminated path; the notification is closed as `change` drops.
+        let raw = unsafe {
+            FindFirstChangeNotificationW(
+                dir.as_ptr(),
+                0,
+                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE,
+            )
+        };
+        // No directory: no list there, which a read says.
+        let change = (raw != INVALID_HANDLE_VALUE).then_some(Change(raw));
+        if change.is_none() || listed_name(at)?.as_deref() != Some(name) {
+            return Ok(Freed::Listed);
+        }
+        let handles: Vec<HANDLE> = [Some(done.raw()), change.as_ref().map(|c| c.0)]
+            .into_iter()
+            .flatten()
+            .collect();
+        let count = u32::try_from(handles.len()).map_err(io::Error::other)?;
+        // SAFETY: handles that live through the wait.
+        let woke = unsafe { WaitForMultipleObjects(count, handles.as_ptr(), 0, INFINITE) };
+        if woke == WAIT_OBJECT_0 {
+            return match heard.recv().map_err(io::Error::other)? {
+                0 => Ok(Freed::Instance),
+                c if c == ERROR_FILE_NOT_FOUND => Ok(Freed::Listed),
+                c => Err(io::Error::from_raw_os_error(i32::try_from(c).unwrap_or(i32::MAX))),
+            };
+        }
+        if woke != WAIT_OBJECT_0 + 1 {
+            return Err(io::Error::last_os_error());
+        }
+        // The directory changed: the list is read again, under a notification made anew.
     }
 }
 

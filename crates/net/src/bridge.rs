@@ -585,6 +585,8 @@ fn dumped_routes(mut data: &[u8]) -> io::Result<Vec<Prefix>> {
     const RTF_WASCLONED: u32 = 0x20000;
     const RTA_DST: u32 = 0x1;
     const RTA_NETMASK: u32 = 0x4;
+    // The addresses a route message may carry (XNU bsd/net/route.h, `RTAX_MAX 8`, the
+    // macOS SDK's l. 253).
     const RTAX_MAX: u32 = 8;
     const AF_INET: u8 = 2;
     let bad = || io::Error::other("a route dump's message is malformed");

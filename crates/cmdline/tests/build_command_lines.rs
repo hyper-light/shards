@@ -13,7 +13,7 @@ use shards_cmdline::commands::{
 use shards_cmdline::flags::{self, Outcome};
 
 /// What a build step carries at most, the run protocol's frame (shards-abi `MAX_PAYLOAD`).
-const STEP: u64 = 1 << 20;
+const STEP: u64 = shards_abi::run::MAX_PAYLOAD as u64;
 
 /// Where shards answers better than buildx, each for its reason (buildflags.rs): the
 /// command line, and shards' stdout, stderr and status.

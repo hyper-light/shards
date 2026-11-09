@@ -33,9 +33,6 @@ pub(crate) const THROTTLED: [Duration; 5] = [
     Duration::from_millis(400),
     Duration::from_millis(800),
 ];
-/// What a wait grows to past [`THROTTLED`], doubling, where the registry names the window
-/// its allowance is counted over ([`allowance_window`]): the most of each wait after.
-const THROTTLED_MOST: Duration = Duration::from_millis(6400);
 /// The longest window a throttle is waited out within: an allowance counted over longer
 /// (Docker Hub's, over six hours) is a quota spent, not a moment's crowd.
 const WINDOW_MOST: Duration = Duration::from_secs(60);
@@ -1679,16 +1676,16 @@ fn refusal_said(status: u16, body: &[u8]) -> Said {
 /// that fits; a throttle is.
 fn throttle(response: &Response, said: &[u8], n: usize, waited: Duration) -> Option<Duration> {
     // A window of a minute or less named for the allowance: a crowd's throttle, over by the
-    // window's end, so waited out within it, the waits doubling past the schedule. ghcr.io
+    // window's end, so waited out within it, the waits growing with it past the schedule. ghcr.io
     // throttled CI's pulls past the schedule's 1.55 s, naming `allowed: 44000/minute`
     // (PM M191).
     let window = allowance_window(response, said).filter(|w| *w <= WINDOW_MOST);
     let most = match (THROTTLED.get(n), window) {
         (Some(most), _) => *most,
-        (None, Some(_)) => {
-            let past = u32::try_from(n + 1 - THROTTLED.len()).unwrap_or(u32::MAX).min(16);
-            THROTTLED_MOST.min(Duration::from_millis(800u64.saturating_mul(1 << past)))
-        }
+        // Past the schedule, a wait is a share of how long the throttle has lasted (D222's
+        // rule for a trouble: the time lost past its end at most what it had lasted), and
+        // never past what is left of its window, below.
+        (None, Some(_)) => waited.max(THROTTLED.last().copied().unwrap_or_default()),
         (None, None) => return None,
     };
     let left = match window {
@@ -3178,20 +3175,17 @@ mod tests {
         assert_eq!(http.shown("r.example", 443).troubles, 1);
     }
 
-    /// What the round trips of a test of riding out a trouble may take beyond the waits
-    /// themselves, on a host whose every core is busy with the other tests.
-    const SLACK: Duration = Duration::from_millis(1500);
-
     /// A registry asked of a server that answers `failing` (a status line, or `None` to
     /// close the connection unanswered) until `lasting` has passed since its first request,
     /// then 200; riding its trouble out for `moment`. Its answer's status (or error), the
-    /// requests it made, and how long it took.
+    /// requests it made, how long it took, and how long of that it chose to wait: its round
+    /// trips are the rest, as long as the host running it makes them.
     fn ridden(
         failing: Option<&'static str>,
         fields: &'static [(&'static str, &'static str)],
         lasting: Duration,
         moment: Duration,
-    ) -> (Result<u16, Error>, usize, Duration) {
+    ) -> (Result<u16, Error>, usize, Duration, Duration) {
         let first = Arc::new(std::sync::Mutex::new(None::<Instant>));
         let server = route(None, move |_| {
             let began = *first.lock().unwrap().get_or_insert_with(Instant::now);
@@ -3210,7 +3204,12 @@ mod tests {
         let url = registry.base().join("manifests/v1").unwrap();
         let t0 = Instant::now();
         let status = registry.request("GET", &url, &[]).map(|(r, _)| r.status);
-        (status, server.requests().len(), t0.elapsed())
+        (
+            status,
+            server.requests().len(),
+            t0.elapsed(),
+            registry.http.paused(),
+        )
     }
 
     /// A registry's passing trouble, a gateway's 502, 503 or 504 or connections cut
@@ -3230,28 +3229,29 @@ mod tests {
             Some("408 Request Timeout"),
             None,
         ] {
-            let (status, asked, took) = ridden(failing, &[], lasting, moment);
+            let (status, asked, took, paused) = ridden(failing, &[], lasting, moment);
             assert_eq!(status.unwrap(), 200, "{failing:?}");
             assert!(asked >= 3, "{failing:?}: asked {asked} times");
             assert!(took >= lasting, "{failing:?}: {took:?}");
-            // At most its length again, and the asking's own round trips.
-            assert!(took < lasting * 2 + SLACK, "{failing:?}: {took:?}");
+            // Its waits at most its length again; the rest of the time, the asking's own
+            // round trips.
+            assert!(paused < lasting * 2, "{failing:?}: {paused:?} of {took:?}");
         }
         // Past the moment: the registry's answer, said.
         let short = Duration::from_millis(500);
-        let (status, _, took) = ridden(
+        let (status, _, took, paused) = ridden(
             Some("503 Service Unavailable"),
             &[],
             Duration::from_secs(3600),
             short,
         );
         assert_eq!(status.unwrap(), 503);
-        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
-        let (status, _, took) = ridden(None, &[], Duration::from_secs(3600), short);
+        assert!(took >= short && paused < short * 2, "{paused:?} of {took:?}");
+        let (status, _, took, paused) = ridden(None, &[], Duration::from_secs(3600), short);
         assert_eq!(status.unwrap_err().kind(), ErrorKind::Transient);
-        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+        assert!(took >= short && paused < short * 2, "{paused:?} of {took:?}");
         // A wait it names is waited.
-        let (status, _, took) = ridden(
+        let (status, _, took, _) = ridden(
             Some("503 Service Unavailable"),
             &[("Retry-After", "1")],
             Duration::from_millis(100),
@@ -3260,16 +3260,15 @@ mod tests {
         assert_eq!(status.unwrap(), 200);
         assert!(took >= Duration::from_secs(1), "{took:?}");
         // One past the moment is not: the answer at once.
-        let (status, asked, took) = ridden(
+        let (status, asked, _, paused) = ridden(
             Some("503 Service Unavailable"),
             &[("Retry-After", "3600")],
             Duration::from_secs(3600),
             moment,
         );
-        assert_eq!((status.unwrap(), asked), (503, 1));
-        assert!(took < Duration::from_secs(5), "{took:?}");
+        assert_eq!((status.unwrap(), asked, paused), (503, 1, Duration::ZERO));
         // A 500 is asked again once; repeated, it is the answer.
-        let (status, asked, _) = ridden(
+        let (status, asked, _, _) = ridden(
             Some("500 Internal Server Error"),
             &[],
             Duration::from_secs(3600),
@@ -3353,20 +3352,27 @@ mod tests {
             let fetched = registry
                 .fetch_blob(&store, &desc, &Limits::none(), &|_| {})
                 .map(|()| std::fs::read(store.blob_path(&digest)).unwrap());
-            (fetched, server.requests().len(), t0.elapsed())
+            (
+                fetched,
+                server.requests().len(),
+                t0.elapsed(),
+                registry.http.paused(),
+            )
         };
-        let (fetched, asked, took) = fetch(Duration::from_millis(400), Duration::from_secs(20));
+        // Its waits at most the trouble's length again; the rest, its round trips.
+        let lasting = Duration::from_millis(400);
+        let (fetched, asked, _, paused) = fetch(lasting, Duration::from_secs(20));
         assert_eq!(fetched.unwrap(), *blob);
         assert!(asked >= 4, "asked {asked} times");
-        assert!(took < Duration::from_millis(400) * 2 + SLACK, "{took:?}");
+        assert!(paused < lasting * 2, "{paused:?}");
         let short = Duration::from_millis(500);
-        let (fetched, _, took) = fetch(Duration::from_secs(3600), short);
+        let (fetched, _, took, paused) = fetch(Duration::from_secs(3600), short);
         let e = fetched.unwrap_err();
         assert!(
             e.to_string().contains("the download brought nothing for 0."),
             "{e}"
         );
-        assert!(took >= short && took < short * 2 + SLACK, "{took:?}");
+        assert!(took >= short && paused < short * 2, "{paused:?} of {took:?}");
     }
 
     /// A path whose answers come 1.5 s late: its first, past the 1.25 s drawn from the

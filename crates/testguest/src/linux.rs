@@ -1114,7 +1114,8 @@ fn storm() -> Result<(), String> {
     // A restored copy continues here, as does the original, if it resumed.
     let generation = control.read(shards_abi::control::GENERATION);
     let echoed_at = ECHOED.load(Ordering::Relaxed);
-    let beats = watch_main_thread(cpus);
+    let quiet = host_quiet()?;
+    let beats = watch_main_thread(cpus, quiet);
     report(format_args!("SHARDS-TEST INFO generation={generation}"))?;
 
     report(format_args!(
@@ -1234,14 +1235,14 @@ fn storm() -> Result<(), String> {
     // A machine that went on carries the host's stream on past its snapshot: two rounds'
     // worth (the host's rounds are 4 MiB), so the round the snapshot cut through ends and
     // another runs whole after it, however slowly a loaded host streams: for as long as
-    // the stream carries bytes ([`STREAM_QUIET`]).
+    // the stream carries bytes ([`Streaming`]).
     if generation == 0 {
-        let mut stream = Streaming::new();
+        let mut stream = Streaming::new(quiet);
         while ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at) < 8 << 20 {
             beats.fetch_add(1, Ordering::Relaxed);
             if !stream.carries() {
                 return Err(format!(
-                    "the host streamed {} bytes after the snapshot, then nothing for {STREAM_QUIET:?}",
+                    "the host streamed {} bytes after the snapshot, then nothing for {quiet:?}",
                     ECHOED.load(Ordering::Relaxed).saturating_sub(echoed_at)
                 ));
             }
@@ -1255,24 +1256,29 @@ fn storm() -> Result<(), String> {
     // The host's side of the connection is up only once it has read its OK, after this
     // side's accept: its byte, or its close, says so. The host connects once the round it
     // streams ends, waited for while its stream carries bytes.
-    let mut host = accept_while_streaming(&done)?;
+    let mut host = accept_while_streaming(&done, quiet)?;
     let mut byte = [0u8; 1];
     std::io::Read::read(&mut host, &mut byte)
         .map(drop)
         .map_err(|e| format!("waiting for the host's word: {e}"))
 }
 
-/// How long the storm's main thread stands still before a watcher says so, in one line
-/// ([`standing_still`]): well inside the host's `DAEMON_QUIET`, so that the host, which
-/// waits a minute past its deadline for something new, hears of a stall before it gives up.
-const STOOD_STILL: Duration = Duration::from_secs(15);
+/// How long the host waits on a storm that says nothing new and carries nothing through its
+/// echo before it gives up: its own `DAEMON_QUIET` (crates/shards/tests/common), which it
+/// tells the guest on its command line (`shards_quiet_ms`), so that the guest's bounds are
+/// the host's and no copy of them.
+fn host_quiet() -> Result<Duration, String> {
+    env_u64("shards_quiet_ms").map(Duration::from_millis)
+}
 
 /// Watches the storm's main thread from its snapshot on, by the count it adds to at each
-/// step and each look at what it waits for. Once the count has stood still [`STOOD_STILL`],
-/// a watcher says so in a line ([`standing_still`]), once for each beat it stands still at;
-/// once it has stood still [`STREAM_QUIET`], the storm's own bound for a stream that has
-/// stopped, past which the host gives up on it too, the kernel says all it can of it
-/// ([`stood_still`]), once. What stops the main thread past the snapshot stops what it
+/// step and each look at what it waits for, a look a second. Once the count has stood
+/// still for more looks than it ever stood still for before (its own pace, as this host
+/// runs it: on a loaded or nested host its steps take seconds), a watcher says so in a line
+/// ([`standing_still`]), once for each beat it stands still at, which the host, waiting
+/// on something new, hears; once it has stood still for the host's `quiet`, past which the
+/// host gives up on its stream too, the kernel says all it can of it ([`stood_still`]),
+/// once. What stops the main thread past the snapshot stops what it
 /// says too, a lost timer and a stuck console alike; printk's console polls the UART,
 /// needing none of its interrupts, so the kernel's word reaches the host either way.
 ///
@@ -1288,20 +1294,23 @@ const STOOD_STILL: Duration = Duration::from_secs(15);
 /// Four watchers, each pinned to its own of the guest's `cpus`, spread across them: a CPU
 /// whose timer stopped stops the one there, whose sleeps never end, and not the rest. None
 /// says anything after the count is `u64::MAX`, which ends the watch.
-fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+fn watch_main_thread(cpus: usize, quiet: Duration) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     let beats = std::sync::Arc::new(AtomicU64::new(0));
-    // The beat a stall was last said at, and whether the kernel's account was given.
+    // The beat a stall was last said at, the most looks the count stood still for before
+    // it moved on, and whether the kernel's account was given.
     let told = std::sync::Arc::new(AtomicU64::new(u64::MAX));
+    let longest = std::sync::Arc::new(AtomicU64::new(0));
     let accounted = std::sync::Arc::new(AtomicBool::new(false));
     let watchers = cpus.clamp(1, 4);
     for w in 0..watchers {
-        let (watched, told, accounted) = (beats.clone(), told.clone(), accounted.clone());
+        let (watched, told, longest, accounted) =
+            (beats.clone(), told.clone(), longest.clone(), accounted.clone());
         thread::spawn(move || {
             if pin(w * cpus / watchers).is_err() {
                 return;
             }
-            let (mut last, mut since) = (0, Instant::now());
+            let (mut last, mut since, mut looks) = (0, Instant::now(), 0u64);
             loop {
                 thread::sleep(Duration::from_secs(1));
                 let now = watched.load(Ordering::Relaxed);
@@ -1309,18 +1318,20 @@ fn watch_main_thread(cpus: usize) -> std::sync::Arc<std::sync::atomic::AtomicU64
                     return;
                 }
                 if now != last {
-                    (last, since) = (now, Instant::now());
+                    longest.fetch_max(looks, Ordering::Relaxed);
+                    (last, since, looks) = (now, Instant::now(), 0);
                     continue;
                 }
+                looks = looks.saturating_add(1);
                 let still = since.elapsed();
-                if still >= STREAM_QUIET {
+                if still >= quiet {
                     if !accounted.swap(true, Ordering::Relaxed) {
-                        stood_still(now);
+                        stood_still(now, still);
                     }
                     return;
                 }
-                if still >= STOOD_STILL && told.swap(now, Ordering::Relaxed) != now {
-                    standing_still(now);
+                if looks > longest.load(Ordering::Relaxed) && told.swap(now, Ordering::Relaxed) != now {
+                    standing_still(now, still);
                 }
             }
         });
@@ -1348,31 +1359,31 @@ fn main_thread_cpu() -> String {
         .unwrap_or_default()
 }
 
-/// That the main thread has stood still [`STOOD_STILL`] at `beat`, and where it last ran,
-/// in one line ([`watch_main_thread`]).
-fn standing_still(beat: u64) {
+/// That the main thread has stood still `still` at `beat`, longer than it ever had, and
+/// where it last ran, in one line ([`watch_main_thread`]).
+fn standing_still(beat: u64, still: Duration) {
     // SAFETY: sched_getcpu(3) takes no arguments.
     let here = unsafe { libc::sched_getcpu() };
     say(&format!(
         "the main thread stood still {} s at beat {beat} (seen from CPU {here}); it last ran on CPU {}",
-        STOOD_STILL.as_secs(),
+        still.as_secs(),
         main_thread_cpu()
     ));
 }
 
-/// What the kernel can say of a main thread that stood still [`STREAM_QUIET`]
+/// What the kernel can say of a main thread that stood still `still`, the host's quiet,
 /// ([`watch_main_thread`]), on its console at a log level that shows it: what it logged
 /// that the console's level kept off it (notices and worse), the CPU the main thread last
 /// ran on, the CPUs whose local timer took no interrupt in a second, each CPU's timers and
 /// clock event device (sysrq `q`), and every task's stack (sysrq `t`).
-fn stood_still(beat: u64) {
+fn stood_still(beat: u64, still: Duration) {
     let _ = std::fs::write("/proc/sys/kernel/printk", "7");
     let logged = kernel_log(5);
     // SAFETY: sched_getcpu(3) takes no arguments.
     let here = unsafe { libc::sched_getcpu() };
     say(&format!(
         "the main thread stood still {} s at beat {beat} (seen from CPU {here})",
-        STREAM_QUIET.as_secs()
+        still.as_secs()
     ));
     for line in logged {
         say(&format!("log: {line}"));
@@ -1460,24 +1471,22 @@ fn kernel_log(at_most: u32) -> Vec<String> {
     said
 }
 
-/// How long the host's stream through the echo may carry nothing before a storm takes it
-/// for stopped: the host's own `DAEMON_QUIET` (crates/shards/tests/common), a minute,
-/// after which its reads of the stream fail. A stream that carries anything is waited on
-/// however slowly its host runs it (the parity plan's step 10: 196,608 bytes in 120 s).
-const STREAM_QUIET: Duration = Duration::from_secs(60);
-
-/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within
-/// [`STREAM_QUIET`], or since it began watching.
+/// Whether the host's stream through the echo ([`ECHOED`]) has carried bytes within the
+/// host's quiet ([`host_quiet`]), or since it began watching: past it the host's reads of
+/// the stream fail. A stream that carries anything is waited on however slowly its host
+/// runs it (the parity plan's step 10: 196,608 bytes in 120 s).
 struct Streaming {
     echoed: u64,
     since: Instant,
+    quiet: Duration,
 }
 
 impl Streaming {
-    fn new() -> Streaming {
+    fn new(quiet: Duration) -> Streaming {
         Streaming {
             echoed: ECHOED.load(std::sync::atomic::Ordering::Relaxed),
             since: Instant::now(),
+            quiet,
         }
     }
 
@@ -1486,14 +1495,14 @@ impl Streaming {
         if echoed != self.echoed {
             (self.echoed, self.since) = (echoed, Instant::now());
         }
-        self.since.elapsed() < STREAM_QUIET
+        self.since.elapsed() < self.quiet
     }
 }
 
 /// A connection to `listener`, waited for while the host's stream through the echo carries
 /// bytes ([`Streaming`]): the host connects once it has stopped streaming, at the end of a
 /// round however long its host takes over it.
-fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, String> {
+fn accept_while_streaming(listener: &std::fs::File, quiet: Duration) -> Result<std::fs::File, String> {
     use std::os::fd::{AsRawFd, FromRawFd};
     // Each accept(2) gives up after a second, for a look at the stream.
     let wait = libc::timeval {
@@ -1513,7 +1522,7 @@ fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, Str
     if set != 0 {
         return Err(format!("SO_RCVTIMEO: {}", io::Error::last_os_error()));
     }
-    let mut stream = Streaming::new();
+    let mut stream = Streaming::new(quiet);
     loop {
         // SAFETY: accept(2) on our listening socket, without the peer address.
         let fd = unsafe {
@@ -1534,7 +1543,7 @@ fn accept_while_streaming(listener: &std::fs::File) -> Result<std::fs::File, Str
         }
         if !stream.carries() {
             return Err(format!(
-                "no host connection, and nothing through the echo, for {STREAM_QUIET:?}"
+                "no host connection, and nothing through the echo, for {quiet:?}"
             ));
         }
     }
