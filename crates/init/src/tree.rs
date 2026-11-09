@@ -15,8 +15,10 @@ use std::path::{Path, PathBuf};
 
 use shards_abi::changes::{self, Decoder, Entry, Event, flag, kind};
 
-/// How much of a stream is gathered before it is handed on: as much as one frame holds.
-const CHUNK: usize = shards_abi::run::MAX_PAYLOAD as usize;
+/// How much of a stream is gathered before it is handed on: as much as one write of the
+/// guest's sends and the host reads at once (shards_abi::run::BUFFERED): a frame longer
+/// is read in parts all the same, and costs the guest its length in memory.
+const CHUNK: usize = shards_abi::run::BUFFERED;
 
 pub(crate) const OPAQUE: &[u8] = b"trusted.overlay.opaque";
 

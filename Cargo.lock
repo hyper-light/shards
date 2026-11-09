@@ -1283,6 +1283,7 @@ dependencies = [
  "num-traits",
  "regex",
  "serde_json",
+ "shards-abi",
  "shards-image",
  "shards-template",
  "shards-testdir",
@@ -1386,6 +1387,7 @@ name = "shards-ipc"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "shards-abi",
  "shards-testdir",
  "windows-sys 0.61.2",
 ]

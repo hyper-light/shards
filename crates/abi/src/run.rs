@@ -27,8 +27,18 @@ pub const ENGINE_SOCKET: &str = "/run/shards/engine.sock";
 /// The bytes of an exec's token.
 pub const TOKEN: usize = 16;
 pub const HEADER: usize = 8;
-/// The largest payload either side accepts.
-pub const MAX_PAYLOAD: u32 = 1 << 20;
+/// The most of a command line and environment Linux execs, whatever the stack limit it
+/// starts under: 3/4 of `_STK_LIM` (8 MiB), its strings and their pointers together (Linux
+/// 7.2 fs/exec.c `bprm_stack_limits`, l. 414-442; include/uapi/linux/resource.h l. 66).
+pub const ARGS_MOST: u32 = 8 * 1024 * 1024 / 4 * 3;
+/// The largest payload either side accepts: the largest a frame must carry whole is a
+/// command's [`Spec`] (in [`kind::SPEC`] or an exec's frame), which exists to be exec'd in
+/// the guest, so it is as large as Linux execs. A spec encodes each of its strings in no
+/// more than Linux counts it (a 4-byte length against its NUL and an 8-byte pointer), so a
+/// command line and environment the guest's kernel takes fits, the rest of its spec (its
+/// files and limits) within the same bound. Everything sent in parts (output, layers,
+/// trees) is sent in parts of this or less.
+pub const MAX_PAYLOAD: u32 = ARGS_MOST;
 /// What the guest reads of a stream at once, and so the most one of its output frames
 /// carries.
 pub const CHUNK: usize = 64 * 1024;
