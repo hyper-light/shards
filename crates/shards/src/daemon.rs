@@ -555,8 +555,19 @@ type Reserve = Option<File>;
 /// None on Windows: a pipe's client is refused by its own instance, disconnected and made to
 /// wait again (`shards_ipc::Listener::refuse`), which makes no handle.
 #[cfg(windows)]
-#[derive(Default)]
 struct Reserve;
+
+/// A listener's reserve before its first refusal: none held yet on Unix ([`spare_held`]
+/// makes it), and nothing to hold on Windows.
+#[cfg(unix)]
+fn no_reserve() -> Reserve {
+    None
+}
+
+#[cfg(windows)]
+fn no_reserve() -> Reserve {
+    Reserve
+}
 
 /// Whether the listener holds its spare, made again where a refusal let it go and could not:
 /// whether it may accept, since a client it cannot take, and could not refuse, would keep
@@ -2220,7 +2231,7 @@ impl<D: Disk> Daemon<D> {
         self.tell_slots(slots::Event::Look);
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
-        let mut spare = Reserve::default();
+        let mut spare = no_reserve();
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
