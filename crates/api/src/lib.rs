@@ -32,6 +32,8 @@ mod client;
 pub mod conformance;
 pub mod sim;
 mod stream;
+#[cfg(unix)]
+mod taken;
 
 pub use client::Shards;
 
