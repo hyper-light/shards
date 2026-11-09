@@ -13,9 +13,15 @@ shards builds its own guest kernel. Firecracker's CI kernel lacks EROFS, which i
   `firecracker-aarch64-6.18.config`, Firecracker's microVM CI configs at commit
   6f82ac4cf331, unmodified. Crypto self-tests stay on (`CONFIG_CRYPTO_SELFTESTS=y`).
 - **Our changes:** `shards.config`, merged on top, then the architecture's own
-  `shards-<arch>.config` where there is one (`shards-aarch64.config`: a 1,000 Hz tick, PM
-  M66); no option is named by both. Each line says why. The build fails if
-  any of them does not survive `make olddefconfig`.
+  `shards-<arch>.config`; no option is named by both. Each line says why. The build fails
+  if any of them does not survive `make olddefconfig`. The architectures' own:
+  - `shards-aarch64.config`: a 1,000 Hz tick (PM M66).
+  - Both: `CONFIG_NR_CPUS`, as many CPUs as a machine of the architecture has vCPUs at its
+    most, 255 on x86_64 (`acpi::MAX_VCPUS`, the MADT's APIC ids) and 123 on aarch64
+    (`layout::MAX_VCPUS`, the GIC's redistributors), where Firecracker's 64 left a guest
+    given one vCPU for each host CPU (D191) on a host of more the first 64 of them (D13).
+    crates/vmm's `the_guest_kernel_takes_every_vcpu_a_machine_has` holds them to the VMM's
+    limits.
 - **The `kvm` variant:** `kvm.config`, merged last, for a guest that is itself a KVM host,
   on arm64 booted at EL2 (`run --kernel --nested`, D132), and for a guest that takes a PCI
   function it was given through VFIO, its interrupts among it, as the tests of passing a

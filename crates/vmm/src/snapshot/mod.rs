@@ -113,9 +113,32 @@ const VERSION_WITH_SLOTS: u32 = 28;
 /// The snapshot format this build writes and reads: what a snapshot kept for reuse is
 /// keyed by.
 pub const FORMAT: u32 = VERSION;
-/// A state file is kilobytes; anything past this is not one of ours.
-pub(crate) const MAX_STATE: u64 = 64 << 20;
-const MAX_DISKS: usize = 64;
+/// The most virtio devices a machine of this build's guest architecture has, each on a
+/// virtio-mmio transport of its own (`vm::virtio_devices` refuses more): x86-64's free
+/// IOAPIC pins, arm64's SPIs set aside for them (`layout::VIRTIO_MMIO_MAX`). A state's
+/// disks, pmem files and shared directories are among them.
+#[cfg(target_arch = "x86_64")]
+const VIRTIO_SLOTS: usize = crate::arch::x86_64::layout::VIRTIO_MMIO_MAX as usize;
+#[cfg(not(target_arch = "x86_64"))]
+const VIRTIO_SLOTS: usize = crate::arch::aarch64::layout::VIRTIO_MMIO_MAX as usize;
+/// A state's head as [`encode`] writes it, as far as its RAM's size: the magic, the
+/// format, this build's architecture's name and the generation's, each with its length,
+/// the vCPUs and the RAM. A state of another architecture is refused within it.
+const HEAD: usize = MAGIC.len() + 4 + 4 + std::env::consts::ARCH.len() + 4 + MAX_NAME + 4 + 8;
+
+/// The most a state of a machine of `memory_mib` of RAM holds: that RAM's size. A state
+/// is read whole into the process restoring its machine, beside the RAM that process maps
+/// for the guest, so that a state of no more costs a restore no more than its guest may
+/// use of the host as it runs: a hostile state gains nothing past the machine it claims
+/// to be, and is refused past it before more than its head is read, its parts as they
+/// are decoded by what that machine makes. A state holds its machine's bookkeeping (runs
+/// of its RAM, its vCPUs' registers, its devices' queues and a share's tables), each a
+/// small part of it (D176's decoders bound each), and the bytes of the files its guest
+/// holds open on a share that no path reaches, which alone nothing of the machine bounds:
+/// a save of more is refused, as a save past 64 MiB was.
+pub(crate) fn most_state(memory_mib: u64) -> u64 {
+    memory_mib.saturating_mul(1 << 20)
+}
 /// A generation's name as [`fresh_name`] makes it, at its longest: `g-`, then the time's
 /// nanoseconds, this process's ID and a count, in hex, each of at most its type's digits.
 const MAX_NAME: usize =
@@ -553,8 +576,9 @@ pub fn decodes(bytes: &[u8]) -> bool {
     decode(bytes).is_ok()
 }
 
-fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
-    let mut r = Reader::new(bytes);
+/// A state's head, as far as its RAM's size: its format, its generation's name, its vCPUs
+/// and its RAM in MiB.
+fn decode_head(r: &mut Reader<'_>) -> codec::Result<(u32, String, u32, u64)> {
     let mut magic = [0u8; 8];
     for b in &mut magic {
         *b = r.u8()?;
@@ -568,7 +592,8 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
             "snapshot format {version}; this shards reads {VERSION}"
         )));
     }
-    let arch = r.bytes(32)?;
+    // Any name the input holds, as it is only compared.
+    let arch = r.bytes(usize::MAX)?;
     if arch != std::env::consts::ARCH.as_bytes() {
         return Err(DecodeError(format!(
             "snapshot of a {} guest; this host runs {} guests",
@@ -579,12 +604,32 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
     let generation = std::str::from_utf8(r.bytes(MAX_NAME)?)
         .map_err(|_| DecodeError("a generation name that is not UTF-8".into()))?
         .to_string();
-    let vcpus = r.u32()?;
-    let memory_mib = r.u64()?;
+    Ok((version, generation, r.u32()?, r.u64()?))
+}
+
+/// The most the state whose first [`HEAD`] bytes are `head` may hold ([`most_state`]):
+/// what [`platform::read_beneath_by`] reads a state by.
+fn state_most(head: &[u8]) -> io::Result<u64> {
+    decode_head(&mut Reader::new(head))
+        .map(|(_, _, _, memory_mib)| most_state(memory_mib))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+/// The state file of generation `name` in `dir`, none where it is gone: refused past its
+/// machine's RAM before more than its head is read.
+fn read_state(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
+    platform::read_beneath_by(dir, &[name, STATE], HEAD, state_most)
+}
+
+fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
+    let mut r = Reader::new(bytes);
+    let (version, generation, vcpus, memory_mib) = decode_head(&mut r)?;
     let path = platform::PATH_MOST;
-    let disks = r.seq(MAX_DISKS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
-    let pmem = r.seq(MAX_DISKS, 4, |r| path_from(r.bytes(path)?))?;
-    let identities = r.seq(2 * MAX_DISKS, 36, Identity::decode)?;
+    let disks = r.seq(VIRTIO_SLOTS, 5, |r| Ok((path_from(r.bytes(path)?)?, r.bool()?)))?;
+    let pmem = r.seq(VIRTIO_SLOTS.saturating_sub(disks.len()), 4, |r| {
+        path_from(r.bytes(path)?)
+    })?;
+    let identities = r.seq(VIRTIO_SLOTS, 36, Identity::decode)?;
     if identities.len() != disks.len() + pmem.len() {
         return Err(DecodeError(format!(
             "{} identities for {} backing files",
@@ -601,8 +646,13 @@ fn decode(bytes: &[u8]) -> codec::Result<Decoded> {
         Err(_) => return Err(DecodeError("a MAC that is not six bytes".into())),
     };
     let shares = r.u32()?;
-    if shares as usize > MAX_DISKS {
-        return Err(DecodeError(format!("{shares} shared directories")));
+    if shares as usize > VIRTIO_SLOTS.saturating_sub(disks.len() + pmem.len()) {
+        return Err(DecodeError(format!(
+            "{shares} shared directories beside {} disks and {} pmem files, more than a \
+             machine's {VIRTIO_SLOTS} virtio devices",
+            disks.len(),
+            pmem.len()
+        )));
     }
     let join = r.bool()?;
     let join_share = r.bool()?;
@@ -1024,7 +1074,7 @@ pub fn relocate(dir: &Path, to: &dyn Fn(&Path) -> Option<PathBuf>) -> Result<(),
         .and_then(|n| n.to_str())
         .ok_or_else(|| at(&"a generation with no name"))?
         .to_string();
-    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+    let bytes = read_state(dir, &name)
         .map_err(|e| at(&e))?
         .ok_or_else(|| at(&"gone"))?;
     let decoded = decode(&bytes).map_err(|e| at(&e))?;
@@ -1085,7 +1135,7 @@ pub fn layout(dir: &Path) -> Result<(u64, Vec<(u64, u64)>), String> {
         .ok_or_else(|| format!("{}: a generation with no name", generation.display()))?
         .to_string();
     let at = |e: &dyn std::fmt::Display| format!("{}: {e}", generation.join(STATE).display());
-    let bytes = platform::read_beneath(dir, &[name.as_str(), STATE], MAX_STATE)
+    let bytes = read_state(dir, &name)
         .map_err(|e| at(&e))?
         .ok_or_else(|| at(&"gone"))?;
     let decoded = decode(&bytes).map_err(|e| at(&e))?;
@@ -1107,10 +1157,12 @@ fn state_of(snap: &Snapshot, name: &str) -> Result<Vec<u8>, String> {
     let state = encode(snap, name, &identities)?;
     // No more than a restore reads (D176): a share's tables, with the bytes of the files its
     // guest holds that no path reaches, are what grows it.
-    if state.len() as u64 > MAX_STATE {
+    let most = most_state(snap.config.memory_mib);
+    if state.len() as u64 > most {
         return Err(format!(
-            "the machine's state is {} bytes, more than a snapshot keeps ({MAX_STATE})",
-            state.len()
+            "the machine's state is {} bytes, more than a snapshot of its {} MiB of memory keeps ({most})",
+            state.len(),
+            snap.config.memory_mib
         ));
     }
     Ok(state)
@@ -1322,7 +1374,7 @@ pub fn backing_named(dir: &Path) -> Result<Vec<(PathBuf, bool)>, String> {
         _ => format!("{}: {CURRENT}: {e}", dir.display()),
     })?;
     let state = dir.join(&name).join(STATE);
-    let bytes = platform::read_beneath(dir, &[&name, STATE], MAX_STATE)
+    let bytes = read_state(dir, &name)
         .map_err(|e| format!("{}: {e}", state.display()))?
         .ok_or_else(|| format!("{}: gone", state.display()))?;
     let decoded = decode(&bytes).map_err(|e| format!("{}: {e}", state.display()))?;
@@ -1359,7 +1411,7 @@ fn open(dir: &Path, name: &str) -> Result<Pinned, Open> {
             Open::Bad(at(file, &e))
         }
     };
-    let bytes = platform::read_beneath(dir, &[name, STATE], MAX_STATE)
+    let bytes = read_state(dir, name)
         .map_err(|e| Open::Bad(at(STATE, &e)))?
         .ok_or_else(|| Open::Gone(at(STATE, &"gone")))?;
     let decoded = decode(&bytes).map_err(|e| Open::Bad(at(STATE, &e)))?;
@@ -1814,10 +1866,85 @@ mod tests {
         assert!(e.0.contains("bytes left"), "{e}");
     }
 
+    /// A state's head, as far as its RAM, is [`HEAD`] long, and says the most the state
+    /// holds: its RAM's size; one of another architecture is refused within it. Its disks,
+    /// pmem files and shares are no more than a machine's virtio devices.
+    #[test]
+    fn a_state_is_bounded_by_its_machine() {
+        let ids = vec![Identity::default(); 3];
+        let snap = sample(&nowhere(), 1);
+        let longest = format!("g-{}", "a".repeat(MAX_NAME - 2));
+        let bytes = encode(&snap, &longest, &ids).unwrap();
+        let head = bytes.get(..HEAD).unwrap();
+        let mut r = Reader::new(head);
+        let (_, _, vcpus, memory_mib) = decode_head(&mut r).unwrap();
+        assert!(
+            r.is_empty(),
+            "the head of the longest name ends with the RAM's size"
+        );
+        assert_eq!((vcpus, memory_mib), (4, 1));
+        assert_eq!(state_most(head).unwrap(), 1 << 20);
+        assert_eq!(most_state(512), 512 << 20);
+        assert_eq!(most_state(u64::MAX), u64::MAX);
+        // A state of another architecture says so, whatever its name's length.
+        let arch = std::env::consts::ARCH.as_bytes();
+        let at = MAGIC.len() + 4;
+        let mut foreign = bytes.clone();
+        foreign.splice(
+            at..at + 4 + arch.len(),
+            [&7u32.to_le_bytes()[..], b"riscv64"].concat(),
+        );
+        let e = state_most(&foreign[..HEAD]).unwrap_err();
+        assert!(e.to_string().contains("snapshot of a riscv64 guest"), "{e}");
+
+        let mut full = sample(&nowhere(), 1);
+        full.config.shares = (VIRTIO_SLOTS - 3) as u32;
+        assert!(decode(&encode(&full, "g-1", &ids).unwrap()).is_ok());
+        full.config.shares += 1;
+        let e = decode(&encode(&full, "g-1", &ids).unwrap()).unwrap_err();
+        assert!(e.0.contains("virtio devices"), "{e}");
+        let mut disks = sample(&nowhere(), 1);
+        disks.config.pmem.clear();
+        disks.config.shares = 0;
+        disks.config.disks = vec![(nowhere().join("d"), true); VIRTIO_SLOTS + 1];
+        let many = vec![Identity::default(); VIRTIO_SLOTS + 1];
+        assert!(decode(&encode(&disks, "g-1", &many).unwrap()).is_err());
+    }
+
     /// The store on disk, on every host: Windows' platform layer opens files beneath a
     /// directory and in one it holds as Unix's does (windows_files.rs).
     mod on_disk {
         use super::*;
+
+        /// A state longer than its machine's RAM is refused before more than its head is
+        /// read, and one within it is read whole; a state's save past it is refused.
+        #[test]
+        fn a_state_past_its_machines_memory_is_refused() {
+            let dir = shards_testdir::TempDir::new("snap-most").unwrap();
+            let name = fresh_name();
+            fs::create_dir(dir.join(&name)).unwrap();
+            let ids = vec![Identity::default(); 3];
+            let mut snap = sample(&nowhere(), 1);
+            let mut bytes = encode(&snap, &name, &ids).unwrap();
+            bytes.resize(1 << 20, 0);
+            fs::write(dir.join(&name).join(STATE), &bytes).unwrap();
+            assert_eq!(read_state(&dir, &name).unwrap().unwrap().len(), 1 << 20);
+            bytes.push(0);
+            fs::write(dir.join(&name).join(STATE), &bytes).unwrap();
+            let e = read_state(&dir, &name).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{e}");
+            assert!(read_state(&dir, "g-gone").unwrap().is_none());
+
+            let files = Scratch::new("most-save");
+            snap = sample(&files.0, 1);
+            assert!(state_of(&snap, &name).is_ok());
+            snap.devices = vec![0; 1 << 20];
+            let e = state_of(&snap, &name).unwrap_err();
+            assert!(
+                e.contains("more than a snapshot of its 1 MiB of memory keeps"),
+                "{e}"
+            );
+        }
 
         /// A directory of its own under the system's temporary directory, holding the
         /// files [`sample`] names, removed on drop.

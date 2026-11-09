@@ -111,7 +111,7 @@ const DESCRIPTOR: u8 = 3;
 const SETUPMAPPING: u32 = 48;
 const REMOVEMAPPING: u32 = 49;
 const MAP_WRITE: u64 = 1 << 0;
-/// The most a control frame holds: a share's tables, which a snapshot's state holds.
+/// The most a control frame holds: its length word's, a share's tables at their most.
 const MAX_CONTROL: usize = proto::MAX_TABLES;
 
 impl Slot {

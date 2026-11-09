@@ -23,13 +23,19 @@ use crate::memory::GuestMemory;
 pub const DEVICE_ID: u32 = 5;
 /// VIRTIO_BALLOON_F_REPORTING (include/uapi/linux/virtio_balloon.h).
 const REPORTING: u64 = 1 << 5;
-/// Linux reports at most PAGE_REPORTING_CAPACITY (32) ranges at once, each a descriptor of
-/// one chain, and takes a reporting queue no smaller (virtio_balloon.c `virtballoon_probe`).
-const QUEUE_SIZE: u16 = 64;
+/// Inflate's and deflate's rings: Linux's driver sends one array of page numbers at a time
+/// on each, one descriptor, and waits for the device to take it before the next
+/// (drivers/virtio/virtio_balloon.c l. 183-197, `tell_host`; Linux 1590cf03).
+const PAGES_QUEUE_SIZE: u16 = 1;
+/// The reporting ring: Linux reports at most PAGE_REPORTING_CAPACITY (32,
+/// include/linux/page_reporting.h l. 9) ranges at once, each a descriptor of one chain,
+/// waits for each report to be taken (l. 199-224, `virtballoon_free_page_report`), and
+/// takes a reporting queue no smaller (l. 1019-1023, `virtballoon_probe`).
+const REPORTING_QUEUE_SIZE: u16 = 32;
 /// The queues as Linux's driver finds them with free page reporting alone: inflate,
 /// deflate, then reporting, as it gives indexes only to the queues it names
 /// (virtio_balloon.c `init_vqs`, virtio_mmio.c `vm_find_vqs`).
-const QUEUES: [u16; 3] = [QUEUE_SIZE; 3];
+const QUEUES: [u16; 3] = [PAGES_QUEUE_SIZE, PAGES_QUEUE_SIZE, REPORTING_QUEUE_SIZE];
 const REPORTING_QUEUE: usize = 2;
 /// `struct virtio_balloon_config`: le32 num_pages, actual, free_page_hint_cmd_id,
 /// poison_val.

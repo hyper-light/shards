@@ -55,8 +55,10 @@ pub const GUEST_PAGE: u32 = 4096;
 pub const MAX_WRITE: u32 = MAX_PAGES as u32 * GUEST_PAGE;
 
 /// The most a share's tables hold, the bytes of its guest's removed files among them: what
-/// a snapshot's state holds (D176).
-pub const MAX_TABLES: usize = crate::snapshot::MAX_STATE as usize;
+/// one control frame carries to or from its server, the 31 bits of its length word below
+/// the bit that marks it (`CONTROL`). The state that keeps them is bounded besides by its
+/// machine's RAM (`snapshot::most_state`, D176), which a save checks as a restore does.
+pub const MAX_TABLES: usize = (super::CONTROL - 1) as usize;
 
 /// The bytes of a request's header that an answer of an error alone needs: its length,
 /// opcode and `unique`.

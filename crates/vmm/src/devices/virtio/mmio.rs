@@ -174,7 +174,7 @@ impl MmioTransport {
         }
         s.status = new;
         if added & status::DRIVER_OK != 0
-            && let Err(e) = self.activate(s, &[])
+            && let Err(e) = self.activate(s, None)
         {
             if !std::mem::replace(&mut s.said_activate, true) {
                 warn!("virtio device {}: {e}", s.device.device_id());
@@ -185,12 +185,20 @@ impl MmioTransport {
     }
 
     /// Starts the device on the driver's queues, continuing from `progress` where a
-    /// snapshot recorded it (empty: from the beginning).
-    fn activate(&self, s: &mut State, progress: &[QueueState]) -> Result<(), String> {
+    /// snapshot recorded it (empty: from the beginning; none: not restored).
+    fn activate(&self, s: &mut State, restored: Option<&[QueueState]>) -> Result<(), String> {
+        let progress = restored.unwrap_or_default();
         if s.status & status::FEATURES_OK == 0 {
             return Err("DRIVER_OK before FEATURES_OK".into());
         }
-        let max = s.device.queue_max_sizes().to_vec();
+        // A restored queue is the ring its driver made against what the device offered
+        // then, which another build may have offered more of (a ring's size since derived
+        // from its traffic, D12): it is held to the specification's maximum, as its
+        // driver will not size it again.
+        let max: Vec<u16> = match restored {
+            None => s.device.queue_max_sizes().to_vec(),
+            Some(_) => vec![super::queue::MAX_QUEUE_SIZE; s.queues.len()],
+        };
         let mut queues = Vec::with_capacity(s.queues.len());
         for (i, (cfg, max)) in s.queues.iter().zip(max).enumerate() {
             if !cfg.ready {
@@ -415,7 +423,7 @@ impl MmioDevice for MmioTransport {
         let live = status::DRIVER_OK;
         let dead = status::DEVICE_NEEDS_RESET | status::FAILED;
         if s.status & live != 0 && s.status & dead == 0 && !failed {
-            self.activate(&mut s, &progress)
+            self.activate(&mut s, Some(&progress))
                 .map_err(|e| codec::DecodeError(format!("restoring virtio device: {e}")))?;
         }
         Ok(())
@@ -465,6 +473,87 @@ mod tests {
 
     impl Interrupt for Line {
         fn set_level(&self, _: bool) {}
+    }
+
+    /// A device of one queue of at most `.0` entries, which says the sizes it is started
+    /// on.
+    struct Ring(u16, Arc<Mutex<Vec<u16>>>);
+
+    impl VirtioDevice for Ring {
+        fn device_id(&self) -> u32 {
+            16
+        }
+        fn features(&self) -> u64 {
+            feature::VERSION_1
+        }
+        fn queue_max_sizes(&self) -> &[u16] {
+            std::slice::from_ref(&self.0)
+        }
+        fn read_config(&self, _: u64, data: &mut [u8]) {
+            data.fill(0);
+        }
+        fn write_config(&mut self, _: u64, _: &[u8]) {}
+        fn activate(&mut self, a: Activation) -> Result<(), String> {
+            *self.1.lock().unwrap() = a.queues.iter().map(Queue::size).collect();
+            Ok(())
+        }
+        fn notify(&self, _: u16) {}
+        fn reset(&mut self) {}
+        fn pause(&mut self) -> Vec<QueueState> {
+            Vec::new()
+        }
+        fn resume(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A ring its driver made against what another build offered, more than this one's
+    /// device offers, is restored as it was made (a ring's size derived anew, D12); a
+    /// driver of this build is held to what the device offers.
+    #[test]
+    fn a_restored_ring_keeps_the_size_its_driver_made() {
+        let memory = Arc::new(GuestMemory::anonymous(&[(0, 1 << 16)]).unwrap());
+        let drive = |t: &MmioTransport, size: u32| {
+            for (at, v) in [
+                (DRIVER_FEATURES_SEL, 1),
+                (DRIVER_FEATURES, (feature::VERSION_1 >> 32) as u32),
+                (QUEUE_SEL, 0),
+                (QUEUE_NUM, size),
+                (QUEUE_DESC_LOW, 0x1000),
+                (QUEUE_DRIVER_LOW, 0x2000),
+                (QUEUE_DEVICE_LOW, 0x3000),
+                (QUEUE_READY, 1),
+                (STATUS, status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK),
+                (
+                    STATUS,
+                    status::ACKNOWLEDGE | status::DRIVER | status::FEATURES_OK | status::DRIVER_OK,
+                ),
+            ] {
+                t.write(at, &v.to_le_bytes());
+            }
+        };
+        let then = Arc::new(Mutex::new(Vec::new()));
+        let old = MmioTransport::new(Box::new(Ring(8, then.clone())), memory.clone(), Arc::new(Line));
+        drive(&old, 8);
+        assert_eq!(*then.lock().unwrap(), [8]);
+        old.pause();
+        let mut w = Writer::default();
+        old.save(&mut w);
+        let saved = w.into_bytes();
+
+        let now = Arc::new(Mutex::new(Vec::new()));
+        let new = MmioTransport::new(Box::new(Ring(4, now.clone())), memory.clone(), Arc::new(Line));
+        new.restore(&mut Reader::new(&saved)).unwrap();
+        assert_eq!(*now.lock().unwrap(), [8], "restored as its driver made it");
+
+        let fresh = Arc::new(Mutex::new(Vec::new()));
+        let driven = MmioTransport::new(Box::new(Ring(4, fresh.clone())), memory, Arc::new(Line));
+        drive(&driven, 8);
+        assert!(
+            fresh.lock().unwrap().is_empty(),
+            "a new driver's past the device's"
+        );
+        assert_ne!(read(&driven, STATUS) & status::DEVICE_NEEDS_RESET, 0);
     }
 
     fn read(t: &MmioTransport, offset: u64) -> u32 {

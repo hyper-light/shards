@@ -30,8 +30,11 @@ pub const BLOCK: u64 = 2 << 20;
 /// the unit it adds memory in; memory outside whole blocks of it Linux cannot use
 /// (`virtio_mem_init_hotplug`).
 pub const ALIGN: u64 = 128 << 20;
-/// Linux's driver waits for each request's answer before it sends the next.
-const QUEUE_SIZE: u16 = 64;
+/// The ring: Linux's driver sends one request at a time, from the one buffer it keeps, and
+/// waits for its answer before the next (drivers/virtio/virtio_mem.c l. 1389-1417,
+/// `virtio_mem_send_request`; Linux 1590cf03): the request and its response, two
+/// descriptors, as the device offers no indirect ones.
+const QUEUE_SIZE: u16 = 2;
 /// VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE (include/uapi/linux/virtio_mem.h).
 const UNPLUGGED_INACCESSIBLE: u64 = 1 << 1;
 
