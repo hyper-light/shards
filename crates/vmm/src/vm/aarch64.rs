@@ -458,6 +458,7 @@ fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
+    said: usize,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
     pci: super::Pci<'_>,
@@ -680,6 +681,7 @@ fn assemble(
             gic: gic.clone(),
             intid: SPI_INTID_BASE + layout::SPI_UART,
         }),
+        said,
     ));
     bus.insert(layout::UART, 0x1000, serial.clone())?;
     bus.insert(layout::RTC, 0x1000, Arc::new(Pl031::default()))?;
@@ -855,6 +857,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             &memory,
             &config,
             cfg.console,
+            cfg.said,
             hosts,
             cfg.gpu.then_some(0),
             super::Pci {
@@ -1069,6 +1072,7 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
+    said: usize,
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
@@ -1094,6 +1098,7 @@ pub fn restore(
         &memory,
         &snap.config,
         console,
+        said,
         hosts,
         snap.config.gpu,
         super::Pci {

@@ -32,7 +32,7 @@ fn until(handle: &Handle, line: &str) -> String {
     loop {
         let console = handle.console_said();
         heard.said(console != before);
-        let said = String::from_utf8_lossy(&console).into_owned();
+        let said = String::from_utf8_lossy(&console.lines).into_owned();
         if let Some(before) = said.rsplit_once(line).map(|(before, _)| before) {
             return before.to_string();
         }
@@ -110,6 +110,8 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
     cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
+    // Its whole console kept: this test reads it as it goes (D12).
+    cfg.said = usize::MAX;
     cfg.pci_slots = 4;
     cfg.disks.push(vm::Disk {
         path: boot_disk.clone(),
@@ -251,6 +253,8 @@ fn devices_are_plugged_into_a_running_microvm_and_its_disks_grow() {
         cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
         cfg.memory_mib = 512;
         cfg.console = Console::Discard;
+        // Its whole console kept: this test reads it as it goes (D12).
+        cfg.said = usize::MAX;
         cfg.pci_slots = slots;
         let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
         until(&handle, "SHARDS-PLUG WAIT 0");
@@ -328,6 +332,8 @@ fn a_hosts_function_is_plugged_into_a_running_microvm() {
     cfg.cmdline = "console=ttyS0 panic=-1 quiet shards_test=pci-plug".into();
     cfg.memory_mib = 512;
     cfg.console = Console::Discard;
+    // Its whole console kept: this test reads it as it goes (D12).
+    cfg.said = usize::MAX;
     cfg.pci_slots = 2;
     let (handle, running) = vm::start(&cfg).unwrap_or_else(|e| panic!("{e}"));
     let mut step = 0;

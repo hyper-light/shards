@@ -8,7 +8,7 @@
 //! asks for a reset (`vm_run.rs` `supervise`), and as it is signalled or killed.
 //!
 //! What shards writes to its stdout and stderr is diagnostics, never a protocol: its last
-//! [`TAIL`] bytes are kept for a refusal to quote. The guest is ready when a `CONNECT` is
+//! bytes are kept for a refusal to quote, as many as its longest report takes ([`tail`]). The guest is ready when a `CONNECT` is
 //! answered `OK`; until it listens, the handshake is refused or closed and asked again.
 
 use std::collections::VecDeque;
@@ -35,21 +35,24 @@ impl Shards {
     }
 }
 
-/// What shards-vmm keeps of a guest's console, its last bytes, and a reset's report
-/// quotes: `SAID` (`crates/vmm/src/devices/serial.rs:57`).
-const CONSOLE_SAID: usize = 4096;
 /// The most bytes shards' report writes for one byte of the console: it escapes each control
-/// character (`vm_run.rs:2750` `last_said`, `char::escape_default`): a C0 one or DEL to at
+/// character (`vm_run.rs` `last_said`, `char::escape_default`): a C0 one or DEL to at
 /// most six (`\u{1f}`, `\u{7f}`), a C1 one (two bytes) to six, a byte that is no UTF-8 to
 /// U+FFFD's three.
 const ESCAPED: usize = "\\u{7f}".len();
-/// How much of what shards says on its stdout and stderr is kept, its last bytes: the longest
-/// report it writes as it ends, a reset's, with `--no-console` its guest's last console page
-/// escaped (`crates/shards/src/vm_run.rs:2730-2737`, `report` at `:1021`), so a refusal quotes it
-/// whole. Its other reports are one error each.
-const TAIL: usize = "shards: guest requested a reset, its console's last lines:\n".len()
-    + CONSOLE_SAID * ESCAPED
-    + "\n".len();
+/// How much of what shards says on its stdout and stderr is kept, its last bytes, for a guest
+/// that keeps `said` bytes of its console (`--console-said`, D12): the longest report it
+/// writes as it ends, a reset's, with `--no-console` its guest's last console bytes escaped
+/// and their first said lost (`crates/shards/src/vm_run.rs` `supervise`, `last_said`), so a
+/// refusal quotes it whole. Its other reports are one error each.
+fn tail(said: usize) -> usize {
+    "shards: guest requested a reset, its console's last lines, those before them lost past the "
+        .len()
+        .saturating_add(usize::MAX.ilog10() as usize + 1)
+        .saturating_add(" bytes kept:\n".len())
+        .saturating_add(said.saturating_mul(ESCAPED))
+        .saturating_add("\n".len())
+}
 /// The longest answer a handshake reads, `OK <host port>\n` with the port a u32: Firecracker's
 /// hybrid vsock answer (firecracker `docs/vsock.md`, "Host-Initiated Connections": `OK
 /// <assigned_hostside_port>\n`), as shards' muxer writes it
@@ -104,6 +107,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
             bytes: VecDeque::new(),
+            keep: 0,
             drained: true,
             output: None,
         }),
@@ -155,7 +159,9 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
     backend()?;
     let dir = PrivateDir::new()?;
     let vsock = dir.0.join("v");
-    let args = arguments(spec, &vsock)?;
+    // What its console keeps to quote, as its kernel's records say (D12).
+    let said = crate::said::kept(&spec.kernel);
+    let args = arguments(spec, &vsock, said)?;
     let binary = spec
         .binary
         .clone()
@@ -190,6 +196,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
             bytes: VecDeque::new(),
+            keep: tail(said),
             drained: false,
             output: None,
         }),
@@ -221,9 +228,10 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
     })
 }
 
-/// `shards run --kernel …` for `spec`, its vsock at `vsock`. `--kernel` comes first, as the
-/// command line knows a direct boot by it (`cli/mod.rs`).
-fn arguments(spec: &GuestSpec, vsock: &Path) -> Result<Vec<OsString>, Refusal> {
+/// `shards run --kernel …` for `spec`, its vsock at `vsock`, its console's last `said` bytes
+/// kept to quote. `--kernel` comes first, as the command line knows a direct boot by it
+/// (`cli/mod.rs`).
+fn arguments(spec: &GuestSpec, vsock: &Path, said: usize) -> Result<Vec<OsString>, Refusal> {
     let mut args: Vec<OsString> = vec!["run".into(), "--kernel".into(), spec.kernel.clone().into()];
     match &spec.init {
         Init::Initrd(path) => args.extend(["--initrd".into(), path.clone().into()]),
@@ -243,7 +251,13 @@ fn arguments(spec: &GuestSpec, vsock: &Path) -> Result<Vec<OsString>, Refusal> {
     for share in &spec.shares {
         args.extend(["--share".into(), with_mode("share", &share.dir, share.read_only)?]);
     }
-    args.extend(["--vsock".into(), vsock.into(), "--no-console".into()]);
+    args.extend([
+        "--vsock".into(),
+        vsock.into(),
+        "--no-console".into(),
+        "--console-said".into(),
+        said.to_string().into(),
+    ]);
     Ok(args)
 }
 
@@ -387,6 +401,8 @@ struct State {
 #[derive(Debug)]
 struct Tail {
     bytes: VecDeque<u8>,
+    /// How many of its last bytes are kept ([`tail`]).
+    keep: usize,
     /// Read to the end mark, or to an end or error before it.
     drained: bool,
     /// The read end, once drained: kept open, so the end mark's write meets no closed pipe
@@ -427,13 +443,15 @@ fn start_threads(
     Ok(())
 }
 
-/// Reads `output` to the end mark, keeping its last [`TAIL`] bytes before it. What follows the
+/// Reads `output` to the end mark, keeping its last bytes before it, as many as its tail
+/// keeps ([`Tail::keep`]). What follows the
 /// mark is not shards': a child it left holding its output (macOS's grants broker, until it
 /// exits) holds no refusal back.
 fn drain(shared: &Shared, mut output: io::PipeReader) {
     let mark = shared.end_mark.as_slice();
-    // A read never returns more than the tail keeps.
-    let mut buf = [0u8; TAIL];
+    let keep = lock(&shared.tail).keep;
+    // A read never returns more than the tail keeps (never nothing: [`tail`]'s report).
+    let mut buf = vec![0u8; keep];
     loop {
         match output.read(&mut buf) {
             Ok(0) => break,
@@ -450,7 +468,7 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
                 if let Some(at) = at {
                     tail.bytes.truncate(from.saturating_add(at));
                 }
-                let over = tail.bytes.len().saturating_sub(TAIL);
+                let over = tail.bytes.len().saturating_sub(keep);
                 tail.bytes.drain(..over);
                 if at.is_some() {
                     break;
@@ -961,7 +979,7 @@ mod tests {
     /// kernel first (D215).
     #[test]
     fn a_spec_is_the_flags_shards_run_reads() {
-        let args = arguments(&spec(), Path::new("/p/v")).unwrap();
+        let args = arguments(&spec(), Path::new("/p/v"), 2048).unwrap();
         let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(
             args,
@@ -985,14 +1003,16 @@ mod tests {
                 "/s/ro:ro",
                 "--vsock",
                 "/p/v",
-                "--no-console"
+                "--no-console",
+                "--console-said",
+                "2048"
             ]
         );
         let initrd = GuestSpec {
             init: Init::Initrd("/k/initrd".into()),
             ..spec()
         };
-        let args = arguments(&initrd, Path::new("/p/v")).unwrap();
+        let args = arguments(&initrd, Path::new("/p/v"), 2048).unwrap();
         assert_eq!(args.get(3..5).unwrap(), ["--initrd", "/k/initrd"]);
     }
 
@@ -1005,7 +1025,7 @@ mod tests {
             read_only: false,
         });
         assert!(matches!(
-            arguments(&s, Path::new("/p/v")),
+            arguments(&s, Path::new("/p/v"), 2048),
             Err(Refusal::Unsupported { what: "disk", .. })
         ));
     }

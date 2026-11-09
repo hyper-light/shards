@@ -347,25 +347,39 @@ mod client {
     }
 
     /// The longest report shards writes as it ends, a reset's with its guest's last console
-    /// page escaped (six bytes for each of its 4096), is quoted whole (D215).
+    /// bytes escaped (six bytes for each of the `--console-said N` the client passed) and
+    /// their first said lost, is quoted whole (D12, D215).
     #[test]
     fn the_longest_report_shards_writes_is_quoted_whole() {
         let dir = shards_testdir::TempDir::new("api-tail").unwrap();
-        let report = format!(
-            "shards: guest requested a reset, its console's last lines:\n{}",
-            "\\u{1b}".repeat(4096)
-        );
         let said = dir.path().join("said");
-        std::fs::write(&said, format!("{report}\n")).unwrap();
-        let bin = stand_in(&dir, &format!("cat '{}' >&2; exit 3", said.display()));
+        let script = r#"n=
+while [ $# -gt 0 ]; do
+  if [ "$1" = --console-said ]; then n=$2; fi
+  shift
+done
+{
+  printf "shards: guest requested a reset, its console's last lines, those before them lost past the %s bytes kept:\n" "$n"
+  i=0
+  while [ "$i" -lt "$n" ]; do printf '\\u{1b}'; i=$((i+1)); done
+  printf '\n'
+} > 'SAID'
+cat 'SAID' >&2
+exit 3"#
+            .replace("SAID", &said.display().to_string());
+        let bin = stand_in(&dir, &script);
         let g = Shards
             .boot(&GuestSpec {
                 binary: Some(bin),
                 ..spec("")
             })
             .unwrap();
-        match g.connect(ECHO, patience()) {
-            Err(Refusal::Boot(why)) => assert!(why.ends_with(&report), "{} bytes: {why:.200}", why.len()),
+        let outcome = g.connect(ECHO, patience());
+        let report = std::fs::read_to_string(&said).unwrap();
+        let report = report.trim_end();
+        assert!(report.ends_with("\\u{1b}"), "{report:.200}");
+        match outcome {
+            Err(Refusal::Boot(why)) => assert!(why.ends_with(report), "{} bytes: {why:.200}", why.len()),
             other => panic!("{:?}", other.err()),
         }
     }
