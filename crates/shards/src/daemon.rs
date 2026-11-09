@@ -555,7 +555,8 @@ type Reserve = Option<File>;
 /// None on Windows: a pipe's client is refused by its own instance, disconnected and made to
 /// wait again (`shards_ipc::Listener::refuse`), which makes no handle.
 #[cfg(windows)]
-type Reserve = ();
+#[derive(Default)]
+struct Reserve;
 
 /// Whether the listener holds its spare, made again where a refusal let it go and could not:
 /// whether it may accept, since a client it cannot take, and could not refuse, would keep
