@@ -25,7 +25,7 @@ use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::Span;
 use super::conn::Conn;
@@ -37,8 +37,6 @@ use crate::platform::{AsRawSocket, UnixListener, UnixStream};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::vm::VsockHost;
 
-/// Open connections and pending handshakes together (Firecracker's MAX_CONNECTIONS).
-const MAX_CONNECTIONS: usize = 1023;
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
@@ -47,12 +45,6 @@ const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
 /// The longest handshake line: `CONNECT 4294967295\r\n`. A longer one is refused before
 /// its end: a port has at most `u32::MAX`'s digits, and its words one space between them.
 const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
-/// How long a pending handshake holds its slot against a newcomer once accepted: not at
-/// all, by any clock. A client that is gone is seen at once, as its socket's end; one that
-/// is alive keeps its slot while no other wants it, and gives it up, silent longest first,
-/// when one does ([`Muxer::make_room`]). Its line is a local process's to write, as soon
-/// as the process runs, so a load that delays the process delays nothing else (D12).
-const HANDSHAKE_TIMEOUT: Duration = Duration::ZERO;
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
 
@@ -96,6 +88,25 @@ pub(super) const fn stray_rsts_bound(rx_ring: u16, tx_ring: u16) -> usize {
     }
 }
 
+/// A muxer's slots ([`Muxer::slots`]): what this process's descriptor limit, raised as far
+/// as it may go as a share process raises its own, leaves past the descriptors it holds,
+/// its listener's and spare's among them, one to a connection, its host socket
+/// (`shards_abi::bounds::connections`, D12). Where it cannot say what it holds, the limit
+/// alone; where it cannot say its limit, no number: its descriptors bound them then, as
+/// they bound a dial past what it held as the muxer was made ([`Muxer::refuse_one`]).
+fn slots() -> usize {
+    let limit = crate::platform::raise_descriptor_limit()
+        .ok()
+        .or_else(crate::platform::descriptor_limit);
+    match limit {
+        Some(limit) => {
+            let held = crate::platform::open_descriptors().unwrap_or(0);
+            shards_abi::bounds::connections(limit, held, 1)
+        }
+        None => usize::MAX,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     local_port: u32,
@@ -115,9 +126,13 @@ pub enum Token {
 struct Handshake {
     stream: UnixStream,
     line: Vec<u8>,
-    /// Its latest progress: its accept, then the latest bytes of its line. The handshake
-    /// silent longest gives its slot up first ([`Muxer::make_room`]).
-    deadline: Instant,
+    /// Its latest progress: its accept, then the latest bytes of its line. A pending
+    /// handshake holds its slot against a newcomer on no clock: a client that is gone is seen
+    /// at once, as its socket's end; one that is alive keeps its slot while no other wants
+    /// it, and gives it up, silent longest first, when one does ([`Muxer::make_room`]). Its
+    /// line is a local process's to write, as soon as the process runs, so a load that
+    /// delays the process delays nothing else (D12).
+    heard: Instant,
 }
 
 /// What a snapshot keeps of a muxer: the streams the guest may still hold, and where
@@ -170,8 +185,16 @@ pub struct Muxer {
     /// How many [`stray_rsts`](Muxer::stray_rsts) may be owed: [`stray_rsts_bound`] of the
     /// guest's rings ([`Muxer::set_rings`]), of the largest it may negotiate until then.
     max_stray_rsts: usize,
-    /// Open connections and pending handshakes together, at most.
+    /// Open connections and pending handshakes together, at most (Firecracker's
+    /// MAX_CONNECTIONS): what this process's descriptors leave as the muxer is made
+    /// ([`slots`]). Past them a host's dial is refused ([`Muxer::take`]), and so is a
+    /// guest's connection ([`Muxer::guest_connect`]).
     slots: usize,
+    /// A descriptor held for a dial no other is left for ([`Muxer::refuse_one`]). None while
+    /// it cannot be made again, as another took the one its refusal let go: the listener
+    /// waits unpolled until a round makes it ([`Muxer::on_events`]), where a dial no
+    /// descriptor is left for would keep it ready for ever.
+    spare: Option<Spare>,
     local_ports: HashSet<u32>,
     last_local_port: u32,
 }
@@ -199,6 +222,14 @@ impl Muxer {
             }
             None => None,
         };
+        // Made with the listener, so that the slots read below leave it its descriptor.
+        let spare = match &listener {
+            Some((path, listener)) => Some(
+                spare(listener)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: its spare: {e}", path.display())))?,
+            ),
+            None => None,
+        };
         Ok(Muxer {
             guest_cid,
             listener,
@@ -211,7 +242,8 @@ impl Muxer {
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             max_stray_rsts: MAX_STRAY_RSTS,
-            slots: MAX_CONNECTIONS,
+            slots: slots(),
+            spare,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
         })
@@ -288,7 +320,7 @@ impl Muxer {
             .handshakes
             .iter()
             .enumerate()
-            .min_by_key(|(_, h)| h.deadline)
+            .min_by_key(|(_, h)| h.heard)
             .map(|(i, _)| i);
         if let Some(i) = silent {
             debug!("vsock: every slot taken; a host connection silent longest gives its own up");
@@ -455,7 +487,7 @@ impl Muxer {
             });
         };
         if let Some((_, listener)) = &self.listener
-            && self.open() < self.slots
+            && self.spare.is_some()
         {
             add(listener.raw_socket(), true, false, Token::Listener);
         }
@@ -476,6 +508,13 @@ impl Muxer {
 
     /// Acts on what became ready.
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
+        // A spare its refusal let go, whose descriptor another took first, is made again as
+        // soon as one is free: until then the listener is left unpolled.
+        if self.spare.is_none()
+            && let Some((_, listener)) = &self.listener
+        {
+            self.spare = spare(listener).ok();
+        }
         let mut ready_handshakes = Vec::new();
         let mut listener = false;
         #[cfg(windows)]
@@ -508,7 +547,6 @@ impl Muxer {
         }
         // After the handshakes, whose indices a slot given up would move.
         if listener {
-            self.make_room();
             self.accept();
         }
         #[cfg(windows)]
@@ -522,24 +560,21 @@ impl Muxer {
         }
     }
 
+    /// Takes host clients' dials, a ring's worth a round at most, as many as the resets a
+    /// round may owe the guest ([`Muxer::max_stray_rsts`]), so that dials keep none of the
+    /// guest's packets from their turn (`step`, audit A09). Each is a pending handshake
+    /// ([`Muxer::take`]), or refused, its connection closed, where every slot is a
+    /// connection's or no descriptor is left for it ([`Muxer::refuse_one`]): none waits in
+    /// the listener's queue for a connection to end, or keeps it ready for ever.
     fn accept(&mut self) {
-        let Some((_, listener)) = &self.listener else {
-            return;
-        };
-        while self.handshakes.len() + self.conns.len() < self.slots {
+        for _ in 0..self.max_stray_rsts {
+            let Some((_, listener)) = &self.listener else {
+                return;
+            };
             match listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = stream.set_nonblocking(true) {
-                        debug!("vsock: host connection: {e}");
-                        continue;
-                    }
-                    self.handshakes.push(Handshake {
-                        stream,
-                        line: Vec::with_capacity(MAX_HANDSHAKE),
-                        deadline: Instant::now() + HANDSHAKE_TIMEOUT,
-                    });
-                }
+                Ok((stream, _)) => self.take(stream),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if out_of_descriptors(&e) && self.spare.is_some() => self.refuse_one(),
                 Err(e) => {
                     if e.kind() != io::ErrorKind::WouldBlock {
                         debug!("vsock: accept: {e}");
@@ -548,6 +583,45 @@ impl Muxer {
                 }
             }
         }
+    }
+
+    /// A host client's dial, accepted: a pending handshake, in the slot one silent longest
+    /// gives up where every slot is taken ([`Muxer::make_room`]); or refused, its connection
+    /// closed, where every slot is a connection's, as Firecracker's muxer refuses one past
+    /// its MAX_CONNECTIONS.
+    fn take(&mut self, stream: UnixStream) {
+        self.make_room();
+        if self.handshakes.len() + self.conns.len() >= self.slots {
+            debug!("vsock: every slot a connection's; a host connection refused");
+            return;
+        }
+        if let Err(e) = stream.set_nonblocking(true) {
+            debug!("vsock: host connection: {e}");
+            return;
+        }
+        self.handshakes.push(Handshake {
+            stream,
+            line: Vec::with_capacity(MAX_HANDSHAKE),
+            heard: Instant::now(),
+        });
+    }
+
+    /// Refuses the dial at the head of the listener's queue, which no descriptor is left to
+    /// take: the spare let go for it, the dial accepted and its connection closed at once,
+    /// which its client reads as its end before any answer, and the spare made again
+    /// (libev's documentation, "the special problem of accept()ing when you can't"; libuv's
+    /// `uv__emfile_trick`). Where another takes the descriptor first, a later round makes
+    /// the spare again ([`Muxer::on_events`]).
+    fn refuse_one(&mut self) {
+        let Some((_, listener)) = &self.listener else {
+            return;
+        };
+        self.spare = None;
+        match listener.accept() {
+            Ok(_) => debug!("vsock: no descriptor left for a host connection; refused"),
+            Err(e) => debug!("vsock: accept: {e}"),
+        }
+        self.spare = spare(listener).ok();
     }
 
     fn handshake(&mut self, i: usize) {
@@ -577,7 +651,7 @@ impl Muxer {
     }
 
     fn allocate_local_port(&mut self) -> u32 {
-        // At most MAX_CONNECTIONS are taken, so a free port is always near.
+        // At most its slots are taken, so a free port is always near.
         loop {
             self.last_local_port =
                 LOCAL_PORT_BASE | (self.last_local_port.wrapping_add(1) & (LOCAL_PORT_BASE - 1));
@@ -587,7 +661,7 @@ impl Muxer {
         }
     }
 
-    /// The earliest deadline of any connection. Handshakes have none ([`HANDSHAKE_TIMEOUT`]).
+    /// The earliest deadline of any connection. Handshakes have none ([`Handshake::heard`]).
     pub fn next_deadline(&self) -> Option<Instant> {
         self.conns.values().filter_map(Conn::expiry).min()
     }
@@ -633,7 +707,7 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
         match h.stream.read(dst) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(n) => {
-                h.deadline = Instant::now();
+                h.heard = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
                     return parse_connect(&h.line)
@@ -664,6 +738,45 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
     }
     let port = words.next()?.parse().ok()?;
     words.next().is_none().then_some(port)
+}
+
+/// A descriptor held for a dial no other descriptor is left for ([`Muxer::refuse_one`]):
+/// let go, it is the one accept takes. On Unix a copy of the listener's (dup(2)), which
+/// asks nothing a confined VM process may be refused.
+#[cfg(unix)]
+type Spare = UnixListener;
+/// On Windows, whose sockets are kernel handles, counted with the rest of a process's
+/// (WSAEMFILE), an event's, which a VM process in its AppContainer makes as its waker's is
+/// (mod.rs), where a copy of a socket asks for the process by its id (WSADuplicateSocketW).
+#[cfg(windows)]
+type Spare = std::os::windows::io::OwnedHandle;
+
+#[cfg(unix)]
+fn spare(listener: &UnixListener) -> io::Result<Spare> {
+    listener.try_clone()
+}
+
+#[cfg(windows)]
+fn spare(_listener: &UnixListener) -> io::Result<Spare> {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    // SAFETY: an unnamed event, of default security, reset by a wait, and not set.
+    let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle CreateEventW just made, which nothing else owns.
+    Ok(unsafe { Spare::from_raw_handle(event) })
+}
+
+/// Whether an accept found no descriptor for its connection: the process's are all open
+/// (EMFILE; WSAEMFILE on Windows), or on Unix the system's (ENFILE).
+fn out_of_descriptors(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    let out = [libc::EMFILE, libc::ENFILE];
+    #[cfg(windows)]
+    let out = [windows_sys::Win32::Networking::WinSock::WSAEMFILE];
+    e.raw_os_error().is_some_and(|code| out.contains(&code))
 }
 
 /// Connects without blocking: a host listener whose backlog is full refuses at once
@@ -721,6 +834,7 @@ fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::Write as _;
+    use std::time::Duration;
 
     use super::*;
 
@@ -756,7 +870,7 @@ mod tests {
             let mut h = Handshake {
                 stream: server,
                 line: Vec::new(),
-                deadline: Instant::now(),
+                heard: Instant::now(),
             };
             client.write_all(line).unwrap();
             read_handshake(&mut h)
@@ -818,7 +932,10 @@ mod tests {
             rlim_max: was.rlim_max,
         };
         // SAFETY: setrlimit(2) from a local, in this child alone.
-        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) }, 0);
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) },
+            0
+        );
         m.on_events(&[Ready {
             token: Some(Token::Listener),
             read: true,
@@ -878,7 +995,10 @@ mod tests {
         client.set_nonblocking(true).unwrap();
         let end = client.read(&mut [0u8; 1]);
         assert!(
-            matches!(&end, Ok(0)) || end.as_ref().is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            matches!(&end, Ok(0))
+                || end
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
             "a dial past its slots: {end:?}"
         );
         assert_eq!(m.conns.len(), 1, "the guest's connection kept");
@@ -950,7 +1070,7 @@ mod tests {
         let mut h = Handshake {
             stream: server,
             line: Vec::new(),
-            deadline: Instant::now(),
+            heard: Instant::now(),
         };
         client.write_all(b"CONN").unwrap();
         assert_eq!(read_handshake(&mut h).unwrap(), None);
