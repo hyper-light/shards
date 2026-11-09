@@ -28,7 +28,19 @@ use crate::sync::{lock, wait_timeout};
 use crate::{debug, warn};
 
 pub const DEVICE_ID: u32 = 1;
-const QUEUE_SIZE: u16 = 256;
+/// The rings: the frame ring's bytes ([`shards_netring::RING`]) in the guest's receive
+/// buffers, so that a frame waiting in the frame ring waits on its guest, never on RX
+/// first. Linux makes each mergeable receive buffer a page at most
+/// (drivers/net/virtio_net.c l. 2696-2711, `get_mergeable_buf_len`; Linux 1590cf03), 4 KiB
+/// ([`GUEST_PAGE`](super::fs::proto::GUEST_PAGE)), and fills RX whole; TX holds as many of
+/// the guest's frames, one entry each with indirect descriptors, the frame ring the other
+/// way holding their bytes. A split ring's size is a power of two (virtio 1.3 §2.7).
+const QUEUE_SIZE: u16 = (shards_netring::RING / super::fs::proto::GUEST_PAGE as usize) as u16;
+const _: () = assert!(
+    QUEUE_SIZE.is_power_of_two()
+        && QUEUE_SIZE <= super::queue::MAX_QUEUE_SIZE
+        && QUEUE_SIZE as usize * super::fs::proto::GUEST_PAGE as usize == shards_netring::RING
+);
 const RX: usize = 0;
 const TX: usize = 1;
 /// The virtio-net header, as VERSION_1 makes it whatever else is negotiated (§5.1.6).

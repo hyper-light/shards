@@ -106,9 +106,12 @@ const OWN: [&str; 26] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 7] = [
+pub(crate) const INTERNAL: [&str; 8] = [
     // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
+    // The recorder of a directly booted VM's console report (`shards run vm --kernel`,
+    // `shards restore vm`, Unix; D12).
+    "console-said",
     // The writer of a restore's working set (`shards restore`, Linux).
     "working-set",
     // A budgeted build's writer outside its budget, which the build starts (D188): refused
@@ -1048,6 +1051,98 @@ fn instead(args: &[OsString]) -> ExitCode {
     }
 }
 
+/// `args` (a VM's, `run` or `restore` first) with what the VM keeps of its console learned
+/// and its report recorded, where it quotes its console as it fails (said.rs, D12): the
+/// bytes its kernel's records need (`--console-said N`, unless its starter gave them), and
+/// the pipe it tells how its report came out on (`--said-to`), which `record` takes the
+/// other end of. Learning fails no boot: where it cannot, the VM keeps what it is given, or
+/// what a kernel with no records keeps, and nothing is recorded.
+fn console_said<T>(
+    args: &[OsString],
+    record: impl FnOnce(&std::path::Path, &crate::said::Learned, usize) -> Result<T, String>,
+) -> (Vec<OsString>, Option<T>) {
+    let Some(kernel) = crate::said::quotes(args) else {
+        return (args.to_vec(), None);
+    };
+    let home = match shards_ipc::home() {
+        Ok(home) => home,
+        Err(e) => {
+            shards_vmm::debug!("the console's records: {e}");
+            return (args.to_vec(), None);
+        }
+    };
+    let (given, _) = crate::said::given(args);
+    let learned = crate::said::learn(&home, kernel.as_deref());
+    let kept = given.unwrap_or(learned.kept);
+    let mut with: Vec<OsString> = Vec::with_capacity(args.len().saturating_add(4));
+    with.extend(args.first().cloned());
+    if given.is_none() {
+        with.extend(["--console-said".into(), kept.to_string().into()]);
+    }
+    let recording = match record(&home, &learned, kept) {
+        Ok(recording) => Some(recording),
+        Err(e) => {
+            shards_vmm::debug!("not recording the console's report: {e}");
+            None
+        }
+    };
+    with.extend(args.iter().skip(1).cloned());
+    (with, recording)
+}
+
+/// [`console_said`] on Unix: the report's recorder, `shardsd console-said`, started on a
+/// pipe's read end, out of reach of the VM's terminal, and the pipe's other end given the VM
+/// as `--said-to FD` once this process becomes it, as [`said_kept`] leaves it open through
+/// the exec. The recorder records what the VM tells as it exits, and is reaped by the kernel.
+#[cfg(unix)]
+fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::OwnedFd>) {
+    use std::os::fd::AsFd as _;
+    let (mut with, to) = console_said(args, |home, learned, kept| {
+        let (from_vm, to_recorder) = std::io::pipe().map_err(|e| format!("its pipe: {e}"))?;
+        let recorder = shardsd()?;
+        let stderr = std::io::stderr();
+        let kept = kept.to_string();
+        shards_ipc::spawn(
+            &recorder,
+            &[
+                "console-said".as_ref(),
+                home.as_os_str(),
+                learned.pin.as_ref(),
+                kept.as_ref(),
+            ],
+            &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
+            true,
+        )
+        .map_err(|e| format!("{}: {e}", recorder.display()))?;
+        Ok(std::os::fd::OwnedFd::from(to_recorder))
+    });
+    if let Some(to) = &to {
+        use std::os::fd::AsRawFd as _;
+        with.splice(1..1, ["--said-to".into(), to.as_raw_fd().to_string().into()]);
+    }
+    (with, to)
+}
+
+/// Keeps `to`, the VM's end of its report's pipe ([`said_recorded`]), open through the exec
+/// into it.
+#[cfg(unix)]
+fn said_kept(to: Option<std::os::fd::OwnedFd>) -> Result<(), String> {
+    use std::os::fd::IntoRawFd as _;
+    let Some(to) = to else {
+        return Ok(());
+    };
+    let fd = to.into_raw_fd();
+    // SAFETY: fcntl(2) clearing close-on-exec on a descriptor this process owns, kept open
+    // through the exec, for the VM.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } != 0 {
+        return Err(format!(
+            "the console report's pipe: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 /// `shards run vm --kernel` and `shards restore vm`: become shards-vm. On macOS, where shards-vm runs in App Sandbox and may
 /// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
 /// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
@@ -1065,6 +1160,8 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(served) => served,
         Err(e) => return failed(&e),
     };
+    // What it keeps of its console learned, and its report's recorder started (D12).
+    let (args, said_to) = said_recorded(&args);
     let args = args.as_slice();
     let broker = match shardsd() {
         Ok(bin) => bin,
@@ -1120,7 +1217,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     with.push("--cwd".into());
     with.push(cwd.into());
     with.extend(args.iter().skip(1).cloned());
-    if let Err(e) = shares::inherit(shared) {
+    if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
         return failed(&e);
     }
     instead(&with)
@@ -1138,12 +1235,14 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(served) => served,
         Err(e) => return failed(&e),
     };
+    // What it keeps of its console learned, and its report's recorder started (D12).
+    let (args, said_to) = said_recorded(&args);
     let args = args.as_slice();
     let with = match working_set_writer(args) {
         Ok(with) => with,
         Err(e) => return failed(&e),
     };
-    if let Err(e) = shares::inherit(shared) {
+    if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
         return failed(&e);
     }
     match with {
@@ -1246,6 +1345,11 @@ fn working_set_writer(
 #[cfg(windows)]
 const WORKING_SET: &str = "working-set";
 
+/// The name the pipe a VM tells how its console's report came out on is given to it by
+/// (`--said-to`), on Windows (D12).
+#[cfg(windows)]
+const SAID_TO: &str = "said-to";
+
 /// No other Unix but macOS records a restore's working set, so none starts a writer.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
@@ -1278,6 +1382,17 @@ fn vm(args: &[OsString]) -> ExitCode {
         Ok(served) => served,
         Err(e) => return failed(&e),
     };
+    // What it keeps of its console learned, and the pipe it tells how its report came out
+    // on (D12), given it as [`SAID_TO`]: this process, which waits for it, records that.
+    let (mut args, said) = console_said(&args, |home, learned, kept| {
+        let (from_vm, to_this) = std::io::pipe().map_err(|e| format!("its pipe: {e}"))?;
+        let recording = (home.to_path_buf(), learned.pin.clone(), kept, from_vm);
+        Ok((recording, OwnedHandle::from(to_this)))
+    });
+    let (recording, said_to) = said.unzip();
+    if said_to.is_some() {
+        args.splice(1..1, ["--said-to".into(), SAID_TO.into()]);
+    }
     // Its shares served before its VM process starts, in its AppContainer (shares.rs).
     let (args, shared, share_process) = match shares::served(&args, &job) {
         Ok(shared) => shared,
@@ -1345,6 +1460,10 @@ fn vm(args: &[OsString]) -> ExitCode {
         name: WORKING_SET,
         handle: to_keeper.as_handle(),
     }));
+    given.extend(said_to.as_ref().map(|said_to| shards_ipc::Given {
+        name: SAID_TO,
+        handle: said_to.as_handle(),
+    }));
     // A warm VM holds its spawner's NUL for the clients it lets go of, as the daemon's
     // do: its AppContainer opens no file by name (PM M351).
     let warm = served.iter().any(|(name, _)| name == WARM);
@@ -1375,7 +1494,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     });
     // The VM's ends are its own now: its exit ends the requests, what it hands over of its
     // working set, and its shares, whose process then exits.
-    drop((asks_to, answers_from, to_keeper, shared));
+    drop((asks_to, answers_from, to_keeper, shared, said_to));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
@@ -1433,6 +1552,15 @@ fn vm(args: &[OsString]) -> ExitCode {
         let _ = share_process.wait();
     }
     drop((container, job));
+    // What it told of its console's report, its end closed as it exited (D12).
+    if let Some((home, pin, kept, from_vm)) = recording {
+        let recorded = crate::said::told(from_vm)
+            .map_err(|e| format!("the VM's pipe: {e}"))
+            .and_then(|told| crate::said::record(&home, &pin, kept, &told));
+        if let Err(e) = recorded {
+            let _ = writeln!(std::io::stderr(), "shards: the console's record: {e}");
+        }
+    }
     match ended {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => failed(&format!("waiting for the VM: {e}")),

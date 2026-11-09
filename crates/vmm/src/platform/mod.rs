@@ -205,6 +205,29 @@ pub fn read_input(path: &std::path::Path, max: u64) -> io::Result<Option<Vec<u8>
     read_bounded(open_input(path, false), &path.display().to_string(), max)
 }
 
+/// [`read_beneath`] of a file that says in its first bytes how long it may be: `most` is
+/// given its first `head` bytes (all of it, if it is shorter) and answers the most the
+/// whole may hold, or why its head is none of the file's kind. A file longer than that is
+/// an error, found before more than its head is read.
+pub fn read_beneath_by(
+    root: &std::path::Path,
+    rel: &[&str],
+    head: usize,
+    most: impl FnOnce(&[u8]) -> io::Result<u64>,
+) -> io::Result<Option<Vec<u8>>> {
+    let name = rel.join("/");
+    let file = match open_beneath_input(root, rel) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    let mut first = vec![0u8; usize::try_from(len).map_or(head, |len| len.min(head))];
+    read_exact_at(&file, &mut first, 0)?;
+    let max = most(&first)?;
+    read_whole(&file, &name, len, max)
+}
+
 fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Option<Vec<u8>>> {
     let file = match opened {
         Ok(file) => file,
@@ -212,6 +235,11 @@ fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Op
         Err(e) => return Err(e),
     };
     let len = file.metadata()?.len();
+    read_whole(&file, name, len, max)
+}
+
+/// All `len` bytes of `file`, refused before any is read where they are more than `max`.
+fn read_whole(file: &File, name: &str, len: u64, max: u64) -> io::Result<Option<Vec<u8>>> {
     if len > max {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -224,7 +252,7 @@ fn read_bounded(opened: io::Result<File>, name: &str, max: u64) -> io::Result<Op
         .try_reserve_exact(len)
         .map_err(|e| io::Error::new(io::ErrorKind::OutOfMemory, e.to_string()))?;
     bytes.resize(len, 0);
-    read_exact_at(&file, &mut bytes, 0)?;
+    read_exact_at(file, &mut bytes, 0)?;
     Ok(Some(bytes))
 }
 

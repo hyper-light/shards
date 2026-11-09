@@ -247,13 +247,13 @@ const TAKEOVER: Duration = Duration::from_secs(20);
 /// `defaultStopTimeout` (moby v28.5.1 container/container_unix.go l. 26, read at
 /// container/container.go l. 601).
 const STOP_GRACE: Duration = Duration::from_secs(10);
-/// How often a listener out of descriptors looks for one again: nothing tells of one
-/// closed anywhere in the process. And how often one whose watches could not be made
-/// looks at its home.
-const RETRY: Duration = Duration::from_millis(250);
-/// How long a client may take to send its whole request (audit A07). One sends it as it
-/// connects; one that has not by now is broken, or trickling it out.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// How often what could not watch a file it follows (its watch not made: Linux gives a user
+/// 128 inotify instances, shared with every program they run, PM M257) looks at it instead:
+/// the listener at its home, `logs -f`, a process's events, a log driver's copier. A figure
+/// picked, owed its replacement (docs/design/architecture.md, D185's admission). A listener
+/// out of descriptors no longer looks on a clock: it refuses the client it cannot take
+/// (`refuse_api`), and is woken as descriptors are let go of.
+const UNWATCHED: Duration = Duration::from_millis(250);
 /// The threads the daemon keeps besides its clients': its listener, and the followers',
 /// the completer's, the files', the recorder's, the collector's, the refiller's, the
 /// health checks' and the memory pressure watcher's (D188); and the system's, the dispatch
@@ -533,6 +533,82 @@ fn accept_api(api: &ApiListener) -> io::Result<UnixStream> {
     return api.accept().map(|(conn, _)| conn);
     #[cfg(windows)]
     return api.accept();
+}
+
+/// A uniform draw from [0, 1), of 53 random bits; 1 where none can be had, the whole of
+/// what it scales.
+fn uniform() -> f64 {
+    let mut bytes = [0u8; 8];
+    match shards_vmm::platform::fill_random(&mut bytes) {
+        Ok(()) => (u64::from_le_bytes(bytes) >> 11) as f64 / (1u64 << 53) as f64,
+        Err(_) => 1.0,
+    }
+}
+
+/// A descriptor the listener holds for a client no other descriptor is left for
+/// ([`refuse_api`]): let go of, it is the one accept takes. The null device's, as libuv
+/// holds one (`uv__emfile_trick`'s `loop->emfile_fd`, src/unix/core.c), one for every
+/// listener the daemon's own listener thread accepts on: the Engine API's and the contexts'.
+#[cfg(unix)]
+type Reserve = Option<File>;
+
+/// None on Windows: a pipe's client is refused by its own instance, disconnected and made to
+/// wait again (`shards_ipc::Listener::refuse`), which makes no handle.
+#[cfg(windows)]
+type Reserve = ();
+
+/// Whether the listener holds its spare, made again where a refusal let it go and could not:
+/// whether it may accept, since a client it cannot take, and could not refuse, would keep
+/// its listener ready.
+#[cfg(unix)]
+fn spare_held(spare: &mut Reserve) -> bool {
+    if spare.is_none() {
+        *spare = crate::os::null().ok();
+    }
+    spare.is_some()
+}
+
+#[cfg(windows)]
+fn spare_held(_spare: &mut Reserve) -> bool {
+    true
+}
+
+/// Refuses the client waiting at `listener` whose accept found no descriptor for it (EMFILE,
+/// ENFILE): `spare` let go of so that the accept takes its descriptor, the connection closed
+/// at once, which its client reads as its end before any answer (as a refused connection),
+/// and the spare made again. Left in the backlog, the client would keep the listener
+/// readable for ever, poll(2) waking at once, unless the listener stopped polling it and
+/// looked again on a clock (libev's "the special problem of accept()ing when you can't", ev.3;
+/// libuv's uv__emfile_trick; the vsock muxer's `refuse_one`, 3447c5a7). Whether the listener
+/// is polled again: not where the accept found none still (another thread took the
+/// descriptor let go of first) or the spare is not made again, since a client it cannot take
+/// keeps it readable; it is polled again as the listener is woken, which it is as clients,
+/// runs and connections let go of their descriptors (`wake_listener`), and holds a spare.
+#[cfg(unix)]
+fn refuse_api(listener: &ApiListener, spare: &mut Reserve) -> bool {
+    drop(spare.take());
+    let refused = loop {
+        match accept_api(listener) {
+            Ok(conn) => {
+                drop(conn);
+                break true;
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break false,
+        }
+    };
+    *spare = crate::os::null().ok();
+    refused && spare.is_some()
+}
+
+/// [`refuse_api`] on Windows: the client that came, which no handle is left to take,
+/// disconnected by its own instance, which waits for the next (`Listener::refuse`).
+#[cfg(windows)]
+fn refuse_api(listener: &ApiListener, _spare: &mut Reserve) -> bool {
+    listener
+        .refuse()
+        .map_err(|e| log(format!("refusing a client: {e}")))
+        .is_ok()
 }
 
 /// A listener at `path` that a client finds listening once it finds the name, not blocking:
@@ -1092,8 +1168,10 @@ struct Daemon<D: Disk = Real> {
     /// says (`SHARDS_LOG_MAX_SIZE`, `SHARDS_LOG_MAX_FILE`); else [`Daemon::log_retention`]
     /// reads the home's disk settings.
     logs: Option<LogRetention>,
-    /// How long a client may take to send its request ([`REQUEST_TIMEOUT`]).
-    request_timeout: Duration,
+    /// What the daemon has seen of its clients, which its waits on them follow: how long a
+    /// request's rest is waited for, and how long a closed daemon waits on a client that
+    /// takes nothing of its answer ([`slots::Seen`]).
+    seen: Mutex<slots::Seen>,
     state: Mutex<State>,
     changed: Condvar,
     /// Clients in hand: connected, and not yet handed over, answered, or waiting long.
@@ -1651,8 +1729,11 @@ fn serve(ready: Option<File>, listen: Option<std::net::SocketAddr>) -> Result<()
         // Another daemon serves this home.
         return Ok(());
     };
-    let pid_file = home.join("daemon.pid");
-    std::fs::write(&pid_file, format!("{}\n", std::process::id()))
+    // By its ID and its start, which a process given its ID once it has gone does not share
+    // (shards_ipc::Named): a client waits for a slot while this daemon lives.
+    let pid_file = home.join(shards_ipc::PID);
+    shards_ipc::this_process()
+        .and_then(|named| std::fs::write(&pid_file, named))
         .map_err(|e| format!("{}: {e}", pid_file.display()))?;
     let exe = std::env::current_exe().map_err(|e| format!("this binary: {e}"))?;
     // Every child the daemon makes, its spawner makes, made now, before the daemon holds a
@@ -1967,7 +2048,7 @@ impl<D: Disk> Daemon<D> {
             max_map_count: settings.max_map_count,
             keep: settings.keep,
             logs: settings.logs,
-            request_timeout: REQUEST_TIMEOUT,
+            seen: Mutex::new(slots::Seen::default()),
             state: Mutex::default(),
             changed: Condvar::new(),
             busy: AtomicUsize::new(0),
@@ -2114,7 +2195,7 @@ impl<D: Disk> Daemon<D> {
     fn listen<'s, 'e>(&'s self, threads: &'s Threads<'s, 'e>, mut api: Option<ApiListener>) {
         // The home, whose removal the listener must see, and its images,
         // where a pull leaves a collection due (pull.rs, `collect_due`). Where a watch
-        // cannot be made, the listener looks again every RETRY.
+        // cannot be made, the listener looks again every UNWATCHED.
         let watch = |dir: &Path| match shards_vmm::platform::open_dir(dir).and_then(|d| FileWatch::new(&d)) {
             Ok(w) => Some(w),
             Err(e) => {
@@ -2138,6 +2219,7 @@ impl<D: Disk> Daemon<D> {
         self.tell_slots(slots::Event::Look);
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
+        let mut spare = Reserve::default();
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
@@ -2154,28 +2236,35 @@ impl<D: Disk> Daemon<D> {
             // The engines of the contexts this home joined (relay.rs): served while the
             // daemon is open, and their sockets removed as it closes, the clients that
             // reached one by then relayed.
+            // A client no descriptor is left for is refused with the spare (`refuse_api`):
+            // made again here where a refusal could not, as the listener is woken.
+            let accepting = spare_held(&mut spare);
             let relays_ready = if closing {
-                self.close_relays(threads, &mut relays);
+                self.close_relays(threads, &mut relays, &mut spare);
                 true
             } else {
                 self.relay_contexts(&mut relays, contexts_changed || watches[2].is_none());
-                self.relay_waiting(threads, &relays)
+                accepting && self.relay_waiting(threads, &relays, &mut spare)
             };
             // The Engine API's clients, each served on a thread of its own as long as it
             // keeps its connection: not counted among the clients in hand, whose cap is
             // for requests, as each of its calls is counted as it is put to the daemon.
-            // One that cannot be accepted now (out of descriptors) waits for the retry.
-            let mut api_ready = true;
-            if let Some(api) = &api {
+            // One that cannot be accepted (out of descriptors) is refused, not left to keep
+            // the listener ready; where even that cannot be done, the listener waits on it no
+            // more until it is woken (`refuse_api`).
+            let mut api_ready = accepting;
+            if let Some(api) = api.as_ref().filter(|_| accepting) {
                 loop {
                     match accept_api(api) {
                         Ok(conn) => self.take_engine(threads, conn, None, None),
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                         Err(e) => {
-                            log(format!("accepting an API client: {e}"));
-                            api_ready = false;
-                            break;
+                            log(format!("accepting an API client: {e}; refused"));
+                            if !refuse_api(api, &mut spare) {
+                                api_ready = false;
+                                break;
+                            }
                         }
                     }
                 }
@@ -2215,9 +2304,11 @@ impl<D: Disk> Daemon<D> {
                 self.leave_slots();
                 self.exit();
             }
-            let looking = !api_ready || !relays_ready || watches.iter().any(Option::is_none);
+            // A listener it could not take a client from, out of descriptors, waits for a wake
+            // as they are let go of; a home it could not watch is looked at again.
+            let looking = watches.iter().any(Option::is_none);
             let timeout = if looking {
-                Some(RETRY.min(self.next_duty(quiet).unwrap_or(RETRY)))
+                Some(UNWATCHED.min(self.next_duty(quiet).unwrap_or(UNWATCHED)))
             } else {
                 self.next_duty(quiet)
             };
@@ -2261,9 +2352,14 @@ impl<D: Disk> Daemon<D> {
             && crate::os::path_id(&self.home) == self.home_id
     }
 
-    /// Wakes the listener: something it waits for may have happened.
+    /// Wakes the listener: something it waits for may have happened, descriptors let go of
+    /// among them, which what starved of them tries again for (`have_room`): the listener's
+    /// spare (`refuse_api`), the slots' maker, a collection.
     fn wake_listener(&self) {
         self.listener_wake.wake();
+        if self.starving.load(Ordering::SeqCst) {
+            self.have_room();
+        }
         self.tell_slots(slots::Event::Room);
         let (held, room) = &self.room;
         let _held = lock(held);
@@ -2594,7 +2690,7 @@ impl<D: Disk> Daemon<D> {
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
     fn finish(&self) {
-        let _ = std::fs::remove_file(self.home.join("daemon.pid"));
+        let _ = std::fs::remove_file(self.home.join(shards_ipc::PID));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
         let state = lock(&self.state);
         let waiting = state.pools.values().flat_map(|p| p.ready.iter().map(|r| &r.vm));
@@ -2643,13 +2739,13 @@ impl<D: Disk> Daemon<D> {
         number: u64,
     ) -> Option<(String, Arc<Mutex<Inbox>>)> {
         let conn = &*conn;
-        let message = match shards_ipc::recv_by(conn, Instant::now() + self.request_timeout) {
+        // Every connection taken here is the daemon's own, a socket pair one of its threads
+        // writes the request on whole: a slot's bridge, once it has the request whole within
+        // its wait (slots.rs, `Seen`), or a request the daemon puts to itself. So no client
+        // is waited on here: a sender that cannot send ends its writing, which ends this read.
+        let message = match shards_ipc::recv(conn) {
             Ok(Some(m)) => m,
             Ok(None) => return None,
-            Err(e) if e.kind() == io::ErrorKind::TimedOut => {
-                log(format!("a client sent no request in {:?}", self.request_timeout));
-                return None;
-            }
             Err(e) => {
                 log(format!("a client's request: {e}"));
                 return None;
@@ -6487,7 +6583,7 @@ impl<D: Disk> Daemon<D> {
         // Before its slots go: whoever then finds no daemon serving waits for this one
         // while it ends its runs, however long their stop timeouts.
         let stopping = self.home.join(shards_ipc::STOPPING);
-        if let Err(e) = std::fs::write(&stopping, format!("{}\n", std::process::id())) {
+        if let Err(e) = shards_ipc::this_process().and_then(|named| std::fs::write(&stopping, named)) {
             log(format!("{}: {e}", stopping.display()));
         }
         self.close();
@@ -7582,15 +7678,13 @@ impl<D: Disk> Daemon<D> {
             if let Err(e) = self.collect_garbage() {
                 log(format!("collecting: {e}"));
                 // Short of descriptors, which the clients the listener takes as room comes
-                // may take back from it, it is due again: once there is room, and not before
-                // a RETRY on, lest it spin while there is none (CI 3a640ba: one begun as room
+                // may take back from it, it is due again once there is room: the daemon is
+                // starving until it is told descriptors were let go of (`wake_listener`), not
+                // before, lest it spin while there is none (CI 3a640ba: one begun as room
                 // came failed so, and none followed).
                 if short_of_descriptors(&e) {
-                    let due = lock(&c.due);
-                    let (mut due, _) = c
-                        .changed
-                        .wait_timeout(due, RETRY)
-                        .unwrap_or_else(PoisonError::into_inner);
+                    let mut due = lock(&c.due);
+                    self.starving.store(true, Ordering::SeqCst);
                     *due = true;
                 }
             }
@@ -10740,8 +10834,8 @@ mod tests {
     #[test]
     fn a_closed_daemon_waits_for_its_clients_to_take_their_answers() {
         use shards_ipc::slots as s;
-        let mut t = Test::new("la");
-        t.daemon.request_timeout = Duration::from_millis(500);
+        let t = Test::new("la");
+        lock(&t.daemon.seen).least = Duration::from_millis(500);
         t.run(|t| {
             t.t.daemon
                 .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
@@ -10805,7 +10899,7 @@ mod tests {
                 !d.slots_hold().0
             });
             assert!(
-                since.elapsed() >= t.daemon.request_timeout,
+                since.elapsed() >= lock(&t.daemon.seen).answer_wait(),
                 "{:?}",
                 since.elapsed()
             );
@@ -10828,13 +10922,13 @@ mod tests {
     /// lets go of it as before.
     #[test]
     fn a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear() {
-        let mut t = Test::new("sp");
-        t.daemon.request_timeout = Duration::from_millis(200);
+        let t = Test::new("sp");
+        lock(&t.daemon.seen).least = Duration::from_millis(200);
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             living.passed();
             t.daemon.close();
-            std::thread::sleep(t.daemon.request_timeout * 3);
+            std::thread::sleep(lock(&t.daemon.seen).answer_wait() * 3);
             assert!(
                 t.daemon.slots_hold().0,
                 "a slot whose request went on let go of with its answer still to come"
@@ -10861,10 +10955,10 @@ mod tests {
     /// in, still reading, and the daemon would have exited mid-answer.
     #[test]
     fn a_closed_daemon_waits_for_a_client_taking_its_answer_slowly() {
-        let mut t = Test::new("sl");
-        // A request's time each piece has, many times what one takes this client: a host at
-        // a load of 31 slowed its reads fourfold, and a piece of 64 KiB missed 500 ms.
-        t.daemon.request_timeout = Duration::from_secs(3);
+        let t = Test::new("sl");
+        // The wait each piece has, many times what one takes this client: a host at a load
+        // of 31 slowed its reads fourfold, and a piece of 64 KiB missed 500 ms.
+        lock(&t.daemon.seen).least = Duration::from_secs(3);
         t.run(|t| {
             let living = slots::Living::new(&t.daemon, 0);
             t.daemon.close();
@@ -10895,7 +10989,11 @@ mod tests {
                 );
                 written.unwrap();
                 assert_eq!(taken, answer.len() + 5);
-                assert!(t0.elapsed() > t.daemon.request_timeout, "{:?}", t0.elapsed());
+                assert!(
+                    t0.elapsed() > lock(&t.daemon.seen).answer_wait(),
+                    "{:?}",
+                    t0.elapsed()
+                );
             });
             drop(living);
             assert!(lock(&t.daemon.live).is_empty());
@@ -11036,7 +11134,8 @@ mod tests {
                 left.exists(),
                 "collected while the listener was out of descriptors"
             );
-            t.daemon.have_room();
+            // Descriptors let go of anywhere wake the listener, which tells the collector.
+            t.daemon.wake_listener();
             t.until("not collected once the listener had room", |_| !left.exists());
         });
     }
@@ -11325,37 +11424,114 @@ mod tests {
         assert!(matches!(e, Untaken::Surely(_)), "{e:?}");
     }
 
-    /// A client that sends no request, or trickles one out, is let go once its time is up,
-    /// however many bytes it sends meanwhile (audit A07).
+    /// A client whose request does not come whole within its wait is cut, and told to ask
+    /// again (RESTART), as a request is cut only where asking again is a restart (D222's
+    /// cutoff, `slots::Seen`); the cut is learned, the next wait doubled (RFC 6298 §5.5).
+    /// Before, its slot ended unanswered after 10 s, which its client took for its
+    /// command's end.
     #[test]
-    fn a_client_is_let_go_if_its_request_is_late() {
-        let mut t = Test::new("late-request");
-        t.daemon.request_timeout = Duration::from_millis(200);
+    fn a_request_cut_tells_its_client_to_ask_again() {
+        use shards_ipc::slots as s;
+        let t = Test::new("cut");
         t.run(|t| {
-            let (silent, silent_client) = UnixStream::pair().unwrap();
-            let (trickling, trickling_client) = UnixStream::pair().unwrap();
+            t.t.daemon
+                .serve_slots(t.threads, s::Requests::open(&t.home).unwrap());
+            let s::Taken::Slot(client) = s::take(&t.home, 0).unwrap() else {
+                panic!("no daemon");
+            };
+            // Its first byte and a part of the rest: a request begun, never whole (no
+            // streams, no descriptors, a frame of kind 0 whose length is two bytes short).
             let t0 = Instant::now();
-            t.t.daemon.take(t.threads, silent);
-            t.t.daemon.take(t.threads, trickling);
-            let trickle = std::thread::spawn(move || {
-                for byte in [kind::CONTAINER, 0, 0, 0, 200].into_iter().chain([0u8; 200]) {
-                    if (&trickling_client).write_all(&[byte]).is_err() {
-                        return trickling_client;
-                    }
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                trickling_client
-            });
-            t.until("clients still in hand", |d| d.busy.load(Ordering::SeqCst) == 0);
+            client.sender().unwrap().send(0, &[]).unwrap();
+            let said = client.recv().unwrap().expect("its slot ended unanswered");
             let took = t0.elapsed();
-            assert!(
-                took >= Duration::from_millis(200) && took < Duration::from_secs(3),
-                "{took:?}"
-            );
-            // Disconnected, macOS refuses the option (EINVAL), and the read ends at once anyway.
-            let _ = silent_client.set_read_timeout(Some(PATIENCE));
-            assert!(matches!(shards_ipc::recv(&silent_client), Ok(None)));
-            drop(joined(trickle));
+            assert_eq!(said.kind, kind::RESTART);
+            // Before any request was whole, a second, drawn from [1 s, 2 s).
+            assert!(took >= Duration::from_secs(1) && took < PATIENCE, "{took:?}");
+            {
+                let seen = lock(&t.daemon.seen);
+                assert_eq!(seen.cuts, 1);
+                assert!(seen.request_wait(0.0) >= Duration::from_secs(2));
+            }
+            drop(client);
+            // Its slots' maker ends as the daemon closes.
+            t.daemon.close();
+        });
+    }
+
+    /// A request's rest is waited for as its clients' requests have shown makes them come
+    /// soonest when a cut is asked again (D222's cutoff): a second before any, drawn from
+    /// [t, 2t); doubled for each cut in a row, and no longer once one comes whole; the least
+    /// second where requests come whole at once (RFC 6298 §2.4); past what slow clients take.
+    /// A client that takes nothing of its answer is waited for twice the longest one took a
+    /// piece in, RFC 1122's R2 at least.
+    #[test]
+    fn a_requests_wait_is_learned_from_its_clients() {
+        let mut seen = slots::Seen::default();
+        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
+        assert_eq!(seen.request_wait(0.5), Duration::from_millis(1500));
+        seen.cut(Duration::from_secs(1));
+        assert_eq!(seen.request_wait(0.0), Duration::from_secs(2));
+        seen.cut(Duration::from_secs(2));
+        assert_eq!(seen.request_wait(0.0), Duration::from_secs(4));
+        for _ in 0..100 {
+            seen.whole(Duration::from_micros(300));
+        }
+        assert_eq!(seen.cuts, 0);
+        assert_eq!(seen.request_wait(0.0), Duration::from_secs(1));
+        let mut slow = slots::Seen::default();
+        for _ in 0..100 {
+            slow.whole(Duration::from_secs(3));
+        }
+        let wait = slow.request_wait(0.0);
+        assert!(
+            wait >= Duration::from_secs(3) && wait < Duration::from_secs(4),
+            "{wait:?}"
+        );
+        assert_eq!(seen.answer_wait(), Duration::from_secs(100));
+    }
+
+    /// A client no descriptor is left for is refused with the listener's spare: accepted with
+    /// it and closed at once, which the client reads as its end, and the spare made again, so
+    /// that the listener is not left ready for ever by a client it cannot take (libuv's
+    /// uv__emfile_trick).
+    #[cfg(unix)]
+    #[test]
+    fn a_client_no_descriptor_is_left_for_is_refused_with_the_spare() {
+        let dir = shards_testdir::TempDir::new("spare").unwrap();
+        let path = dir.join("api.sock");
+        let listener = listening_at(&path).unwrap();
+        let mut spare = Reserve::default();
+        assert!(spare_held(&mut spare));
+        let client = UnixStream::connect(&path).unwrap();
+        assert!(refuse_api(&listener, &mut spare));
+        assert!(spare.is_some(), "the spare not made again");
+        client.set_read_timeout(Some(PATIENCE)).unwrap();
+        assert!(
+            matches!(shards_ipc::recv(&client), Ok(None)),
+            "the client was not refused"
+        );
+        // None waiting: nothing to refuse, and the listener waits on no more.
+        assert!(!refuse_api(&listener, &mut spare));
+        assert!(spare.is_some());
+    }
+
+    /// A closed daemon's slot whose answer's last word is its client's holds it no more:
+    /// the word is there in its FIFO whether or not the daemon is, and nothing its client
+    /// reads comes after it.
+    #[test]
+    fn a_closed_daemon_is_not_held_by_a_slot_whose_answer_is_said() {
+        let t = Test::new("said");
+        t.run(|t| {
+            let living = slots::Living::new(&t.daemon, 0);
+            living.passed();
+            t.daemon.close();
+            assert!(t.daemon.slots_hold().0, "a slot whose request went on let go of");
+            let (_client, ours) = shards_ipc::slots::joined().unwrap();
+            living.answer(&ours, kind::END, &[0]).unwrap();
+            living.answered();
+            assert_eq!(t.daemon.slots_hold(), (false, None));
+            drop(living);
         });
     }
 

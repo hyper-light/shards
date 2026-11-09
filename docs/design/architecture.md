@@ -3429,6 +3429,131 @@ Held by `vsock::tests::the_rings_hold_a_guest_sockets_credit`. Owed: a vsock thr
 of several host streams at once on each hypervisor (the rings halved), E2E, the 8-target
 lint.
 
+### The other virtio devices' rings: each from its driver's traffic (D12, D31, D38, D133, D144, D151, D154)
+
+**Found** beside the vsock rings: every other virtio device's rings were picked too:
+virtio-net's, virtio-blk's and virtio-fs's 256 (Firecracker's), the GPU's 256 and 16 (QEMU's
+and libkrun's), and 64 for the balloon's three, virtio-mem's, virtio-pmem's and
+virtio-iommu's two. And a restore held a saved ring to what the device offers now, so the
+vsock rings' halving refused every template saved before it.
+
+**Decided:**
+- **Where its driver bounds what it puts in flight, a ring holds that**, every entry a
+  descriptor where the device offers no indirect ones: the balloon's inflate and deflate
+  one array of page numbers at a time (1 each), its reporting at most
+  PAGE_REPORTING_CAPACITY ranges, which Linux takes no smaller ring than (32); virtio-mem
+  one request and its response from the one buffer it keeps (2); virtio-pmem one flush
+  (2), as the device answers one at a time, each a flush of its file whole, and a flush
+  finding the ring full waits in the driver's list as it would in the ring; virtio-iommu's
+  events none, the device reporting no faults (1, so its driver allocates one event
+  buffer); the GPU's cursor none, with no scanout (1).
+- **virtio-net's rings hold the frame ring's bytes** in the guest's receive buffers, which
+  Linux makes a page at most: 1 MiB / 4 KiB = 256, the figure it was, now derived, so a
+  frame waiting in the frame ring waits on its guest, never on RX first; TX holds as many of
+  the guest's frames, one entry each with indirect descriptors, the frame ring the other way
+  holding their bytes.
+- **A restored ring keeps the size its driver made**, held to the specification's maximum
+  rather than to what the device offers now: its driver sized it once, against what the
+  build that saved it offered, and does not size it again. A new driver is held to the
+  device's offer.
+- **Not derived, owed a measurement:** virtio-blk's ring (256), virtio-fs's (256), the
+  GPU's control ring (256) and virtio-iommu's requests (64). Their drivers bound nothing
+  they put in flight but by the ring (blk-mq's tags are the ring's entries, virtio_blk.c
+  l. 1477-1488; FUSE's synchronous requests one per task; virtio-gpu's submissions by its
+  programs; virtio-iommu's unmaps batched until a sync, x86-64's DMA being lazy), and each
+  device's worker serves one request at a time, so a longer ring only moves what waits from
+  the guest's queues into the ring. The size that keeps a worker from waiting on its
+  guest's refill is Little's law over the worker's service time and the guest's refill
+  time, both to be measured on each hypervisor under load (block and share I/O, Venus
+  submissions, a passed-through device's DMA); these keep their figures until then.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| balloon `QUEUES` (balloon.rs) | 64, 64, 64 | `PAGES_QUEUE_SIZE` 1, 1; `REPORTING_QUEUE_SIZE` 32 | drivers/virtio/virtio_balloon.c l. 183-197 (`tell_host`), l. 199-224 (`virtballoon_free_page_report`), l. 1019-1023; include/linux/page_reporting.h l. 9 (`PAGE_REPORTING_CAPACITY`) |
+| `QUEUE_SIZE` (mem.rs) | 64 | 2 | drivers/virtio/virtio_mem.c l. 1389-1417 (`virtio_mem_send_request`: `vm->req`, `virtqueue_add_sgs(vq, sgs, 1, 1, …)`, waits) |
+| `QUEUE_SIZE` (pmem.rs) | 64 | 2 | drivers/nvdimm/nd_virtio.c l. 72-102 (`virtio_pmem_flush`: one out, one in; -ENOSPC waits for an answer) |
+| `EVENT_QUEUE_SIZE` (iommu.rs) | 64 | 1 | drivers/iommu/virtio-iommu.c l. 1131-1138 (`viommu_fill_evtq`: a buffer for each free entry); the device sends no fault |
+| GPU `QUEUE_SIZES[1]` (gpu/mod.rs) | 16 | 1 | no scanout; drivers/gpu/drm/virtio/virtgpu_kms.c l. 221-227 (both queues found) |
+| `QUEUE_SIZE` (net.rs) | 256 | `netring::RING / GUEST_PAGE` = 256 | drivers/net/virtio_net.c l. 2696-2711 (`get_mergeable_buf_len`, a page at most); crates/netring `RING`; virtio 1.3 §2.7 |
+| `QUEUE_SIZE` (block.rs), `QUEUE_SIZE` (fs/mod.rs), GPU `QUEUE_SIZES[0]`, `QUEUE_SIZE` (iommu.rs, requests) | 256, 256, 256, 64 | unchanged: owed, as above | drivers/block/virtio_blk.c l. 1477-1488; fs/fuse/virtio_fs.c; drivers/iommu/virtio-iommu.c l. 249, 943-957 |
+| a restored queue's bound (mmio.rs `activate`) | the device's offer | `MAX_QUEUE_SIZE` | virtio 1.3 §2.7; drivers/virtio/virtio_mmio.c l. 374-391 (`vm_setup_vq`: QueueNum written once, as the queue is set up) |
+
+All in Linux 1590cf03. Held by `mmio::tests::a_restored_ring_keeps_the_size_its_driver_made`
+and a compile-time assertion of the net rings. Owed: E2E of each device on each hypervisor
+(the balloon's reporting, a grow and a shrink by virtio-mem, a pmem flush, a GPU guest, a
+passed-through device behind the IOMMU), a template saved by the build before restored by
+this one, a network throughput run, the measurements above, and the 8-target lint.
+
+### D12's console kept to quote: learned for each kernel
+
+**Found** beside D12's figures above: a VM whose console no one reads kept its last 4096
+bytes (`SAID`, serial.rs, "a page") to quote as its guest resets, and shards-api copied the
+figure (`CONSOLE_SAID`) to size the tail it keeps of shards' output (`TAIL`). Picked, not
+derived: one panic (6.18 on arm64, 1,129 bytes to a `quiet` console) stood behind it, and
+every other VM, whose console nothing quotes, kept the same.
+
+**Decided:**
+- **What a VM keeps is learned, for each kernel, from how its kernel's reports came out.**
+  The spawner of a VM that quotes its console reads `<home>/said/<pin>` and gives the VM
+  `--console-said N`, N = `shards_abi::bounds::console_said`: the longest whole report
+  recorded, and twice the most kept of one that ran out (it needed more), at least a
+  panic's frame, the report it is kept for (a run-out at nothing kept says nothing of its
+  length); with no records of its own kernel's, the same over every kernel's; with none at
+  all, a panic's frame.
+- **A panic's frame** is the two lines that carry the kernel's panic message,
+  `Kernel panic - not syncing: %s` and `---[ end Kernel panic - not syncing: %s ]---`, each
+  as long as the buffer the message is formatted into, `vpanic`'s `static char buf[1024]`:
+  2 x 1024 = 2048 bytes. The 1,129 bytes above fit it.
+- **A kernel's pin is its identity, the SHA-256 of its bytes.** The guest store names its
+  files by it (`<home>/guest/sha256-<hex>`, shards' pinned kernels among them, whose
+  `Pinned::sha256` is the same digest), so a stored kernel is never hashed; one given by
+  path is hashed once for each file as it is (its path, length, time of change, and on Unix
+  device, inode and ctime), the digest kept in `<home>/said/kernels`. A restore's spawner
+  does not know its kernel: its records are `unpinned`'s, which count among every kernel's.
+  (The plan named a pinned kernel by `Pinned::name`; its SHA-256 is the same identity and
+  lets a path to the pinned kernel's bytes share its records.)
+- **A record is one whole line**, `report N` (a report whole, the console's N bytes all
+  kept) or `cut N` (its first bytes lost past the N kept), appended in one write (`O_APPEND`
+  on Unix, `FILE_APPEND_DATA` without `FILE_WRITE_DATA` on Windows, std's `append`), so
+  writers beside each other never interleave; a reader passes over an unfinished last line
+  and any line that is no record.
+- **The console says whether its ring lost bytes**, and the reset's report says so: `its
+  console's last lines, those before them lost past the N bytes kept:`. A report cut before
+  its first line is a run-out.
+- **The VM writes no record.** It tells its spawner `report N` or `cut N` on a pipe the
+  spawner gives it (`--said-to`); the spawner holds it to the size it gave (a whole report
+  no longer, a cut recorded at that size) and appends. The VM process, in App Sandbox on
+  macOS, opens only what its spawner grants it (D30).
+- **The spawners:** a build's builder (build/builder.rs, which records on a thread of its
+  own); the command line's direct boot, `shards run vm --kernel … --no-console` and `shards
+  restore vm … --no-console` (cli/mod.rs: on Unix, which becomes the VM, a recorder it
+  starts first, `shards console-said`, reads the pipe to the VM's exit; on Windows the
+  command line itself, which waits for its VM); and shards-api's client, which reads the
+  records and passes `--console-said N`, the command line it starts recording, and keeps
+  the tail its report fits in (`tail(N)`).
+- **A VM whose console nothing quotes keeps none of it**: one whose console is shown, one
+  that serves a command (`--rootfs … -- CMD`), and the daemon's warm VMs. Where a spawner
+  says nothing, a VM that quotes keeps a panic's frame. The tests that run a machine in
+  their own process and read its console as it goes keep all of it (`cfg.said =
+  usize::MAX`).
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `SAID` (serial.rs) | 4096 | `Config::said`, its spawner's `--console-said N` = `console_said(kernel's records, every kernel's)`; 0 where nothing quotes it | this kernel's own reports (`<home>/said/<pin>`) |
+| no records (bounds.rs `PANIC_FRAME`) | none | 2 x `PANIC_MESSAGE` = 2 x 1024 = 2048 | Linux 6.18.48 kernel/panic.c l. 431 (`static char buf[1024]`), l. 483 and 596 (the two lines that print it) |
+| `CONSOLE_SAID` (shards-api client.rs) | 4096 | the `--console-said N` it passes, read from the same records | as `SAID` |
+| `TAIL` (shards-api client.rs) | prefix + 4096 x 6 + 1 | `tail(N)`: the longest prefix (a cut's, N's most digits) + N x `ESCAPED` + 1 | vm_run.rs `last_said` |
+
+Held by unit tests (`a_consoles_kept_bytes_are_what_its_records_need`,
+`console_records_are_whole_lines`, `the_last_bytes_said_are_kept_in_whole_lines`,
+`a_kernels_records_teach_what_its_vms_keep`, `a_path_kernels_digest_is_kept_until_it_changes`,
+`records_appended_at_once_never_interleave`, `only_a_vm_that_quotes_its_console_learns`,
+`a_guests_last_words_move_no_terminal`, shards-api's
+`the_longest_report_shards_writes_is_quoted_whole`). Owed: E2E on KVM, Hypervisor.framework
+and WHP (`a_reset_with_no_console_says_its_guests_panic`, a builder's reset), what a direct
+boot's recorder process costs (its start beside the VM's, its memory while it waits) and a
+path kernel's first hash, both unmeasured; the 8-target lint and CI.
+
 ### D9's and D153's virtio limits: each the specification's
 
 | Literal | Was | Now | Source |
@@ -3436,8 +3561,11 @@ lint.
 | `MAX_QUEUE_SIZE` (queue.rs) | 32768 | 32768, cited | virtio 1.3 §2.7 ("The maximum Queue Size value is 32768"); §2.8's 15-bit indices |
 | `QUEUE_NUM_MAX` (mmio.rs) | 0x034 | 0x034, cited with the register block | virtio 1.3 §4.2.2 ("MMIO Device Register Layout"); include/uapi/linux/virtio_mmio.h l. 81 |
 | `READABLE_MAX` (iommu.rs) | 72 | the longest request's readable part, from each structure's fields: ATTACH 20, DETACH 20, MAP 36, UNMAP 28, PROBE 72 | virtio 1.3 §5.13.6; include/uapi/linux/virtio_iommu.h l. 62-150 |
+| `PROBE_SIZE` (iommu.rs) | 512 | `RESV_MEM_BYTES` = 2 + 2 + 1 + 3 + 8 + 8 = 24: the one property the device gives, the MSI window, which fills it; without one, a NONE at once | virtio 1.3 §5.13.6; include/uapi/linux/virtio_iommu.h l. 123-137; drivers/iommu/virtio-iommu.c l. 565-582 (properties read to a NONE or `probe_size`'s end) |
 
-Held by `iommu::tests::the_longest_readable_part_is_probes`.
+Held by `iommu::tests::the_longest_readable_part_is_probes` and
+`iommu::tests::probe_gives_the_msi_doorbell`. A guest restored from a build that offered
+512 has its larger buffers answered as before, zeros after the property.
 
 ### D13's boot and hypervisor limits: each the protocol's, the architecture's or the hypervisor's
 
@@ -3471,12 +3599,25 @@ Held by `iommu::tests::the_longest_readable_part_is_probes`.
 | `MAX_REGS` (hv/kvm/sys/aarch64.rs, `reg_list`) | 4096 | KVM's count (E2BIG, then that many; a second refusal is no vCPU's) | arch/arm64/kvm/arm.c l. 1869-1889 (`kvm_arm_num_regs`, fixed once finalized) |
 | `MAX_DEVICES` (devices/virtio/gpu/virgl.rs; D201, D202) | 64 | Vulkan's count | Vulkan specification, "Physical Devices", `vkEnumeratePhysicalDevices` (count first, then as many) |
 | `PATH_MAX` (devices/virtio/fs/host.rs, Windows' Linux constants) | 4096 | 4096, cited | include/uapi/linux/limits.h l. 13 |
+| `CONFIG_NR_CPUS` (resources/kernel/shards-x86_64.config) | 64 (Firecracker's base) | `acpi::MAX_VCPUS` = 255 | arch/x86/Kconfig (NR_CPUS, range 2 to 512 without CPUMASK_OFFSTACK, Linux 6.18); arch/x86/kernel/cpu/topology.c l. 267-268 (CPUs past it ignored); Intel SDM Vol. 3A §11.6.2.1 (ids to 0xFE are xAPIC's) |
+| `CONFIG_NR_CPUS` (resources/kernel/shards-aarch64.config) | 64 (Firecracker's base) | `layout::MAX_VCPUS` = 123 | arch/arm64/Kconfig (NR_CPUS, range 2 to 4096, Linux 6.18) |
+
+**The guest kernel takes every vCPU a machine has.** Firecracker's base configurations build
+Linux for 64 CPUs, so a guest given one vCPU for each host CPU (D191) on a host of more ran
+64 of them. Each architecture's delta sets NR_CPUS to the VMM's own limit. Per-CPU areas are
+a possible CPU's, which are the vCPUs the MADT or the device tree names, so they grow with a
+machine's vCPUs, not with NR_CPUS; what NR_CPUS adds of its own (static per-CPU tables and
+cpumasks; "about 8KB to the kernel image" each, by x86's Kconfig help) is unmeasured, and the
+guest's overhead that runs are sized by (PM M179, M183; `resources::overhead_kib`) is owed a
+measurement again on the kernel built with it. Held by
+`arch::tests::the_guest_kernel_takes_every_vcpu_a_machine_has`.
 
 All in Linux 1590cf03. Held by `acpi::tests::refuses_what_the_madt_cannot_hold` (255 taken,
 256 refused, the last id 0xFE) and `whp::state::tests::a_decoders_bounds_are_what_a_save_makes`.
 Owed: KVM's two-call lists on a KVM host of each architecture (`hv::kvm` unit tests and E2E),
 the GPU's on Linux, macOS and Windows hosts, a 255-vCPU boot on an x86-64 host with as many
-CPUs, E2E, the 8-target lint.
+CPUs (and a 123-vCPU one on arm64), the kernel built and pinned with NR_CPUS (kernel.yml),
+M179's and M183's overhead on it, E2E, the 8-target lint.
 
 ### D176's decoders: what a snapshot holds is what its machine and its hypervisor make
 
@@ -3536,8 +3677,25 @@ what only the hypervisor knows the size of, the input bounds and that hypervisor
 | `MAX_PATH` (snapshot/mod.rs) | 4096 | `platform::PATH_MOST` | include/uapi/linux/limits.h l. 13; macOS sys/syslimits.h; Win32 "Maximum Path Length Limitation"; RFC 3629 §3 |
 | `MAX_NAME` (snapshot/mod.rs) | 64 | `"g-"` + 32 + 1 + 8 + 1 + 16 hex digits = 60 | `fresh_name`'s format |
 | `MAX_RECORD` (vm/live.rs) | 1 MiB | `DATA_BLOCK` = 2 MiB | D151 |
+| `MAX_STATE` (snapshot/mod.rs) | 64 MiB | `most_state(memory_mib)`: the machine's RAM, read from the state's head (`HEAD`, as far as `memory_mib`) before more of it is read (`platform::read_beneath_by`); a save past it refused | the restore's process maps that RAM for the guest; D176's decoders for each part |
+| `MAX_DISKS` (snapshot/mod.rs) | 64 (2 × 64 identities, 64 shares) | `VIRTIO_SLOTS` = the guest architecture's `layout::VIRTIO_MMIO_MAX` (18 on x86-64, 32 on arm64), disks, pmem files and shares together | `vm::virtio_devices` (each a virtio-mmio transport, refused past it); x86-64's free IOAPIC pins 5-22; arm64's SPIs from `SPI_VIRTIO_MMIO` |
+| arch name (snapshot/mod.rs) | 32 bytes | the input's: it is only compared with this build's | `decode_head` |
+| `MAX_TABLES` (fs/proto.rs), `MAX_CONTROL` (fs/mod.rs) | `MAX_STATE`, 64 MiB | `CONTROL - 1` = 2^31 - 1: what one control frame's length word says below its mark | fs/mod.rs `CONTROL`, `read_any_into` |
 
-Held by unit tests (`a_state_past_what_a_machine_has_is_refused`,
+**A state is bounded by its machine.** A state is read whole into the process that restores
+its machine, beside the RAM that process maps for the guest: one of no more than that RAM
+costs a restore no more of the host than the machine it describes may use as it runs, so a
+hostile state gains nothing past the machine it claims to be, and is refused past it before
+more than its head is read; its parts are bounded as they are decoded by what that machine
+makes (above). Its disks, pmem files and shared directories are among its machine's virtio
+devices, each on a transport of its own, as many as the architecture's interrupt lines for
+them. The bytes of the files a guest holds open on a share that no path reaches are the
+one part nothing of the machine bounds: a save of a state past its RAM is refused, as one
+past 64 MiB was, and the share's tables travel to and from their server in one control
+frame, as long as its length word says.
+
+Held by unit tests (`a_state_is_bounded_by_its_machine`,
+`a_state_past_its_machines_memory_is_refused`, `a_state_past_what_a_machine_has_is_refused`,
 `a_decoders_bounds_are_what_kvm_gives`, `a_restore_takes_the_writes_a_save_of_its_vcpus_makes`,
 `a_decoders_bounds_are_what_a_save_makes`, `runs_are_bounded_by_the_machines_memory`). Owed:
 a template saved and restored on Hypervisor.framework, KVM of each architecture and WHP of
@@ -3553,17 +3711,37 @@ every vCPU to run, and no later: none can spend it sooner, vCPUs using at most t
 CPU time. A group's governor reads as soon as the group's room could be spent, its own
 vCPUs alone or, sooner, at the rate the group was last seen eating into it (`room_lasts`),
 which its other machines spend too; a group no further ahead than at its last read leaves
-the first. `SOONEST` (1 ms) stays the least wait of both, recorded with the half-share busy
-mark as owed below.
+the first.
+
+**Decided, the least wait and when to read so closely:**
+- **`SOONEST` is CFS's own precision, 1 ms.** CFS bandwidth control takes no quota or period
+  below 1 ms and leaves each CPU up to 1 ms of runtime past a cgroup's quota: the hold, which
+  holds vCPUs as CFS holds a cgroup's threads, reads no closer, its vCPUs each running at
+  most that past their share, which comes off the next period's.
+- **A machine reads closely when its own use foretells its share spent**, not at half of it:
+  where its last period's use, grown again by as much as it grew from the period before,
+  reaches the share (`busy_next`), or it was held, or a new limit begins. A machine's first
+  period, after none, is foretold twice its use, the half mark it had; one holding steady
+  below its share reads once a period, and one growing toward it reads closely before it
+  gets there. A group reads closely when the rate it was seen eating into its room
+  (`room_lasts`, its last two reads) would spend the room within a period, where it had read
+  so at half its room.
 
 | Literal | Was | Now | Source |
 |---|---|---|---|
 | `PERIOD` (vm/hold.rs) | 100 ms | 100 ms, cited | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
 | `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
+| `SOONEST` (vm/hold.rs) | 1 ms | 1 ms, cited | kernel/sched/core.c l. 10054 (`min_bw_quota_period_us`); kernel/sched/fair.c l. 7179 (`min_cfs_rq_runtime`); Documentation/scheduler/sched-bwc.rst l. 94-95, 179-186 |
+| the machine's busy mark (vm/hold.rs `govern`) | `used * 2 >= share` | `busy_next(before, used, share)`: `used + (used - before) >= share` | the machine's own last two periods |
+| the group's busy mark (vm/hold.rs `govern_group`) | `ahead * 2 >= room` | `room_lasts(before, now, room) < whole` | the group's own last two reads |
 
-Held by `hold::tests` (`a_groups_room_lasts_at_the_rate_it_was_seen_spent` and the governors'
-spinning tests). Owed: the hold's E2E on each hypervisor, a group of machines held on a
-loaded host, and `SOONEST` and the half-share mark derived as these were.
+All in Linux 1590cf03. Held by `hold::tests` (`a_machine_is_busy_as_its_last_two_periods_foretell`,
+`a_groups_room_lasts_at_the_rate_it_was_seen_spent` and the governors' spinning tests, which
+need a host whose CPUs the test threads get: run through
+`docs/research/measurements/macos-sched/launchd-run.sh` or on a quiet host). Owed: the hold's
+E2E on each hypervisor, a group of machines held on a loaded host, and how far past their
+share machines that go from steady to busy run under each mark (the old and the derived),
+measured.
 
 ### D38's and D197's virtio-fs frames: FUSE's own structures
 
@@ -6502,14 +6680,18 @@ descriptors.
   took a slot holds no place; and sweeps only while a slot is taken with no request
   read: a minute after it is first seen so, and again a minute after, when a slot still
   unwritten goes. With none, it sleeps until it hears something (PM M260).
-- **A request in time.** The rest of a request is read within 10 s of its first byte
-  (`REQUEST_TIMEOUT`, a socket's first message's), and no longer once the daemon ends its
-  clients (`requests_end`, a pipe written once): such a client hears RESTART, as one whose
-  request no thread had read did, and asks the next daemon.
-- **Out of descriptors**, the maker offers nothing, says so once, and looks again every
-  250 ms (`RETRY`); no collection starts meanwhile, and clients wait on their lists. A slot
-  is about 7 descriptors, 13 with streams, its FIFOs' ends and its stop pipe: four offered
-  hold 40. At its most clients in hand it says so too, once a minute at most.
+- **A request in time.** The rest of a request is read within the wait its clients'
+  requests have shown makes them come soonest (D222's cutoff; "Admission", below), and no
+  longer once the daemon ends its clients (`requests_end`, a pipe written once): either
+  way the client hears RESTART, as one whose request no thread had read did, and asks
+  again. (Was 10 s, `REQUEST_TIMEOUT`, after which the slot ended unanswered.)
+- **Out of descriptors**, the maker offers nothing, says so once, and offers again as it is
+  told descriptors were let go of (`Event::Room`, from `wake_listener`); no collection
+  starts meanwhile, and clients wait on their lists. A slot taken whose serving finds no
+  descriptor (its bridge's socket pair) tells its client RESTART on the slot's own FIFO.
+  (Was a look every 250 ms, `RETRY`; "Admission", below.) A slot is about 7 descriptors,
+  13 with streams, its FIFOs' ends and its stop pipe: four offered hold 40. At its most
+  clients in hand it says so too, once a minute at most.
 - **A request of any size.** The bridge starts the daemon's handling of its connection
   before it writes the request there: written first, a request past the socket pair's
   buffer (a run's labels; 8 KiB on macOS, 208 KiB on Linux) waited for ever for a reader
@@ -6532,13 +6714,15 @@ descriptors.
   x86_64 CI, run 39191414199; 23 of 40 runs of them at 79caf2d7 on a loaded Fedora host,
   1 of 40 counting only the slots that pass a daemon's messages on). While it serves, a
   slot its client opened holds it; once it has closed, every slot does, but a client that
-  takes nothing, stopped, or held by a pager that waits, holds it no longer than a
-  request's time (`REQUEST_TIMEOUT`, 10 s) from the start of the piece of its answer it
-  leaves untaken, or, its request not yet gone on, from its last step or the close, the
-  later: the daemon says so, and exits, and the next daemon starts. A slot whose request
-  went on, with nothing of its answer yet to take, holds it until the daemon has answered,
-  its answer's last word (`EXIT`, `END`, `RESTART`) passed on, and a request's time at most
-  after: an attached run its stop ended after a 35 s timeout said nothing meanwhile, and
+  takes nothing, stopped, or held by a pager that waits, holds it no longer than the wait
+  a client that takes nothing has (`Seen::answer_wait`: twice the longest a client took a
+  piece in, RFC 1122's R2 at least; was a request's time, `REQUEST_TIMEOUT`, 10 s) from the
+  start of the piece of its answer it leaves untaken, or, its request not yet gone on, from
+  its last step or the close, the later: the daemon says so, and exits, and the next daemon
+  starts. A slot whose request went on, with nothing of its answer yet to take, holds it
+  until the daemon has answered, its answer's last word (`EXIT`, `END`, `RESTART`) passed
+  on (was: and a request's time at most after; the word is its client's in its FIFO
+  whether or not the daemon is, "Admission", below): an attached run its stop ended after a 35 s timeout said nothing meanwhile, and
   timed from the close, its slot let go of the daemon, which exited as the run's VM said
   DONE, before its slot passed on the EXIT the VM wrote next. The run's client said its
   microVM stopped before its command ended (125 where its SIGKILL's 137 was due), once in
@@ -6556,9 +6740,10 @@ descriptors.
   daemon served the rest. A waiting read(2), poll(2) and kqueue(2) saw every record, but
   only select(2) and a read see a FIFO's writer go there (M253). So a client waits on its
   list in kqueue(2), for its records, its name's removal (a closing daemon unoffers it; a
-  new one makes its own), and its daemon's exit (the process `daemon.pid` names; a killed
-  daemon leaves its list's name), and reads after each, not waiting; where `daemon.pid`
-  names no live process, it looks again every 250 ms. On Linux a read waits, which sees
+  new one makes its own), and its daemon's exit (the process `daemon.pid` names, by its ID
+  and start, "Admission", below; a killed daemon leaves its list's name), and reads after
+  each, not waiting; where `daemon.pid` names no live process, it looks again every
+  250 ms. On Linux a read waits, which sees
   both. Held by `clients_waiting_on_one_list_wake_for_its_records`, which failed in each
   of 6 runs with select(2) put back, 8 to 12 of its 16 clients asleep.
 - **Measured** against slice 3 (build-ab, PM M259): what slots alone change costs a run
@@ -6576,6 +6761,97 @@ streams (`slots::fds::MAX`, the count of `streams::IN | OUT | ERR`, 3), as a run
 | Literal | Was | Now | Source |
 |---|---|---|---|
 | `fds::MAX` (ipc slots.rs) | 8 | a slot's streams, 3 | `slots::streams`; cli/client.rs, a run's `ways` |
+
+**Admission (audit of picked constants, 2026-11-09).** Three figures of how the daemon admits
+and lets go of its clients were picked: how long a request's rest was waited for, how often a
+daemon out of descriptors looked for one, and how a client knew its daemon. Each is now what
+it follows: the request's own times, the descriptors' being let go of, the daemon's own
+process.
+
+- **A request's rest is waited for as long as makes requests come soonest, and a cut one is
+  asked again** (`slots::Seen`). A cut is safe to learn only where its client is told to ask
+  again: a request cut is not begun anywhere, so asking again is a restart, and its slot now
+  answers RESTART, as a closing daemon's does (before, it ended unanswered, and its client
+  took the end for its command's); a client still writing finds its `say` gone, and asks
+  again through the next slot (`ask_slot`'s BrokenPipe). So the wait is D222's restart
+  cutoff (Luby, Sinclair and Zuckerman 1993) over this daemon's own requests' times from
+  their first byte to whole, cuts counted as observations cut short (Kaplan and Meier
+  1958), a second at least and before any (RFC 6298 §2.1, §2.4), doubled for each cut in a
+  row (§5.5), drawn from [t, 2t); asking again taken as a fresh draw, since a client's next
+  asking is not told from another's. The daemon's own handling of a connection waits on no
+  clock at all: every connection it takes is a socket pair one of its threads writes the
+  request on whole (a slot's bridge, a request it puts to itself), and a bridge that cannot
+  send ends its writing.
+- **A client that takes nothing of its answer holds a closed daemon twice the longest a
+  client of it took a piece in, at least TCP's R2** (100 s, RFC 1122 §4.2.3.5: the least a
+  sender retransmits to a peer that acknowledges nothing before it gives up), as D222
+  rides out a trouble; its command done, it cannot be told to ask again. A slot whose
+  answer's last word is its client's holds it no more: the word is in its FIFO whether or
+  not the daemon is, and nothing its client reads comes after it.
+- **Out of descriptors, the daemon refuses the client it cannot take and is woken as
+  descriptors are let go of: nothing looks on a clock.** What it accepts on, and how:
+  - *The Engine API's socket and the contexts' (Unix)*: a listener whose accept finds no
+    descriptor (EMFILE, ENFILE) keeps its client in the backlog and stays readable. The
+    listener holds one spare descriptor (the null device's, as libuv's `loop->emfile_fd`),
+    lets it go, accepts with it, closes the connection at once (its client reads its end,
+    as a refusal), and opens the spare again (libev's "the special problem of accept()ing
+    when you can't", ev.3; libuv's `uv__emfile_trick`; the vsock muxer's `refuse_one`,
+    3447c5a7). Where another thread took the freed descriptor first, the listener polls
+    those sockets no more until it is woken (`wake_listener`: as a client, a run or a
+    connection ends) and holds its spare again (`refuse_api`, `spare_held`).
+  - *Their named pipes (Windows)*: a pipe's client comes on an instance that waits for it;
+    accept makes the next instance, and out of handles cannot. The client is refused by its
+    own instance, disconnected (DisconnectNamedPipe) and made to wait for the next client
+    again, which makes no handle (`shards_ipc::Listener::refuse`): no spare is needed.
+  - *The request slots (D185)*: a slot holds its descriptors from its offer, so a client
+    waiting on a list waits in a backlog that keeps nothing of the daemon's ready; out of
+    descriptors, the maker offers again as it hears `Event::Room`, which `wake_listener`
+    sends. A client that took a slot whose serving then finds no descriptor (its bridge's
+    socket pair and the null device) is told RESTART on the slot's own FIFO and asks again.
+    A slot that could not be offered for another reason (its FIFOs, its thread) is tried
+    again after a random share of how long the trouble has lasted (D222's `Trouble`).
+  - *The collector*: short of descriptors, it marks the daemon starving and waits for the
+    wake that says some were let go of (`have_room`), where it waited 250 ms.
+- **A daemon is known by its process ID and start** (`shards_ipc::Named`): `daemon.pid` and
+  `daemon.stopping` hold `PID START`, START the process's start as its OS counts it (Linux
+  `/proc/<pid>/stat` starttime, proc(5); macOS `proc_pid_rusage`'s `ri_proc_start_abstime`,
+  as crates/api's taken.rs reads it; Windows `GetProcessTimes`' creation time), and a
+  daemon lives only where the process of that ID started then. A client's wait for a slot
+  (`daemon_lives`, `exiting`) and the macOS list watcher's wait for its daemon's exit could
+  wait for ever on an unrelated process given a dead daemon's ID. A file of an older build
+  (`PID` alone) is still read, by its ID alone. crates/api's reader is its crate's own
+  (`pub(crate)`, Unix only, and shards_ipc does not depend on it), so shards_ipc reads
+  starts itself, the same way, and Windows' besides.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `REQUEST_TIMEOUT` (daemon.rs), a request's rest | 10 s, slot ended unanswered | `Seen::request_wait`, learned; cut told RESTART | D222's cutoff (Luby, Sinclair, Zuckerman 1993; Kaplan, Meier 1958; RFC 6298 §2.1, §2.4, §5.5) |
+| `REQUEST_TIMEOUT`, a handled connection's first message | 10 s | none: the daemon's own pairs | its senders write whole or end their writing |
+| `REQUEST_TIMEOUT`, a closed daemon's client taking nothing | 10 s | `Seen::answer_wait`: 2 × longest piece taken, ≥ 100 s | RFC 1122 §4.2.3.5 (R2); Baeza-Yates, Culberson, Rawlins 1993 |
+| `REQUEST_TIMEOUT`, after an answer's last word | 10 s | none | pipe(7): a FIFO keeps what was written as its writer goes |
+| `RETRY` (daemon.rs), the API's and contexts' accept | 250 ms | none: refused with a spare, woken as descriptors go | libev ev.3; libuv `uv__emfile_trick`; muxer 3447c5a7 |
+| `RETRY` (relay.rs, Windows), a context's pipe | 250 ms | none: `Listener::refuse` | DisconnectNamedPipe, ConnectNamedPipe (Win32 named pipes) |
+| `RETRY` (slots.rs), a slot not offered | 250 ms | starved: `Event::Room`; otherwise a share of the trouble so far | D222's `Trouble` (full jitter) |
+| `RETRY` (daemon.rs), the collector | 250 ms | none: `have_room` on a wake | the wake of descriptors let go of |
+| `daemon.pid`, `daemon.stopping` | `PID` | `PID START` | proc(5); `proc_pid_rusage`; `GetProcessTimes` |
+
+Still picked, owed: `UNWATCHED` (250 ms, `RETRY`'s other use), how often what could not make
+a file watch (Linux's 128 inotify instances a user, PM M257) looks instead: the listener at
+its home, `logs -f`, a process's events, a log driver's copier; and the macOS list watcher's
+250 ms look where `daemon.pid` names no live daemon. Neither has an event to wait for.
+
+Held by unit tests: `a_request_cut_tells_its_client_to_ask_again` (red before: its slot ended
+unanswered), `a_requests_wait_is_learned_from_its_clients`,
+`a_client_no_descriptor_is_left_for_is_refused_with_the_spare`,
+`a_closed_daemon_is_not_held_by_a_slot_whose_answer_is_said`,
+`no_collection_starts_while_the_listener_is_starved` (now woken by `wake_listener`; red
+before), the closed daemon's slot tests at their new wait, and shards_ipc's
+`a_daemon_whose_id_another_process_has_now_does_not_live`,
+`a_daemon_is_exiting_while_its_process_lives`,
+`a_list_without_a_live_pid_still_ends_with_its_writer` (a reused ID among its cases). Owed:
+the daemon E2E suite (its slots, `daemon stop`, a stepping-aside daemon), an E2E of a daemon
+out of descriptors (RLIMIT_NOFILE lowered for it alone), the Windows named pipe refusal on a
+Windows host, the 8-target lint, and CI.
 
 ### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
 
@@ -15260,15 +15536,10 @@ progress; D222's estimators).
 | `FRAME_MOST` (synced.rs) | 64 KiB | cited | a pipe's capacity: include/linux/pipe_fs_i.h l. 5, pipe(7); xnu bsd/sys/pipe.h l. 80 |
 | `SECRET_MAX` (synced.rs) | `MAX_PAYLOAD` | cited | BuildKit v0.33.0 session/secrets/secretsprovider/secretsprovider.go l. 15 (500 KiB, which it holds) |
 
-Not yet replaced, owed: the daemon's `REQUEST_TIMEOUT` (10 s; a client's request, and its
-answer's taking once the daemon has closed) and `RETRY` (250 ms; the listener out of
-descriptors or without its watches, and the collector short of descriptors). Each is a cutoff
-whose replacement changes how the daemon admits and lets go of clients: a cutoff learned as
-D222's is (the times clients have taken, doubled for each cut in a row) is safe only where a
-client cut is told to ask again (`RESTART`), which a `Late` request is not yet; and a
-descriptor freed anywhere in the process tells nothing, so its retry wants the listener woken
-as clients and runs let go of theirs and a reserve descriptor for the accept (libuv's
-`uv__emfile_trick`). Both want the daemon's E2E suite, which this pass did not run.
+The daemon's `REQUEST_TIMEOUT` and `RETRY`, and how a client knows its daemon, are D185's
+"Admission" (2026-11-09): a request cut told RESTART and its wait learned, a client out of
+descriptors refused with a spare and the daemon woken as descriptors go, a daemon known by its
+ID and start. `RETRY`'s use for what could not watch a file (`UNWATCHED`) is still owed.
 
 Held by unit tests (`a_pressure_is_said_as_it_doubles`,
 `each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles`,

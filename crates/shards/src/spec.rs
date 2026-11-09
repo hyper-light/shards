@@ -212,6 +212,7 @@ fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
 pub const RUN_VALUED: &[&str] = &[
     "--attach",
     "--cmdline",
+    "--console-said",
     "--cpu-baseline",
     "--cpus",
     "--cwd",
@@ -232,6 +233,7 @@ pub const RUN_VALUED: &[&str] = &[
     "--pci-tests",
     "--pmem",
     "--rootfs",
+    "--said-to",
     "--shares",
     "--share-window",
     "--slates-fs",

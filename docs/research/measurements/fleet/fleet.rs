@@ -205,7 +205,9 @@ fn fleet() {
         let mut refill_cpu: Vec<f64> = warm.iter().map(|&p| cpu_ms(p)).collect();
         let daemon: u32 = std::fs::read_to_string(home.join("daemon.pid"))
             .unwrap()
-            .trim()
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
             .parse()
             .unwrap();
         println!(

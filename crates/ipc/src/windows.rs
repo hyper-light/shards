@@ -1150,6 +1150,41 @@ pub(crate) fn alive(pid: u32) -> bool {
     unsafe { WaitForSingleObject(process.as_raw_handle(), 0) == WAIT_TIMEOUT }
 }
 
+/// When process `pid` started ([`crate::started`]): its creation time (GetProcessTimes), in
+/// 100 ns since 1601.
+pub(crate) fn started(pid: u32) -> io::Result<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    // SAFETY: a process handle of limited query access alone, owned below.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle just opened, which nothing else owns.
+    let process = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: a process handle this function holds, and four FILETIMEs of ours to fill.
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
+
 impl crate::Identity {
     /// A file's identity, or a directory's: its volume's serial number and its index there,
     /// Windows' device and inode (GetFileInformationByHandle's), its size and its last write.

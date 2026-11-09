@@ -1228,6 +1228,7 @@ name = "shards-api"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "sha2",
  "shards-abi",
  "shards-afunix",
  "shards-testdir",

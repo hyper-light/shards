@@ -1111,6 +1111,10 @@ pub struct Config {
     pub memory_mib: u64,
     /// Where guest console (UART) output goes.
     pub console: Console,
+    /// How many of its console's last bytes it keeps to quote (`Handle::console_said`):
+    /// what its spawner learned its kernel's failure reports need
+    /// (`shards_abi::bounds::console_said`, D12); none unless it is quoted.
+    pub said: usize,
     /// virtio-blk disks, in the order the guest enumerates them (vda, vdb, ...).
     pub disks: Vec<Disk>,
     /// What to do when the guest asks for a snapshot; without it, requests are ignored.
@@ -2231,6 +2235,7 @@ impl Config {
             vcpus: 1,
             memory_mib: MEMORY_MIB,
             console: Console::Stdout,
+            said: 0,
             disks: Vec::new(),
             snapshot: None,
             pmem: Vec::new(),
@@ -2262,6 +2267,8 @@ pub struct RestoreConfig {
     /// The snapshot directory.
     pub dir: PathBuf,
     pub console: Console,
+    /// As [`Config::said`].
+    pub said: usize,
     /// For snapshots the restored guest asks for.
     pub snapshot: Option<SnapshotPolicy>,
     /// Prepare everything, then wait for [`Handle::release`]: a warm VM whose start

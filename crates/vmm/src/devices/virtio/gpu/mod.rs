@@ -47,9 +47,10 @@ pub mod feature {
 /// The host-visible memory region's id (VIRTIO_GPU_SHM_ID_HOST_VISIBLE).
 pub const HOST_VISIBLE: u8 = 1;
 
-/// The control queue's size and the cursor queue's, QEMU's and libkrun's: no scanout, so
-/// no cursor is ever sent.
-const QUEUE_SIZES: [u16; 2] = [256, 16];
+/// The control queue's size, QEMU's and libkrun's, and the cursor queue's: no scanout, so
+/// no cursor is ever sent, and its ring is the least one, which Linux's driver makes all
+/// the same (drivers/gpu/drm/virtio/virtgpu_kms.c l. 221-227, Linux 1590cf03).
+const QUEUE_SIZES: [u16; 2] = [256, 1];
 
 /// A capability set the renderer offers (`struct virtio_gpu_resp_capset_info`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

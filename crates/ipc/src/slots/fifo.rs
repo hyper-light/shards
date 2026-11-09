@@ -722,8 +722,9 @@ impl Waits {
     }
 
     /// A kqueue of the list's records, its name's going, and its daemon's exit; `None` where
-    /// its name names another list already. Its daemon is the one `daemon.pid` names, where
-    /// that one runs: one gone has left no writer, which a read sees.
+    /// its name names another list already. Its daemon is the one `daemon.pid` names, by its
+    /// ID and start ([`crate::Named`]), where that one runs: one gone has left no writer,
+    /// which a read sees.
     #[cfg(target_os = "macos")]
     fn watch(&self, home: &Path, list: &Path) -> io::Result<Option<ListWatch>> {
         use std::os::fd::FromRawFd as _;
@@ -759,15 +760,18 @@ impl Waits {
             libc::EVFILT_VNODE,
             libc::NOTE_DELETE | libc::NOTE_RENAME | libc::NOTE_REVOKE,
         ))?;
-        let daemon = std::fs::read_to_string(home.join("daemon.pid"))
-            .ok()
-            .and_then(|p| p.trim().parse::<libc::pid_t>().ok())
-            .filter(|&pid| pid > 0)
-            .and_then(|pid| usize::try_from(pid).ok());
+        let daemon = crate::Named::read(&home.join(crate::PID))
+            .filter(|named| libc::pid_t::try_from(named.pid).is_ok_and(|pid| pid > 0));
         let mut process = false;
-        if let Some(pid) = daemon {
-            match add(&event(pid, libc::EVFILT_PROC, libc::NOTE_EXIT)) {
-                Ok(()) => process = true,
+        if let Some(named) = daemon
+            && let Ok(ident) = usize::try_from(named.pid)
+        {
+            match add(&event(ident, libc::EVFILT_PROC, libc::NOTE_EXIT)) {
+                // The process watched is the daemon only where it started when the daemon did:
+                // its start read once it is watched, so that the daemon's exit after is seen,
+                // and an ID given another process since is no daemon's (its own exit would
+                // wait for nothing of this list's).
+                Ok(()) => process = named.lives(),
                 // Gone already: read again rather than wait for an exit never watched.
                 Err(e) if e.raw_os_error() == Some(libc::ESRCH) => {}
                 Err(e) => return Err(e),
@@ -887,7 +891,14 @@ mod tests {
         let mut child = Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
         let gone = child.id().to_string();
         assert!(child.wait().unwrap().success());
-        for pid in [None, Some("not a pid"), Some(gone.as_str())] {
+        // A live process's ID, its start another's: the daemon's ID given to it since.
+        let reused = format!("{} 1", std::process::id());
+        for pid in [
+            None,
+            Some("not a pid"),
+            Some(gone.as_str()),
+            Some(reused.as_str()),
+        ] {
             let home = home("slot-no-pid");
             let requests = Requests::open(&home).unwrap();
             let list = home.join(DIR).join(FREE);
@@ -923,7 +934,7 @@ mod tests {
     fn a_waiting_client_leaves_a_list_whose_name_went() {
         let home = home("slot-unlisted");
         let requests = Requests::open(&home).unwrap();
-        std::fs::write(home.join("daemon.pid"), std::process::id().to_string()).unwrap();
+        std::fs::write(home.join("daemon.pid"), crate::this_process().unwrap()).unwrap();
         let list = home.join(DIR).join(FREE);
         let mut waits = Waits::new(open_now(&list, false).unwrap());
         waits.queue = waits.watch(&home, &list).unwrap();

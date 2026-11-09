@@ -24,7 +24,12 @@ use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::lock;
 
 pub const DEVICE_ID: u32 = 27;
-const QUEUE_SIZE: u16 = 64;
+/// The ring: one flush, its request and its response, two descriptors, as the device
+/// offers no indirect ones. The device answers a flush at a time, each a flush of its file
+/// whole ([`Shared::flush`]); Linux's driver keeps a flush that finds the ring full waiting
+/// for the device to answer one (drivers/nvdimm/nd_virtio.c l. 72-102,
+/// `virtio_pmem_flush`; Linux 1590cf03), as it would wait in the ring behind it.
+const QUEUE_SIZE: u16 = 2;
 /// Regions are 2 MiB aligned and sized: the size the guest's memory hotplug and DAX
 /// work in (Firecracker docs/pmem.md).
 pub const ALIGN: u64 = 2 << 20;
