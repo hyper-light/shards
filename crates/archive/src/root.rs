@@ -137,8 +137,13 @@ pub(crate) fn split_path(
     Ok((parts, suffix_sep))
 }
 
-/// rootMaxSymlinks.
+/// Go's rootMaxSymlinks (go1.26.1 src/os/root.go l. 76: `__POSIX_SYMLOOP_MAX`, the least
+/// SYMLOOP_MAX POSIX allows), which go-archive's root walks inherit.
 const MAX_SYMLINKS: usize = 8;
+/// Go's doInRoot bounds on a walk (go1.26.1 src/os/root_openat.go l. 293-294): it halts once
+/// both its steps and its restarts from the root (each `..`) pass these.
+const MAX_STEPS: usize = 255;
+const MAX_RESTARTS: usize = 8;
 
 /// doInRoot: walks `name` from the root, opening each directory with `open_dir`, then
 /// runs `f` on the last component's parent and name.
@@ -154,7 +159,7 @@ pub(crate) fn walk<H, T>(
     let (mut i, mut steps, mut restarts, mut symlinks) = (0usize, 0usize, 0usize, 0usize);
     loop {
         steps += 1;
-        if steps > 255 && restarts > 8 {
+        if steps > MAX_STEPS && restarts > MAX_RESTARTS {
             return Err(WalkError::Os(io::Error::from_raw_os_error(name_too_long())));
         }
         let Some(part) = parts.get(i).cloned() else {

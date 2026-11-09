@@ -8,7 +8,9 @@ use std::io::{Read, Write};
 use crate::h2;
 
 /// The most a message may be either way: grpcclient's MaxCallRecvMsgSize and
-/// MaxCallSendMsgSize, 16 MiB.
+/// MaxCallSendMsgSize (moby/buildkit frontend/gateway/grpcclient/client.go l. 1473-1474),
+/// containerd's DefaultMaxRecvMsgSize and DefaultMaxSendMsgSize (containerd/v2
+/// defaults/defaults.go l. 22, 25: `16 << 20`), which a frontend's calls are held to.
 pub const MOST: usize = 16 << 20;
 
 /// A call's status other than OK.

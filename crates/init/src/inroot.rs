@@ -196,7 +196,8 @@ impl Root {
     /// (securejoin's IsNotExist), unless `strict`: then it is an error, as fs.RootPath
     /// lstats each name.
     pub fn resolve(&self, path: &[u8], strict: bool) -> io::Result<Vec<u8>> {
-        // filepath-securejoin's maxSymlinkLimit.
+        // filepath-securejoin's MaxSymlinkLimit (cyphar/filepath-securejoin
+        // internal/consts/consts.go l. 15, 0.7.0), which moby's fs.RootPath resolves under.
         const MAX_LINKS: usize = 255;
         let mut todo: std::collections::VecDeque<Vec<u8>> = components(path).map(<[u8]>::to_vec).collect();
         let mut done: Vec<Vec<u8>> = Vec::new();

@@ -70,6 +70,8 @@ pub fn net_mode(v: &str) -> Result<NetMode, String> {
 
 /// `cpuset.Validate`: CSV of CPUs or ranges, none past 8192.
 fn cpuset(s: &str) -> Result<(), String> {
+    // BuildKit's MaxCPU (moby/buildkit util/cpuset/cpuset.go l. 14), which Validate holds
+    // each element to, byte for byte with BuildKit's errors.
     const MAX: i64 = 8192;
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         match part.split_once('-') {
