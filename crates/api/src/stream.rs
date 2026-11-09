@@ -522,6 +522,8 @@ mod tests {
     /// native plan step 8).
     #[test]
     fn a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read() {
+        // A hang guard alone: each wait here returns at its fact.
+        let (_, guard) = timed();
         let (a, mut b) = pair().unwrap();
         Stream::set_nonblocking(&a, true).unwrap();
         let mut clone = Stream::try_clone(&a).unwrap();
@@ -532,7 +534,7 @@ mod tests {
             tx.send(empty).unwrap();
             clone
         });
-        let empty = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        let empty = rx.recv_timeout(guard).unwrap();
         assert_eq!(empty, Err(io::ErrorKind::WouldBlock));
         let mut clone = reader.join().unwrap();
         b.write_all(b"now").unwrap();
@@ -543,8 +545,9 @@ mod tests {
                 events: libc::POLLIN,
                 revents: 0,
             };
+            let ms = i32::try_from(guard.as_millis()).unwrap();
             // SAFETY: poll(2) of one pollfd, of a socket `a` holds open.
-            let n = unsafe { libc::poll(&raw mut fd, 1, 60_000) };
+            let n = unsafe { libc::poll(&raw mut fd, 1, ms) };
             assert_eq!((n, fd.revents & libc::POLLIN), (1, libc::POLLIN));
         }
         let mut buf = [0u8; 8];
