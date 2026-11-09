@@ -490,9 +490,6 @@ impl Drop for Vulkan {
     }
 }
 
-/// The most devices whose heaps are counted: more than any host has.
-const MAX_DEVICES: u32 = 64;
-
 /// The bytes of the host GPUs' heaps that host-visible memory comes from, as Vulkan says
 /// them, which Venus tells the guest, every GPU's counted: the most memory a guest can
 /// have mapped into its window at once. On Windows those of the memory the renderer shows
@@ -516,11 +513,20 @@ fn host_visible() -> Result<u64, String> {
     if r != 0 || instance.is_null() {
         return Err(format!("Vulkan made no instance ({r})"));
     }
+    // Every device Vulkan has: asked for their count first, then for as many (the Vulkan
+    // specification's two calls, "Physical Devices", vkEnumeratePhysicalDevices).
     let mut count = 0u32;
     // SAFETY: the count alone asked.
     let r = unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
-    let mut devices = vec![std::ptr::null_mut(); count.min(MAX_DEVICES) as usize];
-    let mut count = devices.len() as u32;
+    let mut devices = Vec::new();
+    if devices.try_reserve_exact(count as usize).is_err() {
+        // SAFETY: the instance made above.
+        unsafe { (vk.destroy_instance)(instance, std::ptr::null()) };
+        return Err(format!(
+            "Vulkan has {count} GPUs, more than this process has room for"
+        ));
+    }
+    devices.resize(count as usize, std::ptr::null_mut());
     let r = if r == 0 {
         // SAFETY: room for `count` devices; VK_INCOMPLETE where there are more, which is
         // fine.

@@ -208,8 +208,10 @@ pub struct Record<'a> {
     pub bytes: &'a [u8],
 }
 
-/// The most bytes a record holds: a run of pages a writer sends at once.
-pub const MAX_RECORD: usize = 1 << 20;
+/// The most bytes a record holds, the run of pages a writer sends at once: a block of a
+/// snapshot's memory file ([`DATA_BLOCK`](crate::memory::DATA_BLOCK), Linux's pageblock of
+/// 4 KiB pages, D151), the unit the file says it holds data in and a restore maps.
+pub const MAX_RECORD: usize = crate::memory::DATA_BLOCK;
 
 /// Reads a live move's stream from `r`, each record given to `take` in order, up to its
 /// end. A stream cut short, or a record past [`MAX_RECORD`], is refused.

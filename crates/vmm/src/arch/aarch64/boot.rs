@@ -14,7 +14,9 @@ use crate::platform;
 const IMAGE_MAGIC: u32 = 0x644d_5241; // "ARM\x64"
 const IMAGE_HEADER_LEN: usize = 64;
 const SZ_2M: u64 = 2 << 20;
-/// booting.rst: the DTB may not exceed 2 MiB and the 2 MiB after it must be RAM.
+/// Linux's arm64 boot protocol: the DTB "must not exceed 2 megabytes in size", and the
+/// 2 MiB block it lies in is mapped whole (Documentation/arch/arm64/booting.rst §2, l. 53-56,
+/// Linux 1590cf03).
 pub const FDT_MAX: u64 = SZ_2M;
 
 #[derive(Debug)]

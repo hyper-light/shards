@@ -106,6 +106,7 @@ pub const CAP_IRQCHIP: u64 = 0;
 pub const CAP_USER_MEMORY: u64 = 3;
 pub const CAP_NR_VCPUS: u64 = 9;
 pub const CAP_MP_STATE: u64 = 14;
+/// KVM_CAP_MAX_VCPUS, "max vcpus per vm" (include/uapi/linux/kvm.h l. 816, Linux 1590cf03).
 pub const CAP_MAX_VCPUS: u64 = 66;
 pub const CAP_IMMEDIATE_EXIT: u64 = 136;
 pub const CAP_READONLY_MEM: u64 = 81;

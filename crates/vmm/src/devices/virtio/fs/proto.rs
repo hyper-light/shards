@@ -48,7 +48,11 @@ pub mod op {
 
 /// The most the guest writes or reads in one request: 256 pages.
 pub const MAX_PAGES: u16 = shards_abi::SHARE_MAX_PAGES;
-pub const MAX_WRITE: u32 = MAX_PAGES as u32 * 4096;
+/// The guest's page, which FUSE counts `max_pages` in (fs/fuse/inode.c l. 1342-1344, Linux
+/// 1590cf03): 4 KiB, x86-64's least (Intel SDM Vol. 3A §4.5) and arm64's as shards' kernel
+/// is built (resources/kernel/firecracker-aarch64-6.18.config l. 437, CONFIG_ARM64_4K_PAGES).
+pub const GUEST_PAGE: u32 = 4096;
+pub const MAX_WRITE: u32 = MAX_PAGES as u32 * GUEST_PAGE;
 
 /// The most a share's tables hold, the bytes of its guest's removed files among them: what
 /// a snapshot's state holds (D176).
@@ -62,6 +66,15 @@ pub const HEADER_BYTES: usize = 16;
 pub const IN_HEADER_BYTES: usize = 40;
 /// The bytes of a reply's header (struct fuse_out_header): its length, error and `unique`.
 pub const OUT_HEADER_BYTES: usize = 16;
+/// The bytes of a WRITE's arguments before its data (struct fuse_write_in,
+/// include/uapi/linux/fuse.h l. 839-847): its handle, offset, size, write flags, lock owner,
+/// flags and padding.
+pub const WRITE_IN_BYTES: usize = 40;
+/// A SETXATTR's arguments (struct fuse_setxattr_in, l. 868-873), at their longest, with
+/// its name of at most XATTR_NAME_MAX bytes and its NUL and its value of at most
+/// XATTR_SIZE_MAX (include/uapi/linux/limits.h l. 15-16): the longest request of a guest's
+/// but a WRITE's.
+pub const SETXATTR_MOST: usize = 16 + 255 + 1 + 65536;
 
 /// A Linux errno, as a reply carries it negated.
 pub(super) type Errno = i32;

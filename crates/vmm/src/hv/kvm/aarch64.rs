@@ -496,7 +496,7 @@ impl Vm {
         let (regs, its) = decoded.map_err(|crate::snapshot::codec::DecodeError(e)| {
             Error::Guest(format!("the snapshot's GIC: {e}"))
         })?;
-        gic::restore(gic, &regs)?;
+        gic::restore(gic, &regs, self.mpidrs.len(), its.is_some())?;
         match (its, self.its.get()) {
             (Some(state), Some(its)) => gic::its_restore(its, &state),
             (None, None) => Ok(()),

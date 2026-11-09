@@ -87,8 +87,13 @@ impl std::ops::Deref for SlotOf {
     }
 }
 
-/// The most a request or reply frame holds: a write's data and its headers.
-pub const MAX_FRAME: usize = proto::MAX_WRITE as usize + 4096;
+/// The most a request or reply frame holds: the longest request, a WRITE of the most data
+/// INIT lets the guest write and its header and arguments, longer than any other request
+/// (a SETXATTR's at its longest) and than any reply (a READ's of as much, its header
+/// shorter).
+pub const MAX_FRAME: usize = proto::IN_HEADER_BYTES + proto::WRITE_IN_BYTES + proto::MAX_WRITE as usize;
+const _: () = assert!(proto::IN_HEADER_BYTES + proto::SETXATTR_MOST <= MAX_FRAME);
+const _: () = assert!(proto::OUT_HEADER_BYTES + proto::MAX_WRITE as usize <= MAX_FRAME);
 
 /// A frame of the VM process's own, never of a guest's (D176): its length word's top bit,
 /// which no guest's request (at most [`MAX_FRAME`]) sets, as the device sends what the

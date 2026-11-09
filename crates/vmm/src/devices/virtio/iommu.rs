@@ -75,8 +75,28 @@ const RESV_MEM_T_MSI: u8 = 1;
 const PROBE_SIZE: u32 = 512;
 /// The granule of a mapping: its addresses and length are whole 4 KiB pages.
 const PAGE: u64 = 1 << 12;
-/// The longest request's device-readable part: PROBE's head, endpoint and reserved bytes.
-const READABLE_MAX: usize = 72;
+/// Each request's device-readable part, as virtio 1.3 §5.13.6 lays it out
+/// (include/uapi/linux/virtio_iommu.h l. 62-150): its 4-byte head, then ATTACH's domain,
+/// endpoint, flags and 4 reserved bytes; DETACH's domain, endpoint and 8 reserved; MAP's
+/// domain, start, end, physical start and flags; UNMAP's domain, start, end and 4 reserved;
+/// PROBE's endpoint and 64 reserved, before the properties the device writes.
+const ATTACH_READABLE: usize = 4 + 4 + 4 + 4 + 4;
+const DETACH_READABLE: usize = 4 + 4 + 4 + 8;
+const MAP_READABLE: usize = 4 + 4 + 8 + 8 + 8 + 4;
+const UNMAP_READABLE: usize = 4 + 4 + 8 + 8 + 4;
+const PROBE_READABLE: usize = 4 + 4 + 64;
+/// The longest of them: PROBE's, 72.
+const READABLE_MAX: usize = longer(
+    longer(
+        longer(ATTACH_READABLE, DETACH_READABLE),
+        longer(MAP_READABLE, UNMAP_READABLE),
+    ),
+    PROBE_READABLE,
+);
+
+const fn longer(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
 
 /// A translation as the device and its endpoints' DMA share it.
 pub type Shared = Arc<Mutex<Translation>>;
@@ -985,6 +1005,24 @@ mod tests {
     use super::*;
 
     const MSI: Option<(u64, u64)> = Some((0xfee0_0000, 0xfeef_ffff));
+
+    /// Each request's readable part is its structure's less its 4-byte tail (or, PROBE's,
+    /// its properties), and the longest is PROBE's.
+    #[test]
+    fn the_longest_readable_part_is_probes() {
+        assert_eq!(
+            [
+                ATTACH_READABLE,
+                DETACH_READABLE,
+                MAP_READABLE,
+                UNMAP_READABLE,
+                PROBE_READABLE
+            ],
+            [20, 20, 36, 28, 72]
+        );
+        assert_eq!(READABLE_MAX, 72);
+        assert_eq!(attach(1, 2, 0).len(), ATTACH_READABLE);
+    }
 
     fn attach(domain: u32, endpoint: u32, flags: u32) -> Vec<u8> {
         let mut r = vec![T_ATTACH, 0, 0, 0];
