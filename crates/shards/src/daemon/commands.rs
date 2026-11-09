@@ -1004,7 +1004,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             builtin: shards_abi::run::builtin::PROCESSES,
             ..Default::default()
         };
-        let quiet = match self.exec_quietly(id, &spec, None, TOP_LIMIT, super::TAKE_TIMEOUT) {
+        let quiet = match self.exec_quietly(id, &spec, None, top_limit(), super::TAKE_TIMEOUT) {
             Ok(q) if q.status == Some(0) && !q.more => q,
             Ok(_) => return Err(format!("{given}: its processes could not be read")),
             Err(e) => return Err(format!("{given}: reading its processes: {e}")),
@@ -3602,8 +3602,13 @@ impl DiffPage {
 
 pub(crate) use shards_ipc::COPY_STEP;
 
-/// The most of a microVM's process dump `top` takes: some 2 KiB a process.
-const TOP_LIMIT: usize = 16 << 20;
+/// The most of a microVM's process dump `top` takes: shards-init makes it whole in its
+/// guest's memory before it sends it (init procs.rs `dump`), so no more than the guest
+/// holds, which its host holds; read as far as the daemon can hold now
+/// ([`crate::build::holdable`]).
+fn top_limit() -> usize {
+    usize::try_from(crate::build::holdable()).unwrap_or(usize::MAX)
+}
 
 /// dockerd's check of `top`'s ps options (top_unix.go, validatePSArgs): over each match
 /// of `\s+([^\s]*)=\s*(PID[^\s]*)`, a field headed `PID…` must be `pid`, which dockerd

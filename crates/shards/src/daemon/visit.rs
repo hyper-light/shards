@@ -16,10 +16,10 @@ use shards_ipc::Stream as UnixStream;
 use shards_ipc::fd::{AsFd as _, BorrowedFd};
 use shards_ipc::{Run, kind};
 
-use super::{Daemon, Inbox, Keep, LAYER_NEW, REQUEST, RunState, Threads, lock, log, network, open_layer};
-
-/// How long a visit's VM may take to start holding.
-const START_LIMIT: Duration = Duration::from_secs(30);
+use super::{
+    Daemon, Inbox, Keep, LAYER_NEW, READY_STALL, READY_TIMEOUT, REQUEST, RunState, Threads, lock, log,
+    network, open_layer,
+};
 
 impl<D: crate::containers::Disk> Daemon<D> {
     /// Starts a visit to the files of the stopped microVM that command `argv` reads
@@ -273,7 +273,10 @@ impl<D: crate::containers::Disk> Daemon<D> {
     }
 
     /// Takes run `id`'s messages until its VM says it holds: the built-ins' requests then
-    /// find its files in place.
+    /// find its files in place. Waited for as long as its VM's process runs its start, as a
+    /// warm VM's is (`ready`, PM M357): given up once it has run nothing a start does
+    /// ([`shards_vmm::platform::progressed`]) for [`READY_TIMEOUT`], judged each
+    /// [`READY_STALL`]; one whose CPU time cannot be read, [`READY_TIMEOUT`] from its start.
     fn await_holding(&self, id: &str, inbox: &Arc<Mutex<Inbox>>) -> Result<(), String> {
         #[cfg(unix)]
         let fd = {
@@ -287,7 +290,9 @@ impl<D: crate::containers::Disk> Daemon<D> {
             .stream
             .try_clone()
             .map_err(|e| format!("its VM's connection: {e}"))?;
-        let deadline = Instant::now() + START_LIMIT;
+        let pid = lock(inbox).pid;
+        let mut progress = shards_vmm::platform::Progress::of(pid);
+        let mut ran_last = Instant::now();
         loop {
             let ended = self.take_messages(id, inbox);
             {
@@ -299,10 +304,18 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     return Err("its VM ended before it held".into());
                 }
             }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Err("its VM did not start in time".into());
+            if progress.since() >= READY_STALL {
+                let look = progress.look();
+                if look.ran {
+                    ran_last = Instant::now();
+                }
+                if ran_last.elapsed() >= READY_TIMEOUT {
+                    return Err(format!(
+                        "its VM ran nothing of its start for {READY_TIMEOUT:?}: {look}"
+                    ));
+                }
             }
+            let left = READY_STALL.saturating_sub(progress.since());
             #[cfg(unix)]
             {
                 let mut polled = libc::pollfd {
@@ -310,12 +323,12 @@ impl<D: crate::containers::Disk> Daemon<D> {
                     events: libc::POLLIN,
                     revents: 0,
                 };
-                let ms = libc::c_int::try_from(left.as_millis().min(1000)).unwrap_or(1000);
+                let ms = libc::c_int::try_from(left.as_millis().max(1)).unwrap_or(libc::c_int::MAX);
                 // SAFETY: poll(2) on one pollfd of a descriptor the inbox holds open.
                 unsafe { libc::poll(&raw mut polled, 1, ms) };
             }
             #[cfg(windows)]
-            let _ = stream.wait_readable(None, Instant::now().checked_add(left.min(Duration::from_secs(1))));
+            let _ = stream.wait_readable(None, Instant::now().checked_add(left));
         }
     }
 }

@@ -2,7 +2,9 @@
 //! header, print function, sort item, width and flags; the macros that stand for lists
 //! of them; AIX's field descriptors; and the one-letter sort keys.
 
-/// How a column is justified (common.h CF_JUST_MASK), and when it prints.
+/// How a column is justified, and when it prints: procps-ng 4.0.2's flags, each as its
+/// src/ps/common.h defines it (`CF_JUST_MASK` l. 243, `CF_USER` to `CF_SIGNAL` l. 245-250,
+/// `CF_PIDMAX` l. 252, and the `CF_PRINT_` flags after it, l. 254-258).
 pub(super) const CF_JUST_MASK: u32 = 0x0f;
 pub(super) const USER: u32 = 1;
 pub(super) const LEFT: u32 = 2;
