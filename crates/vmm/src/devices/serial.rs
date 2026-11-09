@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::{Arc, Condvar, Mutex};
 
+pub use shards_abi::bounds::ConsoleReport;
+
 use super::{Interrupt, MmioDevice};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::sync::{lock, wait};
@@ -57,12 +59,6 @@ const MSR_DCD: u8 = 1 << 7;
 /// (src/vmm/src/devices/legacy/serial.rs `recv_bytes`), so what the guest has not drained
 /// stays in the host's own buffers, the input's pipe or terminal.
 const RX_FIFO: usize = 16;
-/// What is kept of the console's output, its last bytes ([`Serial::said`]): a page. A
-/// kernel's panic and the errors before it wrote 1,129 bytes to a console told to be
-/// `quiet`, 858 of them from its panic's line to its reset (6.18 on arm64, a root it could
-/// not mount).
-const SAID: usize = 4096;
-
 struct State {
     ier: u8,
     lcr: u8,
@@ -78,9 +74,23 @@ struct State {
     /// of an older build, which the guest drains first.
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
-    /// The console's last bytes, at most [`SAID`].
+    /// The console's last bytes, at most [`keep`](State::keep).
     said: VecDeque<u8>,
+    /// How many of its last bytes are kept: what its spawner learned its kernel's failure
+    /// reports need (`shards_abi::bounds::console_said`, D12), none where none is quoted.
+    keep: usize,
+    /// Whether bytes said were lost past [`keep`](State::keep), and whether the last lost
+    /// ended a line, so that the first kept is a line's first.
+    lost: Option<bool>,
     level: bool,
+}
+
+/// What a console said last ([`Serial::said`]): its whole lines, and whether they are all
+/// it said or its first were lost past what it kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Said {
+    pub lines: Vec<u8>,
+    pub report: ConsoleReport,
 }
 
 pub struct Serial {
@@ -107,7 +117,8 @@ impl std::fmt::Debug for Serial {
 }
 
 impl Serial {
-    pub fn new(out: Box<dyn Write + Send>, irq: Arc<dyn Interrupt>) -> Serial {
+    /// A console writing to `out`, that keeps its last `keep` bytes ([`Serial::said`]).
+    pub fn new(out: Box<dyn Write + Send>, irq: Arc<dyn Interrupt>, keep: usize) -> Serial {
         Serial {
             state: Mutex::new(State {
                 ier: 0,
@@ -122,6 +133,8 @@ impl Serial {
                 rx: VecDeque::new(),
                 out,
                 said: VecDeque::new(),
+                keep,
+                lost: None,
                 level: false,
             }),
             room: Condvar::new(),
@@ -129,19 +142,26 @@ impl Serial {
         }
     }
 
-    /// The whole lines of the last [`SAID`] bytes its guest wrote to the console: what it
-    /// said last, as a kernel writes why it panics there.
-    pub fn said(&self) -> Vec<u8> {
+    /// The whole lines of the last bytes its guest wrote to the console, as many as it keeps:
+    /// what it said last, as a kernel writes why it panics there. A report whole where it
+    /// kept every byte said; else cut at what it keeps, a line it lost the start of dropped.
+    pub fn said(&self) -> Said {
         let s = lock(&self.state);
-        let mut said: Vec<u8> = s.said.iter().copied().collect();
-        if said.len() == SAID {
-            let cut = said
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(said.len(), |at| at + 1);
-            said.drain(..cut);
-        }
-        said
+        let mut lines: Vec<u8> = s.said.iter().copied().collect();
+        let report = match s.lost {
+            None => ConsoleReport::Whole(lines.len()),
+            Some(at_line_end) => {
+                if !at_line_end {
+                    let cut = lines
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map_or(lines.len(), |at| at.saturating_add(1));
+                    lines.drain(..cut);
+                }
+                ConsoleReport::Cut(s.keep)
+            }
+        };
+        Said { lines, report }
     }
 
     /// Gives host input to the guest, waiting while its receiver has no room: as a line
@@ -265,10 +285,13 @@ impl MmioDevice for Serial {
                 } else {
                     // Console output is best effort: a closed stdout must not stop the guest.
                     let _ = s.out.write_all(&[v]).and_then(|()| s.out.flush());
-                    if s.said.len() == SAID {
-                        s.said.pop_front();
+                    if s.said.len() >= s.keep {
+                        let lost = s.said.pop_front().unwrap_or(v);
+                        s.lost = Some(lost == b'\n');
                     }
-                    s.said.push_back(v);
+                    if s.keep > 0 {
+                        s.said.push_back(v);
+                    }
                 }
                 // Transmission is instantaneous, so THR is empty again at once.
                 s.thri_pending = true;
@@ -373,38 +396,63 @@ mod tests {
         b[0]
     }
 
-    /// What the console said last is kept, its last page in whole lines; what loops back
-    /// to the guest is not said.
+    /// What the console said last is kept, as many of its last bytes as it was asked to keep,
+    /// in whole lines; what loops back to the guest is not said. Whether its first bytes were
+    /// lost is said with it: a report whole, of every byte said, or cut at what was kept.
     #[test]
-    fn the_last_page_said_is_kept_in_whole_lines() {
-        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()));
+    fn the_last_bytes_said_are_kept_in_whole_lines() {
+        let keep = 1000;
+        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()), keep);
         let say = |bytes: &[u8]| bytes.iter().for_each(|b| s.write(RBR_THR_DLL, &[*b]));
-        assert!(s.said().is_empty());
+        assert_eq!(s.said().lines, b"");
+        assert_eq!(s.said().report, ConsoleReport::Whole(0));
         say(b"first\nsecond\n");
         s.write(MCR, &[MCR_LOOP]);
         say(b"looped");
         s.write(MCR, &[MCR_OUT2]);
-        assert_eq!(s.said(), b"first\nsecond\n");
+        assert_eq!(s.said().lines, b"first\nsecond\n");
+        assert_eq!(s.said().report, ConsoleReport::Whole(13));
+        // Filled to the byte, nothing lost: whole, its first line too.
         let line: Vec<u8> = [b'x'; 99].into_iter().chain(*b"\n").collect();
-        for _ in 0..SAID / line.len() + 2 {
+        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()), keep);
+        let say = |bytes: &[u8]| bytes.iter().for_each(|b| s.write(RBR_THR_DLL, &[*b]));
+        for _ in 0..keep / line.len() {
             say(&line);
         }
-        say(b"panic");
+        assert_eq!(s.said().report, ConsoleReport::Whole(keep));
+        assert_eq!(s.said().lines.len(), keep);
+        // Past it: cut, its first line lost with the bytes before it.
+        say(&line[..50]);
+        say(b"\npanic");
         let said = s.said();
+        assert_eq!(said.report, ConsoleReport::Cut(keep));
         assert!(
-            said.len() > SAID - line.len() && said.len() <= SAID,
+            said.lines.len() > keep - line.len() && said.lines.len() < keep,
             "{}",
-            said.len()
+            said.lines.len()
         );
-        assert!(said.starts_with(&line), "{:?}", &said[..8]);
-        assert!(said.ends_with(b"\npanic"));
+        assert!(said.lines.starts_with(&line), "{:?}", &said.lines[..8]);
+        assert!(said.lines.ends_with(b"\npanic"));
+        // Lost exactly at a line's end, the first kept line is whole.
+        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()), line.len());
+        let say = |bytes: &[u8]| bytes.iter().for_each(|b| s.write(RBR_THR_DLL, &[*b]));
+        say(&line);
+        say(&line);
+        assert_eq!(s.said().lines, line);
+        assert_eq!(s.said().report, ConsoleReport::Cut(line.len()));
+        // Keeping nothing, anything said is lost.
+        let s = Serial::new(Box::new(std::io::sink()), Arc::new(Line::default()), 0);
+        assert_eq!(s.said().report, ConsoleReport::Whole(0));
+        s.write(RBR_THR_DLL, b"x");
+        assert_eq!(s.said().report, ConsoleReport::Cut(0));
+        assert_eq!(s.said().lines, b"");
     }
 
     #[test]
     fn transmit_receive_and_interrupts() {
         let sink = Sink::default();
         let line = Arc::new(Line::default());
-        let s = Serial::new(Box::new(sink.clone()), line.clone());
+        let s = Serial::new(Box::new(sink.clone()), line.clone(), 0);
         for b in b"ok\n" {
             s.write(RBR_THR_DLL, &[*b]);
         }
@@ -434,7 +482,7 @@ mod tests {
     #[test]
     fn divisor_latch_and_loopback() {
         let sink = Sink::default();
-        let s = Serial::new(Box::new(sink.clone()), Arc::new(Line::default()));
+        let s = Serial::new(Box::new(sink.clone()), Arc::new(Line::default()), 0);
         s.write(LCR, &[LCR_DLAB | 3]);
         s.write(RBR_THR_DLL, &[0x01]);
         s.write(IER_DLM, &[0x02]);
@@ -452,7 +500,7 @@ mod tests {
     /// A loopback write past the receiver's room overruns it, as the datasheet's does.
     #[test]
     fn overrun_is_reported_and_cleared() {
-        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
         s.write(IIR_FCR, &[1]);
         s.write(MCR, &[MCR_LOOP]);
         for _ in 0..=RX_FIFO {
@@ -477,7 +525,7 @@ mod tests {
         w.u32(held.len() as u32);
         held.iter().for_each(|&b| w.u8(b));
         let bytes = w.into_bytes();
-        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
         let mut r = Reader::new(&bytes);
         s.restore(&mut r).unwrap();
         r.finish().unwrap();
@@ -491,7 +539,7 @@ mod tests {
     /// is lost or overruns.
     #[test]
     fn host_input_waits_for_room_and_loses_nothing() {
-        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()), 0);
         let typed: Vec<u8> = (0..=u8::MAX).cycle().take(5 * RX_FIFO + 3).collect();
         let mut read = Vec::new();
         std::thread::scope(|scope| {

@@ -3484,6 +3484,76 @@ and a compile-time assertion of the net rings. Owed: E2E of each device on each 
 passed-through device behind the IOMMU), a template saved by the build before restored by
 this one, a network throughput run, the measurements above, and the 8-target lint.
 
+### D12's console kept to quote: learned for each kernel
+
+**Found** beside D12's figures above: a VM whose console no one reads kept its last 4096
+bytes (`SAID`, serial.rs, "a page") to quote as its guest resets, and shards-api copied the
+figure (`CONSOLE_SAID`) to size the tail it keeps of shards' output (`TAIL`). Picked, not
+derived: one panic (6.18 on arm64, 1,129 bytes to a `quiet` console) stood behind it, and
+every other VM, whose console nothing quotes, kept the same.
+
+**Decided:**
+- **What a VM keeps is learned, for each kernel, from how its kernel's reports came out.**
+  The spawner of a VM that quotes its console reads `<home>/said/<pin>` and gives the VM
+  `--console-said N`, N = `shards_abi::bounds::console_said`: the longest whole report
+  recorded, and twice the most kept of one that ran out (it needed more), at least a
+  panic's frame, the report it is kept for (a run-out at nothing kept says nothing of its
+  length); with no records of its own kernel's, the same over every kernel's; with none at
+  all, a panic's frame.
+- **A panic's frame** is the two lines that carry the kernel's panic message,
+  `Kernel panic - not syncing: %s` and `---[ end Kernel panic - not syncing: %s ]---`, each
+  as long as the buffer the message is formatted into, `vpanic`'s `static char buf[1024]`:
+  2 x 1024 = 2048 bytes. The 1,129 bytes above fit it.
+- **A kernel's pin is its identity, the SHA-256 of its bytes.** The guest store names its
+  files by it (`<home>/guest/sha256-<hex>`, shards' pinned kernels among them, whose
+  `Pinned::sha256` is the same digest), so a stored kernel is never hashed; one given by
+  path is hashed once for each file as it is (its path, length, time of change, and on Unix
+  device, inode and ctime), the digest kept in `<home>/said/kernels`. A restore's spawner
+  does not know its kernel: its records are `unpinned`'s, which count among every kernel's.
+  (The plan named a pinned kernel by `Pinned::name`; its SHA-256 is the same identity and
+  lets a path to the pinned kernel's bytes share its records.)
+- **A record is one whole line**, `report N` (a report whole, the console's N bytes all
+  kept) or `cut N` (its first bytes lost past the N kept), appended in one write (`O_APPEND`
+  on Unix, `FILE_APPEND_DATA` without `FILE_WRITE_DATA` on Windows, std's `append`), so
+  writers beside each other never interleave; a reader passes over an unfinished last line
+  and any line that is no record.
+- **The console says whether its ring lost bytes**, and the reset's report says so: `its
+  console's last lines, those before them lost past the N bytes kept:`. A report cut before
+  its first line is a run-out.
+- **The VM writes no record.** It tells its spawner `report N` or `cut N` on a pipe the
+  spawner gives it (`--said-to`); the spawner holds it to the size it gave (a whole report
+  no longer, a cut recorded at that size) and appends. The VM process, in App Sandbox on
+  macOS, opens only what its spawner grants it (D30).
+- **The spawners:** a build's builder (build/builder.rs, which records on a thread of its
+  own); the command line's direct boot, `shards run vm --kernel … --no-console` and `shards
+  restore vm … --no-console` (cli/mod.rs: on Unix, which becomes the VM, a recorder it
+  starts first, `shards console-said`, reads the pipe to the VM's exit; on Windows the
+  command line itself, which waits for its VM); and shards-api's client, which reads the
+  records and passes `--console-said N`, the command line it starts recording, and keeps
+  the tail its report fits in (`tail(N)`).
+- **A VM whose console nothing quotes keeps none of it**: one whose console is shown, one
+  that serves a command (`--rootfs … -- CMD`), and the daemon's warm VMs. Where a spawner
+  says nothing, a VM that quotes keeps a panic's frame. The tests that run a machine in
+  their own process and read its console as it goes keep all of it (`cfg.said =
+  usize::MAX`).
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `SAID` (serial.rs) | 4096 | `Config::said`, its spawner's `--console-said N` = `console_said(kernel's records, every kernel's)`; 0 where nothing quotes it | this kernel's own reports (`<home>/said/<pin>`) |
+| no records (bounds.rs `PANIC_FRAME`) | none | 2 x `PANIC_MESSAGE` = 2 x 1024 = 2048 | Linux 6.18.48 kernel/panic.c l. 431 (`static char buf[1024]`), l. 483 and 596 (the two lines that print it) |
+| `CONSOLE_SAID` (shards-api client.rs) | 4096 | the `--console-said N` it passes, read from the same records | as `SAID` |
+| `TAIL` (shards-api client.rs) | prefix + 4096 x 6 + 1 | `tail(N)`: the longest prefix (a cut's, N's most digits) + N x `ESCAPED` + 1 | vm_run.rs `last_said` |
+
+Held by unit tests (`a_consoles_kept_bytes_are_what_its_records_need`,
+`console_records_are_whole_lines`, `the_last_bytes_said_are_kept_in_whole_lines`,
+`a_kernels_records_teach_what_its_vms_keep`, `a_path_kernels_digest_is_kept_until_it_changes`,
+`records_appended_at_once_never_interleave`, `only_a_vm_that_quotes_its_console_learns`,
+`a_guests_last_words_move_no_terminal`, shards-api's
+`the_longest_report_shards_writes_is_quoted_whole`). Owed: E2E on KVM, Hypervisor.framework
+and WHP (`a_reset_with_no_console_says_its_guests_panic`, a builder's reset), what a direct
+boot's recorder process costs (its start beside the VM's, its memory while it waits) and a
+path kernel's first hash, both unmeasured; the 8-target lint and CI.
+
 ### D9's and D153's virtio limits: each the specification's
 
 | Literal | Was | Now | Source |

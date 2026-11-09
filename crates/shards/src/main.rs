@@ -49,6 +49,7 @@ mod pressure;
 mod pull;
 mod resources;
 mod run;
+mod said;
 mod search;
 mod segments;
 mod setup;
@@ -89,6 +90,10 @@ pub(crate) fn shardsd(args: Vec<std::ffi::OsString>) -> ExitCode {
         // the VM's broker (`shards run vm --kernel`, `shards restore vm`): not for people to run.
         #[cfg(target_os = "macos")]
         Some("grants") => grant_answer::broker(),
+        // the recorder of how a directly booted VM's console report came out (D12): not
+        // for people to run.
+        #[cfg(unix)]
+        Some("console-said") => said::recorder(args),
         // the writer of a restore's working set (`shards restore` on Linux): not for people to run.
         #[cfg(target_os = "linux")]
         Some("working-set") => working_set::keeper(),

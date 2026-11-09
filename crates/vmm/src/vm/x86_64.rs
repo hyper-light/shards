@@ -381,6 +381,7 @@ fn assemble(
     memory: &Arc<GuestMemory>,
     config: &MachineConfig,
     console: Console,
+    said: usize,
     hosts: super::Hosts<'_>,
     gpu: Option<u64>,
     pci: super::Pci<'_>,
@@ -562,6 +563,7 @@ fn assemble(
             irqs: irqs.clone(),
             gsi: layout::GSI_COM1,
         }),
+        said,
     ));
     let power = Arc::new(Power::default());
     bus.pio.insert(u64::from(layout::COM1), 8, serial.clone())?;
@@ -713,6 +715,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             &memory,
             &config,
             cfg.console,
+            cfg.said,
             hosts,
             cfg.gpu.then_some(0),
             super::Pci {
@@ -779,6 +782,7 @@ pub fn restore(
     snap: &Snapshot,
     memory_file: &File,
     console: Console,
+    said: usize,
     hosts: super::Hosts<'_>,
     working_set: Vec<hv::Touch>,
 ) -> Result<Machine, String> {
@@ -799,6 +803,7 @@ pub fn restore(
         &memory,
         &snap.config,
         console,
+        said,
         hosts,
         snap.config.gpu,
         super::Pci {

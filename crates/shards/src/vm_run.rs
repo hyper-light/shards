@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --share: the host directory DIR, as virtio-fs tag shards0, shards1, ... in order;
@@ -78,7 +78,7 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
                 VIRTIO_IOMMU. Not with --snapshot-dir.
   Console escape: Ctrl-A x stops the VM.";
 
-const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console] [--gpu] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RESTORE_USAGE: &str = "usage: shards restore vm DIR [--hold] [--vsock PATH] [--no-console [--console-said N]] [--gpu] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards restore vm DIR [--hold] [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards restore vm DIR [--working-set FD] ...
        shards restore vm DIR --warm FD [--backing PATH[:ro]]... [--layer PATH [--layer-cloned GENERATION]]
@@ -182,6 +182,12 @@ fn disk(spec: OsString) -> Disk {
 /// Options `run` and `restore` share.
 struct Common {
     console: Console,
+    /// `--console-said N`: how many of its console's last bytes a VM whose console no one
+    /// reads keeps, to quote as it fails, as its spawner learned (D12).
+    said: Option<usize>,
+    /// `--said-to FD` (Windows: `--said-to NAME`): where it tells its spawner how that
+    /// report came out, for the spawner to record.
+    said_to: Option<LinkArg>,
     snapshot_dir: Option<PathBuf>,
     then: AfterSnapshot,
     vsock: Option<PathBuf>,
@@ -196,6 +202,8 @@ impl Common {
     fn new() -> Common {
         Common {
             console: Console::Stdout,
+            said: None,
+            said_to: None,
             snapshot_dir: None,
             then: AfterSnapshot::Stop,
             vsock: None,
@@ -214,6 +222,14 @@ impl Common {
         let w = &mut self.workload;
         match arg {
             "--no-console" => self.console = Console::Discard,
+            "--console-said" => {
+                self.said = Some(
+                    text(value("--console-said")?)?
+                        .parse()
+                        .map_err(|e| format!("--console-said: {e}"))?,
+                )
+            }
+            "--said-to" => self.said_to = Some(link_arg("--said-to", text(value("--said-to")?)?)?),
             "--snapshot-dir" => self.snapshot_dir = Some(PathBuf::from(value("--snapshot-dir")?)),
             "--snapshot-then" => {
                 self.then = match text(value("--snapshot-then")?)?.as_str() {
@@ -266,6 +282,18 @@ impl Common {
             then,
             working_set: false,
         })
+    }
+
+    /// How many of its console's last bytes a VM keeps: where it quotes them as it fails
+    /// (`quoted`, its console no one's), what its spawner says, else what a kernel with no
+    /// records keeps (`shards_abi::bounds::console_said`); none where it quotes none.
+    fn kept(&self, quoted: bool) -> usize {
+        use shards_abi::bounds::{ConsoleRecords, console_said};
+        let none = ConsoleRecords::default();
+        match quoted && self.console == Console::Discard {
+            true => self.said.unwrap_or_else(|| console_said(none, none)),
+            false => 0,
+        }
     }
 
     /// Checks that workload options come with a command.
@@ -338,6 +366,8 @@ struct Run {
     /// `--attach FD` (Windows: `--attach NAME`, the name its spawner handed it by): the
     /// socket a builder attaches files to the VM's join disk on (D134).
     attach: Option<String>,
+    /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
+    said_to: Option<LinkArg>,
 }
 
 fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
@@ -507,6 +537,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             .ok_or_else(|| format!("--memory-max {max} is less than --memory {}", cfg.memory_mib))?;
     }
     cfg.kernel = kernel.ok_or("--kernel is required")?;
+    let quoting = common.kept(true);
     cfg.snapshot = common.policy();
     cfg.console = common.console;
     cfg.vsock = common.vsock.map(VsockHost::at);
@@ -533,6 +564,7 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             mode: Mode::Warm { rootfs, fd },
             workload: common.workload,
             attach,
+            said_to: None,
         });
     }
     let mode = match rootfs {
@@ -542,10 +574,16 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
         None if command => return Err("a command needs --rootfs".into()),
         None => Mode::Plain,
     };
+    // Quoted as it fails where it is supervised to its end (`supervise`), not where it
+    // serves a command.
+    if matches!(mode, Mode::Plain | Mode::Template(_)) {
+        cfg.said = quoting;
+    }
     Ok(Run {
         cfg,
         mode,
         workload: common.workload,
+        said_to: common.said_to.take(),
         attach,
     })
 }
@@ -562,6 +600,8 @@ struct Restore {
     /// `--resume FD`, in place of `--warm FD`: the snapshot is a run's, whose command goes
     /// on (D176).
     resume: bool,
+    /// Where it tells its spawner how its console's report came out ([`Common::said_to`]).
+    said_to: Option<LinkArg>,
 }
 
 fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String> {
@@ -640,9 +680,13 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
     if layer_cloned.is_some() && layer.is_none() {
         return Err("--layer-cloned says whose clone --layer's file is: it needs --layer".into());
     }
+    // Quoted as it fails where it is supervised to its end (`supervise`), not where it
+    // serves a command.
+    let said = common.kept(warm.is_none() && common.workload.argv.is_empty());
     let cfg = RestoreConfig {
         dir,
         console: common.console,
+        said,
         snapshot: common.policy(),
         // A run's, held until its request maps its swap back and its guest's connections
         // are awaited, which its guest dials as it resumes (D176).
@@ -673,6 +717,7 @@ fn parse_restore(args: impl Iterator<Item = OsString>) -> Result<Restore, String
         warm,
         working_set_to,
         resume,
+        said_to: common.said_to.take(),
     })
 }
 
@@ -1162,6 +1207,7 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         mode,
         workload,
         attach,
+        said_to,
     } = match parsed(parse_run(args), RUN_USAGE) {
         Ok(run) => run,
         Err(code) => return code,
@@ -1172,14 +1218,21 @@ pub fn run(args: impl Iterator<Item = OsString>) -> ExitCode {
         report(e);
         return ExitCode::FAILURE;
     }
+    let said_to = match said_to.map(|to| handed("--said-to", to)).transpose() {
+        Ok(to) => to,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
     match mode {
-        Mode::Plain => supervise(start(&cfg), cfg.console, false),
+        Mode::Plain => supervise(start(&cfg), cfg.console, false, said_to),
         Mode::Template(rootfs) => {
             boot_into(&mut cfg, rootfs, true);
             // Restored copies dial the host through this device, served by whatever
             // restores them.
             cfg.vsock.get_or_insert_with(VsockHost::default);
-            supervise(start(&cfg), cfg.console, true)
+            supervise(start(&cfg), cfg.console, true, said_to)
         }
         Mode::Workload(rootfs) => run_in(cfg, rootfs, &workload),
         Mode::Warm { rootfs, fd } => warm_boot(cfg, rootfs, fd),
@@ -1193,6 +1246,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         warm,
         working_set_to,
         resume,
+        said_to,
     } = match parsed(parse_restore(args), RESTORE_USAGE) {
         Ok(restore) => restore,
         Err(code) => return code,
@@ -1201,6 +1255,13 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         return warm_restore(cfg, fd, resume);
     }
     let to = match working_set_to.map(WorkingSetTo::new).transpose() {
+        Ok(to) => to,
+        Err(e) => {
+            report(e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let said_to = match said_to.map(|to| handed("--said-to", to)).transpose() {
         Ok(to) => to,
         Err(e) => {
             report(e);
@@ -1243,7 +1304,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         (Ok((handle, _)), Some(to)) => to.hand_after(handle, RECORD_FOR),
         _ => None,
     };
-    let code = supervise(started, console, false);
+    let code = supervise(started, console, false, said_to);
     if let Some(h) = handing {
         h.now();
     }
@@ -1258,32 +1319,35 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
 /// (`vm::accept_working_set`): no VM writes its snapshot (D30).
 struct WorkingSetTo(std::fs::File);
 
-impl WorkingSetTo {
-    /// The pipe its spawner left it at descriptor `fd`.
-    #[cfg(unix)]
-    fn new(fd: LinkArg) -> Result<WorkingSetTo, String> {
-        use std::os::fd::FromRawFd as _;
-        // SAFETY: fcntl(2) asks whether the descriptor is open.
-        if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
-            return Err(format!("--working-set {fd}: not a descriptor of its own"));
-        }
-        // SAFETY: fcntl(2) on an open descriptor the spawner left for this process alone,
-        // closed on exec from here on.
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
-            return Err(format!("--working-set {fd}: {}", std::io::Error::last_os_error()));
-        }
-        // SAFETY: as above, owned from here on.
-        Ok(WorkingSetTo(unsafe { std::fs::File::from_raw_fd(fd) }))
+/// The pipe its spawner left it at descriptor `fd` for option `flag`, owned and closed on
+/// exec from here on.
+#[cfg(unix)]
+fn handed(flag: &str, fd: LinkArg) -> Result<std::fs::File, String> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: fcntl(2) asks whether the descriptor is open.
+    if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+        return Err(format!("{flag} {fd}: not a descriptor of its own"));
     }
+    // SAFETY: fcntl(2) on an open descriptor the spawner left for this process alone,
+    // closed on exec from here on.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(format!("{flag} {fd}: {}", std::io::Error::last_os_error()));
+    }
+    // SAFETY: as above, owned from here on.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
 
-    /// The pipe its spawner handed it by `name`, as `--warm`'s is: the CLI's, which keeps
-    /// the working set as the VM ends.
-    #[cfg(windows)]
-    fn new(name: LinkArg) -> Result<WorkingSetTo, String> {
-        Ok(WorkingSetTo(std::fs::File::from(take_given(
-            "--working-set",
-            &name,
-        )?)))
+/// The pipe its spawner handed it by `name` for option `flag`, owned from here on.
+#[cfg(windows)]
+fn handed(flag: &str, name: LinkArg) -> Result<std::fs::File, String> {
+    take_given(flag, &name).map(std::fs::File::from)
+}
+
+impl WorkingSetTo {
+    /// The pipe its spawner left it (on Windows handed it by name, as `--warm`'s is: the
+    /// CLI's, which keeps the working set as the VM ends).
+    fn new(given: LinkArg) -> Result<WorkingSetTo, String> {
+        handed("--working-set", given).map(WorkingSetTo)
     }
 
     /// Hands what `handle` records once `after` has passed since its vCPUs started, or the
@@ -2761,8 +2825,14 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
 }
 
 /// Runs a started VM to its end: console, timing report, exit code. A template must end
-/// in its snapshot.
-fn supervise(started: Result<(Handle, Running), String>, console: Console, template: bool) -> ExitCode {
+/// in its snapshot. A reset whose console no one read quotes what the guest said there last,
+/// and tells `said_to`, its spawner's, whether that was all it said.
+fn supervise(
+    started: Result<(Handle, Running), String>,
+    console: Console,
+    template: bool,
+    said_to: Option<std::fs::File>,
+) -> ExitCode {
     let (handle, running) = match started {
         Ok(v) => v,
         Err(e) => {
@@ -2784,7 +2854,12 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
         ExitReason::PowerOff | ExitReason::Stopped => ExitCode::SUCCESS,
         ExitReason::Reset => {
             let said = if console == Console::Discard {
-                last_said(&handle.console_said())
+                let said = handle.console_said();
+                // One line, in one write, which a pipe takes whole (PIPE_BUF, POSIX write(2)).
+                if let Some(mut to) = said_to {
+                    let _ = to.write_all(said.report.line().as_bytes());
+                }
+                last_said(&said.lines, said.report)
             } else {
                 String::new()
             };
@@ -2800,9 +2875,9 @@ fn supervise(started: Result<(Handle, Running), String>, console: Console, templ
 
 /// What a guest whose console no one read wrote to it last, `said`, as a kernel writes there
 /// why it panics (`panic=-1` resets it): its lines, each other character a terminal acts on
-/// written as its escape, so that what a guest wrote moves no terminal it is shown on.
-/// Nothing where it wrote nothing.
-fn last_said(said: &[u8]) -> String {
+/// written as its escape, so that what a guest wrote moves no terminal it is shown on; and,
+/// where `report` ran out, that its first lines were lost. Nothing where it wrote nothing.
+fn last_said(said: &[u8], report: shards_abi::bounds::ConsoleReport) -> String {
     let mut text = String::new();
     for c in String::from_utf8_lossy(said).chars() {
         match c {
@@ -2812,25 +2887,39 @@ fn last_said(said: &[u8]) -> String {
             c => text.push(c),
         }
     }
+    let lost = match report {
+        shards_abi::bounds::ConsoleReport::Whole(_) => String::new(),
+        shards_abi::bounds::ConsoleReport::Cut(kept) => {
+            format!(", those before them lost past the {kept} bytes kept")
+        }
+    };
     match text.trim_start_matches('\n').trim_end() {
         "" => String::new(),
-        said => format!(", its console's last lines:\n{said}"),
+        said => format!(", its console's last lines{lost}:\n{said}"),
     }
 }
 
 #[cfg(test)]
 mod said {
     use super::last_said;
+    use shards_abi::bounds::ConsoleReport::{Cut, Whole};
 
     /// A guest's last words are its lines as it wrote them, their carriage returns gone and
-    /// each other character a terminal acts on escaped; nothing where it said nothing.
+    /// each other character a terminal acts on escaped; nothing where it said nothing; and
+    /// where they ran out past what was kept, said so.
     #[test]
     fn a_guests_last_words_move_no_terminal() {
-        assert_eq!(last_said(b""), "");
-        assert_eq!(last_said(b"\r\n \r\n"), "");
+        assert_eq!(last_said(b"", Whole(0)), "");
+        assert_eq!(last_said(b"\r\n \r\n", Whole(5)), "");
+        let said = b"\r\n[    0.44] Kernel panic - not syncing: VFS\r\n\x1b[2J\x1b]0;mine\x07\tyes\r\n";
+        let lines = "\n[    0.44] Kernel panic - not syncing: VFS\n\\u{1b}[2J\\u{1b}]0;mine\\u{7}\tyes";
         assert_eq!(
-            last_said(b"\r\n[    0.44] Kernel panic - not syncing: VFS\r\n\x1b[2J\x1b]0;mine\x07\tyes\r\n"),
-            ", its console's last lines:\n[    0.44] Kernel panic - not syncing: VFS\n\\u{1b}[2J\\u{1b}]0;mine\\u{7}\tyes"
+            last_said(said, Whole(said.len())),
+            format!(", its console's last lines:{lines}")
+        );
+        assert_eq!(
+            last_said(said, Cut(2048)),
+            format!(", its console's last lines, those before them lost past the 2048 bytes kept:{lines}")
         );
     }
 }

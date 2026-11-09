@@ -823,9 +823,10 @@ impl Handle {
         self.serial.input(bytes);
     }
 
-    /// The whole lines of the last page its guest wrote to its console, whoever read it:
-    /// a kernel's panic says there why it resets its machine (`panic=-1`).
-    pub fn console_said(&self) -> Vec<u8> {
+    /// The whole lines of the last bytes its guest wrote to its console, as many as it was
+    /// told to keep ([`Config::said`]), and whether that was all it said: a kernel's panic
+    /// says there why it resets its machine (`panic=-1`).
+    pub fn console_said(&self) -> crate::devices::serial::Said {
         self.serial.said()
     }
 
@@ -1310,6 +1311,7 @@ pub fn restore_from(cfg: &RestoreConfig, pinned: snapshot::Pinned) -> Result<(Ha
         &snap,
         &memory_file,
         cfg.console,
+        cfg.said,
         super::Hosts {
             vsock: cfg.vsock.as_ref(),
             net: cfg.net.as_ref(),
