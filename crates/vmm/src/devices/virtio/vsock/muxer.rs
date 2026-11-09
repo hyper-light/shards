@@ -41,12 +41,6 @@ use crate::vm::VsockHost;
 const MAX_CONNECTIONS: usize = 1023;
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
-/// Streams a snapshot holds the ports of, at most (review 1.15): a muxer's connections and
-/// owed resets, and a restored one's are all owed resets, which a save made before they
-/// go out holds again beside its own connections. So the bound is that of 64 saves in a
-/// row with none sent between, not of one; past it the oldest owed go unsaid, and a
-/// stream of theirs is reset as its next packet finds no connection.
-const MAX_SAVED: usize = 64 * (MAX_CONNECTIONS + MAX_STRAY_RSTS);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
 /// time, never consumes data a client sends after its line.
 const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
@@ -145,7 +139,9 @@ impl Saved {
     }
 
     pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
-        let ports = r.seq(MAX_SAVED, 8, |r| Ok((r.u32()?, r.u32()?)))?;
+        // Whatever a save wrote, a host's with more slots than this one's too: as many as
+        // the input's bytes hold, as `seq` refuses a count they cannot.
+        let ports = r.seq(usize::MAX, 8, |r| Ok((r.u32()?, r.u32()?)))?;
         Ok(Saved {
             ports,
             last_local_port: r.u32()?,
@@ -233,13 +229,18 @@ impl Muxer {
     }
 
     /// The streams the guest may hold, for a snapshot: its connections, then the resets
-    /// owed, newest first, as many as a restore reads.
+    /// owed, newest first. As many as a muxer never restored holds at most: its slots, and
+    /// the resets [`stray_rst`](Muxer::stray_rst) keeps owed, a ring's worth, as Linux keeps
+    /// its own replies owed (`virtio_transport_more_replies`). A restored muxer owes a reset
+    /// for every stream its snapshot held, and saved again before they go out it keeps the
+    /// newest; the oldest go unsaid, and a stream of theirs is reset as its next packet
+    /// finds no connection (review 1.15, D12).
     pub fn saved(&self) -> Saved {
         let conns = self.conns.keys().map(|k| (k.local_port, k.peer_port));
         Saved {
             ports: conns
                 .chain(self.stray_rsts.iter().rev().copied())
-                .take(MAX_SAVED)
+                .take(self.slots.saturating_add(self.max_stray_rsts))
                 .collect(),
             last_local_port: self.last_local_port,
         }
