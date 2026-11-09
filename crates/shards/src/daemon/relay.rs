@@ -333,7 +333,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         relays: &Relays,
-        _spare: &mut super::Spare,
+        _spare: &mut super::Reserve,
     ) -> bool {
         while let Ok((name, conn)) = relays.came.1.try_recv() {
             if relays.served.contains_key(&name) {
@@ -352,7 +352,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         relays: &Relays,
-        spare: &mut super::Spare,
+        spare: &mut super::Reserve,
     ) -> bool {
         for (name, relay) in &relays.served {
             loop {
@@ -380,7 +380,7 @@ impl<D: Disk> Daemon<D> {
         &'s self,
         threads: &'s Threads<'s, 'e>,
         relays: &mut Relays,
-        spare: &mut super::Spare,
+        spare: &mut super::Reserve,
     ) {
         if relays.served.is_empty() {
             return;

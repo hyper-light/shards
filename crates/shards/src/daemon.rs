@@ -550,18 +550,18 @@ fn uniform() -> f64 {
 /// holds one (`uv__emfile_trick`'s `loop->emfile_fd`, src/unix/core.c), one for every
 /// listener the daemon's own listener thread accepts on: the Engine API's and the contexts'.
 #[cfg(unix)]
-type Spare = Option<File>;
+type Reserve = Option<File>;
 
 /// None on Windows: a pipe's client is refused by its own instance, disconnected and made to
 /// wait again (`shards_ipc::Listener::refuse`), which makes no handle.
 #[cfg(windows)]
-type Spare = ();
+type Reserve = ();
 
 /// Whether the listener holds its spare, made again where a refusal let it go and could not:
 /// whether it may accept, since a client it cannot take, and could not refuse, would keep
 /// its listener ready.
 #[cfg(unix)]
-fn spare_held(spare: &mut Spare) -> bool {
+fn spare_held(spare: &mut Reserve) -> bool {
     if spare.is_none() {
         *spare = crate::os::null().ok();
     }
@@ -569,7 +569,7 @@ fn spare_held(spare: &mut Spare) -> bool {
 }
 
 #[cfg(windows)]
-fn spare_held(_spare: &mut Spare) -> bool {
+fn spare_held(_spare: &mut Reserve) -> bool {
     true
 }
 
@@ -585,7 +585,7 @@ fn spare_held(_spare: &mut Spare) -> bool {
 /// keeps it readable; it is polled again as the listener is woken, which it is as clients,
 /// runs and connections let go of their descriptors (`wake_listener`), and holds a spare.
 #[cfg(unix)]
-fn refuse_api(listener: &ApiListener, spare: &mut Spare) -> bool {
+fn refuse_api(listener: &ApiListener, spare: &mut Reserve) -> bool {
     drop(spare.take());
     let refused = loop {
         match accept_api(listener) {
@@ -604,7 +604,7 @@ fn refuse_api(listener: &ApiListener, spare: &mut Spare) -> bool {
 /// [`refuse_api`] on Windows: the client that came, which no handle is left to take,
 /// disconnected by its own instance, which waits for the next (`Listener::refuse`).
 #[cfg(windows)]
-fn refuse_api(listener: &ApiListener, _spare: &mut Spare) -> bool {
+fn refuse_api(listener: &ApiListener, _spare: &mut Reserve) -> bool {
     listener
         .refuse()
         .map_err(|e| log(format!("refusing a client: {e}")))
@@ -2219,7 +2219,7 @@ impl<D: Disk> Daemon<D> {
         self.tell_slots(slots::Event::Look);
         let mut relays = relay::Relays::default();
         let mut contexts_changed = true;
-        let mut spare = Spare::default();
+        let mut spare = Reserve::default();
         loop {
             let closing = self.closed.load(Ordering::SeqCst);
             // A daemon whose home is gone has nothing left to serve, and its runs' microVMs
@@ -11496,7 +11496,7 @@ mod tests {
         let dir = shards_testdir::TempDir::new("spare").unwrap();
         let path = dir.join("api.sock");
         let listener = listening_at(&path).unwrap();
-        let mut spare = Spare::default();
+        let mut spare = Reserve::default();
         assert!(spare_held(&mut spare));
         let client = UnixStream::connect(&path).unwrap();
         assert!(refuse_api(&listener, &mut spare));
