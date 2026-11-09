@@ -37,11 +37,13 @@ pub const RUN: u8 = b'R';
 pub const STOP: u8 = b'S';
 pub const ENDED: u8 = b'E';
 
-/// The most a frame of the worker's holds, a call or its value, as a request's body holds
-/// (`server::BODY_MAX`): a worker may make its instance hold no more for it than a request
-/// may. The instance's frames, the program (a request's body) and what its calls return,
-/// are bounded by what the instance holds, and the worker reads them whole.
-pub const FRAME_MAX: usize = 1 << 20;
+/// The most a frame holds: what its length, a big-endian u32, says at most. A worker's
+/// frames, its calls and its value, are held as they come, as a request's body is
+/// (`server::HEAD_MAX`): the worker is its instance's child, in its caller's domain, whose
+/// `memory.max` bounds what either is made to hold (D60, D136). The instance's frames, the
+/// program and what its calls return, are bounded by what the instance holds, and the
+/// worker reads them whole.
+pub const FRAME_MAX: usize = u32::MAX as usize;
 
 /// Where the helper finds its control socket.
 pub const CONTROL_FD: RawFd = 3;
@@ -151,7 +153,9 @@ fn read_frame(fd: RawFd, max: usize) -> io::Result<(u8, Vec<u8>)> {
             "a frame of {len} bytes, more than {max}"
         )));
     }
-    let mut bytes = vec![0u8; len];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(len).map_err(io::Error::other)?;
+    bytes.resize(len, 0);
     read_exact(fd, &mut bytes)?;
     Ok((kind, bytes))
 }
@@ -805,12 +809,13 @@ return [typeof __call, typeof globalThis.__call, Object.isFrozen(shards), change
         assert_eq!(parse_frame(&whole), Ok(Some((CALL, &b"abc"[..], 8))));
         assert_eq!(parse_frame(&whole[..7]), Ok(None));
         assert_eq!(parse_frame(&whole[..3]), Ok(None));
-        let mut past = vec![CALL];
-        past.extend_from_slice(&u32::try_from(FRAME_MAX + 1).unwrap().to_be_bytes());
-        assert!(parse_frame(&past).is_err());
+        // Its length says up to u32::MAX, which a frame may be.
+        let mut most = vec![CALL];
+        most.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(parse_frame(&most), Ok(None));
         let (ours, theirs) = UnixStream::pair().unwrap();
-        write_all(ours.as_raw_fd(), &past).unwrap();
-        assert!(read_frame(theirs.as_raw_fd(), FRAME_MAX).is_err());
+        write_all(ours.as_raw_fd(), &whole).unwrap();
+        assert!(read_frame(theirs.as_raw_fd(), 2).is_err());
     }
 
     /// A worker's filter lets it make the calls it needs, and ends it for any other: one
