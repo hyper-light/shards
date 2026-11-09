@@ -1068,7 +1068,7 @@ impl<D: Disk> Daemon<D> {
             if let Some((number, end)) = self.wake_at_end(id)? {
                 let followed = (|| -> io::Result<Shipped> {
                     // Where no watch can be had (on Linux, its user's inotify instances
-                    // spent: PM M257), it reads again every RETRY, as `logs -f` does.
+                    // spent: PM M257), it reads again every UNWATCHED, as `logs -f` does.
                     let mut watch = FileWatch::new(file.dir()).ok();
                     let mut watched = None;
                     loop {
@@ -1097,11 +1097,11 @@ impl<D: Disk> Daemon<D> {
                             place.keep(id, dir, sender.delivered(), false, cached);
                         }
                         // Woken as the driver asks, for what it holds back; without a watch,
-                        // at least every RETRY.
+                        // at least every UNWATCHED.
                         let within = match (sender.driver.due(), &watch) {
                             (due, Some(_)) => due,
-                            (Some(due), None) => Some(due.min(super::RETRY)),
-                            (None, None) => Some(super::RETRY),
+                            (Some(due), None) => Some(due.min(super::UNWATCHED)),
+                            (None, None) => Some(super::UNWATCHED),
                         };
                         let ready = waits.wait(within)?;
                         if ready[1] {

@@ -48,9 +48,9 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, GetNamedPipeInfo, NMPWAIT_WAIT_FOREVER, PIPE_READMODE_BYTE,
-    PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
-    PeekNamedPipe, SetNamedPipeHandleState, WaitNamedPipeW,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeInfo, NMPWAIT_WAIT_FOREVER,
+    PIPE_READMODE_BYTE, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_TYPE_MESSAGE,
+    PIPE_WAIT, PeekNamedPipe, SetNamedPipeHandleState, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, ResetEvent, SetEvent,
@@ -1247,32 +1247,38 @@ impl std::fmt::Debug for Waiting {
 impl Waiting {
     fn begin(name: &[u16], first: bool, event: &Event) -> io::Result<Waiting> {
         let instance = instance(name, first, false, BUFFER, true)?;
-        event.reset();
-        let mut overlapped = Box::new(OVERLAPPED {
-            hEvent: event.raw(),
-            ..OVERLAPPED::default()
-        });
-        // SAFETY: an instance of ours, and an OVERLAPPED boxed where it stays until the
-        // connect is done or cancelled (`Listener`'s drop).
-        let connected = if unsafe { ConnectNamedPipe(instance.as_raw_handle(), &raw mut *overlapped) } != 0 {
-            true
-        } else {
-            // SAFETY: no arguments.
-            match unsafe { GetLastError() } {
-                // Its client came between the instance and its connect.
-                ERROR_PIPE_CONNECTED => {
-                    event.set();
-                    true
-                }
-                ERROR_IO_PENDING => false,
-                e => return Err(io::Error::from_raw_os_error(e as i32)),
-            }
-        };
+        let mut overlapped = Box::new(OVERLAPPED::default());
+        let connected = Waiting::connect(&instance, &mut overlapped, event)?;
         Ok(Waiting {
             instance,
             overlapped,
             connected,
         })
+    }
+
+    /// Begins `instance`'s connect, on `overlapped`, of `event`: whether its client has come
+    /// already.
+    fn connect(instance: &OwnedHandle, overlapped: &mut OVERLAPPED, event: &Event) -> io::Result<bool> {
+        event.reset();
+        *overlapped = OVERLAPPED {
+            hEvent: event.raw(),
+            ..OVERLAPPED::default()
+        };
+        // SAFETY: an instance of ours, and an OVERLAPPED boxed where it stays until the
+        // connect is done or cancelled (`Listener`'s drop).
+        if unsafe { ConnectNamedPipe(instance.as_raw_handle(), overlapped) } != 0 {
+            return Ok(true);
+        }
+        // SAFETY: no arguments.
+        match unsafe { GetLastError() } {
+            // Its client came between the instance and its connect.
+            ERROR_PIPE_CONNECTED => {
+                event.set();
+                Ok(true)
+            }
+            ERROR_IO_PENDING => Ok(false),
+            e => Err(io::Error::from_raw_os_error(e as i32)),
+        }
     }
 }
 
@@ -1325,6 +1331,44 @@ impl Listener {
         let next = Waiting::begin(&self.name, false, &self.event)?;
         let came = std::mem::replace(&mut *waiting, next);
         Stream::of(came.instance, Way::Plain, true)
+    }
+
+    /// Refuses the client that came, where [`accept`](Self::accept) could not take it: out of
+    /// handles, the instance to wait in its place is not made, and its event stays set. Its
+    /// instance is disconnected (DisconnectNamedPipe), which its client reads as its pipe's
+    /// end, and waits for the next client in its place: no handle is made, so it refuses where
+    /// accept could not. Where no client has come, it does nothing.
+    pub fn refuse(&self) -> io::Result<()> {
+        let mut waiting = lock(&self.waiting);
+        if !waiting.connected {
+            let mut moved = 0u32;
+            // SAFETY: the waiting connect's own instance and OVERLAPPED; not waited for.
+            if unsafe {
+                GetOverlappedResult(
+                    waiting.instance.as_raw_handle(),
+                    &raw const *waiting.overlapped,
+                    &raw mut moved,
+                    0,
+                )
+            } == 0
+                // SAFETY: no arguments.
+                && unsafe { GetLastError() } == windows_sys::Win32::Foundation::ERROR_IO_INCOMPLETE
+            {
+                return Ok(());
+            }
+        }
+        // SAFETY: our instance, its connect done: its client, where one came, is let go of.
+        unsafe { DisconnectNamedPipe(waiting.instance.as_raw_handle()) };
+        let Waiting {
+            instance,
+            overlapped,
+            connected,
+        } = &mut *waiting;
+        // Not connected until its next connect says so: a connect that fails leaves no
+        // client for `accept` to take.
+        *connected = false;
+        *connected = Waiting::connect(instance, overlapped, &self.event)?;
+        Ok(())
     }
 }
 

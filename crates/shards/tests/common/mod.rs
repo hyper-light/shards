@@ -1992,7 +1992,7 @@ pub fn stacks_of(pids: &[(&str, u32)], home: Option<&Path>) -> String {
         if cdb.is_file() {
             let daemon = home
                 .and_then(|h| std::fs::read_to_string(h.join("daemon.pid")).ok())
-                .and_then(|p| p.trim().parse::<u32>().ok());
+                .and_then(|p| p.split_ascii_whitespace().next()?.parse::<u32>().ok());
             // shards' symbols: its PDB beside the build's own binary, which the copy these
             // tests run names (the test binary's deps directory and the one above it).
             let deps = std::env::current_exe()
@@ -2200,7 +2200,7 @@ impl Patience {
             self.read = Some(Instant::now());
             let pid = std::fs::read_to_string(home.join("daemon.pid"))
                 .ok()
-                .and_then(|p| p.trim().parse::<u32>().ok());
+                .and_then(|p| p.split_ascii_whitespace().next()?.parse::<u32>().ok());
             if pid != self.daemon.as_ref().map(|(d, _)| *d) {
                 self.daemon = pid.map(|d| (d, Ran::of(d)));
             }

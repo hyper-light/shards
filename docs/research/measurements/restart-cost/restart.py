@@ -157,10 +157,10 @@ def daemon(shards, home, env):
     pid_file = os.path.join(home, "daemon.pid")
     while time.time() < deadline:
         try:
-            if int(open(pid_file).read().strip()) == p.pid:
+            if int(open(pid_file).read().split()[0]) == p.pid:
                 time.sleep(0.5)
                 return p
-        except (OSError, ValueError):
+        except (OSError, ValueError, IndexError):
             pass
         if p.poll() is not None:
             raise SystemExit(f"the daemon exited: {p.returncode}")

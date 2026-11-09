@@ -14,6 +14,9 @@ mod fetch;
 pub mod http;
 pub mod links;
 mod patience;
+/// D222's restart cutoff, for other waits whose cut is asked again: the daemon's for a
+/// client's request (D185).
+pub use patience::{Cutoff, Sketch};
 pub mod proxy;
 pub mod pull;
 pub mod push;

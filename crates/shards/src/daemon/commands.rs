@@ -2750,7 +2750,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
             // a segment's coming, by the run's end, or by the client's hanging up, not by
             // a timer (audit A12). Each watch comes before a read, so no append between
             // them goes unseen. Where no watch can be had (on Linux, its user's inotify
-            // instances spent: PM M257), it reads again every RETRY, as the listener looks,
+            // instances spent: PM M257), it reads again every UNWATCHED, as the listener looks,
             // rather than end the follow.
             let mut watch = shards_vmm::platform::FileWatch::new(log.dir()).ok();
             let mut watched = None;
@@ -2779,7 +2779,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                         watch.as_ref(),
                         &end,
                         reply.0,
-                        watch.is_none().then_some(super::RETRY),
+                        watch.is_none().then_some(super::UNWATCHED),
                     )?;
                     // Once the microVM has ended, what is left of a line is all of it.
                     if ready[1] {

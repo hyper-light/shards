@@ -44,8 +44,9 @@ pub fn home() -> Result<PathBuf, String> {
 pub const HOME: &str = "SHARDS_HOME";
 
 /// What a daemon that no longer serves keeps in its home while it ends its runs: its
-/// process ID. A daemon or client that finds none serving waits for that one while it
-/// lives, as long as its runs' stop timeouts make it, and then takes its place.
+/// process, as [`this_process`] names it. A daemon or client that finds none serving waits
+/// for that one while it lives, as long as its runs' stop timeouts make it, and then takes
+/// its place.
 pub const STOPPING: &str = "daemon.stopping";
 
 /// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
@@ -54,7 +55,7 @@ pub fn exiting(home: &Path) -> bool {
 }
 
 /// What the daemon that holds a home's lock writes in it as it takes it, before it offers
-/// any slot: its process ID.
+/// any slot: its process, as [`this_process`] names it.
 pub const PID: &str = "daemon.pid";
 
 /// Whether the daemon that `PID` in `home` names lives: one that has taken the home, which
@@ -63,16 +64,70 @@ pub fn daemon_lives(home: &Path) -> bool {
     named_lives(&home.join(PID))
 }
 
-/// Whether the process the file at `path` names, by its ID, lives.
-fn named_lives(path: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return false;
-    };
+/// A process as a home's [`PID`] and [`STOPPING`] name it: its ID, and its start, which tells
+/// it from a process given that ID once it has gone. An ID alone is reused (Linux hands
+/// them out again once `pid_max` wraps, proc(5); XNU and Windows likewise), so a client
+/// waiting on a daemon by its ID alone could wait for ever on an unrelated process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Named {
+    pub pid: u32,
+    /// Its start ([`started`]); `None` in a file a build from before starts were kept
+    /// wrote, whose daemon is known by its ID alone.
+    pub start: Option<u64>,
+}
+
+impl Named {
+    /// What a file names: `PID START`, or `PID` alone.
+    pub fn parse(text: &str) -> Option<Named> {
+        let mut words = text.split_ascii_whitespace();
+        let pid = words.next()?.parse().ok()?;
+        let start = match words.next() {
+            Some(start) => Some(start.parse().ok()?),
+            None => None,
+        };
+        words.next().is_none().then_some(Named { pid, start })
+    }
+
+    /// What the file at `path` names, where it names one process.
+    pub fn read(path: &Path) -> Option<Named> {
+        Named::parse(&std::fs::read_to_string(path).ok()?)
+    }
+
+    /// Whether it lives: its ID's process lives, and is the one that started when it did.
+    pub fn lives(&self) -> bool {
+        #[cfg(unix)]
+        let alive = unix::alive;
+        #[cfg(windows)]
+        let alive = windows::alive;
+        alive(self.pid)
+            && self
+                .start
+                .is_none_or(|start| started(self.pid).is_ok_and(|now| now == start))
+    }
+}
+
+/// This process as a home's files name it ([`Named`]), a line: what a daemon writes in its
+/// [`PID`] and [`STOPPING`].
+pub fn this_process() -> std::io::Result<String> {
+    let pid = std::process::id();
+    Ok(format!("{pid} {}\n", started(pid)?))
+}
+
+/// When process `pid` started, as its OS counts it, set as it is made and kept through exec:
+/// Linux's `/proc/<pid>/stat` starttime (clock ticks after boot, proc(5)); macOS's
+/// `proc_pid_rusage` `ri_proc_start_abstime` (Mach absolute time, as crates/api's taken.rs
+/// reads it); Windows' `GetProcessTimes` creation time (100 ns since 1601). Two processes
+/// given one ID, one after the other, start at different times.
+pub fn started(pid: u32) -> std::io::Result<u64> {
     #[cfg(unix)]
-    let alive = unix::alive;
+    return unix::started(pid);
     #[cfg(windows)]
-    let alive = windows::alive;
-    text.trim().parse::<u32>().is_ok_and(alive)
+    return windows::started(pid);
+}
+
+/// Whether the process the file at `path` names lives ([`Named::lives`]).
+fn named_lives(path: &Path) -> bool {
+    Named::read(path).is_some_and(|named| named.lives())
 }
 
 /// Where a daemon the client starts writes its messages.
@@ -2491,17 +2546,62 @@ mod tests {
         let gone = std::process::Command::new("true").spawn().unwrap();
         let gone_pid = gone.id();
         let _ = { gone }.wait();
+        let me = std::process::id();
         for (said, is) in [
-            (std::process::id().to_string(), true),
+            (this_process().unwrap().trim().to_string(), true),
+            // A build's from before starts were kept: by its ID alone.
+            (me.to_string(), true),
             (gone_pid.to_string(), false),
             ("0".to_string(), false),
             ("-1".to_string(), false),
             ("daemon".to_string(), false),
+            (format!("{me} 1 2"), false),
+            (format!("{me} start"), false),
         ] {
             std::fs::write(home.join(STOPPING), format!("{said}\n")).unwrap();
             assert_eq!(exiting(&home), is, "{said}");
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// A daemon is known by its ID and its start: a file naming a live process's ID with
+    /// another start names a daemon that has gone, its ID given to that process since, and a
+    /// client waiting on it would wait for ever (`daemon_lives`, the CLI's wait for a slot).
+    #[test]
+    fn a_daemon_whose_id_another_process_has_now_does_not_live() {
+        let home = shards_testdir::TempDir::new("ipc-reused").unwrap();
+        assert!(!daemon_lives(&home), "no file");
+        let me = std::process::id();
+        let start = started(me).unwrap();
+        assert_eq!(started(me).unwrap(), start, "a start read twice differs");
+        let written = this_process().unwrap();
+        assert_eq!(
+            Named::parse(&written),
+            Some(Named {
+                pid: me,
+                start: Some(start)
+            })
+        );
+        std::fs::write(home.join(PID), &written).unwrap();
+        assert!(daemon_lives(&home), "{written}");
+        for other in [start.wrapping_add(1), start.wrapping_sub(1), 0] {
+            std::fs::write(home.join(PID), format!("{me} {other}\n")).unwrap();
+            assert!(
+                !daemon_lives(&home),
+                "{me} {other}, this process started at {start}"
+            );
+        }
+        // Another process's start is its own.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let child_start = started(child.id());
+        let _ = child.wait();
+        if let Ok(child_start) = child_start {
+            assert_ne!(child_start, start);
+        }
     }
 
     /// A working set goes in parts each within a message's payload, and comes back whole,

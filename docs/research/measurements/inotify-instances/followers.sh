@@ -25,7 +25,7 @@ user_held() {
 }
 before=$(user_held)
 "$shards" run -d --name followed --pull missing alpine:3.22 sh -c 'while :; do sleep 1; done' >/dev/null
-daemon=$(cat "$SHARDS_HOME/daemon.pid")
+daemon=$(cut -d" " -f1 "$SHARDS_HOME/daemon.pid")
 i=0
 pids=
 while [ "$i" -lt "$n" ]; do
