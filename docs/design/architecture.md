@@ -14749,6 +14749,109 @@ download.
   gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
   A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
 
+### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
+
+**Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")
+listed 49 figures of the `shards` crate with no source beside them. Each is either a figure
+shards must match (a spec's, an upstream's, a design's), now cited where it is, or one that was
+picked, now derived from what it bounds or learned as shards runs (D209's waits that follow
+progress; D222's estimators).
+
+**Decided:**
+- **What microVMs and builders gave back is said as a pressure doubles** (D188;
+  `pressure::Saying`): as it begins, then each time it has gone on as long again as when last
+  said, a window at the least, so that a pressure that lasts `t` is said about log2(t / window)
+  times; a word after a whole window without one begins another. Builders' answers are waited
+  for until the next word can come, a pressure window (`build/give.rs` `PATIENCE`): later ones
+  are heard as they come (`late`), as before.
+- **A client waits for its daemon as long as that daemon lives** (D185): its starter returns
+  once the daemon serves, or found another that does; the client then waits for a slot while
+  the daemon `daemon.pid` names lives, or one ends its runs (`shards_ipc::daemon_lives`,
+  `exiting`), and says the daemon ended before it served once neither does. `shards stop
+  daemon` waits for the daemon's end, which its runs' stop timeouts bound (D217), on no clock
+  of its own.
+- **A visit's VM, and a leaf's processes as the daemon exits, are waited for as long as they
+  run** (D37, D183; D209): given up once they have run nothing a start or an end does
+  (`platform::progressed`) for a window, as a warm VM's start is (`ready`).
+- **A log driver's credentials are found again by a margin learned** (D163, D168;
+  `ship/renewal.rs`): the longest a request took from its credential's choosing to its
+  answer, and, where one was refused as expired, as long as it had left by this host's clock
+  and took. A credential refused is found again for the next request, as before, so a margin
+  not yet learned loses nothing.
+- **A terminal is waited on for its answer as long as its kind has shown it takes**
+  (`cli/terminal.rs` `Answers`): RFC 6298's estimator over the answers terminals of its kind
+  gave, kept in the user's cache; 1 s before any; one that never answered is not asked again.
+- **Reads whose length the reader cannot know before, guarding the reader's memory, read as
+  far as the host can hold** (`build::holdable`: the host's available memory): an Engine API
+  call's body (dockerd's ReadJSON reads unbounded), the daemon's own microVM records (a cap
+  under what it writes would refuse its own record), and `top`'s process dump (made whole in
+  the guest's memory by shards-init, so never more than the guest holds).
+- **Records and frames are bounded by what writes them**: a resume record by the longest this
+  build writes (`max_resume`), a template's origin likewise (`Origin::most`), a move's plan by
+  the frame its `ready` step was given it in, a policy step's request by BuildKit's gateway
+  message as JSON writes it, a fluentd ack by the chunk ID sent, extended attributes by
+  Linux's limits.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `AGENTFILE_MOST` (agentfile.rs) | 1 MiB | cited | shards-init's reader, crates/init src/json.rs `MAX_LEN` l. 7 (build and run refuse alike) |
+| `AGENT_MAX` (build/builder.rs) | 256 KiB | cited | openssh-portable V_9_9_P1 ssh-agent.c l. 99 `AGENT_MAX_LEN`, authfd.c l. 64 `MAX_AGENT_REPLY_LEN` |
+| `PATIENCE` (build/give.rs) | 10 s | `platform::PRESSURE_WINDOW` | the window a pressure that goes on is heard again after (D188) |
+| `SAY_EVERY` (build/give.rs, daemon/reclaim.rs) | 60 s | none: `pressure::Saying` | a doubling over the pressure's own length (Baeza-Yates, Culberson, Rawlins, Inf. Comput. 106(2), 1993) |
+| `POLICY_WINDOW` (build/mod.rs) | 500 ms | cited | buildx v0.37.1 build/opt.go l. 98 `policyProgressWindow` |
+| `MOST` (build/mod.rs, remote Dockerfile) | 2 MiB | cited | buildx v0.37.1 build/url.go l. 17 `maxDockerfileSize`, l. 49 |
+| `MAX_MATERIAL_DEPTH` (policy/provenance.rs) | 24 | cited | buildx v0.37.1 policy/input.go l. 14 |
+| `MAX_NESTING` (policy/provenance.rs) | 10000 | cited | Go 1.26.1 src/encoding/json/scanner.go l. 148 |
+| `ASK_MOST` (build/policy_command.rs) | 1 MiB | 6 × 16 MiB | BuildKit v0.33.0 frontend/gateway/gateway.go l. 459, containerd v2 defaults/defaults.go l. 22; RFC 8259 §7 |
+| `HOUR`, `CA_LIFE`, `LEAF_LIFE` (build/proxy/ca.rs) | 1 h, 10 y, 1 d | cited | BuildKit v0.33.0 util/network/proxyprovider/provider_linux.go l. 52-55, 812-813, 857-858 |
+| `MOST` (build/proxy/head.rs) | 1 MiB + 4 KiB | cited | Go 1.26.1 src/net/http/server.go l. 895, 904-906 |
+| `PACKET_MAX` (build/ssh.rs) | 256 KiB | cited | openssh-portable V_9_9_P1 packet.c l. 106 |
+| `MAX_PACKET` (build/ssh.rs) | 32 KiB | cited | openssh-portable V_9_9_P1 channels.h l. 223-224 |
+| `START_TIMEOUT` (cli/client.rs) | 30 s | none: while the daemon lives | `daemon.pid` (written before any slot), `daemon.stopping` |
+| `STOP_TIMEOUT` (cli/client.rs) | 60 s | none: the daemon's end | its runs' stop timeouts (D217) |
+| `TICK` (cli/show.rs) | 83 ms | 1 s / 30 | hyperlight-site a8c2004 components/studies/use-study-motion.ts l. 20, 29 |
+| `PATIENCE` ×2 (cli/terminal.rs) | 500 ms | learned per kind of terminal | RFC 6298 §2.1-2.3, §5.5; ECMA-48 §8.3.24 (DA) |
+| `MAX_RECORD` (containers.rs) | 8 MiB | `build::holdable()` | the host's available memory (proc_meminfo(5), `kern.memorystatus_level`, `ullAvailPhys`) |
+| `STOP_GRACE` (daemon.rs) | 10 s | cited | moby v28.5.1 container/container_unix.go l. 26, container/container.go l. 601; Compose spec |
+| `PATIENCE` (daemon.rs tests) | 20 s | kept, a test's hang bound | no daemon wait; tests may bound a hang |
+| `TOP_LIMIT` (daemon/commands.rs) | 16 MiB | `build::holdable()` | init procs.rs `dump` (whole in guest memory) |
+| `KEEP` (daemon/demand.rs tests) | 600 s | kept, a test's input | past the test's longest step |
+| `BODY_MOST` (daemon/engine.rs) | 8 MiB | `build::holdable()` | moby v28.5.1 api/server/httputils ReadJSON (unbounded) |
+| `MAX_PATH` (daemon/moves.rs) | 4096 | cited | Linux 6.18 include/uapi/linux/limits.h l. 13 |
+| `MAX_PLAN` (daemon/moves.rs) | 16 MiB | `shards_remote::frame::MAX_FRAME` | the `ready` step's request frame (cli/moves.rs) |
+| `MAX_XATTRS` (daemon/moves.rs) | 65536 | `XATTR_LIST_MAX / 6` = 10922 | limits.h l. 17; xattr.h l. 33 (`os2.`); listxattr(2) |
+| `MAX_XATTR` (daemon/moves.rs) | 64 KiB | cited | limits.h l. 16 (and the name's 255, l. 15) |
+| `EMPTIED` (daemon/parents.rs) | 10 s | none: while the leaf's processes run | `platform::IDLE_VM_CPU`, `progressed` (PM M357) |
+| `RENEW` (ship/awslogs.rs, ship/gcplogs.rs) | 5 min | `Renewal::margin()`, learned | the requests' own times and expiries |
+| `MOST_WAIT` (ship/fluentd.rs) | 60 s | cited, with its 1.5 | moby v28.5.1 daemon/logger/fluentd/fluentd.go l. 263-277; fluent-logger-golang v1.9.0 fluent/fluent.go l. 34, 36, 496-498 |
+| `ACK_MOST` (ship/fluentd.rs) | 1024 | `ID_LEN` = 24 | the chunk ID sent (16 bytes, RFC 4648 §4); Forward Protocol v1, Response |
+| `ENTRY_MOST` (ship/gcplogs.rs) | 256 KiB | cited | https://cloud.google.com/logging/quotas, read 2026-11-08 |
+| `MAX_RESUME` (daemon/snapshots.rs) | 4 KiB | `max_resume()` | the longest record this build writes |
+| `UNLIMITED`, `PIDMAX` (daemon/top/specs.rs) | 4, 0x10 | cited | procps-ng 4.0.2 src/ps/common.h l. 243-258 |
+| `START_LIMIT` (daemon/visit.rs) | 30 s | none: while its VM runs its start | `READY_TIMEOUT` judged each `READY_STALL` (PM M357) |
+| `TCP_MOST` (logging/gelf.rs) | 2 MiB | cited | graylog2-server 3d2aea59 TcpTransport.java l. 50, 68 |
+| `BROWSER_WAIT` (oidc.rs) | 120 s | cited | sigstore v1.10.8 pkg/oauthflow/interactive.go l. 225 (cosign v3.1.3's flow, its texts) |
+| `PROGRESS_EVERY` (pull.rs) | 100 ms | `cli::show::TICK` | a frame the client paints |
+| `Origin::MOST` (run.rs) | 64 KiB | `Origin::most()` | `PATH_MAX` (libc), Windows' 32,767 units; RFC 8259 §7; OCI descriptor.md |
+| `FRAME_MOST` (synced.rs) | 64 KiB | cited | a pipe's capacity: include/linux/pipe_fs_i.h l. 5, pipe(7); xnu bsd/sys/pipe.h l. 80 |
+| `SECRET_MAX` (synced.rs) | `MAX_PAYLOAD` | cited | BuildKit v0.33.0 session/secrets/secretsprovider/secretsprovider.go l. 15 (500 KiB, which it holds) |
+
+Not yet replaced, owed: the daemon's `REQUEST_TIMEOUT` (10 s; a client's request, and its
+answer's taking once the daemon has closed) and `RETRY` (250 ms; the listener out of
+descriptors or without its watches, and the collector short of descriptors). Each is a cutoff
+whose replacement changes how the daemon admits and lets go of clients: a cutoff learned as
+D222's is (the times clients have taken, doubled for each cut in a row) is safe only where a
+client cut is told to ask again (`RESTART`), which a `Late` request is not yet; and a
+descriptor freed anywhere in the process tells nothing, so its retry wants the listener woken
+as clients and runs let go of theirs and a reserve descriptor for the accept (libuv's
+`uv__emfile_trick`). Both want the daemon's E2E suite, which this pass did not run.
+
+Held by unit tests (`a_pressure_is_said_as_it_doubles`,
+`each_word_asks_every_builder_once_and_says_the_sum_as_the_pressure_doubles`,
+`a_terminals_wait_is_learned_from_its_answers`, `the_margin_is_learned_from_answers_and_expiries`,
+`a_resume_record_is_within_the_longest_this_build_writes`). Owed: the E2E suite (daemon start
+and stop, `top`, visits, moves, log drivers), the 8-target lint, and CI.
+
 ### D130. Frontend inputs, as docker/dockerfile:1.27.1 reads them
 
 shards' frontend (D113) refused frontend inputs: definitions a client gives the frontend
