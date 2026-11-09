@@ -232,6 +232,14 @@ pub struct Kept {
     pub upper: OwnedFd,
 }
 
+impl Kept {
+    /// Its layers' descriptors, as a report carries them: an overlay's lower and upper
+    /// directories (Documentation/filesystems/overlayfs.rst, `lowerdir=`, `upperdir=`).
+    fn fds(&self) -> [std::os::fd::RawFd; MAX_FDS] {
+        [self.lower.as_raw_fd(), self.upper.as_raw_fd()]
+    }
+}
+
 /// What a joiner's child built: its image's users, and its layers kept.
 pub type Built = (Users, Kept);
 
@@ -1143,7 +1151,7 @@ pub fn report(to: OwnedFd, built: &Result<Built, String>) {
         .to_vec();
     bytes.extend(body);
     let fds = match built {
-        Ok((_, kept)) => vec![kept.lower.as_raw_fd(), kept.upper.as_raw_fd()],
+        Ok((_, kept)) => kept.fds().to_vec(),
         Err(_) => Vec::new(),
     };
     let _ = send_with(&to, &bytes, &fds);
@@ -1206,8 +1214,10 @@ pub fn report_channel() -> Result<(OwnedFd, OwnedFd), String> {
     Ok(unsafe { (OwnedFd::from_raw_fd(r), OwnedFd::from_raw_fd(w)) })
 }
 
-/// The most descriptors a report carries: a joiner's two layers.
-const MAX_FDS: usize = 2;
+/// The most descriptors a report carries: a joiner's layers, as many as [`Kept`] holds
+/// descriptors, each of which [`Kept::fds`] returns (an array of this length, so that one
+/// more or less fails to build).
+const MAX_FDS: usize = std::mem::size_of::<Kept>() / std::mem::size_of::<OwnedFd>();
 
 /// Sends `bytes` on `sock`, `fds` with their first byte (`SCM_RIGHTS`, unix(7)).
 fn send_with(sock: &OwnedFd, bytes: &[u8], fds: &[std::os::fd::RawFd]) -> io::Result<()> {

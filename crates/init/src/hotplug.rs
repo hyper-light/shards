@@ -33,10 +33,8 @@
 use std::ffi::CString;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::time::{Duration, Instant};
 
-/// How long a function plugged in is waited for, its driver probing it.
-const FOUND_WITHIN: Duration = Duration::from_secs(10);
+use crate::devices::Uevents;
 
 /// The file systems a plugged disk is tried as, in order.
 const FILE_SYSTEMS: [&std::ffi::CStr; 5] = [c"ext4", c"xfs", c"btrfs", c"vfat", c"erofs"];
@@ -72,8 +70,11 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
             let read_only = rest.contains(&"ro");
             bound(addr)?;
             let tag = CString::new(*tag).map_err(io::Error::other)?;
-            // The tag's device comes as its driver probes it: tried a while.
-            let mounted = retried(|| fs_mount(c"virtiofs", &tag, read_only))?;
+            // The tag is virtio-fs's once its driver has the function: virtio_fs_probe adds
+            // it before the probe returns, and a driver is bound only after (drivers/base/
+            // dd.c `really_probe`, then `driver_bound`). Mounted once: a refusal is the
+            // kernel's word.
+            let mounted = fs_mount(c"virtiofs", &tag, read_only)?;
             attach(mounted, workload, dst)
         }
         ["unmount", addr, dst] => {
@@ -99,29 +100,27 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
             crate::devices::sysfs_write(&format!("bus/pci/devices/{addr}/remove"), "1")
         }
         ["grow", addr, dst, sectors] => {
+            // Heard from before the disk is found: its driver reads the new size as the
+            // host's word of it comes (virtio_blk.c `virtblk_config_changed_work`), and says
+            // so (`set_capacity_and_notify`'s KOBJ_CHANGE, RESIZE=1) once the size reads it.
+            let events = Uevents::open()?;
             let name = block_device(addr)?;
             let size = format!("/sys/block/{name}/size");
             let want = sectors.to_string();
-            let end = Instant::now() + FOUND_WITHIN;
-            while crate::devices::sysfs_read(&format!("class/block/{name}/size"))
-                .is_none_or(|s| s.trim() != want)
-            {
-                if Instant::now() > end {
-                    return Err(io::Error::other(format!(
-                        "{size} does not read {sectors} sectors"
-                    )));
-                }
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            events
+                .arrival(|| {
+                    crate::devices::sysfs_read(&format!("class/block/{name}/size"))
+                        .filter(|s| s.trim() == want)
+                })
+                .map_err(|e| {
+                    io::Error::other(format!("waiting for {size} to read {sectors} sectors: {e}"))
+                })?;
             let sectors: u64 = sectors.parse().map_err(io::Error::other)?;
             in_workload(workload, || grow_ext4(dst, sectors * 512))?;
             write!(out, "{}", sectors * 512)
         }
         ["function", addr, kind, host] => {
-            rescan()?;
-            wait(|| crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}"))).ok_or_else(|| {
-                io::Error::other(format!("no function at {addr} after a rescan of the PCI bus"))
-            })?;
+            rescan(addr)?;
             let mut node = crate::devices::vfio_function(addr, kind, host).map_err(io::Error::other)?;
             // The workload's to open: the VM's devtmpfs makes a group's node, and a VFIO
             // device's, root's and 0600 (vfio_devnode and vfio_device_devnode set no mode;
@@ -196,57 +195,44 @@ pub fn device(args: &[Vec<u8>], workload: libc::pid_t, out: &mut impl Write) -> 
 
 /// The block device of the virtio disk at PCI address `addr`, once its driver has it.
 fn block_device(addr: &str) -> io::Result<String> {
-    rescan()?;
+    let events = rescan(addr)?;
     let dir = format!("bus/pci/devices/{addr}");
-    wait(|| {
-        let virtio = crate::devices::sysfs_list(&dir)?
-            .into_iter()
-            .find(|n| n.starts_with("virtio"))?;
-        crate::devices::sysfs_list(&format!("{dir}/{virtio}/block"))?
-            .into_iter()
-            .next()
-    })
-    .ok_or_else(|| io::Error::other(format!("no disk at {addr} after a rescan of the PCI bus")))
+    events
+        .arrival(|| {
+            let virtio = crate::devices::sysfs_list(&dir)?
+                .into_iter()
+                .find(|n| n.starts_with("virtio"))?;
+            crate::devices::sysfs_list(&format!("{dir}/{virtio}/block"))?
+                .into_iter()
+                .next()
+        })
+        .map_err(|e| io::Error::other(format!("waiting for the disk at {addr}: {e}")))
 }
 
 /// Waits for the function at `addr` to have its driver.
 fn bound(addr: &str) -> io::Result<()> {
-    rescan()?;
-    wait(|| crate::devices::sysfs_link(&format!("bus/pci/devices/{addr}/driver")))
+    let events = rescan(addr)?;
+    events
+        .arrival(|| crate::devices::sysfs_link(&format!("bus/pci/devices/{addr}/driver")))
         .map(|_| ())
-        .ok_or_else(|| io::Error::other(format!("no driver took {addr} after a rescan of the PCI bus")))
+        .map_err(|e| io::Error::other(format!("waiting for a driver to take {addr}: {e}")))
 }
 
 /// Has the kernel scan the PCI bus for functions plugged in (drivers/pci/pci-sysfs.c,
-/// rescan_store; pci_rescan_bus).
-fn rescan() -> io::Result<()> {
-    crate::devices::sysfs_write("bus/pci/rescan", "1")
-}
-
-/// What `found` finds, asked again every millisecond for [`FOUND_WITHIN`].
-fn wait<T>(mut found: impl FnMut() -> Option<T>) -> Option<T> {
-    let end = Instant::now() + FOUND_WITHIN;
-    loop {
-        if let Some(t) = found() {
-            return Some(t);
-        }
-        if Instant::now() > end {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(1));
+/// rescan_store; pci_rescan_bus), and says whether it found the function at `addr`: the
+/// scan adds what it finds before the write returns, so one not there then is not plugged
+/// in. Its driver is the kernel's to bind, which it does in the same write unless it
+/// defers it or runs it apart (drivers/base/dd.c `__device_attach`): the kernel's device
+/// events, heard from before the scan and returned, say when.
+fn rescan(addr: &str) -> io::Result<Uevents> {
+    let events = Uevents::open()?;
+    crate::devices::sysfs_write("bus/pci/rescan", "1")?;
+    if crate::devices::sysfs_list(&format!("bus/pci/devices/{addr}")).is_none() {
+        return Err(io::Error::other(format!(
+            "no function at {addr} after a rescan of the PCI bus"
+        )));
     }
-}
-
-/// `make`'s mount, tried again every millisecond for [`FOUND_WITHIN`] while it fails.
-fn retried(mut make: impl FnMut() -> io::Result<OwnedFd>) -> io::Result<OwnedFd> {
-    let end = Instant::now() + FOUND_WITHIN;
-    loop {
-        match make() {
-            Ok(fd) => return Ok(fd),
-            Err(e) if Instant::now() > end => return Err(e),
-            Err(_) => std::thread::sleep(Duration::from_millis(1)),
-        }
-    }
+    Ok(events)
 }
 
 /// Block device `name`'s file system, mounted attached nowhere: the first of
