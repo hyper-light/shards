@@ -407,6 +407,9 @@ impl VirtioDevice for Vsock {
             return Err(format!("virtio-vsock activated with {} queues", queues.len()));
         }
         let mut muxer = self.muxer.take().ok_or("virtio-vsock activated twice")?;
+        if let (Some(rx), Some(tx)) = (queues.get(RX), queues.get(TX)) {
+            muxer.set_rings(rx.size(), tx.size());
+        }
         if restored {
             // The guest's connections belong to the snapshot's host, not to this one.
             muxer.reset();
