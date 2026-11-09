@@ -19927,7 +19927,7 @@ revision before comparing a changed API/implementation.
   against 51.0 ms at p90: under load the spawn of shards' VM process goes slower than
   Firecracker's; at load 85 its median too. The 16 VMs' host memory (MemAvailable given
   up) moves by more than the VMs' own between rounds on this host; tied, then better.
-- **Also: DAX windows on Linux 6.19.** M463 found a bind's DAX window (D189) on adacachy2
+- **Also: DAX windows on Linux 6.19.** M511 found a bind's DAX window (D189) on adacachy2
   (CachyOS, Linux 7.3.3) read 64 MiB at 9.5 MiB/s, 513 µs an open, a 4 KiB read and a
   close. The same test (`what_a_clients_bind_costs`, 3 rounds, 86e41c99) here, load 40 to
   65: the machine's own bind with DAX 111 to 201 µs at p50 an open, read 122 to 577 MiB/s;
