@@ -50,7 +50,22 @@ pub const STOPPING: &str = "daemon.stopping";
 
 /// Whether the daemon that `STOPPING` in `home` names still lives, ending its runs.
 pub fn exiting(home: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(home.join(STOPPING)) else {
+    named_lives(&home.join(STOPPING))
+}
+
+/// What the daemon that holds a home's lock writes in it as it takes it, before it offers
+/// any slot: its process ID.
+pub const PID: &str = "daemon.pid";
+
+/// Whether the daemon that `PID` in `home` names lives: one that has taken the home, which
+/// offers its slots or ends.
+pub fn daemon_lives(home: &Path) -> bool {
+    named_lives(&home.join(PID))
+}
+
+/// Whether the process the file at `path` names, by its ID, lives.
+fn named_lives(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
     #[cfg(unix)]

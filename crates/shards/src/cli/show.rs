@@ -24,9 +24,12 @@ use shards_tui::rate::Rate;
 use shards_tui::text;
 use shards_tui::tokens::{self, Paint, Rgb};
 
-/// Between frames: 12 a second, slow enough to cost nothing, fast enough to read as
-/// motion (the site paints its studies at 30).
-pub const TICK: Duration = Duration::from_millis(83);
+/// The frames painted a second: the site's, whose design the terminal's is, as it paints its
+/// studies (`useStudyMotion`'s `fps = 30`, hyperlight-site a8c2004
+/// components/studies/use-study-motion.ts l. 20).
+pub const FPS: u32 = 30;
+/// Between frames: a second over [`FPS`], as the site's `interval = 1000 / fps` (l. 29).
+pub const TICK: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
 
 /// What the display is told: the daemon's events, and text to print below the frame.
 pub enum Shown {

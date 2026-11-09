@@ -127,13 +127,16 @@ pub fn size(fd: libc::c_int) -> (u16, u16) {
 /// on a timer: the query is followed by DA1 (`ESC [ c`), which every terminal answers, and
 /// an answer to DA1 with none to OSC 11 before it says there is none. Asked of the
 /// controlling terminal, not stdin, which may be a pipe; `None` where there is none, or
-/// it says nothing in `PATIENCE`, the most a terminal that answers neither is waited for.
+/// it says nothing in the time its kind of terminal has shown it answers in ([`Answers`]):
+/// one that answers neither (a pseudo-terminal no emulator reads, as `docker run -t`
+/// gives) is waited on once, and not asked again.
 #[cfg(unix)]
 pub fn background() -> Option<(u8, u8, u8)> {
     use std::io::{Read as _, Write as _};
     use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(500);
+    let mut answers = Answers::of_this_terminal();
+    let patience = answers.patience()?;
     let mut tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -162,7 +165,9 @@ pub fn background() -> Option<(u8, u8, u8)> {
     }
     let mut heard = Vec::new();
     let asked = tty.write_all(b"\x1b]11;?\x1b\\\x1b[c").and_then(|()| tty.flush());
-    let deadline = std::time::Instant::now() + PATIENCE;
+    let began = std::time::Instant::now();
+    let deadline = began + patience;
+    let mut answered = None;
     if asked.is_ok() {
         let mut buf = [0u8; 256];
         // select(2), not poll(2): macOS's poll does not wait on a terminal device.
@@ -193,7 +198,8 @@ pub fn background() -> Option<(u8, u8, u8)> {
                 break;
             }
             match tty.read(&mut buf) {
-                Ok(0) => continue,
+                // Readable with nothing to read: its other end has gone.
+                Ok(0) => break,
                 Ok(n) => heard.extend_from_slice(buf.get(..n).unwrap_or_default()),
                 Err(_) => break,
             }
@@ -201,12 +207,16 @@ pub fn background() -> Option<(u8, u8, u8)> {
             if let Some(at) = find(&heard, b"\x1b[?")
                 && heard.get(at..).is_some_and(|rest| rest.contains(&b'c'))
             {
+                answered = Some(began.elapsed());
                 break;
             }
         }
     }
     // SAFETY: tcsetattr(3) reads `saved`, the settings found.
     unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
+    if asked.is_ok() {
+        answers.record(answered);
+    }
     parse_background(&heard)
 }
 
@@ -357,8 +367,9 @@ fn console(fd: i32) -> Option<windows_sys::Win32::Foundation::HANDLE> {
 /// DA1, which every terminal answers), of the console this process's stdin and stdout are:
 /// stdout taking escape sequences ([`styles`]), and stdin in virtual terminal input
 /// (ENABLE_VIRTUAL_TERMINAL_INPUT) for the answer, which comes as the console's input, as a
-/// terminal's keys do. `None` where they are no console, or it says nothing in `PATIENCE`;
-/// the console's input mode is given back as it was.
+/// terminal's keys do. `None` where they are no console, or it says nothing in the time its
+/// kind of terminal has shown it answers in ([`Answers`]); the console's input mode is given
+/// back as it was.
 #[cfg(windows)]
 pub fn background() -> Option<(u8, u8, u8)> {
     use std::io::Write as _;
@@ -368,11 +379,12 @@ pub fn background() -> Option<(u8, u8, u8)> {
         SetConsoleMode,
     };
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
-    const PATIENCE: std::time::Duration = std::time::Duration::from_millis(500);
     let input = console_in()?;
     if !styles(1) {
         return None;
     }
+    let mut answers = Answers::of_this_terminal();
+    let patience = answers.patience()?;
     let mut was = 0;
     // SAFETY: the console's own handle, its mode read into a local.
     if unsafe { GetConsoleMode(input, &mut was) } == 0 {
@@ -385,7 +397,9 @@ pub fn background() -> Option<(u8, u8, u8)> {
     let mut heard = Vec::new();
     let mut out = io::stdout();
     let asked = out.write_all(b"\x1b]11;?\x1b\\\x1b[c").and_then(|()| out.flush());
-    let deadline = std::time::Instant::now() + PATIENCE;
+    let began = std::time::Instant::now();
+    let deadline = began + patience;
+    let mut answered = None;
     while asked.is_ok()
         && let Some(left) = deadline.checked_duration_since(std::time::Instant::now())
     {
@@ -420,11 +434,15 @@ pub fn background() -> Option<(u8, u8, u8)> {
         if let Some(at) = find(&heard, b"\x1b[?")
             && heard.get(at..).is_some_and(|rest| rest.contains(&b'c'))
         {
+            answered = Some(began.elapsed());
             break;
         }
     }
     // SAFETY: the console's own handle, its mode given back.
     unsafe { SetConsoleMode(input, was) };
+    if asked.is_ok() {
+        answers.record(answered);
+    }
     parse_background(&heard)
 }
 
@@ -627,6 +645,146 @@ fn field<T: TryFrom<i64> + Default>(v: i64) -> T {
     T::try_from(v).unwrap_or_default()
 }
 
+/// How long a kind of terminal is waited on for its answer to DA1, learned from the answers
+/// terminals of its kind have given as shards runs, kept in this user's cache
+/// (`terminals.json`): its round trip estimated as TCP estimates one, the smoothed time and
+/// four times its smoothed deviation (RFC 6298 §2.3, after Jacobson, "Congestion Avoidance
+/// and Control", SIGCOMM 1988), as D222 waits on a registry's path; doubled for each time in
+/// a row it went unanswered (§5.5); and before any answer of its kind is measured, the
+/// standard's wait on a path whose round trip is unknown, 1 s (§2.1). A kind that never
+/// answered its first ask is not asked again: what does not answer DA1, which every
+/// terminal answers (VT100's Device Attributes, ECMA-48 §8.3.24), is no terminal reading
+/// it (a pseudo-terminal no emulator reads, as `docker run -t` gives), and a late answer
+/// would be read by whatever reads the terminal next.
+#[derive(Debug, Default)]
+pub(crate) struct Answers {
+    kind: String,
+    shown: Shown,
+}
+
+/// What terminals of one kind have shown: RFC 6298's SRTT and RTTVAR, in µs; how many
+/// answers were measured; how many asks in a row went unanswered since; and whether it
+/// has never answered.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct Shown {
+    srtt_us: u64,
+    rttvar_us: u64,
+    n: u64,
+    unanswered: u32,
+    silent: bool,
+}
+
+/// RFC 6298 §2.1's wait before any round trip is measured.
+const FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl Shown {
+    /// The wait for an answer; none for a kind that never answered.
+    fn patience(&self) -> Option<std::time::Duration> {
+        if self.silent {
+            return None;
+        }
+        let base = if self.n == 0 {
+            FIRST_WAIT
+        } else {
+            let us = self.srtt_us.saturating_add(self.rttvar_us.saturating_mul(4));
+            std::time::Duration::from_micros(us)
+        };
+        Some(base.saturating_mul(1u32.checked_shl(self.unanswered).unwrap_or(u32::MAX)))
+    }
+
+    /// An answer that came in `took`, or none that came (`None`).
+    fn record(&mut self, took: Option<std::time::Duration>) {
+        let Some(took) = took else {
+            if self.n == 0 {
+                self.silent = true;
+            } else {
+                self.unanswered = self.unanswered.saturating_add(1);
+            }
+            return;
+        };
+        let r = u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+        if self.n == 0 {
+            // §2.2.
+            self.srtt_us = r;
+            self.rttvar_us = r / 2;
+        } else {
+            // §2.3: α = 1/8, β = 1/4.
+            let off = self.srtt_us.abs_diff(r);
+            self.rttvar_us = self.rttvar_us.saturating_mul(3).saturating_add(off) / 4;
+            self.srtt_us = self.srtt_us.saturating_mul(7).saturating_add(r) / 8;
+        }
+        self.n = self.n.saturating_add(1);
+        self.unanswered = 0;
+        self.silent = false;
+    }
+}
+
+impl Answers {
+    /// The terminal this process's environment names: its kind its `TERM`, the program
+    /// that says it is the emulator (`TERM_PROGRAM` and its version, xterm's, Windows
+    /// Terminal's), `COLORTERM`, and whether it is reached over SSH; what its kind has shown.
+    pub(crate) fn of_this_terminal() -> Answers {
+        let var = |k: &str| std::env::var(k).unwrap_or_default();
+        let kind = [
+            var("TERM"),
+            var("TERM_PROGRAM"),
+            var("TERM_PROGRAM_VERSION"),
+            var("XTERM_VERSION"),
+            var("COLORTERM"),
+            String::from(if std::env::var_os("WT_SESSION").is_some() {
+                "wt"
+            } else {
+                ""
+            }),
+            String::from(if std::env::var_os("SSH_TTY").is_some() {
+                "ssh"
+            } else {
+                ""
+            }),
+        ]
+        .join("\u{1f}");
+        let shown = Self::kept()
+            .and_then(|all| all.get(&kind).copied())
+            .unwrap_or_default();
+        Answers { kind, shown }
+    }
+
+    /// How long to wait for its answer; none where its kind never answered.
+    pub(crate) fn patience(&self) -> Option<std::time::Duration> {
+        self.shown.patience()
+    }
+
+    /// Its answer, which came in `took`, or none, kept for the next ask of its kind.
+    pub(crate) fn record(&mut self, took: Option<std::time::Duration>) {
+        self.shown.record(took);
+        let Ok(dir) = crate::helpers::cache() else {
+            return;
+        };
+        let mut all = Self::kept().unwrap_or_default();
+        all.insert(self.kind.clone(), self.shown);
+        let Ok(bytes) = serde_json::to_vec(&all) else {
+            return;
+        };
+        // Written whole under a name of this process's and renamed into place: a reader
+        // finds the last whole one.
+        let _ = std::fs::create_dir_all(&dir);
+        let new = dir.join(format!("terminals.json.{}", std::process::id()));
+        if std::fs::write(&new, bytes).is_ok() && std::fs::rename(&new, dir.join(TERMINALS)).is_err() {
+            let _ = std::fs::remove_file(&new);
+        }
+    }
+
+    /// What every kind has shown, as last kept.
+    fn kept() -> Option<std::collections::BTreeMap<String, Shown>> {
+        let dir = crate::helpers::cache().ok()?;
+        serde_json::from_slice(&std::fs::read(dir.join(TERMINALS)).ok()?).ok()
+    }
+}
+
+/// The file of this user's cache that keeps what terminals have shown ([`Answers`]).
+const TERMINALS: &str = "terminals.json";
+
 /// Where `needle` starts in `hay`.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
@@ -648,6 +806,37 @@ fn parse_background(heard: &[u8]) -> Option<(u8, u8, u8)> {
         u8::try_from(v * 255 / max).ok()
     });
     Some((channels.next()??, channels.next()??, channels.next()??))
+}
+
+#[cfg(test)]
+mod answers {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// A kind first waited on for RFC 6298's first second, then for its smoothed round trip
+    /// and four deviations, doubled for each ask in a row it left unanswered; one that never
+    /// answered is not asked again.
+    #[test]
+    fn a_terminals_wait_is_learned_from_its_answers() {
+        let mut s = Shown::default();
+        assert_eq!(s.patience(), Some(Duration::from_secs(1)));
+        s.record(Some(Duration::from_millis(4)));
+        // SRTT 4 ms, RTTVAR 2 ms.
+        assert_eq!(s.patience(), Some(Duration::from_millis(12)));
+        s.record(Some(Duration::from_millis(4)));
+        // SRTT 4 ms, RTTVAR 1.5 ms.
+        assert_eq!(s.patience(), Some(Duration::from_millis(10)));
+        s.record(None);
+        assert_eq!(s.patience(), Some(Duration::from_millis(20)));
+        s.record(None);
+        assert_eq!(s.patience(), Some(Duration::from_millis(40)));
+        s.record(Some(Duration::from_millis(4)));
+        assert_eq!(s.unanswered, 0);
+        let mut silent = Shown::default();
+        silent.record(None);
+        assert_eq!(silent.patience(), None);
+    }
 }
 
 #[cfg(all(test, unix))]
