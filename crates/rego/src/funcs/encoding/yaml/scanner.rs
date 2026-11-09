@@ -132,8 +132,12 @@ struct SimpleKey {
 }
 
 const INPUT_RAW_BUFFER_SIZE: usize = 512;
+/// go-yaml's `max_flow_level` (go.yaml.in/yaml/v2 v2.4.2 scannerc.go:895).
 const MAX_FLOW_LEVEL: usize = 10000;
+/// go-yaml's `max_indents` (scannerc.go:929): the indents are a stack kept here, not
+/// recursion.
 const MAX_INDENTS: usize = 10000;
+/// go-yaml's `max_number_length` (scannerc.go:1677): a %YAML directive's version digits.
 const MAX_NUMBER_LENGTH: i8 = 2;
 
 // Character classes (yamlprivateh.go), reading past the end as NUL.

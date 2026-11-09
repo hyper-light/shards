@@ -1853,6 +1853,7 @@ impl Certificate {
     }
 }
 
+/// crypto/x509's `maxChainSignatureChecks` (go1.26.1 src/crypto/x509/verify.go:721).
 const MAX_SIGNATURE_CHECKS: usize = 100;
 
 /// buildChains, its error kept as Go keeps it: the last candidate's validity or deeper

@@ -2878,8 +2878,15 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   run's, unchanged (`fs::server::Server`, `fs::answer`); a last `:ro` is its read-only
   mode, as `--disk`'s, and every other colon the path's. Its tags follow any
   `--slates-fs-fd` given beside them: with k of those, the i-th `--share` is `shards{k+i}`,
-  as the share connections are handed on after the flags given. Test: boot.rs
-  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`; shards-api's
+  as the share connections are handed on after the flags given. None of its processes
+  outlives its client, however the client ends (SIGKILL, TerminateProcess): on Unix the
+  client is the VM, and the share process (and macOS's broker, Linux's working-set writer)
+  ends as its connection to the VM closes, which the kernel closes as the VM ends; on
+  Windows, which has no exec, the client makes the share process (detached from its
+  console, out of the VM's Ctrl-C) and the VM process's own Job in a job it alone holds,
+  which ends both as it ends (D141). Tests: boot.rs
+  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`,
+  `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`; shards-api's
   conformance suite on real guests, boot.rs `shards_api_conforms_on_real_guests`.
 - **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
@@ -4084,6 +4091,23 @@ microVMs, from a git daemon and from smart HTTP served by git's own upload-pack.
   `add_fetches_a_commit_a_server_will_not_send_alone`, against a server that refuses as
   such hosts do; mutation-checked). git's own upload-pack, speaking protocol v2, sends
   such a commit (measured, git 2.50.1), so the fallback is for hosts that do not.
+
+- **Its formats' literals are git's** (audit of picked constants, 2026-11-09). A checkout
+  refused trees past 4096 levels, a figure its comment gave as git's own: git v2.51.0's
+  core.maxTreeDepth is 2048 where BuildKit runs git, on Linux (512 and 1280 in Windows
+  builds only), and its walk recursed once a level, so a thread's stack, not git, bounded
+  a hostile repository's nesting; a pack's delta chains recursed the same way, to git's
+  4095. The walk keeps the trees open on a stack of its own, a chain is followed in a loop,
+  and the walk refuses what git refuses (`trees_nest_as_deep_as_git_checks_out_and_no_deeper`:
+  2048 levels walked on a 256 KiB thread and 2049 refused, as git's read-tree takes and
+  refuses the same trees).
+
+  | Literal | Was | Now | Source |
+  |---|---|---|---|
+  | `checkout::MAX_DEPTH` | 4096, recursion a level | 2048, iterative | git v2.51.0 environment.c:105-106 (`max_allowed_tree_depth`), tree-walk.c:445 (`traverse_trees_cur_depth > max_allowed_tree_depth`) |
+  | `pack::MAX_DEPTH` | 4095, recursion a delta | 4095, a loop: deltas kept on the way to the base, applied from it up | git v2.51.0 pack-objects.h:15 (`OE_DEPTH_BITS` 12), builtin/pack-objects.c:5033-5036 (pack.depth forced below `1 << OE_DEPTH_BITS`) |
+  | `pktline::MAX` | 65520 | kept | git v2.51.0 pkt-line.h:233 (`LARGE_PACKET_MAX`), gitprotocol-common.adoc:87-89 |
+  | `pktline::FLUSH`, `DELIMITER` | `0000`, `0001` | kept | gitprotocol-v2.adoc:45-46 |
 
 SSH remotes: D69.
 
@@ -9928,7 +9952,8 @@ the guest keeps their metadata alone.
   own metadata, its journal and the blocks the kernel keeps back (2% or 4096 clusters)
   take is added (`shards_ext4::size_for`). A size is a template of its own (its key holds
   it). One whose page structures, a 64th of it, would take more memory as its microVM
-  boots than its host has is refused, as one past ext4's 16 TiB is.
+  boots than its host has is refused, as one past what ext4 counts the inodes of is
+  (`MOST_BLOCKS`, below).
 - **Snapshots** (format 24) keep the layer's length in MiB, its head and its file system
   beside the memory: the head's 2 MiB blocks each once, after an index of them, since all
   but a few describe sections none of whose pages is in use, alike to the byte (a 10 GiB
@@ -10301,6 +10326,21 @@ the guest keeps their metadata alone.
   give-back took 11.1 and 160.2 ms at p50 (15.3 and 303.8 at most) on Fedora's Btrfs, as
   the daemon keeps the layer, after its run's client is told it ended and before a command
   that reads the layer goes on (PM M443).
+- **Its bounds are ext4's and mke2fs's** (audit of picked constants, 2026-11-09). The most
+  a layer may be was 2^32 blocks (16 TiB), said to be what 32-bit block numbers hold; with
+  `64bit` they are 48 bits, and the count that binds is `s_inodes_count`'s 32 bits, which
+  must be the groups times their inodes (ext4_check_geometry): at one inode to 16 KiB, as
+  many whole groups as it counts (524287), 64 TiB less a group's 128 MiB. A host whose
+  file system holds no file that long refuses it as the layer's file is sized (EFBIG), an
+  error and not a panic. Held by `the_most_blocks_are_as_many_groups_as_the_inode_count_holds`;
+  containers.rs's `--storage-opt size=70t` is the refusal's E2E (owed a run).
+
+  | Literal | Was | Now | Source |
+  |---|---|---|---|
+  | `MOST_BLOCKS` (lib.rs) | 2^32 | `(u32::MAX / (GROUP * BLOCK / INODE_RATIO)) * GROUP` = 2^34 - 2^15 | Linux v6.18.48 fs/ext4/ext4.h:1327 (`__le32 s_inodes_count`), super.c:4828 and 4840-4846 (ext4_check_geometry) |
+  | `LEAST_BLOCKS` (lib.rs) | 2048 | kept | e2fsprogs v1.47.0 lib/ext2fs/mkjournal.c:359 (no journal below 2048 blocks) |
+  | `MAX_LEN` (lib.rs), `INIT_MAX_LEN` (read.rs) | 32768 | kept | Linux v6.18.48 fs/ext4/ext4_extents.h:149 (`EXT_INIT_MAX_LEN`) |
+  | `MAX_DEPTH` (read.rs) | 5 | kept | ext4_extents.h:87 (`EXT4_MAX_EXTENT_DEPTH`) |
 
 **Next** (the slices after these).
 - Visits and joiners' runs over the kept file too.
@@ -14169,6 +14209,28 @@ was built on [PM M200-M203]:
   forbids itself once its partition is set up (SetProcessMitigationPolicy), since
   windows-2022 sets no partition up without it, while every call a VM makes after its
   setup works [PM M202]; the library never does, as a test's process sets up many.
+- **A direct boot's processes end with its client, however it ends.** Its VM's Job ended
+  the VM as its spawner was killed, but its share process (D38, D197), detached from the
+  console so that the VM's Ctrl-C misses it, also broke away from every job
+  (CREATE_BREAKAWAY_FROM_JOB) and outlived a client ended by TerminateProcess (one found on
+  jupiter hours after its test; boot.rs
+  `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`). So `run vm --kernel`
+  and `restore` make a job first, with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, set through
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION, which "causes all processes associated with the
+  job to terminate when the last handle to the job is closed" (Microsoft's
+  JOBOBJECT_BASIC_LIMIT_INFORMATION): uninheritable, its one handle the client's
+  (`shards_ipc::GroupJob::ending_with_this_process`). The share process is made in it,
+  still detached from the console but breaking away from no job, and the VM process's
+  own Job nested under it (PROC_THREAD_ATTRIBUTE_JOB_LIST, as a group's VM is under its
+  group's job, D183); a job's end ends its child jobs' processes ("Nested Jobs"). Windows
+  closes an ended process's handles, so the client's end, any end, closes the job. A
+  client in a job of its own (a CI runner's, kiln's) has both made in that one too, and
+  this job nests under it as the share process is assigned: Windows 8 and later nest jobs
+  where the hierarchy stays valid, a child job holding a subset of its parent's processes,
+  and neither sets UI limits ("Nested Jobs"). A client that ends as it should waits for
+  its share process, which ends as its streams close with the VM, before the job closes.
+  The daemon's runs are untouched: their processes are the daemon's, in its groups' jobs
+  (D195, D183).
 - **No profile left behind.** Each lives with a record its spawner holds open
   (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
   no process holds.

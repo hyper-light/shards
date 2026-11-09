@@ -177,6 +177,7 @@ pub struct NoteSignature {
 
 /// bufio.Scanner's lines (ScanLines), as many as its 64 KiB buffer lets it read.
 fn scanner_lines(data: &[u8]) -> Vec<&[u8]> {
+    /// bufio.MaxScanTokenSize (go1.26.1 src/bufio/scan.go:82).
     const MAX: usize = 64 * 1024;
     let mut out = Vec::new();
     let mut rest = data;

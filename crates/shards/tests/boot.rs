@@ -2088,10 +2088,12 @@ fn a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one() {
     assert!(!ro.join("from-guest").exists());
 }
 
-/// `run --kernel … --share DIR` ended at its deadline leaves nothing it started running: on
-/// Windows its share process breaks away from any job its caller holds (review 11), so the
-/// harness ends what is under the run itself, as it ends the run (`common::run_until`).
-#[cfg(windows)]
+/// `run vm --kernel … --share DIR` ended at its deadline leaves nothing it started running:
+/// the harness ends the client alone, as a killed client is ended (TerminateProcess,
+/// SIGKILL), and waits for what is under it to end by itself (`common::run_until`). On
+/// Windows its share process and VM process are in a job the client alone holds, which
+/// closes as it ends (D141); on Unix the client is the VM, and the share process ends as
+/// its connections to it close.
 #[test]
 fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
     if cannot_run_vms() {
@@ -2121,12 +2123,14 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
     let Err(ended) = common::run_until(cmd, &asked, E2E.get()) else {
         panic!("an echo guest's run ended by itself");
     };
-    // Its share process is `shards.exe` (its VM's, shards-vm.exe), started before the VM.
+    // Its share process is `shards` (its VM's, shards-vm, on Windows; on Unix the VM is
+    // the client), started before the VM.
+    let share = if cfg!(windows) { "shards.exe" } else { "shards" };
     assert!(
         ended
             .started
             .iter()
-            .any(|(_, name)| name.eq_ignore_ascii_case("shards.exe")),
+            .any(|(_, name)| name.eq_ignore_ascii_case(share)),
         "no share process under the run: {:?}\n{}",
         ended.started,
         ended.said
