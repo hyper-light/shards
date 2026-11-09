@@ -19,14 +19,11 @@ use serde_json::Value;
 use shards_registry::http::{Client, Patience};
 use shards_registry::url::Url;
 
+use super::renewal::Renewal;
 use super::{Driver, Message, Wait};
 use crate::aws::credentials::{Chain, ECS, Found};
 use crate::aws::sigv4::{Rule, Scope};
 use crate::logging::awslogs::{self, Batch, Config, EVENT, Event, Events, Rendered};
-
-/// How long before they expire credentials are found again: a put signed with them takes
-/// a while to send, as the SDK gives a container's (resolveHTTPCredProvider's ExpiryWindow).
-const RENEW: Duration = Duration::from_secs(5 * 60);
 
 pub(super) struct Awslogs {
     config: Config,
@@ -47,6 +44,9 @@ pub(super) struct Awslogs {
     /// The token the last put was answered with, which the next is sent with, for endpoints
     /// that still ask for one (CloudWatch no longer does, D168).
     token: Option<String>,
+    /// How long before they expire its credentials are found again, as its requests have
+    /// shown (renewal.rs).
+    renewal: Renewal,
 }
 
 /// CloudWatch Logs, as a run's environment finds it.
@@ -81,13 +81,15 @@ impl Awslogs {
             pending: VecDeque::new(),
             batch: Batch::default(),
             token: None,
+            renewal: Renewal::default(),
         })
     }
 
-    /// Where puts go, and their credentials, found again where these expire within
-    /// [`RENEW`].
+    /// Where puts go, and their credentials, found again where these expire within what its
+    /// requests have shown they need ([`Renewal`]).
     fn to(&mut self) -> io::Result<&mut To> {
-        if self.to.as_ref().is_some_and(|to| !to.found.expiring(RENEW)) {
+        let margin = self.renewal.margin();
+        if self.to.as_ref().is_some_and(|to| !to.found.expiring(margin)) {
             return self
                 .to
                 .as_mut()
@@ -145,6 +147,8 @@ impl Awslogs {
             fields.push(("x-amzn-logs-format", awslogs::EMF));
         }
         let to = self.to()?;
+        let (chosen, expires) = (std::time::Instant::now(), to.found.expires);
+        let at = std::time::SystemTime::now();
         let (status, answer) = crate::aws::post_signed(
             &to.client,
             &to.url,
@@ -158,8 +162,10 @@ impl Awslogs {
             },
         )
         .map_err(io::Error::other)?;
+        let took = chosen.elapsed();
         let v: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
         if status == 200 {
+            self.renewal.answered(took);
             return Ok(Ok(v));
         }
         let kind = crate::aws::text(&v, "__type")
@@ -169,6 +175,11 @@ impl Awslogs {
         let kind = kind.split(':').next().unwrap_or_default().to_string();
         let message = crate::aws::text(&v, "message")
             .unwrap_or_else(|| String::from_utf8_lossy(&answer).trim().to_string());
+        if matches!(kind.as_str(), "ExpiredTokenException" | "ExpiredToken") {
+            self.renewal.expired(expires, at, took);
+        } else {
+            self.renewal.answered(took);
+        }
         // Credentials refused or expired: found again for the next request.
         if status == 403
             || matches!(

@@ -11,12 +11,12 @@
 //! with its log, where moby's waits a second.
 
 use std::io;
-use std::time::Duration;
 
 use serde_json::Value;
 use shards_registry::http::{Client, Patience};
 use shards_registry::url::Url;
 
+use super::renewal::Renewal;
 use super::{Driver, Message, Wait};
 use crate::google::{self, Env, Token};
 use crate::logging::gcplogs::{Config, From, Instance, SCOPE};
@@ -26,11 +26,10 @@ const ENTRIES: usize = 1000;
 const BYTES: usize = 8 << 20;
 /// The most of an entry's bytes Cloud Logging takes: "Size of a LogEntry 256 KiB ...
 /// approximate and ... based on internal data sizes, not the actual REST API request size"
-/// (Cloud Logging, Quotas and limits, read 2026-11-08). An entry is held to it as written,
+/// (Cloud Logging, Quotas and limits, https://cloud.google.com/logging/quotas, "Logging
+/// API quotas and limits", read 2026-11-08). An entry is held to it as written,
 /// its JSON, which spells each of its fields at least as long as their internal form.
 const ENTRY_MOST: usize = 256 * 1024;
-/// How long before it expires a token is asked for again.
-const RENEW: Duration = Duration::from_secs(5 * 60);
 
 pub(super) struct Gcplogs {
     config: Config,
@@ -41,6 +40,10 @@ pub(super) struct Gcplogs {
     /// The run's log and resource, found as first needed.
     from: Option<From>,
     token: Option<Token>,
+    /// How long before it expires a token is asked for again, as its writes have shown
+    /// (renewal.rs). Its expiry is its answer's `expires_in` read by this host's clock as it
+    /// came, so that no clock of another's is in it.
+    renewal: Renewal,
     client: Client,
     url: Url,
     batch: Vec<String>,
@@ -70,6 +73,7 @@ impl Gcplogs {
             attributes,
             from: None,
             token: None,
+            renewal: Renewal::default(),
             client,
             url,
             batch: Vec::new(),
@@ -133,9 +137,11 @@ impl Gcplogs {
             .ok_or_else(|| io::Error::other("no log to write to"))
     }
 
-    /// A token for Cloud Logging, asked for again before it expires.
+    /// A token for Cloud Logging, asked for again before it expires by as long as a write
+    /// has been seen to take ([`Renewal`]).
     fn token(&mut self) -> io::Result<String> {
-        if self.token.as_ref().is_none_or(|t| t.expiring(RENEW)) {
+        let margin = self.renewal.margin();
+        if self.token.as_ref().is_none_or(|t| t.expiring(margin)) {
             let env = |k: &str| shards_ipc::env_value(&self.env, k);
             self.token = Some(google::access(&env, SCOPE).map_err(io::Error::other)?);
         }
@@ -158,6 +164,7 @@ impl Gcplogs {
             .ok_or_else(|| io::Error::other("no log to write to"))?
             .write(&self.batch);
         let token = self.token()?;
+        let chosen = std::time::Instant::now();
         let auth = format!("Bearer {token}");
         let env = |k: &str| shards_ipc::env_value(&self.env, k);
         let quota = google::quota_project(&env);
@@ -169,6 +176,7 @@ impl Gcplogs {
             headers.push(("x-goog-user-project", q.as_str()));
         }
         let (status, answer) = send(&self.client, &self.url, &headers, &body)?;
+        self.renewal.answered(chosen.elapsed());
         match status {
             200 => {}
             // Partial success: what it took is written; what it refused, said.

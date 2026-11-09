@@ -33,6 +33,7 @@ mod journald;
 mod learned;
 #[cfg(target_os = "macos")]
 mod oslog;
+mod renewal;
 mod sockets;
 mod splunk;
 mod stream;
