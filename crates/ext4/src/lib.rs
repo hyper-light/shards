@@ -58,10 +58,17 @@ const FLEX: u64 = 1 << LOG_FLEX;
 /// The inode's bytes past the 128 of ext2's (`s_want_extra_isize`): through `i_projid`.
 const EXTRA_ISIZE: u16 = 32;
 const GOOD_OLD_INODE_SIZE: usize = 128;
-/// The least a file system may be: where mke2fs makes no journal below it.
+/// The least a file system may be: where mke2fs makes no journal below it (e2fsprogs
+/// v1.47.0 lib/ext2fs/mkjournal.c:359, ext2fs_default_journal_size's `num_blocks < 2048`).
 const LEAST_BLOCKS: u64 = 2048;
-/// The most, in blocks: what 32-bit block numbers in a group's bitmaps' arithmetic hold.
-const MOST_BLOCKS: u64 = 1 << 32;
+/// The most, in blocks: as many whole groups as the superblock can count the inodes of.
+/// `s_inodes_count` is 32 bits (Linux v6.18.48 fs/ext4/ext4.h:1327) and must be the groups
+/// times their inodes (super.c:4840-4846, ext4_check_geometry's "inodes count not valid"),
+/// and a whole group holds `GROUP * BLOCK / INODE_RATIO` inodes: 524287 groups, 64 TiB
+/// less one group's 128 MiB. Every other count the format keeps reaches further: block
+/// numbers are 48 bits with `64bit`, and the groups' count 2^32 less a block of
+/// descriptors (super.c:4828).
+const MOST_BLOCKS: u64 = (u32::MAX as u64 / (GROUP * BLOCK / INODE_RATIO)) * GROUP;
 
 const MAGIC: u16 = 0xEF53;
 const EXTENT_MAGIC: u16 = 0xF30A;
@@ -396,8 +403,8 @@ impl Geometry {
         }
         if blocks > MOST_BLOCKS {
             return err(format!(
-                "an ext4 file system of {bytes} bytes: at most {} TiB",
-                (MOST_BLOCKS * BLOCK) >> 40
+                "an ext4 file system of {bytes} bytes: at most {} bytes",
+                MOST_BLOCKS * BLOCK
             ));
         }
         loop {
@@ -818,6 +825,7 @@ fn journal_blocks(blocks: u64) -> u64 {
 /// An inode's `i_block` holding `runs`, `(first block, count)`, as extents in its own
 /// header: at most four, each at most 32768 blocks (EXT_INIT_MAX_LEN).
 fn extents(runs: &[(u64, u64)]) -> Result<[u8; 60], Error> {
+    // EXT_INIT_MAX_LEN, `1UL << 15` (Linux v6.18.48 fs/ext4/ext4_extents.h:149).
     const MAX_LEN: u64 = 32768;
     if runs.len() > 4 || runs.iter().any(|&(_, n)| n == 0 || n > MAX_LEN) {
         return err(format!("extents {runs:?} do not fit in an inode"));

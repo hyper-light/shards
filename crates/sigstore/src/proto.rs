@@ -775,6 +775,10 @@ pub fn unmarshal(b: &[u8], schema: &'static Schema) -> Result<Msg, ProtoError> {
     Ok(m)
 }
 
+/// protojson's default `RecursionLimit`, `protowire.DefaultRecursionLimit`
+/// (google.golang.org/protobuf v1.36.12 encoding/protowire/wire.go:28,
+/// encoding/protojson/decode.go:75-76). Messages nest only as deep as the schemas do, and
+/// `structure` reads a Struct with a stack of its own, so no thread's stack bounds it.
 const RECURSION_LIMIT: usize = 10_000;
 
 fn message(d: &mut Decoder<'_>, schema: &'static Schema, depth: usize) -> Result<Msg, ProtoError> {

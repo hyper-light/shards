@@ -4,7 +4,8 @@
 
 use std::io::{self, Read};
 
-/// The longest packet: 65520 bytes, its length included (LARGE_PACKET_MAX).
+/// The longest packet: 65520 bytes, its length included (LARGE_PACKET_MAX, git v2.51.0
+/// pkt-line.h:233; Documentation/gitprotocol-common.adoc:87-89).
 pub const MAX: usize = 65520;
 
 /// A packet as read.
@@ -28,6 +29,7 @@ pub fn data(payload: &[u8]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
+/// The flush-pkt and the delim-pkt (git v2.51.0 Documentation/gitprotocol-v2.adoc:45-46).
 pub const FLUSH: &[u8] = b"0000";
 pub const DELIMITER: &[u8] = b"0001";
 

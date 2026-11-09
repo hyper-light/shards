@@ -14,6 +14,8 @@ const CODEGEN_CODE_COUNT: usize = 19;
 const BAD_CODE: u8 = 255;
 const BUFFER_FLUSH_SIZE: usize = 240;
 const BUFFER_SIZE: usize = BUFFER_FLUSH_SIZE + 8;
+/// Go's `maxStoreBlockSize` (go1.26.1 src/compress/flate/deflate.go:52): a stored block's
+/// LEN is 16 bits (RFC 1951 §3.2.4).
 pub const MAX_STORE_BLOCK_SIZE: usize = 65535;
 
 const LENGTH_EXTRA_BITS: [u8; 29] = [

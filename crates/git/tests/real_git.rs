@@ -713,3 +713,93 @@ fn an_objects_abbreviation_is_gits() {
         "the two that share 8 digits: {lengths:?}"
     );
 }
+
+/// Trees nested as deep as git checks out and one deeper, made by git (fast-import, which
+/// writes paths no file system holds, into a pack of its own): the walk takes the first
+/// and refuses the second as git's read-tree does at the same core.maxTreeDepth, and needs
+/// no stack for the depth (it runs on a thread of 256 KiB).
+#[test]
+fn trees_nest_as_deep_as_git_checks_out_and_no_deeper() {
+    use shards_git::checkout::{self, Item, MAX_DEPTH};
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("SKIP: no git on this host");
+        return;
+    }
+    let tmp = shards_testdir::TempDir::new("git-deep").unwrap();
+    for depth in [MAX_DEPTH, MAX_DEPTH + 1] {
+        // Bare, so that no command looks for attributes in a work tree along the paths.
+        let dir = tmp.join(depth.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "--bare"]);
+        let path = format!("{}/f", vec!["a"; depth].join("/"));
+        let stream = format!(
+            "commit refs/heads/deep\ncommitter t <t@t> 0 +0000\ndata 0\nM 100644 inline {path}\ndata 2\nx\n\n"
+        );
+        fed(
+            git_command(&dir)
+                .arg("-C")
+                .arg(&dir)
+                .args(["fast-import", "--quiet"]),
+            stream.into_bytes(),
+        );
+        // git's own answer, at the depth Linux's git takes by default.
+        let git_took = git_command(&dir)
+            .arg("-C")
+            .arg(&dir)
+            .env("GIT_INDEX_FILE", dir.join("deep.index"))
+            .args([
+                "-c",
+                &format!("core.maxTreeDepth={MAX_DEPTH}"),
+                "read-tree",
+                "deep",
+            ])
+            .output()
+            .unwrap();
+        let git_ok = git_took.status.success()
+            && !String::from_utf8_lossy(&git_took.stderr).contains("exceeded maximum allowed tree depth");
+        let packs: Vec<_> = std::fs::read_dir(dir.join("objects/pack"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "pack"))
+            .collect();
+        assert_eq!(packs.len(), 1, "{packs:?}");
+        let bytes = std::fs::read(&packs[0]).unwrap();
+        let commit = Oid::parse(
+            String::from_utf8(git(&dir, &["rev-parse", "deep"]))
+                .unwrap()
+                .trim()
+                .as_bytes(),
+        )
+        .unwrap();
+        let (dirs, walked) = std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(move || {
+                let pack = Pack::read(bytes, 1 << 24).unwrap();
+                let (kind, data) = pack.get(&commit).unwrap();
+                assert_eq!(kind, Kind::Commit);
+                let tree = object::commit(&data).unwrap().tree;
+                let mut dirs = 0;
+                let walked = checkout::walk(&pack, &tree, &mut |_, item| {
+                    if item == Item::Dir {
+                        dirs += 1;
+                    }
+                    Ok(())
+                });
+                (dirs, walked)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            walked.is_ok(),
+            git_ok,
+            "depth {depth}: {walked:?}, git's {git_took:?}"
+        );
+        if depth == MAX_DEPTH {
+            assert!(git_ok);
+            assert_eq!(dirs, MAX_DEPTH);
+        } else {
+            assert_eq!(walked, Err("a tree nested too deep".into()));
+        }
+    }
+}

@@ -23,8 +23,11 @@ const UNICODE_GROUPS: u16 = 1 << 7;
 /// syntax.Perl.
 const PERL: u16 = CLASS_NL | ONE_LINE | PERL_X | UNICODE_GROUPS;
 
+/// Go's `maxHeight` (go1.26.1 src/regexp/syntax/parse.go:94).
 const MAX_HEIGHT: usize = 1000;
-const MAX_SIZE: i64 = (128 << 20) / 40;
+/// Go's `maxSize`, `128 << 20 / instSize` with `instSize = 5 * 8` (parse.go:103-104).
+const MAX_SIZE: i64 = (128 << 20) / (5 * 8);
+/// `unicode.MaxRune` (go1.26.1 src/unicode/letter.go:10), Unicode's last code point.
 const MAX_RUNE: u32 = 0x10FFFF;
 
 // Error codes (syntax.ErrorCode).

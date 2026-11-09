@@ -60,6 +60,8 @@ enum St {
 const PARSE_OBJECT_KEY: u8 = 0;
 const PARSE_OBJECT_VALUE: u8 = 1;
 const PARSE_ARRAY_VALUE: u8 = 2;
+/// Go's `maxNestingDepth` (go1.26.1 src/encoding/json/scanner.go:148): the scanner's
+/// `parseState` is a stack it keeps, not recursion, so only Go's limit bounds it.
 const MAX_NESTING_DEPTH: usize = 10000;
 
 #[derive(Debug)]
