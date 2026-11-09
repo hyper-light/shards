@@ -22,9 +22,15 @@ pub struct VcpuState {
     pub serror: Option<SError>,
 }
 
-/// More registers than any arm64 vCPU has (a few hundred): a state that names more is no
-/// vCPU's.
-const MAX_REGS: usize = 4096;
+/// The most registers KVM lists for a vCPU without SVE (`kvm_arm_num_regs`,
+/// arch/arm64/kvm/guest.c l. 661-671): each ID of one of five classes, its core registers,
+/// its demultiplexed ones, its system registers, its firmware registers and their feature
+/// bitmaps (KVM_REG_ARM_CORE, _DEMUX, KVM_REG_ARM64_SYSREG, KVM_REG_ARM_FW, _FW_FEAT_BMAP:
+/// arch/arm64/include/uapi/asm/kvm.h l. 215-352, Linux 1590cf03), each class's IDs told
+/// apart by their low 16 bits (a core register's word in `struct kvm_regs`, a CCSIDR's
+/// selector, a system register's op0:op1:CRn:CRm:op2, a firmware register's number). A state
+/// naming more names one twice, and is no vCPU's.
+const MAX_REGS: usize = 5 << 16;
 
 /// The counters' registers, which a restore leaves alone: it sets the virtual counter once
 /// for the whole VM as its vCPUs are released, the physical one being the host's as on HVF

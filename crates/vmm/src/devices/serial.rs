@@ -95,6 +95,11 @@ fn rx_capacity(s: &State) -> usize {
     if s.fifo_enabled { RX_FIFO } else { 1 }
 }
 
+/// The most host input the receiver takes at once, its FIFO ([`Serial::input`]): what a
+/// reader of the host's input need read at a time, the rest waiting in the host's pipe or
+/// terminal rather than in the reader.
+pub const INPUT_AT_ONCE: usize = RX_FIFO;
+
 impl std::fmt::Debug for Serial {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Serial").finish_non_exhaustive()

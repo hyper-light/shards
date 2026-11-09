@@ -20,9 +20,9 @@ pub(super) const REQUIRED: &[(u64, &str)] = &[
     (sys::CAP_SET_IDENTITY_MAP_ADDR, "KVM_CAP_SET_IDENTITY_MAP_ADDR"),
 ];
 
-/// The most vCPUs a machine has: 254, since the MADT carries 8-bit APIC ids (research
-/// doc §3.5).
-pub(super) const VCPU_LIMIT: u32 = 254;
+/// The most vCPUs a machine has: as many as its MADT has APIC ids for
+/// ([`acpi::MAX_VCPUS`](crate::arch::x86_64::acpi::MAX_VCPUS)).
+pub(super) const VCPU_LIMIT: u32 = crate::arch::x86_64::acpi::MAX_VCPUS;
 
 /// What the process asks of Linux once, before KVM is asked what guests may have.
 pub(super) fn prepare() {

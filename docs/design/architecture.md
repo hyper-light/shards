@@ -3366,6 +3366,182 @@ Held by unit tests (`handshake_lines_are_bounded_by_the_protocols_words`,
 `an_older_snapshots_longer_receive_buffer_restores`). Owed: E2E runs on KVM,
 Hypervisor.framework and WHP, and the 8-target lint.
 
+### D12's rings and the console's reader: each from what it holds
+
+**Found** beside D12's figures above: the vsock device's rings, 256 descriptors each
+(Firecracker's), and the console's reader of host input, 256 bytes at a time, both picked.
+
+**Decided:**
+- **The vsock rings hold one guest socket's whole credit** in its guest's receive buffers, so
+  a host stream to it waits on its credit, never on the ring first. A socket gives its peer
+  at most its buffer's maximum, 256 KiB unless its program raises it; each receive buffer
+  holds less than a page, so more than 64 hold it, and a split ring is a power of two: 128.
+  Linux's driver makes its rings as large as the device offers and fills RX whole, so this
+  is also the guest memory RX holds: half of what 256 held.
+- **The console's reader reads as much as the receiver takes at once**, its FIFO: what the
+  guest has not drained waits in stdin, not in the reader, as `Serial::input` waits for
+  room.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `QUEUE_SIZE` (vsock/mod.rs) | 256 | `(256 KiB / 4 KiB + 1).next_power_of_two()` = 128 | Linux net/vmw_vsock/af_vsock.c l. 200-201 (`VSOCK_DEFAULT_BUFFER_MAX_SIZE`); include/linux/virtio_vsock.h l. 138 (`VIRTIO_VSOCK_DEFAULT_RX_BUF_SIZE`, `SKB_WITH_OVERHEAD(1024 * 4)`); virtio 1.3 §2.7 (power of two); drivers/virtio/virtio_mmio.c l. 374-381 (the ring as long as QueueNumMax); Linux 1590cf03 |
+| `forward_stdin`'s buffer (crates/shards vm_run.rs) | 256 B | `serial::INPUT_AT_ONCE` = the receive FIFO, 16 | the NS16550A's FIFO, as `RX_FIFO` above |
+
+Held by `vsock::tests::the_rings_hold_a_guest_sockets_credit`. Owed: a vsock throughput run
+of several host streams at once on each hypervisor (the rings halved), E2E, the 8-target
+lint.
+
+### D9's and D153's virtio limits: each the specification's
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `MAX_QUEUE_SIZE` (queue.rs) | 32768 | 32768, cited | virtio 1.3 §2.7 ("The maximum Queue Size value is 32768"); §2.8's 15-bit indices |
+| `QUEUE_NUM_MAX` (mmio.rs) | 0x034 | 0x034, cited with the register block | virtio 1.3 §4.2.2 ("MMIO Device Register Layout"); include/uapi/linux/virtio_mmio.h l. 81 |
+| `READABLE_MAX` (iommu.rs) | 72 | the longest request's readable part, from each structure's fields: ATTACH 20, DETACH 20, MAP 36, UNMAP 28, PROBE 72 | virtio 1.3 §5.13.6; include/uapi/linux/virtio_iommu.h l. 62-150 |
+
+Held by `iommu::tests::the_longest_readable_part_is_probes`.
+
+### D13's boot and hypervisor limits: each the protocol's, the architecture's or the hypervisor's
+
+**Decided:**
+- **What the hypervisor counts, it is asked.** KVM's MSR index list and a vCPU's register list
+  are read as KVM's interface offers: asked with room for none, KVM answers E2BIG and the
+  count, and the list is read with room for that many, where a cap of 1,024 MSRs or 4,096
+  registers was guessed. A GPU's devices are as many as Vulkan counts, where 64 were.
+- **A machine has a vCPU for each APIC id its MADT can give one** on x86-64: every 8-bit id
+  but 0xFF, the broadcast, which Linux ignores in a Local APIC entry and which is past its
+  xAPIC driver's highest, 0xFE: 255. 254 had come from Firecracker's MP table, whose IOAPIC
+  takes an APIC id; shards' MADT gives its IOAPIC id 0, another namespace. KVM's and WHP's
+  limits and WHP's snapshot decoder take the one constant (`acpi::MAX_VCPUS`). On arm64, a
+  machine has as many as its memory map has GICv3 redistributors for (`layout::MAX_VCPUS`,
+  123), which a snapshot's decoder takes too.
+- **A kernel's program headers are as many as its ELF header says**, below the gABI's escape
+  (PN_XNUM), and their table must lie in the file, which is checked before anything is
+  allocated for it: 64 had been picked.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `FDT_MAX` (arch/aarch64/boot.rs) | 2 MiB | 2 MiB, cited | Linux Documentation/arch/arm64/booting.rst §2, l. 53-56 |
+| `MAX_PHDRS` (arch/x86_64/boot.rs) | 64 | `phnum < PN_XNUM` (0xffff), the table within the file | System V gABI, "ELF Header" (`e_phnum`, PN_XNUM); include/uapi/linux/elf.h l. 69 |
+| `TSC_DEADLINE` (arch/x86_64/cpuid.rs) | bit 24 | bit 24, cited | Intel SDM Vol. 2A, CPUID.01H:ECX[24]; arch/x86/include/asm/cpufeatures.h l. 129 |
+| x86-64's vCPU limit (acpi.rs, hv/kvm/x86_64.rs `VCPU_LIMIT`, hv/whp/mod.rs, hv/whp/state.rs `MAX_VCPUS`) | 254 (four copies) | `acpi::MAX_VCPUS` = `u8::MAX` = 255 | ACPI 6.5 §5.2.12.2 (8-bit APIC id); Intel SDM Vol. 3A §11.6.2.1 (0xFF broadcast); arch/x86/kernel/acpi/boot.c l. 270-272; arch/x86/kernel/apic/apic_flat_64.c l. 44 (`max_apic_id = 0xFE`) |
+| arm64's vCPU limit (arch/aarch64/mod.rs `layout::MAX_VCPUS`) | (state.rs: 1024) | `(GIC_REDIST_MAX_END - GIC_REDIST) / GIC_REDIST_SIZE` = 123 | GICv3/v4 architecture specification IHI 0069, §12.10 (RD_base and SGI_base, 64 KiB each) |
+| `CAP_MAX_VCPUS` (hv/kvm/sys.rs) | 66 | 66, cited | include/uapi/linux/kvm.h l. 816 |
+| `CAP_TSC_DEADLINE_TIMER` (hv/kvm/sys/x86_64.rs) | 72 | 72, cited | include/uapi/linux/kvm.h l. 822 |
+| `MAX_CPUID_ENTRIES` (hv/kvm/sys/x86_64.rs) | 256 | 256, cited | arch/x86/include/asm/kvm_host.h l. 170; arch/x86/kvm/cpuid.c l. 597, 641, 1992-1993 |
+| `msr_index_list`'s `MAX` (hv/kvm/sys/x86_64.rs) | 1024 | KVM's count (E2BIG, then that many) | arch/x86/kvm/x86.c l. 5029-5054 |
+| `MAX_REGS` (hv/kvm/sys/aarch64.rs, `reg_list`) | 4096 | KVM's count (E2BIG, then that many; a second refusal is no vCPU's) | arch/arm64/kvm/arm.c l. 1869-1889 (`kvm_arm_num_regs`, fixed once finalized) |
+| `MAX_DEVICES` (devices/virtio/gpu/virgl.rs; D201, D202) | 64 | Vulkan's count | Vulkan specification, "Physical Devices", `vkEnumeratePhysicalDevices` (count first, then as many) |
+| `PATH_MAX` (devices/virtio/fs/host.rs, Windows' Linux constants) | 4096 | 4096, cited | include/uapi/linux/limits.h l. 13 |
+
+All in Linux 1590cf03. Held by `acpi::tests::refuses_what_the_madt_cannot_hold` (255 taken,
+256 refused, the last id 0xFE) and `whp::state::tests::a_decoders_bounds_are_what_a_save_makes`.
+Owed: KVM's two-call lists on a KVM host of each architecture (`hv::kvm` unit tests and E2E),
+the GPU's on Linux, macOS and Windows hosts, a 255-vCPU boot on an x86-64 host with as many
+CPUs, E2E, the 8-target lint.
+
+### D176's decoders: what a snapshot holds is what its machine and its hypervisor make
+
+**Found.** The decoders of a snapshot's state, which a restore reads as untrusted, held picked
+bounds: 1,024 vCPUs, 512 system registers, 32 of the CPU interface's, 64 ID registers and
+16 MiB of GIC state on arm64; 4,096 registers on arm64 KVM and 65,536 GIC writes; blobs of
+64 KiB and 4,096 MSRs on x86-64 KVM; blobs of 64 KiB, 256 registers, 64 leaves and 254 vCPUs on
+WHP; runs of plugged memory and of RAM's data for 1 TiB; paths of 4,096 bytes and generation
+names of 64; and a live move's records of 1 MiB.
+
+**Decided:** each bound is what the machine the state describes, its architecture or its
+hypervisor can make, so a state past it is no machine's and is refused as it is read; and
+what only the hypervisor knows the size of, the input bounds and that hypervisor judges:
+- **Counts by the key space they are drawn from.** System registers and the CPU interface's
+  are keyed by their 16-bit encodings, so a list of more than 2^16 names one twice; ID
+  registers are of the Feature ID space, 192. KVM's register IDs on arm64 are of five
+  classes, each told apart by 16 bits (5 × 2^16).
+- **Counts by the machine.** vCPUs by the vCPU limits above (D13); runs of data by the RAM's
+  blocks (one a block at most, as runs that meet are one); runs of plugged memory by every
+  other block of the plug region (`hotplug_mib` rounded up to Linux's memory block); both
+  read from the same state before them. Generation names are as long as `fresh_name` makes
+  them (60); paths as long as the host's own (PATH_MAX on Unix, an extended-length path on
+  Windows).
+- **Counts by what a save makes.** KVM's GIC writes: as many as `gic::save` makes of the
+  restoring VM's vCPUs, with or without LPIs (2, 81 for each 32 SPIs, and per vCPU 17
+  private, 5 for LPIs, up to 15 of its CPU interface); the ITS's registers: the 13 it saves.
+  WHP's registers: every name a save keeps, each once (its 69, its optional ones and 16
+  variable MTRR pairs); its CPUID: the leaves of `IDENTITY`.
+- **Sizes by the structure.** KVM's x86-64 structures are each exactly their ioctl's size;
+  its XSAVE area at least `struct kvm_xsave`'s and at most what its own CPUID says (leaf
+  0DH's ECX, which KVM's KVM_CAP_XSAVE2 says the same of); WHP's APIC state its register page.
+- **The hypervisor judges what only it sizes.** A GIC's state on arm64 is its backend's own
+  serialization: KVM's and WHP's restores bound theirs (the writes above; WinHvPlatformDefs.h's
+  layouts), and Hypervisor.framework refuses a state not its own. WHP's XSAVE area is as long
+  as its partition's, which takes it or refuses it. KVM's MSRs are fewer than its MAX_IO_MSRS,
+  which a save and a restore each pass in one call.
+- **A live move's records are a memory file's blocks** (`DATA_BLOCK`, 2 MiB), the unit the file
+  says data in; both ends are one build's.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `MAX_VCPUS` (arch/aarch64/state.rs) | 1024 | `layout::MAX_VCPUS` = 123 | D13's row |
+| `MAX_SYS`, `MAX_ICC` (arch/aarch64/state.rs) | 512, 32 | `SYS_REG_ENCODINGS` = 2^16 | Arm ARM DDI 0487, C5.3 (op0:op1:CRn:CRm:op2, 2+3+4+4+3 bits), C6.2 MRS/MSR |
+| `MAX_ID` (arch/aarch64/state.rs) | 64 | `FEATURE_ID_SPACE` = 3 × 8 × 8 = 192 | DDI 0487J.a D19.2.66; arch/arm64/include/uapi/asm/kvm.h l. 536-554 |
+| `MAX_GIC` (arch/aarch64/state.rs) | 16 MiB | the input; each backend's restore bounds its own | hv::kvm::aarch64::gic (`most_writes`); hv::whp_arm64 (`GLOBAL_STATE_MOST`, `LOCAL_STATE`); hv_gic_state.h (`hv_gic_set_state`) |
+| `MAX_WRITES` (hv/kvm/aarch64/gic.rs) | 65,536 | `most_writes(vcpus, lpis)` of the restoring VM | `gic::save`'s own writes; GICv3 §12.2.1-12.2.4 (four active priority registers of each kind) |
+| ITS registers (gic.rs `its_restore`) | 64 | `ITS_SAVED` = 13 | `its_save`'s own; arm-vgic-its.rst |
+| `MAX_REGS` (hv/kvm/aarch64/state.rs) | 4096 | `5 << 16` | arch/arm64/kvm/guest.c l. 661-671; arch/arm64/include/uapi/asm/kvm.h l. 215-352 |
+| `MAX_BLOB` (hv/kvm/state.rs) | 64 KiB | each structure's size; XSAVE `4096..=xsave_most(cpuid)` | arch/x86/kvm/cpuid.c l. 1543-1545; arch/x86/kvm/x86.c l. 4955-4959; Intel SDM Vol. 2A, CPUID leaf 0DH |
+| `MAX_MSRS` (hv/kvm/state.rs) | 4096 | `MAX_IO_MSRS - 1` = 255 | arch/x86/kvm/x86.c l. 93, 4690-4692 |
+| `MAX_BLOB` (hv/whp/state.rs) | 64 KiB | APIC: `APIC_PAGE` = 4096; XSAVE: the input, the partition judging | Intel SDM Vol. 3A §11.4.1; PM M345 (4,096 and 2,472 bytes read) |
+| `MAX_REGISTERS` (hv/whp/state.rs) | 256 | `MOST_REGISTERS` = `REGISTERS` + `OPTIONAL` + 2 × `VARIABLE_MTRRS` | WinHvPlatformDefs.h (PhysBase0-F); Intel SDM Vol. 3A §12.11.2.1 |
+| `MAX_LEAVES` (hv/whp/state.rs) | 64 | `IDENTITY.len()` | `identity` reads those alone |
+| `MAX_VCPUS` (hv/whp/state.rs) | 254 | `acpi::MAX_VCPUS` | D13's row |
+| `MAX_PLUGGED_RUNS` (snapshot/mod.rs) | 2^18 | `most_plugged_runs(hotplug_mib)` | `mem::ALIGN`, `mem::BLOCK` (Linux's memory block and pageblock); `Hotplug::runs` |
+| `MAX_DATA_RUNS` (snapshot/mod.rs) | 2^18 | `most_data_runs(memory_mib)` | `DATA_BLOCK`; `blocks_of` |
+| `MAX_PATH` (snapshot/mod.rs) | 4096 | `platform::PATH_MOST` | include/uapi/linux/limits.h l. 13; macOS sys/syslimits.h; Win32 "Maximum Path Length Limitation"; RFC 3629 §3 |
+| `MAX_NAME` (snapshot/mod.rs) | 64 | `"g-"` + 32 + 1 + 8 + 1 + 16 hex digits = 60 | `fresh_name`'s format |
+| `MAX_RECORD` (vm/live.rs) | 1 MiB | `DATA_BLOCK` = 2 MiB | D151 |
+
+Held by unit tests (`a_state_past_what_a_machine_has_is_refused`,
+`a_decoders_bounds_are_what_kvm_gives`, `a_restore_takes_the_writes_a_save_of_its_vcpus_makes`,
+`a_decoders_bounds_are_what_a_save_makes`, `runs_are_bounded_by_the_machines_memory`). Owed:
+a template saved and restored on Hypervisor.framework, KVM of each architecture and WHP of
+each (E2E), a live move, and the 8-target lint.
+
+### D191's hold: CFS's period, and reads when the share could be spent
+
+**Found:** the governor read its vCPUs' time at least every 10 ms while they were busy, a
+picked cap.
+
+**Decided:** a machine's governor reads their time when the share could first be spent were
+every vCPU to run, and no later: none can spend it sooner, vCPUs using at most their number's
+CPU time. A group's governor reads as soon as the group's room could be spent, its own
+vCPUs alone or, sooner, at the rate the group was last seen eating into it (`room_lasts`),
+which its other machines spend too; a group no further ahead than at its last read leaves
+the first. `SOONEST` (1 ms) stays the least wait of both, recorded with the half-share busy
+mark as owed below.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `PERIOD` (vm/hold.rs) | 100 ms | 100 ms, cited | kernel/sched/sched.h l. 445-447 (`default_bw_period_us`), Linux 1590cf03 |
+| `BUSY` (vm/hold.rs) | 10 ms | none: `(allowed - used) / vcpus`; a group's, the lesser of that and `room_lasts` | the vCPUs' own count; the group's charged rate (`GroupCpu::charge`) |
+
+Held by `hold::tests` (`a_groups_room_lasts_at_the_rate_it_was_seen_spent` and the governors'
+spinning tests). Owed: the hold's E2E on each hypervisor, a group of machines held on a
+loaded host, and `SOONEST` and the half-share mark derived as these were.
+
+### D38's and D197's virtio-fs frames: FUSE's own structures
+
+**Decided:** a frame holds the longest request a guest sends, a WRITE of the most INIT lets
+it write with its header and arguments, which is longer than any other request (a SETXATTR's
+at its longest) and any reply (a READ's of as much), as two compile-time assertions hold;
+4,096 bytes of room had been picked. `MAX_WRITE`'s 4,096 is the guest's page, which FUSE
+counts `max_pages` in.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `MAX_FRAME` (fs/mod.rs) | `MAX_WRITE + 4096` | `IN_HEADER_BYTES + WRITE_IN_BYTES + MAX_WRITE` (40 + 40 + 1 MiB) | include/uapi/linux/fuse.h l. 839-847 (`fuse_write_in`), l. 868-873 (`fuse_setxattr_in`); include/uapi/linux/limits.h l. 15-16 |
+| `MAX_WRITE`'s page (fs/proto.rs) | 4096 | `GUEST_PAGE` = 4096, cited | fs/fuse/inode.c l. 1342-1344; Intel SDM Vol. 3A §4.5; resources/kernel/firecracker-aarch64-6.18.config l. 437 |
+
+Owed: the share's E2E on each host (a guest's largest write and SETXATTR), the 8-target lint.
+
 ### Devices and block I/O (D44)
 
 A microVM's workload reaches the devices Docker gives a container and those it is given, and no other of

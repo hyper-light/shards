@@ -321,30 +321,36 @@ impl VcpuFd {
     /// Every register of this vCPU KVM gives a user, by ID (KVM_GET_REG_LIST, api.rst
     /// 4.84): asked first for none, which KVM answers with E2BIG and the count.
     pub fn reg_list(&self) -> io::Result<Vec<u64>> {
-        let mut list = vec![0u64];
-        loop {
-            // SAFETY: a kvm_reg_list of `list[0]` IDs after its count, which KVM fills
-            // up to that count.
-            match unsafe { ioctl(self.fd(), KVM_GET_REG_LIST, list.as_mut_ptr() as libc::c_ulong) } {
-                Ok(_) => {
-                    let n = usize::try_from(list.first().copied().unwrap_or(0)).map_err(io::Error::other)?;
-                    return Ok(list.get(1..=n).map(<[u64]>::to_vec).unwrap_or_default());
-                }
-                Err(e) if e.raw_os_error() == Some(libc::E2BIG) => {
-                    let n = usize::try_from(list.first().copied().unwrap_or(0)).map_err(io::Error::other)?;
-                    // Registers come and go only as the vCPU is initialized; a count that
-                    // grows past any arm64 vCPU's is not one.
-                    if n == 0 || n > MAX_REGS {
-                        return Err(io::Error::other(format!("KVM_GET_REG_LIST counts {n} registers")));
-                    }
-                    list = vec![0u64; n + 1];
-                    if let Some(count) = list.first_mut() {
-                        *count = n as u64;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
+        // Asked with room for none, KVM says how many registers the vCPU has and refuses
+        // with E2BIG; asked again with room for that many, it fills them in. The count is
+        // the vCPU's once it is finalized, which KVM requires first (arch/arm64/kvm/arm.c
+        // l. 1869-1889, `kvm_arm_num_regs`; Linux 1590cf03), so a second refusal is no
+        // vCPU's.
+        let ask = |list: &mut [u64]| {
+            // SAFETY: a kvm_reg_list of `list[0]` IDs after its count, which KVM fills up to
+            // that count.
+            unsafe { ioctl(self.fd(), KVM_GET_REG_LIST, list.as_mut_ptr() as libc::c_ulong) }
+        };
+        let count =
+            |list: &[u64]| usize::try_from(list.first().copied().unwrap_or(0)).map_err(io::Error::other);
+        let mut head = [0u64];
+        let n = match ask(&mut head) {
+            Ok(_) => return Ok(Vec::new()),
+            Err(e) if e.raw_os_error() == Some(libc::E2BIG) => count(&head)?,
+            Err(e) => return Err(e),
+        };
+        let len = n
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other(format!("KVM_GET_REG_LIST counts {n} registers")))?;
+        let mut list = Vec::new();
+        list.try_reserve_exact(len).map_err(io::Error::other)?;
+        list.resize(len, 0u64);
+        if let Some(first) = list.first_mut() {
+            *first = n as u64;
         }
+        ask(&mut list)?;
+        let n = count(&list)?.min(n);
+        Ok(list.get(1..=n).map(<[u64]>::to_vec).unwrap_or_default())
     }
 
     /// Reads register `id`, of 16 bytes at most (a V register's), as a little-endian value.
@@ -432,9 +438,6 @@ impl VcpuFd {
         }
     }
 }
-
-/// More registers than any arm64 vCPU has: a reg list's count past it is no vCPU's.
-const MAX_REGS: usize = 4096;
 
 /// A vCPU's descriptor and its `kvm_run`, not kept alive by this handle ([`VcpuFd::weak`]).
 #[derive(Debug, Clone)]

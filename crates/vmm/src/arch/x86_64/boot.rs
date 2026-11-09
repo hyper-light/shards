@@ -66,7 +66,11 @@ pub fn ram_ranges(ram: u64) -> Vec<(u64, u64)> {
 const PT_LOAD: u32 = 1;
 const EM_X86_64: u16 = 62;
 const ET_EXEC: u16 = 2;
-const MAX_PHDRS: u16 = 64;
+/// `e_phnum`'s escape, its largest value: the count is then not in the header but in section 0's
+/// `sh_info` (System V gABI, "ELF Header", PN_XNUM; include/uapi/linux/elf.h l. 69), which
+/// no kernel's few segments need. Below it, the count is the header's own, and its table
+/// must lie in the file, which the read of it checks.
+const PN_XNUM: u16 = 0xffff;
 
 fn le<const N: usize>(b: &[u8], at: usize) -> Result<[u8; N], BootError> {
     b.get(at..at + N)
@@ -120,7 +124,7 @@ pub fn parse_elf(
     let phoff = u64_at(header, 32)?;
     let phentsize = u16_at(header, 54)?;
     let phnum = u16_at(header, 56)?;
-    if phentsize != 56 || phnum == 0 || phnum > MAX_PHDRS {
+    if phentsize != 56 || phnum == 0 || phnum == PN_XNUM {
         return Err(BootError::NotAnElf("unexpected program headers"));
     }
     let table = phdrs(phoff, usize::from(phnum) * 56)?;
@@ -160,7 +164,16 @@ pub struct LoadedKernel {
 pub fn plan_kernel(kernel: &File, low_ram_end: u64) -> Result<(LoadedKernel, Vec<FileSpan>), BootError> {
     let mut header = [0u8; 64];
     platform::read_exact_at(kernel, &mut header, 0)?;
+    let size = kernel.metadata()?.len();
     let elf = parse_elf(&header, |offset, len| {
+        // The table lies in the file, which bounds it before anything is allocated for it.
+        if u64::try_from(len)
+            .ok()
+            .and_then(|len| offset.checked_add(len))
+            .is_none_or(|end| end > size)
+        {
+            return Err(BootError::NotAnElf("program headers past the file's end"));
+        }
         let mut table = vec![0u8; len];
         platform::read_exact_at(kernel, &mut table, offset)?;
         Ok(table)

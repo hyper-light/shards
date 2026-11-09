@@ -28,6 +28,9 @@ pub const SIGNIFICANT_INDEX: u32 = 1;
 
 const HTT: u32 = 1 << 28;
 const HYPERVISOR: u32 = 1 << 31;
+/// CPUID.01H:ECX[24], TSC-Deadline (Intel SDM Vol. 2A, CPUID, "Feature Information
+/// Returned in the ECX Register"; Linux arch/x86/include/asm/cpufeatures.h l. 129,
+/// `X86_FEATURE_TSC_DEADLINE_TIMER` = word 4, bit 24).
 const TSC_DEADLINE: u32 = 1 << 24;
 const LEVEL_SMT: u32 = 1;
 const LEVEL_CORE: u32 = 2;

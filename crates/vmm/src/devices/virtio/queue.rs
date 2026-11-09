@@ -20,6 +20,8 @@ const DESC_F_WRITE: u16 = 2;
 const DESC_F_INDIRECT: u16 = 4;
 const AVAIL_F_NO_INTERRUPT: u16 = 1;
 const USED_F_NO_NOTIFY: u16 = 1;
+/// "The maximum Queue Size value is 32768" (virtio 1.3 §2.7, Split Virtqueues; a packed
+/// ring's 15-bit indices, §2.8, hold no more).
 pub const MAX_QUEUE_SIZE: u16 = 32768;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

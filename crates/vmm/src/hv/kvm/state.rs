@@ -37,11 +37,28 @@ pub struct VmState {
     pub clock: Vec<u8>,
 }
 
-/// Bounds on what a decoder accepts: a state blob is at most a few pages; the XSAVE area
-/// with AMX about 11 KiB.
-const MAX_BLOB: usize = 64 << 10;
-const MAX_MSRS: usize = 4096;
+/// What a decoder takes, each the most KVM gives or takes. Each structure is its ioctl's
+/// own size ([`sys`]'s, asserted against the ioctl numbers). The XSAVE area is at least
+/// `struct kvm_xsave`'s and at most what its CPUID says ([`xsave_most`]).
+/// CPUID: KVM_MAX_CPUID_ENTRIES ([`sys::MAX_CPUID_ENTRIES`]).
 const MAX_CPUID: usize = sys::MAX_CPUID_ENTRIES;
+/// MSRs: fewer than KVM's MAX_IO_MSRS, 256, which KVM_GET_MSRS and KVM_SET_MSRS refuse a
+/// list of (arch/x86/kvm/x86.c l. 93 and 4690-4692, `msr_io`; Linux 1590cf03): a save reads
+/// the list in one call, and a restore sets it in one.
+const MAX_MSRS: usize = 256 - 1;
+
+/// The most bytes a vCPU of `cpuid` has in its XSAVE area: CPUID leaf 0DH's ECX, "the size
+/// required by the XSAVE/XRSTOR save area for all supported features" (Intel SDM Vol. 2A,
+/// CPUID), which KVM gives its guests as the size of the components it permits
+/// (arch/x86/kvm/cpuid.c l. 1543-1545) and its KVM_CAP_XSAVE2 says the same of, never
+/// less than `struct kvm_xsave`'s 4096 (arch/x86/kvm/x86.c l. 4955-4959; Linux 1590cf03).
+/// A CPU without the leaf has the 4096.
+fn xsave_most(cpuid: &[[u32; 7]]) -> usize {
+    cpuid
+        .iter()
+        .find(|e| e[0] == 0xd && e[1] == 0)
+        .map_or(sys::XSAVE_SIZE, |e| (e[5] as usize).max(sys::XSAVE_SIZE))
+}
 
 impl VcpuState {
     pub fn encode(&self, w: &mut Writer) {
@@ -81,25 +98,24 @@ impl VcpuState {
             Ok(e)
         })?;
         let mp_state = r.u32()?;
-        let mut blob = |len: Option<usize>| -> codec::Result<Vec<u8>> {
-            let b = r.bytes(MAX_BLOB)?;
-            match len {
-                Some(len) if b.len() != len => Err(DecodeError(format!(
-                    "a state structure of {} bytes, not {len}",
+        let xsave_most = xsave_most(&cpuid);
+        let mut blob = |least: usize, most: usize| -> codec::Result<Vec<u8>> {
+            let b = r.bytes(most)?;
+            if b.len() < least {
+                return Err(DecodeError(format!(
+                    "a state structure of {} bytes, not {least}",
                     b.len()
-                ))),
-                _ => Ok(b.to_vec()),
+                )));
             }
+            Ok(b.to_vec())
         };
-        let regs = blob(Some(size_of::<sys::kvm_regs>()))?;
-        let sregs = blob(Some(size_of::<sys::kvm_sregs>()))?;
-        let xsave = blob(None)?;
-        let xcrs = blob(Some(sys::XCRS_SIZE))?;
-        let debugregs = blob(Some(sys::DEBUGREGS_SIZE))?;
-        let lapic = blob(Some(sys::LAPIC_SIZE))?;
-        if xsave.len() < sys::XSAVE_SIZE {
-            return Err(DecodeError(format!("an XSAVE area of {} bytes", xsave.len())));
-        }
+        let (regs_len, sregs_len) = (size_of::<sys::kvm_regs>(), size_of::<sys::kvm_sregs>());
+        let regs = blob(regs_len, regs_len)?;
+        let sregs = blob(sregs_len, sregs_len)?;
+        let xsave = blob(sys::XSAVE_SIZE, xsave_most)?;
+        let xcrs = blob(sys::XCRS_SIZE, sys::XCRS_SIZE)?;
+        let debugregs = blob(sys::DEBUGREGS_SIZE, sys::DEBUGREGS_SIZE)?;
+        let lapic = blob(sys::LAPIC_SIZE, sys::LAPIC_SIZE)?;
         let msrs = r.seq(MAX_MSRS, 12, |r| Ok((r.u32()?, r.u64()?)))?;
         let events = r.bytes(sys::VCPU_EVENTS_SIZE)?.to_vec();
         if events.len() != sys::VCPU_EVENTS_SIZE {
@@ -157,7 +173,11 @@ mod tests {
 
     fn vcpu() -> VcpuState {
         VcpuState {
-            cpuid: vec![[1, 0, 0, 0x806f8, 0x800, 0xfffa3203, 0x178bfbff]],
+            // Leaf 0xD's ECX: AMX's XSAVE area, 11008 bytes.
+            cpuid: vec![
+                [1, 0, 0, 0x806f8, 0x800, 0xfffa3203, 0x178bfbff],
+                [0xd, 0, 1, 0x602e7, 0x2b00, 11008, 0],
+            ],
             mp_state: 0,
             regs: vec![1; size_of::<sys::kvm_regs>()],
             sregs: vec![2; size_of::<sys::kvm_sregs>()],
@@ -209,5 +229,31 @@ mod tests {
             *marker = 2;
         }
         assert!(VcpuState::decode(&mut Reader::new(&bytes)).is_err());
+    }
+
+    /// An XSAVE area is no longer than its CPUID says, and no shorter than KVM's least; a
+    /// CPU without leaf 0xD has the least. MSRs are fewer than KVM takes in one call.
+    #[test]
+    fn a_decoders_bounds_are_what_kvm_gives() {
+        let decodes = |st: &VcpuState| {
+            let mut w = Writer::default();
+            st.encode(&mut w);
+            VcpuState::decode(&mut Reader::new(&w.into_bytes())).is_ok()
+        };
+        let mut st = vcpu();
+        st.xsave.push(0);
+        assert!(!decodes(&st));
+        st.cpuid.retain(|e| e[0] != 0xd);
+        assert!(!decodes(&st));
+        st.xsave = vec![3; sys::XSAVE_SIZE];
+        assert!(decodes(&st));
+        st.xsave.pop();
+        assert!(!decodes(&st));
+
+        let mut st = vcpu();
+        st.msrs = (0..MAX_MSRS as u32).map(|i| (i, 0)).collect();
+        assert!(decodes(&st));
+        st.msrs.push((0xc000_0080, 0));
+        assert!(!decodes(&st));
     }
 }

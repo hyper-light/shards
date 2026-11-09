@@ -17,11 +17,10 @@ use super::group::GroupCpu;
 use crate::platform::ThreadClock;
 use crate::sync::{lock, wait, wait_timeout};
 
-/// A period: CFS bandwidth control's default (`cpu.max`'s 100000 µs).
+/// A period: CFS bandwidth control's default, `cpu.max`'s 100000 µs
+/// (kernel/sched/sched.h l. 445-447, `default_bw_period_us`, Linux 1590cf03), which Docker's
+/// `--cpus` is a quota of.
 pub(super) const PERIOD: Duration = Duration::from_millis(100);
-/// The longest the governor waits between reads while its vCPUs are busy, and so about
-/// the most each may overrun a period's share by before they are held.
-const BUSY: Duration = Duration::from_millis(10);
 /// The least it waits between reads, however little of the share is left.
 const SOONEST: Duration = Duration::from_millis(1);
 
@@ -224,10 +223,10 @@ impl Hold {
     /// a period's share is spent, `kick` taking each out of its guest, and lets them go as
     /// the period ends. While they are busy (holding, using half the share or more, or
     /// in a new limit's first period) it reads their time as soon as the share could be
-    /// spent were every vCPU to run, no sooner than [`SOONEST`] and no later than
-    /// [`BUSY`]; while they are not, once a period, so that vCPUs gone from quiet to busy
-    /// may run that period through before they are held. What a period overran comes off
-    /// the next ones.
+    /// spent were every vCPU to run, no sooner than [`SOONEST`]: none can spend it before,
+    /// as vCPUs use at most their number's CPU time; while they are not, once a period, so
+    /// that vCPUs gone from quiet to busy may run that period through before they are held.
+    /// What a period overran comes off the next ones.
     pub(super) fn govern(&self, kick: &dyn Fn()) {
         // It runs as it wakes, its waits ending on time, as a vCPU's timers do (PM M8,
         // M10, M294): one that runs late lets the vCPUs overrun, or holds them past their
@@ -280,7 +279,7 @@ impl Hold {
                     left
                 } else {
                     Duration::from_nanos(allowed.saturating_sub(used) / vcpus)
-                        .clamp(SOONEST, BUSY)
+                        .max(SOONEST)
                         .min(left)
                 };
                 let mut s = lock(&self.state);
@@ -316,8 +315,10 @@ impl Hold {
     /// of the group charges, and holds them, `kick` taking each out of its guest, while the
     /// group runs more than a period ahead of its budget's rate, until it is within it. As
     /// [`govern`](Self::govern) reads, it reads their time as soon as the group's room
-    /// could be spent were every vCPU to run, between [`SOONEST`] and [`BUSY`], while the
-    /// group uses half its room or more; else once a period, what a quiet machine gone
+    /// could be spent, no sooner than [`SOONEST`], while the group uses half its room or
+    /// more: were every vCPU of this machine's to spend it, or, sooner, at the rate the
+    /// group was last seen to eat into it, which its other machines' vCPUs spend too
+    /// ([`room_lasts`]); else once a period, what a quiet machine gone
     /// busy runs past it within that period coming off the group's next ones. With no
     /// budget written it looks again each period of D191's.
     pub(super) fn govern_group(&self, group: &GroupCpu, kick: &dyn Fn()) {
@@ -330,12 +331,15 @@ impl Hold {
         };
         let vcpus = u64::try_from(self.clocks.len()).unwrap_or(u64::MAX).max(1);
         let mut last = self.used();
+        // The group's last read: when, and how far ahead of its budget's rate it ran.
+        let mut seen: Option<(u64, u64)> = None;
         loop {
             let next = match (group.budget(), crate::platform::monotonic_ns()) {
                 (Some((quota, period)), Ok(now)) => {
                     let used = self.used();
                     let ahead = group.charge(now, used.saturating_sub(last), quota, period);
                     last = used;
+                    let before = seen.replace((now, ahead));
                     // A period of the budget's, in ns: how far ahead of its rate the
                     // group may run.
                     let room = u64::from(period).saturating_mul(1000);
@@ -355,9 +359,9 @@ impl Hold {
                             let left = u128::from(room - ahead) * u128::from(quota)
                                 / u128::from(period)
                                 / u128::from(vcpus);
-                            Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX))
-                                .clamp(SOONEST, BUSY)
-                                .min(whole)
+                            let own = Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX));
+                            let at_rate = before.and_then(|b| room_lasts(b, (now, ahead), room));
+                            own.min(at_rate.unwrap_or(own)).max(SOONEST).min(whole)
                         } else {
                             whole
                         }
@@ -366,12 +370,14 @@ impl Hold {
                 (None, _) => {
                     self.set_group_held(false);
                     last = self.used();
+                    seen = None;
                     PERIOD
                 }
                 (Some(_), Err(e)) => {
                     crate::warn!("the group's governor: the host's clock: {e}");
                     self.set_group_held(false);
                     last = self.used();
+                    seen = None;
                     PERIOD
                 }
             };
@@ -382,10 +388,37 @@ impl Hold {
     }
 }
 
+/// How long a group's room lasts, read `before` and `now` as `(when, how far ahead of its
+/// budget's rate)`, each in ns: at the rate it ran further ahead between the two, until it
+/// is `room` ahead. None where it did not run further ahead: its spending is then no
+/// faster than its budget's rate, at which the room lasts.
+fn room_lasts(before: (u64, u64), now: (u64, u64), room: u64) -> Option<Duration> {
+    let elapsed = now.0.checked_sub(before.0).filter(|&e| e > 0)?;
+    let grew = now.1.checked_sub(before.1).filter(|&g| g > 0)?;
+    let left = u128::from(room.saturating_sub(now.1)) * u128::from(elapsed) / u128::from(grew);
+    Some(Duration::from_nanos(u64::try_from(left).unwrap_or(u64::MAX)))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    /// A group's room lasts as long as the rate it was last seen eating into it leaves it:
+    /// 6 ms ahead of 10 after 2 ms of 4 more lasts 2 ms more; a group no further ahead, or
+    /// read at one instant, has no such rate.
+    #[test]
+    fn a_groups_room_lasts_at_the_rate_it_was_seen_spent() {
+        let ms = 1_000_000;
+        assert_eq!(
+            room_lasts((0, 2 * ms), (2 * ms, 6 * ms), 10 * ms),
+            Some(Duration::from_millis(2))
+        );
+        assert_eq!(room_lasts((0, 6 * ms), (2 * ms, 6 * ms), 10 * ms), None);
+        assert_eq!(room_lasts((0, 7 * ms), (2 * ms, 6 * ms), 10 * ms), None);
+        assert_eq!(room_lasts((2 * ms, 2 * ms), (2 * ms, 6 * ms), 10 * ms), None);
+        assert_eq!(room_lasts((0, 0), (ms, 11 * ms), 10 * ms), Some(Duration::ZERO));
+    }
 
     /// Threads as vCPUs: each spins in slices of 200 µs, looking at the hold before each,
     /// as a vCPU does at each of its exits, until `stop`. The CPU time they used in about

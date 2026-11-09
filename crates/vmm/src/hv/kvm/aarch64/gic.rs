@@ -52,8 +52,57 @@ const ICC_BPR1_EL1: u64 = 0xc663;
 const ICC_AP0R0_EL1: u64 = 0xc644;
 const ICC_AP1R0_EL1: u64 = 0xc648;
 
-/// More writes than a GIC of the most vCPUs a machine has makes.
-const MAX_WRITES: usize = 1 << 16;
+/// What [`save`] writes of each redistributor: where the machine has an ITS, its LPI
+/// registers (PROPBASER's and PENDBASER's two words each, then its control); then its
+/// private interrupts' group, enables (the clear and the set), configuration (two words),
+/// levels, pending state, activity (the clear and the set), and eight priority words.
+const LPI_WRITES: usize = 5;
+const PRIVATE_WRITES: usize = 9 + 8;
+/// Of each CPU interface: its seven registers, and as many active priority registers of
+/// each kind as its priority bits need, at most ICC_AP0R0 to ICC_AP0R3 and ICC_AP1R0 to
+/// ICC_AP1R3 (GICv3 §12.2.1-12.2.4).
+const ICC_WRITES_MOST: usize = 7 + 2 * 4;
+/// Of the distributor: its implementation and control, then the SPIs' registers' words,
+/// each register's ([`spi_words`]) as `save` reads them: a group, two enables, a routing,
+/// a configuration, a level, a pending, two activities and a priority word.
+const SPI_WRITES: usize =
+    (7 * spi_words(1).len() + spi_words(64).len() + spi_words(2).len() + spi_words(8).len()) as usize;
+
+/// The words of a distributor register of `bits` bits an interrupt that hold the SPIs':
+/// those past the private interrupts', 32 interrupts to a word of a bit each, 16 of two
+/// bits, 4 of eight, and the routing's two of one.
+const fn spi_words(bits: u32) -> SpiWords {
+    SpiWords {
+        start: 32 * bits / 32,
+        end: NR_IRQS * bits / 32,
+    }
+}
+
+/// A run of register words, `start..end`.
+#[derive(Debug, Clone, Copy)]
+struct SpiWords {
+    start: u32,
+    end: u32,
+}
+
+impl SpiWords {
+    const fn len(self) -> u32 {
+        self.end.saturating_sub(self.start)
+    }
+
+    fn words(self) -> std::ops::Range<u32> {
+        self.start..self.end
+    }
+}
+
+/// The most writes [`save`] makes of a GIC of `vcpus` vCPUs, with LPIs where `lpis`: what
+/// [`restore`] takes of a snapshot's.
+fn most_writes(vcpus: usize, lpis: bool) -> Option<usize> {
+    let lpi = if lpis { LPI_WRITES } else { 0 };
+    vcpus
+        .checked_mul(lpi + PRIVATE_WRITES + ICC_WRITES_MOST)?
+        .checked_add(2 + SPI_WRITES)
+}
 
 /// One write of the state: a register's attribute group and ID, and its value, 32 bits
 /// but for a CPU interface register's 64.
@@ -138,9 +187,8 @@ pub(super) fn save(gic: &sys::DeviceFd, mpidrs: &[u64], lpis: bool) -> Result<Ve
             writes.push(redist(GICD_IPRIORITYR + 4 * n)?);
         }
     }
-    // The SPIs': each register's words past the private interrupts', 32 interrupts to a
-    // word of a bit each, 16 of two bits, 4 of eight, and the routing's two of one.
-    let words = |bits: u32| (32 * bits / 32)..(NR_IRQS * bits / 32);
+    // The SPIs': each register's words past the private interrupts'.
+    let words = |bits: u32| spi_words(bits).words();
     for w in words(1) {
         writes.push(dist(GICD_IGROUPR + 4 * u64::from(w))?);
     }
@@ -195,11 +243,14 @@ pub(super) fn save(gic: &sys::DeviceFd, mpidrs: &[u64], lpis: bool) -> Result<Ve
 }
 
 /// Makes `gic`, initialized, every vCPU of its VM made and none in the guest nor in any
-/// other call of KVM's, the GIC [`save`] read.
-pub(super) fn restore(gic: &sys::DeviceFd, state: &[u8]) -> Result<()> {
+/// other call of KVM's, the GIC [`save`] read of a VM of as many vCPUs, with LPIs where
+/// `lpis`: no more writes than such a save makes ([`most_writes`]).
+pub(super) fn restore(gic: &sys::DeviceFd, state: &[u8], vcpus: usize, lpis: bool) -> Result<()> {
+    let most =
+        most_writes(vcpus, lpis).ok_or_else(|| Error::Guest(format!("the snapshot's GIC: {vcpus} vCPUs")))?;
     let mut r = Reader::new(state);
     let writes = r
-        .seq(MAX_WRITES, 20, |r| {
+        .seq(most, 20, |r| {
             Ok(Write {
                 group: r.u32()?,
                 attr: r.u64()?,
@@ -244,6 +295,9 @@ const GITS_CREADR: u64 = 0x0090;
 const GITS_BASER: u64 = 0x0100;
 /// GITS_BASER<n>, n 0 to 7.
 const ITS_BASERS: u64 = 8;
+/// The registers [`its_save`] keeps: the implementation, the command queue's place, each
+/// table's place, where the queue is read and written, and the control.
+const ITS_SAVED: usize = 2 + ITS_BASERS as usize + 3;
 
 /// The ITS's state (arm-vgic-its.rst, "ITS Save Sequence"): its tables written to guest
 /// memory, before the memory is saved, and its registers, each a 64-bit value by offset in
@@ -277,7 +331,7 @@ pub(super) fn its_restore(its: &sys::DeviceFd, state: &[u8]) -> Result<()> {
     let failed = |what: &str, e: std::io::Error| Error::Guest(format!("the ITS's {what}: {e}"));
     let mut r = Reader::new(state);
     let regs = r
-        .seq(64, 16, |r| Ok((r.u64()?, r.u64()?)))
+        .seq(ITS_SAVED, 16, |r| Ok((r.u64()?, r.u64()?)))
         .and_then(|regs| r.finish().map(|()| regs))
         .map_err(|DecodeError(e)| Error::Guest(format!("the snapshot's ITS: {e}")))?;
     let (ctlr, rest): (Vec<_>, Vec<_>) = regs.into_iter().partition(|(offset, _)| *offset == GITS_CTLR);
@@ -321,10 +375,24 @@ mod tests {
     /// The SPIs' words of each register, for the machine's interrupts.
     #[test]
     fn the_spis_registers_are_the_words_past_the_private_interrupts() {
-        let words = |bits: u32| (32 * bits / 32)..(NR_IRQS * bits / 32);
+        let words = |bits: u32| spi_words(bits).words();
         assert_eq!(words(1), 1..NR_IRQS / 32);
         assert_eq!(words(2), 2..NR_IRQS / 16);
         assert_eq!(words(8), 8..NR_IRQS / 4);
         assert_eq!(words(64).len() as u32, 2 * (NR_IRQS - 32));
+        assert_eq!(spi_words(64).len(), 2 * (NR_IRQS - 32));
+    }
+
+    /// A restore takes no more writes than a save of as many vCPUs makes: 2 of the
+    /// distributor's own, 81 for each 32 SPIs, and each vCPU's 17 private, 5 of LPIs where
+    /// the machine has an ITS, and up to 15 of its CPU interface's.
+    #[test]
+    fn a_restore_takes_the_writes_a_save_of_its_vcpus_makes() {
+        let spis = (NR_IRQS / 32 - 1) as usize;
+        assert_eq!(most_writes(0, false), Some(2 + 81 * spis));
+        assert_eq!(most_writes(1, false), Some(2 + 81 * spis + 17 + 15));
+        assert_eq!(most_writes(3, true), Some(2 + 81 * spis + 3 * (5 + 17 + 15)));
+        assert_eq!(most_writes(usize::MAX, false), None);
+        assert_eq!(ITS_SAVED, 13);
     }
 }

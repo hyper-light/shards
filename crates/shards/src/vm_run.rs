@@ -1077,7 +1077,8 @@ fn forward_stdin(handle: vm::Handle) {
         .name("console-in".into())
         .spawn(move || {
             let mut stdin = std::io::stdin().lock();
-            let mut buf = [0u8; 256];
+            // As much as the console's receiver takes at once: the rest waits in stdin.
+            let mut buf = [0u8; shards_vmm::devices::serial::INPUT_AT_ONCE];
             let mut escape = false;
             loop {
                 let n = match stdin.read(&mut buf) {
