@@ -903,7 +903,7 @@ fn record_need(path: &Path, need: u64, short: bool) -> Result<(), String> {
 /// have without taking from what runs. Linux's `MemAvailable` ("an estimate of how much
 /// memory is available for starting new applications, without swapping", proc_meminfo(5)).
 #[cfg(target_os = "linux")]
-fn host_available() -> Option<u64> {
+pub(crate) fn host_available() -> Option<u64> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     let kib: u64 = text
         .lines()
@@ -920,7 +920,7 @@ fn host_available() -> Option<u64> {
 /// (`memorystatus_get_available_page_count`, osfmk/vm/vm_pageout.c `vm_pressure_response`;
 /// the sysctl in bsd/kern/kern_memorystatus.c), of its memory.
 #[cfg(target_os = "macos")]
-fn host_available() -> Option<u64> {
+pub(crate) fn host_available() -> Option<u64> {
     let mut level: libc::c_int = 0;
     let mut len = size_of::<libc::c_int>();
     // SAFETY: sysctlbyname(3) of a NUL-terminated name into an int of the length given.
@@ -942,7 +942,7 @@ fn host_available() -> Option<u64> {
 
 /// The memory this host has available, in bytes: none known on this Unix.
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn host_available() -> Option<u64> {
+pub(crate) fn host_available() -> Option<u64> {
     None
 }
 
@@ -950,7 +950,7 @@ fn host_available() -> Option<u64> {
 /// "the amount of physical memory that can be immediately reused without having to write
 /// its contents to disk first" (MEMORYSTATUSEX).
 #[cfg(windows)]
-fn host_available() -> Option<u64> {
+pub(crate) fn host_available() -> Option<u64> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     let mut status = MEMORYSTATUSEX {
         dwLength: size_of::<MEMORYSTATUSEX>() as u32,
@@ -966,6 +966,14 @@ fn host_available() -> Option<u64> {
 fn whole_blocks(mib: u64) -> u64 {
     let block = (shards_vmm::devices::virtio::mem::BLOCK >> 20).max(1);
     mib - mib % block
+}
+
+/// The most a read whose length the reader cannot know before it ends may hold, where what
+/// it guards is the reader's memory: what this host has available now ([`host_available`]),
+/// else its memory ([`host_memory`]); past that it could not be held without taking from
+/// what runs. Unbounded where the host says neither, as dockerd reads a call's JSON.
+pub(crate) fn holdable() -> u64 {
+    host_available().or_else(host_memory).unwrap_or(u64::MAX)
 }
 
 /// The host's physical memory, in bytes.
@@ -2059,7 +2067,8 @@ struct PolicyStep<'a> {
     closed: std::cell::Cell<bool>,
 }
 
-/// policyProgressWindow.
+/// How long a policy's evaluation goes before its progress shows it: buildx's
+/// `policyProgressWindow` (v0.37.1 build/opt.go l. 98), held to buildx's output.
 const POLICY_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
 impl<'a> PolicyStep<'a> {
@@ -3017,6 +3026,8 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                 return Err(format!("failed to build: {e}"));
             }
         };
+        // buildx's `maxDockerfileSize` (v0.37.1 build/url.go l. 17, checked at l. 49), its
+        // refusal held to buildx's.
         const MOST: u64 = 2 * 1024 * 1024;
         if d.size > MOST {
             let e = format!(

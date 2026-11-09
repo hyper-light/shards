@@ -440,8 +440,12 @@ impl policy::tester::TestProvider for Provider<'_> {
 }
 
 /// The most of a request a step reads: a source, its attributes and what is asked of it,
-/// a signature's hash suffix among them, come to a few KiB.
-const ASK_MOST: u64 = 1 << 20;
+/// as BuildKit's gateway takes them, in one `ResolveSourceMetaRequest` of at most
+/// containerd's `DefaultMaxRecvMsgSize`, 16 MiB (BuildKit v0.33.0
+/// frontend/gateway/gateway.go l. 459; containerd v2 defaults/defaults.go l. 22), as
+/// [`policy::wire::ask`] writes them in JSON: each byte at most six (RFC 8259 §7, a control
+/// character's `\u00XX`).
+const ASK_MOST: u64 = 6 * (16 << 20);
 
 /// A step of a client's policy command (D180), this host its builder, as the machine's
 /// daemon runs it: `platform`, this host's; `resolve`, a source's metadata, the source and

@@ -18,7 +18,9 @@ pub struct AgentVolume {
     pub scoped: bool,
 }
 
-/// The most a normalized Agentfile may be, as shards-init reads one.
+/// The most a normalized Agentfile may be: what shards-init, which reads it in the guest,
+/// takes (crates/init src/json.rs `MAX_LEN`, l. 7), so that the host refuses as the guest
+/// would, at build and at run alike.
 const AGENTFILE_MOST: u64 = 1 << 20;
 
 /// An image's Agentfile as the daemon holds a run to it (D109): its volumes, and its

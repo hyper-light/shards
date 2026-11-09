@@ -19,10 +19,14 @@ use rcgen::{
 use rustls::ServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+/// BuildKit v0.33.0's proxy's lifetimes (util/network/proxyprovider/provider_linux.go):
+/// `proxyLeafCertRefreshBefore` (l. 54), each certificate valid from this long ago
+/// (`NotBefore`, l. 812 and 857); `proxyCACertLifetime` (l. 52, `NotAfter` l. 813);
+/// `proxyLeafCertLifetime` (l. 53, `NotAfter` l. 858). A step trusts what BuildKit's would.
 const HOUR: Duration = Duration::from_secs(3600);
 const CA_LIFE: Duration = Duration::from_secs(10 * 365 * 24 * 3600);
 const LEAF_LIFE: Duration = Duration::from_secs(24 * 3600);
-/// The most hosts' certificates kept (`proxyCertCacheMaxEntries`).
+/// The most hosts' certificates kept (`proxyCertCacheMaxEntries`, the same file l. 55).
 const LEAVES: usize = 1024;
 
 /// The proxy's CA, and the TLS each host it has served is served with.

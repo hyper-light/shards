@@ -84,10 +84,12 @@ const HOST_KEY_ALGORITHMS: &[&str] = &[
     "rsa-sha2-256",
 ];
 
-/// The largest packet taken (OpenSSH's PACKET_MAX_SIZE).
+/// The largest packet taken: OpenSSH's `PACKET_MAX_SIZE` (openssh-portable V_9_9_P1
+/// packet.c l. 106), which its server sends no larger than.
 const PACKET_MAX: usize = 256 * 1024;
 /// What a channel may be sent before it says it has room for more, and the most of it in
-/// one packet (OpenSSH's CHAN_SES_WINDOW_DEFAULT and CHAN_SES_PACKET_DEFAULT).
+/// one packet: OpenSSH's `CHAN_SES_WINDOW_DEFAULT` and `CHAN_SES_PACKET_DEFAULT`
+/// (openssh-portable V_9_9_P1 channels.h l. 223-224), as its own client opens a session.
 const WINDOW: u32 = 2 * 1024 * 1024;
 const MAX_PACKET: u32 = 32 * 1024;
 /// The version shards says it speaks, and the longest line of the server's taken before

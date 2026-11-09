@@ -26,9 +26,11 @@ use super::{AttestationChain, Meta, MetaRequest, Resolve, Source};
 
 /// The annotation naming an attestation's predicate type.
 const PREDICATE_TYPE: &str = "in-toto.io/predicate-type";
-/// maxMaterialDepth.
+/// How deep provenance's materials are followed: buildx's `maxMaterialDepth` (v0.37.1
+/// policy/input.go l. 14, its refusal at l. 22-23), held to buildx's policies' input.
 const MAX_MATERIAL_DEPTH: i64 = 24;
-/// The scanner's maxNestingDepth.
+/// How deep a document nests, as Go's encoding/json scanner takes one: `maxNestingDepth`
+/// (Go 1.26.1 src/encoding/json/scanner.go l. 148), which buildx's decoder is.
 const MAX_NESTING: usize = 10_000;
 
 /// What buildx logs as it reads, by level.
