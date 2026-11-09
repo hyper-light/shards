@@ -34,6 +34,8 @@ pub mod sim;
 mod stream;
 #[cfg(unix)]
 mod taken;
+#[cfg(test)]
+mod while_runs;
 
 pub use client::Shards;
 

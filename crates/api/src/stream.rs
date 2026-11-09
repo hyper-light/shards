@@ -334,6 +334,7 @@ impl Stream for Socket {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::while_runs;
     use std::time::Instant;
 
     /// Bytes go both ways, a half-close reaches the peer as its end, and the other way
@@ -388,31 +389,21 @@ mod tests {
         assert_eq!(waits::nanos(Some(Duration::MAX)).unwrap(), u64::MAX);
     }
 
-    /// How long a timed operation here may take: its timeout, `UNSERVED_PATIENCE`, and
-    /// this host class's recorded lateness of a timed wait (`OVERSHOOT`), a hang guard.
-    fn timed() -> (Duration, Duration) {
-        let late = crate::conformance::OVERSHOOT.get();
-        let timeout = crate::conformance::UNSERVED_PATIENCE;
-        (timeout, timeout.saturating_add(late))
-    }
-
     /// A write to a peer that stops reading fails at its timeout, having moved what the
-    /// socket took, rather than blocking for ever (D215; review B3).
+    /// socket took, rather than blocking for ever: waited on while it runs, however late its
+    /// host runs it (D215; review B3).
     #[test]
     fn a_write_to_a_peer_that_stops_reading_ends_at_its_timeout() {
-        let (timeout, guard) = timed();
+        // An input: any timeout shows it kept.
+        let timeout = crate::conformance::UNSERVED_PATIENCE;
         let (mut a, _b) = pair().unwrap();
         Stream::set_write_timeout(&a, Some(timeout)).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            // An input: more than any socket's buffer holds (macOS's 8 KiB, Linux's
-            // wmem_max), so the peer's not reading is what stops it.
-            let big = vec![7u8; 64 << 20];
-            tx.send(a.write_all(&big).map_err(|e| e.kind()))
-        });
-        let wrote = rx
-            .recv_timeout(guard)
-            .expect("the write blocked past its timeout");
+        // An input: more than any socket's buffer holds (macOS's 8 KiB, Linux's wmem_max), so
+        // the peer's not reading is what stops it. Made before the write's thread begins, so
+        // its beginning is the write's.
+        let big = vec![7u8; 64 << 20];
+        let (worker, rx) = while_runs::on_a_thread(move || a.write_all(&big).map_err(|e| e.kind()));
+        let wrote = while_runs::answer(&rx, worker, timeout);
         // Winsock may take the whole buffer from a non-blocking send (jupiter took 64 MiB);
         // what the write may not do is block past its timeout.
         assert!(
@@ -472,21 +463,24 @@ mod tests {
     }
 
     /// Two clones reading one byte: one reads it, the other fails at its timeout rather
-    /// than blocking after a poll said the byte was there (D215; review B3).
+    /// than blocking after a poll said the byte was there; each waited on while it runs
+    /// (D215; review B3).
     #[test]
     fn a_read_a_clone_raced_ends_at_its_timeout() {
-        let (timeout, guard) = timed();
+        // An input: any timeout shows it kept.
+        let timeout = crate::conformance::UNSERVED_PATIENCE;
         let (a, mut b) = pair().unwrap();
         Stream::set_read_timeout(&a, Some(timeout)).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        for _ in 0..2 {
-            let mut reader = Stream::try_clone(&a).unwrap();
-            let tx = tx.clone();
-            std::thread::spawn(move || tx.send(reader.read(&mut [0u8; 1]).map_err(|e| e.kind())));
-        }
+        let readers: Vec<_> = (0..2)
+            .map(|_| {
+                let mut reader = Stream::try_clone(&a).unwrap();
+                while_runs::on_a_thread(move || reader.read(&mut [0u8; 1]).map_err(|e| e.kind()))
+            })
+            .collect();
         b.write_all(b"x").unwrap();
-        let mut got: Vec<_> = (0..2)
-            .map(|_| rx.recv_timeout(guard).expect("a read blocked past its timeout"))
+        let mut got: Vec<_> = readers
+            .iter()
+            .map(|(worker, rx)| while_runs::answer(rx, *worker, timeout))
             .collect();
         got.sort_by_key(|r| r.is_err());
         assert_eq!(got[0], Ok(1));
@@ -522,33 +516,33 @@ mod tests {
     /// native plan step 8).
     #[test]
     fn a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read() {
-        // A hang guard alone: each wait here returns at its fact.
-        let (_, guard) = timed();
+        // Neither the read nor the poll below waits for anything but its fact: each is looked
+        // at while it runs, each millisecond (poll(2)'s unit), and fails the test if blocked.
+        let at_once = Duration::from_millis(1);
         let (a, mut b) = pair().unwrap();
         Stream::set_nonblocking(&a, true).unwrap();
         let mut clone = Stream::try_clone(&a).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
+        let (worker, rx) = while_runs::on_a_thread(move || {
             let mut buf = [0u8; 8];
-            let empty = clone.read(&mut buf).map_err(|e| e.kind());
-            tx.send(empty).unwrap();
-            clone
+            (clone.read(&mut buf).map_err(|e| e.kind()), clone)
         });
-        let empty = rx.recv_timeout(guard).unwrap();
+        let (empty, mut clone) = while_runs::answer(&rx, worker, at_once);
         assert_eq!(empty, Err(io::ErrorKind::WouldBlock));
-        let mut clone = reader.join().unwrap();
         b.write_all(b"now").unwrap();
         #[cfg(unix)]
         {
-            let mut fd = libc::pollfd {
-                fd: std::os::fd::AsRawFd::as_raw_fd(&Stream::handle(&a)),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let ms = i32::try_from(guard.as_millis()).unwrap();
-            // SAFETY: poll(2) of one pollfd, of a socket `a` holds open.
-            let n = unsafe { libc::poll(&raw mut fd, 1, ms) };
-            assert_eq!((n, fd.revents & libc::POLLIN), (1, libc::POLLIN));
+            let fd = std::os::fd::AsRawFd::as_raw_fd(&Stream::handle(&a));
+            let (worker, rx) = while_runs::on_a_thread(move || {
+                let mut fd = libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: poll(2) of one pollfd, of a socket `a` holds open until it answers.
+                let n = unsafe { libc::poll(&raw mut fd, 1, -1) };
+                (n, fd.revents & libc::POLLIN)
+            });
+            assert_eq!(while_runs::answer(&rx, worker, at_once), (1, libc::POLLIN));
         }
         let mut buf = [0u8; 8];
         let n = clone.read(&mut buf).unwrap();
