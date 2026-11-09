@@ -1169,4 +1169,250 @@ mod tests {
         assert_eq!(pause(us(5), ms(150), ms(1)), ms(1));
         assert_eq!(pause(Duration::MAX, Duration::MAX, ms(1)), ms(1));
     }
+
+    /// A muxer for `listener`'s guest until the listener fails: each connection's
+    /// `CONNECT` answered `OK`, then what it is sent echoed back until it half-closes, as the
+    /// test guest's echo mode does.
+    #[cfg(unix)]
+    fn serve_echo(listener: &std::os::unix::net::UnixListener) {
+        for s in listener.incoming() {
+            let Ok(mut s) = s else { return };
+            std::thread::spawn(move || {
+                let mut line = Vec::new();
+                let mut byte = [0u8; 1];
+                while line.last() != Some(&b'\n') && s.read_exact(&mut byte).is_ok() {
+                    line.push(byte[0]);
+                }
+                if s.write_all(b"OK 1073741824\n").is_err() {
+                    return;
+                }
+                let mut buf = [0u8; 4096];
+                while let Ok(n @ 1..) = s.read(&mut buf) {
+                    if s.write_all(&buf[..n]).is_err() {
+                        return;
+                    }
+                }
+                let _ = s.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    }
+
+    /// A guest booted by a stand-in for shards that runs on until it is ended, with an echoing
+    /// muxer (`serve_echo`) at its vsock socket, and its spec.
+    #[cfg(unix)]
+    fn echoing() -> (shards_testdir::TempDir, ShardsGuest, GuestSpec) {
+        let dir = shards_testdir::TempDir::new("api-attach").unwrap();
+        let bin = dir.path().join("shards");
+        installed(&bin, "#!/bin/sh\nexec sleep 1000\n");
+        let spec = GuestSpec {
+            binary: Some(bin),
+            ..spec()
+        };
+        let guest = start(&spec).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&guest.vsock).unwrap();
+        std::thread::spawn(move || serve_echo(&listener));
+        (dir, guest, spec)
+    }
+
+    /// What `guest`'s port 1024 echoes of `back`, written and half-closed.
+    #[cfg(unix)]
+    fn echoed(guest: &dyn Guest) -> Vec<u8> {
+        let mut conn = guest.connect(1024, Duration::MAX).unwrap();
+        conn.write_all(b"back").unwrap();
+        conn.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut got = Vec::new();
+        conn.read_to_end(&mut got).unwrap();
+        got
+    }
+
+    /// A booted guest names itself by its VM process's pid, that process's start as its OS
+    /// counts it, the same however often it is asked, and its vsock socket; once it has
+    /// ended, its pid no longer names it, and it is refused `Ended` (D215; Hex's proposal).
+    #[cfg(unix)]
+    #[test]
+    fn a_guest_names_itself_by_pid_start_and_socket() {
+        let (_dir, guest, _) = echoing();
+        let identity = guest.identity().unwrap();
+        assert_eq!((identity.pid, &identity.vsock), (guest.pid, &guest.vsock));
+        assert_eq!(echoed(&guest), b"back");
+        assert_eq!(guest.identity().unwrap(), identity);
+        guest.stop().unwrap();
+        assert_eq!(guest.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
+        assert_eq!(guest.identity(), Err(Refusal::Ended(End::Stopped)));
+    }
+
+    /// A guest whose handle its client lost without its drop (a crash, in one process) is
+    /// taken back by its identity: it serves its port, names itself as before, stops as
+    /// `Stopped`, and is then gone; an identity whose start differs (its pid since given
+    /// another process) is refused `Gone` (D215; Hex's proposal).
+    #[cfg(unix)]
+    #[test]
+    fn attach_takes_back_a_guest_whose_handle_was_lost() {
+        let (_dir, guest, spec) = echoing();
+        let identity = guest.identity().unwrap();
+        std::mem::forget(guest);
+        let other = Identity {
+            started: identity.started.wrapping_add(1),
+            ..identity.clone()
+        };
+        assert!(
+            matches!(Shards.attach(&other, &spec), Err(Refusal::Gone { .. })),
+            "another start"
+        );
+        let back = Shards.attach(&identity, &spec).unwrap();
+        assert_eq!(back.identity().unwrap(), identity);
+        assert_eq!(echoed(&*back), b"back");
+        back.stop().unwrap();
+        assert_eq!(back.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
+        let again = Shards.attach(&identity, &spec);
+        assert!(matches!(again, Err(Refusal::Gone { .. })), "{:?}", again.err());
+    }
+
+    /// A guest taken back is its taker's until it drops, which ends it, and with it the
+    /// socket directory its first client made; one that ends by itself ends `Failed`, as
+    /// its exit status is its parent's alone (D215; Hex's proposal).
+    #[cfg(unix)]
+    #[test]
+    fn a_guest_taken_back_ends_as_it_drops_or_by_itself() {
+        let (_dir, guest, spec) = echoing();
+        let (identity, shared) = (guest.identity().unwrap(), guest.shared.clone());
+        std::mem::forget(guest);
+        let back = Shards.attach(&identity, &spec).unwrap();
+        let socket_dir = identity.vsock.parent().unwrap().to_path_buf();
+        drop(back);
+        assert!(
+            reaped_once_exited(identity.pid, &shared),
+            "pid {} runs on",
+            identity.pid
+        );
+        assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
+        let (_dir, guest, spec) = echoing();
+        let identity = guest.identity().unwrap();
+        std::mem::forget(guest);
+        let back = Shards.attach(&identity, &spec).unwrap();
+        let killed = Command::new("kill")
+            .args(["-KILL", &identity.pid.to_string()])
+            .status()
+            .unwrap();
+        assert!(killed.success());
+        let end = back.wait_for(Duration::MAX).unwrap();
+        assert!(
+            matches!(&end, Some(End::Failed(why)) if why.contains("parent")),
+            "{end:?}"
+        );
+    }
+
+    /// Set in the client `attach_takes_back_a_guest_whose_client_crashed` runs: the stand-in
+    /// for shards it boots with.
+    #[cfg(unix)]
+    const CRASHING_SHARDS: &str = "SHARDS_API_CRASHING_SHARDS";
+    /// Set by that stand-in for the VM process it becomes: its `--vsock` socket.
+    #[cfg(unix)]
+    const STANDIN_VSOCK: &str = "SHARDS_API_STANDIN_VSOCK";
+
+    /// The client `attach_takes_back_a_guest_whose_client_crashed` runs, in a process of its
+    /// own: it boots a guest, takes its identity before its stand-in has become the VM
+    /// process (so a start an exec changed would not be taken back), connects to it, says
+    /// the identity, and ends holding it, its drop never run, as a crash ends a client.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "a child of attach_takes_back_a_guest_whose_client_crashed"]
+    fn child_a_client_that_crashes() {
+        let Some(bin) = std::env::var_os(CRASHING_SHARDS) else {
+            return;
+        };
+        let guest = start(&GuestSpec {
+            binary: Some(bin.into()),
+            ..spec()
+        })
+        .unwrap();
+        let id = guest.identity().unwrap();
+        drop(guest.connect(1024, Duration::MAX).unwrap());
+        println!("identity {} {} {}", id.pid, id.started, id.vsock.display());
+        std::process::exit(0);
+    }
+
+    /// The VM process the crashing client's stand-in for shards becomes: an echoing muxer
+    /// (`serve_echo`) at the `--vsock` socket it was given, until it is killed.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "a child of attach_takes_back_a_guest_whose_client_crashed"]
+    fn child_a_vm_process_serving_its_vsock() {
+        let Some(vsock) = std::env::var_os(STANDIN_VSOCK) else {
+            return;
+        };
+        serve_echo(&std::os::unix::net::UnixListener::bind(vsock).unwrap());
+    }
+
+    /// A guest whose client crashed, ending with it held, is taken back by its identity from
+    /// another process, whose child its VM process is not: it serves its port, stops as
+    /// `Stopped`, and is then gone, and the crashed client's socket directory with it (D215;
+    /// Hex's proposal).
+    #[cfg(unix)]
+    #[test]
+    fn attach_takes_back_a_guest_whose_client_crashed() {
+        let dir = shards_testdir::TempDir::new("api-crash").unwrap();
+        let bin = dir.path().join("shards");
+        let me = std::env::current_exe().unwrap();
+        installed(
+            &bin,
+            &format!(
+                "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = --vsock ]; then {STANDIN_VSOCK}=$2; \
+                 export {STANDIN_VSOCK}; fi\n  shift\ndone\nexec '{}' --exact \
+                 client::tests::child_a_vm_process_serving_its_vsock --ignored --test-threads=1 \
+                 >/dev/null 2>&1\n",
+                me.display()
+            ),
+        );
+        let client = Command::new(&me)
+            .args([
+                "--exact",
+                "client::tests::child_a_client_that_crashes",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CRASHING_SHARDS, &bin)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&client.stdout);
+        assert!(client.status.success(), "{:?}: {said}", client.status);
+        let line = said
+            .lines()
+            .find_map(|l| l.strip_prefix("identity "))
+            .unwrap_or_else(|| panic!("no identity said: {said}"));
+        let mut words = line.splitn(3, ' ');
+        let identity = Identity {
+            pid: words.next().unwrap().parse().unwrap(),
+            started: words.next().unwrap().parse().unwrap(),
+            vsock: words.next().unwrap().into(),
+        };
+        let spec = GuestSpec {
+            binary: Some(bin),
+            ..spec()
+        };
+        let back = Shards.attach(&identity, &spec).unwrap();
+        assert_eq!(echoed(&*back), b"back");
+        back.stop().unwrap();
+        assert_eq!(back.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
+        let again = Shards.attach(&identity, &spec);
+        assert!(matches!(again, Err(Refusal::Gone { .. })), "{:?}", again.err());
+        let socket_dir = identity.vsock.parent().unwrap().to_path_buf();
+        drop(back);
+        assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
+    }
+
+    /// On Windows a guest's VM ends with the process that booted it (D141), so none outlives
+    /// its client to be taken back: attach is refused `Gone` (D215; Hex's proposal).
+    #[cfg(windows)]
+    #[test]
+    fn attach_is_refused_gone_on_windows() {
+        let identity = Identity {
+            pid: std::process::id(),
+            started: 1,
+            vsock: "v".into(),
+        };
+        let refused = Shards.attach(&identity, &spec());
+        assert!(matches!(refused, Err(Refusal::Gone { .. })), "{:?}", refused.err());
+    }
 }
