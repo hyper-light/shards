@@ -11,9 +11,86 @@ use std::time::{Duration, Instant};
 use crate::stream::{self, Socket};
 use crate::{End, Guest, GuestSpec, Guests, Identity, Refusal, Stream, allowed, backend, check};
 
-/// The connections shards' muxer holds at once, open and pending together
-/// (`MAX_CONNECTIONS`, Firecracker's, `crates/vmm/src/devices/virtio/vsock/muxer.rs:40-41`).
-const MAX_CONNECTIONS: usize = 1023;
+/// How many connections may wait to be accepted, as shards' muxer bounds its slots
+/// (`crates/vmm/src/devices/virtio/vsock/muxer.rs` `slots`): what this process's descriptor
+/// limit leaves past those it holds, two to a connection, a socket pair's ends
+/// (`shards_abi::bounds::connections`). Read as each guest boots, its limit never raised: the
+/// process is its program's. Where it cannot say what it holds, the limit alone; where it
+/// cannot say its limit, no number, and a pair the kernel refuses (EMFILE) is refused as a
+/// connect is.
+fn slots() -> usize {
+    match descriptor_limit() {
+        Some(limit) => shards_abi::bounds::connections(limit, open_descriptors().unwrap_or(0), 2),
+        None => usize::MAX,
+    }
+}
+
+/// How many descriptors this process may have open: its soft limit (getrlimit(2)), and on
+/// macOS no more than `kern.maxfilesperproc`, which the kernel holds a process to whatever
+/// its limit (as shards-vmm's `platform::descriptor_limit`).
+#[cfg(unix)]
+fn descriptor_limit() -> Option<u64> {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } != 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut most: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        // SAFETY: sysctlbyname(3) reading one int into a local of its size.
+        let read = unsafe {
+            libc::sysctlbyname(
+                c"kern.maxfilesperproc".as_ptr(),
+                (&raw mut most).cast(),
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if read == 0
+            && let Ok(most) = u64::try_from(most)
+        {
+            return Some(lim.rlim_cur.min(most));
+        }
+    }
+    Some(lim.rlim_cur)
+}
+
+/// Windows: the kernel handles a process may hold, "The per-process limit on kernel handles
+/// is 2^24" (Microsoft, "Kernel Objects"), with nothing to raise.
+#[cfg(windows)]
+fn descriptor_limit() -> Option<u64> {
+    Some(1 << 24)
+}
+
+/// How many descriptors this process has open: the entries of /proc/self/fd on Linux and of
+/// /dev/fd on macOS, less the one that lists them (as shards-vmm's
+/// `platform::open_descriptors`).
+#[cfg(unix)]
+fn open_descriptors() -> Option<u64> {
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    let count = std::fs::read_dir(dir).ok()?.count();
+    u64::try_from(count.checked_sub(1)?).ok()
+}
+
+/// Windows: the handles this process has open (GetProcessHandleCount).
+#[cfg(windows)]
+fn open_descriptors() -> Option<u64> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+    let mut count = 0u32;
+    // SAFETY: this process's pseudo-handle, and a count to fill.
+    let ok = unsafe { GetProcessHandleCount(GetCurrentProcess(), &mut count) };
+    (ok != 0).then_some(u64::from(count))
+}
 
 /// The most vCPUs the simulated hypervisor runs: the CPUs this process may run on, as std
 /// reads them, where shards-vmm asks its hypervisor (`vm/runtime.rs:1059` `check_vcpus`).
@@ -69,13 +146,14 @@ pub struct SimHost {
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    /// Connections that may wait to be accepted, at most ([`slots`]), read as it booted.
+    slots: usize,
 }
 
 #[derive(Debug, Default)]
 struct State {
     listening: BTreeSet<u32>,
-    /// Connections made and not yet accepted, at most [`MAX_CONNECTIONS`] (the muxer's bound on
-    /// pending and open connections).
+    /// Connections made and not yet accepted, at most its slots ([`slots`]).
     pending: VecDeque<(u32, Socket)>,
     end: Option<End>,
 }
@@ -138,6 +216,7 @@ impl Guests for SimGuests {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
+            slots: slots(),
         });
         let host = SimHost {
             spec: spec.clone(),
@@ -231,10 +310,13 @@ impl Guest for SimGuest {
                 return Err(Refusal::Ended(end.clone()));
             }
             if state.listening.contains(&port) {
-                if state.pending.len() >= MAX_CONNECTIONS {
+                if state.pending.len() >= self.shared.slots {
                     return Err(Refusal::Channel {
                         port,
-                        why: format!("{MAX_CONNECTIONS} connections wait to be accepted"),
+                        why: format!(
+                            "{} connections wait to be accepted: what this process's descriptors leave",
+                            self.shared.slots
+                        ),
                     });
                 }
                 let (ours, theirs) = stream::pair().map_err(|e| Refusal::Channel {
@@ -314,7 +396,8 @@ impl Drop for SimGuest {
     }
 }
 
-#[cfg(test)]
+/// Descriptor limits are Unix's (setrlimit(2)); Windows has none to lower.
+#[cfg(all(test, unix))]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::print_stdout)]
 mod tests {
     use super::*;
@@ -322,7 +405,6 @@ mod tests {
 
     /// Set in the child `past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound`
     /// runs.
-    #[cfg(unix)]
     const LOWERED: &str = "SHARDS_API_SIM_LOWERED";
 
     /// Connections waiting to be accepted are bounded as shards' muxer bounds its slots: by
@@ -332,7 +414,6 @@ mod tests {
     /// descriptor limit (setrlimit(2)) before the guest boots, leaving room for a few
     /// connections and a descriptor more, which no pair fits (review: connections derived,
     /// refused typed past them).
-    #[cfg(unix)]
     #[test]
     fn past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound() {
         const NAME: &str = "sim::tests::past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound";
@@ -393,10 +474,8 @@ mod tests {
             rlim_max: was.rlim_max,
         };
         // SAFETY: setrlimit(2) from a local, in this child alone.
-        assert_eq!(
-            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) },
-            0
-        );
+        let set = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) };
+        assert_eq!(set, 0);
         let guest = guests.boot(&spec).unwrap();
         let mut kept = Vec::new();
         let refused = loop {
