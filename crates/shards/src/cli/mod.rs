@@ -1242,19 +1242,28 @@ fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
 /// it start nothing; with Windows' mitigations (PM M200-M203). This process then answers
 /// what it asks for, as macOS's broker does (`grant_answer`), until it has all it needs,
 /// and exits as it does. Windows has no exec: the VM is a child, which takes the console's
-/// Ctrl-C itself, while this process waits to say how it ended.
+/// Ctrl-C itself, while this process waits to say how it ended. The VM's Job and its share
+/// process are made in a job this process alone holds, which ends both as this process
+/// ends, however it ends: a share process detached from the console, out of the VM's
+/// Ctrl-C, broke away from every job, and outlived a client ended by TerminateProcess.
 #[cfg(windows)]
 fn vm(args: &[OsString]) -> ExitCode {
     use std::os::windows::io::{AsHandle as _, OwnedHandle};
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    // Made before any process of the run's, and held until this process ends, its last
+    // handle with it.
+    let job = match shards_ipc::GroupJob::ending_with_this_process() {
+        Ok(job) => job,
+        Err(e) => return failed(&format!("the run's job: {e}")),
+    };
     let (args, served) = match served_pipes(args) {
         Ok(served) => served,
         Err(e) => return failed(&e),
     };
     // Its shares served before its VM process starts, in its AppContainer (shares.rs).
-    let (args, shared) = match shares::served(&args) {
+    let (args, shared, share_process) = match shares::served(&args, &job) {
         Ok(shared) => shared,
         Err(e) => return failed(&e),
     };
@@ -1343,7 +1352,8 @@ fn vm(args: &[OsString]) -> ExitCode {
         env: &crate::netproc::env_pairs(&env),
         container: Some(&container),
         holds: shards_ipc::Holds::Hypervisor,
-        group: None,
+        // Its own Job nested under the run's.
+        group: Some(&job),
         // A GPU's VM process runs its host's GPU driver (D202).
         graphics: args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu"),
     });
@@ -1401,7 +1411,12 @@ fn vm(args: &[OsString]) -> ExitCode {
         }
         ended
     });
-    drop(container);
+    // Its share process ends as its streams close, with the VM: waited for, so that the
+    // run's job, closing as this process ends, cuts none of its work short.
+    if let Some(share_process) = share_process {
+        let _ = share_process.wait();
+    }
+    drop((container, job));
     match ended {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(e) => failed(&format!("waiting for the VM: {e}")),

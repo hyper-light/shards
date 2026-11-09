@@ -19,10 +19,12 @@
 //! On Windows (D197) the daemon makes each share's stream, a duplex pipe, itself, and hands
 //! its VM the other end with the run: a stream a process is given hands no handle on
 //! (shards_ipc's `Stream::given`). This process is made in its microVM's group's job where
-//! it has one, as its VM process is (a direct boot's is detached instead, out of reach of a
-//! Ctrl-C meant for its VM, as a Unix one leads a session of its own), and given each share's directory as 4 + i, the home's
-//! private directory as 4 + n and its end of each share's stream as 5 + n + i, by number as
-//! the daemon's children on Windows take theirs (`shards_ipc::given_fd`).
+//! it has one, as its VM process is; a direct boot's in the job its client alone holds,
+//! which ends it and the VM as the client ends (D141), detached from the console, out of
+//! reach of a Ctrl-C meant for its VM, as a Unix one leads a session of its own. It is
+//! given each share's directory as 4 + i, the home's private directory as 4 + n and its
+//! end of each share's stream as 5 + n + i, by number as the daemon's children on Windows
+//! take theirs (`shards_ipc::given_fd`).
 
 use std::collections::HashMap;
 use std::ffi::{CString, OsString};

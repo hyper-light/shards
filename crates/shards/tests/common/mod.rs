@@ -2220,26 +2220,7 @@ impl Patience {
 /// The VM processes `client` is, or started, as far down as its descendants go: shards-vm's
 /// and the GPU's (shards-vm-gpu), from Windows' table of processes or `ps`.
 pub fn vm_processes_under(client: u32) -> Vec<u32> {
-    #[cfg(windows)]
     let listed = processes();
-    #[cfg(unix)]
-    let listed: Vec<(u32, u32, String)> = Command::new("ps")
-        .args(["-A", "-o", "pid=,ppid=,comm="])
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|line| {
-                    let mut w = line.split_whitespace();
-                    Some((
-                        w.next()?.parse().ok()?,
-                        w.next()?.parse().ok()?,
-                        w.collect::<Vec<_>>().join(" "),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let is_vm = |name: &str| {
         let name = name
             .rsplit(['/', '\\'])
@@ -2266,18 +2247,51 @@ pub fn vm_processes_under(client: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Every process, its parent and its command's name, from `ps`.
+#[cfg(unix)]
+pub fn processes() -> Vec<(u32, u32, String)> {
+    Command::new("ps")
+        .args(["-A", "-o", "pid=,ppid=,comm="])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut w = line.split_whitespace();
+                    Some((
+                        w.next()?.parse().ok()?,
+                        w.next()?.parse().ok()?,
+                        w.collect::<Vec<_>>().join(" "),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Runs `cmd` as built, `shards` itself ([`run_shards_with`]) or a program that runs it
 /// (given [`as_tests_run`]'s environment), its output collected; killed, failing the test,
 /// after `timeout`, `asked` naming it then, or, where its home's daemon still says
 /// something then, once it has said nothing for [`DAEMON_QUIET`] ([`Said`]), or where a
 /// microVM of its own still runs then, once none has run for as long ([`Ran`]).
 pub fn run_command(cmd: Command, asked: &[String], timeout: Duration) -> Run {
-    run_until(cmd, asked, timeout).unwrap_or_else(|ended| panic!("{}", ended.said))
+    run_ending(cmd, asked, timeout, Leftovers::Ended).unwrap_or_else(|ended| panic!("{}", ended.said))
+}
+
+/// What a run ended at its deadline leaves of the processes under it ([`end_run`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leftovers {
+    /// Ended by the harness with it, on Windows: a test that fails at its deadline leaves
+    /// no process, whatever the run started (a daemon among them).
+    Ended,
+    /// Waited for, as the run's own end should end them: those still running then are
+    /// [`Ended::left`], and only then ended by the harness.
+    Awaited,
 }
 
 /// A run [`run_until`] ended at its deadline: what it had said and shown ([`stuck`]), the
-/// processes it had started (on Windows: those under it, each named), and those of them
-/// still running once it was ended.
+/// processes it had started (those under it, each named), and those of them still running
+/// once it was ended and they were waited for.
 pub struct Ended {
     pub said: String,
     pub started: Vec<Process>,
@@ -2288,8 +2302,19 @@ pub struct Ended {
 pub type Process = (u32, String);
 
 /// [`run_command`]'s run, ended at its deadline as [`Ended`] says rather than failing the
-/// test there, for a test of what an ended run leaves.
-pub fn run_until(mut cmd: Command, asked: &[String], timeout: Duration) -> Result<Run, Ended> {
+/// test there, for a test of what an ended run leaves: the processes under it are left to
+/// end as its own end ends them ([`Leftovers::Awaited`]).
+pub fn run_until(cmd: Command, asked: &[String], timeout: Duration) -> Result<Run, Ended> {
+    run_ending(cmd, asked, timeout, Leftovers::Awaited)
+}
+
+/// [`run_until`]'s run, the processes under it at its deadline as `leftovers` says.
+fn run_ending(
+    mut cmd: Command,
+    asked: &[String],
+    timeout: Duration,
+    leftovers: Leftovers,
+) -> Result<Run, Ended> {
     let start = Instant::now();
     // Its home, for what is shown of a run that never ends ([`stuck`]).
     let home: Option<PathBuf> = cmd
@@ -2356,7 +2381,7 @@ pub fn run_until(mut cmd: Command, asked: &[String], timeout: Duration) -> Resul
         let ran_lately = ran.lately();
         if start.elapsed() > timeout && !said_lately && !ran_lately {
             let seen = stuck(child.id(), home.as_deref());
-            let (started, left) = end_run(&mut child, timeout);
+            let (started, left) = end_run(&mut child, timeout, leftovers);
             return Err(Ended {
                 said: format!(
                     "{} did not exit within {timeout:?}\n--- stdout\n{}\n--- stderr\n{}{seen}",
@@ -2383,55 +2408,103 @@ pub fn run_until(mut cmd: Command, asked: &[String], timeout: Duration) -> Resul
     })
 }
 
-/// Ends `child`, a run past its deadline, and on Windows each process under it, and gives
-/// those processes, each named, with any still running `within` after. They are read from
-/// one snapshot while it still runs, so that each is the run's by its parent. A direct
-/// boot's share process breaks away from any job a caller could end it by (review 11), so
-/// ending it is the harness's; one past `within` is left for the test to fail on.
-fn end_run(child: &mut std::process::Child, within: Duration) -> (Vec<Process>, Vec<Process>) {
-    #[cfg(windows)]
+/// Ends `child`, a run past its deadline, and gives the processes under it, each named,
+/// with any still running `within` after: read from one snapshot while it still runs, so
+/// that each is the run's by its parent. With [`Leftovers::Ended`] the harness ends those
+/// on Windows as it ends the run (on Unix a run's share process ends with its VM, the
+/// client itself: cli/shares.rs); with [`Leftovers::Awaited`] it ends none of them, which
+/// the run's own end must end (D141: on Windows the job its client alone holds), and only
+/// those left past `within` afterwards, for the test to fail on, not to outlive it.
+fn end_run(
+    child: &mut std::process::Child,
+    within: Duration,
+    leftovers: Leftovers,
+) -> (Vec<Process>, Vec<Process>) {
+    if cfg!(unix) && leftovers == Leftovers::Ended {
+        let _ = child.kill();
+        let _ = child.wait();
+        return (Vec::new(), Vec::new());
+    }
     let under = under(child.id());
     let _ = child.kill();
     let _ = child.wait();
-    #[cfg(windows)]
-    {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-        use windows_sys::Win32::System::Threading::{TerminateProcess, WaitForSingleObject};
-        for (_, _, h) in &under {
-            // SAFETY: TerminateProcess of a process handle `under` opened with the right to.
-            unsafe { TerminateProcess(h.as_raw_handle(), 1) };
+    if leftovers == Leftovers::Ended {
+        for p in &under {
+            p.end();
         }
-        let until = Instant::now() + within;
-        let started = under.iter().map(|(pid, name, _)| (*pid, name.clone())).collect();
-        let left = under
-            .iter()
-            .filter(|(_, _, h)| {
-                let ms = u32::try_from(until.saturating_duration_since(Instant::now()).as_millis())
-                    .unwrap_or(u32::MAX);
-                // SAFETY: a process handle `under` opened, waited on for what is left of `within`.
-                let waited = unsafe { WaitForSingleObject(h.as_raw_handle(), ms) };
-                waited != WAIT_OBJECT_0
-            })
-            .map(|(pid, name, _)| (*pid, name.clone()))
-            .collect();
-        (started, left)
     }
-    // On Unix a run's share process ends as its VM does (cli/shares.rs): none to end here.
-    #[cfg(not(windows))]
-    {
-        let _ = within;
-        (Vec::new(), Vec::new())
+    let until = Instant::now() + within;
+    let started = under.iter().map(|p| (p.pid, p.name.clone())).collect();
+    let left: Vec<&Under> = under.iter().filter(|p| !p.ended_by(until)).collect();
+    for p in &left {
+        p.end();
+    }
+    (started, left.iter().map(|p| (p.pid, p.name.clone())).collect())
+}
+
+/// A process under a run, opened while the run still ran: on Windows a handle to end it
+/// and wait on; on Unix its ID, which names it until it is reaped.
+struct Under {
+    pid: u32,
+    name: String,
+    #[cfg(windows)]
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+impl Under {
+    /// Whether it has ended by `until`.
+    fn ended_by(&self, until: Instant) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            let ms = u32::try_from(until.saturating_duration_since(Instant::now()).as_millis())
+                .unwrap_or(u32::MAX);
+            // SAFETY: a process handle `under` opened, waited on until `until`.
+            unsafe { WaitForSingleObject(self.handle.as_raw_handle(), ms) == WAIT_OBJECT_0 }
+        }
+        // Its parent gone, it is reaped by the one it was given to as it ends: kill(2)
+        // finds no process then.
+        #[cfg(unix)]
+        loop {
+            let Ok(pid) = libc::pid_t::try_from(self.pid) else {
+                return true;
+            };
+            // SAFETY: kill(2) with signal 0, which only asks whether the process is there.
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// Ends it.
+    fn end(&self) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            // SAFETY: TerminateProcess of a process handle `under` opened with the right to.
+            unsafe {
+                windows_sys::Win32::System::Threading::TerminateProcess(self.handle.as_raw_handle(), 1)
+            };
+        }
+        #[cfg(unix)]
+        if let Ok(pid) = libc::pid_t::try_from(self.pid) {
+            // SAFETY: kill(2) of a process this run started, found under it.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
     }
 }
 
 /// The processes under `root` (its children, theirs and so on), as one snapshot of them
 /// lists them ([`processes`]): a pass over the snapshot for each generation, at most as
-/// many as it lists. Each is opened to be ended and waited for, while `root` still runs.
-#[cfg(windows)]
-fn under(root: u32) -> Vec<(u32, String, std::os::windows::io::OwnedHandle)> {
-    use std::os::windows::io::FromRawHandle as _;
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+/// many as it lists. Each is opened, on Windows, to be ended and waited for, while `root`
+/// still runs; named by its executable's file name.
+fn under(root: u32) -> Vec<Under> {
     let all = processes();
     let mut tree = vec![root];
     for _ in 0..all.len() {
@@ -2448,16 +2521,35 @@ fn under(root: u32) -> Vec<(u32, String, std::os::windows::io::OwnedHandle)> {
     all.into_iter()
         .filter(|(pid, _, _)| *pid != root && tree.contains(pid))
         .filter_map(|(pid, _, name)| {
-            // SAFETY: a handle to a process the snapshot lists, owned below or not at all.
-            let raw = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
-            if raw.is_null() {
-                return None;
-            }
-            // SAFETY: the handle just opened, which nothing else owns.
-            let owned = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) };
-            Some((pid, name, owned))
+            let name = name.rsplit(['/', '\\']).next().unwrap_or(&name).to_string();
+            Under::opened(pid, name)
         })
         .collect()
+}
+
+impl Under {
+    /// Process `pid`, opened on Windows to be ended and waited for: none where it does not
+    /// open (it has ended).
+    #[cfg(windows)]
+    fn opened(pid: u32, name: String) -> Option<Under> {
+        use std::os::windows::io::FromRawHandle as _;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE};
+        // SAFETY: a handle to a process the snapshot lists, owned below or not at all.
+        let raw = unsafe { OpenProcess(PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid) };
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: the handle just opened, which nothing else owns.
+        let handle = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) };
+        Some(Under { pid, name, handle })
+    }
+
+    /// Process `pid`, named by its ID until it is reaped.
+    #[cfg(unix)]
+    #[allow(clippy::unnecessary_wraps)]
+    fn opened(pid: u32, name: String) -> Option<Under> {
+        Some(Under { pid, name })
+    }
 }
 
 /// A fresh directory, short enough for sockaddr_un paths, removed with everything in it
