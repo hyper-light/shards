@@ -25,7 +25,7 @@ use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use super::Span;
 use super::conn::Conn;
@@ -37,28 +37,14 @@ use crate::platform::{AsRawSocket, UnixListener, UnixStream};
 use crate::snapshot::codec::{self, Reader, Writer};
 use crate::vm::VsockHost;
 
-/// Open connections and pending handshakes together (Firecracker's MAX_CONNECTIONS).
-const MAX_CONNECTIONS: usize = 1023;
 /// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
 const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
-/// Streams a snapshot holds the ports of, at most (review 1.15): a muxer's connections and
-/// owed resets, and a restored one's are all owed resets, which a save made before they
-/// go out holds again beside its own connections. So the bound is that of 64 saves in a
-/// row with none sent between, not of one; past it the oldest owed go unsaid, and a
-/// stream of theirs is reset as its next packet finds no connection.
-const MAX_SAVED: usize = 64 * (MAX_CONNECTIONS + MAX_STRAY_RSTS);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
 /// time, never consumes data a client sends after its line.
 const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
 /// The longest handshake line: `CONNECT 4294967295\r\n`. A longer one is refused before
 /// its end: a port has at most `u32::MAX`'s digits, and its words one space between them.
 const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
-/// How long a pending handshake holds its slot against a newcomer once accepted: not at
-/// all, by any clock. A client that is gone is seen at once, as its socket's end; one that
-/// is alive keeps its slot while no other wants it, and gives it up, silent longest first,
-/// when one does ([`Muxer::make_room`]). Its line is a local process's to write, as soon
-/// as the process runs, so a load that delays the process delays nothing else (D12).
-const HANDSHAKE_TIMEOUT: Duration = Duration::ZERO;
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
 
@@ -102,6 +88,25 @@ pub(super) const fn stray_rsts_bound(rx_ring: u16, tx_ring: u16) -> usize {
     }
 }
 
+/// A muxer's slots ([`Muxer::slots`]): what this process's descriptor limit, raised as far
+/// as it may go as a share process raises its own, leaves past the descriptors it holds,
+/// its listener's and spare's among them, one to a connection, its host socket
+/// (`shards_abi::bounds::connections`, D12). Where it cannot say what it holds, the limit
+/// alone; where it cannot say its limit, no number: its descriptors bound them then, as
+/// they bound a dial past what it held as the muxer was made ([`Muxer::refuse_one`]).
+fn slots() -> usize {
+    let limit = crate::platform::raise_descriptor_limit()
+        .ok()
+        .or_else(crate::platform::descriptor_limit);
+    match limit {
+        Some(limit) => {
+            let held = crate::platform::open_descriptors().unwrap_or(0);
+            shards_abi::bounds::connections(limit, held, 1)
+        }
+        None => usize::MAX,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
     local_port: u32,
@@ -121,9 +126,13 @@ pub enum Token {
 struct Handshake {
     stream: UnixStream,
     line: Vec<u8>,
-    /// Its latest progress: its accept, then the latest bytes of its line. The handshake
-    /// silent longest gives its slot up first ([`Muxer::make_room`]).
-    deadline: Instant,
+    /// Its latest progress: its accept, then the latest bytes of its line. A pending
+    /// handshake holds its slot against a newcomer on no clock: a client that is gone is seen
+    /// at once, as its socket's end; one that is alive keeps its slot while no other wants
+    /// it, and gives it up, silent longest first, when one does ([`Muxer::make_room`]). Its
+    /// line is a local process's to write, as soon as the process runs, so a load that
+    /// delays the process delays nothing else (D12).
+    heard: Instant,
 }
 
 /// What a snapshot keeps of a muxer: the streams the guest may still hold, and where
@@ -145,7 +154,9 @@ impl Saved {
     }
 
     pub fn read(r: &mut Reader<'_>) -> codec::Result<Saved> {
-        let ports = r.seq(MAX_SAVED, 8, |r| Ok((r.u32()?, r.u32()?)))?;
+        // Whatever a save wrote, a host's with more slots than this one's too: as many as
+        // the input's bytes hold, as `seq` refuses a count they cannot.
+        let ports = r.seq(usize::MAX, 8, |r| Ok((r.u32()?, r.u32()?)))?;
         Ok(Saved {
             ports,
             last_local_port: r.u32()?,
@@ -174,6 +185,16 @@ pub struct Muxer {
     /// How many [`stray_rsts`](Muxer::stray_rsts) may be owed: [`stray_rsts_bound`] of the
     /// guest's rings ([`Muxer::set_rings`]), of the largest it may negotiate until then.
     max_stray_rsts: usize,
+    /// Open connections and pending handshakes together, at most (Firecracker's
+    /// MAX_CONNECTIONS): what this process's descriptors leave as the muxer is made
+    /// ([`slots`]). Past them a host's dial is refused ([`Muxer::take`]), and so is a
+    /// guest's connection ([`Muxer::guest_connect`]).
+    slots: usize,
+    /// A descriptor held for a dial no other is left for ([`Muxer::refuse_one`]). None while
+    /// it cannot be made again, as another took the one its refusal let go: the listener
+    /// waits unpolled until a round makes it ([`Muxer::on_events`]), where a dial no
+    /// descriptor is left for would keep it ready for ever.
+    spare: Option<Spare>,
     local_ports: HashSet<u32>,
     last_local_port: u32,
 }
@@ -201,6 +222,14 @@ impl Muxer {
             }
             None => None,
         };
+        // Made with the listener, so that the slots read below leave it its descriptor.
+        let spare = match &listener {
+            Some((path, listener)) => Some(
+                spare(listener)
+                    .map_err(|e| io::Error::new(e.kind(), format!("{}: its spare: {e}", path.display())))?,
+            ),
+            None => None,
+        };
         Ok(Muxer {
             guest_cid,
             listener,
@@ -213,6 +242,8 @@ impl Muxer {
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
             max_stray_rsts: MAX_STRAY_RSTS,
+            slots: slots(),
+            spare,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
         })
@@ -230,13 +261,18 @@ impl Muxer {
     }
 
     /// The streams the guest may hold, for a snapshot: its connections, then the resets
-    /// owed, newest first, as many as a restore reads.
+    /// owed, newest first. As many as a muxer never restored holds at most: its slots, and
+    /// the resets [`stray_rst`](Muxer::stray_rst) keeps owed, a ring's worth, as Linux keeps
+    /// its own replies owed (`virtio_transport_more_replies`). A restored muxer owes a reset
+    /// for every stream its snapshot held, and saved again before they go out it keeps the
+    /// newest; the oldest go unsaid, and a stream of theirs is reset as its next packet
+    /// finds no connection (review 1.15, D12).
     pub fn saved(&self) -> Saved {
         let conns = self.conns.keys().map(|k| (k.local_port, k.peer_port));
         Saved {
             ports: conns
                 .chain(self.stray_rsts.iter().rev().copied())
-                .take(MAX_SAVED)
+                .take(self.slots.saturating_add(self.max_stray_rsts))
                 .collect(),
             last_local_port: self.last_local_port,
         }
@@ -272,7 +308,7 @@ impl Muxer {
     /// Where every slot is taken, frees one for a newcomer: the pending handshake silent
     /// longest gives its slot up (the client sees its socket close).
     fn make_room(&mut self) {
-        self.make_room_within(MAX_CONNECTIONS);
+        self.make_room_within(self.slots);
     }
 
     /// [`make_room`](Muxer::make_room) where `slots` are all there are.
@@ -284,7 +320,7 @@ impl Muxer {
             .handshakes
             .iter()
             .enumerate()
-            .min_by_key(|(_, h)| h.deadline)
+            .min_by_key(|(_, h)| h.heard)
             .map(|(i, _)| i);
         if let Some(i) = silent {
             debug!("vsock: every slot taken; a host connection silent longest gives its own up");
@@ -357,7 +393,7 @@ impl Muxer {
     /// The guest connects to host port `key.local_port`: one this process serves, or the
     /// socket `<path>_<port>`.
     fn guest_connect(&mut self, key: Key, request: &Header) {
-        if self.open() >= MAX_CONNECTIONS {
+        if self.open() >= self.slots {
             debug!(
                 "vsock: connection limit reached; refusing guest port {}",
                 key.peer_port
@@ -451,7 +487,7 @@ impl Muxer {
             });
         };
         if let Some((_, listener)) = &self.listener
-            && self.open() < MAX_CONNECTIONS
+            && self.spare.is_some()
         {
             add(listener.raw_socket(), true, false, Token::Listener);
         }
@@ -472,6 +508,13 @@ impl Muxer {
 
     /// Acts on what became ready.
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
+        // A spare its refusal let go, whose descriptor another took first, is made again as
+        // soon as one is free: until then the listener is left unpolled.
+        if self.spare.is_none()
+            && let Some((_, listener)) = &self.listener
+        {
+            self.spare = spare(listener).ok();
+        }
         let mut ready_handshakes = Vec::new();
         let mut listener = false;
         #[cfg(windows)]
@@ -504,7 +547,6 @@ impl Muxer {
         }
         // After the handshakes, whose indices a slot given up would move.
         if listener {
-            self.make_room();
             self.accept();
         }
         #[cfg(windows)]
@@ -518,24 +560,21 @@ impl Muxer {
         }
     }
 
+    /// Takes host clients' dials, a ring's worth a round at most, as many as the resets a
+    /// round may owe the guest ([`Muxer::max_stray_rsts`]), so that dials keep none of the
+    /// guest's packets from their turn (`step`, audit A09). Each is a pending handshake
+    /// ([`Muxer::take`]), or refused, its connection closed, where every slot is a
+    /// connection's or no descriptor is left for it ([`Muxer::refuse_one`]): none waits in
+    /// the listener's queue for a connection to end, or keeps it ready for ever.
     fn accept(&mut self) {
-        let Some((_, listener)) = &self.listener else {
-            return;
-        };
-        while self.handshakes.len() + self.conns.len() < MAX_CONNECTIONS {
+        for _ in 0..self.max_stray_rsts {
+            let Some((_, listener)) = &self.listener else {
+                return;
+            };
             match listener.accept() {
-                Ok((stream, _)) => {
-                    if let Err(e) = stream.set_nonblocking(true) {
-                        debug!("vsock: host connection: {e}");
-                        continue;
-                    }
-                    self.handshakes.push(Handshake {
-                        stream,
-                        line: Vec::with_capacity(MAX_HANDSHAKE),
-                        deadline: Instant::now() + HANDSHAKE_TIMEOUT,
-                    });
-                }
+                Ok((stream, _)) => self.take(stream),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) if out_of_descriptors(&e) && self.spare.is_some() => self.refuse_one(),
                 Err(e) => {
                     if e.kind() != io::ErrorKind::WouldBlock {
                         debug!("vsock: accept: {e}");
@@ -544,6 +583,45 @@ impl Muxer {
                 }
             }
         }
+    }
+
+    /// A host client's dial, accepted: a pending handshake, in the slot one silent longest
+    /// gives up where every slot is taken ([`Muxer::make_room`]); or refused, its connection
+    /// closed, where every slot is a connection's, as Firecracker's muxer refuses one past
+    /// its MAX_CONNECTIONS.
+    fn take(&mut self, stream: UnixStream) {
+        self.make_room();
+        if self.handshakes.len() + self.conns.len() >= self.slots {
+            debug!("vsock: every slot a connection's; a host connection refused");
+            return;
+        }
+        if let Err(e) = stream.set_nonblocking(true) {
+            debug!("vsock: host connection: {e}");
+            return;
+        }
+        self.handshakes.push(Handshake {
+            stream,
+            line: Vec::with_capacity(MAX_HANDSHAKE),
+            heard: Instant::now(),
+        });
+    }
+
+    /// Refuses the dial at the head of the listener's queue, which no descriptor is left to
+    /// take: the spare let go for it, the dial accepted and its connection closed at once,
+    /// which its client reads as its end before any answer, and the spare made again
+    /// (libev's documentation, "the special problem of accept()ing when you can't"; libuv's
+    /// `uv__emfile_trick`). Where another takes the descriptor first, a later round makes
+    /// the spare again ([`Muxer::on_events`]).
+    fn refuse_one(&mut self) {
+        let Some((_, listener)) = &self.listener else {
+            return;
+        };
+        self.spare = None;
+        match listener.accept() {
+            Ok(_) => debug!("vsock: no descriptor left for a host connection; refused"),
+            Err(e) => debug!("vsock: accept: {e}"),
+        }
+        self.spare = spare(listener).ok();
     }
 
     fn handshake(&mut self, i: usize) {
@@ -573,7 +651,7 @@ impl Muxer {
     }
 
     fn allocate_local_port(&mut self) -> u32 {
-        // At most MAX_CONNECTIONS are taken, so a free port is always near.
+        // At most its slots are taken, so a free port is always near.
         loop {
             self.last_local_port =
                 LOCAL_PORT_BASE | (self.last_local_port.wrapping_add(1) & (LOCAL_PORT_BASE - 1));
@@ -583,7 +661,7 @@ impl Muxer {
         }
     }
 
-    /// The earliest deadline of any connection. Handshakes have none ([`HANDSHAKE_TIMEOUT`]).
+    /// The earliest deadline of any connection. Handshakes have none ([`Handshake::heard`]).
     pub fn next_deadline(&self) -> Option<Instant> {
         self.conns.values().filter_map(Conn::expiry).min()
     }
@@ -629,7 +707,7 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
         match h.stream.read(dst) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(n) => {
-                h.deadline = Instant::now();
+                h.heard = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
                     return parse_connect(&h.line)
@@ -660,6 +738,45 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
     }
     let port = words.next()?.parse().ok()?;
     words.next().is_none().then_some(port)
+}
+
+/// A descriptor held for a dial no other descriptor is left for ([`Muxer::refuse_one`]):
+/// let go, it is the one accept takes. On Unix a copy of the listener's (dup(2)), which
+/// asks nothing a confined VM process may be refused.
+#[cfg(unix)]
+type Spare = UnixListener;
+/// On Windows, whose sockets are kernel handles, counted with the rest of a process's
+/// (WSAEMFILE), an event's, which a VM process in its AppContainer makes as its waker's is
+/// (mod.rs), where a copy of a socket asks for the process by its id (WSADuplicateSocketW).
+#[cfg(windows)]
+type Spare = std::os::windows::io::OwnedHandle;
+
+#[cfg(unix)]
+fn spare(listener: &UnixListener) -> io::Result<Spare> {
+    listener.try_clone()
+}
+
+#[cfg(windows)]
+fn spare(_listener: &UnixListener) -> io::Result<Spare> {
+    use std::os::windows::io::FromRawHandle as _;
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    // SAFETY: an unnamed event, of default security, reset by a wait, and not set.
+    let event = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle CreateEventW just made, which nothing else owns.
+    Ok(unsafe { Spare::from_raw_handle(event) })
+}
+
+/// Whether an accept found no descriptor for its connection: the process's are all open
+/// (EMFILE; WSAEMFILE on Windows), or on Unix the system's (ENFILE).
+fn out_of_descriptors(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    let out = [libc::EMFILE, libc::ENFILE];
+    #[cfg(windows)]
+    let out = [windows_sys::Win32::Networking::WinSock::WSAEMFILE];
+    e.raw_os_error().is_some_and(|code| out.contains(&code))
 }
 
 /// Connects without blocking: a host listener whose backlog is full refuses at once
@@ -717,6 +834,7 @@ fn connect_nonblocking(path: &Path) -> io::Result<UnixStream> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use std::io::Write as _;
+    use std::time::Duration;
 
     use super::*;
 
@@ -752,7 +870,7 @@ mod tests {
             let mut h = Handshake {
                 stream: server,
                 line: Vec::new(),
-                deadline: Instant::now(),
+                heard: Instant::now(),
             };
             client.write_all(line).unwrap();
             read_handshake(&mut h)
@@ -760,6 +878,128 @@ mod tests {
         assert_eq!(read(b"CONNECT 4294967295\r\n").unwrap(), Some(u32::MAX));
         assert_eq!(read(b"connect 4294967295\n").unwrap(), Some(u32::MAX));
         assert!(read(b"CONNECT  4294967295\r\n").is_err());
+    }
+
+    /// Set in the child `past_its_descriptors_a_dial_is_refused_at_once` runs.
+    #[cfg(unix)]
+    const LOWERED: &str = "SHARDS_VMM_MUXER_LOWERED";
+
+    /// Past the descriptors its process may open, a host's dial is refused at once, its
+    /// connection closed, where the muxer's accept fails EMFILE: not left in the listener's
+    /// queue, as the listener, polled again, fails again for ever. Run in a child of this
+    /// test binary, which lowers its soft descriptor limit (setrlimit(2)) to its lowest free
+    /// descriptor, so the next one any accept makes fails, once its clients have dialed
+    /// (D12; review: connections derived, refused typed, EMFILE included).
+    #[cfg(unix)]
+    #[test]
+    fn past_its_descriptors_a_dial_is_refused_at_once() {
+        const NAME: &str =
+            "devices::virtio::vsock::muxer::tests::past_its_descriptors_a_dial_is_refused_at_once";
+        const REFUSED: &str = "muxer child: every dial past its descriptors refused";
+        if std::env::var_os(LOWERED).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                .env(LOWERED, "1")
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && said.contains(REFUSED),
+                "{:?}\n{said}{}",
+                child.status,
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        let dir_guard = shards_testdir::TempDir::new("vsock-emfile").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        // An input: any few clients show it.
+        let mut clients: Vec<UnixStream> = (0..3).map(|_| UnixStream::connect(&dir).unwrap()).collect();
+        let mut was = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut was) }, 0);
+        // SAFETY: dup(2) of stdin, the lowest descriptor free: the next one made.
+        let lowest = unsafe { libc::dup(0) };
+        assert!(lowest >= 0);
+        // SAFETY: close(2) of the descriptor dup just made.
+        unsafe { libc::close(lowest) };
+        let lowered = libc::rlimit {
+            rlim_cur: libc::rlim_t::try_from(lowest).unwrap(),
+            rlim_max: was.rlim_max,
+        };
+        // SAFETY: setrlimit(2) from a local, in this child alone.
+        let set = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) };
+        assert_eq!(set, 0);
+        m.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        let ends: Vec<String> = clients
+            .iter_mut()
+            .map(|c| {
+                c.set_nonblocking(true).unwrap();
+                match c.read(&mut [0u8; 1]) {
+                    Ok(0) => "closed".to_string(),
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => "closed".to_string(),
+                    other => format!("{other:?}"),
+                }
+            })
+            .collect();
+        // SAFETY: setrlimit(2) from a local: the limit as it was, so the child ends cleanly.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const was) }, 0);
+        assert!(ends.iter().all(|e| e == "closed"), "{ends:?}");
+        println!("{REFUSED}");
+    }
+
+    /// Past its slots, every one a connection's, a host's dial is refused at once, its
+    /// connection closed, as Firecracker's muxer refuses one past its MAX_CONNECTIONS: not
+    /// left in the listener's queue until a connection ends (D12; review: connections
+    /// derived, refused typed past them).
+    #[test]
+    fn past_its_slots_a_dial_is_refused_at_once() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-full").unwrap();
+        let dir = dir_guard.join("v");
+        let (sender, _arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir.clone()),
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        // An input: one slot, which the guest's connection holds.
+        m.slots = 1;
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
+        assert_eq!(m.conns.len(), 1);
+        let mut client = UnixStream::connect(&dir).unwrap();
+        // What the device polls is what the muxer asks for, and the listener is ready.
+        let mut interests = Vec::new();
+        m.interests(&mut interests);
+        let ready: Vec<Ready<Option<Token>>> = interests
+            .iter()
+            .filter(|i| matches!(i.token, Some(Token::Listener)))
+            .map(|i| Ready {
+                token: i.token,
+                read: true,
+                write: false,
+            })
+            .collect();
+        m.on_events(&ready);
+        client.set_nonblocking(true).unwrap();
+        let end = client.read(&mut [0u8; 1]);
+        assert!(
+            matches!(&end, Ok(0))
+                || end
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == io::ErrorKind::ConnectionReset),
+            "a dial past its slots: {end:?}"
+        );
+        assert_eq!(m.conns.len(), 1, "the guest's connection kept");
     }
 
     /// A pending handshake waits on no clock: it outlives any deadline, and gives its slot
@@ -828,7 +1068,7 @@ mod tests {
         let mut h = Handshake {
             stream: server,
             line: Vec::new(),
-            deadline: Instant::now(),
+            heard: Instant::now(),
         };
         client.write_all(b"CONN").unwrap();
         assert_eq!(read_handshake(&mut h).unwrap(), None);
@@ -1064,48 +1304,49 @@ mod tests {
         }
     }
 
-    /// A restored muxer saved again before it has sent the resets it owes saves them
-    /// beside its own, and a restore reads them all (review 1.15): a full snapshot's, saved
-    /// again, round-trips.
+    /// A save holds one save's worth of streams, however many saves came before it with
+    /// none of their resets sent between: its connections, then the newest resets owed, as
+    /// many as a muxer never restored holds at most, its slots and a ring's worth of resets
+    /// ([`Muxer::stray_rst`]). A restore reads whatever a save wrote, a host's with more
+    /// slots too (review 1.15).
     #[test]
-    fn a_save_before_a_restores_resets_go_out_reads_back() {
+    fn a_save_holds_one_saves_worth_however_many_came_before() {
         let dir_guard = shards_testdir::TempDir::new("vsock-resave").unwrap();
-        let dir = dir_guard.join("v");
-        let mut m = Muxer::new(VsockHost::at(dir), 3).unwrap();
-        let full = MAX_CONNECTIONS + MAX_STRAY_RSTS;
-        let ports: Vec<(u32, u32)> = (0..full as u32)
+        let (sender, _arrived) = std::sync::mpsc::channel();
+        let host = VsockHost {
+            path: Some(dir_guard.join("v")),
+            ports: Vec::new(),
+            every: vec![(54, sender)],
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        // An input: few slots and small rings, which saves in a row outgrow.
+        m.slots = 3;
+        m.set_rings(4, 4);
+        let one = m.slots + m.max_stray_rsts;
+        // Restored from three saves' worth, none of whose resets went out; then the guest
+        // connects.
+        let held: Vec<(u32, u32)> = (0..3 * one as u32)
             .map(|i| (LOCAL_PORT_BASE + i, 1000 + i))
             .collect();
         m.restore(Saved {
-            ports: ports.clone(),
-            last_local_port: LOCAL_PORT_BASE + full as u32,
+            ports: held.clone(),
+            last_local_port: LOCAL_PORT_BASE + 3 * one as u32,
         });
-        // As many streams again as its own connections would hold (which a save holds
-        // beside the resets owed): past what one snapshot holds.
-        let own: Vec<(u32, u32)> = (0..MAX_CONNECTIONS as u32)
-            .map(|i| (LOCAL_PORT_BASE + 10_000 + i, 1))
-            .collect();
-        m.stray_rsts.extend(own.iter().copied());
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        m.on_guest_packet(&request(54, 49_152), &[], &mem);
         let saved = m.saved();
-        assert_eq!(saved.ports.len(), full + MAX_CONNECTIONS);
+        let mut kept = vec![(54, 49_152)];
+        kept.extend(held.iter().rev().take(one - 1));
+        assert_eq!(saved.ports, kept, "its connection, then the newest owed");
+        // A restore reads a save whole, one of a host with more slots too.
+        let bigger = Saved {
+            ports: held,
+            last_local_port: saved.last_local_port,
+        };
         let mut w = Writer::default();
-        saved.write(&mut w);
+        bigger.write(&mut w);
         let bytes = w.into_bytes();
-        let mut r = Reader::new(&bytes);
-        let read = Saved::read(&mut r).unwrap();
-        assert!(read.ports.iter().all(|p| ports.contains(p) || own.contains(p)));
-        assert_eq!(read.ports.len(), full + MAX_CONNECTIONS);
-        // Saved more than a restore reads, it keeps the newest.
-        let big_dir = shards_testdir::TempDir::new("vsock-big").unwrap();
-        let mut big = Muxer::new(VsockHost::at(big_dir.join("v")), 3).unwrap();
-        let many: Vec<(u32, u32)> = (0..(MAX_SAVED + 5) as u32).map(|i| (i, i)).collect();
-        big.stray_rsts.extend(many);
-        let saved = big.saved();
-        assert_eq!(saved.ports.len(), MAX_SAVED);
-        assert_eq!(
-            saved.ports.first(),
-            Some(&((MAX_SAVED + 4) as u32, (MAX_SAVED + 4) as u32))
-        );
+        assert_eq!(Saved::read(&mut Reader::new(&bytes)).unwrap(), bigger);
     }
 
     #[test]
