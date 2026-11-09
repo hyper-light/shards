@@ -88,7 +88,9 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
         pid: identity.pid,
         why,
     })?;
+    // Shared: its watcher thread waits on it for the guest's life, past this call, as the guest kills it.
     let process = Arc::new(process);
+    // Shared: the guest and its watcher thread, which outlives this call, each hold it while either lives.
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             exited: false,
@@ -174,6 +176,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         .stderr(stderr)
         .spawn()
         .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
+    // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
     let shared = Arc::new(Shared {
         state: Mutex::new(State {
             exited: false,
@@ -195,6 +198,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
     });
     #[cfg(unix)]
     let pid = child.id();
+    // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
     let child = Arc::new(Mutex::new(child));
     let started = start_threads(&shared, &child, output, writer);
     if let Err(e) = started {
