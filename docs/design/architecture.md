@@ -3314,6 +3314,56 @@ resident memory and `--` for the rest. Memory is the guest's truth: the files a
 microVM writes are memory while its writable layer is in guest memory (D37's open
 item).
 
+### D12's sizes and waits, and the boot console's: each from what it bounds
+
+**Found.** The vsock device's muxer (crates/vmm `devices/virtio/vsock/muxer.rs`) and the
+NS16550A console (`devices/serial.rs`) each held figures picked, not derived: 2 s for a
+host client's handshake line, 256 RSTs owed, a 32-byte handshake line (Firecracker's
+buffer, `src/vmm/src/devices/virtio/vsock/unix/muxer.rs` `read_local_stream_port`,
+edb60617) and a 4096-byte receive buffer whose overflow lost what a host pasted.
+
+**Decided** (the device's connection limit and what a snapshot keeps of its streams are
+D12's too, derived apart):
+- **A host client's handshake waits on no clock.** A pending handshake costs a slot and
+  nothing else; a client that is gone is seen at once, as its socket's end. One that is
+  alive keeps its slot while no other wants it, and gives it up only when every slot is
+  taken and a newcomer (a host client or a guest's dial) wants one, the handshake silent
+  longest first: its last progress is its accept, then its line's latest bytes
+  (`Muxer::make_room`). The line is a local process's to write as it runs, so a host so
+  loaded that the process runs late fails nothing, where 2 s cut it; and a cut cannot be
+  asked again on the client's behalf, which D222's restart cutoffs rest on.
+- **RSTs owed for packets that matched no connection follow the guest's rings**
+  (`stray_rsts_bound`, read at activation from the sizes the guest negotiated): one RST
+  answers one guest packet, and a round takes a TX ring of those at most (`step`); it
+  goes out in one RX buffer, and the RX ring holds at most its size, which Linux keeps
+  full. A guest taking its RSTs as they come has no more owed than the larger of the two;
+  past that it is not taking them, and more are dropped (a TX flood cannot block RX's
+  turn, audit A09, so they are not held back instead).
+- **A handshake line is as long as the protocol's words make it**, at compile time:
+  `CONNECT`, a space, a port of at most `u32::MAX`'s digits, and `\r\n` (a client's
+  terminal may end it so; `\n` is Firecracker's). Case and spacing are taken as
+  Firecracker takes them, within that length; a longer line is refused before its end.
+- **The console's receiver is the NS16550A's**: its 16-byte FIFO, or in 16450 mode its
+  one register, as the guest's driver sizes it. Host input waits for room instead of
+  overrunning it, as Firecracker reads stdin only as far as its FIFO has room, so nothing
+  typed or pasted is lost: what the guest has not drained waits in the host's own pipe or
+  terminal. A loopback write past the room overruns, as the datasheet's does. A
+  snapshot's receiver restores whole however long an older build made it.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `HANDSHAKE_TIMEOUT` (muxer.rs) | 2 s | none: `Duration::ZERO`, a slot given up only to a newcomer | the slot it holds (`make_room`); a client's end seen at once (poll.rs) |
+| `MAX_STRAY_RSTS` (muxer.rs) | 256 | `stray_rsts_bound(rx, tx)` = the larger negotiated ring, `QUEUE_SIZE`'s before activation | virtio 1.3 §2.7 (queue size); Linux net/vmw_vsock/virtio_transport.c `virtio_vsock_rx_fill` (`while (vq->num_free)`, l. 336) and `virtio_transport_more_replies` (replies owed < the vring's size, l. 374-383), Linux 1590cf03 |
+| `MIN_HANDSHAKE` (muxer.rs) | 10 | `handshake_len(decimal_digits(0), "\n")` = 10 | firecracker docs/vsock.md l. 55-57 (`CONNECT PORT\n`, decimal), edb60617 |
+| `MAX_HANDSHAKE` (muxer.rs) | 32 | `handshake_len(decimal_digits(u32::MAX), "\r\n")` = 20 | the same, and the port's type, a u32 (virtio 1.3 §5.10.6, `le32 src_port, dst_port`) |
+| `RX_CAPACITY` (serial.rs) | 4096 | `RX_FIFO` = 16 in FIFO mode, 1 in 16450 mode, host input flow-controlled | PC16550D datasheet ("16 byte FIFOs"); Linux drivers/tty/serial/8250/8250_port.c `uart_config[PORT_16550A]` (`.fifo_size = 16`, l. 66-68); Firecracker src/vmm/src/devices/legacy/serial.rs `recv_bytes` (l. 220-236) |
+
+Held by unit tests (`handshake_lines_are_bounded_by_the_protocols_words`,
+`a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it`,
+`stray_resets_owed_follow_the_guests_rings`, `host_input_waits_for_room_and_loses_nothing`,
+`an_older_snapshots_longer_receive_buffer_restores`). Owed: E2E runs on KVM,
+Hypervisor.framework and WHP, and the 8-target lint.
+
 ### Devices and block I/O (D44)
 
 A microVM's workload reaches the devices Docker gives a container and those it is given, and no other of

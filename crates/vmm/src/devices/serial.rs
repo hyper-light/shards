@@ -7,11 +7,11 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use super::{Interrupt, MmioDevice};
 use crate::snapshot::codec::{self, Reader, Writer};
-use crate::sync::lock;
+use crate::sync::{lock, wait};
 
 const RBR_THR_DLL: u64 = 0;
 const IER_DLM: u64 = 1;
@@ -48,8 +48,15 @@ const MSR_DSR: u8 = 1 << 5;
 const MSR_RI: u8 = 1 << 6;
 const MSR_DCD: u8 = 1 << 7;
 
-/// Receive buffer: generous so pasted input isn't dropped while the guest drains it.
-const RX_CAPACITY: usize = 4096;
+/// The receive FIFO's depth in FIFO mode (FCR bit 0 set): the NS16550A's 16 bytes
+/// (PC16550D datasheet, "In the FIFO mode, transmitter and receiver are each buffered with
+/// 16 byte FIFOs"; Linux 8250_port.c `uart_config[PORT_16550A].fifo_size`, which the
+/// guest's driver sizes its reads by). In 16450 mode, the receiver buffer register's one
+/// byte ([`rx_capacity`]). Host input waits for room rather than overrun it
+/// ([`Serial::input`]), as Firecracker reads stdin only as far as its FIFO has room
+/// (src/vmm/src/devices/legacy/serial.rs `recv_bytes`), so what the guest has not drained
+/// stays in the host's own buffers, the input's pipe or terminal.
+const RX_FIFO: usize = 16;
 /// What is kept of the console's output, its last bytes ([`Serial::said`]): a page. A
 /// kernel's panic and the errors before it wrote 1,129 bytes to a console told to be
 /// `quiet`, 858 of them from its panic's line to its reset (6.18 on arm64, a root it could
@@ -67,6 +74,8 @@ struct State {
     /// THR-empty interrupt is pending until IIR reports it or THR is written.
     thri_pending: bool,
     overrun: bool,
+    /// Received bytes the guest has not read, at most [`rx_capacity`] but for a snapshot's
+    /// of an older build, which the guest drains first.
     rx: VecDeque<u8>,
     out: Box<dyn Write + Send>,
     /// The console's last bytes, at most [`SAID`].
@@ -76,7 +85,14 @@ struct State {
 
 pub struct Serial {
     state: Mutex<State>,
+    /// Signalled as the receive buffer gains room, for host input waiting on it.
+    room: Condvar,
     irq: Arc<dyn Interrupt>,
+}
+
+/// How many bytes the receiver holds: its FIFO, or in 16450 mode its one register.
+fn rx_capacity(s: &State) -> usize {
+    if s.fifo_enabled { RX_FIFO } else { 1 }
 }
 
 impl std::fmt::Debug for Serial {
@@ -103,6 +119,7 @@ impl Serial {
                 said: VecDeque::new(),
                 level: false,
             }),
+            room: Condvar::new(),
             irq,
         }
     }
@@ -122,17 +139,30 @@ impl Serial {
         said
     }
 
-    /// Queues host input for the guest. Bytes beyond the buffer set the overrun flag.
-    pub fn enqueue_input(&self, bytes: &[u8]) {
+    /// Gives host input to the guest, waiting while its receiver has no room: as a line
+    /// with flow control, nothing is lost, and what the guest has not taken waits in the
+    /// caller.
+    pub fn input(&self, mut bytes: &[u8]) {
         let mut s = lock(&self.state);
-        for &b in bytes {
-            if s.rx.len() < RX_CAPACITY {
-                s.rx.push_back(b);
-            } else {
-                s.overrun = true;
+        loop {
+            let took = Self::enqueue(&mut s, bytes);
+            bytes = bytes.get(took..).unwrap_or_default();
+            if took > 0 {
+                self.update_irq(&mut s);
             }
+            if bytes.is_empty() {
+                return;
+            }
+            s = wait(&self.room, s);
         }
-        self.update_irq(&mut s);
+    }
+
+    /// Queues as much of `bytes` as the receiver has room for; returns how many it took.
+    fn enqueue(s: &mut State, bytes: &[u8]) -> usize {
+        let room = rx_capacity(s).saturating_sub(s.rx.len());
+        let took = bytes.len().min(room);
+        s.rx.extend(bytes.iter().take(took));
+        took
     }
 
     fn pending(s: &State) -> u8 {
@@ -175,7 +205,13 @@ impl MmioDevice for Serial {
         let dlab = s.lcr & LCR_DLAB != 0;
         let v = match offset {
             RBR_THR_DLL if dlab => s.dll,
-            RBR_THR_DLL => s.rx.pop_front().unwrap_or(0),
+            RBR_THR_DLL => match s.rx.pop_front() {
+                Some(b) => {
+                    self.room.notify_all();
+                    b
+                }
+                None => 0,
+            },
             IER_DLM if dlab => s.dlm,
             IER_DLM => s.ier,
             IIR_FCR => {
@@ -216,7 +252,7 @@ impl MmioDevice for Serial {
             RBR_THR_DLL if dlab => s.dll = v,
             RBR_THR_DLL => {
                 if s.mcr & MCR_LOOP != 0 {
-                    if s.rx.len() < RX_CAPACITY {
+                    if s.rx.len() < rx_capacity(&s) {
                         s.rx.push_back(v);
                     } else {
                         s.overrun = true;
@@ -246,6 +282,7 @@ impl MmioDevice for Serial {
                 if v & 0x02 != 0 {
                     s.rx.clear();
                 }
+                self.room.notify_all();
             }
             LCR => s.lcr = v,
             MCR => s.mcr = v & 0x1f,
@@ -287,14 +324,12 @@ impl MmioDevice for Serial {
         s.fifo_enabled = r.bool()?;
         s.thri_pending = r.bool()?;
         s.overrun = r.bool()?;
-        let n = r.u32()? as usize;
-        if n > RX_CAPACITY {
-            return Err(codec::DecodeError(format!("UART receive buffer of {n}")));
-        }
+        // As many bytes as the snapshot holds: an older build's held up to 4096, which the
+        // guest drains before host input finds room again.
+        let rx = r.bytes(u32::MAX as usize)?;
         s.rx.clear();
-        for _ in 0..n {
-            s.rx.push_back(r.u8()?);
-        }
+        s.rx.extend(rx);
+        self.room.notify_all();
         s.level = false;
         self.update_irq(&mut s);
         Ok(())
@@ -372,7 +407,8 @@ mod tests {
         assert_eq!(rd(&s, LSR) & (LSR_THRE | LSR_TEMT), LSR_THRE | LSR_TEMT);
 
         // RX interrupt only once enabled; clears when the FIFO drains.
-        s.enqueue_input(b"ab");
+        s.write(IIR_FCR, &[1]);
+        s.input(b"ab");
         assert!(!line.0.load(Ordering::SeqCst));
         s.write(IER_DLM, &[IER_RDI]);
         assert!(line.0.load(Ordering::SeqCst));
@@ -408,11 +444,71 @@ mod tests {
         assert_eq!(rd(&s, RBR_THR_DLL), 0x5a);
     }
 
+    /// A loopback write past the receiver's room overruns it, as the datasheet's does.
     #[test]
     fn overrun_is_reported_and_cleared() {
         let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
-        s.enqueue_input(&vec![0u8; RX_CAPACITY + 1]);
+        s.write(IIR_FCR, &[1]);
+        s.write(MCR, &[MCR_LOOP]);
+        for _ in 0..=RX_FIFO {
+            s.write(RBR_THR_DLL, &[0x5a]);
+        }
         assert_eq!(rd(&s, LSR) & LSR_OE, LSR_OE);
         assert_eq!(rd(&s, LSR) & LSR_OE, 0);
+    }
+
+    /// A snapshot of an older build, whose receiver held more than the FIFO's depth,
+    /// restores whole, and the guest reads it all.
+    #[test]
+    fn an_older_snapshots_longer_receive_buffer_restores() {
+        let mut w = Writer::default();
+        for v in [0, 3, MCR_OUT2, 0, 12, 0] {
+            w.u8(v);
+        }
+        w.bool(true);
+        w.bool(false);
+        w.bool(false);
+        let held: Vec<u8> = (0..=u8::MAX).cycle().take(4096).collect();
+        w.u32(held.len() as u32);
+        held.iter().for_each(|&b| w.u8(b));
+        let bytes = w.into_bytes();
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
+        let mut r = Reader::new(&bytes);
+        s.restore(&mut r).unwrap();
+        r.finish().unwrap();
+        let read: Vec<u8> = held.iter().map(|_| rd(&s, RBR_THR_DLL)).collect();
+        assert_eq!(read, held);
+        assert_eq!(rd(&s, LSR) & LSR_DR, 0);
+    }
+
+    /// Host input fills the receiver to its depth, the FIFO's or in 16450 mode its one
+    /// byte, and waits there; each byte the guest reads makes room for the next, and none
+    /// is lost or overruns.
+    #[test]
+    fn host_input_waits_for_room_and_loses_nothing() {
+        let s = Serial::new(Box::new(Sink::default()), Arc::new(Line::default()));
+        let typed: Vec<u8> = (0..=u8::MAX).cycle().take(5 * RX_FIFO + 3).collect();
+        let mut read = Vec::new();
+        std::thread::scope(|scope| {
+            scope.spawn(|| s.input(&typed));
+            // In 16450 mode the receiver holds one byte; then the FIFO, once enabled.
+            while rd(&s, LSR) & LSR_DR == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(lock(&s.state).rx.len(), 1);
+            read.push(rd(&s, RBR_THR_DLL));
+            s.write(IIR_FCR, &[1]);
+            while read.len() < typed.len() {
+                let held = lock(&s.state).rx.len();
+                assert!(held <= RX_FIFO, "{held}");
+                if rd(&s, LSR) & LSR_DR != 0 {
+                    read.push(rd(&s, RBR_THR_DLL));
+                } else {
+                    std::thread::yield_now();
+                }
+            }
+        });
+        assert_eq!(read, typed);
+        assert_eq!(rd(&s, LSR) & LSR_OE, 0, "no overrun");
     }
 }

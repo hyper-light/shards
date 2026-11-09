@@ -39,8 +39,8 @@ use crate::vm::VsockHost;
 
 /// Open connections and pending handshakes together (Firecracker's MAX_CONNECTIONS).
 const MAX_CONNECTIONS: usize = 1023;
-/// RSTs owed for packets that matched no connection, beyond which more are dropped.
-const MAX_STRAY_RSTS: usize = 256;
+/// RSTs owed, at most, for the largest rings a guest may negotiate ([`stray_rsts_bound`]).
+const MAX_STRAY_RSTS: usize = stray_rsts_bound(super::QUEUE_SIZE, super::QUEUE_SIZE);
 /// Streams a snapshot holds the ports of, at most (review 1.15): a muxer's connections and
 /// owed resets, and a restored one's are all owed resets, which a save made before they
 /// go out holds again beside its own connections. So the bound is that of 64 saves in a
@@ -49,11 +49,58 @@ const MAX_STRAY_RSTS: usize = 256;
 const MAX_SAVED: usize = 64 * (MAX_CONNECTIONS + MAX_STRAY_RSTS);
 /// The shortest handshake line, `CONNECT 0\n`. Reading this much first, then a byte at a
 /// time, never consumes data a client sends after its line.
-const MIN_HANDSHAKE: usize = 10;
-const MAX_HANDSHAKE: usize = 32;
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
+const MIN_HANDSHAKE: usize = handshake_len(decimal_digits(0), LF);
+/// The longest handshake line: `CONNECT 4294967295\r\n`. A longer one is refused before
+/// its end: a port has at most `u32::MAX`'s digits, and its words one space between them.
+const MAX_HANDSHAKE: usize = handshake_len(decimal_digits(u32::MAX), CRLF);
+/// How long a pending handshake holds its slot against a newcomer once accepted: not at
+/// all, by any clock. A client that is gone is seen at once, as its socket's end; one that
+/// is alive keeps its slot while no other wants it, and gives it up, silent longest first,
+/// when one does ([`Muxer::make_room`]). Its line is a local process's to write, as soon
+/// as the process runs, so a load that delays the process delays nothing else (D12).
+const HANDSHAKE_TIMEOUT: Duration = Duration::ZERO;
 /// Host ports for host-initiated connections come from [2^30, 2^31), as in Firecracker.
 const LOCAL_PORT_BASE: u32 = 1 << 30;
+
+/// The handshake's words (firecracker docs/vsock.md: `CONNECT PORT\n`, PORT in decimal),
+/// whose line a client's terminal may end with `\r\n` as well.
+const CONNECT: &[u8] = b"CONNECT";
+const SPACE: &[u8] = b" ";
+const LF: &[u8] = b"\n";
+const CRLF: &[u8] = b"\r\n";
+
+/// The decimal digits of `n`.
+const fn decimal_digits(mut n: u32) -> usize {
+    let mut digits = 1;
+    while n >= 10 {
+        n /= 10;
+        digits += 1;
+    }
+    digits
+}
+
+/// A handshake line's length: its words, a port of `digits` digits, and `end`.
+const fn handshake_len(digits: usize, end: &[u8]) -> usize {
+    CONNECT.len() + SPACE.len() + digits + end.len()
+}
+
+/// RSTs owed for packets that matched no connection, beyond which more are dropped, for a
+/// guest whose RX ring holds `rx_ring` buffers and whose TX ring `tx_ring` (the sizes it
+/// negotiated, virtio 1.3 §2.7, at most the device's). An RST answers one guest packet,
+/// and a round takes at most a TX ring of those (`step`); it is a packet of its own, one RX
+/// buffer each (`fill_rx`), and the RX ring holds at most `rx_ring` buffers at once, which
+/// Linux's driver keeps full (net/vmw_vsock/virtio_transport.c `virtio_vsock_rx_fill`,
+/// `while (vq->num_free)`). So a guest that takes its RSTs as they come never has more
+/// owed than one round answers or one RX ring takes, whichever is more; past that, it is
+/// not taking them. Linux bounds its own replies owed the same way, to a ring's size
+/// (`virtio_transport_more_replies`).
+pub(super) const fn stray_rsts_bound(rx_ring: u16, tx_ring: u16) -> usize {
+    if rx_ring > tx_ring {
+        rx_ring as usize
+    } else {
+        tx_ring as usize
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Key {
@@ -74,6 +121,8 @@ pub enum Token {
 struct Handshake {
     stream: UnixStream,
     line: Vec<u8>,
+    /// Its latest progress: its accept, then the latest bytes of its line. The handshake
+    /// silent longest gives its slot up first ([`Muxer::make_room`]).
     deadline: Instant,
 }
 
@@ -122,6 +171,9 @@ pub struct Muxer {
     rxq: VecDeque<Key>,
     /// RSTs for packets that matched no connection: (host port, guest port).
     stray_rsts: VecDeque<(u32, u32)>,
+    /// How many [`stray_rsts`](Muxer::stray_rsts) may be owed: [`stray_rsts_bound`] of the
+    /// guest's rings ([`Muxer::set_rings`]), of the largest it may negotiate until then.
+    max_stray_rsts: usize,
     local_ports: HashSet<u32>,
     last_local_port: u32,
 }
@@ -160,6 +212,7 @@ impl Muxer {
             lingering: Vec::new(),
             rxq: VecDeque::new(),
             stray_rsts: VecDeque::new(),
+            max_stray_rsts: MAX_STRAY_RSTS,
             local_ports: HashSet::new(),
             last_local_port: LOCAL_PORT_BASE - 1,
         })
@@ -201,16 +254,46 @@ impl Muxer {
         self.last_local_port = saved.last_local_port;
     }
 
+    /// The sizes of the RX and TX rings the guest negotiated, which bound the RSTs owed.
+    pub fn set_rings(&mut self, rx: u16, tx: u16) {
+        self.max_stray_rsts = stray_rsts_bound(rx, tx);
+    }
+
     pub fn has_pending_rx(&self) -> bool {
         !self.stray_rsts.is_empty() || !self.rxq.is_empty()
     }
 
+    /// The slots no newcomer can take: connections. A pending handshake gives its own up
+    /// to one ([`Muxer::make_room`]).
     fn open(&self) -> usize {
-        self.conns.len() + self.handshakes.len()
+        self.conns.len()
+    }
+
+    /// Where every slot is taken, frees one for a newcomer: the pending handshake silent
+    /// longest gives its slot up (the client sees its socket close).
+    fn make_room(&mut self) {
+        self.make_room_within(MAX_CONNECTIONS);
+    }
+
+    /// [`make_room`](Muxer::make_room) where `slots` are all there are.
+    fn make_room_within(&mut self, slots: usize) {
+        if self.handshakes.len() + self.conns.len() < slots {
+            return;
+        }
+        let silent = self
+            .handshakes
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, h)| h.deadline)
+            .map(|(i, _)| i);
+        if let Some(i) = silent {
+            debug!("vsock: every slot taken; a host connection silent longest gives its own up");
+            self.handshakes.swap_remove(i);
+        }
     }
 
     fn stray_rst(&mut self, local_port: u32, peer_port: u32) {
-        if self.stray_rsts.len() < MAX_STRAY_RSTS {
+        if self.stray_rsts.len() < self.max_stray_rsts {
             self.stray_rsts.push_back((local_port, peer_port));
         }
     }
@@ -308,6 +391,7 @@ impl Muxer {
         };
         match connected {
             Ok(stream) => {
+                self.make_room();
                 self.conns
                     .insert(key, Conn::guest_initiated(stream, self.guest_cid, request));
                 self.enqueue(key);
@@ -389,12 +473,13 @@ impl Muxer {
     /// Acts on what became ready.
     pub fn on_events(&mut self, events: &[Ready<Option<Token>>]) {
         let mut ready_handshakes = Vec::new();
+        let mut listener = false;
         #[cfg(windows)]
         let mut ready_lingering = Vec::new();
         for e in events {
             match e.token {
                 None => {}
-                Some(Token::Listener) => self.accept(),
+                Some(Token::Listener) => listener = true,
                 Some(Token::Handshake(i)) => ready_handshakes.push(i),
                 #[cfg(windows)]
                 Some(Token::Lingering(i)) => ready_lingering.push(i),
@@ -416,6 +501,11 @@ impl Muxer {
         ready_handshakes.sort_unstable_by(|a, b| b.cmp(a));
         for i in ready_handshakes {
             self.handshake(i);
+        }
+        // After the handshakes, whose indices a slot given up would move.
+        if listener {
+            self.make_room();
+            self.accept();
         }
         #[cfg(windows)]
         {
@@ -493,16 +583,13 @@ impl Muxer {
         }
     }
 
-    /// The earliest deadline of any handshake or connection.
+    /// The earliest deadline of any connection. Handshakes have none ([`HANDSHAKE_TIMEOUT`]).
     pub fn next_deadline(&self) -> Option<Instant> {
-        let handshakes = self.handshakes.iter().map(|h| h.deadline);
-        let conns = self.conns.values().filter_map(Conn::expiry);
-        handshakes.chain(conns).min()
+        self.conns.values().filter_map(Conn::expiry).min()
     }
 
-    /// Drops late handshakes and resets late connections.
+    /// Resets late connections.
     pub fn expire(&mut self, now: Instant) {
-        self.handshakes.retain(|h| h.deadline > now);
         let late: Vec<Key> = self
             .conns
             .iter_mut()
@@ -542,6 +629,7 @@ fn read_handshake(h: &mut Handshake) -> io::Result<Option<u32>> {
         match h.stream.read(dst) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
             Ok(n) => {
+                h.deadline = Instant::now();
                 h.line.extend(dst.iter().take(n));
                 if h.line.contains(&b'\n') {
                     return parse_connect(&h.line)
@@ -567,7 +655,7 @@ fn parse_connect(line: &[u8]) -> Option<u32> {
         return None;
     }
     let mut words = command.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case("connect") {
+    if !words.next()?.as_bytes().eq_ignore_ascii_case(CONNECT) {
         return None;
     }
     let port = words.next()?.parse().ok()?;
@@ -647,6 +735,90 @@ mod tests {
         ] {
             assert_eq!(parse_connect(bad), None, "{:?}", String::from_utf8_lossy(bad));
         }
+    }
+
+    /// The handshake's bounds are its own words': `CONNECT 0\n` the shortest line, and
+    /// `CONNECT 4294967295\r\n` the longest, which is read whole, where a byte more is
+    /// refused before its end.
+    #[test]
+    fn handshake_lines_are_bounded_by_the_protocols_words() {
+        assert_eq!(MIN_HANDSHAKE, b"CONNECT 0\n".len());
+        assert_eq!(MAX_HANDSHAKE, b"CONNECT 4294967295\r\n".len());
+        assert_eq!(decimal_digits(9), 1);
+        assert_eq!(decimal_digits(10), 2);
+        let read = |line: &[u8]| {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            server.set_nonblocking(true).unwrap();
+            let mut h = Handshake {
+                stream: server,
+                line: Vec::new(),
+                deadline: Instant::now(),
+            };
+            client.write_all(line).unwrap();
+            read_handshake(&mut h)
+        };
+        assert_eq!(read(b"CONNECT 4294967295\r\n").unwrap(), Some(u32::MAX));
+        assert_eq!(read(b"connect 4294967295\n").unwrap(), Some(u32::MAX));
+        assert!(read(b"CONNECT  4294967295\r\n").is_err());
+    }
+
+    /// A pending handshake waits on no clock: it outlives any deadline, and gives its slot
+    /// up only to a newcomer, the one silent longest first.
+    #[test]
+    fn a_silent_handshake_keeps_its_slot_until_a_newcomer_wants_it() {
+        let dir_guard = shards_testdir::TempDir::new("vsock-room").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        let mut clients = Vec::new();
+        for _ in 0..3 {
+            clients.push(UnixStream::connect(&dir).unwrap());
+            m.on_events(&[Ready {
+                token: Some(Token::Listener),
+                read: true,
+                write: false,
+            }]);
+        }
+        assert_eq!(m.handshakes.len(), 3);
+        assert_eq!(m.next_deadline(), None, "no clock on a handshake");
+        m.expire(Instant::now() + Duration::from_secs(3600));
+        assert_eq!(m.handshakes.len(), 3, "kept past any deadline");
+        // The first two clients, accepted first, write part of their lines: the third is
+        // silent longest.
+        for (client, h) in clients.iter_mut().zip(&mut m.handshakes).take(2) {
+            client.write_all(b"CONN").unwrap();
+            assert_eq!(read_handshake(h).unwrap(), None);
+        }
+        m.make_room_within(4);
+        assert_eq!(m.handshakes.len(), 3, "a slot free: none gives its own up");
+        m.make_room_within(3);
+        assert_eq!(m.handshakes.len(), 2);
+        assert!(
+            m.handshakes.iter().all(|h| h.line == b"CONN"),
+            "the silent one went"
+        );
+        let mut buf = [0u8; 1];
+        assert_eq!(clients[2].read(&mut buf).unwrap(), 0, "its client sees its end");
+    }
+
+    /// RSTs owed for packets that matched nothing are bounded by the guest's rings: one
+    /// round's TX packets, or one RX ring, whichever is more.
+    #[test]
+    fn stray_resets_owed_follow_the_guests_rings() {
+        assert_eq!(stray_rsts_bound(64, 128), 128);
+        assert_eq!(stray_rsts_bound(256, 16), 256);
+        let host = VsockHost {
+            path: None,
+            ports: Vec::new(),
+            every: Vec::new(),
+        };
+        let mut m = Muxer::new(host, 3).unwrap();
+        assert_eq!(m.max_stray_rsts, MAX_STRAY_RSTS);
+        m.set_rings(64, 128);
+        let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
+        for from in 0..200 {
+            m.on_guest_packet(&request(7, 50_000 + from), &[], &mem);
+        }
+        assert_eq!(m.stray_rsts.len(), 128);
     }
 
     #[test]
