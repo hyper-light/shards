@@ -11448,9 +11448,14 @@ mod tests {
             assert_eq!(said.kind, kind::RESTART);
             // Before any request was whole, a second, drawn from [1 s, 2 s).
             assert!(took >= Duration::from_secs(1) && took < PATIENCE, "{took:?}");
-            let seen = lock(&t.daemon.seen);
-            assert_eq!(seen.cuts, 1);
-            assert!(seen.request_wait(0.0) >= Duration::from_secs(2));
+            {
+                let seen = lock(&t.daemon.seen);
+                assert_eq!(seen.cuts, 1);
+                assert!(seen.request_wait(0.0) >= Duration::from_secs(2));
+            }
+            drop(client);
+            // Its slots' maker ends as the daemon closes.
+            t.daemon.close();
         });
     }
 
