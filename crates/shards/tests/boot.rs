@@ -2102,6 +2102,7 @@ fn a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes() {
     std::fs::create_dir(&rw).unwrap();
     let args = [
         "run",
+        "vm",
         "--kernel",
         kernel().to_str().unwrap(),
         "--init",
