@@ -762,6 +762,81 @@ mod tests {
         assert!(read(b"CONNECT  4294967295\r\n").is_err());
     }
 
+    /// Set in the child `past_its_descriptors_a_dial_is_refused_at_once` runs.
+    #[cfg(unix)]
+    const LOWERED: &str = "SHARDS_VMM_MUXER_LOWERED";
+
+    /// Past the descriptors its process may open, a host's dial is refused at once, its
+    /// connection closed, where the muxer's accept fails EMFILE: not left in the listener's
+    /// queue, as the listener, polled again, fails again for ever. Run in a child of this
+    /// test binary, which lowers its soft descriptor limit (setrlimit(2)) to its lowest free
+    /// descriptor, so the next one any accept makes fails, once its clients have dialed
+    /// (D12; review: connections derived, refused typed, EMFILE included).
+    #[cfg(unix)]
+    #[test]
+    fn past_its_descriptors_a_dial_is_refused_at_once() {
+        const NAME: &str =
+            "devices::virtio::vsock::muxer::tests::past_its_descriptors_a_dial_is_refused_at_once";
+        const REFUSED: &str = "muxer child: every dial past its descriptors refused";
+        if std::env::var_os(LOWERED).is_none() {
+            let child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                .env(LOWERED, "1")
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&child.stdout);
+            assert!(
+                child.status.success() && said.contains(REFUSED),
+                "{:?}\n{said}{}",
+                child.status,
+                String::from_utf8_lossy(&child.stderr)
+            );
+            return;
+        }
+        let dir_guard = shards_testdir::TempDir::new("vsock-emfile").unwrap();
+        let dir = dir_guard.join("v");
+        let mut m = Muxer::new(VsockHost::at(dir.clone()), 3).unwrap();
+        // An input: any few clients show it.
+        let mut clients: Vec<UnixStream> = (0..3).map(|_| UnixStream::connect(&dir).unwrap()).collect();
+        let mut was = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit(2) into a local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut was) }, 0);
+        // SAFETY: dup(2) of stdin, the lowest descriptor free: the next one made.
+        let lowest = unsafe { libc::dup(0) };
+        assert!(lowest >= 0);
+        // SAFETY: close(2) of the descriptor dup just made.
+        unsafe { libc::close(lowest) };
+        let lowered = libc::rlimit {
+            rlim_cur: libc::rlim_t::try_from(lowest).unwrap(),
+            rlim_max: was.rlim_max,
+        };
+        // SAFETY: setrlimit(2) from a local, in this child alone.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) }, 0);
+        m.on_events(&[Ready {
+            token: Some(Token::Listener),
+            read: true,
+            write: false,
+        }]);
+        let ends: Vec<String> = clients
+            .iter_mut()
+            .map(|c| {
+                c.set_nonblocking(true).unwrap();
+                match c.read(&mut [0u8; 1]) {
+                    Ok(0) => "closed".to_string(),
+                    Err(e) if e.kind() == io::ErrorKind::ConnectionReset => "closed".to_string(),
+                    other => format!("{other:?}"),
+                }
+            })
+            .collect();
+        // SAFETY: setrlimit(2) from a local: the limit as it was, so the child ends cleanly.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const was) }, 0);
+        assert!(ends.iter().all(|e| e == "closed"), "{ends:?}");
+        println!("{REFUSED}");
+    }
+
     /// A pending handshake waits on no clock: it outlives any deadline, and gives its slot
     /// up only to a newcomer, the one silent longest first.
     #[test]
