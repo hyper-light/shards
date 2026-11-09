@@ -201,23 +201,29 @@ pub(super) fn inherit(fds: Vec<std::os::fd::OwnedFd>) -> Result<(), String> {
     Ok(())
 }
 
-/// `args` with each `--share` in its served place, and the VM's ends, each named.
+/// `args` with each `--share` in its served place, the VM's ends, each named, and the share
+/// process serving them, where there are any.
 #[cfg(windows)]
-pub(super) type Served = (Vec<OsString>, Vec<(String, std::os::windows::io::OwnedHandle)>);
+pub(super) type Served = (
+    Vec<OsString>,
+    Vec<(String, std::os::windows::io::OwnedHandle)>,
+    Option<shards_ipc::Child>,
+);
 
 /// The share streams of `args`' `--share`s on Windows (D197): a share process started on
-/// the directories, given each share's server end of a duplex pipe, and the VM's ends,
+/// the directories in `job`, the direct boot's, which ends it as its client ends however
+/// that ends (D141), given each share's server end of a duplex pipe; and the VM's ends,
 /// named `share-{i}`, for the VM to be given as `--slates-fs share-{i}`, which takes the
 /// place of each `--share`.
 #[cfg(windows)]
-pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
+pub(super) fn served(args: &[OsString], job: &shards_ipc::GroupJob) -> Result<Served, String> {
     use std::os::windows::io::AsHandle as _;
     if args.first().is_none_or(|a| a != "run") {
-        return Ok((args.to_vec(), Vec::new()));
+        return Ok((args.to_vec(), Vec::new(), None));
     }
     let (kept, shares) = take(args.get(1..).unwrap_or_default())?;
     if shares.is_empty() {
-        return Ok((args.to_vec(), Vec::new()));
+        return Ok((args.to_vec(), Vec::new(), None));
     }
     let dirs = opened(&shares)?;
     let ghosts = private_dir()?;
@@ -242,10 +248,17 @@ pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
         ));
     }
     let env = crate::netproc::child_env();
-    // Detached, as Unix's leads a session of its own: out of reach of a Ctrl-C meant for the
-    // VM (review 11).
-    shards_ipc::spawn_detached(&exe, &share_args(&shares), &fds, &crate::netproc::env_pairs(&env))
-        .map_err(|e| format!("starting the share process: {e}"))?;
+    // Detached from the console, as Unix's leads a session of its own: out of reach of a
+    // Ctrl-C meant for the VM (review 11). In the direct boot's job, breaking away from
+    // none: ended with its client, as Unix's ends with its VM, the client itself.
+    let child = shards_ipc::spawn_detached(
+        Some(job),
+        &exe,
+        &share_args(&shares),
+        &fds,
+        &crate::netproc::env_pairs(&env),
+    )
+    .map_err(|e| format!("starting the share process: {e}"))?;
     let mut with: Vec<OsString> = vec!["run".into()];
     let mut given = Vec::with_capacity(n);
     let at = kept.iter().position(|a| a == "--").unwrap_or(kept.len());
@@ -256,7 +269,7 @@ pub(super) fn served(args: &[OsString]) -> Result<Served, String> {
         given.push((name, vm));
     }
     with.extend(kept.iter().skip(at).cloned());
-    Ok((with, given))
+    Ok((with, given, Some(child)))
 }
 
 #[cfg(test)]

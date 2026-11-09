@@ -2847,8 +2847,15 @@ microVM as virtio-fs shares (virtio 1.3 §5.11; Linux fs/fuse/virtio_fs.c):
   run's, unchanged (`fs::server::Server`, `fs::answer`); a last `:ro` is its read-only
   mode, as `--disk`'s, and every other colon the path's. Its tags follow any
   `--slates-fs-fd` given beside them: with k of those, the i-th `--share` is `shards{k+i}`,
-  as the share connections are handed on after the flags given. Test: boot.rs
-  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`; shards-api's
+  as the share connections are handed on after the flags given. None of its processes
+  outlives its client, however the client ends (SIGKILL, TerminateProcess): on Unix the
+  client is the VM, and the share process (and macOS's broker, Linux's working-set writer)
+  ends as its connection to the VM closes, which the kernel closes as the VM ends; on
+  Windows, which has no exec, the client makes the share process (detached from its
+  console, out of the VM's Ctrl-C) and the VM process's own Job in a job it alone holds,
+  which ends both as it ends (D141). Tests: boot.rs
+  `a_direct_boot_writes_through_a_share_and_not_through_a_read_only_one`,
+  `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`; shards-api's
   conformance suite on real guests, boot.rs `shards_api_conforms_on_real_guests`.
 - **A share another server serves** (`shards run vm --kernel … --slates-fs-fd N`): a direct
   run's share slot (`shards{i}`, after any of its own) given a connected socket its spawner
@@ -14010,6 +14017,28 @@ was built on [PM M200-M203]:
   forbids itself once its partition is set up (SetProcessMitigationPolicy), since
   windows-2022 sets no partition up without it, while every call a VM makes after its
   setup works [PM M202]; the library never does, as a test's process sets up many.
+- **A direct boot's processes end with its client, however it ends.** Its VM's Job ended
+  the VM as its spawner was killed, but its share process (D38, D197), detached from the
+  console so that the VM's Ctrl-C misses it, also broke away from every job
+  (CREATE_BREAKAWAY_FROM_JOB) and outlived a client ended by TerminateProcess (one found on
+  jupiter hours after its test; boot.rs
+  `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes`). So `run vm --kernel`
+  and `restore` make a job first, with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, set through
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION, which "causes all processes associated with the
+  job to terminate when the last handle to the job is closed" (Microsoft's
+  JOBOBJECT_BASIC_LIMIT_INFORMATION): uninheritable, its one handle the client's
+  (`shards_ipc::GroupJob::ending_with_this_process`). The share process is made in it,
+  still detached from the console but breaking away from no job, and the VM process's
+  own Job nested under it (PROC_THREAD_ATTRIBUTE_JOB_LIST, as a group's VM is under its
+  group's job, D183); a job's end ends its child jobs' processes ("Nested Jobs"). Windows
+  closes an ended process's handles, so the client's end, any end, closes the job. A
+  client in a job of its own (a CI runner's, kiln's) has both made in that one too, and
+  this job nests under it as the share process is assigned: Windows 8 and later nest jobs
+  where the hierarchy stays valid, a child job holding a subset of its parent's processes,
+  and neither sets UI limits ("Nested Jobs"). A client that ends as it should waits for
+  its share process, which ends as its streams close with the VM, before the job closes.
+  The daemon's runs are untouched: their processes are the daemon's, in its groups' jobs
+  (D195, D183).
 - **No profile left behind.** Each lives with a record its spawner holds open
   (`%LOCALAPPDATA%\shards\containers`); the next spawner deletes the profile of each record
   no process holds.
