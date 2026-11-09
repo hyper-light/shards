@@ -465,6 +465,37 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
   groups, the environment, working directories, mounts and every exit status. It also
   sends 8 MiB through stdin and back, and reads 32 MiB of output.
 
+**Its frames' bound, and shards_ipc's (audit of picked constants, 2026-11-09).** Both
+protocols took 1 MiB as the most a message carries, a figure picked; and the daemon's
+request to a warm VM, its head and a spec within the run protocol's 1 MiB, could not go in
+shards_ipc's 1 MiB, nor could a run that brought every descriptor it may (11) go in
+shards_ipc's 9.
+- **A frame holds what Linux execs.** The largest a frame must carry whole is a command's
+  spec (`kind::SPEC`, an exec's frame), which exists to be exec'd in the guest: Linux takes at
+  most 3/4 of `_STK_LIM` of a command line and environment, their strings and pointers
+  together, whatever the stack limit (fs/exec.c `bprm_stack_limits`), and a spec encodes a
+  string in no more than Linux counts it (4 bytes of length against its NUL and an 8-byte
+  pointer). So `MAX_PAYLOAD` is 6 MiB, and the rest of a spec shares it. What goes in parts
+  goes in parts of it or less; a builder guest's trees go in parts of what a write of the
+  guest's sends and the host reads at once (`run::BUFFERED`), not a whole frame's worth.
+- **A message of shards_ipc's holds the largest sent whole**: a run's request to its warm
+  VM, its head (`RunHead::LEN`) and that spec. The microVM record a run is kept in, and the
+  engine's request bodies, follow it (`containers::MAX_RECORD`, `engine::BODY_MOST`).
+- **A message carries as many descriptors as a run's request brings** (`shards_ipc::
+  run_fds`): its client's connection, its stdio, its log's two files, its layers in and out,
+  its swap, its group's CPU budget and its share process's connection, 11, every one of
+  which may come at once.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `MAX_PAYLOAD` (abi run.rs) | 1 MiB | `ARGS_MOST` = `_STK_LIM / 4 * 3` = 6 MiB | Linux 7.2 fs/exec.c `bprm_stack_limits` l. 414-442; include/uapi/linux/resource.h l. 66 |
+| `CHUNK` (init tree.rs) | `MAX_PAYLOAD` | `run::BUFFERED` | what one write of the guest's sends and the host reads at once |
+| `MAX_PAYLOAD` (ipc lib.rs) | 1 MiB | `RunHead::LEN + run::MAX_PAYLOAD` | the largest message sent whole, a run's request |
+| `MAX_FDS` (ipc lib.rs) | 9 | the sum of `run_fds`, 11 | warm.rs `receive`, the order a run's descriptors are taken in |
+| `MAX_RECORD` (shards containers.rs) | 8 MiB | `8 * shards_ipc::MAX_PAYLOAD`, as `BODY_MOST` | follows the message a run arrives in (its own derivation is the shards crate's audit row) |
+
+Owed: the E2E suite (a run with every descriptor at once; a spec past 1 MiB).
+
 ### Mounts (D17, design)
 
 A mount applies to one workload, a subset of the workloads, or all of them. It is
@@ -3364,6 +3395,22 @@ Held by unit tests (`handshake_lines_are_bounded_by_the_protocols_words`,
 `an_older_snapshots_longer_receive_buffer_restores`). Owed: E2E runs on KVM,
 Hypervisor.framework and WHP, and the 8-target lint.
 
+### Upstream figures the runtime crates match, cited where they are (audit of picked constants, 2026-11-09)
+
+Each of these is a spec's or an upstream's value that shards must match; its source is now
+written beside it.
+
+| Literal | Value | Source |
+|---|---|---|
+| `MAX_LINKS` (init inroot.rs) | 255 | cyphar/filepath-securejoin internal/consts/consts.go l. 15, `MaxSymlinkLimit` (0.7.0), which moby's fs.RootPath resolves under |
+| `MAX_SYMLINKS`, `MAX_STEPS`, `MAX_RESTARTS` (archive root.rs) | 8, 255, 8 | go1.26.1 src/os/root.go l. 76 (`rootMaxSymlinks`, `__POSIX_SYMLOOP_MAX`); root_openat.go l. 293-294 |
+| `NAME_MAX` (erofs lib.rs) | 255 | Linux 7.2 fs/erofs/erofs_fs.h l. 294, `EROFS_NAME_LEN` |
+| `MAX_ERRNO` (seccomp compiler.rs) | 4095 | libseccomp src/system.h l. 34, sys_chk_seccomp_action (system.c l. 202); Linux include/linux/err.h |
+| `MAX` (agentfile run_options.rs, `cpuset`) | 8192 | moby/buildkit util/cpuset/cpuset.go l. 14, `MaxCPU` |
+| `RTAX_MAX` (net bridge.rs) | 8 | XNU bsd/net/route.h (macOS SDK l. 253) |
+| `MOST` (gateway grpc.rs) | 16 MiB | moby/buildkit frontend/gateway/grpcclient/client.go l. 1473-1474; containerd/v2 defaults/defaults.go l. 22, 25 |
+| `TICK` (tui mark.rs) | 2 | an order, not a size: each rank the next above the one under it (`FACET + 1`) |
+
 ### Devices and block I/O (D44)
 
 A microVM's workload reaches the devices Docker gives a container and those it is given, and no other of
@@ -4344,6 +4391,35 @@ No run-time labels, relays or declassifiers (§12 answer 14, decided by the user
 2026-10-07): every path between domains is a grant, and the build refuses any that joins
 an internal-only domain to the world (D58), so there is no data to label. Code mode is
 D136.
+
+**Its sizes (audit of picked constants, 2026-11-09).** An instance held a request's head to
+16 KiB, its body to 1 MiB, a worker's frame to 1 MiB and read each peer's message into 1 MiB:
+figures picked, and a peer's message past its socket's buffer (208 KiB by Linux's default)
+failed as "has not taken what was sent it".
+- **A head is what MCP's clients send**: Node's `http.maxHeaderSize`, 16 KiB, which MCP's
+  TypeScript SDK serves Streamable HTTP under (nodejs.org/api/cli.html,
+  `--max-http-header-size`).
+- **A body, and a worker's frame, are held as their length says**: an instance runs in its
+  caller's domain's cgroup (init's `domains`), so what a caller can make it hold counts
+  against the caller's own `memory.max` and ends with it; a frame's length is a u32, and a
+  body's length past what memory addresses is refused (413). Their buffers grow as bytes
+  come, fallibly.
+- **A message to a peer is as long as its socket takes**: a sequenced packet is at most the
+  sender's SO_SNDBUF less 32 bytes (Linux 7.2 net/unix/af_unix.c `unix_dgram_sendmsg`,
+  l. 2122), read once per channel at the start (`message_most`); a text, an answer or a file
+  handed across past it is refused saying how much it holds. One is read into as many bytes
+  as it holds, which the kernel says first (recv(2), MSG_PEEK | MSG_TRUNC).
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `HEAD_MAX` (server.rs) | 16 KiB | 16 KiB, cited | Node.js `http.maxHeaderSize` default |
+| `BODY_MAX` (server.rs) | 1 MiB | none: Content-Length, held fallibly; overflow 413 | the domain's `memory.max` (D60, init domains.rs) |
+| `FRAME_MAX` (sandbox.rs) | 1 MiB | `u32::MAX`, a frame's length field | the frame's own head; the worker in the same cgroup |
+| peer buffer (server.rs `take`) | `9 + BODY_MAX` | the message's own length | recv(2) MSG_TRUNC on SOCK_SEQPACKET (Linux 3.4+) |
+| a peer message's most | `BODY_MAX` | SO_SNDBUF - 32 | net/unix/af_unix.c l. 2122 |
+
+Owed: shards-server's unit tests on Linux (built and linted here for musl), the in-VM server's
+E2E (tests/isolation.rs, tests/mcp.rs).
 
 ### D180. Contexts: shards on another machine, over QUIC (parts 1 to 4 built, 3a to 3l)
 
@@ -5340,6 +5416,17 @@ manifest and a build's load of such a copy the client's) and
 `agent::tests::an_agents_files_are_read_as_a_build_reads_its_context` (the binary's own
 tests on both runners, 41262337649 at 41c3560d).
 
+**Its sizes (audit of picked constants, 2026-11-09).** A join's proof is HMAC-SHA-256's tag
+(`invite::PROOF`, 32 bytes: RFC 2104 §2, FIPS 180-4 §1), so the most a join carries is the
+invitation's name, its NUL and that. What a command tells its client of the microVM it made
+is its ID alone, as `--cidfile` writes it: 64 hex digits, two for each of the 32 random bytes
+of moby's stringid.GenerateRandomID (`containers::new_id`); it was read up to 4 KiB.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `JOIN_MAX` (remote invite.rs) | `NAME_MAX + 1 + 32` | `NAME_MAX + 1 + PROOF` | RFC 2104 §2; FIPS 180-4 §1 |
+| `MADE_MOST` (remote server.rs) | 4 KiB | `2 * 32` = 64 | moby pkg/stringid `GenerateRandomID`; cli/request.rs `CidFile::write` |
+
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
@@ -6278,6 +6365,15 @@ descriptors.
   first cut woke an idle daemon once a second, its maker looking at its lists on a timer
   (30 context switches in 30 s, where the daemon before had none, M259), which the looks
   above replaced.
+
+**What a request names (audit of picked constants, 2026-11-09).** A request named at most 8
+descriptors, "a run's three and room to spare": picked. Each it names stands for one of its
+slot's streams or for none in that stream's place, so it names at most as many as a slot has
+streams (`slots::fds::MAX`, the count of `streams::IN | OUT | ERR`, 3), as a run's do.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `fds::MAX` (ipc slots.rs) | 8 | a slot's streams, 3 | `slots::streams`; cli/client.rs, a run's `ways` |
 
 ### D186. How much of the disk shards keeps is its user's to set (`shards configure disk`, built)
 
@@ -7684,6 +7780,36 @@ share made ahead), and a disk's capacity was fixed when its file was opened.
   has a spare one bound to vfio-pci: tested nested, on QEMU edu's model); the guest's
   remove's 29 ms on KVM x86_64, not yet split (PM M430).
 
+**Its waits, on the kernel's word (audit of picked constants, 2026-11-09).** init waited
+10 s for a plugged function, its driver, its disk, a share's tag and a function's VFIO node,
+each looked at every millisecond, and as long for a grown disk's size: figures picked. The
+kernel says when each comes, so init waits on that and on no clock:
+- A rescan (`bus/pci/rescan`) adds what it finds before its write returns (drivers/pci/
+  pci-sysfs.c `rescan_store`, `pci_rescan_bus`): a function not there after it is not
+  plugged in, said at once (`hotplug::rescan`). Its driver is bound in the same write, its
+  probe run before the driver is said bound (drivers/base/dd.c `really_probe`, then
+  `driver_bound`), so a disk's block device and a share's virtio-fs tag are there as the
+  driver is; none of virtio-pci, virtio-blk, virtio-fs and vfio-pci asks to be probed apart
+  (no `PROBE_PREFER_ASYNCHRONOUS`, Linux 7.2). A share's tag is mounted once, after its
+  driver binds: a refusal is the kernel's, said at once rather than after 10 s of retries.
+- What comes later, a probe the kernel defers or runs apart, and a disk's new size (its
+  driver reads it in a work item as the host's config change arrives, virtio_blk.c
+  `virtblk_config_changed_work`), is waited for on the kernel's device events
+  (`devices::Uevents`, NETLINK_KOBJECT_UEVENT's group 1, opened before the rescan, the bind
+  or the look, so that no event between is missed): the device looked at again as each
+  comes. A disk's size says so as it is set (block/genhd.c `set_capacity_and_notify`,
+  KOBJ_CHANGE with `RESIZE=1`); a VFIO node is made before its device's KOBJ_ADD
+  (drivers/base/core.c `device_add`: `devtmpfs_create_node` waits for it).
+- A wait has no end of its own: the daemon's exec of the built-in ends it, and says so.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `FOUND_WITHIN` (init hotplug.rs) | 10 s, looked at every 1 ms | none: the rescan's own return, then the kernel's device events | Linux 7.2 drivers/pci/pci-sysfs.c `rescan_store`; drivers/base/dd.c `__device_attach`, `really_probe`; lib/kobject_uevent.c; block/genhd.c `set_capacity_and_notify` |
+| `FUNCTION_WITHIN` (init devices.rs) | 10 s, looked at every 1 ms | none: there at once, else the kernel's device events | drivers/base/core.c `device_add` (devtmpfs node before KOBJ_ADD) |
+
+Owed: init's unit tests on a Linux host (they build for musl here, and run in a guest), and
+hotplug's E2E (tests/hotplug.rs) on KVM, Hypervisor.framework and WHP.
+
 ### D228. A client's paths are its own; the machine's are its owner's to grant (built)
 
 **The need.** Through a context (D180) a laptop runs microVMs on a GPU or x86_64 machine.
@@ -8225,6 +8351,23 @@ x86_64's (D140). `hv::whp_arm64`, `hv = "whp"` on arm64 Windows.
   other tests' and the wait's own poll: its waits follow its console alone
   (`Heard::console`, `common::machine_ended`). Each fails `DAEMON_QUIET` after its last
   progress, as before.
+
+**The storm's watch, by the host's word (audit of picked constants, 2026-11-09).** The test
+guest's storm said its main thread stood still after 15 s and took its host's stream for
+stopped after 60 s, a copy of the host's `DAEMON_QUIET`. The host now tells it that quiet on
+its command line (`shards_quiet_ms`, tests/snapshot.rs), which bounds the stream and gives
+the kernel's account; and a stall is said once the main thread has stood still for more of
+its watchers' looks than it ever had before (its own pace on the host that runs it), once a
+beat.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `STOOD_STILL` (testguest linux.rs) | 15 s | the longest the main thread stood still before | its watchers' looks |
+| `STREAM_QUIET` (testguest linux.rs) | 60 s, a copy | the host's `DAEMON_QUIET`, told | tests/common `DAEMON_QUIET` |
+| `AWAIT_MOST` (testdir shards-testhelper.rs) | 300 s | none: waits while its test's directory is | `TempDir`, removed as its test ends, failed or killed |
+
+Owed: the storm suites (tests/snapshot.rs) on KVM, Hypervisor.framework and the nested arm64
+Windows host, and the remote and build tests that run the helper's `await`.
 
 ### D207. A Windows host's bind sources: its drives' paths (built)
 
@@ -8983,6 +9126,22 @@ memory given back under a budget (step 7); the Engine API, another machine's cli
 `--use-api-socket` and what log drivers wait on a TCP connection for (step 8). Templates,
 warm pools and saves are served (step 4, on WHP's snapshots, D196), and published ports
 (step 5, D142).
+
+**A waiting client's look at its list (audit of picked constants, 2026-11-09).** A client
+whose list's every instance was taken waited 250 ms at a time in WaitNamedPipe, then looked
+at its list's file, as a daemon that made its lists again offers on another name: a poll,
+its interval picked. It now waits on both events at once (`slots::named::wait_free`): a
+thread waits in WaitNamedPipe for as long as it takes (no handle waits for a free instance,
+which only WaitNamedPipe does), its end an event, beside a change notification on the
+lists' directory (FindFirstChangeNotificationW), armed before the list is read again. A
+thread whose list was renamed first is left to its wait, which ends as an instance of the
+old name frees or its last closes, or with its process.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `LOOK_AGAIN` (ipc slots/named.rs) | 250 ms | none: WaitNamedPipe's end and the directory's change notification | Win32 WaitNamedPipeW (`NMPWAIT_WAIT_FOREVER`), FindFirstChangeNotificationW |
+
+Owed: the ipc crate's tests on Windows (it builds and lints here for x86_64 Windows).
 
 ### D194. The registries Docker's daemon configuration names: an insecure one asked in plain HTTP too, Docker Hub's mirrors first (built)
 
@@ -14748,6 +14907,31 @@ download.
   its descriptor fails at once, with ranges and without); auth.rs (a token server's
   gateway failures ridden out). Mutation-checked: the budget, the riding, the short blob.
   A real pull from ghcr.io on Fedora kept ghcr.io's and its CDN's paths in the home.
+
+**Its remaining figures (audit of picked constants, 2026-11-09).**
+- **A throttle's waits past the schedule grow with the throttle**: each a share of how long
+  it has lasted so far, as a trouble's are (above), never past what is left of the window its
+  allowance is counted over; they doubled from 800 ms to 6.4 s.
+- **A token server's answer is read up to what its fields can usefully hold**: two tokens,
+  each sent in a request's head, which a registry on Go's net/http reads 1 MiB of
+  (`DefaultMaxHeaderBytes`); a refresh token, sent back in a form, which Go reads 10 MiB of
+  (`maxFormSize`); its times; each byte escaped at most (`\uXXXX`, RFC 8259 §7); and their
+  names. It was 1 MiB.
+- **Go's own**: a trailer within the transport's 4 KiB read buffer (transfer.go
+  `body.readTrailer`, transport.go `readBufferSize`), and ten redirects (client.go
+  `defaultCheckRedirect`), cited where they are.
+- **The tests' riding-out bound**: a test held the time a trouble took to its length again
+  and 1.5 s of round trips, a slack picked. The client now records the waits it chose
+  (test builds alone), and a test holds those to the trouble's length again, the round trips
+  being whatever the host running it makes them.
+
+| Literal | Was | Now | Source |
+|---|---|---|---|
+| `THROTTLED_MOST` (registry.rs) | 6.4 s, doubling from 800 ms | the throttle's length so far (at least the schedule's last), within its window | D222's rule for a trouble |
+| `MAX_TOKEN_RESPONSE` (auth.rs) | 1 MiB | `6 * (2 * 1 MiB + 10 MiB + 35 + 20) + FIELDS` | go1.26.1 net/http server.go l. 895, request.go l. 1280, time/format.go `RFC3339Nano`; RFC 8259 §7 |
+| `MAX_TRAILER` (http.rs) | 4096, uncited | 4096, cited | go1.26.1 net/http/transfer.go l. 925-935, transport.go l. 326 |
+| `MAX_REDIRECTS` (http.rs) | 10, uncited | 10, cited | go1.26.1 net/http/client.go l. 834 |
+| `SLACK` (registry.rs tests) | 1.5 s | none: the waits the client chose (`Client::paused`) | the test's own record |
 
 ### D130. Frontend inputs, as docker/dockerfile:1.27.1 reads them
 
