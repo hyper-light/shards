@@ -932,10 +932,8 @@ mod tests {
             rlim_max: was.rlim_max,
         };
         // SAFETY: setrlimit(2) from a local, in this child alone.
-        assert_eq!(
-            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) },
-            0
-        );
+        let set = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lowered) };
+        assert_eq!(set, 0);
         m.on_events(&[Ready {
             token: Some(Token::Listener),
             read: true,
