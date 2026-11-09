@@ -13,7 +13,10 @@ pub enum HuffError {
     Internal(&'static str),
 }
 
+/// huff0's `maxSymbolValue` (klauspost/compress v1.19.2 huff0/huff0.go:17): a literal is
+/// a byte.
 const MAX_SYMBOL_VALUE: usize = 255;
+/// huff0's `tableLogMax` (huff0.go:21): RFC 8878 §4.2.1's longest code, 11 bits.
 const TABLE_LOG_MAX: u8 = 11;
 const TABLE_LOG_DEFAULT: u8 = 11;
 const MIN_TABLE_LOG: u8 = 5;
@@ -133,6 +136,8 @@ impl Default for WeightFse {
     }
 }
 
+/// The fse package's `maxTableLog`, `maxMemoryUsage - 2` (klauspost/compress v1.19.2
+/// fse/fse.go:26, 29).
 const FSE_MAX_TABLE_LOG: u8 = 12;
 const FSE_MIN_TABLE_LOG: u8 = 5;
 const FSE_DEFAULT_TABLE_LOG: u8 = 11;

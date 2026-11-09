@@ -11,7 +11,10 @@ const TABLE_SHIFT: u32 = 32 - TABLE_BITS;
 const BUFFER_RESET: i32 = i32::MAX - (MAX_STORE_BLOCK_SIZE as i32) * 2;
 const INPUT_MARGIN: i32 = 16 - 1;
 const MIN_NON_LITERAL_BLOCK_SIZE: usize = 1 + 1 + INPUT_MARGIN as usize;
+/// Go's `maxMatchOffset` (go1.26.1 src/compress/flate/deflate.go:47): DEFLATE's farthest
+/// distance, 32 KiB (RFC 1951 §3.2.5).
 const MAX_MATCH_OFFSET: i32 = 1 << 15;
+/// Go's `maxMatchLength` (deflate.go:45; RFC 1951 §3.2.5).
 const MAX_MATCH_LENGTH: i32 = 258;
 const BASE_MATCH_LENGTH: i32 = 3;
 const BASE_MATCH_OFFSET: i32 = 1;

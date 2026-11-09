@@ -24,6 +24,9 @@ pub const ALLOWED: [&str; 6] = [
     "metadata",
     "name",
 ];
+/// skills-ref's MAX_SKILL_NAME_LENGTH, MAX_DESCRIPTION_LENGTH and MAX_COMPATIBILITY_LENGTH
+/// (agentskills 69ef37e9, skills-ref/src/skills_ref/validator.py:10-12), the Agent Skills
+/// specification's limits, in code points.
 const MAX_NAME: usize = 64;
 const MAX_DESCRIPTION: usize = 1024;
 const MAX_COMPATIBILITY: usize = 500;

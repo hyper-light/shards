@@ -37,7 +37,7 @@ const MEDIA_TYPE_BASE: &str = "application/vnd.dev.sigstore.bundle";
 const ERR_VALIDATION: &str = "validation error";
 const MISSING_MATERIAL: &str = "validation error: missing verification material";
 const MISSING_ENVELOPE: &str = "validation error: invalid attestation: missing valid envelope";
-/// MaxAllowedTlogEntries.
+/// MaxAllowedTlogEntries (sigstore-go v1.2.2 internal/limits/limits.go:21).
 pub const MAX_TLOG_ENTRIES: usize = 32;
 
 /// The bundle's verification material (VerificationMaterial.content), each as given.
