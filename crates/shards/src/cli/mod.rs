@@ -169,6 +169,22 @@ fn dispatch(args: Vec<OsString>) -> ExitCode {
         }
         return dispatch(said.into_iter().map(OsString::from).collect());
     }
+    // A form whose words past its action and thing are not all UTF-8 (a path a kernel, a
+    // share or a socket names): the grammar maps the action and thing alone, the rest
+    // following as they are, so they are passed on untouched, as they came.
+    if text.len() < args.len()
+        && let Some(head) = text.get(..2)
+        && let Some(said) = shards_cmdline::grammar::rewrite(head)
+        && said != head
+    {
+        look::name_as(&head.join(" "));
+        if let Some(form) = shards_cmdline::grammar::form(head) {
+            let _ = FORM.set(form);
+        }
+        let mut rest: Vec<OsString> = said.into_iter().map(OsString::from).collect();
+        rest.extend(args.iter().skip(2).cloned());
+        return dispatch(rest);
+    }
     let words: Vec<&str> = args.iter().map_while(|a| a.to_str()).take(2).collect();
     match words.as_slice() {
         [] | ["help" | "-h" | "--help"] => return top_help(),
