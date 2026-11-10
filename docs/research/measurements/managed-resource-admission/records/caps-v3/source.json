@@ -1,0 +1,65 @@
+{
+  "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "branch": "p/managed-resource-admission-v1",
+  "worktree_paths": {
+    "crates/init/src/domains/admission.rs": "0949b25d3369b8fa01dff07770e6275d4e39514f39717ac0821c7a5b4a0aa870",
+    "crates/init/src/domains.rs": "1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7"
+  },
+  "libc_version": "0.2.189",
+  "compiled": "actual admission.rs byte-for-byte; isolated tests, not actual domains.rs caller",
+  "adaptation": "private workspace member list and libc exact version only; original source testdir/lints, source member hashes retained",
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "bytes": 45787,
+      "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 2224,
+      "sha256": "b404847f1f7b1feab0aedf5d1fe32398eb3d4e85a956dfa85a15ee602a0ea2d9"
+    },
+    {
+      "path": "admission-light/Cargo.toml",
+      "bytes": 260,
+      "sha256": "130a3c3f6a21d5d9250293efe5afdbc19d2834f7915da5df57362913f8b747aa"
+    },
+    {
+      "path": "admission-light/src/lib.rs",
+      "bytes": 164,
+      "sha256": "10a0e482caa7ff53711dacefde125347e5f929d4afad3aa2382e777588f1f7cf"
+    },
+    {
+      "path": "clippy.toml",
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "bytes": 113664,
+      "sha256": "1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7"
+    },
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "bytes": 25092,
+      "sha256": "0949b25d3369b8fa01dff07770e6275d4e39514f39717ac0821c7a5b4a0aa870"
+    },
+    {
+      "path": "crates/testdir/Cargo.toml",
+      "bytes": 536,
+      "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1"
+    },
+    {
+      "path": "crates/testdir/src/bin/shards-testhelper.rs",
+      "bytes": 5719,
+      "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123"
+    },
+    {
+      "path": "crates/testdir/src/lib.rs",
+      "bytes": 17917,
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+    }
+  ],
+  "production_source_commit": "bc381c013d4a53bebb94efe4df2289c34acc6380",
+  "private_workspace_correction": "Removed only unused unrelated aws-lc/rquickjs vendor patch declarations from isolated libc/testdir workspace. Production Cargo.toml/lock/provider unchanged."
+}

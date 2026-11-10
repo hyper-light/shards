@@ -1,5 +1,27 @@
 # Resource admission implementation handoff
 
+LATEST: sourcebc381c013d4a53bebb94efe4df2289c34acc6380 actual private GNU
+build0/eightunitsPASS0fail0filtered/Clippy0 on Fedora8f1CPU1GiB2GiB serial
+NEW own-caps-v3 paths. ModuleSHA0949b25d3369b8fa01dff07770e6275d4e39514f39717ac0821c7a5b4a0aa870;
+domainsSHA1e61unchanged. Binary7,430,344B SHAba958429fdea359f05751ba43b7a5cec916d9b4ae7a410b9db1916a6059f062b.
+All own jobs terminal. V1 manifest101 beforeRust, V2 build/eightunits0 then
+Clippy101 unsafe-comment position, corrected only by local descriptor binding.
+All12/19/19 raw members and original archives verified in records/caps-v1/v2/v3;
+all private source/cache/finalbinary/raw retained. No Parent/kernel/full init/
+VM/profile/guarantee claim. Older WRITTEN/UNRUN notes below describe firstcheckpoint.
+Actual remote rustc/cargo1.98.1 with complete commits/LLVM22.1.8 retained, MSRV
+not used as a pin. Latest source/evidence push pending next checkpoint.
+
+CONTINUING real hierarchical queue: daemon/budget.rs::room/held_at and ABI::ROOM
+are reclaim-headroom observations, not owner reservation; resources::cgroup
+maps memory_reservation to memory.low, current Domain asks only caps. No explicit
+Spec/Domain guaranteed claim/issuer found. Asked ROOT to select typed owner input
+at its Programs/RUN seam, keymanaged-caps-bc381c013-green-and-strict-authority-seam-v1;
+do NOT invent hidden JSON/string selector or generic unused ledger. Next independent
+work is actual full init caller typecheck in new own Linux private scope under
+same envelope, plus exact parent/authority facts; Root all actual kernel/VM/
+attribution/profile/matrix and required strict guarantee integration remain owed.
+
 Lane01a1c5be192972d8b05dc7c207cc6fca; ROOT01a148884a4770fdaf0111f3f792a248.
 Current worktree managed-allocation-metrics, NEW branch
 `p/managed-resource-admission-v1` from exact

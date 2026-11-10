@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"outcomes\": {\"build\": 0, \"units\": 0, \"clippy\": 101}, \"records\": \"/home/adalundhe/managed-resource-admission-light-cbd392849-caps-v2\", \"source\": \"/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v2\", \"binary\": {\"path\": \"/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v2/target/debug/deps/managed_resource_admission_light-af49216697ca4c33\", \"bytes\": 7430344, \"sha256\": \"1f03859ce192ed9e0d700c7a9ac68da68808c0e3a0aa485646632bf08fc8d58a\"}, \"raw_files\": 19}\nclippy:\n    Checking libc v0.2.189\n    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v2/crates/testdir)\n    Checking managed-resource-admission-light v0.0.0 (/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v2/admission-light)\nerror: unsafe block missing a safety comment\n   --> admission-light/src/../../crates/init/src/domains/admission.rs:401:24\n    |\n401 |             directory: unsafe { File::from_raw_fd(fd) },\n    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    |\n    = help: consider adding a safety comment on the preceding line\n    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks\n    = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`\n    = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`\n\nerror: could not compile `managed-resource-admission-light` (lib) due to 1 previous error\n\n",
+    "running": false,
+    "why": "linux/x86_64 · 17 of 32 cores idle · 32 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk · 1 CI jobs",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

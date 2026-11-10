@@ -86,7 +86,8 @@ budgets; no new helper task allowance is invented here.
 
 ## Validation status and exact remaining boundaries
 
-Eight tests are WRITTEN, not yet executed: scalar/overflow, kernel rounding,
+Eight tests now PASS on source `bc381c013d4a53bebb94efe4df2289c34acc6380`:
+scalar/overflow, kernel rounding,
 controller tokens/read errors, checked pressure arithmetic, missing/malformed/
 mismatched/symlink controls, fresh-only rollback, descriptor transfer and names.
 Ordinary private files exercise IO/state behavior; they do not emulate cgroup
@@ -103,6 +104,28 @@ Exact attempted command/source package/result are retained in `records/`.
 Fresh inventory also had no admitted Linux runner. Admission remains
 1CPU/1GiB RAM/2GiB disk, serial/sync:false/new private paths. No guard bypass,
 larger envelope, local fallback, root-cache write or cleanup occurred.
+
+After that initial hold, v1 was admitted but its narrowed workspace failed before
+Rust compilation because unrelated vendor patch paths were absent. V2 corrected
+only the private workspace adaptation: build0/eight units0, then Clippy101 for a
+misplaced descriptor safety comment. Source bc381 moves the same ownership
+conversion under its adjacent safety explanation. V3 build0, eight units passed
+with zero failures/filters, and Clippy0. Production dependency/crypto/provider
+configuration is unchanged. The isolated import's only allowance is dead_code;
+new production panic/unsafe checks remain enabled.
+
+All three original archives and their12/19/19 regular members were transferred
+and byte/hash verified in `records/caps-v{1,2,3}`. Actual remote Rust1.98.1
+commit48a229ceaefd4985c50990b14116b6d856af0985/LLVM22.1.8 and
+Cargo1.98.1 commit797e8a9bca276c1c9f9f738d2a20f484fa4eea9d are retained.
+The V3 test executable is
+`/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v3/target/debug/deps/managed_resource_admission_light-af49216697ca4c33`,
+7,430,344B, SHA256
+`ba958429fdea359f05751ba43b7a5cec916d9b4ae7a410b9db1916a6059f062b`.
+It was hashed before execution and reverified after Clippy and during collection.
+All own jobs have completed; private sources, Cargo caches, binaries and raw
+records remain preserved. No actual run-group/controller/full-caller/VM operation
+was executed by the unit harness. Exact commands/environments are in each record.
 
 ROOT owes actual full init/helper caller compilation, live cgroup/kernel-rounded
 readback and refusal/unused rollback/FD/identity/lifecycle/cleanup cases, bounded

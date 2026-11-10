@@ -1,0 +1,57 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 45787,
+    "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+  },
+  {
+    "path": "build.command.json",
+    "bytes": 269,
+    "sha256": "a46df7ab8272d47d333fc42b0f4c1ccefc648117dff39cc59860340d6ef35519"
+  },
+  {
+    "path": "build.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "build.log",
+    "bytes": 352,
+    "sha256": "be3c9b990aa494a459ca457434fdc95ff57b4e38969e4e87d0efe0befb30805d"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "environment.json",
+    "bytes": 486,
+    "sha256": "4d1e31af66b663357b2ef13a2f342b8631c014cc7af8aa45af07d9825a8b85e3"
+  },
+  {
+    "path": "outcomes.json",
+    "bytes": 19,
+    "sha256": "5a44345937994c09f2026f0f99121d62adc017e2504806efdea63160b5070e7f"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "scope.json",
+    "bytes": 751,
+    "sha256": "eeb08ef89f1f6d2e506b3001308b201c10e72974fa8d5596cdb542fb382b8e16"
+  },
+  {
+    "path": "source.json",
+    "bytes": 2215,
+    "sha256": "746e1d725cfbdebbbb6dea7582a399a227b721acf747edfcddf62a4adecf329d"
+  },
+  {
+    "path": "tools.json",
+    "bytes": 475,
+    "sha256": "46c7f728a4c961c8bc6d5ad84dba3fb1d953ae341e9785ee829e98dce227639f"
+  }
+]
