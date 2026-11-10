@@ -830,7 +830,8 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
             .any(|r| r["type"] == "Error" || r["type"] == "UdpError")
     );
     assert_eq!(
-        run.status, 0,
+        run.status,
+        Some(0),
         "destination rewrite alone is not compatibility success: {run}"
     );
 }
