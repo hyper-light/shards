@@ -1,0 +1,63 @@
+   Compiling libc v0.2.189
+    Checking shards-devcgroup v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v3/devcgroup)
+    Checking sock-addr-pure v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v3/helper)
+error: type `managed_network::intercept::udp::Mode` is more private than the item `managed_network::intercept::sock_addr::Inputs::Controller::mode`
+  --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:16:9
+   |
+16 |         mode: Mode,
+   |         ^^^^^^^^^^ field `managed_network::intercept::sock_addr::Inputs::Controller::mode` is reachable at visibility `pub(in crate::managed_network)`
+   |
+note: but type `managed_network::intercept::udp::Mode` is only usable at visibility `pub(in crate::managed_network::intercept)`
+  --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/udp.rs:5:1
+   |
+ 5 | pub(super) enum Mode {
+   | ^^^^^^^^^^^^^^^^^^^^
+   = note: `-D private-interfaces` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(private_interfaces)]`
+
+error: type `managed_network::intercept::udp::Mode` is more private than the item `managed_network::intercept::sock_addr::Inputs::Client::mode`
+  --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:20:9
+   |
+20 |         mode: Mode,
+   |         ^^^^^^^^^^ field `managed_network::intercept::sock_addr::Inputs::Client::mode` is reachable at visibility `pub(in crate::managed_network)`
+   |
+note: but type `managed_network::intercept::udp::Mode` is only usable at visibility `pub(in crate::managed_network::intercept)`
+  --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/udp.rs:5:1
+   |
+ 5 | pub(super) enum Mode {
+   | ^^^^^^^^^^^^^^^^^^^^
+
+error: type `managed_network::intercept::Reply` is more private than the item `managed_network::intercept::sock_addr::Inputs::Client::expected`
+   --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:23:9
+    |
+ 23 |         expected: Reply,
+    |         ^^^^^^^^^^^^^^^ field `managed_network::intercept::sock_addr::Inputs::Client::expected` is reachable at visibility `pub(in crate::managed_network)`
+    |
+note: but type `managed_network::intercept::Reply` is only usable at visibility `pub(self)`
+   --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept.rs:120:1
+    |
+120 | enum Reply {
+    | ^^^^^^^^^^
+
+error: this `if` statement can be collapsed
+   --> /home/adalundhe/managed-network-sock-addr-proof-v3/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:493:9
+    |
+493 | /         if !matches!(self.state, MountState::Removed) {
+494 | |             if let Err(e) = self.cleanup() {
+495 | |                 error(Stage::RemoveCgroup, &e);
+496 | |             }
+497 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+493 ~         if !matches!(self.state, MountState::Removed)
+494 ~             && let Err(e) = self.cleanup() {
+495 |                 error(Stage::RemoveCgroup, &e);
+496 ~             }
+    |
+
+error: could not compile `sock-addr-pure` (lib) due to 4 previous errors

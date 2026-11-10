@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Connected,
     Unconnected,
 }
@@ -39,20 +39,20 @@ impl Inputs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Exchange {
+pub(super) enum Exchange {
     Binary,
     Empty,
 }
 impl Exchange {
     // Two semantic cases, not a capacity or learned runtime limit.
-    const SCRIPT: [Self; 2] = [Self::Binary, Self::Empty];
-    fn request(self) -> &'static [u8] {
+    pub(super) const SCRIPT: [Self; 2] = [Self::Binary, Self::Empty];
+    pub(super) fn request(self) -> &'static [u8] {
         match self {
             Self::Binary => SENT,
             Self::Empty => b"",
         }
     }
-    fn response(self, role: Reply) -> &'static [u8] {
+    pub(super) fn response(self, role: Reply) -> &'static [u8] {
         match self {
             Self::Binary => role.bytes(),
             Self::Empty => b"",
@@ -72,7 +72,7 @@ enum Stage {
     Record,
 }
 #[derive(Debug)]
-enum Fault {
+pub(super) enum Fault {
     Io(io::Error),
     Metadata(UdpMetadataError),
     Payload,
@@ -126,13 +126,13 @@ fn validate(
     Ok(metadata)
 }
 
-fn hex(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn hex(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     for byte in bytes {
         write!(out, "{byte:02x}")?;
     }
     Ok(())
 }
-fn arrival_record(
+pub(super) fn arrival_record(
     role: &str,
     step: Exchange,
     ordinal: usize,
@@ -181,10 +181,10 @@ fn fault_record(role: &str, stage: Stage, fault: &Fault) -> io::Result<()> {
 }
 
 #[derive(Default)]
-struct DatagramReport {
-    arrivals: usize,
-    matched: usize,
-    empty: usize,
+pub(super) struct DatagramReport {
+    pub(super) arrivals: usize,
+    pub(super) matched: usize,
+    pub(super) empty: usize,
 }
 impl DatagramReport {
     fn consume(&mut self, arrival: &UdpArrival) -> Result<(), Fault> {
@@ -196,16 +196,16 @@ impl DatagramReport {
     }
 }
 #[derive(Clone, Copy, Debug)]
-enum Terminal {
+pub(super) enum Terminal {
     ScriptComplete,
     Cancelled,
 }
-struct Completion {
-    report: DatagramReport,
+pub(super) struct Completion {
+    pub(super) report: DatagramReport,
     stage: Stage,
-    result: Result<Terminal, Fault>,
+    pub(super) result: Result<Terminal, Fault>,
 }
-struct DatagramWorker {
+pub(super) struct DatagramWorker {
     cancel: OwnedFd,
     state: WorkerState,
 }
@@ -214,7 +214,7 @@ enum WorkerState {
     Joined,
 }
 impl DatagramWorker {
-    fn start(
+    pub(super) fn start(
         receiver: UdpSocket,
         sender: UdpSocket,
         destination: SocketAddr,
@@ -305,7 +305,7 @@ impl DatagramWorker {
             )
         };
     }
-    fn finish(&mut self) -> io::Result<Completion> {
+    pub(super) fn finish(&mut self) -> io::Result<Completion> {
         self.wake();
         match std::mem::replace(&mut self.state, WorkerState::Joined) {
             WorkerState::Running(thread) => {
@@ -410,7 +410,7 @@ fn client_result(role: &str, completion: &ClientCompletion) -> io::Result<()> {
     )?;
     out.flush()
 }
-fn worker_record(role: Reply, completed: &io::Result<Completion>) -> io::Result<()> {
+pub(super) fn worker_record(role: Reply, completed: &io::Result<Completion>) -> io::Result<()> {
     let mut out = io::stdout().lock();
     match completed {
         Ok(completed) => {

@@ -1,0 +1,20 @@
+     Locking 11 packages to latest Rust 1.98.1 compatible versions
+      Adding serde_json v1.0.151 (available: v1.0.154)
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling sock-addr-host-pure v0.0.0 (/home/adalundhe/managed-network-sock-addr-host-red-v1)
+error: no rules expected `0`
+   --> fixture.rs:782:17
+    |
+781 |                 arrival["flags"].as_i64().unwrap() & 0x28 // Linux guest MSG_TRUNC (0x20) | MSG_CTRUNC (0x08), not host ABI.,
+    |                                                          - help: missing comma here
+782 |                 0
+    |                 ^ no rules expected this token in macro call
+    |
+note: while trying to match `,`
+   --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/macros/mod.rs:43:15
+
+error: could not compile `sock-addr-host-pure` (lib test) due to 1 previous error

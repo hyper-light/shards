@@ -44,6 +44,7 @@ enum Probe<'a> {
     Capabilities(Option<&'a str>),
     Intercept(intercept::Inputs),
     InterceptUdp(intercept::udp::Inputs),
+    SockAddr(intercept::sock_addr::Inputs),
     Serve(Case, SocketMode),
     Dial(Case),
     Pair(Case),
@@ -106,6 +107,9 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     words.try_reserve_exact(args.len()).map_err(io::Error::other)?;
     words.extend(args.iter().map(String::as_str));
     match words.as_slice() {
+        ["sock-addr-udp4" | "sock-addr-client4", ..] => {
+            Ok(Probe::SockAddr(intercept::sock_addr::Inputs::parse(&words)?))
+        }
         ["capabilities"] => Ok(Probe::Capabilities(None)),
         ["capabilities", path] => Ok(Probe::Capabilities(Some(path))),
         [
@@ -174,7 +178,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], sock-addr-udp4 {connected|unconnected} DEADLINE_MS, {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -270,6 +274,7 @@ fn run(probe: Probe<'_>) -> io::Result<()> {
         Probe::Capabilities(path) => capabilities(path),
         Probe::Intercept(input) => intercept::run(input),
         Probe::InterceptUdp(input) => intercept::udp::run(input),
+        Probe::SockAddr(input) => intercept::sock_addr::run(input),
         Probe::Serve(case, mode) => {
             let deadline = Deadline::new(case.within)?;
             match case.transport {
