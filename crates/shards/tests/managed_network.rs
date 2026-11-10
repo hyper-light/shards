@@ -192,7 +192,7 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     let origin = required("SHARDS_INTERCEPT_ORIGIN");
     assert!(matches!(
         origin.as_str(),
-        "local" | "forward" | "local-loopback" | "local-self"
+        "local" | "forward" | "local-loopback" | "local-self" | "forward-relay-absent"
     ));
     let mark = required("SHARDS_INTERCEPT_MARK");
     let table = required("SHARDS_INTERCEPT_TABLE");
@@ -202,8 +202,6 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
         &format!("intercept-tcp4-{origin}"),
         &["intercept-tcp4", &origin, &millis, &mark, &table, &priority],
     );
-    assert_eq!(run.status, Some(0), "{run}");
-    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
     let records = intercept_records(&run.stdout);
     let one = |kind| {
         let matching: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
@@ -216,6 +214,14 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     let client = namespaces["client_inode"].as_u64().unwrap();
     assert!(router != backend && router != client && backend != client);
     let target = one("Target");
+    assert_eq!(
+        target["relay_mode"],
+        if origin == "forward-relay-absent" {
+            "Absent"
+        } else {
+            "Present"
+        }
+    );
     let expected_ip = match origin.as_str() {
         "local-loopback" => "127.0.0.1",
         "local-self" => "192.0.2.1",
@@ -230,7 +236,11 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     assert_eq!(target["relay_inode"].as_u64(), Some(router));
     assert_eq!(
         target["client_inode"].as_u64(),
-        Some(if origin == "forward" { client } else { router })
+        Some(if matches!(origin.as_str(), "forward" | "forward-relay-absent") {
+            client
+        } else {
+            router
+        })
     );
     assert_eq!(
         target["backend_inode"].as_u64(),
@@ -242,6 +252,61 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     );
     let baseline = one("Baseline");
     assert_eq!(target["destination"], baseline["destination"]);
+    if origin == "forward-relay-absent" {
+        let closed = one("RelayListenerClosed");
+        assert_eq!(closed["relay_port"], baseline["relay_port"]);
+        assert_eq!(closed["relay_worker"], "NotStarted");
+        let outcome = one("ClientOutcome");
+        let joined = one("Joined");
+        assert_eq!(joined["joined"], true);
+        assert_eq!(joined["relay_worker"], "NotStarted");
+        // Accept and exact request receipt are independent actual effects.
+        assert_eq!(
+            joined["backend_accepted"], 1,
+            "absent relay admitted a fresh backend connection: {run}"
+        );
+        assert_eq!(
+            joined["backend_receipts"], 1,
+            "absent relay delivered another exact request: {run}"
+        );
+        assert_eq!(joined["relay_accepted"], 0);
+        assert_eq!(joined["relay_receipts"], 0);
+        assert_eq!(
+            outcome["stage"], "ConnectCall",
+            "setup failure is inconclusive: {run}"
+        );
+        assert_eq!(
+            outcome["outcome"], "Refused",
+            "only an actual refusal is eligible; success/deadline/error is not a containment pass: {run}"
+        );
+        assert_eq!(outcome["kind"], "ConnectionRefused");
+        assert_eq!(joined["backend_terminal"], "Stopped");
+        assert_eq!(one("AbsenceVerdict")["verdict"], "ContainedRefusal");
+        let backends: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "ServerObservation" && r["role"] == "Backend")
+            .collect();
+        assert_eq!(backends.len(), 1, "actual backend receipt count differs: {run}");
+        let clients: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "ClientObservation")
+            .collect();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0]["reply"], "Backend");
+        assert_eq!(clients[0]["hex"], "4241434b454e4400ff");
+        assert_eq!(backends[0]["peer"], clients[0]["local"]);
+        assert!(
+            records
+                .iter()
+                .all(|r| r["type"] != "ServerObservation" || r["role"] != "Relay")
+        );
+        one("RelayAbsentChecked");
+        assert_eq!(run.status, Some(0), "{run}");
+        assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+        return;
+    }
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
     let intercepted = one("Intercepted");
     assert_eq!(intercepted["original"], baseline["destination"]);
     assert_eq!(intercepted["original"], intercepted["client_peer"]);
@@ -250,6 +315,8 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     assert_eq!(joined["joined"], true);
     assert_eq!(joined["backend_accepted"], 1);
     assert_eq!(joined["relay_accepted"], 1);
+    assert_eq!(joined["backend_receipts"], 1);
+    assert_eq!(joined["relay_receipts"], 1);
     let observations: Vec<_> = records
         .iter()
         .filter(|r| r["type"] == "ClientObservation")
