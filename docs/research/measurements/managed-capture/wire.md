@@ -18,6 +18,24 @@ the coordinator's live run.
 
 ## Representation and limits
 
+The coordinator's subsequent tenant clarification supersedes the initial aggregate
+slot proposal below. Each declared AGENT/HARNESS is a tenant. Credit, subscriber
+authority and offsets bind `(run, member, channel)`, with an ancestor run/tenant
+lease preventing multiplied entitlement. `Credit` is exactly u32 member + u8
+canonical channel + u64 admitted capacity (13 bytes); channel validity and finite
+capacity are checked. `Abort` on the independent signal/control path is exactly
+u32 member + positive i32 errno (8 bytes). At most one trusted tenant abort is
+reserved/coalesced per declared member; observer loss never emits one. Owner-end
+and tenant quarantine report unknown uncaptured tails, never zero loss.
+
+The internal setup entries are unique `managed-capacity=` (finite protocol ceiling),
+`managed-members=` (positive u32 count) and `managed-token=` (exactly the existing
+16-byte HELLO token). These are checked launch metadata, not new manifest fields.
+No tenant/channel receives credit merely because a sibling has an available slot.
+Adaptive issued credit must fit the caller's actual admitted lease and protocol
+ceiling; it cannot expand authority. Full tenant/channel slots must not block the
+reader serving other admitted records or main/control progress.
+
 `shards_abi::run::managed::Record` borrows its payload. It allocates nothing and
 checks version, reserved/tag values, exact variant payload shape and arithmetic.
 `StreamState::accept` enforces New → Open → Data* → End|Aborted with contiguous

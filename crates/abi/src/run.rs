@@ -166,8 +166,10 @@ pub mod kind {
     pub const OVER: u8 = 42;
     /// Guest to host, only on the authenticated managed connection: a checked managed record.
     pub const MANAGED: u8 = 43;
-    /// Host to guest, on the managed connection: one record's admitted capacity as u64.
+    /// Host to guest, on the managed connection: one tenant/channel's admitted Credit.
     pub const MANAGED_CREDIT: u8 = 44;
+    /// Guest to host, on the independent signal connection: one tenant's trusted Abort.
+    pub const MANAGED_ABORT: u8 = 45;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
