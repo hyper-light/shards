@@ -190,7 +190,10 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     let inputs = Inputs::supplied();
     assert!(!common::cannot_run_vms(), "real hypervisor required");
     let origin = required("SHARDS_INTERCEPT_ORIGIN");
-    assert!(matches!(origin.as_str(), "local" | "forward"));
+    assert!(matches!(
+        origin.as_str(),
+        "local" | "forward" | "local-loopback" | "local-self"
+    ));
     let mark = required("SHARDS_INTERCEPT_MARK");
     let table = required("SHARDS_INTERCEPT_TABLE");
     let priority = required("SHARDS_INTERCEPT_RULE_PRIORITY");
@@ -212,7 +215,33 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     let backend = namespaces["backend_inode"].as_u64().unwrap();
     let client = namespaces["client_inode"].as_u64().unwrap();
     assert!(router != backend && router != client && backend != client);
+    let target = one("Target");
+    let expected_ip = match origin.as_str() {
+        "local-loopback" => "127.0.0.1",
+        "local-self" => "192.0.2.1",
+        _ => "192.0.2.2",
+    };
+    let actual_destination = target["destination"]
+        .as_str()
+        .unwrap()
+        .parse::<std::net::SocketAddr>()
+        .unwrap();
+    assert_eq!(actual_destination.ip().to_string(), expected_ip);
+    assert_eq!(target["relay_inode"].as_u64(), Some(router));
+    assert_eq!(
+        target["client_inode"].as_u64(),
+        Some(if origin == "forward" { client } else { router })
+    );
+    assert_eq!(
+        target["backend_inode"].as_u64(),
+        Some(if matches!(origin.as_str(), "local-loopback" | "local-self") {
+            router
+        } else {
+            backend
+        })
+    );
     let baseline = one("Baseline");
+    assert_eq!(target["destination"], baseline["destination"]);
     let intercepted = one("Intercepted");
     assert_eq!(intercepted["original"], baseline["destination"]);
     assert_eq!(intercepted["original"], intercepted["client_peer"]);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# COORDINATOR ONLY: boots one real guest for the supplied local/forward case.
+# COORDINATOR ONLY: boots one real guest for the supplied finite IPv4 TCP origin case.
 set -euo pipefail
 : "${CARGO_TARGET_DIR:?coordinator private target}"
 : "${SHARDS_KERNEL:?absolute experimental kernel, never production-pin fallback}"
@@ -10,7 +10,7 @@ set -euo pipefail
 : "${SHARDS_NETWORK_CASE_MS:?single original socket/setup deadline}"
 : "${SHARDS_NETWORK_MEMORY_MIB:?coordinator VM memory allocation}"
 : "${SHARDS_NETWORK_CPUS:?coordinator VM CPU allocation}"
-: "${SHARDS_INTERCEPT_ORIGIN:?local or forward}"
+: "${SHARDS_INTERCEPT_ORIGIN:?local, forward, local-loopback or local-self}"
 : "${SHARDS_INTERCEPT_MARK:?decimal nonzero32-bit fixture mark}"
 : "${SHARDS_INTERCEPT_TABLE:?decimal32-bit fixture table, excluding reserved IDs}"
 : "${SHARDS_INTERCEPT_RULE_PRIORITY:?decimal priority before main and after local}"
