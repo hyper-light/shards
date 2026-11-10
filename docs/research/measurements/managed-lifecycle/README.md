@@ -57,6 +57,22 @@ was run by this implementer.
 
 ## Coordinator validation still required
 
+Coordinator KVM green r57 at f756d09d passed1/1 in4.26s, exit0. It verifies the
+new actor/reaper identities and denied signal/proc access in the committed test,
+not the rest of the attack matrix below. Full raw logs and environment remain on
+Fedora as `~/managed-lifecycle-green*`; root retains excerpts in the integration
+measurement record.
+
+Root added a one-task scope boundary at eb470a119. It refused startup with
+EAGAIN/125 in3.30s (r59). The old-source control c9d0a46f with only that same test
+change also refused EAGAIN/125 in2.13s (r60). Thus a one-task scope did not admit
+this agent before the reaper: its existing MCP processes already share pids.max.
+The original boundary assertion wrongly assumed an actor-only allowance. The
+retained boundary checks explicit refusal and that the actor wrote no report;
+it does not inflate the owner's task grant to make the new helper fit. The helper
+remains counted, and small-limit compatibility/cost beyond this case is still
+owed. The old-source test diff is `~/managed-lifecycle-pids-control-fixture.patch`.
+
 - New native-reaper green on actual VMs; inherited-management-FD absence; tamper
   attempts; whole-population cleanup and orphan reaping; helper/owner/actor death.
 - Forced setup/exec failure, EOF/invalid readiness, descriptor exhaustion and cgroup

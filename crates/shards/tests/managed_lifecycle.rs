@@ -10,15 +10,20 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn a_supplied_agent_runs_below_a_protected_native_reaper() {
-    protected_reaper(None);
+    supplied_agent(None, Admission::ProtectedActor);
 }
 
 #[test]
-fn a_supplied_agent_keeps_its_one_process_allowance() {
-    protected_reaper(Some(1));
+fn a_scope_below_its_required_task_budget_is_refused() {
+    supplied_agent(Some(1), Admission::Refused);
 }
 
-fn protected_reaper(processes: Option<u64>) {
+enum Admission {
+    ProtectedActor,
+    Refused,
+}
+
+fn supplied_agent(processes: Option<u64>, admission: Admission) {
     if cannot_run_vms() {
         return;
     }
@@ -73,6 +78,21 @@ fn protected_reaper(processes: Option<u64>) {
         ("lifecycle-ready", 1),
         TIMEOUT,
     );
+    if matches!(admission, Admission::Refused) {
+        assert_eq!(ran.status, Some(125), "{ran}");
+        assert!(
+            ran.stderr.contains("starting agent probe")
+                && ran
+                    .stderr
+                    .contains("Resource temporarily unavailable (os error 11)"),
+            "{ran}"
+        );
+        assert!(
+            !reports.join("result").exists(),
+            "actor ran beyond its task budget"
+        );
+        return;
+    }
     assert_eq!(ran.status, Some(0), "{ran}");
     let report = std::fs::read_to_string(reports.join("result")).unwrap();
     eprintln!("managed lifecycle facts:\n{report}");
