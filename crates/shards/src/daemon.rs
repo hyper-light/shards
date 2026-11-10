@@ -4032,11 +4032,13 @@ impl<D: Disk> Daemon<D> {
         let capture = match capture.map(|stream| stream.share()).transpose() {
             Ok(handle) => handle,
             Err(error) => {
-                log(format_args!(
-                    "{id}: sharing managed capture: {:?}, OS code {:?}",
+                let _ = writeln!(
+                    io::stderr().lock(),
+                    "shards daemon {}: {id}: sharing managed capture: {:?}, OS code {:?}",
+                    std::process::id(),
                     error.kind(),
                     error.raw_os_error()
-                ));
+                );
                 fails("managed capture handle could not be shared");
                 return None;
             }
