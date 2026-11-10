@@ -183,6 +183,13 @@ compiler JSON, test/clippy logs and exit files. Executables are not committed.
 All hashes refer to actual selected artifacts, not a path assumed fresh from a
 previous build. The local manifest covers these retained source/evidence files.
 
+Formatter, shell syntax, policy and source-only diff checks passed. The whole
+evidence commit's `git show --check` returns2 for the original command logger's
+trailing spaces and libtest's extra final blank lines in raw records only; the
+[exact check output](records/raw-whitespace-check.json) is retained. Those raw
+bytes match the original archives and were preserved. The earlier local diff0
+record predates staging the raw extraction; it is not a whole-evidence diff0 claim.
+
 ## R01–R16 account and coordinator work owed
 
 | Rule | Proof/result and remaining gap |
