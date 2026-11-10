@@ -534,8 +534,8 @@ impl GuestMemory {
     /// Where the platform cannot map a file into reserved memory, the file is read in.
     /// `data`, the runs of the file's RAM that hold data as [`save`](Self::save) said them,
     /// `(offset, len)`: where the platform maps those alone from the file, the rest is
-    /// memory of the guest's own, zeros, as the file holds there (Windows,
-    /// [`platform::map_file_views`]); none says all of it may.
+    /// memory of the guest's own, zeros, as the file holds there
+    /// ([`platform::map_file_views`]); none says all of it may.
     ///
     /// The file must hold all of them, and must not change while the VM runs: pages the
     /// guest has not yet touched come from it.
@@ -1996,6 +1996,63 @@ mod tests {
         }
         drop((m, r, file));
         let _ = std::fs::remove_file(path);
+    }
+
+    /// A restore's zero gaps stay anonymous: reading them must not fill its template's
+    /// sparse file, which tmpfs charges as shmem even after the restore ends (D188).
+    #[cfg(unix)]
+    #[test]
+    fn a_restores_zero_gaps_do_not_fill_its_templates_sparse_file() {
+        use std::os::unix::fs::MetadataExt;
+        let page = page_size().unwrap();
+        let base = 0x8000_0000u64;
+        let ranges = [(base, 2 * DATA_BLOCK)];
+        let saved = GuestMemory::anonymous(&ranges).unwrap();
+        saved.access().unwrap().write(base, &[1]).unwrap();
+        let dir = shards_testdir::TempDir::new("zero-gaps").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(dir.join("memory"))
+            .unwrap();
+        let data = saved.save(&file).unwrap();
+        assert_eq!(data, [(0, DATA_BLOCK as u64)]);
+        file.sync_all().unwrap();
+        let before = file.metadata().unwrap().blocks();
+        let restored = GuestMemory::from_file(&ranges, &file, Some(&data)).unwrap();
+        for offset in (DATA_BLOCK..2 * DATA_BLOCK).step_by(page) {
+            assert_eq!(
+                restored
+                    .access()
+                    .unwrap()
+                    .read_obj::<u8>(base + offset as u64)
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(restored.access().unwrap().read_obj::<u8>(base).unwrap(), 1);
+        restored.access().unwrap().write(base, &[2]).unwrap();
+        restored
+            .access()
+            .unwrap()
+            .write(base + DATA_BLOCK as u64, &[3])
+            .unwrap();
+        let other = GuestMemory::from_file(&ranges, &file, Some(&data)).unwrap();
+        assert_eq!(other.access().unwrap().read_obj::<u8>(base).unwrap(), 1);
+        assert_eq!(
+            other
+                .access()
+                .unwrap()
+                .read_obj::<u8>(base + DATA_BLOCK as u64)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            file.metadata().unwrap().blocks(),
+            before,
+            "reading a zero gap filled the template's holes"
+        );
     }
 
     /// A restore's RAM, its runs of data a file's copy-on-write and the rest zeros, gives

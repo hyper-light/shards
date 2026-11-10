@@ -564,10 +564,11 @@ impl FileViews {
     }
 }
 
-/// Maps `len` bytes of `file` from `offset` copy-on-write at `at` ([`map_file_private`]), as
-/// a restore maps its RAM, whose pages its guest gives back through the [`FileViews`]:
-/// whole, whatever runs of it hold data (windows.rs maps those alone from the file), as a
-/// private mapping gives a page back to its file's however much of the file it maps.
+/// Maps the runs of `len` bytes of `file` from `offset` that `data` says hold data,
+/// copy-on-write at `at` ([`map_file_private`]). The zero gaps keep the anonymous memory
+/// [`reserve_ram`] placed there: a read fault on a tmpfs file's hole allocates a shmem
+/// page (`mm/shmem.c`, `shmem_fault`), which remains charged after the restore ends.
+/// Its guest gives either kind of page back through the [`FileViews`].
 ///
 /// # Safety
 /// As for [`map_file_private`].
@@ -576,10 +577,33 @@ pub unsafe fn map_file_views(
     offset: u64,
     len: usize,
     at: NonNull<u8>,
-    _data: &[std::ops::Range<usize>],
+    data: &[std::ops::Range<usize>],
 ) -> io::Result<FileViews> {
-    // SAFETY: forwarded caller contract.
-    unsafe { map_file_private(file, offset, len, at) }.map(|()| FileViews)
+    let page = page_size()?;
+    let mut end = 0;
+    for run in data {
+        if run.start < end
+            || run.start >= run.end
+            || run.end > len
+            || !run.start.is_multiple_of(page)
+            || !run.end.is_multiple_of(page)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unaligned or overlapping memory data",
+            ));
+        }
+        offset
+            .checked_add(run.end as u64)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        end = run.end;
+    }
+    for run in data {
+        // SAFETY: each run lies on whole pages inside the caller's reservation, checked
+        // above. Its offset fits too; the caller holds the file and reservation whole.
+        unsafe { map_file_private(file, offset + run.start as u64, run.len(), at.add(run.start))? };
+    }
+    Ok(FileViews)
 }
 
 /// Replaces `len` bytes at `at` with a private, copy-on-write mapping of `file` from
