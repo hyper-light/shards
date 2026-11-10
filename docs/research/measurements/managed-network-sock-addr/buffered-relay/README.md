@@ -4,6 +4,11 @@ Signed source **7ee6c4bcf90796c6a1540ed748a5ef89940825e1**, branch
 `p/managed-network-buffered-relay`, starts at exact combined
 `ebbda9b3b7b3de9a9143f4d383f60769ec7803b7`. The intervening main/combined update
 was coordinator-reported code-identical; this branch preserves its approved base.
+Evidence-only checkpoint `da7d5b4fee6634ac51844229bb4008d8f415952f` follows it.
+A subsequent coordinator-requested comment-only correction describes udp.rs as
+finite compatibility and one-flow forwarding comparisons, with no product policy.
+The checked runtime source remains7ee; no behavior changes or new runtime result
+are implied by that file-level documentation correction.
 No production mechanism is selected or changed. Prior responder/presentation
 checkpoints and the UDP-local tuple-reservation reds remain preserved.
 

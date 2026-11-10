@@ -1,4 +1,4 @@
-//! Finite UDP compatibility experiment. No forwarding relay, cache, or product policy.
+//! Finite UDP compatibility and one-flow forwarding comparisons; no product policy.
 use super::*;
 
 pub(super) mod forward;
