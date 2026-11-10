@@ -1,0 +1,523 @@
+{
+  "archive": "udp-light-raw-v4.tar.gz",
+  "sha256": "3615decfba86bbcb8e862f594b5a21831c083ae972b545c5bd509e78468def80",
+  "bytes": 142327,
+  "entries": 104,
+  "files": [
+    {
+      "path": "v1/gnu-pure.command",
+      "sha256": "37656366e4d7fb7b4326b399e6e2ab9b64378f64425c87b1bd8d42883e42c959",
+      "bytes": 184
+    },
+    {
+      "path": "v1/gnu-pure.exit",
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "bytes": 4
+    },
+    {
+      "path": "v1/gnu-pure.log",
+      "sha256": "1da60bc5965a5de1b7f9a9a77d1be2e15abc1b625062c83462aa10918372c57a",
+      "bytes": 800
+    },
+    {
+      "path": "v1/identity.txt",
+      "sha256": "d824e7adfa0a7a9cb98ac44678b753f7016cfb4b3c1965e7ae9f382322d56c15",
+      "bytes": 1890
+    },
+    {
+      "path": "v2/gnu-clippy.command",
+      "sha256": "e1988b3628928d5b46d3733c54a6ee3d3d7254f318644d7524ac04943f1507ea",
+      "bytes": 165
+    },
+    {
+      "path": "v2/gnu-clippy.exit",
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+      "bytes": 4
+    },
+    {
+      "path": "v2/gnu-clippy.log",
+      "sha256": "37a676cf6dc7e56aa3a2e9e11903b3febc42f397d84d2f9717980df8628efbe8",
+      "bytes": 1026
+    },
+    {
+      "path": "v2/gnu-pure.command",
+      "sha256": "af3401e640badedc9c7a3a578b7a97a358b8d6ffb97740e1628b1c9c30641631",
+      "bytes": 192
+    },
+    {
+      "path": "v2/gnu-pure.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v2/gnu-pure.log",
+      "sha256": "484d36b33ccc9968f8fb6cc7572945e71b5d1850a5e638bef60e5a4051a40b40",
+      "bytes": 2224
+    },
+    {
+      "path": "v2/identity.txt",
+      "sha256": "396be019c1425a561dbadd8f2d77e8c3be647d61918e443e96de862426f3731f",
+      "bytes": 1890
+    },
+    {
+      "path": "v2/tcp-parser.command",
+      "sha256": "00f7708884cacbadbd1eaeb09fdcbae66300f20f96b09987810df09a20e3983d",
+      "bytes": 243
+    },
+    {
+      "path": "v2/tcp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v2/tcp-parser.log",
+      "sha256": "c18c3fd28eedad924c7133a31af486b8c666d5eab087fad110e470b34f657e3a",
+      "bytes": 416
+    },
+    {
+      "path": "v2/udp-parser.command",
+      "sha256": "5f8329c84b13e4227dc75a065469f956ed31db0677ac9ad2a673e9094cbb5a86",
+      "bytes": 245
+    },
+    {
+      "path": "v2/udp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v2/udp-parser.log",
+      "sha256": "e2bb3fb50e0d9e80f9438427b0432663b9f4984e18e915e0a554c7d422d0092c",
+      "bytes": 418
+    },
+    {
+      "path": "v3/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "v3/artifact-sha256.txt",
+      "sha256": "ec4e7f0f6d2e40cc571c064aa35c83ddd590ef63545aae3a1dfab6fd6eca9ee5",
+      "bytes": 517
+    },
+    {
+      "path": "v3/gnu-clippy.command",
+      "sha256": "3592dc7ec7fef45205c477dd7c11f9fb7b9876f0f3fe33306e645e75ea7e8274",
+      "bytes": 165
+    },
+    {
+      "path": "v3/gnu-clippy.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v3/gnu-clippy.log",
+      "sha256": "27734185acf34ee987b7baa063af72f5c5bb32054dfa08f531bed9f26f8d596d",
+      "bytes": 192
+    },
+    {
+      "path": "v3/gnu-pure.command",
+      "sha256": "a07383c9f59cee9a64fe4ccf22ca155dba56959c66c38a112a7d3fd5d04bfa9f",
+      "bytes": 192
+    },
+    {
+      "path": "v3/gnu-pure.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v3/gnu-pure.log",
+      "sha256": "83a71c9c921ca1112b42fa30f3dab44e1d63891f4dcc189fd29b2e1c0b77f770",
+      "bytes": 2224
+    },
+    {
+      "path": "v3/identity.txt",
+      "sha256": "355d2d0ff443c2abcf47497bda7c8a06364db33773c73846f32136d1162f5506",
+      "bytes": 1890
+    },
+    {
+      "path": "v3/musl-clippy.command",
+      "sha256": "8029830332c753538df87af2b63889d02fa75a84ad7fde7d577d0ae5dc301fba",
+      "bytes": 166
+    },
+    {
+      "path": "v3/musl-clippy.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v3/musl-clippy.log",
+      "sha256": "a04a4116a5c9b2f9a3e9dd74f7c4ee44009c28b164a00259cb2d2162a0d1849c",
+      "bytes": 192
+    },
+    {
+      "path": "v3/tcp-parser.command",
+      "sha256": "bc3cf6082ab8b31c520552ca89ae54a54cd12e4ff8411c58120cff57838c2ef8",
+      "bytes": 243
+    },
+    {
+      "path": "v3/tcp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v3/tcp-parser.log",
+      "sha256": "539de42ca3fe83ff95c84d100fbd3f0ca9b4109975dbac8de4da52b66b8d6d04",
+      "bytes": 416
+    },
+    {
+      "path": "v3/udp-parser.command",
+      "sha256": "d831e434d9958cac35407bc8c77dbdb2367247733725c4aaa4329b041fc837d2",
+      "bytes": 245
+    },
+    {
+      "path": "v3/udp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v3/udp-parser.log",
+      "sha256": "c683d0f47d9ac2f3cded923653abed1a397b9f2c471c0cd62b584ea73c30f404",
+      "bytes": 418
+    },
+    {
+      "path": "v4/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "v4/artifact-sha256.txt",
+      "sha256": "ecb3980f95de3c8aeb67a84b03b308c8d898b925d2c41899703d18ffbe1a7ec3",
+      "bytes": 517
+    },
+    {
+      "path": "v4/gnu-clippy.command",
+      "sha256": "3875a4abe5796aaf6c651c21137753f7f012967b92bad3e0d5f4cfeb1d9616a1",
+      "bytes": 165
+    },
+    {
+      "path": "v4/gnu-clippy.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v4/gnu-clippy.log",
+      "sha256": "0da920d5396c91af90103da09d2b87ce2dc2f68ed3ae4623b9c27f6c7030ac74",
+      "bytes": 192
+    },
+    {
+      "path": "v4/gnu-pure.command",
+      "sha256": "a7c7674d82bd2c925cda941957aebdb3324557921bfb0e110e8f005c2b4c20a5",
+      "bytes": 192
+    },
+    {
+      "path": "v4/gnu-pure.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v4/gnu-pure.log",
+      "sha256": "c5c902321e3cb3dec25251dbc6aae12ec98c12362f0aae33cf827611e4deab41",
+      "bytes": 2224
+    },
+    {
+      "path": "v4/identity.txt",
+      "sha256": "adda6dd56696b95f285f652d00ec9dab49ddfa6bc2c491089f1630162ae0a42f",
+      "bytes": 1636
+    },
+    {
+      "path": "v4/musl-clippy.command",
+      "sha256": "4b505206bc47c8797420b9161ac5b413e1dc74ea37690577a8404711b3ec65f2",
+      "bytes": 166
+    },
+    {
+      "path": "v4/musl-clippy.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v4/musl-clippy.log",
+      "sha256": "c8240024727bbcd067a69c8b3d9ab727eebae3bbc3dd49494d7c04f63356d93c",
+      "bytes": 192
+    },
+    {
+      "path": "v4/tcp-parser.command",
+      "sha256": "59e7c4c30b4ed09810c12f8e893f2b1bd5d59bd19e1334cb2ad65a046235ac87",
+      "bytes": 243
+    },
+    {
+      "path": "v4/tcp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v4/tcp-parser.log",
+      "sha256": "1442d156d86061c17a72b6599f4c4413dd8c1e4e8a6545eee7c4edebc1143477",
+      "bytes": 416
+    },
+    {
+      "path": "v4/udp-parser.command",
+      "sha256": "6c7bcf1582fd8614ede43cde27bcec9dfa83b6bf9033e0779bc58f1988128b2c",
+      "bytes": 245
+    },
+    {
+      "path": "v4/udp-parser.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "v4/udp-parser.log",
+      "sha256": "87beccaabc809fb28cc0e30b98cbafdd9517ac33c9287713767719d8fb164ca4",
+      "bytes": 418
+    },
+    {
+      "path": "host-v1/host-clippy.command",
+      "sha256": "5bc122d43960608a6642fdd21e04f68729b4e9116ec6760773637aa49a6e1ab4",
+      "bytes": 169
+    },
+    {
+      "path": "host-v1/host-clippy.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "host-v1/host-clippy.log",
+      "sha256": "cb20a2f56734b603a4981fba55dafd112c85c02ac659ee7a93f8970fa685fc60",
+      "bytes": 312
+    },
+    {
+      "path": "host-v1/host-pure.command",
+      "sha256": "073a854849afd7c66dfcf6133e2b0ce800ab94b93902cd9bd6e371b714a348b6",
+      "bytes": 153
+    },
+    {
+      "path": "host-v1/host-pure.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "bytes": 2
+    },
+    {
+      "path": "host-v1/host-pure.log",
+      "sha256": "e56b6cc3b30735c1fc2fb95f089a08411d76c4f6155f814d88b80665d2bdd0d7",
+      "bytes": 7479
+    },
+    {
+      "path": "host-v1/source.json",
+      "sha256": "85b8790d7dec99f3347b4aee8496f1b45d1c63d4b9987781f5c689dfcc1f3a2f",
+      "bytes": 344
+    },
+    {
+      "path": "source-v1/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "source-v1/Cargo.toml",
+      "sha256": "9af80a6dda1e3a1f69a76130a266cb9de818e0a4ba6353493562b4a0a30b3662",
+      "bytes": 296
+    },
+    {
+      "path": "source-v1/clippy.toml",
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+      "bytes": 526
+    },
+    {
+      "path": "source-v1/crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "b44039cc0ec83543c810b01f5643c5d5fa41eee35b6e6ecece331c3a5655fead",
+      "bytes": 22048
+    },
+    {
+      "path": "source-v1/crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "83dc912ea01826d3c13f087efb3d4e6c41ed4af65a32d93a725f07f3f4182fad",
+      "bytes": 35044
+    },
+    {
+      "path": "source-v1/crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "82011483d59201aeaea7b0da08a6cd4b5f3ea86c31e01eb73d6b1252c925822c",
+      "bytes": 35796
+    },
+    {
+      "path": "source-v1/crates/testguest/src/managed_network.rs",
+      "sha256": "a954a0ced7ce095abf5f48c9923f8946c7b50464e6df272d1b41d39bb925ddd1",
+      "bytes": 36585
+    },
+    {
+      "path": "source-v1/main.rs",
+      "sha256": "8fd364e5b057d7fd2be4bbd3611b3bae83a1693c2ca02335f6912209172085f9",
+      "bytes": 241
+    },
+    {
+      "path": "source-v2/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "source-v2/Cargo.toml",
+      "sha256": "9af80a6dda1e3a1f69a76130a266cb9de818e0a4ba6353493562b4a0a30b3662",
+      "bytes": 296
+    },
+    {
+      "path": "source-v2/clippy.toml",
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+      "bytes": 526
+    },
+    {
+      "path": "source-v2/crates/testguest/src/main-wrapper.rs",
+      "sha256": "40cefe7136b96b6cd2ad76bdcbab0a3f5154c2e09459e864a35995abd295ef5c",
+      "bytes": 25
+    },
+    {
+      "path": "source-v2/crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "7690ef4fb6cbb5f40e5b39c1c5a18b70a9e4f4aa4cc5ed7aef8355eaa368c808",
+      "bytes": 22198
+    },
+    {
+      "path": "source-v2/crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "83dc912ea01826d3c13f087efb3d4e6c41ed4af65a32d93a725f07f3f4182fad",
+      "bytes": 35044
+    },
+    {
+      "path": "source-v2/crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "82011483d59201aeaea7b0da08a6cd4b5f3ea86c31e01eb73d6b1252c925822c",
+      "bytes": 35796
+    },
+    {
+      "path": "source-v2/crates/testguest/src/managed_network.rs",
+      "sha256": "a954a0ced7ce095abf5f48c9923f8946c7b50464e6df272d1b41d39bb925ddd1",
+      "bytes": 36585
+    },
+    {
+      "path": "source-v2/docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex",
+      "sha256": "637e2c05b8256410af49939f40b6a4739f8956ee8728719948e8336004fd56ba",
+      "bytes": 17121
+    },
+    {
+      "path": "source-v2/main.rs",
+      "sha256": "178080d5b96679efcef8da8a9b55bf40e9dc169d028be401338803b61bc60c10",
+      "bytes": 237
+    },
+    {
+      "path": "source-v3/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "source-v3/Cargo.toml",
+      "sha256": "9af80a6dda1e3a1f69a76130a266cb9de818e0a4ba6353493562b4a0a30b3662",
+      "bytes": 296
+    },
+    {
+      "path": "source-v3/clippy.toml",
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+      "bytes": 526
+    },
+    {
+      "path": "source-v3/crates/testguest/src/main-wrapper.rs",
+      "sha256": "40cefe7136b96b6cd2ad76bdcbab0a3f5154c2e09459e864a35995abd295ef5c",
+      "bytes": 25
+    },
+    {
+      "path": "source-v3/crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "c7b2c0675b0749cd680497df5923007ef8ef2234c3cbcef259b6f51bb9b1a108",
+      "bytes": 22158
+    },
+    {
+      "path": "source-v3/crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "83dc912ea01826d3c13f087efb3d4e6c41ed4af65a32d93a725f07f3f4182fad",
+      "bytes": 35044
+    },
+    {
+      "path": "source-v3/crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "82011483d59201aeaea7b0da08a6cd4b5f3ea86c31e01eb73d6b1252c925822c",
+      "bytes": 35796
+    },
+    {
+      "path": "source-v3/crates/testguest/src/managed_network.rs",
+      "sha256": "a954a0ced7ce095abf5f48c9923f8946c7b50464e6df272d1b41d39bb925ddd1",
+      "bytes": 36585
+    },
+    {
+      "path": "source-v3/docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex",
+      "sha256": "637e2c05b8256410af49939f40b6a4739f8956ee8728719948e8336004fd56ba",
+      "bytes": 17121
+    },
+    {
+      "path": "source-v3/main.rs",
+      "sha256": "178080d5b96679efcef8da8a9b55bf40e9dc169d028be401338803b61bc60c10",
+      "bytes": 237
+    },
+    {
+      "path": "source-v4/Cargo.lock",
+      "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107",
+      "bytes": 387
+    },
+    {
+      "path": "source-v4/Cargo.toml",
+      "sha256": "9af80a6dda1e3a1f69a76130a266cb9de818e0a4ba6353493562b4a0a30b3662",
+      "bytes": 296
+    },
+    {
+      "path": "source-v4/clippy.toml",
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+      "bytes": 526
+    },
+    {
+      "path": "source-v4/crates/testguest/src/main-wrapper.rs",
+      "sha256": "40cefe7136b96b6cd2ad76bdcbab0a3f5154c2e09459e864a35995abd295ef5c",
+      "bytes": 25
+    },
+    {
+      "path": "source-v4/crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "d25753bc77f730552276a4d0016d3ab93bde48a08ede7aff5c904ab1a9a93722",
+      "bytes": 22165
+    },
+    {
+      "path": "source-v4/crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "83dc912ea01826d3c13f087efb3d4e6c41ed4af65a32d93a725f07f3f4182fad",
+      "bytes": 35044
+    },
+    {
+      "path": "source-v4/crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "82011483d59201aeaea7b0da08a6cd4b5f3ea86c31e01eb73d6b1252c925822c",
+      "bytes": 35796
+    },
+    {
+      "path": "source-v4/crates/testguest/src/managed_network.rs",
+      "sha256": "a954a0ced7ce095abf5f48c9923f8946c7b50464e6df272d1b41d39bb925ddd1",
+      "bytes": 36585
+    },
+    {
+      "path": "source-v4/docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex",
+      "sha256": "637e2c05b8256410af49939f40b6a4739f8956ee8728719948e8336004fd56ba",
+      "bytes": 17121
+    },
+    {
+      "path": "source-v4/main.rs",
+      "sha256": "178080d5b96679efcef8da8a9b55bf40e9dc169d028be401338803b61bc60c10",
+      "bytes": 237
+    },
+    {
+      "path": "host-source-v1/Cargo.lock",
+      "sha256": "a9f97e5997174124a747f58d2401b68bcdf42491ce0667cc36cada798bb9ae6a",
+      "bytes": 2653
+    },
+    {
+      "path": "host-source-v1/Cargo.toml",
+      "sha256": "2d68623d08d10cf4ce7e4f8312ac6596f78c80d8c87ef96d9789e4f451d2be7e",
+      "bytes": 128
+    },
+    {
+      "path": "host-source-v1/fixtures.json",
+      "sha256": "654fde364f70e433353e1c76b220d7096b9e7a8e73395dfe52430bd58a0387d3",
+      "bytes": 23616
+    },
+    {
+      "path": "host-source-v1/lib.rs",
+      "sha256": "8ad3625b670e24d51defe2a284f62d1ef5fe17fdf3bf44146b17a0d2c5454016",
+      "bytes": 7283
+    },
+    {
+      "path": "v4/binaries.json",
+      "sha256": "9903ff9b026dd84272856559b862e79a8b490c9011d8a1e40edb09c07a6170a9",
+      "bytes": 243
+    }
+  ]
+}
