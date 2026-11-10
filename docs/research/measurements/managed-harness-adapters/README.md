@@ -86,7 +86,8 @@ State transitions for the codec are `received -> rejected(typed cause)` or
 actual effect state. A response write error returns its IO error and cannot
 change the actual effect to not-started. `Request::reserve_reply` counts the exact
 empty native envelope, adds at most six escaped bytes per broker result byte,
-and reserves fallibly. Its `ReplySlot::finish` checks the broker result bound and
+and reserves fallibly. The slot borrows the request which prepared it, so filling
+cannot substitute another packet's correlation IDs. `ReplySlot::finish` checks the broker result bound and
 uses a fixed writer that cannot grow the buffer. The canonical broker must supply
 its actual reserved result bound before execution; that getter/caller span is
 pending ROOT/audit-owner coordination. No infallible post-effect wrapper allocation.
@@ -126,6 +127,7 @@ physical CPU/kernel/memory peak attribution.
 | `raw/native-05` | Corrected native-probe.py streams SHA256 and performs both actual initializations with credential/keychain/network denials. Both reply before EOF and exit0, including Claude2.1.321/tokenSource none assertions. |
 | `raw/codec-03` | Final current codec source after exact known-method matching: named format0, strict compilation0,7passed/0failed/0ignored; one unrelated product JSON test filtered. |
 | `raw/final-light-01` | Final production-mode and test-mode scoped Clippy0 with denied panic/index/output lints and warnings; policy checker0. Source hashes and unchanged product Cargo.lock identity retained;169GiB Mac free. |
+| `raw/codec-04`, `raw/final-light-02` | New request-bound reply-slot API refinement: current7tests0failed/0ignored, named format0, strict production/test Clippy0 and policy0. These current source hashes supersede codec-03/final-light-01 for the amended interface. This is new-work refinement, not a live production defect claim. |
 | `raw/source-fetch-*` | Exact pinned URLs/lengths/hashes and original404/403 attempts retained. Corrected paths use the fetched immutable Git tree. No inaccessible source is called read. |
 
 All native probes deny network operations and use fresh

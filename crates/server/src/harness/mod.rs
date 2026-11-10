@@ -142,7 +142,7 @@ pub(crate) enum Completion {
     Uncertain,
 }
 
-impl Request<'_> {
+impl<'packet> Request<'packet> {
     pub fn reported(&self) -> Option<&Reported<'_>> {
         match &self.envelope {
             Envelope::Codex { reported, .. } => Some(reported),
@@ -163,7 +163,7 @@ impl Request<'_> {
 
     /// The bound must come from the canonical broker's reserved result, before
     /// its effect. JSON's longest escape is six ASCII bytes per input byte.
-    pub fn reserve_reply(&self, result_bound: usize) -> Result<ReplySlot, ReplyFailure> {
+    pub fn reserve_reply(&self, result_bound: usize) -> Result<ReplySlot<'_, 'packet>, ReplyFailure> {
         let mut count = wire::Count(0);
         self.respond(&mut count, Completion::Refused, "")
             .map_err(|_| ReplyFailure::Length)?;
@@ -175,7 +175,11 @@ impl Request<'_> {
         bytes
             .try_reserve_exact(capacity)
             .map_err(|_| ReplyFailure::Capacity)?;
-        Ok(ReplySlot { bytes, result_bound })
+        Ok(ReplySlot {
+            bytes,
+            result_bound,
+            request: self,
+        })
     }
 }
 
@@ -188,22 +192,18 @@ pub(crate) enum ReplyFailure {
 }
 
 /// A prepared output reservation; filling it cannot grow its buffer.
-pub(crate) struct ReplySlot {
+pub(crate) struct ReplySlot<'request, 'packet> {
     bytes: Vec<u8>,
     result_bound: usize,
+    request: &'request Request<'packet>,
 }
 
-impl ReplySlot {
-    pub fn finish(
-        mut self,
-        request: &Request<'_>,
-        completion: Completion,
-        result: &str,
-    ) -> Result<String, ReplyFailure> {
+impl ReplySlot<'_, '_> {
+    pub fn finish(mut self, completion: Completion, result: &str) -> Result<String, ReplyFailure> {
         if result.len() > self.result_bound {
             return Err(ReplyFailure::BoundExceeded);
         }
-        request
+        self.request
             .respond(&mut wire::Fixed(&mut self.bytes), completion, result)
             .map_err(|_| ReplyFailure::Encoding)?;
         String::from_utf8(self.bytes).map_err(|_| ReplyFailure::Encoding)

@@ -216,13 +216,13 @@ fn result_capacity_is_prepared_before_effect_and_cannot_grow_while_filling() {
         ));
         let slot = request.reserve_reply(result.len()).unwrap();
         let before = slot.bytes.capacity();
-        let answer = slot.finish(&request, Completion::Completed, result).unwrap();
+        let answer = slot.finish(Completion::Completed, result).unwrap();
         assert!(answer.len() <= before);
         assert_eq!(answer.capacity(), before);
         assert!(json::parse(answer.as_bytes()).is_ok());
         let slot = request.reserve_reply(0).unwrap();
         assert_eq!(
-            slot.finish(&request, Completion::Uncertain, result),
+            slot.finish(Completion::Uncertain, result),
             Err(ReplyFailure::BoundExceeded)
         );
     }
