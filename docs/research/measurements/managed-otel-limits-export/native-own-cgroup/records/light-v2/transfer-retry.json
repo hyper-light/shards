@@ -1,0 +1,20 @@
+{
+  "input": {
+    "command": "python3 - <<'PY'\nimport pathlib,hashlib,json,base64\np=pathlib.Path.home()/'managed-otel-own-cgroup-c298-light-v1/attempt-v2/raw.tar.gz';b=p.read_bytes()\nprint(json.dumps({'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()}))\nPY",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+    "sync": false,
+    "timeout_s": 600
+  },
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "exit_code": 0,
+    "running": false,
+    "why": "linux/x86_64 \u00b7 26 of 32 cores idle \u00b7 56 GB free \u00b7 room for 1 CPU, 256 MiB of memory, 1 GiB of disk"
+  },
+  "archive": {
+    "bytes": 28609,
+    "sha256": "75766b677283916248de29e7aaac209236db41c6ee7ec034082c749fa9bf0e8d"
+  },
+  "output_representation": "Original base64 output decoded byte-for-byte to raw.tar.gz; no redundant encoded payload retained."
+}

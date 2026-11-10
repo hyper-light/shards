@@ -1,0 +1,24 @@
+{
+  "full": {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit_code": 2
+  },
+  "excluding_only_authentic_raw_stdout": {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check",
+      "--",
+      ".",
+      ":!docs/research/measurements/managed-otel-limits-export/native-own-cgroup/records/light-v2/resolution-tests.stdout"
+    ],
+    "exit_code": 0
+  },
+  "reason": "Original libtest stdout EOF blank is authentic retained evidence, not source. Original bytes preserved; full check is NOT claimed zero."
+}

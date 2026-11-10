@@ -1,5 +1,15 @@
 # Native own-cgroup source integration, active implementer checkpoint
 
+CURRENT raw follow-up: SAMEread admitted normally at26/32idle; original28609B
+archive nowlocal, EVERY53payload+1manifest verified (outside54rows). Original
+resolver3pass0fail0ignored1filtered; fullnativeofficialtypedcompareactuallyran.
+OriginalownpathNONROOT delegatedrun group, mount43/dev29/inode478878 recorded;
+both rawcapsIoENOENT2, sixunavailable, numericcapsabsent. Underlyingfileabsence
+causeUNESTABLISHED, nocontrollerquery/fix/fallback/rerun. Native1resource4metrics
+14points/errorcount6; FD[0,1,2,3]same. SeeRAW-VERIFICATION.md +light-v2/verified.json.
+The original pending paragraphs below describe81632 history, not currentrawstatus.
+No ownjobactive; active nextqueueG25events contract in managed-otel-cgroup-events.
+
 Implementer01a1c5be192972d8b05dc7c207cc6fca; ROOT01a148884a4770fdaf0111f3f792a248.
 POLICY_READ current0342b85d9c808e3ced041a6c3ef0e9bf70438272, FULL AGENTS,
 R01–R16/evidence/CLAUDE/managed plan/global handoff +required0ae read. Rules SHA256

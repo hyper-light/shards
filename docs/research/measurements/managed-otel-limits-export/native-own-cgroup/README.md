@@ -6,6 +6,11 @@ not a Shards VM, cap-transition, Collector, performance or entitlement test.
 ROOT adoption of c298 and its whole-caller/Collector/profile/matrix gates remain
 pending. All original source, raw failures and frozen artifacts are preserved.
 
+The original archive has now been retrieved under normal admission and EVERY
+53payloads+one manifest verified; see [RAW-VERIFICATION.md](RAW-VERIFICATION.md).
+The pending-raw paragraphs below preserve81632's historical checkpoint status.
+Live finite/max cap reads remain UNVERIFIED.
+
 ## Actual result and limitation
 
 The corrected private run returned0 for all13 command phases, including the

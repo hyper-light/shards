@@ -1,0 +1,51 @@
+{
+  "cpu_usec": {
+    "type": "Observed",
+    "value": "49164440"
+  },
+  "memory_bytes": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  },
+  "memory_limit": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  },
+  "raw_reads_are_separate_nonatomic_observations": true,
+  "read_bytes": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  },
+  "scope": "Workload (fixture label)",
+  "task_limit": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  },
+  "threads": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  },
+  "time_unix_nano": "1794346501872785695",
+  "write_bytes": {
+    "cause": {
+      "errno": 2,
+      "type": "Io"
+    },
+    "type": "Failure"
+  }
+}

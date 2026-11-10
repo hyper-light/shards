@@ -1,0 +1,10 @@
+{
+  "memory.max": {
+    "errno": 2,
+    "type": "Io"
+  },
+  "pids.max": {
+    "errno": 2,
+    "type": "Io"
+  }
+}

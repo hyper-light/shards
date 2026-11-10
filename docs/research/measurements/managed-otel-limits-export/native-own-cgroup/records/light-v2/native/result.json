@@ -1,0 +1,41 @@
+{
+  "fd_after": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "fd_before": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "fd_sets_equal": true,
+  "fd_sets_include_the_temporary_enumeration_fd": true,
+  "fixture_generation": 0,
+  "outcome": {
+    "atomic_snapshot_or_exclusive_process_accounting": false,
+    "cap_writes_or_cgroup_creation": false,
+    "full_official_typed_requests_equal": true,
+    "identity_inputs_are_synthetic_fixture_labels": true,
+    "limit_state_points": 6,
+    "memory_limit": {
+      "cause": {
+        "errno": 2,
+        "type": "Io"
+      },
+      "type": "Failure"
+    },
+    "task_limit": {
+      "cause": {
+        "errno": 2,
+        "type": "Io"
+      },
+      "type": "Failure"
+    },
+    "type": "Observed"
+  },
+  "run_label": "0000000000000000000000000000000000000000000000000000000000000001",
+  "vm_label": "0000000000000000000000000000000000000000000000000000000000000002"
+}

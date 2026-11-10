@@ -1,0 +1,8 @@
+
+running 3 tests
+test own_resolution_tests::missing_mount_and_malformed_escapes_are_limitations_without_fallback ... ok
+test own_resolution_tests::mount_mapping_uses_component_prefix_and_ignores_optional_tags ... ok
+test own_resolution_tests::own_unified_path_is_not_unescaped_or_allowed_to_walk_up ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
