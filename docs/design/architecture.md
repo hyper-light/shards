@@ -15524,6 +15524,27 @@ download.
 | `MAX_REDIRECTS` (http.rs) | 10, uncited | 10, cited | go1.26.1 net/http/client.go l. 834 |
 | `SLACK` (registry.rs tests) | 1.5 s | none: the waits the client chose (`Client::paused`) | the test's own record |
 
+#### DNS/dial completion and cancellation are events (D222, continued)
+
+The old `DIAL_POLL = 100 ms` was an ordinary cancellation probe, not a protocol
+schedule. A controlled local libc fixture held the actual getaddrinfo/connect
+worker calls: cancellation took about 100 ms at the median over 20 samples each
+and both regression guards failed. The private `Reply` now notifies the existing
+Cancel Condvar on answer or unanswered drop; `wait_reply` checks typed answer,
+cancellation, deadline and disconnection states under its existing live mutex.
+There is no new polling interval, listener registry, cache or resolver manager.
+Workers hold Weak cancellation ownership, so a libc call outliving its caller does
+not retain that client's sockets/helpers. The original Happy Eyeballs address
+schedule remains distinct and is bounded by the complete dial deadline.
+
+[Evidence and pinned primary sources](../research/measurements/registry-cancel/README.md)
+record red/green, independent notification mutations, cleanup, resource samples and
+all R01–R16 gaps. In particular, cancellation does not terminate libc resolution;
+aggregate abandoned-worker admission, large shared-Condvar fanout, six remaining
+platform/runtime checks and measured leading implementation comparisons remain
+open. The existing 300 ms RACE is an upstream default still requiring separate
+R03 derivation; preserving its protocol purpose does not justify its value.
+
 ### The `crates/shards` figures of the picked-constants audit (2026-11-09): each from its source
 
 **Found.** The audit of 2026-11-09 (docs/audit/2026-11-09_picked-constants.md, "crates/shards")

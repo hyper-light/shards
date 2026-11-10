@@ -1,0 +1,62 @@
+[
+  {
+    "name": "rust-condvar",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/sync/poison/condvar.rs",
+    "sha256": "b04d88c4281a8da36c8a4f683cbab3dda453d404ca9efcc887deec25d1be4769",
+    "bytes": 18911
+  },
+  {
+    "name": "rust-unix-resolve",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/sys/net/connection/socket/mod.rs",
+    "sha256": "5b12aa13a5aa6d57a05ec0864068a31ea310ce479e4f136621d00b72917d8fdd",
+    "bytes": 28108
+  },
+  {
+    "name": "go-dial",
+    "url": "https://raw.githubusercontent.com/golang/go/go1.27.1/src/net/dial.go",
+    "sha256": "1ea8719962e33747db841fae362a339c29315fde2c5554a344b2935aa6f803b5",
+    "bytes": 32230
+  },
+  {
+    "name": "go-lookup",
+    "url": "https://raw.githubusercontent.com/golang/go/go1.27.1/src/net/lookup.go",
+    "sha256": "e8b6b0a0dc7ca0715fe14e6599b1784dc85ce59689e0cb3f9a7fe3eea26ada19",
+    "bytes": 30201
+  },
+  {
+    "name": "curl-threaded",
+    "url": "https://raw.githubusercontent.com/curl/curl/curl-8_17_0/lib/asyn-thrdd.c",
+    "sha256": "074d3503925d033d8572adf2db9aa611bcbba50368b397c2ac89452f86f16aa6",
+    "bytes": 21827
+  },
+  {
+    "name": "rfc8305",
+    "url": "https://www.rfc-editor.org/rfc/rfc8305.txt",
+    "sha256": "9bb65e288b32acae072d1bf403c609f71c32ea7a5087d0056ee9af3cedca47e1",
+    "bytes": 32917
+  },
+  {
+    "name": "kernel-crypto-proc",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/crypto/proc.c",
+    "sha256": "383b836fba5a566449261299a516cc57c766db3c22557a4db0de3b46b5fb7b14",
+    "bytes": 2591
+  },
+  {
+    "name": "kernel-crypto-algapi",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/crypto/algapi.c",
+    "sha256": "7c7ffbcb87d14fd2cc0530d59d933dc3124bb6933763ed0f835fe9b7798aee11",
+    "bytes": 25113
+  },
+  {
+    "name": "opa-regex",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/topdown/regex.go",
+    "sha256": "523fe8e4dc0c9520e78c868ef7b0d04b8a9dd330cc8dff0ed1090aa0b4df00b6",
+    "bytes": 8300
+  },
+  {
+    "name": "opa-regex-template",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/topdown/regex_template.go",
+    "sha256": "facfde2d0b659a15e283bbcf3b0555f541eaf3c788cd75de51d636b51f778885",
+    "bytes": 4129
+  }
+]
