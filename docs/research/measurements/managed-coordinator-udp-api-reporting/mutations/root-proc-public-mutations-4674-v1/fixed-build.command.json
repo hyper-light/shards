@@ -1,0 +1,1 @@
+["cargo", "build", "--manifest-path", "docs/research/measurements/managed-proc-main/public-probe/Cargo.toml", "--offline", "--locked", "--release", "-j4", "--message-format=json-render-diagnostics"]

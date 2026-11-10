@@ -1,0 +1,44 @@
+[
+  {
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "remote": "root-managed-latest-linux-raw-v2.tgz",
+    "bytes": 282100,
+    "sha": "8e4d7d673ebf1e81e8452ac3ef3a4054427185d5c551005a5e057c07de9f3896",
+    "prefix": "linux"
+  },
+  {
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "remote": "root-managed-latest-macos-raw.tgz",
+    "bytes": 2798,
+    "sha": "d4e206732667a8d931080c799f498976c7a27f5bbf0825e1dc41142e228497a4",
+    "prefix": "macos"
+  },
+  {
+    "on": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "remote": "root-managed-reporting-candidate-raw.tgz",
+    "bytes": 2912,
+    "sha": "41cbcaa2b493a80d9c8ccc1e4de58425eaf5068d867676483dcdfe4086534c58",
+    "prefix": "reporting"
+  },
+  {
+    "on": "f766f09294f2e17e3b8a631ffd4e6a4b",
+    "remote": "root-managed-latest-windows-raw.tgz",
+    "bytes": 2181,
+    "sha": "2ad40abad29e2be1da439915b6ba6b816521f0427beaa0b637cd35ea9942daf4",
+    "prefix": "windows"
+  },
+  {
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "remote": "root-proc-public-mutations-4674-raw.tgz",
+    "bytes": 14020,
+    "sha": "f0721a99f68170969627d4a50b856511060932c025761bb09039c28899fe1875",
+    "prefix": "mutations"
+  },
+  {
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "remote": "root-managed-seven-target-d804-raw.tgz",
+    "bytes": 2897,
+    "sha": "ce8fe204960970869baaeac9f707247c73cb06d2bc6c708f2b70ce6f80bb86e1",
+    "prefix": "matrix"
+  }
+]

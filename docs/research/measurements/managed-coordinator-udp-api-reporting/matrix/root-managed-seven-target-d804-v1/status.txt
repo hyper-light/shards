@@ -1,0 +1,7 @@
+?? .DS_Store
+?? crates/.DS_Store
+?? docs/.DS_Store
+?? docs/research/.DS_Store
+?? resources/.DS_Store
+?? scripts/.DS_Store
+?? vendor/.DS_Store

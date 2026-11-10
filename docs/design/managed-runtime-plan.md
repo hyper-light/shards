@@ -512,3 +512,23 @@ an unsupported route is mediated. Required user promises cannot be reclassified
 as optional to pass the gate. The guest kernel and trusted Shards mechanisms remain
 trusted; this plan does not claim immunity to every kernel vulnerability, hardware
 covert channel or abuse of deliberately delegated read/write/credential authority.
+
+## 12. Current coordinator checkpoint
+
+The [UDP/API/reporting record](../research/measurements/managed-coordinator-udp-api-reporting/README.md)
+retains actual eight-case UDP peer interception and two TCP regressions, public
+identity guard mutations with restored ordinary suites, native Linux/macOS API
+corpora, and the seven-target combined lint gate. These are revision-specific
+functional and compilation results, not completion of P1–P13 or G01–G24.
+
+The cold macOS reporting defect remains open. A native C-stream experiment
+survives the tested Rust allocation refusal but actual mixed-writer output
+interleaves with Rust stderr, so that partial replacement is unadopted. The owned
+API's separate macOS Mutex failure also remains open. Typed startup and process
+errors require the public API migration recorded with their candidate source.
+
+The UDP experiment is a responder, not a forwarding relay. Same-namespace UDP
+loopback/self and the remaining route classes require separate evidence. Hard
+aggregate/parent/kernel budgets, broker-owned effects, native harness adapters,
+credential contracts and restore generations remain implementation obligations.
+The Windows ARM VM remains paused and its real-VM coverage remains unverified.

@@ -1,0 +1,26 @@
+[
+  {
+    "mode": "cold",
+    "exit": 0,
+    "stdout": "",
+    "stderr": "shards: \u03b1 \ud83d\ude00 count=18446744073709551615 hex=0xffffffffffffffff\n"
+  },
+  {
+    "mode": "formatter-cold",
+    "exit": 0,
+    "stdout": "FORMATTER_RETURNED\n",
+    "stderr": "shards: "
+  },
+  {
+    "mode": "closed-cold",
+    "exit": 0,
+    "stdout": "CLOSED_IO_RETURNED\n",
+    "stderr": ""
+  },
+  {
+    "mode": "mixed",
+    "exit": 0,
+    "stdout": "NATIVE_COMPLETED_BEFORE_RUST_RELEASE\n",
+    "stderr": "RUST-BEGINshards: NATIVE\nRUST-END\n"
+  }
+]

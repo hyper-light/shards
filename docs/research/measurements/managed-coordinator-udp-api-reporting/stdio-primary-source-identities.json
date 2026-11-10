@@ -1,0 +1,42 @@
+{
+  "apple_libc_revision": "71bbe350ab79eef58113991d817ccc6165061a64",
+  "local_preserved_source": "/Users/adalundhe/g121-managed-stdio-primary",
+  "files": [
+    {
+      "path": "include/stdio.h",
+      "bytes": 3069,
+      "sha256": "d2220614f42d3cb678ae0de176ba0ab3256e15fb45b3efdb5d17b8ac1f6a4b54"
+    },
+    {
+      "path": "sources.json",
+      "bytes": 1471,
+      "sha256": "01dcb444dd6d5839a8fea1c4fe26b9795b7d09a07d1c8b31798ab49f63f2c332"
+    },
+    {
+      "path": "stdio/FreeBSD/_flock_stub.c",
+      "bytes": 2998,
+      "sha256": "9bc78e2a871139a3a9f23811d396814cf8d1ae9d65d10864668ef494361e6d59"
+    },
+    {
+      "path": "stdio/FreeBSD/findfp.c",
+      "bytes": 9043,
+      "sha256": "220c213e509122c4ef1200d659532dad4422141f4870d7b37c8f9ab02985d11e"
+    },
+    {
+      "path": "stdio/FreeBSD/flockfile.3",
+      "bytes": 3192,
+      "sha256": "ae59a047c4d95c5e3f81a2e2da536dea10c587302920e5b589490f64c6093f28"
+    },
+    {
+      "path": "stdio/FreeBSD/local.h",
+      "bytes": 6283,
+      "sha256": "88526319ee5d11f374ba3e4da8c59ea3b6a5aee803700574a1dfd21e66b13705"
+    },
+    {
+      "path": "tree.json",
+      "bytes": 405107,
+      "sha256": "b2024175a282fff8852c320f8406ce22fd5b4a48dbc8226f55f99a3872805b57"
+    }
+  ],
+  "scope": "Pinned primary source comparison, not a proven exact match to the running macOS libc build. FILE locking differs from Rust private stderr locking; no production remedy selected."
+}

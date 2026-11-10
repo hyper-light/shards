@@ -1,0 +1,1 @@
+["cargo", "test", "--offline", "--locked", "-p", "shards-api", "-j4", "--test", "sim", "--", "--test-threads=1"]

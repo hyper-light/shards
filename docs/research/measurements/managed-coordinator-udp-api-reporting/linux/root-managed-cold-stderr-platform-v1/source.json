@@ -1,0 +1,6 @@
+{
+  "revision": "5b7d1bf57990e0ec7aef64601dbe3dee6e4f692c",
+  "probe_sha256": "2279bf843d6765d97f05af27dcb6f6ecd9c3313464abf511abe92f8602786166",
+  "allocation_sha256": "90df56ccfa8e6cb4c1289ff91f4262afe039a69336f4aafc434ef6cbd871321a",
+  "scope": "same exact report, static Display, redirected stderr; not console Unicode or full VM"
+}

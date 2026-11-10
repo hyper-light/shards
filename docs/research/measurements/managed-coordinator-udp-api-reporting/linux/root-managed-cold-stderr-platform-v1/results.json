@@ -1,0 +1,12 @@
+[
+  {
+    "mode": "ordinary",
+    "exit": 0,
+    "stderr": "shards: private static refusal probe\n"
+  },
+  {
+    "mode": "cold-refused",
+    "exit": 0,
+    "stderr": "shards: private static refusal probe\n"
+  }
+]

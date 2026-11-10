@@ -1,0 +1,1 @@
+r401 source fetch failed128 before any prototype execution: SSH host-key verification. Host trust settings unchanged. This run uses authorized kiln source sync and local source bytes, without a Git fetch or trust bypass.

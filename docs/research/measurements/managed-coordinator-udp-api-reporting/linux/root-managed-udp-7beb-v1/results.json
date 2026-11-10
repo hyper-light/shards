@@ -1,0 +1,52 @@
+[
+  {
+    "case": "intercept-udp4-local-connected",
+    "exit": 0,
+    "elapsed_ns": 125456734885
+  },
+  {
+    "case": "intercept-udp4-local-unconnected",
+    "exit": 0,
+    "elapsed_ns": 23461075424
+  },
+  {
+    "case": "intercept-udp4-forward-connected",
+    "exit": 0,
+    "elapsed_ns": 23307481861
+  },
+  {
+    "case": "intercept-udp4-forward-unconnected",
+    "exit": 0,
+    "elapsed_ns": 22533946326
+  },
+  {
+    "case": "intercept-udp6-local-connected",
+    "exit": 0,
+    "elapsed_ns": 21518172287
+  },
+  {
+    "case": "intercept-udp6-local-unconnected",
+    "exit": 0,
+    "elapsed_ns": 20584157650
+  },
+  {
+    "case": "intercept-udp6-forward-connected",
+    "exit": 0,
+    "elapsed_ns": 20314442597
+  },
+  {
+    "case": "intercept-udp6-forward-unconnected",
+    "exit": 0,
+    "elapsed_ns": 19868709481
+  },
+  {
+    "case": "intercept-tcp4-local",
+    "exit": 0,
+    "elapsed_ns": 19501925549
+  },
+  {
+    "case": "intercept-tcp6-local",
+    "exit": 0,
+    "elapsed_ns": 18055362139
+  }
+]

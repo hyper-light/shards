@@ -1,0 +1,25 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-main-safety-e4eb0bfc03/crates/api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running tests/sim.rs (/home/adalundhe/root-main-start-oom-target/debug/deps/sim-a85a3dc401b08797)
+
+running 17 tests
+test a_connect_waits_for_a_guest_that_listens_late ... ok
+test a_guest_ends_as_its_program_says ... ok
+test client::a_child_holding_shards_output_holds_no_refusal_back ... ok
+test client::a_guest_powered_off_before_a_connect_is_ended_not_a_boot_refusal ... ok
+test client::a_missing_binary_is_refused ... ok
+test client::a_port_off_the_allowlist_is_refused ... ok
+test client::exit_codes_are_ends ... ok
+test client::no_clock_ends_with_shards ... ok
+test client::overshoot_of_an_unserved_connect ... ignored, a measurement, run by its harness
+test client::shards_ending_first_is_a_boot_refusal_with_its_exit_code ... ok
+test client::shards_refusing_the_vcpus_is_a_bounds_refusal ... ok
+test client::stop_ends_a_running_shards ... ok
+test client::stop_kills_a_shards_that_ignores_sigterm ... ok
+test client::the_longest_report_shards_writes_is_quoted_whole ... ok
+test client::the_waits_of_these_tests ... ignored, a measurement, run by its harness
+test no_clock_waits_for_the_fact ... ok
+test the_simulator_conforms ... ok
+
+test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.96s
+

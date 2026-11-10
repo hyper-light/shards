@@ -1,0 +1,67 @@
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-capture-check/crates/abi)
+   Compiling const-oid v0.10.2
+   Compiling cpufeatures v0.3.1
+   Compiling cfg-if v1.0.5
+   Compiling hybrid-array v0.4.15
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/managed-capture-check/crates/testdir)
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling shards-api v0.1.0 (/home/adalundhe/managed-capture-check/crates/api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.24s
+     Running unittests src/lib.rs (/home/adalundhe/root-proc-public-mutation-target/debug/deps/shards_api-8feff50157961148)
+
+running 47 tests
+test client::tests::a_dial_to_a_full_listener_is_asked_again_within_its_patience ... ok
+test client::tests::a_dials_cost_is_its_work_not_its_wait_for_an_answer ... ok
+test client::tests::a_dropped_guest_leaves_no_zombie ... ok
+test client::tests::a_guest_names_itself_by_pid_start_and_socket ... ok
+test client::tests::a_guest_taken_back_ends_as_it_drops_or_by_itself ... ok
+test client::tests::a_path_ending_in_ro_is_refused ... ok
+test client::tests::a_patience_of_max_dials_until_the_guest_listens ... ok
+test client::tests::a_patience_of_zero_dials_once ... ok
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+test client::tests::a_socket_directory_too_long_is_passed_over_or_refused ... ok
+test client::tests::a_spec_is_the_flags_shards_run_reads ... ok
+test client::tests::a_stop_kills_at_once ... ok
+test client::tests::an_answer_past_the_longest_ok_is_refused ... ok
+test client::tests::attach_takes_back_a_guest_whose_client_crashed ... ok
+test client::tests::attach_takes_back_a_guest_whose_handle_was_lost ... ok
+test client::tests::child_a_client_that_crashes ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::child_a_vm_process_serving_its_vsock ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::the_cost_of_a_refused_dial ... ignored, a measurement, run by its harness
+test client::tests::the_socket_directory_is_named_apart_from_the_pid ... ok
+test client::tests::the_socket_directory_is_private_and_removed ... ok
+test said::tests::a_kernels_pin_is_its_bytes_digest ... ok
+test sim::tests::past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound ... ok
+test stream::tests::a_buffer_size_of_zero_or_less_is_an_error ... ok
+test stream::tests::a_clone_is_the_same_connection ... ok
+test stream::tests::a_connection_reports_its_buffer_sizes ... ok
+test stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read ... ok
+test stream::tests::a_pair_carries_bytes_both_ways_and_a_half_close ... ok
+test stream::tests::a_read_a_clone_raced_ends_at_its_timeout ... ok
+test stream::tests::a_read_times_out_and_the_connection_goes_on ... ok
+test stream::tests::a_timeout_is_kept_as_given ... ok
+test stream::tests::a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills ... ok
+test stream::tests::a_write_to_a_peer_that_stops_reading_ends_at_its_timeout ... ok
+test taken::linux::tests::actual_reader_and_started_return_initial_and_later_oom ... ok
+test taken::linux::tests::field_boundaries_and_raw_comm_are_independent_of_text_encoding ... ok
+test taken::linux::tests::held_find_returns_error_when_start_allocation_is_refused ... ok
+test taken::linux::tests::held_identity_child ... ignored, private owned child awaiting stdin EOF
+test taken::linux::tests::legal_raw_comm_preserves_held_process_start ... ok
+test taken::linux::tests::public_attach_returns_scoped_capacity_failure_before_success_setup ... ok
+test taken::linux::tests::raw_comm_child ... ignored, private own-child role for raw process-name regression
+test taken::linux::tests::read_bytes_empty_eof_and_file_error ... ok
+test taken::linux::tests::stack_path_covers_u32_decimal_boundaries_under_allocation_refusal ... ok
+test taken::linux::tests::typed_display_clone_and_unknown_observation_survive_refusal ... ok
+test taken::linux::tests::wrong_start_and_unreaped_exit_keep_exact_identity_and_return_fds ... ok
+test tests::a_bound_seeds_from_the_records_and_rises_with_what_it_sees ... ok
+test tests::backends_are_named_per_host ... ok
+test tests::bounds_are_refused_by_name ... ok
+test tests::the_hypervisors_bounds_are_its_own_to_refuse ... ok
+
+test result: ok. 42 passed; 0 failed; 5 ignored; 0 measured; 0 filtered out; finished in 0.73s
+

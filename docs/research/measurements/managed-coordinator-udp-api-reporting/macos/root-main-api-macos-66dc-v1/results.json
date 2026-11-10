@@ -1,0 +1,18 @@
+[
+  {
+    "name": "lib",
+    "exit": 0,
+    "elapsed_ns": 5284223333,
+    "summaries": [
+      "test result: ok. 33 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 2.82s"
+    ]
+  },
+  {
+    "name": "sim",
+    "exit": 0,
+    "elapsed_ns": 5263781750,
+    "summaries": [
+      "test result: ok. 15 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 4.02s"
+    ]
+  }
+]

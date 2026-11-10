@@ -1,0 +1,13 @@
+--- crates/api/src/taken.rs
++++ crates/api/src/taken.rs
+@@ -138,9 +138,7 @@
+         loop {
+             // One further byte to observe data/EOF; growth is fallible even for
+             // procfs's zero metadata size, unlike std's initial small probe.
+-            bytes
+-                .try_reserve(1)
+-                .map_err(|_| ProcessFailure::CapacityUnavailable)?;
++            bytes.reserve(1);
+             let used = bytes.len();
+             // Only initialize already-owned capacity; resize cannot grow here.
+             bytes.resize(bytes.capacity(), 0);

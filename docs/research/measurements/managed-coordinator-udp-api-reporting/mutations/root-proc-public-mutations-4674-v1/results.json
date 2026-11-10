@@ -1,0 +1,58 @@
+[
+  {
+    "case": "fixed-build",
+    "exit": 0
+  },
+  {
+    "case": "fixed-oom",
+    "exit": 0
+  },
+  {
+    "case": "fixed-raw-comm",
+    "exit": 0
+  },
+  {
+    "case": "string-cause-build",
+    "exit": 0
+  },
+  {
+    "case": "string-cause-oom",
+    "exit": -6
+  },
+  {
+    "case": "whole-record-utf8-build",
+    "exit": 0
+  },
+  {
+    "case": "whole-record-utf8-raw-comm",
+    "exit": 1
+  },
+  {
+    "case": "infallible-reserve-build",
+    "exit": 0
+  },
+  {
+    "case": "infallible-reserve-oom",
+    "exit": -6
+  },
+  {
+    "case": "restored-build",
+    "exit": 0
+  },
+  {
+    "case": "restored-oom",
+    "exit": 0
+  },
+  {
+    "case": "restored-raw-comm",
+    "exit": 0
+  },
+  {
+    "case": "ordinary-lib",
+    "exit": 0
+  },
+  {
+    "case": "ordinary-sim",
+    "exit": 0
+  }
+]

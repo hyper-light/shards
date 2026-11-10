@@ -1,0 +1,16 @@
+{
+  "lint_revision": "d804bd384516cb8183fea27bfc243825f15b28da",
+  "mutation_driver_revision": "46749a35d15c8dd331103a2e8971be936470ed9d",
+  "compared_paths": [
+    "crates",
+    "Cargo.toml",
+    "Cargo.lock",
+    "resources",
+    "scripts",
+    "vendor",
+    "rust-toolchain.toml",
+    ".cargo"
+  ],
+  "changed_paths": [],
+  "limit": "Evidence of source equality for these paths, not native or real-VM execution coverage."
+}

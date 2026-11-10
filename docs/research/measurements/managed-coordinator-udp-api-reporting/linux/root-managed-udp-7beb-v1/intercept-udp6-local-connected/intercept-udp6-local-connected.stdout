@@ -1,0 +1,19 @@
+[    0.009467] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-udp6", "local", "connected", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"Local","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"UdpTarget","family":"Ipv6","origin":"Local","mode":"Connected","destination":"[2001:db8:1::2]:57664","relay_port":49123,"reply_local":"[2001:db8:1::2]:57664","client_inode":4026532020,"backend_inode":4026532093,"relay_inode":4026532020}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"[2001:db8:1::2]:57664","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"[2001:db8:1::1]:50041","original":"[2001:db8:1::2]:57664"}
+managed-intercept {"type":"UdpArrival","role":"BaselineClient","step":"Binary","ordinal":1,"local":"[2001:db8:1::1]:50041","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"[2001:db8:1::2]:57664","original":"[2001:db8:1::1]:50041"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"[2001:db8:1::2]:57664","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"[2001:db8:1::1]:50041","original":"[2001:db8:1::2]:57664"}
+managed-intercept {"type":"UdpArrival","role":"BaselineClient","step":"Empty","ordinal":2,"local":"[2001:db8:1::1]:50041","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"[2001:db8:1::2]:57664","original":"[2001:db8:1::1]:50041"}
+managed-intercept {"type":"UdpClientOutcome","role":"BaselineClient","stage":"ValidateDatagram","outcome":"ScriptComplete"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Binary","ordinal":1,"local":"[::]:49123","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"[2001:db8:1::1]:36792","original":"[2001:db8:1::2]:57664"}
+managed-intercept {"type":"UdpArrival","role":"InterceptedClient","step":"Binary","ordinal":1,"local":"[2001:db8:1::1]:36792","reported":7,"flags":0,"copied_hex":"52454c41590080","metadata":"Known","peer":"[2001:db8:1::2]:57664","original":"[2001:db8:1::1]:36792"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Empty","ordinal":2,"local":"[::]:49123","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"[2001:db8:1::1]:36792","original":"[2001:db8:1::2]:57664"}
+managed-intercept {"type":"UdpArrival","role":"InterceptedClient","step":"Empty","ordinal":2,"local":"[2001:db8:1::1]:36792","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"[2001:db8:1::2]:57664","original":"[2001:db8:1::1]:36792"}
+managed-intercept {"type":"UdpClientOutcome","role":"InterceptedClient","stage":"ValidateDatagram","outcome":"ScriptComplete"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Relay","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"ScriptComplete"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"Cancelled"}
+managed-intercept {"type":"UdpIntercepted","joined":true,"after_window":"Unverified"}
+SHARDS-TEST PASS
+[    0.088723] reboot: Power down

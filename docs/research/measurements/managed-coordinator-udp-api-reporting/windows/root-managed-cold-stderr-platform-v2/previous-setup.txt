@@ -1,0 +1,1 @@
+v1 setup failed before execution: known Windows python3 Store alias, exit49; no test ran. v2 uses only native shell/rustc.

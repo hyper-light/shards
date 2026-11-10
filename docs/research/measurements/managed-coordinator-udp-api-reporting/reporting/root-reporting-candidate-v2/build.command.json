@@ -1,0 +1,1 @@
+["lockf", "/tmp/g121-mac.lock", "cargo", "build", "--offline", "-j2", "--manifest-path", "docs/research/measurements/managed-reporting-coordinator/root-probe/Cargo.toml"]

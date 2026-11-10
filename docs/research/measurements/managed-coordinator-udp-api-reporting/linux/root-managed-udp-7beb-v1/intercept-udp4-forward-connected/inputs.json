@@ -1,0 +1,16 @@
+{
+  "SHARDS_INTERCEPT_UDP_MODE": "connected",
+  "SHARDS_NETWORK_RECORDS": "/home/adalundhe/root-managed-udp-7beb-v1/intercept-udp4-forward-connected",
+  "SHARDS_NETWORK_BOOT_MS": "120000",
+  "SHARDS_NETWORK_CONFIG_PROVENANCE": "root r122 exact5d23+14patches+two-symbol overlay; artifactSHA97819d00 configSHAfb1a17c6",
+  "SHARDS_NETWORK_MEMORY_MIB": "256",
+  "SHARDS_INTERCEPT_ORIGIN": "forward",
+  "SHARDS_NETWORK_CASE_MS": "30000",
+  "SHARDS_NETWORK_CPUS": "1",
+  "SHARDS_INTERCEPT_TABLE": "100",
+  "SHARDS_NETWORK_EFFECTIVE_CONFIG": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_INTERCEPT_MARK": "1",
+  "SHARDS_INTERCEPT_RULE_PRIORITY": "100",
+  "SHARDS_NETWORK_SOURCE_REVISION": "7beb88056fe1ebd4c40179544452afbc172769f1",
+  "SHARDS_INTERCEPT_PROTOCOL": "intercept-udp4"
+}

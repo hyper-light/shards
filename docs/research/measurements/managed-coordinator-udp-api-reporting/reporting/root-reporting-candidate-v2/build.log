@@ -1,0 +1,6 @@
+     Locking 2 packages to latest Rust 1.98.1 compatible versions
+      Adding libc v0.2.189 (available: v0.2.191)
+   Compiling libc v0.2.189
+   Compiling managed-reporting-prototype v0.0.0 (/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-combined-e53207f66f/docs/research/measurements/managed-reporting-coordinator/prototype)
+   Compiling root-reporting-probe v0.0.0 (/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-combined-e53207f66f/docs/research/measurements/managed-reporting-coordinator/root-probe)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.09s

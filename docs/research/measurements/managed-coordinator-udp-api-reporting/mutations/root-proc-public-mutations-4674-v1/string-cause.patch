@@ -1,0 +1,15 @@
+--- crates/api/src/client.rs
++++ crates/api/src/client.rs
+@@ -88,10 +88,8 @@
+ #[cfg(unix)]
+ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
+     let process =
+-        crate::taken::Held::find(identity.pid, identity.started).map_err(|failure| Refusal::Process {
+-            pid: identity.pid,
+-            expected_started: identity.started,
+-            failure,
++        crate::taken::Held::find(identity.pid, identity.started).map_err(|failure| Refusal::Gone {
++            pid: identity.pid, why: failure.to_string(),
+         })?;
+     // Shared: its watcher thread waits on it for the guest's life, past this call, as the guest kills it.
+     let process = Arc::new(process);

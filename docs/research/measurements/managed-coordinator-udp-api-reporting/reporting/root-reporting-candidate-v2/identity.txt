@@ -1,0 +1,14 @@
+/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-combined-e53207f66f
+99474d2e94ae8cdfa17cf84340339761031e9d3c
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: aarch64-apple-darwin
+release: 1.98.1
+LLVM version: 22.1.8
+ProductName:		macOS
+ProductVersion:		26.4
+BuildVersion:		25E246
+Filesystem   1024-blocks      Used  Available Capacity iused       ifree %iused  Mounted on
+/dev/disk3s5  3902665360 932451176 2940701592    25% 5845371 29407015920    0%   /System/Volumes/Data

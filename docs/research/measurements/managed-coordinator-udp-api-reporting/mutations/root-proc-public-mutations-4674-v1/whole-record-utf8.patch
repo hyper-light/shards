@@ -1,0 +1,11 @@
+--- crates/api/src/taken.rs
++++ crates/api/src/taken.rs
+@@ -162,6 +162,8 @@
+     }
+ 
+     fn start_field(stat: &[u8]) -> Result<u64, ProcessFailure> {
++        let stat = std::str::from_utf8(stat)
++            .map_err(|_| ProcessFailure::InvalidStartRecord)?.as_bytes();
+         // Its command, field 2, is in parentheses and may hold any byte but NUL, a ')' too:
+         // fields 3 on follow the last ')', starttime the 20th of them (field 22).
+         // Only that decimal field needs UTF-8 validation; comm is raw kernel bytes.

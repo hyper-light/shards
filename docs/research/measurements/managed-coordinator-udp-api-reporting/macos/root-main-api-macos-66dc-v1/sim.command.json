@@ -1,0 +1,1 @@
+["lockf", "/tmp/g121-mac.lock", "cargo", "test", "--locked", "-j4", "-p", "shards-api", "--test", "sim", "--", "--nocapture", "--test-threads=1"]
