@@ -1,0 +1,40 @@
+   Compiling autocfg v1.5.1
+   Compiling libc v0.2.189
+   Compiling memchr v2.8.3
+   Compiling regex-syntax v0.8.11
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling num-integer v0.1.47
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-capture-check/crates/abi)
+   Compiling num-bigint v0.4.8
+   Compiling regex-automata v0.4.18
+   Compiling shards-template v0.1.0 (/home/adalundhe/managed-capture-check/crates/template)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/managed-capture-check/crates/archive)
+   Compiling regex v1.13.1
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/managed-capture-check/crates/cmdline)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/managed-capture-check/crates/testdir)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/managed-capture-check/crates/erofs)
+   Compiling shards-user v0.1.0 (/home/adalundhe/managed-capture-check/crates/user)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/managed-capture-check/crates/devcgroup)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/managed-capture-check/crates/dns)
+   Compiling shards-init v0.1.0 (/home/adalundhe/managed-capture-check/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.80s
+     Running unittests src/main.rs (/home/adalundhe/managed-capture-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 1 test
+
+thread 'setup::tests::managed_capture_metadata_is_not_a_workload_mount' (1437958) panicked at crates/init/src/setup.rs:1204:13:
+assertion `left == right` failed
+  left: Err(22)
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test setup::tests::managed_capture_metadata_is_not_a_workload_mount ... FAILED
+
+failures:
+
+failures:
+    setup::tests::managed_capture_metadata_is_not_a_workload_mount
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

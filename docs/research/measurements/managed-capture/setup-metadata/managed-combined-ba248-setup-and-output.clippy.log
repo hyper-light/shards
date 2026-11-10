@@ -1,0 +1,20 @@
+    Checking memchr v2.8.3
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-capture-check/crates/abi)
+    Checking num-traits v0.2.19
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking libc v0.2.189
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking shards-template v0.1.0 (/home/adalundhe/managed-capture-check/crates/template)
+    Checking regex v1.13.1
+    Checking shards-archive v0.1.0 (/home/adalundhe/managed-capture-check/crates/archive)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/managed-capture-check/crates/cmdline)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-capture-check/crates/testdir)
+    Checking shards-user v0.1.0 (/home/adalundhe/managed-capture-check/crates/user)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/managed-capture-check/crates/erofs)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/managed-capture-check/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/managed-capture-check/crates/dns)
+    Checking shards-init v0.1.0 (/home/adalundhe/managed-capture-check/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.28s

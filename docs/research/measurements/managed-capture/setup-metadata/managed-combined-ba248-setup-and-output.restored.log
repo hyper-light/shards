@@ -1,0 +1,10 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/managed-capture-check/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.94s
+     Running unittests src/main.rs (/home/adalundhe/managed-capture-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 2 tests
+test setup::tests::managed_capture_metadata_is_not_a_workload_mount ... ok
+test setup::tests::a_volume_is_told_its_runs_owner ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 100 filtered out; finished in 0.00s
+

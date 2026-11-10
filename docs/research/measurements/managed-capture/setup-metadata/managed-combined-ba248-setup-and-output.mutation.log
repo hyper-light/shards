@@ -1,0 +1,21 @@
+   Compiling shards-init v0.1.0 (/home/adalundhe/managed-capture-check/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.90s
+     Running unittests src/main.rs (/home/adalundhe/managed-capture-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 1 test
+
+thread 'setup::tests::managed_capture_metadata_is_not_a_workload_mount' (1545731) panicked at crates/init/src/setup.rs:1204:13:
+assertion `left == right` failed
+  left: Err(22)
+ right: Ok(())
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test setup::tests::managed_capture_metadata_is_not_a_workload_mount ... FAILED
+
+failures:
+
+failures:
+    setup::tests::managed_capture_metadata_is_not_a_workload_mount
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 101 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`

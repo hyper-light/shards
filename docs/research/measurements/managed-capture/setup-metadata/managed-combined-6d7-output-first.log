@@ -1,0 +1,101 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-capture-check/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/managed-capture-check/crates/vmm)
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/managed-capture-check/crates/ipc)
+   Compiling shards-build v0.1.0 (/home/adalundhe/managed-capture-check/crates/build)
+   Compiling shards-registry v0.1.0 (/home/adalundhe/managed-capture-check/crates/registry)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/managed-capture-check/crates/remote)
+   Compiling shards-net v0.1.0 (/home/adalundhe/managed-capture-check/crates/net)
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+   Compiling shards-api v0.1.0 (/home/adalundhe/managed-capture-check/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 2m 52s
+     Running tests/build.rs (/home/adalundhe/managed-capture-target/test-release/deps/build-b983bba14df26f6d)
+
+running 1 test
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-capture-check/crates/abi)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+    Finished `guest` profile [optimized] target(s) in 20.86s
+run_watching capture-protocol never ready: top status=Some(1) ready=false awaiting=false rows=[] stderr="shards: capture-protocol: its processes could not be read"
+
+thread 'supplied_member_output_does_not_rewrite_the_main_protocol' (316590) panicked at crates/shards/tests/build.rs:9120:5:
+assertion `left == right` failed: status Some(125) after 1.525352294s
+--- stdout
+
+--- stderr
+shards: error remounting the root read-only: invalid argument
+
+Run 'shards run --help' for more information
+shards-timing {"client_rss_kib":9776,"client_us":1522418,"released_us":50212,"entry_us":50242,"exit_us":0,"request_us":1378111,"answered_us":1384447,"prefetched":0,"rss_kib":262636,"footprint_kib":259960,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,199714],[3,1362910]]}
+
+  left: Some(125)
+ right: Some(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /tmp/shards-tests/316589/capture-context-1/daemon.log, its last 0 lines
+--- /tmp/shards-tests/316589/capture-home-0/daemon.log, its last 12 lines
+shards daemon 367562: the default bridge is 172.22.0.0/16
+shards daemon 367566: the default bridge is 172.22.0.0/16
+shards daemon 367562: serving /tmp/shards-tests/316589/capture-home-0 through /tmp/shards-tests/316589/capture-home-0/requests, with up to 524288 descriptors open
+shards daemon 367562: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: managed output capture: managed output closed
+shards daemon 367562: container 685e2e416fa9f7070a9ae80d9adbe9674677935a9d9ab7548320c060d82f85ff: giving back what it holds cold: shards: the container's process ended before the command started
+--- /tmp/shards-tests/316589/capture-home-0/daemon.log, its last 2620 of 2620 bytes
+shards daemon 367562: the default bridge is 172.22.0.0/16
+shards daemon 367566: the default bridge is 172.22.0.0/16
+shards daemon 367562: serving /tmp/shards-tests/316589/capture-home-0 through /tmp/shards-tests/316589/capture-home-0/requests, with up to 524288 descriptors open
+shards daemon 367562: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c42924d0740981a5e561f214098b/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 367562: managed output capture: managed output closed
+shards daemon 367562: container 685e2e416fa9f7070a9ae80d9adbe9674677935a9d9ab7548320c060d82f85ff: giving back what it holds cold: shards: the container's process ended before the command started
+
+test supplied_member_output_does_not_rewrite_the_main_protocol ... FAILED
+
+failures:
+
+failures:
+    supplied_member_output_does_not_rewrite_the_main_protocol
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 137 filtered out; finished in 23.33s
+
+error: test failed, to rerun pass `-p shards --test build`
