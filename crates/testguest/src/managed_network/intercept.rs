@@ -22,6 +22,8 @@ const SENT: &[u8] = b"REQUEST\0\xff";
 pub(super) enum Origin {
     Local,
     Forward,
+    LocalLoopback,
+    LocalSelf,
 }
 
 #[derive(Debug)]
@@ -59,7 +61,13 @@ impl Inputs {
             origin: match origin {
                 "local" => Origin::Local,
                 "forward" => Origin::Forward,
-                _ => return Err(invalid("origin must be local or forward")),
+                "local-loopback" => Origin::LocalLoopback,
+                "local-self" => Origin::LocalSelf,
+                _ => {
+                    return Err(invalid(
+                        "origin must be local, forward, local-loopback or local-self",
+                    ));
+                }
             },
             within,
             mark,
@@ -86,6 +94,7 @@ impl Reply {
 #[derive(Clone, Copy, Debug)]
 enum Phase {
     Namespaces,
+    Target,
     Baseline,
     Installed,
     Intercepted,
@@ -365,8 +374,17 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
     })?;
     endpoint(&backend, c"backend0", BACKEND, ROUTER_BACKEND, &deadline)?;
     endpoint(&client_ns, c"client0", CLIENT, ROUTER_CLIENT, &deadline)?;
-    let backend_listener = in_namespace(Some(&backend.handle), || {
-        listen(SocketAddr::from((BACKEND, 0)), SocketMode::Native)
+    let (backend_namespace, backend_ip) = match input.origin {
+        Origin::Local | Origin::Forward => (&backend, BACKEND),
+        Origin::LocalLoopback => (&router, Ipv4Addr::LOCALHOST),
+        Origin::LocalSelf => (&router, ROUTER_BACKEND),
+    };
+    let origin = match input.origin {
+        Origin::Forward => &client_ns,
+        Origin::Local | Origin::LocalLoopback | Origin::LocalSelf => &router,
+    };
+    let backend_listener = in_namespace(Some(&backend_namespace.handle), || {
+        listen(SocketAddr::from((backend_ip, 0)), SocketMode::Native)
     })?;
     let destination = backend_listener.local_addr()?;
     let relay_listener = in_namespace(Some(&router.handle), || {
@@ -376,11 +394,22 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         )
     })?;
     let relay_port = relay_listener.local_addr()?.port();
+    {
+        // Namespaces above names the fixed topology's three objects. Target names
+        // the actual roles, which share the router in the same-namespace cases.
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "managed-intercept {{\"type\":\"{:?}\",\"origin\":\"{:?}\",\"destination\":\"{destination}\",\"client_inode\":{},\"backend_inode\":{},\"relay_inode\":{}}}",
+            Phase::Target,
+            input.origin,
+            origin.inode()?,
+            backend_namespace.inode()?,
+            router.inode()?
+        )?;
+        out.flush()?;
+    }
     let mut backend_worker = Worker::start(backend_listener, Reply::Backend, &deadline)?;
-    let origin = match input.origin {
-        Origin::Local => &router,
-        Origin::Forward => &client_ns,
-    };
     let baseline = client(origin, destination, Reply::Backend, &deadline)?;
     let mut out = io::stdout().lock();
     writeln!(
@@ -393,7 +422,7 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
     in_namespace(Some(&router.handle), || {
         router
             .route
-            .policy(interface(c"lo")?, &input, BACKEND, &deadline)?;
+            .policy(interface(c"lo")?, &input, destination, &deadline)?;
         Netlink::open(libc::NETLINK_NETFILTER)?.interception(&input, destination, relay_port, &deadline)
     })?;
     let mut out = io::stdout().lock();
@@ -471,5 +500,16 @@ mod tests {
             Origin::Forward
         );
         assert_ne!(Reply::Backend.bytes(), Reply::Relay.bytes());
+        for (name, origin) in [
+            ("local", Origin::Local),
+            ("forward", Origin::Forward),
+            ("local-loopback", Origin::LocalLoopback),
+            ("local-self", Origin::LocalSelf),
+        ] {
+            assert_eq!(
+                Inputs::parse(name, "1000", "1", "1000", "100").unwrap().origin,
+                origin
+            );
+        }
     }
 }

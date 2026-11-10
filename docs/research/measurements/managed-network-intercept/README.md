@@ -1,6 +1,9 @@
 # P4 isolated IPv4 TCP interception fixture
 
-**Prepared experiment, not a product mechanism or a passing interception result.**
+**Initial experiment record; no product mechanism adoption.**
+The current two same-namespace target additions and their distinct unrun gates are
+recorded in [LOCAL-TARGETS.md](LOCAL-TARGETS.md). Prior root peer-case results do
+not establish those new cases.
 Root owns every real guest/runtime/mutation/resource/performance run. This lane
 implemented scoped fixture code and ran only pure unit/compiler/lint checks.
 Base `4d3f454f194a0b6927423f0f859071147c43786d`; policy canonical g121-i7

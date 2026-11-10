@@ -173,10 +173,15 @@ impl Netlink {
         &self,
         lo: u32,
         input: &Inputs,
-        destination: Ipv4Addr,
+        destination: SocketAddr,
         deadline: &Deadline,
     ) -> io::Result<()> {
-        let body = route(lo, destination, 32, None, input.table, 2, 254)?; // RTN_LOCAL / RT_SCOPE_HOST
+        let SocketAddr::V4(destination) = destination else {
+            return Err(invalid("policy experiment is IPv4 only"));
+        };
+        // The actual bound listener address is authoritative, including loopback
+        // and own-address cases where the old remote BACKEND is not the target.
+        let body = route(lo, *destination.ip(), 32, None, input.table, 2, 254)?; // RTN_LOCAL / RT_SCOPE_HOST
         self.exchange(&[Message::route(24, CREATE_EXCL, body)], deadline)?;
         let mut body = Vec::new();
         put(&mut body, &[libc::AF_INET as u8, 0, 0, 0, 0, 0, 0, 1])?; // fib_rule_hdr, FR_ACT_TO_TBL
@@ -223,7 +228,7 @@ impl Netlink {
         let mut messages = Vec::new();
         messages.try_reserve_exact(7).map_err(io::Error::other)?; // begin/table/2 chains/2 rules/end
         messages.extend([begin, Message::nft(0, CREATE_EXCL, table)?, pre, intercept]);
-        if input.origin == Origin::Local {
+        if input.origin != Origin::Forward {
             messages.push(chain(b"out\0", b"route\0", 3)?);
             let mut expressions = selector(destination)?;
             mark_accept(&mut expressions, input.mark)?;
@@ -470,5 +475,18 @@ mod tests {
         let mut out = Vec::new();
         attr(&mut out, 3, b"x\0").unwrap();
         assert_eq!(out, [6, 0, 3, 0, b'x', 0, 0, 0]);
+    }
+
+    #[test]
+    fn same_namespace_targets_keep_their_actual_destination_in_both_messages() {
+        for ip in [Ipv4Addr::LOCALHOST, ROUTER_BACKEND] {
+            let at = SocketAddr::from((ip, 43210));
+            let encoded = selector(at).unwrap();
+            assert!(encoded.windows(4).any(|bytes| bytes == ip.octets()));
+            assert!(!encoded.windows(4).any(|bytes| bytes == BACKEND.octets()));
+            let local = route(7, ip, 32, None, 1000, 2, 254).unwrap();
+            assert!(local.windows(4).any(|bytes| bytes == ip.octets()));
+            assert!(!local.windows(4).any(|bytes| bytes == BACKEND.octets()));
+        }
     }
 }
