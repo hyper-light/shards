@@ -1,5 +1,16 @@
 # Resource admission implementation handoff
 
+Latest evidence checkpoint53a0897d7a9ca2763f1b27b7b1c8673710ec8c8a signed/pushed,
+push awaited exit0. Production remains72c below. Next finite allocation-refusal
+light scope sent to ROOT for selection, keys
+managed-next-cap-refusal-light-scope-request-v1 and
+managed-cap-refusal-primary-scope-detail-v1; REFUSAL-LIGHT-SCOPE.md records exact
+Rust1.98.1 primary contracts, alternatives, missing-hook non-pass and bounds.
+No injector source/run/production global registration exists. Do not infer ROOT
+approval from elapsed time or the one agents_wait result showing ROOT writing.
+Keep lane open; no children/goals/stop/auto-dispatch/main merge. ROOT may supply
+an urgent actual-cap red/guest scope instead; no actual guest assigned yet.
+
 LATEST FROZEN PRODUCTION: signed/pushed72c202955bb5604aef495a91619c6bf885f6f1a0,
 branch p/managed-resource-admission-v1; remote ls-remote confirmed that full SHA.
 Only run.rs change is ROOT-authorized obsolete workload_headroom/comment removal,
