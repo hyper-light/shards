@@ -1,0 +1,50 @@
+{
+  "source": "fd2edd898df1d34bc736553db8e34c000ccce456",
+  "scope": "formatter/shell/diff/policy only; no local build",
+  "checks": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "format",
+        "chunk_id": "b5a4fb",
+        "wall_time_seconds": 3.961266125,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "shell",
+        "chunk_id": "92de8b",
+        "wall_time_seconds": 0.000007125,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "diff",
+        "chunk_id": "6e8181",
+        "wall_time_seconds": 0.000006,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "name": "policy",
+        "chunk_id": "d664e8",
+        "wall_time_seconds": 0.000005125,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    }
+  ]
+}

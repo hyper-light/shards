@@ -1,0 +1,18 @@
+
+running 2 tests
+test taken::linux::tests::legal_raw_comm_preserves_held_process_start ... own_tgid_raw_comm=[6f, 77, 6e, 20, ff, 29, 20, 29, 20, fe] held_alive=true observed_start=Err(Error { kind: InvalidData, message: "stream did not contain valid UTF-8" })
+own_name_restored=true original_start_unchanged=true child_exit=Some(0) reader_joined=true
+
+thread 'taken::linux::tests::legal_raw_comm_preserves_held_process_start' (4068676) panicked at /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-main-c4ac3e415a/crates/api/../../docs/research/measurements/managed-proc-main/repro.rs:122:25:
+called `Result::unwrap()` on an `Err` value: Error { kind: InvalidData, message: "stream did not contain valid UTF-8" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test taken::linux::tests::raw_comm_child ... ignored, private own-child role for raw process-name regression
+
+failures:
+
+failures:
+    taken::linux::tests::legal_raw_comm_preserves_held_process_start
+
+test result: FAILED. 0 passed; 1 failed; 1 ignored; 0 measured; 36 filtered out; finished in 0.00s
+

@@ -1,0 +1,5 @@
+
+running 1 test
+test taken::linux::tests::held_find_returns_error_when_start_allocation_is_refused ... own_tgid=50490 precomputed_start=10215685 successful_allocations_before_refusal=0
+memory allocation of 28 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
