@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 enum Failure {
     Io(io::Error),
+    Fork(io::Error),
     Input,
     Protocol,
     UnexpectedAdmission,
@@ -22,6 +23,7 @@ impl Failure {
     fn code(&self) -> Cause {
         match self {
             Self::Io(_) => Cause::Io,
+            Self::Fork(_) => Cause::WrongRefusal,
             Self::Input => Cause::Input,
             Self::Protocol => Cause::Protocol,
             Self::UnexpectedAdmission => Cause::UnexpectedAdmission,
@@ -31,7 +33,7 @@ impl Failure {
     }
     fn errno(&self) -> i32 {
         match self {
-            Self::Io(e) => e.raw_os_error().unwrap_or(0),
+            Self::Io(e) | Self::Fork(e) => e.raw_os_error().unwrap_or(0),
             Self::WrongRefusal(n) => *n,
             _ => 0,
         }
@@ -148,7 +150,7 @@ impl Child {
         // syscalls and _exit, never Rust's allocator/runtime after fork.
         let pid = unsafe { libc::fork() };
         if pid < 0 {
-            return Err(io::Error::last_os_error().into());
+            return Err(Failure::Fork(io::Error::last_os_error()));
         }
         if pid == 0 {
             // fd3 is the only surviving endpoint. Inherited gates cannot hold siblings.
@@ -320,8 +322,8 @@ pub fn actor(root: &str, tasks: &str, reserved: &str, children: &str, patience: 
             }
             // Exactly one excess attempt. Success is owned and reaped before failure.
             match Child::start(until) {
-                Err(Failure::Io(e)) if e.raw_os_error() == Some(libc::EAGAIN) => {}
-                Err(Failure::Io(e)) => return Err(Failure::WrongRefusal(e.raw_os_error().unwrap_or(0))),
+                Err(Failure::Fork(e)) if e.raw_os_error() == Some(libc::EAGAIN) => {}
+                Err(Failure::Fork(e)) => return Err(Failure::WrongRefusal(e.raw_os_error().unwrap_or(0))),
                 Err(e) => return Err(e),
                 Ok(child) => {
                     drop(child);
