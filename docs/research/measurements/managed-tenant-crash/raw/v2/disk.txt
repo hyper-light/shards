@@ -1,0 +1,2 @@
+380	/home/adalundhe/managed-tenant-crash-light-01a1c5d2-v2/source
+82052	/home/adalundhe/managed-tenant-crash-light-01a1c5d2-v2/target

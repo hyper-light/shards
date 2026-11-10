@@ -488,6 +488,8 @@ pub fn main() -> ! {
             "" => managed_capture(arg(1)),
             "exit" => i32::from(managed_capture_bytes(arg(1)).is_err()),
             "step" => managed_capture_step(arg(1), arg(3), arg(4)),
+            "crashes" => managed_capture_crashes(arg(1), arg(3), arg(4), arg(5), arg(6)),
+            "crash-child" => managed_capture_crash_child(arg(1), arg(3)),
             _ => 1,
         },
         "managed-capture-main" => {
@@ -5539,6 +5541,425 @@ fn managed_capture_step(member: &str, port: &str, patience: &str) -> i32 {
     }
 }
 
+// Fixed fixture report framing, not a managed protocol or an entitlement.
+fn managed_capture_wait_report(round: u32, status: std::process::ExitStatus) -> io::Result<()> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let mut out = io::stdout().lock();
+    out.write_all(b"\0W1\0")?;
+    out.write_all(&round.to_be_bytes())?;
+    out.write_all(&status.into_raw().to_be_bytes())?;
+    for value in [status.signal(), status.code()] {
+        out.write_all(&[u8::from(value.is_some())])?;
+        out.write_all(&value.unwrap_or_default().to_be_bytes())?;
+    }
+    out.write_all(&[u8::from(status.core_dumped())])?;
+    out.flush()
+}
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+enum ManagedCrashStage {
+    Inputs,
+    Spawn,
+    Pidfd,
+    ExitReady,
+    Wait,
+    Status,
+    Suppression,
+    Signal,
+    Report,
+    Release,
+}
+
+enum ManagedCrashCleanup {
+    NotSpawned,
+    Reaped(std::process::ExitStatus),
+    Unknown(io::Error),
+}
+
+#[repr(u8)]
+enum ManagedCrashCause {
+    NotApplicable,
+    InvalidInput,
+    InvalidData,
+    TimedOut,
+    UnexpectedEof,
+    BrokenPipe,
+    Interrupted,
+    PermissionDenied,
+    Unsupported,
+    Other,
+}
+
+impl ManagedCrashCause {
+    fn of(error: Option<&io::Error>) -> Self {
+        match error.map(io::Error::kind) {
+            None => Self::NotApplicable,
+            Some(io::ErrorKind::InvalidInput) => Self::InvalidInput,
+            Some(io::ErrorKind::InvalidData) => Self::InvalidData,
+            Some(io::ErrorKind::TimedOut) => Self::TimedOut,
+            Some(io::ErrorKind::UnexpectedEof) => Self::UnexpectedEof,
+            Some(io::ErrorKind::BrokenPipe) => Self::BrokenPipe,
+            Some(io::ErrorKind::Interrupted) => Self::Interrupted,
+            Some(io::ErrorKind::PermissionDenied) => Self::PermissionDenied,
+            Some(io::ErrorKind::Unsupported) => Self::Unsupported,
+            Some(_) => Self::Other,
+        }
+    }
+}
+
+struct ManagedCrashFailure {
+    stage: ManagedCrashStage,
+    cause: io::Error,
+    cleanup: ManagedCrashCleanup,
+}
+
+impl ManagedCrashFailure {
+    fn before_spawn(stage: ManagedCrashStage, cause: io::Error) -> Self {
+        Self {
+            stage,
+            cause,
+            cleanup: ManagedCrashCleanup::NotSpawned,
+        }
+    }
+
+    fn report(&self) {
+        use std::os::unix::process::ExitStatusExt as _;
+        let report = || -> io::Result<()> {
+            let mut err = io::stderr().lock();
+            err.write_all(b"\0E1\0")?;
+            err.write_all(&[self.stage as u8])?;
+            for cause in [
+                Some(&self.cause),
+                match &self.cleanup {
+                    ManagedCrashCleanup::Unknown(error) => Some(error),
+                    _ => None,
+                },
+            ] {
+                let errno = cause.and_then(io::Error::raw_os_error);
+                err.write_all(&[ManagedCrashCause::of(cause) as u8, u8::from(errno.is_some())])?;
+                err.write_all(&errno.unwrap_or_default().to_be_bytes())?;
+            }
+            let (tag, raw) = match self.cleanup {
+                ManagedCrashCleanup::NotSpawned => (0, 0),
+                ManagedCrashCleanup::Reaped(status) => (1, status.into_raw()),
+                ManagedCrashCleanup::Unknown(_) => (2, 0),
+            };
+            err.write_all(&[tag])?;
+            err.write_all(&raw.to_be_bytes())?;
+            err.flush()
+        };
+        let _ = report();
+    }
+}
+
+fn managed_capture_crash_required(member: &str, count: u32) -> io::Result<u64> {
+    let pair = |name_len: usize| -> io::Result<u64> {
+        let n = name_len
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(b"\0stdout\n\xff\x1b[2Jout-tail".len()))
+            .and_then(|n| n.checked_add(b"\0stderr\n\x80\xfeerr-tail".len()))
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        u64::try_from(n).map_err(io::Error::other)
+    };
+    let child_len = member
+        .len()
+        .checked_add("-child-".len())
+        .and_then(|n| n.checked_add(count.to_string().len()))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let final_len = member
+        .len()
+        .checked_add("-after-crashes".len())
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let wait_bytes = b"\0W1\0".len()
+        + size_of::<u32>()
+        + size_of::<i32>()
+        + 2 * (size_of::<u8>() + size_of::<i32>())
+        + size_of::<u8>();
+    let error_bytes = b"\0E1\0".len()
+        + size_of::<u8>()
+        + 2 * (2 * size_of::<u8>() + size_of::<i32>())
+        + size_of::<u8>()
+        + size_of::<i32>();
+    pair(child_len)?
+        .checked_add(u64::try_from(wait_bytes).map_err(io::Error::other)?)
+        .and_then(|n| n.checked_mul(u64::from(count)))
+        .and_then(|n| n.checked_add(pair(member.len()).ok()?))
+        .and_then(|n| n.checked_add(pair(final_len).ok()?))
+        // A refusing child and its parent can each produce one fixed error report.
+        .and_then(|n| n.checked_add(u64::try_from(error_bytes).ok()?.checked_mul(2)?))
+        .ok_or_else(|| io::ErrorKind::InvalidInput.into())
+}
+
+fn managed_capture_pidfd(pid: u32) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: pid belongs to our still-unreaped Child; no other thread waits on it.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = i32::try_from(fd).map_err(io::Error::other)?;
+    // SAFETY: successful pidfd_open returned a new exclusively owned descriptor.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+fn managed_capture_crash_cleanup(
+    mut child: std::process::Child,
+    fd: Option<std::os::fd::OwnedFd>,
+    until: std::time::Instant,
+) -> ManagedCrashCleanup {
+    use std::os::fd::AsRawFd as _;
+    drop(child.stdin.take());
+    // Child remains unreaped, so kill cannot select a reused PID. Only this child is targeted.
+    let _ = child.kill();
+    let result = (|| {
+        let fd = match fd {
+            Some(fd) => fd,
+            None => managed_capture_pidfd(child.id())?,
+        };
+        managed_capture_ready(fd.as_raw_fd(), until)?;
+        child.wait()
+    })();
+    match result {
+        Ok(status) => ManagedCrashCleanup::Reaped(status),
+        Err(error) => ManagedCrashCleanup::Unknown(error),
+    }
+}
+
+enum ManagedCrashRound {
+    Spawned(std::process::Child),
+    HeldPidfd(std::process::Child, std::os::fd::OwnedFd),
+    Released(std::process::Child, std::os::fd::OwnedFd),
+    ExitReady(std::process::Child, std::os::fd::OwnedFd),
+    Reaped(std::process::ExitStatus),
+}
+
+fn managed_capture_crash_round(
+    member: &str,
+    round: u32,
+    work_until: std::time::Instant,
+    cleanup_until: std::time::Instant,
+) -> Result<std::process::ExitStatus, ManagedCrashFailure> {
+    use std::os::fd::AsRawFd as _;
+    use std::process::{Command, Stdio};
+    let spawn = || -> io::Result<_> {
+        if std::time::Instant::now() >= work_until {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Command::new(std::env::current_exe()?)
+            .args(["managed-capture", member, "crash-child", &round.to_string()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+    };
+    let mut state = ManagedCrashRound::Spawned(
+        spawn().map_err(|e| ManagedCrashFailure::before_spawn(ManagedCrashStage::Spawn, e))?,
+    );
+    loop {
+        state = match state {
+            ManagedCrashRound::Spawned(child) => match managed_capture_pidfd(child.id()) {
+                Ok(fd) => ManagedCrashRound::HeldPidfd(child, fd),
+                Err(cause) => {
+                    return Err(ManagedCrashFailure {
+                        stage: ManagedCrashStage::Pidfd,
+                        cause,
+                        cleanup: managed_capture_crash_cleanup(child, None, cleanup_until),
+                    });
+                }
+            },
+            ManagedCrashRound::HeldPidfd(mut child, fd) => {
+                let release = || -> io::Result<()> {
+                    if std::time::Instant::now() >= work_until {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                    let mut stdin = child.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
+                    // Only this parent owns the writer. One byte goes into an empty private pipe.
+                    let result = stdin.write_all(&[1]);
+                    drop(stdin);
+                    result
+                }();
+                match release {
+                    Ok(()) => ManagedCrashRound::Released(child, fd),
+                    Err(cause) => {
+                        return Err(ManagedCrashFailure {
+                            stage: ManagedCrashStage::Release,
+                            cause,
+                            cleanup: managed_capture_crash_cleanup(child, Some(fd), cleanup_until),
+                        });
+                    }
+                }
+            }
+            ManagedCrashRound::Released(child, fd) => {
+                match managed_capture_ready(fd.as_raw_fd(), work_until) {
+                    Ok(()) => ManagedCrashRound::ExitReady(child, fd),
+                    Err(cause) => {
+                        return Err(ManagedCrashFailure {
+                            stage: ManagedCrashStage::ExitReady,
+                            cause,
+                            cleanup: managed_capture_crash_cleanup(child, Some(fd), cleanup_until),
+                        });
+                    }
+                }
+            }
+            ManagedCrashRound::ExitReady(mut child, fd) => match child.wait() {
+                Ok(status) => ManagedCrashRound::Reaped(status),
+                Err(cause) => {
+                    return Err(ManagedCrashFailure {
+                        stage: ManagedCrashStage::Wait,
+                        cause,
+                        cleanup: managed_capture_crash_cleanup(child, Some(fd), cleanup_until),
+                    });
+                }
+            },
+            ManagedCrashRound::Reaped(status) => return Ok(status),
+        };
+    }
+}
+
+fn managed_capture_crashes(
+    member: &str,
+    count: &str,
+    work_ms: &str,
+    cleanup_ms: &str,
+    report_bytes: &str,
+) -> i32 {
+    use std::os::unix::process::ExitStatusExt as _;
+    let run = || -> Result<(), ManagedCrashFailure> {
+        let inputs = || -> io::Result<_> {
+            let count = count.parse::<u32>().map_err(io::Error::other)?;
+            let work_ms = work_ms.parse::<u64>().map_err(io::Error::other)?;
+            let cleanup_ms = cleanup_ms.parse::<u64>().map_err(io::Error::other)?;
+            let report_bytes = report_bytes.parse::<u64>().map_err(io::Error::other)?;
+            let work_until = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(work_ms))
+                .filter(|_| count > 0 && work_ms > 0 && cleanup_ms > 0)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            let cleanup_until = work_until
+                .checked_add(std::time::Duration::from_millis(cleanup_ms))
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            if managed_capture_crash_required(member, count)? > report_bytes {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            Ok((count, work_until, cleanup_until))
+        };
+        let (count, work_until, cleanup_until) =
+            inputs().map_err(|e| ManagedCrashFailure::before_spawn(ManagedCrashStage::Inputs, e))?;
+        managed_capture_bytes(member)
+            .map_err(|e| ManagedCrashFailure::before_spawn(ManagedCrashStage::Report, e))?;
+        for round in 0..count {
+            let status = managed_capture_crash_round(member, round, work_until, cleanup_until)?;
+            managed_capture_wait_report(round, status).map_err(|e| ManagedCrashFailure {
+                stage: ManagedCrashStage::Report,
+                cause: e,
+                cleanup: ManagedCrashCleanup::Reaped(status),
+            })?;
+            if status.signal() != Some(libc::SIGSEGV) || status.core_dumped() || status.code().is_some() {
+                return Err(ManagedCrashFailure {
+                    stage: ManagedCrashStage::Status,
+                    cause: io::ErrorKind::InvalidData.into(),
+                    cleanup: ManagedCrashCleanup::Reaped(status),
+                });
+            }
+        }
+        managed_capture_bytes(&format!("{member}-after-crashes"))
+            .map_err(|e| ManagedCrashFailure::before_spawn(ManagedCrashStage::Report, e))
+    };
+    match run() {
+        Ok(()) => 0,
+        Err(error) => {
+            error.report();
+            1
+        }
+    }
+}
+
+fn managed_capture_crash_child(member: &str, round: &str) -> i32 {
+    let mut release = [0];
+    let admitted = io::stdin().read_exact(&mut release).and_then(|()| {
+        if release == [1] {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::InvalidData.into())
+        }
+    });
+    if let Err(error) = admitted {
+        ManagedCrashFailure::before_spawn(ManagedCrashStage::Release, error).report();
+        return 1;
+    }
+    // SAFETY: fd0 is solely this fresh child's private pipe reader and is never used again.
+    if unsafe { libc::close(libc::STDIN_FILENO) } != 0 {
+        ManagedCrashFailure::before_spawn(ManagedCrashStage::Release, io::Error::last_os_error()).report();
+        return 1;
+    }
+    let suppress = || -> io::Result<()> {
+        let round = round.parse::<u32>().map_err(io::Error::other)?;
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: these operations affect only this freshly execed fixture child.
+        // RLIMIT_CORE alone does not suppress piped dump handlers; dumpability is also verified.
+        unsafe {
+            if libc::setrlimit(libc::RLIMIT_CORE, &limit) != 0
+                || libc::getrlimit(libc::RLIMIT_CORE, &raw mut limit) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if limit.rlim_cur != 0 || limit.rlim_max != 0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let dumpable = libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0);
+            if dumpable < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if dumpable != 0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            if libc::sigemptyset(&raw mut action.sa_mask) != 0
+                || libc::sigaction(libc::SIGSEGV, &action, std::ptr::null_mut()) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let mut actual: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(libc::SIGSEGV, std::ptr::null(), &raw mut actual) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if actual.sa_sigaction != libc::SIG_DFL {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            if libc::sigemptyset(&raw mut mask) != 0
+                || libc::sigaddset(&raw mut mask, libc::SIGSEGV) != 0
+                || libc::sigprocmask(libc::SIG_UNBLOCK, &mask, std::ptr::null_mut()) != 0
+                || libc::sigprocmask(libc::SIG_UNBLOCK, std::ptr::null(), &raw mut mask) != 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::sigismember(&mask, libc::SIGSEGV) != 0 {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
+        managed_capture_bytes(&format!("{member}-child-{round}"))
+    };
+    if let Err(error) = suppress() {
+        ManagedCrashFailure::before_spawn(ManagedCrashStage::Suppression, error).report();
+        return 1;
+    }
+    // SAFETY: SIGSEGV is default/unblocked; verified suppression precedes a signal to self only.
+    let error = if unsafe { libc::raise(libc::SIGSEGV) } != 0 {
+        io::Error::last_os_error()
+    } else {
+        io::ErrorKind::InvalidData.into()
+    };
+    ManagedCrashFailure::before_spawn(ManagedCrashStage::Signal, error).report();
+    1
+}
 /// Set by SIGUSR1's handler: the host's go-ahead came before [`await_process`] blocked it.
 static GONE_AHEAD: AtomicBool = AtomicBool::new(false);
 

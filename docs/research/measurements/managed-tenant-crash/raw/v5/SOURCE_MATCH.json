@@ -1,0 +1,6 @@
+{
+  "helper_functions_sha256": "8368f5293a0f3b9c9111de7dc58cdce941190a7c7155094ffa3d8e2194082d34",
+  "host_fixture_sha256": "c8f6df9bf8d536f7c1a80338447f99d4313d4835623641c04271bcd1d9624315",
+  "normal_terminal_assertion_byte_identical": true,
+  "scope": "actual helper and host fixture bodies compiled; surrounding host glue inert stubs"
+}

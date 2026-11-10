@@ -11,9 +11,13 @@ struct Inputs {
 
 impl Inputs {
     fn supplied() -> Self {
-        let required = |name| std::env::var(name).unwrap_or_else(|_| panic!("supply {name}"));
-        let port = required("SHARDS_TENANT_EXIT_PORT").parse().unwrap();
-        let patience = Duration::from_millis(required("SHARDS_TENANT_EXIT_DEADLINE_MS").parse().unwrap());
+        Self::supplied_for("SHARDS_TENANT_EXIT")
+    }
+
+    fn supplied_for(prefix: &str) -> Self {
+        let required = |name: &str| std::env::var(name).unwrap_or_else(|_| panic!("supply {name}"));
+        let port = required(&format!("{prefix}_PORT")).parse().unwrap();
+        let patience = Duration::from_millis(required(&format!("{prefix}_DEADLINE_MS")).parse().unwrap());
         assert_ne!(port, 0, "explicit guest fixture port required");
         assert!(
             !patience.is_zero(),
@@ -23,7 +27,7 @@ impl Inputs {
             Instant::now().checked_add(patience).is_some(),
             "representable deadline"
         );
-        let records = PathBuf::from(required("SHARDS_TENANT_EXIT_RECORDS"));
+        let records = PathBuf::from(required(&format!("{prefix}_RECORDS")));
         assert!(records.is_absolute(), "absolute new evidence directory required");
         std::fs::create_dir(&records).unwrap();
         Self {
@@ -56,11 +60,25 @@ struct Capture {
 }
 
 impl Capture {
-    fn receive(&mut self, observer: &Observer, expected: &[u8], terminal: bool, until: Instant) {
+    fn receive(
+        &mut self,
+        observer: &Observer,
+        expected: &[u8],
+        terminal: bool,
+        inputs: &Inputs,
+        until: Instant,
+    ) {
         loop {
             let Event::Record(offset, chunk) = observer.next(until) else {
                 panic!("expected canonical member record before terminal");
             };
+            inputs.write(
+                &format!(
+                    "wire-{}-{}-{offset}.json",
+                    observer.scope.member, observer.scope.channel as u8
+                ),
+                &json!({"offset":offset,"raw":chunk}),
+            );
             assert!(!chunk.is_empty(), "empty member record");
             assert_eq!(offset, self.wire, "contiguous transport offset");
             self.wire = self
@@ -75,7 +93,9 @@ impl Capture {
             );
             self.state.accept(record).unwrap();
             match record.event {
-                CaptureEvent::Open(label) => assert_eq!(label, declared_label(observer.scope.member)),
+                CaptureEvent::Open(label) => {
+                    assert_eq!(label, declared_label(observer.scope.member))
+                }
                 CaptureEvent::Data(bytes) => {
                     self.bytes.extend_from_slice(bytes);
                     assert!(expected.starts_with(&self.bytes), "exact controlled member bytes");
@@ -147,6 +167,27 @@ fn release_neighbor(fixture: &Fixture, inputs: &Inputs, until: Instant) {
 }
 
 fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Channel, Capture)> {
+    run_member(
+        fixture,
+        inputs,
+        until,
+        &["managed-capture", "agent", "exit"],
+        None,
+        [
+            payload("agent", Channel::Stdout),
+            payload("agent", Channel::Stderr),
+        ],
+    )
+}
+
+fn run_member(
+    fixture: &mut Fixture,
+    inputs: &Inputs,
+    until: Instant,
+    agent: &[&str],
+    agent_tasks: Option<u32>,
+    expected: [Vec<u8>; 2],
+) -> Vec<(u32, Channel, Capture)> {
     let port = inputs.port.to_string();
     let deadline = inputs.patience.as_millis().to_string();
     // Existing declared NETWORK/EXPOSE grammar, also used by managed_limits.
@@ -154,9 +195,10 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         "NETWORK --ingress={port} control\nEXPOSE --harnesses=driver {port} AS ingress FOR control\nCONNECT driver WITH driver ON control\n"
     );
     fixture.start_with_options(
-        &["managed-capture", "agent", "exit"],
+        agent,
         &["managed-capture", "harness", "step", &port, &deadline],
         &directives,
+        agent_tasks,
         until,
     );
     std::fs::copy(
@@ -186,10 +228,19 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
     })
     .collect();
     for (member, channel, index, capture) in &mut channels {
+        let harness_payload = payload("harness", *channel);
         capture.receive(
             &fixture.observers[*index],
-            &payload(if *member == 1 { "agent" } else { "harness" }, *channel),
+            if *member == 1 {
+                match channel {
+                    Channel::Stdout => &expected[0],
+                    Channel::Stderr => &expected[1],
+                }
+            } else {
+                &harness_payload
+            },
             *member == 1,
+            inputs,
             until,
         );
         if *member == 1 {
@@ -232,7 +283,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
                 payload("harness-after-exit", *channel),
             ]
             .concat();
-            capture.receive(&fixture.observers[*index], &expected, false, until);
+            capture.receive(&fixture.observers[*index], &expected, false, inputs, until);
             fixture.observers[*index].ack_and_finish(capture.wire, until);
         }
         fixture
@@ -349,5 +400,219 @@ fn member_normal_exit_preserves_sibling_and_main_progress() {
     };
     // Owned cleanup and durable evidence precede the strict terminal contract check.
     // A red retains the independent canonical End and transport EOF witnesses.
+    assert_terminal_metadata(&metadata, &result.unwrap());
+}
+
+struct CrashInputs {
+    count: u32,
+    work_ms: u64,
+    cleanup_ms: u64,
+    report_bytes: u64,
+    tasks: u32,
+}
+
+impl CrashInputs {
+    fn supplied() -> Self {
+        let number = |suffix| {
+            std::env::var(format!("SHARDS_TENANT_CRASH_{suffix}"))
+                .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_CRASH_{suffix}"))
+                .parse::<u64>()
+                .unwrap()
+        };
+        let inputs = Self {
+            count: u32::try_from(number("COUNT")).unwrap(),
+            work_ms: number("WORK_MS"),
+            cleanup_ms: number("CLEANUP_MS"),
+            report_bytes: number("REPORT_BYTES"),
+            tasks: u32::try_from(number("TASKS")).unwrap(),
+        };
+        assert!(
+            inputs.count > 0 && inputs.tasks > 0,
+            "positive u32 count and actual AGENT task grammar"
+        );
+        assert!(
+            inputs.work_ms > 0 && inputs.cleanup_ms > 0,
+            "explicit positive helper deadlines"
+        );
+        assert!(
+            Instant::now()
+                .checked_add(Duration::from_millis(inputs.work_ms))
+                .and_then(|until| until.checked_add(Duration::from_millis(inputs.cleanup_ms)))
+                .is_some(),
+            "representable immutable helper work and cleanup deadlines"
+        );
+        // Each successful child contributes a pair and one fixed actual-wait report.
+        // The longest round spelling bounds every round before allocating or starting a VM.
+        let child = format!("agent-child-{}", inputs.count);
+        let wait_bytes = b"\0W1\0".len()
+            + size_of::<u32>()
+            + size_of::<i32>()
+            + 2 * (size_of::<u8>() + size_of::<i32>())
+            + size_of::<u8>();
+        let error_bytes = b"\0E1\0".len()
+            + size_of::<u8>()
+            + 2 * (2 * size_of::<u8>() + size_of::<i32>())
+            + size_of::<u8>()
+            + size_of::<i32>();
+        let pair_len = |name| {
+            payload(name, Channel::Stdout)
+                .len()
+                .checked_add(payload(name, Channel::Stderr).len())
+                .unwrap()
+        };
+        let required = pair_len(&child)
+            .checked_add(wait_bytes)
+            .unwrap()
+            .checked_mul(usize::try_from(inputs.count).unwrap())
+            .unwrap()
+            .checked_add(pair_len("agent"))
+            .unwrap()
+            .checked_add(pair_len("agent-after-crashes"))
+            .unwrap()
+            .checked_add(error_bytes.checked_mul(2).unwrap())
+            .unwrap();
+        assert!(
+            u64::try_from(required).unwrap() <= inputs.report_bytes,
+            "supplied controlled-byte envelope covers both channels and two failure reports"
+        );
+        inputs
+    }
+
+    fn expected(&self) -> [Vec<u8>; 2] {
+        [Channel::Stdout, Channel::Stderr].map(|channel| {
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve(usize::try_from(self.report_bytes).unwrap())
+                .unwrap();
+            bytes.extend(payload("agent", channel));
+            for round in 0..self.count {
+                bytes.extend(payload(&format!("agent-child-{round}"), channel));
+                if channel == Channel::Stdout {
+                    bytes.extend(b"\0W1\0");
+                    bytes.extend(round.to_be_bytes());
+                    // Linux wait status: signal with no core bit/normal exit byte.
+                    bytes.extend(libc::SIGSEGV.to_be_bytes());
+                    bytes.push(1);
+                    bytes.extend(libc::SIGSEGV.to_be_bytes());
+                    bytes.push(0);
+                    bytes.extend(0i32.to_be_bytes());
+                    bytes.push(0);
+                }
+            }
+            bytes.extend(payload("agent-after-crashes", channel));
+            bytes
+        })
+    }
+}
+
+fn preserve_history(fixture: &Fixture, inputs: &Inputs, phase: &str, until: Instant) {
+    let destination = inputs.records.join(format!("history-{phase}"));
+    std::fs::create_dir(&destination).unwrap();
+    let copy = || -> std::io::Result<Vec<String>> {
+        let parent = fixture
+            .record
+            .as_ref()
+            .and_then(|p| p.parent())
+            .ok_or(std::io::ErrorKind::NotFound)?;
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(parent)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .and_then(|n| n.strip_prefix("processes."))
+                .and_then(|n| n.parse::<u64>().ok())
+                .is_some()
+            {
+                if !entry.file_type()?.is_file() {
+                    return Err(std::io::ErrorKind::InvalidData.into());
+                }
+                std::fs::copy(entry.path(), destination.join(&name))?;
+                names.push(name.to_string_lossy().into_owned());
+            }
+        }
+        Ok(names)
+    };
+    let segments = copy();
+    // History is independent evidence, never authority or an assumed complete population.
+    let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        fixture.command(
+            &["read", "processes", "owner-output"],
+            until.saturating_duration_since(Instant::now()),
+        )
+    }));
+    let shown = match read {
+        Ok(run) => json!({"status":run.status,"stdout":run.stdout,"stderr":run.stderr}),
+        Err(_) => json!({"state":"Unknown","cause":"read-processes helper panicked"}),
+    };
+    inputs.write(&format!("history-{phase}.json"), &json!({"read":shown,"segments":segments.as_ref().ok(),"copy_error":segments.as_ref().err().map(ToString::to_string),"completeness":"Unknown: rotation, unsupported/lost/short-lived records and omitted threads remain possible","correlation":"Only actual member/exec round-marker/fork/exit records may correlate; no namespace-to-VM PID mapping or exact output-writer claim"}));
+}
+
+#[test]
+#[ignore = "coordinator-only real VM; explicit count/tasks/byte envelope/deadlines/port/evidence"]
+fn owned_child_crashes_preserve_sibling_and_main_progress() {
+    let crash = CrashInputs::supplied();
+    let expected = crash.expected();
+    let inputs = Inputs::supplied_for("SHARDS_TENANT_CRASH");
+    assert!(
+        !common::cannot_run_vms(),
+        "fixture requires a supported real VM host"
+    );
+    let until = Instant::now().checked_add(inputs.patience).unwrap();
+    let cleanup_until = until
+        .checked_add(Duration::from_millis(crash.cleanup_ms))
+        .unwrap();
+    let artifact = |path: &std::path::Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
+    inputs.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init())}));
+    inputs.write("inputs.json", &json!({"count":crash.count,"tasks":crash.tasks,"controlled_report_bytes":crash.report_bytes,"helper_work_ms":crash.work_ms,"helper_cleanup_ms":crash.cleanup_ms,"host_work_ms":inputs.patience.as_millis(),"port":inputs.port,"source":option_env!("SHARDS_TENANT_CRASH_SOURCE_REVISION"),"population_bound":"at most one owned unreaped child; caller tasks are not hard aggregate/parent/kernel proof","provenance":"member/channel inherited bytes; child round claims are controlled-fixture data, actual wait results reported by fixture parent"}));
+    let args = [
+        crash.count.to_string(),
+        crash.work_ms.to_string(),
+        crash.cleanup_ms.to_string(),
+        crash.report_bytes.to_string(),
+    ];
+    let options = [
+        "managed-capture",
+        "agent",
+        "crashes",
+        &args[0],
+        &args[1],
+        &args[2],
+        &args[3],
+    ];
+    let mut fixture = Fixture::new();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let channels = run_member(
+            &mut fixture,
+            &inputs,
+            until,
+            &options,
+            Some(crash.tasks),
+            expected,
+        );
+        preserve_history(&fixture, &inputs, "after-progress", until);
+        channels
+    }));
+    // Preserve any failing raw member bytes/metadata/history before owned teardown.
+    if let Some(record) = &fixture.record {
+        let _ = std::fs::copy(record, inputs.records.join("managed-output.before-cleanup"));
+    }
+    let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        inputs.command(
+            &fixture,
+            "stop-before-history.json",
+            &["stop", "vm", "-t", "0", "owner-output"],
+            cleanup_until,
+        );
+        preserve_history(&fixture, &inputs, "after-stop", cleanup_until);
+        remove_run(&fixture, &inputs, cleanup_until)
+    }));
+    let stopped = fixture.shutdown(cleanup_until);
+    inputs.write("teardown.json", &json!({"protocol_completed":result.is_ok(),"private_run_cleanup_completed":removed.is_ok(),"owner_stop_and_observer_join":{"completed":stopped.is_ok(),"error":stopped.as_ref().err()},"observer_fd_baseline":fixture.initial_fds,"host_exit_reaping_kernel_return":"Unverified; ROOT independent held-watch/population/resource evidence owed"}));
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+    stopped.unwrap();
+    let metadata = removed.unwrap_or_else(|error| std::panic::resume_unwind(error));
     assert_terminal_metadata(&metadata, &result.unwrap());
 }

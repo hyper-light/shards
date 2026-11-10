@@ -483,11 +483,28 @@ impl Fixture {
             &["managed-capture", "agent"],
             &["managed-capture", "harness"],
             "",
+            None,
             Instant::now() + WITHIN,
         );
     }
 
-    fn start_with_options(&mut self, agent: &[&str], harness: &[&str], directives: &str, until: Instant) {
+    fn start_with_options(
+        &mut self,
+        agent: &[&str],
+        harness: &[&str],
+        directives: &str,
+        agent_tasks: Option<u32>,
+        until: Instant,
+    ) {
+        let processes = agent_tasks
+            .map(|tasks| {
+                assert!(
+                    tasks > 0,
+                    "AGENT --processes numeric grammar requires positive u32"
+                );
+                format!("--processes={tasks} ")
+            })
+            .unwrap_or_default();
         let (image, _) = common::served();
         std::fs::create_dir(self.context.join("files")).unwrap();
         std::fs::write(self.context.join("files/asset"), b"files-only").unwrap();
@@ -516,7 +533,7 @@ impl Fixture {
             ]),
         )
         .unwrap();
-        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
+        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT {processes}helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
         let built = self.command(
             &[
                 "build",

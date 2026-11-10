@@ -1,0 +1,12 @@
+     Locking 13 packages to highest Rust 1.99.1 compatible versions
+      Adding libc v0.2.189 (available: v0.2.191)
+      Adding serde_json v1.0.151 (available: v1.0.154)
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-tenant-crash-light-01a1c5d2-v4/source/abi)
+   Compiling serde_json v1.0.151
+    Checking memchr v2.8.3
+    Checking itoa v1.0.18
+    Checking managed-tenant-crash-compile-only v0.1.0 (/home/adalundhe/managed-tenant-crash-light-01a1c5d2-v4/source)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.49s

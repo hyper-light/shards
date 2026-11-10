@@ -1,6 +1,8 @@
 # Bounded owned-child crash fixture proposal
 
-Status: coordinator approval for code pending. No helper, socket, VM, fault,
+Status: coordinator approved the bounded implementation and caller-supplied task
+extension, then approved the private one-byte stdin ordering amendment on2026-11-10.
+No helper, socket, VM, fault,
 stress/chaos campaign, audit or profile has been executed. Preserve normal-exit
 checkpoint `fce89fb1063b5c2344f920ff9e967c023ce3abfc` unchanged on
 `p/managed-tenant-exit`. This proposal uses the same worktree on
@@ -27,11 +29,21 @@ The parent checks positive finite count, deadlines, representable absolute
 `work_until` and `cleanup_until = work_until + cleanup_ms`, and checked total
 report-byte requirement against the supplied envelope before spawning. There is
 at most one owned unreaped `std::process::Child`. The parent fresh-execs the same
-native testguest with literal arguments, closed stdin and inherited fd1/fd2. No
+native testguest with literal arguments, one private piped stdin and inherited
+fd1/fd2. The child receives only the read end as fd0; the parent owns the writer
+and closes it promptly after its one-byte release. No parent management handle
+is passed as this handoff. No
 shell, raw fork, pre_exec hook, new process manager, credential change or grant/
 syscall/profile widening. Original descendant confinement remains in place.
 
-Each round is `Spawned -> HeldPidfd -> ExitReady -> Reaped -> next round`.
+Each round is `Spawned -> HeldPidfd -> Released -> ExitReady -> Reaped -> next round`.
+The fresh child blocks on the single release byte BEFORE core suppression and
+the intentional self-signal. Only successful held pidfd acquisition permits the
+parent's release write, and the original work deadline is checked before that
+write. Acquisition/write/EOF failure stays typed and retains Child cleanup. The
+cleanup path closes any unreleased stdin writer before killing/waiting only its
+owned child. EOF from parent exit also refuses the child before its fault. The
+pipe wait is a one-shot readiness dependency, not a periodic probe or new grant.
 Use one original absolute work deadline with the existing native readiness wait;
 no try_wait/sleep probe. The parent calls actual Child.wait after readiness and
 records raw wait status, signal, optional normal exit code and core-dump flag.
@@ -111,7 +123,8 @@ an exact writer identity. No product recorder changes are proposed.
 Owned future paths after approval: narrow testguest workload.rs extension,
 tenant_exit family/new fixture module and this evidence directory. Host parent,
 allocation header/module registration and cost fixture stay root/resource-owned
-unless root explicitly approves the one task-envelope wiring change. Scoped
+unless root explicitly approves the one task-envelope wiring change (now approved).
+Scoped
 compile-only GNU/musl checks may use a fresh private source/target at at most
 1CPU/1GiB/2GiB after headroom; every actual helper/guest/negative/mutation/resource
 campaign remains coordinator-owned and unrun here.
