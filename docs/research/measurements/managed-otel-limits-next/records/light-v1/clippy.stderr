@@ -1,0 +1,4 @@
+    Checking libc v0.2.191
+    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-otel-limits-next-022-light-v1/source/docs/measurements/managed-otel-limits/testdir)
+    Checking shards-managed-otel-limits-light v0.0.0 (/home/adalundhe/managed-otel-limits-next-022-light-v1/source/docs/measurements/managed-otel-limits)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s

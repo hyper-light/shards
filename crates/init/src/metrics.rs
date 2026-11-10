@@ -30,7 +30,7 @@ enum Token<'a> {
 
 /// The local configured ceiling, not available memory or an admitted entitlement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MemoryLimit {
+pub enum Limit {
     Finite(u64),
     Unbounded,
 }
@@ -132,14 +132,23 @@ impl Reader {
         value.ok_or(Failure::Missing)
     }
 
-    pub fn memory_limit(&mut self, group: &File) -> Result<MemoryLimit, Failure> {
+    pub fn memory_limit(&mut self, group: &File) -> Result<Limit, Failure> {
+        self.limit(group, c"memory.max")
+    }
+
+    /// Task/TID ceiling, including threads, not a count of process leaders.
+    pub fn task_limit(&mut self, group: &File) -> Result<Limit, Failure> {
+        self.limit(group, c"pids.max")
+    }
+
+    fn limit(&mut self, group: &File, name: &'static CStr) -> Result<Limit, Failure> {
         let mut value = None;
-        self.tokens(group, c"memory.max", |token| {
+        self.tokens(group, name, |token| {
             match token {
                 Token::Word(word) if value.is_none() => {
                     value = Some(match word {
-                        b"max" => MemoryLimit::Unbounded,
-                        digits => MemoryLimit::Finite(number(digits)?),
+                        b"max" => Limit::Unbounded,
+                        digits => Limit::Finite(number(digits)?),
                     });
                 }
                 Token::Word(_) => return Err(Failure::Invalid),

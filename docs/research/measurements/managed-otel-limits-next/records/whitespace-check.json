@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/Users/adalundhe/.kiln-run/bin/gits",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "exit_code": 2,
+  "output": "docs/research/measurements/managed-otel-limits-next/records/light-v1/reader-tests.stdout:20: new blank line at EOF.\n",
+  "decision": "Retain original raw libtest bytes unchanged; no production source fix or whitespace waiver inferred."
+}

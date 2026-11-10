@@ -1,0 +1,49 @@
+{
+  "kernel/cgroup/pids.c": {
+    "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/kernel/cgroup/pids.c",
+    "bytes": 11827,
+    "sha256": "802a4643e30c5cedd8bd67f5dec91ee28bec802cec9b1169a448ee2f233fd634"
+  },
+  "Documentation/admin-guide/cgroup-v2.rst": {
+    "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/Documentation/admin-guide/cgroup-v2.rst",
+    "bytes": 128518,
+    "sha256": "e81d1d9be76afdc6ee0a28f109353b1fd0a1f94df0397652988eac0bce4b87cd"
+  },
+  "pids.c_symbols": {
+    "pids_try_charge": [
+      155,
+      185
+    ],
+    "pids_can_fork": [
+      255,
+      265
+    ],
+    "pids_max_write": [
+      281,
+      308
+    ],
+    "pids_max_show": [
+      310,
+      322
+    ],
+    "pids_files": [
+      365,
+      376
+    ]
+  },
+  "cgroup-v2.rst_sections": {
+    "format": [
+      677,
+      707
+    ],
+    "conventions": [
+      714,
+      738
+    ],
+    "pid": [
+      2148,
+      2201
+    ]
+  },
+  "line_number_origin": "zero-based raw web viewer; README GitHub source links are one-based"
+}
