@@ -1,4 +1,4 @@
-//! Finite peer UDP experiment. No forwarding relay, cache, or product policy.
+//! Finite UDP compatibility experiment. No forwarding relay, cache, or product policy.
 use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,8 +22,10 @@ impl Inputs {
         table: &str,
         priority: &str,
     ) -> io::Result<Self> {
-        if !matches!(origin, "local" | "forward") {
-            return Err(invalid("UDP experiment supports peer local/forward only"));
+        if !matches!(origin, "local" | "forward" | "local-loopback" | "local-self") {
+            return Err(invalid(
+                "UDP experiment expects local, forward, local-loopback or local-self",
+            ));
         }
         Ok(Self {
             network: super::Inputs::parse(family, origin, millis, mark, table, priority)?,
@@ -60,6 +62,7 @@ impl Exchange {
 
 #[derive(Clone, Copy, Debug)]
 enum Stage {
+    ReserveReplyTuple,
     BindClient,
     ConnectDefaultPeer,
     SendDatagram,
@@ -454,26 +457,51 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     let deadline = Deadline::new(input.network.within)?;
     let [router_ip, backend_ip, _, client_ip] = addresses(input.network.family);
     let [router, backend, client_ns] = prepare(&input.network, &deadline)?;
-    let origin = if input.network.origin == Origin::Local {
-        &router
-    } else {
-        &client_ns
+    let loopback: IpAddr = match input.network.family {
+        Family::Ipv4 => Ipv4Addr::LOCALHOST.into(),
+        Family::Ipv6 => Ipv6Addr::LOCALHOST.into(),
     };
-    let source = if input.network.origin == Origin::Local {
-        router_ip
-    } else {
-        client_ip
+    let (origin, source, backend_namespace, backend_address) = match input.network.origin {
+        Origin::Local => (&router, router_ip, &backend, backend_ip),
+        Origin::Forward => (&client_ns, client_ip, &backend, backend_ip),
+        Origin::LocalLoopback => (&router, loopback, &router, loopback),
+        Origin::LocalSelf => (&router, router_ip, &router, router_ip),
     };
-    let backend_socket = in_namespace(Some(&backend.handle), || {
-        udp_socket(SocketAddr::from((backend_ip, 0)), SocketMode::Native)
+    let backend_socket = in_namespace(Some(&backend_namespace.handle), || {
+        udp_socket(SocketAddr::from((backend_address, 0)), SocketMode::Native)
     })?;
     let destination = backend_socket.local_addr()?;
+    {
+        // These facts precede the reservation syscall boundary. No baseline or
+        // datagram worker exists here; a native reservation failure cannot prove
+        // interception or worker cleanup. Held namespace objects name the roles.
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "managed-intercept {{\"type\":\"UdpSetup\",\"stage\":\"{:?}\",\"family\":\"{:?}\",\"origin\":\"{:?}\",\"mode\":\"{:?}\",\"destination\":\"{destination}\",\"client_inode\":{},\"backend_inode\":{},\"relay_inode\":{},\"baseline\":\"NotStarted\",\"backend_worker\":\"NotStarted\",\"relay_worker\":\"NotStarted\"}}",
+            Stage::ReserveReplyTuple,
+            input.network.family,
+            input.network.origin,
+            input.mode,
+            origin.inode()?,
+            backend_namespace.inode()?,
+            router.inode()?
+        )?;
+        out.flush()?;
+    }
     // Reserve the original reply tuple BEFORE wildcard port allocation. Do not
     // connect it: pinned nf_tproxy IPv4/IPv6 exclude unconnected sockets from the
     // established lookup; connecting it could divert later requests to this FD.
-    let sender = in_namespace(Some(&router.handle), || {
+    let sender = match in_namespace(Some(&router.handle), || {
         udp_socket(destination, SocketMode::Transparent)
-    })?;
+    }) {
+        Ok(sender) => sender,
+        Err(error) => {
+            let fault = Fault::Io(error);
+            fault_record("ReplySocket", Stage::ReserveReplyTuple, &fault)?;
+            return Err(fault.into_io());
+        }
+    };
     let unspecified: IpAddr = match input.network.family {
         Family::Ipv4 => Ipv4Addr::UNSPECIFIED.into(),
         Family::Ipv6 => Ipv6Addr::UNSPECIFIED.into(),
@@ -491,7 +519,7 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
         input.mode,
         sender.local_addr()?,
         origin.inode()?,
-        backend.inode()?,
+        backend_namespace.inode()?,
         router.inode()?
     )?;
     out.flush()?;
@@ -569,15 +597,15 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn peer_inputs_are_finite_and_do_not_inherit_tcp_absence_or_local_targets() {
+    fn inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence() {
         for family in [Family::Ipv4, Family::Ipv6] {
-            for origin in ["local", "forward"] {
+            for origin in ["local", "forward", "local-loopback", "local-self"] {
                 for mode in ["connected", "unconnected"] {
                     assert!(Inputs::parse(family, origin, mode, "1000", "1", "1000", "100").is_ok());
                 }
             }
         }
-        for origin in ["local-loopback", "local-self", "forward-relay-absent"] {
+        for origin in ["forward-relay-absent", "unknown"] {
             assert!(Inputs::parse(Family::Ipv4, origin, "connected", "1000", "1", "1000", "100").is_err());
         }
         assert!(Inputs::parse(Family::Ipv6, "forward", "tcp", "1000", "1", "1000", "100").is_err());

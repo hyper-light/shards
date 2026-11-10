@@ -1,0 +1,14 @@
+{
+  "source_revision": "b047371dff9e8443409fda99f80ec44694fc7294",
+  "worker_client_completion": {
+    "unchanged": true,
+    "bytes": 9510,
+    "sha256": "2fde378851320beb52ab249f584a8f967210a36b88ee526fd5d01bf4d267ce23"
+  },
+  "native_udp_helpers": {
+    "unchanged": true,
+    "bytes": 13479,
+    "sha256": "49afcccd92cb9581361d905251ad3e100742a83549c62ecb26e4d603aedfef5b"
+  },
+  "wire_unchanged": true
+}
