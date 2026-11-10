@@ -52,5 +52,7 @@
   },
   "restore": {
     "state": "pending admission; canonical repository source always retained armed guard, private mutation only"
-  }
+  },
+  "closing_record": "closing-results.json",
+  "closing_verification": "closing-verification.json"
 }

@@ -1,0 +1,136 @@
+{
+  "mutation_effect": {
+    "binary": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/mutation-death-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+    "mode": "death",
+    "notification_budget_seconds": 3,
+    "effects": {
+      "ready": {
+        "helper": 2871599,
+        "worker": 2871600,
+        "tasks": 1,
+        "call": {
+          "name": "receive",
+          "args": {}
+        },
+        "worker_pidfd_initial": []
+      },
+      "helper_exit": -9,
+      "worker_death_notification": [],
+      "after_helper_exit": {
+        "kind": "D",
+        "body": "\"completed after helper exit\""
+      }
+    },
+    "cleanup": {
+      "worker_waitpid": {
+        "pid": 2871600,
+        "status": 0
+      },
+      "late_owned_children": [],
+      "fd_before": 5,
+      "fd_after": 5,
+      "limit": "Held-helper/worker waits and own FDs only; no cgroup/kernel cost proof."
+    },
+    "passed": false
+  },
+  "restore": {
+    "death": {
+      "exit": 0,
+      "timeout": false,
+      "facts": {
+        "binary": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/after-musl-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+        "mode": "death",
+        "notification_budget_seconds": 3,
+        "effects": {
+          "ready": {
+            "helper": 45185,
+            "worker": 45186,
+            "tasks": 1,
+            "call": {
+              "name": "receive",
+              "args": {}
+            },
+            "worker_pidfd_initial": []
+          },
+          "helper_exit": -9,
+          "worker_death_notification": [
+            [
+              5,
+              1
+            ]
+          ],
+          "worker_socket_terminal": "EOF"
+        },
+        "cleanup": {
+          "worker_waitpid": {
+            "pid": 45186,
+            "status": 9
+          },
+          "late_owned_children": [],
+          "fd_before": 5,
+          "fd_after": 5,
+          "limit": "Held-helper/worker waits and own FDs only; no cgroup/kernel cost proof."
+        },
+        "passed": true
+      }
+    },
+    "control-error": {
+      "exit": 0,
+      "timeout": false,
+      "facts": {
+        "binary": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/after-musl-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+        "mode": "control-error",
+        "notification_budget_seconds": 3,
+        "effects": {
+          "ready": {
+            "helper": 45205,
+            "worker": 45206,
+            "tasks": 1,
+            "call": {
+              "name": "receive",
+              "args": {}
+            },
+            "worker_pidfd_initial": []
+          },
+          "helper_exit": -31,
+          "worker_death_notification": [
+            [
+              5,
+              17
+            ]
+          ],
+          "worker_socket_terminal": "EOF"
+        },
+        "cleanup": {
+          "helper_reaped": {
+            "waitpid_errno": 10,
+            "pidfd_events": [
+              [
+                5,
+                17
+              ]
+            ],
+            "pidfd_pid": "-1",
+            "exit_status": "not observed by nonparent fixture"
+          },
+          "late_owned_children": [],
+          "fd_before": 5,
+          "fd_after": 5,
+          "limit": "Held-helper/worker waits and own FDs only; no cgroup/kernel cost proof."
+        },
+        "passed": true
+      }
+    }
+  },
+  "post_restart": {
+    "owned_binary_processes": [],
+    "kernel": [
+      "Linux",
+      "fedora-2",
+      "6.19.10-300.fc44.x86_64",
+      "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+      "x86_64"
+    ],
+    "limit": "One executable-path snapshot after runner reavailability; no escaped-descendant/kernel charge proof."
+  }
+}

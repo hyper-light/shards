@@ -1,0 +1,38 @@
+{
+  "before-v3": [
+    {
+      "path": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-v3/target/release/managed-helper-ownership",
+      "manifest": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-v3/source/Cargo.toml",
+      "fresh": false,
+      "sha256": "d7237b6e1aa364920b31c343524239780f92a80f71ae2961ab424434768f70db",
+      "bytes": 1823544
+    }
+  ],
+  "before-musl-v4": [
+    {
+      "path": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+      "manifest": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/source/Cargo.toml",
+      "fresh": false,
+      "sha256": "084275916228cf4038a91dd9eace1ce61bc57f5724612753ffe8d257103ab8b2",
+      "bytes": 1822184
+    }
+  ],
+  "after-musl-v1": [
+    {
+      "path": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/after-musl-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+      "manifest": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/after-musl-v1/source/Cargo.toml",
+      "fresh": false,
+      "sha256": "13438cc87ef8d5e5b2ab4f1b383e6464a818d1ec822432e25425fcfe28e237b5",
+      "bytes": 1821952
+    }
+  ],
+  "mutation-death-v1": [
+    {
+      "path": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/mutation-death-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership",
+      "manifest": "/home/adalundhe/managed-helper-ownership-cbd-before-v1/mutation-death-v1/source/Cargo.toml",
+      "fresh": false,
+      "sha256": "2e7c4b41d24448bae0efbffdb216a6acd0c9f75e6f5b27e7d22831c0d830ff3d",
+      "bytes": 1821952
+    }
+  ]
+}

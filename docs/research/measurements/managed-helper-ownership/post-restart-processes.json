@@ -1,0 +1,11 @@
+{
+  "owned_binary_processes": [],
+  "kernel": [
+    "Linux",
+    "fedora-2",
+    "6.19.10-300.fc44.x86_64",
+    "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "x86_64"
+  ],
+  "limit": "One executable-path snapshot after runner reavailability; no escaped-descendant/kernel charge proof."
+}

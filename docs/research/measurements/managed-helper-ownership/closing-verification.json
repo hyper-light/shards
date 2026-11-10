@@ -1,0 +1,19 @@
+{
+  "archive_bytes": 170006,
+  "sha256": "3df7435019f8f6af54bff220361cef8d1157176456da2a831c0e6bb2ebbd593a",
+  "regular_members": 130,
+  "verified_original_hashes": 129,
+  "after_source_hashes_matched": 315,
+  "restore": [
+    [
+      "death",
+      0,
+      false
+    ],
+    [
+      "control-error",
+      0,
+      false
+    ]
+  ]
+}

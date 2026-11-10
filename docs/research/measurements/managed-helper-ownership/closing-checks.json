@@ -1,0 +1,21 @@
+{
+  "policy": {
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0,
+    "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+  },
+  "source_unchanged": {
+    "command": [
+      "git",
+      "diff",
+      "d956c9795b36d86c8327e584a1dd36fe7f355882",
+      "--",
+      "crates/server/src/sandbox.rs"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+}

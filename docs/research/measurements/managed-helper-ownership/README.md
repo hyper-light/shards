@@ -7,7 +7,8 @@ runtime plan and current handoff read at main
 ROOT assigned the bounded owned-helper native correctness cases; ROOT retains
 audits, profiling/benchmarks, integration acceptance and main merges.
 
-This checkpoint changes only sandbox.rs helper_calls and Worker/serve_helper.
+Signed code checkpoint `d956c9795b36d86c8327e584a1dd36fe7f355882` changes only
+sandbox.rs helper_calls and Worker/serve_helper. This closing evidence changes no code.
 The exact candidate file is SHA-256
 `3d4acf45f97e023f0d789f4dd8492f2c140ffd6c11e81f8045e32ff45b19ba2e`;
 the baseline is `365eed67b1433b694caa40132fbd9958b40a30193dabbfcb3a270491d6e235a3`.
@@ -78,18 +79,36 @@ feature-reduced lock, SHA256
 | --- | --- |
 | r336 before-musl-v4 |313 verified source hashes; build0, death1, control-error1; actual surviving worker DONE in both cases, no timeout. Binary084275916228cf4038a91dd9eace1ce61bc57f5724612753ffe8d257103ab8b2. |
 | r342 after-musl-v1 |315 verified source hashes; build0, death0, control-error0, strict library Clippy0 with original denied panic lints and `-D warnings`; no timeout. Binary13438cc87ef8d5e5b2ab4f1b383e6464a818d1ec822432e25425fcfe28e237b5. |
-| r345 mutation-death-v1 |Only PR_SET_PDEATHSIG's SIGKILL argument changed to0; getppid guard retained. Build0, death1, control-error0, strict library Clippy0; no timeout. Mutation sourceba8bb511e0edf47ca9568b6c06f03fb8eb810f8987105f9334e4615173104c35; binary2e7c4b41d24448bae0efbffdb216a6acd0c9f75e6f5b27e7d22831c0d830ff3d. Detailed failure reason/DONE receipt not yet retrieved: not claimed a completed effect mutation proof. |
+| r345 mutation-death-v1 |Only PR_SET_PDEATHSIG's SIGKILL argument changed to0; getppid guard retained. Build0, death1, control-error0, strict library Clippy0; no timeout. Mutation sourceba8bb511e0edf47ca9568b6c06f03fb8eb810f8987105f9334e4615173104c35; binary2e7c4b41d24448bae0efbffdb216a6acd0c9f75e6f5b27e7d22831c0d830ff3d. The actual ready worker survived helper SIGKILL and returned DONE; this independently detects the removed death guard. |
 
 The driver exits0 after retaining per-case statuses; **driver0 does not turn
 before/mutation case1 into a pass**. Original raw command logs, manifests,
 libraries and binaries remain preserved in their named remote scopes. Received
 baseline and mutation job output and transcribed after counts/hashes are in
-receipts.json. Detailed after/mutation raw transfer and fresh-process restore
-checks remain owed because new runner reads were refused at zero idle cores;
-ROOT also reported a connectivity loss. No result is inferred from silence.
-The canonical source always retained its armed guard; mutation was confined to
-a separate private source. This signed checkpoint is the tested production piece,
-not final acceptance of outstanding evidence gates.
+receipts.json. Initial detailed reads were refused at zero idle cores and ROOT
+reported connectivity loss; those historical held receipts are retained. After
+reavailability, [close-records.py](close-records.py) independently checked the
+private artifacts, captured the actual mutation DONE, and ran both restore cases
+in fresh processes against the frozen original guarded source/binary. Both
+returned0 without timeouts. The canonical source always retained its armed guard;
+mutation was confined to a separate source. No result was inferred from silence.
+
+The restore death case observed worker SIGKILL status9 and EOF. The control-error
+case observed helper exit-31, worker pidfd events17 (IN|HUP), fdinfo Pid:-1 and
+ECHILD10; its nonparent exit status remains unknown. Both had no late owned
+children and FD5→5. [closing-results.json](closing-results.json) retains all facts.
+One [owned executable-path snapshot](post-restart-processes.json) after runner
+reavailability was empty; this is not a global or escaped-descendant proof.
+
+The [immutable raw bundle](raw/closing-records-v1.tar.gz) is170006 bytes,
+SHA256 `3df7435019f8f6af54bff220361cef8d1157176456da2a831c0e6bb2ebbd593a`:
+130 regular members,129 independently verified original member hashes. Safe
+paths/regular types/no native executable checks passed after local transfer.
+[closing-verification.json](closing-verification.json) records that all315 actual
+after source hashes match the current reproduction packager exactly. The four
+actual compiler [binary associations](artifact-associations.json) each reported
+fresh=false, the named private manifest and distinct retained binary hash.
+No source, binary, record or old failed attempt was deleted.
 
 The after fixture requires actual SIGKILL wait status for helper-death cleanup.
 When an error lets the helper reap its own child, ECHILD alone is rejected: the
@@ -114,7 +133,7 @@ is2162096B, SHA256 eb06af8f8c6417a69ba4183413a25e2a506e8204d3f54e55bf2e7db9e42a0
 
 | Rule | Evidence and limit |
 | --- | --- |
-| R01 | Fallible tracking/poll admission, stack reply and nonallocating typed IO cause; strict library Clippy0. Old worker/control/setup allocation faults and helper stdio fatal cause remain unverified. |
+| R01 | Fallible tracking/poll admission, stack reply and typed IO kind/rawcode cause without an OS error-string fallback; strict library Clippy0. Old worker/control/setup allocation faults and helper stdio fatal cause remain unverified. |
 | R02 | Pinned primary sources/alternatives, actual ready-worker survival before code, both libc types, source identity and actual after cases. |
 | R03 | No picked production tuning value: OS flags/UAPI fields and existing wire widths; all fixture budgets explicit inputs. |
 | R04 | Owned pidfd, explicit Worker phases, refusal/stop/reap/error and cleanup-unknown data; old generic creation-refusal wire preserved, no invented generation semantics. |
@@ -122,8 +141,8 @@ is2162096B, SHA256 eb06af8f8c6417a69ba4183413a25e2a506e8204d3f54e55bf2e7db9e42a0
 | R06 | One shared helper loop and finite signal/reap traversal; typed local outcomes, source-only scoped change. |
 | R07 | Safety/ordering/UAPI comments; source/primary records document what syscall ordering alone cannot prove. |
 | R08 | No performance result or4–5x claim; ROOT comparisons owed. |
-| R09 | Actual musl after-helper-death DONE in both before cases; GNU SIGSYS separately retained, no guessed fix. |
-| R10 | Reproduction scripts, pinned inputs, received receipts and retained private raw files; mutation reason/restore/raw archive remain explicitly owed. |
+| R09 | Actual musl after-helper-death DONE in both before cases; guard removal restores actual DONE survival; GNU SIGSYS separately retained, no guessed fix. |
+| R10 | Reproduction scripts, pinned inputs, received receipts and retained private raw files; actual guard-removal DONE, exact frozen-binary fresh-process restore0 and verified130-member raw archive retained. |
 | R11 | Actual native x86_64 musl, two guest-musl UAPI typechecks; full supported seven-target/VM/current caller gates ROOT-owned. Intel Mac unsupported; paused ARM VM untouched. |
 | R12 | Existing single Linux guest mechanism/libc UAPI for both architectures/all host backends; no ABI/dependency/installed binary/authority change. |
 | R13 | Ownership fixed at existing helper seam, preserved worker/transport/frame bodies, no parallel execution mechanism. |
