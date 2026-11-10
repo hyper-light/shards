@@ -357,6 +357,39 @@ bytes plus42 request/echo bytes). No helper, host B body, protocol, grants or
 assertion change is proposed. The approved optional task argument remains None
 for B, as for the existing default/normal callers. Actual result is pending.
 
+## Fresh frozen B on the exact restored candidate
+
+Resumed-session r13 ran the existing B test on exact0ea38a52 using the restored
+caller and native guest, each byte-verified against its frozen baseline before
+the VM. No helper or B host body was edited. AGENT tasks remained None through
+the approved default-preserving parent seam. Full4 CPU/8 GiB/40 GiB admission,
+fresh private fixture home/UUID16 challenge, explicit report91 and original
+300000ms work/cleanup/900s outer bounds were retained.
+
+One actual selected test passed0,20 filtered, in2.13s. Both actor output channels
+reached exact canonical End/ACK/transport EOF before the actual fresh21-byte
+challenge/echo and peer EOF. Later sibling fd1/fd2 and independent main progress,
+a non-zombie actor row, strict final metadata and owned stop/remove/joins all
+passed, FD11→11. Output EOF therefore did not prevent this controlled actor's
+later response or those independent progress checks on this exact candidate.
+This is not complete population/reaping/kernel return proof or a full ownership
+guard claim. [Actual result](live-cbd-v1/raw-v7/result.json).
+
+[Raw transfer](live-cbd-v1/raw-v7/TRANSFER.json) retains47 verified files,
+17,475 bytes. No old ROOT binary or zero-filter run is substituted. R01–R16
+accounting remains scoped to these actual Linux KVM fixtures, source-only
+composition and unchanged production. Audits/profiles/benchmarks, complete
+resource/ownership evidence, other supported VM hosts and final integration
+remain ROOT-owned and open. No overall lane completion is declared.
+
+The next proposed owned case composes only the previously approved875 bounded
+child crash mechanism into a new tenant leaf on current source: two sequential
+rounds, maximum one owned unreaped Child, held pidfd before private release,
+verified child-local suppression before self SIGSEGV, actual wait reports,
+strict capture and causally later sibling/main progress. Its current composition
+has not yet been edited or run at this checkpoint; the old signed source is
+preserved separately. No production/API/Observer/Client changes are authorized.
+
 ## R01–R16 at this checkpoint
 
 | Rule | Evidence and remaining limit |

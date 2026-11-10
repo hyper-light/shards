@@ -1,0 +1,67 @@
+{
+  "source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "test_exit": 0,
+  "actor_control": {
+    "cause_known_to_host": "transport IO only; actor IO failure phase/history can remain Unknown",
+    "complete": true,
+    "error": null,
+    "received": [
+      1,
+      0,
+      0,
+      0,
+      16,
+      89,
+      216,
+      247,
+      237,
+      138,
+      146,
+      76,
+      43,
+      173,
+      160,
+      49,
+      203,
+      68,
+      94,
+      180,
+      210
+    ],
+    "sent": [
+      1,
+      0,
+      0,
+      0,
+      16,
+      89,
+      216,
+      247,
+      237,
+      138,
+      146,
+      76,
+      43,
+      173,
+      160,
+      49,
+      203,
+      68,
+      94,
+      180,
+      210
+    ],
+    "state": "OwnerChallengeAfterBothActorOutputEofs"
+  },
+  "teardown": {
+    "full_population_reaping_kernel_return": "Unverified; ROOT independent held-watch/resource gates owed",
+    "observer_fd_baseline": 11,
+    "owner_stop_observer_join": {
+      "complete": true,
+      "error": null
+    },
+    "protocol_complete": true,
+    "run_removed": true
+  },
+  "full_population_kernel_return": "Unknown"
+}
