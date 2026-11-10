@@ -1,0 +1,90 @@
+{
+  "kind": "preparation policy/format/static text checks ONLY; no compilation/pure/native/VM/mutation test",
+  "mac_free_bytes_before": 179999281152,
+  "results": [
+    {
+      "name": "development-policy",
+      "argv": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "name": "native-source-format",
+      "argv": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "native-source-diff-whitespace",
+      "argv": [
+        "git",
+        "diff",
+        "--check",
+        "4a6c4321686fdcdf1db86a9b18325ec1427436bd",
+        "--",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "native-source-only-stat",
+      "argv": [
+        "git",
+        "diff",
+        "--stat",
+        "4a6c4321686fdcdf1db86a9b18325ec1427436bd",
+        "--",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs"
+      ],
+      "exit": 0,
+      "stdout": " .../current_controls/native_terminal.rs            | 278 ++++++++++++++++++---\n 1 file changed, 248 insertions(+), 30 deletions(-)\n",
+      "stderr": ""
+    },
+    {
+      "name": "host",
+      "argv": [
+        "uname",
+        "-sm"
+      ],
+      "exit": 0,
+      "stdout": "Darwin arm64\n",
+      "stderr": ""
+    },
+    {
+      "name": "formatter-version",
+      "argv": [
+        "rustfmt",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n",
+      "stderr": ""
+    }
+  ],
+  "new_source_build_test_execution": "UNRUN; ROOT review required"
+}

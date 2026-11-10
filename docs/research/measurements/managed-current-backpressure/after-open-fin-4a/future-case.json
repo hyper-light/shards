@@ -1,0 +1,30 @@
+{
+  "status": "UNEXECUTED DESCRIPTOR; not an executable wrapper or authorization",
+  "requires": "ROOT review, reviewed signed source commit + matching fullcaller build, exact artifact/source hashes and private headroom admission",
+  "argv": [
+    "/home/adalundhe/managed-after-open-fin-4a-v1/artifacts/managed_output",
+    "tenant_exit::current_controls::native_terminal::canonical_open_empty_finish_retains_unacked_record_until_authorized_replay",
+    "--exact",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "environment": {
+    "SHARDS_ADVERSARIAL_NATIVE_PHASE_MS": "240000",
+    "SHARDS_ADVERSARIAL_NATIVE_CLEANUP_MS": "15000",
+    "SHARDS_ADVERSARIAL_NATIVE_OUTER_MS": "255000",
+    "SHARDS_ADVERSARIAL_NATIVE_CHANNEL": "stdout",
+    "SHARDS_ADVERSARIAL_NATIVE_RUN": "after-open-fin-4a-v1",
+    "SHARDS_ADVERSARIAL_NATIVE_GENERATION": "1",
+    "SHARDS_ADVERSARIAL_NATIVE_RECORDS": "/home/adalundhe/managed-after-open-fin-4a-v1/records/after-open-noack",
+    "SHARDS_ADVERSARIAL_NATIVE_SOURCE_REVISION": null
+  },
+  "source_revision_binding": "Set to the ROOT-reviewed immutable signed new source commit BEFORE build/actor; null is intentionally not executable and is never replaced with old4a/d8",
+  "errno": "NOT supplied or used for this Open-only case",
+  "outer_timeout_s": 255,
+  "retry_count": 0,
+  "vm_mutation_allocator_cases": 0,
+  "same_original_absolute_deadlines_for_both_observers": true,
+  "receipts_are_not_write_zero_or_server_connection_retirement_proof": true,
+  "reconnect_admission_failure": "Retain actual failure and cleanup; replay/ACK coverage UNREACHED. No retry/sleep/poll/deadline reset/cap increase/new Endpoint."
+}

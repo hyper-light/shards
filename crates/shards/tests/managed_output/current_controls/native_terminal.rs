@@ -1,4 +1,4 @@
-//! Actual native wire/credit boundary with an owner-supplied canonical errno.
+//! Actual native wire/credit boundaries; canonical causes are owner-supplied.
 use super::*;
 use shards_remote::managed::{Control, Endpoint, Producer, State};
 
@@ -9,19 +9,25 @@ enum TerminalControl {
     EmptyFinish,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum NativeCase {
+    Terminal(TerminalControl),
+    AfterOpenEmptyFinish,
+}
+
 struct NativeInput {
     directory: PathBuf,
     run: String,
     generation: u64,
     channel: Channel,
-    errno: i32,
-    control: TerminalControl,
+    errno: Option<i32>,
+    case: NativeCase,
     until: Instant,
     cleanup: Instant,
 }
 
 impl NativeInput {
-    fn read(began: Instant, control: TerminalControl) -> Self {
+    fn read(began: Instant, case: NativeCase) -> Self {
         let required = |suffix| {
             let key = format!("SHARDS_ADVERSARIAL_NATIVE_{suffix}");
             std::env::var(&key).unwrap_or_else(|_| panic!("supply {key}"))
@@ -39,12 +45,29 @@ impl NativeInput {
             "stderr" => Channel::Stderr,
             _ => panic!("select stdout or stderr"),
         };
-        let errno = required("ERRNO").parse().unwrap();
-        assert!(errno > 0, "positive supplied canonical cause");
-        if matches!(control, TerminalControl::EmptyFinish) {
-            assert_eq!(channel, Channel::Stdout);
-            assert_eq!(errno, 5, "assigned owner-supplied cause");
-        }
+        let (errno, selection, work) = match case {
+            NativeCase::Terminal(control) => {
+                let errno = required("ERRNO").parse().unwrap();
+                assert!(errno > 0, "positive supplied canonical cause");
+                if matches!(control, TerminalControl::EmptyFinish) {
+                    assert_eq!(channel, Channel::Stdout);
+                    assert_eq!(errno, 5, "assigned owner-supplied cause");
+                }
+                (
+                    Some(errno),
+                    format!("{control:?}"),
+                    "three canonical records; one selected terminal control; one returned postterminal payload",
+                )
+            }
+            NativeCase::AfterOpenEmptyFinish => {
+                assert_eq!(channel, Channel::Stdout);
+                (
+                    None,
+                    "AfterOpenEmptyFinish".into(),
+                    "one canonical Open; empty FIN without application ACK; one authorized replay and exact ACK; owner abort and returned owned payload",
+                )
+            }
+        };
         let run = required("RUN");
         assert!(!run.is_empty());
         let generation = required("GENERATION").parse().unwrap();
@@ -60,11 +83,11 @@ impl NativeInput {
             generation,
             channel,
             errno,
-            control,
+            case,
             until: deadlines.work,
             cleanup: deadlines.cleanup,
         };
-        input.write("inputs.json", &json!({"scope":"actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error","supplied_errno":errno,"source":source,"phase_ms":limits.phase_ms,"cleanup_ms":limits.cleanup_ms,"outer_ms":limits.outer_ms,"outer_enforcement":"direct caller required","run":input.run,"generation":generation,"channel":channel as u8,"work":"three canonical records; one selected terminal control; one returned postterminal payload","control":format!("{control:?}"),"fixture_sha256":common::sha256_digest(&std::fs::read(std::env::current_exe().unwrap()).unwrap()),"compiled_leaf_sha256":common::sha256_digest(include_bytes!("native_terminal.rs"))}));
+        input.write("inputs.json", &json!({"scope":"actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error","supplied_errno":errno,"source":source,"phase_ms":limits.phase_ms,"cleanup_ms":limits.cleanup_ms,"outer_ms":limits.outer_ms,"outer_enforcement":"direct caller required","run":input.run,"generation":generation,"channel":channel as u8,"work":work,"control":selection,"fixture_sha256":common::sha256_digest(&std::fs::read(std::env::current_exe().unwrap()).unwrap()),"compiled_leaf_sha256":common::sha256_digest(include_bytes!("native_terminal.rs"))}));
         input
     }
 
@@ -118,6 +141,14 @@ struct Worker {
 }
 
 impl Worker {
+    fn held(&self, start: u64, end: u64) {
+        assert!(
+            matches!(self.control.state(), State::Pending(at) if at.accepted==end && at.consumed==start),
+            "the observed record must retain its exact unacknowledged interval"
+        );
+        assert_eq!(self.producer.capacity(), 0, "no returned record credit");
+    }
+
     fn ready(&self, cursor: u64, until: Instant) {
         loop {
             match self.control.state() {
@@ -137,6 +168,7 @@ impl Worker {
 struct Native {
     worker: Option<Worker>,
     observer: Option<Observer>,
+    after_open_receipts: Option<mpsc::Receiver<ControlReceipt>>,
 }
 
 impl Native {
@@ -149,16 +181,25 @@ impl Native {
             member: 1,
             channel: input.channel,
         };
-        let data = payload("agent", input.channel);
-        let records = [
-            encoded(scope, 0, CaptureEvent::Open(declared_label(1))),
-            encoded(scope, 0, CaptureEvent::Data(&data)),
-            encoded(
-                scope,
-                u64::try_from(data.len()).unwrap(),
-                CaptureEvent::Aborted(input.errno),
+        let (data, records) = match input.case {
+            NativeCase::Terminal(_) => {
+                let data = payload("agent", input.channel);
+                let records = vec![
+                    encoded(scope, 0, CaptureEvent::Open(declared_label(1))),
+                    encoded(scope, 0, CaptureEvent::Data(&data)),
+                    encoded(
+                        scope,
+                        u64::try_from(data.len()).unwrap(),
+                        CaptureEvent::Aborted(input.errno.unwrap()),
+                    ),
+                ];
+                (data, records)
+            }
+            NativeCase::AfterOpenEmptyFinish => (
+                Vec::new(),
+                vec![encoded(scope, 0, CaptureEvent::Open(declared_label(1)))],
             ),
-        ];
+        };
         let capacity = records.iter().map(Vec::capacity).max().unwrap();
         let admitted = Admitted {
             record_bytes: capacity,
@@ -201,6 +242,18 @@ impl Native {
         });
         self.observer = Some(Observer::start(&owner, &metadata, scope, address, input.until));
         input.write("bound.json", &json!({"address":address,"capacity":capacity,"transport_bytes":admitted.transport_bytes,"handshake_bytes":admitted.handshake_bytes,"metadata_provenance":"constructed from this actual Endpoint; no daemon append","control":snapshot(&self.worker.as_ref().unwrap().control)}));
+        let control = match input.case {
+            NativeCase::Terminal(control) => control,
+            NativeCase::AfterOpenEmptyFinish => {
+                return self.after_open_empty_finish(
+                    input,
+                    &owner,
+                    &metadata,
+                    scope,
+                    records.first().unwrap(),
+                );
+            }
+        };
         let worker = self.worker.as_ref().unwrap();
         let observer = self.observer.as_ref().unwrap();
         let mut trace = Trace {
@@ -233,14 +286,14 @@ impl Native {
             state,
             StreamState::Aborted {
                 offset: u64::try_from(data.len()).unwrap(),
-                errno: input.errno
+                errno: input.errno.unwrap()
             }
         );
         assert!(
             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
         );
         input.write("canonical.json", &json!({"canonical_state":format!("{state:?}"),"control":snapshot(&worker.control),"actual_transport_end":true}));
-        let (command, bytes, receipts) = match input.control {
+        let (command, bytes, receipts) = match control {
             TerminalControl::DuplicateAck => (Ask::Ack(cursor), managed::consumed(cursor).to_vec(), None),
             TerminalControl::Resubscribe => {
                 let bytes = managed::subscribe(scope, cursor).to_vec();
@@ -269,7 +322,7 @@ impl Native {
                 )
             }
         };
-        let reason = match input.control {
+        let reason = match control {
             TerminalControl::EmptyFinish => Reason::Closed,
             TerminalControl::DuplicateAck | TerminalControl::Resubscribe => Reason::Protocol,
         };
@@ -295,14 +348,14 @@ impl Native {
             panic!("postterminal payload must return with typed Closed");
         };
         assert_eq!(returned, refused);
-        if matches!(input.control, TerminalControl::EmptyFinish) {
+        if matches!(control, TerminalControl::EmptyFinish) {
             assert_eq!(returned.as_ptr(), allocation);
             assert_eq!(returned.capacity(), capacity);
             assert_eq!(worker.producer.capacity(), 0);
             std::fs::write(input.directory.join("postterminal-candidate.bin"), &refused).unwrap();
             std::fs::write(input.directory.join("postterminal-returned.bin"), &returned).unwrap();
         }
-        input.write("control-refusal.json", &json!({"selected_control":format!("{:?}",input.control),"submitted_bytes":bytes.len(),"reason":format!("{reason:?}"),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len(),"same_allocation":returned.as_ptr()==allocation,"capacity_submitted":capacity,"capacity_returned":returned.capacity(),"producer_capacity":worker.producer.capacity()}));
+        input.write("control-refusal.json", &json!({"selected_control":format!("{control:?}"),"submitted_bytes":bytes.len(),"reason":format!("{reason:?}"),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len(),"same_allocation":returned.as_ptr()==allocation,"capacity_submitted":capacity,"capacity_returned":returned.capacity(),"producer_capacity":worker.producer.capacity()}));
         observer.sender.request_stop();
         let observer = self.observer.as_mut().unwrap();
         let joined = observer.join(input.until);
@@ -312,8 +365,8 @@ impl Native {
         }
         if let Some(receipts) = receipts {
             let receipts: Vec<_> = receipts.try_iter().collect();
-            input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":bytes.len(),"finish_requested":matches!(input.control,TerminalControl::EmptyFinish),"meaning":"actual local acceptance/read/finish receipts; not peer ACK or daemon metadata; empty FIN is not an Io::write return0"}));
-            if matches!(input.control, TerminalControl::EmptyFinish) {
+            input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":bytes.len(),"finish_requested":matches!(control,TerminalControl::EmptyFinish),"meaning":"actual local acceptance/read/finish receipts; not peer ACK or daemon metadata; empty FIN is not an Io::write return0"}));
+            if matches!(control, TerminalControl::EmptyFinish) {
                 assert!(bytes.is_empty());
                 check_empty_finish(&receipts);
             } else {
@@ -326,9 +379,149 @@ impl Native {
         assert!(
             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
         );
-        if matches!(input.control, TerminalControl::EmptyFinish) {
+        if matches!(control, TerminalControl::EmptyFinish) {
             assert_eq!(worker.producer.capacity(), 0);
         }
+    }
+
+    fn after_open_empty_finish(
+        &mut self,
+        input: &NativeInput,
+        owner: &Identity,
+        metadata: &Metadata,
+        scope: Scope,
+        submitted: &[u8],
+    ) {
+        let worker = self.worker.as_ref().unwrap();
+        let observer = self.observer.as_ref().unwrap();
+        let mut trace = Trace {
+            directory: &input.directory,
+            next: 0,
+        };
+        let initial = worker.control.progress();
+        assert_eq!(initial.accepted, initial.consumed);
+        worker.ready(initial.consumed, input.until);
+        std::fs::write(input.directory.join("only-submitted-open.bin"), submitted).unwrap();
+        let candidate = submitted.to_vec();
+        let submitted_capacity = candidate.capacity();
+        assert!(submitted_capacity <= metadata.capacity);
+        worker.producer.submit(candidate).unwrap();
+        // Observer::next records bytes without Observer::exact's automatic ACK.
+        let Event::Record(start, bytes) = trace.next(observer, "open-without-ack", input.until) else {
+            panic!("one actual canonical Open required without application ACK");
+        };
+        assert_eq!(start, initial.consumed);
+        assert_eq!(bytes, submitted);
+        let record = Record::decode(&bytes).unwrap();
+        assert_eq!((record.member, record.channel), (scope.member, scope.channel));
+        assert_eq!(record.offset, 0);
+        assert!(matches!(record.event, CaptureEvent::Open(label) if label==declared_label(1)));
+        let mut canonical = StreamState::New;
+        canonical.accept(record).unwrap();
+        assert_eq!(canonical, StreamState::Open { offset: 0 });
+        let end = start.checked_add(u64::try_from(bytes.len()).unwrap()).unwrap();
+        assert!(end > start);
+        worker.held(start, end);
+        input.write("held-before-fin.json", &json!({"wire_start":start,"wire_end":end,"encoded_bytes":bytes.len(),"encoded_sha256":common::sha256_digest(&bytes),"submitted_capacity":submitted_capacity,"admitted_record_bytes":metadata.capacity,"canonical_state":format!("{canonical:?}"),"application_ack_sent":false,"producer_capacity":worker.producer.capacity(),"control":snapshot(&worker.control)}));
+
+        let (sender, receipts) = mpsc::channel();
+        self.after_open_receipts = Some(receipts);
+        std::fs::write(input.directory.join("empty-control.bin"), []).unwrap();
+        observer
+            .sender
+            .send(Command::Handler(Ask::RawControl {
+                bytes: Vec::new(),
+                finish: true,
+                receipts: sender,
+            }))
+            .unwrap();
+        let finish = self
+            .after_open_receipts
+            .as_ref()
+            .unwrap()
+            .recv_timeout(left(input.until))
+            .unwrap();
+        input.write("finish-before-peer-event.json", &receipt_value(&finish));
+        check_empty_finish(std::slice::from_ref(&finish));
+        let Event::Lost(Some(code)) = trace.next(observer, "empty-fin-peer-close", input.until) else {
+            panic!("empty FIN must receive typed peer Closed before local cancellation");
+        };
+        assert_eq!(Reason::try_from(u32::try_from(code).unwrap()), Ok(Reason::Closed));
+        worker.held(start, end);
+        input.write("held-after-peer-close.json", &json!({"peer_reason":format!("{:?}",Reason::Closed),"before_local_cancel":true,"canonical_state":format!("{canonical:?}"),"control":snapshot(&worker.control),"producer_capacity":worker.producer.capacity()}));
+        observer.sender.request_stop();
+        let observer = self.observer.as_mut().unwrap();
+        let joined = observer.join(input.until);
+        let remaining: Vec<_> = observer.events.try_iter().collect();
+        for event in &remaining {
+            trace.record(observer, "first-observer-after-join", event);
+        }
+        let mut receipts = vec![finish];
+        receipts.extend(self.after_open_receipts.as_ref().unwrap().try_iter());
+        input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":0,"finish_requested":true,"meaning":"actual local empty-pending FIN receipt; not Io::write return0, application ACK or server connection-removal proof"}));
+        input.write("first-observer-stop.json", &json!({"joined":joined.is_ok(),"error":joined.as_ref().err(),"post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count(),"control":snapshot(&worker.control)}));
+        joined.unwrap();
+        check_empty_finish(&receipts);
+        assert!(!remaining.iter().any(|event| matches!(event, Event::Record(..))));
+        worker.held(start, end);
+
+        // The existing Client subscribes at wire origin; no replacement cursor/API.
+        assert_eq!(start, 0, "retained first record starts at the native wire origin");
+        assert_eq!(metadata.owner, owner.fingerprint());
+        assert_eq!(metadata.scope(scope.member, scope.channel), scope);
+        let address = *metadata
+            .endpoints
+            .get(&(scope.member, scope.channel as u8))
+            .unwrap();
+        input.write("one-replay-attempt.json", &json!({"retained_start":start,"attempts":1,"same_owner":metadata.owner==owner.fingerprint(),"same_scope":metadata.scope(scope.member,scope.channel)==scope,"same_endpoint":address,"control":snapshot(&worker.control),"admission_uncertainty":"peer Closed and local observer join do not prove server QUIC connection removal; retain failure without retry"}));
+        self.observer = Some(Observer::start(owner, metadata, scope, address, input.until));
+        let observer = self.observer.as_ref().unwrap();
+        let Event::Record(replay_start, replay) = trace.next(observer, "authorized-replay", input.until)
+        else {
+            panic!("the one authorized subscription must replay the exact held Open");
+        };
+        assert_eq!(replay_start, start);
+        assert_eq!(replay, bytes);
+        let mut replay_state = StreamState::New;
+        replay_state.accept(Record::decode(&replay).unwrap()).unwrap();
+        assert_eq!(replay_state, canonical);
+        worker.held(start, end);
+        input.write("replay-before-ack.json", &json!({"wire_start":replay_start,"wire_end":replay_start.checked_add(u64::try_from(replay.len()).unwrap()).unwrap(),"encoded_sha256":common::sha256_digest(&replay),"canonical_state":format!("{replay_state:?}"),"control":snapshot(&worker.control),"producer_capacity":worker.producer.capacity()}));
+        observer.sender.send(Command::Handler(Ask::Ack(end))).unwrap();
+        worker.ready(end, input.until);
+        assert_eq!(worker.producer.capacity(), metadata.capacity);
+        input.write("actual-ack-credit.json", &json!({"application_ack":end,"consumed_interval_start":start,"consumed_interval_end":end,"consumed_interval_bytes":end.checked_sub(start).unwrap(),"admitted_record_bytes":metadata.capacity,"producer_capacity":worker.producer.capacity(),"canonical_state":format!("{canonical:?}"),"control":snapshot(&worker.control),"meaning":"actual Ready predicate after application ACK; no allocator/kernel/durability assertion"}));
+
+        observer.sender.request_stop();
+        let observer = self.observer.as_mut().unwrap();
+        let joined = observer.join(input.until);
+        let remaining: Vec<_> = observer.events.try_iter().collect();
+        for event in &remaining {
+            trace.record(observer, "replay-observer-after-join", event);
+        }
+        input.write("replay-observer-stop.json", &json!({"joined":joined.is_ok(),"error":joined.as_ref().err(),"post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count(),"control":snapshot(&worker.control)}));
+        joined.unwrap();
+        assert!(!remaining.iter().any(|event| matches!(event, Event::Record(..))));
+        assert!(
+            matches!(worker.control.state(),State::Ready(at)|State::Pending(at) if at.accepted==end && at.consumed==end)
+        );
+        worker.control.abort();
+        assert!(matches!(worker.control.finish(), Err(managed::Error::Closed)));
+        assert!(matches!(worker.control.state(),State::Aborted(at) if at.accepted==end && at.consumed==end));
+        assert_eq!(worker.producer.capacity(), 0);
+        let candidate = submitted.to_vec();
+        let allocation = candidate.as_ptr();
+        let capacity = candidate.capacity();
+        let Err(managed::Rejected::Closed(returned)) = worker.producer.submit(candidate) else {
+            panic!("owner-aborted producer must return the owned Open with typed Closed");
+        };
+        assert_eq!(returned, submitted);
+        assert_eq!(returned.as_ptr(), allocation);
+        assert_eq!(returned.capacity(), capacity);
+        assert!(matches!(worker.control.state(),State::Aborted(at) if at.accepted==end && at.consumed==end));
+        assert_eq!(worker.producer.capacity(), 0);
+        std::fs::write(input.directory.join("owner-aborted-returned.bin"), &returned).unwrap();
+        input.write("owner-abort-owned-return.json", &json!({"canonical_state":format!("{canonical:?}"),"canonical_terminal_record_submitted":false,"control":snapshot(&worker.control),"finish_after_abort":"Closed","returned_reason":"Closed","returned_payload_bytes":returned.len(),"returned_payload_sha256":common::sha256_digest(&returned),"same_allocation":returned.as_ptr()==allocation,"capacity_submitted":capacity,"capacity_returned":returned.capacity(),"producer_capacity":worker.producer.capacity(),"writer_population_death":"Unknown; no guest or actor exists in this native fixture"}));
     }
 
     fn cleanup(&mut self, input: &NativeInput) -> Vec<String> {
@@ -353,6 +546,20 @@ impl Native {
         {
             errors.push(error);
         }
+        if matches!(input.case, NativeCase::AfterOpenEmptyFinish) {
+            if let Some(observer) = &self.observer {
+                let mut trace = Trace {
+                    directory: &input.directory,
+                    next: 0,
+                };
+                for event in observer.events.try_iter() {
+                    trace.record(observer, "cleanup-queued-event", &event);
+                }
+            }
+            if let Some(receipts) = &self.after_open_receipts {
+                input.write("cleanup-io-tail.json", &json!({"actual":receipts.try_iter().map(|receipt|receipt_value(&receipt)).collect::<Vec<_>>(),"meaning":"actual unconsumed receipt tail after cleanup join; the earlier Finish has its own record"}));
+            }
+        }
         if let Some(worker) = &mut self.worker {
             match worker.ended.recv_timeout(left(input.cleanup)) {
                 Ok(result) => {
@@ -368,13 +575,18 @@ impl Native {
         }
         self.observer = None;
         self.worker = None;
+        self.after_open_receipts = None;
         errors
     }
 }
 
 fn exercise(control: TerminalControl) {
+    exercise_case(NativeCase::Terminal(control));
+}
+
+fn exercise_case(case: NativeCase) {
     let began = Instant::now();
-    let input = NativeInput::read(began, control);
+    let input = NativeInput::read(began, case);
     let before = std::fs::read_dir("/proc/self/fd").unwrap().count();
     let mut native = Native::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| native.run(&input)));
@@ -405,4 +617,10 @@ fn canonical_aborted_resubscribe_preserves_errno_and_terminal_credit() {
 #[ignore = "assigned native stdout/errno5; one real empty-pending FIN after Aborted/ACK/End, explicit bounds and fresh records"]
 fn canonical_aborted_empty_finish_preserves_errno_credit_and_owned_return() {
     exercise(TerminalControl::EmptyFinish);
+}
+
+#[test]
+#[ignore = "preparation only: ROOT review required; one native stdout Open without ACK, empty FIN and one authorized replay; explicit bounds and fresh records"]
+fn canonical_open_empty_finish_retains_unacked_record_until_authorized_replay() {
+    exercise_case(NativeCase::AfterOpenEmptyFinish);
 }

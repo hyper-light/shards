@@ -1,0 +1,50 @@
+{
+  "status": "immutable original Git locators only; ROOT review still pending, no archive extraction/repack/regeneration/relabel or case rerun this preparation",
+  "commit": "1e2560b1ebc1f66ce4ebd8455d167b5c1a11dbeb",
+  "original_test_source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "files": {
+    "continuation-v1.tar.gz": {
+      "git_path": "docs/research/measurements/managed-current-controls/continuation-v1.tar.gz",
+      "git_blob": "387d483aa2a0164d4aaeec09b6a6a3956816af48",
+      "bytes": 190427,
+      "sha256": "e5e1f5bc3c3a0c60bf1f332f38f5f889608cca3e9bb60dee6d350f8731221aef"
+    },
+    "continuation-v1.member-hashes.json": {
+      "git_path": "docs/research/measurements/managed-current-controls/continuation-v1.member-hashes.json",
+      "git_blob": "85904003b106527b2628572a63430d5165583b1e",
+      "bytes": 215127,
+      "sha256": "6b34bfb073342af12979f223c16c8110643e2dd0671f14e744a151b132205a9d"
+    },
+    "continuation-v1.validated-cases.json": {
+      "git_path": "docs/research/measurements/managed-current-controls/continuation-v1.validated-cases.json",
+      "git_blob": "a03b894423ba5985ec7ad44fe2675035c7b0b684",
+      "bytes": 47889,
+      "sha256": "d7a256a44464024c96681d9bef3bee910aeda8b21285648d9f1c05f345f5f478"
+    },
+    "CONTINUATION.md": {
+      "git_path": "docs/research/measurements/managed-current-controls/CONTINUATION.md",
+      "git_blob": "5240c9c3d30669ab2b29ae7d991fff4e81922b52",
+      "bytes": 7703,
+      "sha256": "6c50354dfd9d2726234e0a779f931b7c56251de956ed67437e3d0edc8d265b24"
+    },
+    "transfer-continuation-v1.json": {
+      "git_path": "docs/research/measurements/managed-current-controls/transfer-continuation-v1.json",
+      "git_blob": "399acb63e25cfe2ef6a27613f8df60cb0aa71983",
+      "bytes": 365,
+      "sha256": "a5fbba4d89a2ed77b0f67fb44f29e35d9f05e9c54453a271c884b66966d0eee2"
+    }
+  },
+  "reported_original_inventory": {
+    "payloads": 1513,
+    "embedded_manifest": 1,
+    "total_members": 1514
+  },
+  "reported_original_cases": {
+    "continuation_vm": 26,
+    "continuation_native": 7,
+    "total_with_prior_requested_vm": 28,
+    "total_with_prior_requested_native": 8
+  },
+  "root_member_verification_performed": false,
+  "current_source_gate": false
+}

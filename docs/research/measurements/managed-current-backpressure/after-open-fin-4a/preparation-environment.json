@@ -1,0 +1,23 @@
+{
+  "observed_unix_time_s": 1794348955.533321,
+  "mac_free_bytes": 180052267008,
+  "required_mac_floor_bytes": 32212254720,
+  "local_lock": "/tmp/g121-mac.lock",
+  "local_builds_tests_actors": "NONE",
+  "source_format_command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config-path",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+    "--config",
+    "skip_children=true",
+    "crates/shards/tests/managed_output/current_controls/native_terminal.rs"
+  ],
+  "source_format_exit": 0,
+  "format_is_not_compile_or_test": true
+}

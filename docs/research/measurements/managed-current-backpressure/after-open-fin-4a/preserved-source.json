@@ -1,0 +1,52 @@
+{
+  "kind": "static source readback only; not compilation, pure tests, native execution or a gate",
+  "base": "4a6c4321686fdcdf1db86a9b18325ec1427436bd",
+  "original_terminal_assertion_sequences": 16,
+  "assertion_tokens_equal_after_only_input_control_errno_binding_normalization": true,
+  "normalization": [
+    "input.control -> local typed TerminalControl binding control",
+    "input.errno -> input.errno.unwrap() after Terminal selection"
+  ],
+  "assertion_sequence_sha256": "030e10bc55fccfd21ac9bc6e4d0e45a9dfd0a6034e3859c7288bf6b7b3b47f0c",
+  "byte_unchanged_functions": {
+    "encoded": {
+      "byte_equal": true,
+      "sha256": "85067e0a5d9d78a660f18e79f70218fab35d52a44a71a62b407202ad8b19aaa0"
+    },
+    "check_empty_finish": {
+      "byte_equal": true,
+      "sha256": "37e7c77c7e5f32ae9f30e6e9943cd28cf128072cc9b0e57db973cb1a65d15faf"
+    },
+    "ready": {
+      "byte_equal": true,
+      "sha256": "63af7d1a2d227afb4b068e3c36c832ecb723cafa6b1cb96e75e5b959e4e97bfb"
+    },
+    "canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit": {
+      "byte_equal": true,
+      "sha256": "2209b14934dbeff17a10de5b54ec44d322581aff8c46d7ac3ef0924cae211921"
+    },
+    "canonical_aborted_resubscribe_preserves_errno_and_terminal_credit": {
+      "byte_equal": true,
+      "sha256": "2b25b1141b0d62b778392ecc718824b590bfb7049726804dd9d2ff0b347a01af"
+    },
+    "canonical_aborted_empty_finish_preserves_errno_credit_and_owned_return": {
+      "byte_equal": true,
+      "sha256": "6c2a5566def3689bf85821a55f711c9ebf4481be3d72106fb62961f9023ecf7c"
+    }
+  },
+  "byte_unchanged_paths": {
+    "crates/shards/tests/common/managed_capture.rs": "6add609e120defa2a2d3969d51a5f22f025f90f6b61ace696f8d6a84b0dd3d72",
+    "crates/shards/tests/managed_output/current_controls.rs": "f6e8091a6f25a7f368af96bea1c6641bcfde9bf7359fd6db30bc875dfbb99fd8",
+    "crates/shards/tests/managed_output/current_controls/write_receipts.rs": "c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa",
+    "crates/shards/tests/managed_output/current_controls/contract.rs": "daf9a45b516ecf1fe5fc2a049d1c82aeafffd189d1274735228c702b8968d06b",
+    "crates/shards/tests/managed_output/current_controls/control_inputs.rs": "7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+    "crates/shards/tests/managed_output.rs": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938",
+    "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+    "crates/remote/src/net.rs": "e3cf92dbff95d0302b96199d170ade037361585bf425a766a226ce09d8f0c678",
+    "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01"
+  },
+  "old_terminal_record_vector_container": "array -> Vec for explicit one-record versus original three-record selection; same encodings/derived admission/assertions, not yet compiled",
+  "cleanup_delta": "after-Open-only unread event/receipt retention plus dropping that same receiver; prior stop/abort/finish/join actions and original catch_unwind/FD assertions remain",
+  "previous_actual_results_not_inherited": true
+}

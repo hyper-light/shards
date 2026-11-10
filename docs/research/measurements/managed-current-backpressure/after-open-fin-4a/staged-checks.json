@@ -1,0 +1,51 @@
+{
+  "kind": "static staged text checks, not compilation/execution",
+  "results": [
+    {
+      "name": "all-owned-including-exact-raw-patch",
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/PROPOSAL.md",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/README.md",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/continuation-locators.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/future-case.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preparation-checks.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preparation-environment.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preserved-source.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/source-scope.json"
+      ],
+      "exit": 2,
+      "stdout": "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:10: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:14: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:33: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:89: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:92: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:111: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:230: trailing whitespace.\n+ \ndocs/research/measurements/managed-current-backpressure/after-open-fin-4a/native-caller.patch:403: trailing whitespace.\n+ \n",
+      "stderr": ""
+    },
+    {
+      "name": "owned-source-and-evidence-excluding-only-generated-raw-patch",
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/PROPOSAL.md",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/README.md",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/continuation-locators.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/future-case.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preparation-checks.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preparation-environment.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/preserved-source.json",
+        "docs/research/measurements/managed-current-backpressure/after-open-fin-4a/source-scope.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "scope": "Only new native leaf/evidence. Exact generated patch context whitespace is preserved, no global whitespace exception or normalized patch. Full-check warnings, if any, remain explicit."
+}
