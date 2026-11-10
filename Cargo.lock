@@ -1154,6 +1154,7 @@ dependencies = [
  "bzip2",
  "cc",
  "flate2",
+ "hyper-quic",
  "libc",
  "libm",
  "lzma-rust2",

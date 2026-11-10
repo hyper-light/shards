@@ -1,0 +1,104 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/abi)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/erofs)
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/template)
+    Checking shards-gitsign v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/gitsign)
+    Checking shards-image v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/image)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/cmdline)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/syscall-filter)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/ipc)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/netring)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/vmm)
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/shards)
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/seccomp)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/dns)
+    Checking shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/testguest)
+    Checking shards-git v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/git)
+    Checking shards-net v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/net)
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/agentfile)
+    Checking shards-registry v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/registry)
+    Checking shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/remote)
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/api)
+    Checking shards-rego v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/rego)
+    Checking shards-tuf v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/sigstore)
+    Checking shards-build v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/build)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/testdir)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/archive)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/gateway)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/ext4)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/user)
+    Checking shards-bus v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/bus)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/zstd)
+    Checking shards-flate v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/flate)
+    Checking shards-tui v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/tui)
+error: used `expect()` on a `Result` value
+   --> crates/shards/tests/managed_output.rs:257:9
+    |
+257 | /         self.events
+258 | |             .recv_timeout(until.saturating_duration_since(Instant::now()))
+259 | |             .expect("observer event before deadline")
+    | |_____________________________________________________^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+    = note: requested on the command line with `-D clippy::expect-used`
+
+error: using `chunks_exact` with a constant chunk size
+   --> crates/shards/tests/managed_output.rs:336:41
+    |
+336 |     for (pair, byte) in text.as_bytes().chunks_exact(2).zip(&mut out) {
+    |                                         ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<2>().0.iter()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+    = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: used `expect()` on an `Option` value
+   --> crates/shards/tests/managed_output.rs:497:13
+    |
+497 |             Metadata::parse(&std::fs::read_to_string(&record).unwrap()).expect("published owner metadata");
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: used `expect()` on an `Option` value
+   --> crates/shards/tests/managed_output.rs:535:22
+    |
+535 |           let stderr = progress
+    |  ______________________^
+536 | |             .stderr
+537 | |             .strip_prefix("main-error\n")
+538 | |             .expect("independent main stderr");
+    | |______________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: used `expect()` on an `Option` value
+   --> crates/shards/tests/managed_output.rs:585:24
+    |
+585 |           let terminal = record
+    |  ________________________^
+586 | |             .lines()
+587 | |             .find_map(|line| line.strip_prefix(&prefix))
+588 | |             .expect("terminal channel metadata");
+    | |________________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: could not compile `shards` (test "managed_output") due to 5 previous errors

@@ -1,0 +1,13 @@
+{"helpers": "skip", "host": "fedora.attlocal.net", "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43", "source": "e3e2a517", "target": "/home/adalundhe/managed-owner-output-target"}
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+
+b419a1f4c937fa333ecc4edf3e9228ee2c7d49005b19a1dfc95160dbafec1e0b crates/shards/tests/managed_output.rs
+e4349a27f12531195cd3a37be2bae55c26d5449f0222f594d9f4a7f3a827631f crates/shards/Cargo.toml
+fe9f31b0ccde220acf3eacb66f44505795fd6d6d6d3e81931a054c7634de1bf9 Cargo.lock
+1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d docs/development-rules.md

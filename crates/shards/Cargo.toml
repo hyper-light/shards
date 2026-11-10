@@ -119,6 +119,8 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# Public QUIC callback types for the managed-output owner integration fixture.
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
 # shards-api's conformance suite, run on real guests this binary boots (tests/boot.rs).
 shards-api = { path = "../api" }
 shards-testdir = { path = "../testdir" }

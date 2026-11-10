@@ -1,0 +1,76 @@
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/vendor/aws-lc-sys)
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/vendor/aws-lc-rs)
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/abi)
+    Checking num-traits v0.2.19
+    Checking generic-array v0.14.7
+    Checking num-integer v0.1.47
+    Checking num-bigint v0.4.8
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/template)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/erofs)
+    Checking shards-image v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/image)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/ipc)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/cmdline)
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking keccak v0.2.2
+    Checking sha3 v0.11.0
+    Checking digest v0.10.7
+    Checking cpufeatures v0.2.17
+    Checking hashbrown v0.17.1
+    Checking sha1 v0.10.7
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/syscall-filter)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/netring)
+    Checking libbz2-rs-sys v0.2.5
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/vmm)
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/agentfile)
+    Checking bzip2 v0.6.1
+    Checking hashlink v0.12.2
+    Checking sha1-checked v0.10.0
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/shards)
+    Checking unicode-normalization v0.1.25
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/seccomp)
+    Checking lzma-rust2 v0.21.0
+    Checking encoding_rs v0.8.35
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/dns)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/devcgroup)
+    Checking arraydeque v0.5.1
+    Checking shards-net v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/net)
+    Checking yaml-rust2 v0.13.0
+    Checking shards-build v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/build)
+    Checking shards-git v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/git)
+    Checking shards-rego v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/rego)
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/api)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/testdir)
+    Checking shards-flate v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/flate)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/gateway)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/zstd)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/user)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/ext4)
+    Checking shards-bus v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/bus)
+    Checking shards-tui v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/tui)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-owner-output-target/debug/build/aws-lc-sys-d7362927ea33fbbf/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls v0.23.46
+    Checking rustls-webpki v0.103.16
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac27)
+    Checking shards-gitsign v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/gitsign)
+    Checking shards-tuf v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/tuf)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac27)
+    Checking rustls-platform-verifier v0.7.1
+    Checking shards-registry v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/registry)
+    Checking shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/remote)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/sigstore)
+    Checking shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde/crates/testguest)
+    Checking rcgen v0.14.10
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 12s

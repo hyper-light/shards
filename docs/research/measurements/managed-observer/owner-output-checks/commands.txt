@@ -1,0 +1,37 @@
+Runner: 8fadc1ec213332e16cb0d915a3fb913f (fedora.attlocal.net)
+Envelope for every request: linux/amd64 cpus=4,mem=8g,disk=10g
+Private cwd: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-owner-output-28ad86cdde
+
+export CARGO_TARGET_DIR="$HOME/managed-owner-output-target" SHARDS_HELPERS=skip
+
+Source e3e2a5172ee9155c737dee82bf8dfdbcf8946bfe, kiln r23:
+cargo check --locked -j4 -p shards --test managed_output
+Observed check.exit=0
+
+Same source, kiln r25:
+cargo clippy --locked -j4 -p shards --test managed_output -- -D warnings
+Observed clippy.exit=101 (five test-helper lint errors)
+
+Source b22ea508, kiln r26, sequential:
+cargo clippy --locked -j4 -p shards --test managed_output -- -D warnings
+cargo test --locked -j4 --profile test-release -p shards --test managed_output metadata_requires_unique_scoped_loopback_endpoints -- --exact --nocapture --test-threads=1
+Observed clippy.exit=0, parser.exit=0, parser1passed/0failed
+
+Source 842460aa, kiln r29, same sequential commands:
+cargo clippy --locked -j4 -p shards --test managed_output -- -D warnings
+cargo test --locked -j4 --profile test-release -p shards --test managed_output metadata_requires_unique_scoped_loopback_endpoints -- --exact --nocapture --test-threads=1
+Observed clippy.exit=0, parser.exit=0, parser1passed/0failed
+
+Source 3752fc9f, kiln r31, same sequential commands:
+cargo clippy --locked -j4 -p shards --test managed_output -- -D warnings
+cargo test --locked -j4 --profile test-release -p shards --test managed_output metadata_requires_unique_scoped_loopback_endpoints -- --exact --nocapture --test-threads=1
+Observed clippy.exit=0, parser.exit=0, parser1passed/0failed
+
+Each stdout/stderr pair is retained in its named .log; exit status was saved
+immediately after each command. environment records source hashes and rustc -Vv.
+Neither real-VM test was selected, and SHARDS_HELPERS=skip carries no VM helper.
+
+Local source-only checks:
+rustfmt --edition 2024 --check crates/shards/tests/managed_output.rs
+git diff --check
+scripts/check-development-policy
