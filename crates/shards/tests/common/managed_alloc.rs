@@ -116,6 +116,12 @@ pub struct ManagedAlloc {
     peak_recorded_live_requested_bytes: Counter,
 }
 
+impl Default for ManagedAlloc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ManagedAlloc {
     pub const fn new() -> Self {
         Self {
