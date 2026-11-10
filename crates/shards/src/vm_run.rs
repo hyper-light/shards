@@ -1282,7 +1282,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         let slot = &handing;
         let code = serve_workload(cfg.vsock.take(), source, move |vsock| {
             cfg.vsock = Some(vsock);
-            let started = restore_vm(cfg);
+            let started = restore_vm(cfg).map_err(vm::StartError::from);
             if let (Ok((handle, _)), Some(to)) = (&started, to)
                 && let Some(h) = to.hand_after(handle, RECORD_FOR)
             {
@@ -1296,7 +1296,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
         return code;
     }
     let (hold, console) = (cfg.hold, cfg.console);
-    let started = restore_vm(cfg);
+    let started = restore_vm(cfg).map_err(vm::StartError::from);
     if hold && let Ok((handle, _)) = &started {
         wait_for_release(handle);
     }
@@ -1450,7 +1450,7 @@ fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
     cfg.console = Console::Discard;
     serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
         cfg.vsock = Some(vsock);
-        restore_vm(cfg)
+        restore_vm(cfg).map_err(vm::StartError::from)
     })
 }
 
@@ -1479,14 +1479,14 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
 fn serve_workload(
     given: Option<VsockHost>,
     source: Source<'_>,
-    start: impl FnOnce(VsockHost) -> Result<(Handle, Running), String>,
+    start: impl FnOnce(VsockHost) -> Result<(Handle, Running), vm::StartError>,
 ) -> ExitCode {
     use crate::spec::NOT_RUN;
     use crate::workload::{self, Request};
-    let failed = |e: String| {
-        report(e);
+    fn failed(message: impl Display) -> ExitCode {
+        report(message);
         ExitCode::from(NOT_RUN)
-    };
+    }
     /// The command, resolved before anything starts.
     enum Command {
         Given {
@@ -1881,7 +1881,7 @@ fn serve_workload(
                 None => ExitCode::from(ended.status),
             },
             Ok((Err(e), false)) => failed(e),
-            Err(_) => failed("the guest stopped without running the command".into()),
+            Err(_) => failed("the guest stopped without running the command"),
         }
     }
 }
@@ -1981,7 +1981,7 @@ fn max_rss_kib() -> u64 {
 /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
 /// snapshot directory it saves to and its vsock socket: on Linux by Landlock, on macOS by
 /// what its spawner grants it (D30). A warm VM's run log comes open from its daemon.
-fn start(cfg: &Config) -> Result<(Handle, Running), String> {
+fn start(cfg: &Config) -> Result<(Handle, Running), vm::StartError> {
     // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
     // its sandbox's container rather than the caller's directory, and a snapshot records
     // its files by absolute path anyway.
@@ -2828,7 +2828,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
 /// in its snapshot. A reset whose console no one read quotes what the guest said there last,
 /// and tells `said_to`, its spawner's, whether that was all it said.
 fn supervise(
-    started: Result<(Handle, Running), String>,
+    started: Result<(Handle, Running), vm::StartError>,
     console: Console,
     template: bool,
     said_to: Option<std::fs::File>,

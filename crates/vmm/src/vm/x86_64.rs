@@ -661,7 +661,7 @@ fn assigning(
     Ok((vm, assigned, given))
 }
 
-pub fn build(cfg: &Config) -> Result<Machine, String> {
+pub fn build(cfg: &Config) -> Result<Machine, super::StartError> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let layer = super::boot_layer(cfg)?;
@@ -748,7 +748,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     ];
     let mut cmdline_bytes = [0; layout::CMDLINE_MAX];
     let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
-        .map_err(|e| e.to_string())?;
+        .map_err(super::StartError::CommandLine)?;
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,
