@@ -84,11 +84,22 @@ pub(super) fn start() {
 pub(super) fn end() -> serde_json::Value {
     ON.store(false, Relaxed);
     let base = BASE.load(Relaxed);
+    // Capture before JSON allocates its own report. The first live run counted
+    // 739 bytes of report construction as retained encoder storage.
+    let captured = [
+        CALLS.load(Relaxed),
+        BYTES.load(Relaxed),
+        REALLOCS.load(Relaxed),
+        REALLOC_BYTES.load(Relaxed),
+        FREES.load(Relaxed),
+        PEAK.load(Relaxed) - base,
+        LIVE.load(Relaxed),
+    ];
     serde_json::json!({
-        "alloc_calls": CALLS.load(Relaxed), "alloc_bytes": BYTES.load(Relaxed),
-        "realloc_calls": REALLOCS.load(Relaxed), "realloc_new_bytes": REALLOC_BYTES.load(Relaxed),
-        "dealloc_calls": FREES.load(Relaxed), "peak_live_delta_bytes": PEAK.load(Relaxed)-base,
-        "live_before": base, "live_after": LIVE.load(Relaxed),
+        "alloc_calls": captured[0], "alloc_bytes": captured[1],
+        "realloc_calls": captured[2], "realloc_new_bytes": captured[3],
+        "dealloc_calls": captured[4], "peak_live_delta_bytes": captured[5],
+        "live_before": base, "live_after": captured[6],
         "note": "observed System GlobalAlloc calls for this optimized binary, not a language guarantee or native/C/kernel allocation census"
     })
 }
