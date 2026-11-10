@@ -1,7 +1,8 @@
 set -eu
 ulimit -c 0
 export CARGO_TARGET_DIR="$HOME/managed-proc-typed-target"
-evidence="$HOME/managed-proc-typed-evidence/attach-v1"
+phase="${1:-attach-v1}"
+evidence="$HOME/managed-proc-typed-evidence/$phase"
 test ! -e "$evidence"
 mkdir -p "$evidence"
 git rev-parse HEAD > "$evidence/source.txt"
@@ -30,6 +31,6 @@ assert len(rows)==1 and rows[0]['fresh'] is False,rows
 (q/'binary.json').write_text(json.dumps(rows[0],indent=2)+'\n')
 shutil.copyfile(rows[0]['path'],q/'test.bin')
 PY
-tar --exclude='*.bin' -czf "$HOME/managed-proc-typed-evidence/attach-v1-raw.tgz" -C "$evidence" .
+tar --exclude='*.bin' -czf "$HOME/managed-proc-typed-evidence/$phase-raw.tgz" -C "$evidence" .
 printf 'focused_attach: exit=%s\n' "$result"
 test "$result" -eq 0
