@@ -184,9 +184,29 @@ fn interception_records_keep_distinct_bytes_and_typed_counts() {
     assert!(std::panic::catch_unwind(|| intercept_records("managed-intercept {broken}")).is_err());
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InterceptionFamily {
+    Ipv4,
+    Ipv6,
+}
+
 #[test]
 #[ignore = "coordinator runs isolated IPv4 TCP interception experiment; no production adoption"]
 fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() {
+    experimental_tcp_interception(InterceptionFamily::Ipv4);
+}
+
+#[test]
+#[ignore = "coordinator runs isolated IPv6 TCP interception experiment; no production adoption"]
+fn experimental_tcp6_interception_has_distinct_backend_and_relay_observations() {
+    experimental_tcp_interception(InterceptionFamily::Ipv6);
+}
+
+fn experimental_tcp_interception(family: InterceptionFamily) {
+    let protocol = match family {
+        InterceptionFamily::Ipv4 => "intercept-tcp4",
+        InterceptionFamily::Ipv6 => "intercept-tcp6",
+    };
     let inputs = Inputs::supplied();
     assert!(!common::cannot_run_vms(), "real hypervisor required");
     let origin = required("SHARDS_INTERCEPT_ORIGIN");
@@ -199,8 +219,8 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
     let priority = required("SHARDS_INTERCEPT_RULE_PRIORITY");
     let millis = inputs.case_ms.to_string();
     let run = inputs.boot(
-        &format!("intercept-tcp4-{origin}"),
-        &["intercept-tcp4", &origin, &millis, &mark, &table, &priority],
+        &format!("{protocol}-{origin}"),
+        &[protocol, &origin, &millis, &mark, &table, &priority],
     );
     let records = intercept_records(&run.stdout);
     let one = |kind| {
@@ -222,17 +242,23 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
             "Present"
         }
     );
-    let expected_ip = match origin.as_str() {
-        "local-loopback" => "127.0.0.1",
-        "local-self" => "192.0.2.1",
-        _ => "192.0.2.2",
-    };
+    let expected_ip = match (family, origin.as_str()) {
+        (InterceptionFamily::Ipv4, "local-loopback") => "127.0.0.1",
+        (InterceptionFamily::Ipv4, "local-self") => "192.0.2.1",
+        (InterceptionFamily::Ipv4, _) => "192.0.2.2",
+        (InterceptionFamily::Ipv6, "local-loopback") => "::1",
+        (InterceptionFamily::Ipv6, "local-self") => "2001:db8:1::1",
+        (InterceptionFamily::Ipv6, _) => "2001:db8:1::2",
+    }
+    .parse::<std::net::IpAddr>()
+    .unwrap();
+    assert_eq!(target["family"], format!("{family:?}"));
     let actual_destination = target["destination"]
         .as_str()
         .unwrap()
         .parse::<std::net::SocketAddr>()
         .unwrap();
-    assert_eq!(actual_destination.ip().to_string(), expected_ip);
+    assert_eq!(actual_destination.ip(), expected_ip);
     assert_eq!(target["relay_inode"].as_u64(), Some(router));
     assert_eq!(
         target["client_inode"].as_u64(),

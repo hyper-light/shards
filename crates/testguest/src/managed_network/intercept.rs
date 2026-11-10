@@ -1,9 +1,10 @@
-//! Coordinator-executed IPv4 TCP TPROXY experiment, never product installation.
+//! Coordinator-executed IPv4/IPv6 TCP TPROXY experiment, never product installation.
 //! Linux v6.18 nft_tproxy_tcp.sh's local/forward distinction; all administration
 //! happens in fresh guest namespaces owned solely by this finite fixture.
 
 use super::*;
 use std::fs::File;
+use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::thread::JoinHandle;
 
@@ -16,6 +17,27 @@ const ROUTER_BACKEND: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 const BACKEND: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 const ROUTER_CLIENT: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
 const CLIENT: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 2);
+// RFC3849 documentation-only subnets; /64 matches the pinned selftest's
+// IPv6 link layout. These are fixture identities, not runtime address policy.
+const ROUTER_BACKEND6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 1);
+const BACKEND6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 2);
+const ROUTER_CLIENT6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 1);
+const CLIENT6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 2, 0, 0, 0, 0, 2);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Family {
+    Ipv4,
+    Ipv6,
+}
+impl Family {
+    fn of(ip: IpAddr) -> Self {
+        match ip {
+            IpAddr::V4(_) => Self::Ipv4,
+            IpAddr::V6(_) => Self::Ipv6,
+        }
+    }
+}
+
 const SENT: &[u8] = b"REQUEST\0\xff";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +56,7 @@ enum RelayMode {
 
 #[derive(Debug)]
 pub(super) struct Inputs {
+    family: Family,
     origin: Origin,
     relay: RelayMode,
     within: Duration,
@@ -44,6 +67,7 @@ pub(super) struct Inputs {
 
 impl Inputs {
     pub(super) fn parse(
+        family: Family,
         origin: &str,
         millis: &str,
         mark: &str,
@@ -65,6 +89,7 @@ impl Inputs {
         let within = Duration::from_millis(millis.parse().map_err(|_| invalid("deadline is milliseconds"))?);
         Deadline::new(within)?;
         Ok(Self {
+            family,
             origin: match origin {
                 "local" => Origin::Local,
                 "forward" | "forward-relay-absent" => Origin::Forward,
@@ -190,8 +215,8 @@ fn interface(name: &std::ffi::CStr) -> io::Result<u32> {
 fn endpoint(
     namespace: &Namespace,
     name: &'static std::ffi::CStr,
-    ip: Ipv4Addr,
-    gateway: Ipv4Addr,
+    ip: IpAddr,
+    gateway: IpAddr,
     deadline: &Deadline,
 ) -> io::Result<()> {
     in_namespace(Some(&namespace.handle), || {
@@ -577,6 +602,24 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         ));
     }
     let deadline = Deadline::new(input.within)?;
+    let [router_backend, backend_address, router_client, client_address] = match input.family {
+        Family::Ipv4 => [
+            ROUTER_BACKEND.into(),
+            BACKEND.into(),
+            ROUTER_CLIENT.into(),
+            CLIENT.into(),
+        ],
+        Family::Ipv6 => [
+            ROUTER_BACKEND6.into(),
+            BACKEND6.into(),
+            ROUTER_CLIENT6.into(),
+            CLIENT6.into(),
+        ],
+    };
+    let (loopback, unspecified): (IpAddr, IpAddr) = match input.family {
+        Family::Ipv4 => (Ipv4Addr::LOCALHOST.into(), Ipv4Addr::UNSPECIFIED.into()),
+        Family::Ipv6 => (Ipv6Addr::LOCALHOST.into(), Ipv6Addr::UNSPECIFIED.into()),
+    };
     let router = Namespace::new(&deadline)?;
     let backend = Namespace::new(&deadline)?;
     let client_ns = Namespace::new(&deadline)?;
@@ -597,11 +640,15 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         out.flush()?;
     }
     in_namespace(Some(&router.handle), || {
-        // Sysctls resolve this dedicated thread's NEW namespace. Disable reverse
-        // path filtering before creating links, as local-route reinjection needs.
-        std::fs::write("/proc/sys/net/ipv4/ip_forward", b"1")?;
-        std::fs::write("/proc/sys/net/ipv4/conf/all/rp_filter", b"0")?;
-        std::fs::write("/proc/sys/net/ipv4/conf/default/rp_filter", b"0")?;
+        // Sysctls resolve only this dedicated thread's NEW router namespace.
+        match input.family {
+            Family::Ipv4 => {
+                std::fs::write("/proc/sys/net/ipv4/ip_forward", b"1")?;
+                std::fs::write("/proc/sys/net/ipv4/conf/all/rp_filter", b"0")?;
+                std::fs::write("/proc/sys/net/ipv4/conf/default/rp_filter", b"0")?;
+            }
+            Family::Ipv6 => std::fs::write("/proc/sys/net/ipv6/conf/all/forwarding", b"1")?,
+        }
         router.route.veth(
             b"to-backend\0",
             b"backend0\0",
@@ -614,19 +661,19 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
             client_ns.handle.as_raw_fd(),
             &deadline,
         )?;
-        for (name, ip) in [(c"to-backend", ROUTER_BACKEND), (c"to-client", ROUTER_CLIENT)] {
+        for (name, ip) in [(c"to-backend", router_backend), (c"to-client", router_client)] {
             let index = interface(name)?;
             router.route.link_up(index, &deadline)?;
             router.route.address(index, ip, &deadline)?;
         }
         Ok(())
     })?;
-    endpoint(&backend, c"backend0", BACKEND, ROUTER_BACKEND, &deadline)?;
-    endpoint(&client_ns, c"client0", CLIENT, ROUTER_CLIENT, &deadline)?;
+    endpoint(&backend, c"backend0", backend_address, router_backend, &deadline)?;
+    endpoint(&client_ns, c"client0", client_address, router_client, &deadline)?;
     let (backend_namespace, backend_ip) = match input.origin {
-        Origin::Local | Origin::Forward => (&backend, BACKEND),
-        Origin::LocalLoopback => (&router, Ipv4Addr::LOCALHOST),
-        Origin::LocalSelf => (&router, ROUTER_BACKEND),
+        Origin::Local | Origin::Forward => (&backend, backend_address),
+        Origin::LocalLoopback => (&router, loopback),
+        Origin::LocalSelf => (&router, router_backend),
     };
     let origin = match input.origin {
         Origin::Forward => &client_ns,
@@ -637,10 +684,7 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
     })?;
     let destination = backend_listener.local_addr()?;
     let relay_listener = in_namespace(Some(&router.handle), || {
-        listen(
-            SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
-            SocketMode::Transparent,
-        )
+        listen(SocketAddr::from((unspecified, 0)), SocketMode::Transparent)
     })?;
     let relay_port = relay_listener.local_addr()?.port();
     {
@@ -649,10 +693,11 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         let mut out = io::stdout().lock();
         writeln!(
             out,
-            "managed-intercept {{\"type\":\"{:?}\",\"origin\":\"{:?}\",\"relay_mode\":\"{:?}\",\"destination\":\"{destination}\",\"client_inode\":{},\"backend_inode\":{},\"relay_inode\":{}}}",
+            "managed-intercept {{\"type\":\"{:?}\",\"origin\":\"{:?}\",\"relay_mode\":\"{:?}\",\"family\":\"{:?}\",\"destination\":\"{destination}\",\"client_inode\":{},\"backend_inode\":{},\"relay_inode\":{}}}",
             Phase::Target,
             input.origin,
             input.relay,
+            Family::of(destination.ip()),
             origin.inode()?,
             backend_namespace.inode()?,
             router.inode()?
@@ -760,12 +805,12 @@ mod tests {
             ("1", "100", "32766"),
             ("4294967296", "100", "100"),
         ] {
-            assert!(Inputs::parse("local", "1000", mark, table, priority).is_err());
+            assert!(Inputs::parse(Family::Ipv4, "local", "1000", mark, table, priority).is_err());
         }
-        assert!(Inputs::parse("local", "0", "1", "100", "100").is_err());
-        assert!(Inputs::parse("ipv6", "1000", "1", "100", "100").is_err());
+        assert!(Inputs::parse(Family::Ipv4, "local", "0", "1", "100", "100").is_err());
+        assert!(Inputs::parse(Family::Ipv4, "ipv6", "1000", "1", "100", "100").is_err());
         assert_eq!(
-            Inputs::parse("forward", "1000", "1", "1000", "100")
+            Inputs::parse(Family::Ipv4, "forward", "1000", "1", "1000", "100")
                 .unwrap()
                 .origin,
             Origin::Forward
@@ -778,15 +823,17 @@ mod tests {
             ("local-self", Origin::LocalSelf),
         ] {
             assert_eq!(
-                Inputs::parse(name, "1000", "1", "1000", "100").unwrap().origin,
+                Inputs::parse(Family::Ipv4, name, "1000", "1", "1000", "100")
+                    .unwrap()
+                    .origin,
                 origin
             );
         }
-        let absent = Inputs::parse("forward-relay-absent", "1000", "1", "1000", "100").unwrap();
+        let absent = Inputs::parse(Family::Ipv4, "forward-relay-absent", "1000", "1", "1000", "100").unwrap();
         assert_eq!(absent.origin, Origin::Forward);
         assert_eq!(absent.relay, RelayMode::Absent);
         assert_eq!(
-            Inputs::parse("forward", "1000", "1", "1000", "100")
+            Inputs::parse(Family::Ipv4, "forward", "1000", "1", "1000", "100")
                 .unwrap()
                 .relay,
             RelayMode::Present
@@ -928,5 +975,30 @@ mod tests {
             absence_verdict(&success, &backend(0, 0, None, Some(io::ErrorKind::NotConnected))),
             AbsenceVerdict::DirectBackendEffect
         );
+    }
+
+    #[test]
+    fn ipv6_family_uses_the_same_finite_origins_and_input_authority() {
+        for name in [
+            "local",
+            "forward",
+            "local-loopback",
+            "local-self",
+            "forward-relay-absent",
+        ] {
+            let input = Inputs::parse(Family::Ipv6, name, "1000", "1", "1000", "100").unwrap();
+            assert_eq!(input.family, Family::Ipv6);
+            assert_eq!(
+                input.relay,
+                if name == "forward-relay-absent" {
+                    RelayMode::Absent
+                } else {
+                    RelayMode::Present
+                }
+            );
+        }
+        assert!(Inputs::parse(Family::Ipv6, "local", "0", "1", "1000", "100").is_err());
+        assert!(Inputs::parse(Family::Ipv6, "local", "1000", "0", "1000", "100").is_err());
+        assert!(Inputs::parse(Family::Ipv6, "local", "1000", "1", "254", "100").is_err());
     }
 }
