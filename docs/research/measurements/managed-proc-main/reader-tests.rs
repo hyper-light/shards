@@ -86,3 +86,13 @@ fn actual_reader_and_started_return_initial_and_later_oom() {
         );
     }
 }
+
+#[test]
+fn held_find_returns_error_when_start_allocation_is_refused() {
+    let pid = std::process::id();
+    let start = started(pid).unwrap();
+    println!("own_tgid={pid} precomputed_start={start} successful_allocations_before_refusal=0");
+    let result = crate::proc_allocation::after(0, || crate::taken::Held::find(pid, start));
+    println!("held_find_returned_error={}", result.is_err());
+    assert!(result.is_err());
+}
