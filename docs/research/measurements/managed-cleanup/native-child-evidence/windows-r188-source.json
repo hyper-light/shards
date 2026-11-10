@@ -1,0 +1,6 @@
+{
+  "revision": "eaedd0b0fe39662b9216a286d83e0e984c3cf2d3",
+  "path": "docs/research/measurements/managed-borrowed/windows-setup-failure.json",
+  "sha256": "bf88deb0345e0fab1b53efde2b7075092e0b4866c492db31ec4b471443d57f6b",
+  "classification": "launcher setup failure before clone/compiler/native Client; not cleanup/product red"
+}

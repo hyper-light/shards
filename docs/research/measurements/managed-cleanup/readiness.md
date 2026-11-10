@@ -14,7 +14,64 @@ Root owns real VM, mutation/repeat/resource/platform gates; implementer work is
 limited to the assigned source and light native cases. No main merge or child
 agents, host root, security changes, process-group kill or cache was introduced.
 
-## Identity and actual red
+## Current shared native child (portability checkpoint)
+
+The native factory now requires an absolute existing `CLEANUP_CLIENT_CHILD`
+artifact, compiled from [readiness-child.rs](readiness-child.rs) with pinned
+rustc1.98.1. It invokes that exact artifact with `MODE stdin`; no PATH interpreter,
+Microsoft Store alias, shell, constructor, custom test-main or per-OS child script
+is involved. This is a private test artifact, never installed, carried or shipped
+as part of Shards. The Client, readiness deadline, Windows adapter, guest workload
+and product cleanup are unchanged. The original Python helper/red scripts/raw
+logs remain historical evidence, including their signal-only controls.
+
+The actual Windowsr188 exit49 was an API-lane **launcher setup failure before
+clone/compiler/native tests**, not a cleanup Client or product failure. Its
+unchanged classification and original evidence revision are copied in
+[native-child-evidence](native-child-evidence/). This demonstrates the runner's
+missing interpreter, while source inspection identifies the cleanup factory's
+same unwanted dependency; no Windows cleanup failure is invented.
+
+The shared Rust child preserves exact stderr PID identity, silent/early/partial/
+normal bytes, early exit7, one stdin release byte `r`, invalid/EOF release exit8,
+and literal LF bytes. I/O failures return an error/status. Input modes and fixed
+bytes/exits are existing fixture protocol identifiers, not runtime resource caps.
+The standard [Command path contract](https://doc.rust-lang.org/std/process/struct.Command.html#method.new),
+[byte-oriented Write contract](https://doc.rust-lang.org/std/io/trait.Write.html)
+and [ExitCode](https://doc.rust-lang.org/std/process/struct.ExitCode.html) support
+this small std-only seam. Those current docs display1.99.1; actual compile/run is
+pinned1.98.1, recorded separately. Microsoft's
+[execution alias explanation](https://learn.microsoft.com/en-us/windows/dev-environment/python#why-does-running-pythonexe-open-the-microsoft-store)
+explains why an alias with arguments can error. Installing Python/changing aliases,
+OS-specific child scripts and custom runtime entry mechanisms were rejected by
+scope. None was added.
+
+On macOS arm64, the helper compiled and passed **6/6** light protocol controls:
+early7; silent/partial/normal withheld release and exact terminal bytes; wrong-byte
+and EOF release8. Each control owns and waits for exactly its child; no process
+group or foreign process is signaled. Strict helper clippy initially rejected a
+byte-character slice spelling, retained as red, then passed after its suggested
+byte-string spelling. Final compile/strict clippy exit0, literal bytes and child
+identities are retained in [native-child-evidence](native-child-evidence/).
+This is **not** a rerun of the five Client tests, Windows/native pipe behavior,
+mutation, VM cleanup or a resource/performance claim; those remain root-owned.
+Std I/O/argument/library allocation and uninterruptible OS wait limits are not
+certified by this fixture. No production panic/allocator claim is made.
+
+The optional Unix Python driver now compiles the Rust child and records its
+source/artifact SHA256, then passes its absolute path. `--helper-only` runs just
+the six light controls, with no Cargo/Client/mutation/VM build. Its Python is
+orchestration only; **the current native test command below needs no Python**.
+The complete driver still includes coordinator-only mutation/restoration, so an
+implementer must select `--helper-only`. Mac compile was under
+`lockf /tmp/g121-mac.lock` after checking the30GiB floor; no full crate/C build.
+Current binding receipt: canonical g121-main
+`f5cec365d2e435afae5e6f613c92d9d3759ef60f`, rules SHA256
+`d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242`, role
+implementer, allR01–R16. Root owns all audits/profiling/benchmarks/heavy real E2E/
+chaos/stress/sweeps; no subagents/main merge or other lane/cache changes occurred.
+
+## Historical identity and actual red
 
 Base combined `cbe3d027`; only the eleven cleanup fixture/evidence paths from
 `fa1b5d35654ac395e4ce24b8fee8ac59f4f0555e` were composed (`cb0843eb`). Guest source
@@ -83,7 +140,7 @@ reader to be joined and does not kill another writer. As with existing test
 supervision, SIGKILL/wait cannot promise a bound against an uninterruptible kernel
 task. No such general guarantee or actual VM cleanup result is claimed.
 
-## Light native proof and owed root runs
+## Historical Client proof and current owed root runs
 
 Five controlled native tests cover silent output, early exit, partial readiness,
 normal release/exact terminal bytes, and dropping a ready but unreleased client.
@@ -93,20 +150,28 @@ mutation is rescued before assertion, so the test does not leave its own child.
 The portable controls use an owned stdin byte for normal release. On Windows the
 witness retains this exact child's process handle and observes its terminal state;
 it does not call that observation Unix zombie reaping or general handle freedom.
-Their protocol writes use Python's binary stdout buffer, preserving literal LF
-instead of platform text newline translation ([Python binary I/O](https://docs.python.org/3/library/io.html#binary-i-o)).
+Those historical runs used Python's binary stdout buffer. Current native runs
+use the shared Rust byte writer above; their exact bytes still require actual
+per-platform execution, and compilation is not a Windows behavior pass.
 
 ```sh
+mkdir -p "$HOME/managed-cleanup-native-artifacts"
+# On macOS, check >=30GiB free and prefix rustc with lockf /tmp/g121-mac.lock.
+rustc +1.98.1 --edition=2024 -Dwarnings -Ccodegen-units=4 \
+  docs/research/measurements/managed-cleanup/readiness-child.rs \
+  -o "$HOME/managed-cleanup-native-artifacts/readiness-child"
 SHARDS_HELPERS=skip CLEANUP_CLIENT_PATIENCE_MS=500 \
+CLEANUP_CLIENT_CHILD="$HOME/managed-cleanup-native-artifacts/readiness-child" \
 CARGO_TARGET_DIR="$HOME/managed-cleanup-quality-target" \
-cargo test --locked -j4 --profile test-release -p shards \
+cargo +1.98.1 test --locked -j4 --profile test-release -p shards \
   --test managed_cleanup native:: -- --ignored --test-threads=1 --nocapture
 ```
 
-The private target is a reflink
-of inactive endpoint target after an empty open-FD check; the source was not
-modified. Assigned native4CPU/8GiB/10GiB remains unchanged. Mac has no local build;
-its checkout stayed above30GiB after root recovered inactive regenerable storage.
+The historical private target was a reflink of inactive endpoint target after an
+empty open-FD check; the source was not modified. That historical assignment was
+4CPU/8GiB/10GiB. The current portability checkpoint ran only the tiny Mac helper
+compile/control above; it ran no local crate/C build. Root Windows replay uses
+its unchanged4CPU/8GiB/20GiB admitted envelope and private target.
 
 Final Client source `43671fad` (unchanged in checkpoint `3ecff4e4`), SHA256
 `0b434f8ef2397046000ba61923d58cfdcc1a315074f4e16c2bdbce4cd2bff50b`:
@@ -132,8 +197,8 @@ Repeat the complete light proof with an unused evidence path:
 ```sh
 CARGO_TARGET_DIR="$HOME/managed-cleanup-quality-target" \
 python3 docs/research/measurements/managed-cleanup/run-readiness.py \
-  --patience-ms 500 --source-ref 3ecff4e4 \
-  --evidence "$HOME/managed-cleanup-quality-evidence/3ecff4e4-proof"
+  --patience-ms 500 --source-ref "$(git rev-parse HEAD)" \
+  --evidence "$HOME/managed-cleanup-quality-evidence/shared-native-child-proof"
 ```
 
 [`readiness-evidence/`](readiness-evidence/) retains baseline and fixed commands,
@@ -147,10 +212,19 @@ Root can exercise the same five native cases on Windows using its own positive
 patience and private target (PowerShell example; not run here):
 
 ```powershell
+$artifactDir = Join-Path $env:USERPROFILE 'managed-cleanup-native-artifacts'
+New-Item -ItemType Directory -Force $artifactDir | Out-Null
+$childSource = (Resolve-Path 'docs/research/measurements/managed-cleanup/readiness-child.rs').Path
+$env:CLEANUP_CLIENT_CHILD = Join-Path $artifactDir 'readiness-child.exe'
+rustc +1.98.1 --edition=2024 -Dwarnings -Ccodegen-units=4 $childSource -o $env:CLEANUP_CLIENT_CHILD
+if ($LASTEXITCODE -ne 0) { throw 'shared native child compile failed' }
+Get-FileHash -Algorithm SHA256 $childSource
+Get-FileHash -Algorithm SHA256 $env:CLEANUP_CLIENT_CHILD
 $env:SHARDS_HELPERS = 'skip'
-$env:CLEANUP_CLIENT_PATIENCE_MS = '500'
-$env:CARGO_TARGET_DIR = "$env:USERPROFILE\managed-cleanup-native-target"
-cargo test --locked -j4 --profile test-release -p shards --test managed_cleanup native:: -- --ignored --test-threads=1 --nocapture
+$env:CLEANUP_CLIENT_PATIENCE_MS = '500' # explicit synthetic test input
+$env:CARGO_TARGET_DIR = Join-Path $env:USERPROFILE 'managed-cleanup-native-target'
+cargo +1.98.1 test --locked -j4 --profile test-release -p shards --test managed_cleanup native:: -- --ignored --test-threads=1 --nocapture
+if ($LASTEXITCODE -ne 0) { throw 'native cleanup Client controls failed' }
 ```
 
 After coverage review, root's unchanged real-VM contract invocation is:
@@ -200,7 +274,23 @@ child/readiness/byte/handle-return proof and WHP remain owed; paused Windows ARM
 stays untouched. Root approved this necessary adapter before implementation and
 owns its native connect-order/byte/handle-return and real-VM proof.
 
-## R01–R16
+## Current helper R01–R16 account
+
+R01/R04/R06/R07/R13: std-only typed modes, handled I/O and existing exit/byte
+protocol; only native launcher changed, no Client/guest/product edit. Tests may
+assert as before. R02/R03/R05/R12: primary contracts, real missing-interpreter
+setup evidence and rejected alternatives above; same shared source on all hosts,
+stdin completion event, no timers/cache/manager or new product constant.
+R08/R14: no measurement, allocation-free/leak-free or4–5x claim. R09/R10: launcher
+red classified exactly, old evidence preserved, actual6/6 helper controls and
+clippy red/green retained; new Client/Windows/VM/mutation results unrun.
+R11: macOS arm64 helper only; current native Client tests, Windows amd64/arm64,
+Linux gnu/musl, full targets and real VM coverage remain owed to root.
+R15/R16: current policy receipt above, scoped light work only, signed named-path
+checkpoint, no subagents/main merge/rootcache; Mac floor/lock respected and all
+source/raw evidence preserved. No local workspace/C build or cleanup.
+
+## Historical R01–R16
 
 | Rule | Evidence and remaining limit |
 | --- | --- |

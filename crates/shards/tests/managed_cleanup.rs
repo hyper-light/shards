@@ -544,11 +544,15 @@ mod native {
     }
 
     fn child(mode: &str) -> Client {
-        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/research/measurements/managed-cleanup/readiness-child.py");
+        let helper = std::env::var_os("CLEANUP_CLIENT_CHILD")
+            .expect("caller supplies the absolute compiled readiness-child artifact");
+        let helper = Path::new(&helper);
+        assert!(
+            helper.is_absolute() && helper.is_file(),
+            "CLEANUP_CLIENT_CHILD must be an absolute existing native artifact"
+        );
         Client::spawn(
-            Command::new("python3")
-                .arg(helper)
+            Command::new(helper)
                 .arg(mode)
                 .arg("stdin")
                 .stdin(Stdio::piped())

@@ -1,0 +1,10 @@
+[
+  "rustc",
+  "+1.98.1",
+  "--edition=2024",
+  "-Dwarnings",
+  "-Ccodegen-units=4",
+  "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-cleanup-native-child/docs/research/measurements/managed-cleanup/readiness-child.rs",
+  "-o",
+  "/Users/adalundhe/g121-cleanup-native-child-light-v2/readiness-child"
+]

@@ -1,5 +1,11 @@
 # Selective main-workload cleanup: scoped real-VM proof
 
+Current native readiness controls require the caller-supplied absolute Rust
+artifact `CLEANUP_CLIENT_CHILD`; see [readiness.md](readiness.md#current-shared-native-child-portability-checkpoint)
+for pinned compile and Python-free Windows commands. The new artifact is private
+test input, never installed/carried/product output. This document retains the
+historical real-VM evidence below; it is not a new revision passing gate.
+
 The proposed cleanup/progress defect was **not reproduced**. All four bounded
 real-VM cases reaped every owned child and preserved a fresh independent-joiner
 operation. Production cleanup is unchanged. The picked 64-pass value remains
