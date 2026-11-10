@@ -1,0 +1,503 @@
+{
+  "plan": {
+    "id": "01a1c5cfb0f6736f910c8f76dcbfc37f",
+    "title": "Maintain the Shards constants/derivation lane through managed-runtime completion",
+    "body": "Goal: Maintain the Shards constants/derivation lane through managed-runtime completion, following canonical R01–R16 and the coordinator's approved queue: finish Poller/inotify primary-source checkpoints, continue TLS Handshake length/admission, QUIC datagram/credit bounds, and the four named unmeasured device rings. Send small signed checkpoints and immediately continue the next approved independent item; do not end the lane or mark this goal met when one report is ready. Research only assigned literals/alternatives until ROOT supplies measured/reproduced implementation authorization; all audits/profiling/heavy real E2E remain ROOT-owned. Done only when the coordinator confirms the lane's managed-runtime obligations accepted on main with actual evidence and releases the lane; otherwise propose the next precise test/derivation within these named seams while ROOT validates. Preserve current policy/readbacks, headroom, artifacts and paused Windows ARM; no fake keepalive, production guesses, child agents or self-main merges.\n\nThis plan is for the sustained implementer lane, not authorization to execute coordinator campaigns. Current signed research checkpoints: df37d254f366e8a7c9d75c876d816927860ee620 and c0db0f6ccd6780d9c703e1ae936674f1795e288f; the same owned note has a capacity-contract continuation in progress. Canonical current main24f/rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242. Current repo ownership remains docs/research/managed-poller-capacity.md and textual docs/research/measurements/managed-poller-research/** until coordinator expands it. TLS/QUIC exact paths and the four ring identities are pending coordinator confirmation; the plan makes that scope resolution an explicit gate. Planning research cites protocol bounds but selects no numeric runtime policy, API or architecture. All runtime fault/fairness/cost/matrix claims remain unrun here.\n\nOperational continuity: proceed through independent approved research while root validates; no child agents or fake keepalive/idle-wait loop. All profiling/audits/benchmarks/heavy/adversarial execution and main merges remain root-owned. No paused VM/root-goal resumption, protected cache/source mutation or host/admin/security/crypto changes are authorized. This planning phase becomes ready when sourced steps/acceptance/tests are recorded; the parent maintenance goal remains active until explicit coordinator release after actual main acceptance.",
+    "tags": [
+      "from a goal",
+      "shards",
+      "constants-derivation",
+      "sustained-lane",
+      "R01-R16"
+    ],
+    "source": {
+      "session": "01a1c5bda0bf766683384c0705c0a9bc",
+      "harness": "codex",
+      "machine": "e30189ea29182644fe5a4b2e06c7dac2",
+      "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-poller-research",
+      "agent": "Shards constants research",
+      "goal": {
+        "agent": "01a1c5bda0bf766683384c0705c0a9bc",
+        "id": "9b0223e190208c2aa5fb869058b7a82c",
+        "text": "Maintain the Shards constants/derivation lane through managed-runtime completion, following canonical R01–R16 and the coordinator's approved queue: finish Poller/inotify primary-source checkpoints, continue TLS Handshake length/admission, QUIC datagram/credit bounds, and the four named unmeasured device rings. Send small signed checkpoints and immediately continue the next approved independent item; do not end the lane or mark this goal met when one report is ready. Research only assigned literals/alternatives until ROOT supplies measured/reproduced implementation authorization; all audits/profiling/heavy real E2E remain ROOT-owned. Done only when the coordinator confirms the lane's managed-runtime obligations accepted on main with actual evidence and releases the lane; otherwise propose the next precise test/derivation within these named seams while ROOT validates. Preserve current policy/readbacks, headroom, artifacts and paused Windows ARM; no fake keepalive, production guesses, child agents or self-main merges."
+      }
+    },
+    "share": null,
+    "version": 2,
+    "created_at": 1794320085,
+    "updated_at": 1794320531,
+    "items": [
+      {
+        "title": "Maintain current policy, role, resource envelope and a concrete scope ledger",
+        "description": "Read full canonical AGENTS.md, R01–R16, development-evidence, CLAUDE, managed plan and current handoff before work/resume; compare checkout policies to current main, record full hashes/implementer role/owned paths, and preserve active root sources/caches and paused Windows ARM. Keep coordinator-only R15 execution/merges. Log actual completed, active and pending items without treating policy receipts as compliance proof.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Current canonical revision/rules SHA256, role, owned paths and resource/runner restrictions are recorded; no stale checkout or skill overrides them."
+          },
+          {
+            "kind": "qualitative",
+            "text": "No children, host-root/admin/security/crypto changes, local builds/new full worktrees, protected-cache mutations, audit/profile/heavy execution or self-main merges occur in this lane."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Resume or changed handoff/policy",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Full files are read again and a stable-key POLICY_READ is sent before dependent work; uncertainty and changed ownership are reconciled."
+              }
+            ]
+          },
+          {
+            "scenario": "Source/budget/run ownership before any approved light check",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "New private Kiln source/target and at most1CPU/1GiB/2GiB are coordinator-approved; Mac remains above30GiB and root caches/paused VM remain untouched."
+              }
+            ]
+          }
+        ],
+        "basis": [
+          "f1",
+          "f9",
+          "f10"
+        ]
+      },
+      {
+        "title": "Close the Poller and inotify research checkpoints without selecting numbers from documents",
+        "description": "Return signed df37d254f/c0db0f6cc and the current contract continuation for coordinator review. Distinguish native event batch64 from caller Vec reuse, logical service length from allocated capacity, conditional inotify record framing from byte/read-turn service choice, and current source facts from reproduced failures. Keep precise alternatives, pre-dequeue/refusal/cancellation semantics, source URLs/revisions/raw hashes and unrun coordinator cases.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Both scoped functions and necessary callers have primary-source citations, compatibility/failure/cold-start/overflow analysis, established alternatives and no copied-default/page-size/benchmark-number recommendation."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Research record separately identifies source observations, inferences, historic root results, actual light documentation checks and all unrun runtime/performance work; R01–R16 are individually accounted."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Capacity-contract document checks",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Mechanical development-policy and named-path whitespace checks pass; local source hashes and pinned citations match the retained manifest."
+              }
+            ]
+          },
+          {
+            "scenario": "Coordinator-owed candidate proof design",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Explicit cases cover length-relative reservation, retained capacity exceeding logical batch, macOS oneshot/refusal ordering, inotify complete-prefix/short-buffer/invalidation and control progress; no proposed case is reported run."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          1
+        ],
+        "basis": [
+          "f1",
+          "f2",
+          "f3",
+          "f4",
+          "f5",
+          "f6",
+          "f10"
+        ]
+      },
+      {
+        "title": "Resolve exact next source seams and ownership from the approved queue",
+        "description": "Ask the coordinator for the TLS Handshake function/callers, the exact meaning of QUIC datagram/credit in this implementation, the identities of all four named unmeasured device rings, current revision and owned research paths. Inspect only those named seams and semantic callers, using git show for sparse omissions. Do not invent four devices or turn missing names into a repository sweep. Independent already authorized primary-source work can continue while a narrower identity is pending.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Each queued item has coordinator-confirmed literal/function/path/revision, required caller scope, note ownership and evidence expectations; unresolved identities remain explicit and do not imply completed research."
+          },
+          {
+            "kind": "qualitative",
+            "text": "The work queue is continuously supplied with real scoped derivation/proposal work, with stable message keys and signed checkpoints; no idle waiter or fake keepalive is introduced."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Ambiguous 'QUIC datagram' or unnamed ring",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "The request identifies the ambiguity and does not apply RFC9221 or a guessed ring protocol to unknown source."
+              }
+            ]
+          },
+          {
+            "scenario": "Checkpoint while root validates another batch",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "The lane immediately proceeds to the next approved independent item without claiming pending work is running."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          1
+        ],
+        "basis": [
+          "f1",
+          "f8",
+          "f9"
+        ]
+      },
+      {
+        "title": "Research TLS Handshake length, fragmentation and admission at its confirmed seam",
+        "description": "Use RFC8446 plus pinned established TLS implementations and the exact named Shards parser/callers. Separate the uint24 Handshake field from record framing, aggregate reassembly, concurrent sessions and admitted memory. Document checked arithmetic, fragmentation/coalescing, cold state, refusal before retention, cleanup/cancellation and typed uncertainty. Preserve all trust/verification/crypto behavior; propose no source fix from suspicion.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Every investigated length/capacity literal is classified as a wire invariant, actual admitted resource bound, learned service decision or unexplained value, with exact sources and unresolved data needs."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Alternatives and a bounded coordinator reproduction/cost/mutation plan cover the actual caller; no record default, protocol maximum or one observed certificate/message size becomes a runtime allocation budget."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Coordinator-owed TLS framing/admission cases",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Plan includes fragmented headers/bodies, coalesced messages, valid encoded limits versus admitted limits, partial state, allocation/length overflow refusal and cancellation/cleanup without relaxing protocol verification."
+              }
+            ]
+          },
+          {
+            "scenario": "Research-source freshness and claims",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "RFC sections/revisions/errata context and established implementation pins are recorded; no live outcome or exact supported-library equivalence is inferred from documents."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          3
+        ],
+        "basis": [
+          "f1",
+          "f7",
+          "f9",
+          "f10"
+        ]
+      },
+      {
+        "title": "Research QUIC packet/datagram bounds and credit ownership at its confirmed seam",
+        "description": "Read RFC9000 and, only if the confirmed semantic feature uses unreliable DATAGRAM frames, RFC9221, plus pinned established implementations and the named Shards callers. Separate UDP/path/peer maximums, packet/frame overhead, stream/connection flow credits, congestion control and parent-owned memory/queue admission. Trace actual credit reservation/release/cancel ownership without a duplicate state cache or generic manager.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "The word datagram is resolved to the actual packet/frame/API semantics; peer/path/transport and owner resource constraints remain distinct, including cold negotiation, loss, zero length, overflow and failure."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Each proposed buffer or credit bound has a sourced derivation/method and a coordinator live proof plan; no1200/65535/library window or benchmark result is copied as unexplained policy."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Coordinator-owed packet/frame boundary and negotiation cases",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Plan covers peer limit changes, framing overhead and PMTU, valid/oversized/empty units, cold or absent negotiation, backpressure, cancellation/credit return and independent neighbor/control progress."
+              }
+            ]
+          },
+          {
+            "scenario": "DATAGRAM-versus-stream credit distinction",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Any RFC9221 claim explicitly preserves its lack of stream/connection flow control while retaining congestion control and actual application storage admission; packet-only code is not mislabeled RFC9221."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          3
+        ],
+        "basis": [
+          "f1",
+          "f8",
+          "f9",
+          "f10"
+        ]
+      },
+      {
+        "title": "Derive the four named unmeasured device-ring choices one scoped ring at a time",
+        "description": "After step3 resolves each exact ring, read only its producer/consumer/notification/lifetime callers and the matching pinned protocol/spec or upstream implementation. Derive required representation/algorithmic limits separately from service capacity and actual registrations/descriptors/in-flight work. Produce an alternative and bounded coordinator occupancy/failure/cost plan for each ring. Never infer names, reuse a stock queue default or claim a measurement from an inventory.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "All four coordinator-named rings have individual source identity, owner/transition/overflow/cancel analysis, alternatives and exact unrun measurement/reproduction requirements; unresolved rings stay unverified."
+          },
+          {
+            "kind": "qualitative",
+            "text": "No production ring depth, allocation strategy, page size or architecture is selected solely from specs or copied upstream defaults; no duplicate watched/in-flight state appears without consistency proof."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Coordinator-owed ring boundary and ownership cases",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "For the actual matched protocol, define empty/full/wrap/partial completion, producer-consumer handoff, notification races, teardown/cancel, allocation refusal and independent effect/resource-return witnesses."
+              }
+            ]
+          },
+          {
+            "scenario": "No identity or measured basis supplied",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Keep the affected implementation held, request precise scope/basis, and continue another approved independent derivation rather than performing a broad audit."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          3
+        ],
+        "basis": [
+          "f1",
+          "f6",
+          "f9",
+          "f10"
+        ]
+      },
+      {
+        "title": "Return precise reproduction and measurement proposals; root executes and decides",
+        "description": "For each completed derivation, give the coordinator exact caller/revision/inputs, independent symptom/effect witnesses, explicit source/budget/cleanup ownership, meaningful guard removals/restoration and paired resource/cost comparisons. Root alone runs audits, profiling, benchmarks, real E2E, chaos/stress/sweeps and reviews uncertainty. Ask for the next approved independent analysis while results are pending.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Root can execute each bounded proposal without guessed source identities, unbounded work, host provisioning or altered security contracts; source findings remain distinct from live reproduction."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Actual returned results name source/environment/raw artifacts, before/after/counterfactuals, cleanup and remaining gaps; n/distributions/allocations/copies/faults/parent/kernel/neighbor costs and4–5× misses are retained when applicable."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "A source suspicion lacks the exact live symptom",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "No production fix is proposed as proven; retain it as a hypothesis and return a decisive root-owned reproduction method."
+              }
+            ]
+          },
+          {
+            "scenario": "One proposed guard removal",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Require its corresponding actual forbidden effect or ownership/control failure, exact restoration and a fresh closing case; loss of a log or a scripted substitute does not pass for the real effect."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          2
+        ],
+        "basis": [
+          "f1",
+          "f3",
+          "f4",
+          "f5",
+          "f7",
+          "f8",
+          "f10"
+        ]
+      },
+      {
+        "title": "Implement only a coordinator-approved measured/reproduced disposition",
+        "description": "For an item with explicit coordinator authorization and path ownership, implement the smallest complete change at the existing platform/hv/arch seam, with explicit typed state/error/cancel behavior, fallible storage and derived constants. Alternatively record a coordinator-accepted no-code disposition supported by the actual evidence. No production implementation is licensed by plan readiness or a source-only research finding.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Each production change has exact root-approved reproduced/measured basis, primary alternatives, D-entry derivation/cold-start/overflow/failure semantics and clear authoritative ownership; no new speculative cache/framework/manager or host/security/crypto change."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Only approved targeted unit/light tests run in a new private Kiln envelope; required coordinator heavy/combined/platform work remains explicitly owed, with no panic/OOM/performance/coverage overclaim."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Targeted light compile and behavior checks after explicit approval",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Use exact named source/target and approved≤1CPU/1GiB/2GiB envelope; record complete commands and outputs, including all unrun checks and sparse/stub limits."
+              }
+            ]
+          },
+          {
+            "scenario": "No-code disposition",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Coordinator acceptance cites actual evidence and remaining supported-contract limits; it cannot waive a required managed-runtime promise or declare unverified coverage passing."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          7
+        ],
+        "basis": [
+          "f1",
+          "f5",
+          "f6",
+          "f10"
+        ]
+      },
+      {
+        "title": "Land reviewed signed pieces promptly through coordinator-owned main gates",
+        "description": "Return small signed named-path commits using /Users/adalundhe/.kiln-run/bin/gits and the required Claude Opus5.5 trailer; push only this lane's branch. Research and independently complete pieces are reviewed/landed promptly without waiting for unrelated phases. Root reviews source/evidence, executes applicable combined seven-target and actual host/VM gates and merges/pushes main; this lane never self-merges.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "Each checkpoint carries exact commit/source/policy IDs, named paths, applicable R01–R16 proof/gaps, completed light checks, root-owed runs and stable coordinator message keys."
+          },
+          {
+            "kind": "qualitative",
+            "text": "Coordinator records reviewed acceptance on actual main/origin/main with revision-specific gates; old source results, skipped hardware or a pushed research branch are not treated as new passing implementation evidence."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Signed checkpoint validation",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Commit signature/trailer, changed-path ownership, named-path whitespace/source checks and remote branch identity are verified; no force-push/signing waiver or staged setup deletion occurs."
+              }
+            ]
+          },
+          {
+            "scenario": "Main acceptance versus integration-only state",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Evidence identifies actual main/origin/main accepted revision and pending checks honestly; full runtime completion is not inferred from branch integration."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          2
+        ],
+        "basis": [
+          "f1",
+          "f9",
+          "f10"
+        ]
+      },
+      {
+        "title": "Keep the analysis lane active until explicit coordinator release",
+        "description": "Cycle through the approved independent topic queue and concrete follow-ups while root validates returned pieces. On compaction preserve policy readback, exact scope/refs, signed artifacts, active root ownership, queued versus running status and next actions. Do not stop at a report, create fake activity, launch unapproved campaigns or mark the maintenance goal complete. Closure occurs only after coordinator confirms all lane obligations accepted on main with actual evidence and explicitly releases the lane.",
+        "examples": "",
+        "acceptance": [
+          {
+            "kind": "qualitative",
+            "text": "No required derivation, approved implementation, owed coordinator evidence or accepted-main obligation is silently dropped; each remaining dependency and supported-platform uncertainty is recorded."
+          },
+          {
+            "kind": "qualitative",
+            "text": "The coordinator's explicit release and actual accepted-main/evidence references are the closure witness; making this plan ready or finishing one report does not meet the maintenance goal."
+          }
+        ],
+        "testing": [
+          {
+            "scenario": "Report checkpoint with other obligations remaining",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Send the bounded signed checkpoint and continue the next approved independent item; preserve the current lane instead of ending it."
+              }
+            ]
+          },
+          {
+            "scenario": "Proposed final lane closure",
+            "criteria": [
+              {
+                "kind": "qualitative",
+                "text": "Verify explicit coordinator release, actual main evidence and every outstanding owed run/disposition; if any is missing continue the scoped queue without an idle poll loop."
+              }
+            ]
+          }
+        ],
+        "needs": [
+          4,
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "basis": [
+          "f1",
+          "f9",
+          "f10"
+        ]
+      }
+    ],
+    "steps": [
+      "Maintain current policy, role, resource envelope and a concrete scope ledger\n\nRead full canonical AGENTS.md, R01–R16, development-evidence, CLAUDE, managed plan and current handoff before work/resume; compare checkout policies to current main, record full hashes/implementer role/owned paths, and preserve active root sources/caches and paused Windows ARM. Keep coordinator-only R15 execution/merges. Log actual completed, active and pending items without treating policy receipts as compliance proof.\n\nAcceptance criteria:\n- Current canonical revision/rules SHA256, role, owned paths and resource/runner restrictions are recorded; no stale checkout or skill overrides them.\n- No children, host-root/admin/security/crypto changes, local builds/new full worktrees, protected-cache mutations, audit/profile/heavy execution or self-main merges occur in this lane.\n\nTests:\n- Resume or changed handoff/policy — passes when Full files are read again and a stable-key POLICY_READ is sent before dependent work; uncertainty and changed ownership are reconciled.\n- Source/budget/run ownership before any approved light check — passes when New private Kiln source/target and at most1CPU/1GiB/2GiB are coordinator-approved; Mac remains above30GiB and root caches/paused VM remain untouched.",
+      "Close the Poller and inotify research checkpoints without selecting numbers from documents\n\nReturn signed df37d254f/c0db0f6cc and the current contract continuation for coordinator review. Distinguish native event batch64 from caller Vec reuse, logical service length from allocated capacity, conditional inotify record framing from byte/read-turn service choice, and current source facts from reproduced failures. Keep precise alternatives, pre-dequeue/refusal/cancellation semantics, source URLs/revisions/raw hashes and unrun coordinator cases.\n\nAcceptance criteria:\n- Both scoped functions and necessary callers have primary-source citations, compatibility/failure/cold-start/overflow analysis, established alternatives and no copied-default/page-size/benchmark-number recommendation.\n- Research record separately identifies source observations, inferences, historic root results, actual light documentation checks and all unrun runtime/performance work; R01–R16 are individually accounted.\n\nTests:\n- Capacity-contract document checks — passes when Mechanical development-policy and named-path whitespace checks pass; local source hashes and pinned citations match the retained manifest.\n- Coordinator-owed candidate proof design — passes when Explicit cases cover length-relative reservation, retained capacity exceeding logical batch, macOS oneshot/refusal ordering, inotify complete-prefix/short-buffer/invalidation and control progress; no proposed case is reported run.",
+      "Resolve exact next source seams and ownership from the approved queue\n\nAsk the coordinator for the TLS Handshake function/callers, the exact meaning of QUIC datagram/credit in this implementation, the identities of all four named unmeasured device rings, current revision and owned research paths. Inspect only those named seams and semantic callers, using git show for sparse omissions. Do not invent four devices or turn missing names into a repository sweep. Independent already authorized primary-source work can continue while a narrower identity is pending.\n\nAcceptance criteria:\n- Each queued item has coordinator-confirmed literal/function/path/revision, required caller scope, note ownership and evidence expectations; unresolved identities remain explicit and do not imply completed research.\n- The work queue is continuously supplied with real scoped derivation/proposal work, with stable message keys and signed checkpoints; no idle waiter or fake keepalive is introduced.\n\nTests:\n- Ambiguous 'QUIC datagram' or unnamed ring — passes when The request identifies the ambiguity and does not apply RFC9221 or a guessed ring protocol to unknown source.\n- Checkpoint while root validates another batch — passes when The lane immediately proceeds to the next approved independent item without claiming pending work is running.",
+      "Research TLS Handshake length, fragmentation and admission at its confirmed seam\n\nUse RFC8446 plus pinned established TLS implementations and the exact named Shards parser/callers. Separate the uint24 Handshake field from record framing, aggregate reassembly, concurrent sessions and admitted memory. Document checked arithmetic, fragmentation/coalescing, cold state, refusal before retention, cleanup/cancellation and typed uncertainty. Preserve all trust/verification/crypto behavior; propose no source fix from suspicion.\n\nAcceptance criteria:\n- Every investigated length/capacity literal is classified as a wire invariant, actual admitted resource bound, learned service decision or unexplained value, with exact sources and unresolved data needs.\n- Alternatives and a bounded coordinator reproduction/cost/mutation plan cover the actual caller; no record default, protocol maximum or one observed certificate/message size becomes a runtime allocation budget.\n\nTests:\n- Coordinator-owed TLS framing/admission cases — passes when Plan includes fragmented headers/bodies, coalesced messages, valid encoded limits versus admitted limits, partial state, allocation/length overflow refusal and cancellation/cleanup without relaxing protocol verification.\n- Research-source freshness and claims — passes when RFC sections/revisions/errata context and established implementation pins are recorded; no live outcome or exact supported-library equivalence is inferred from documents.",
+      "Research QUIC packet/datagram bounds and credit ownership at its confirmed seam\n\nRead RFC9000 and, only if the confirmed semantic feature uses unreliable DATAGRAM frames, RFC9221, plus pinned established implementations and the named Shards callers. Separate UDP/path/peer maximums, packet/frame overhead, stream/connection flow credits, congestion control and parent-owned memory/queue admission. Trace actual credit reservation/release/cancel ownership without a duplicate state cache or generic manager.\n\nAcceptance criteria:\n- The word datagram is resolved to the actual packet/frame/API semantics; peer/path/transport and owner resource constraints remain distinct, including cold negotiation, loss, zero length, overflow and failure.\n- Each proposed buffer or credit bound has a sourced derivation/method and a coordinator live proof plan; no1200/65535/library window or benchmark result is copied as unexplained policy.\n\nTests:\n- Coordinator-owed packet/frame boundary and negotiation cases — passes when Plan covers peer limit changes, framing overhead and PMTU, valid/oversized/empty units, cold or absent negotiation, backpressure, cancellation/credit return and independent neighbor/control progress.\n- DATAGRAM-versus-stream credit distinction — passes when Any RFC9221 claim explicitly preserves its lack of stream/connection flow control while retaining congestion control and actual application storage admission; packet-only code is not mislabeled RFC9221.",
+      "Derive the four named unmeasured device-ring choices one scoped ring at a time\n\nAfter step3 resolves each exact ring, read only its producer/consumer/notification/lifetime callers and the matching pinned protocol/spec or upstream implementation. Derive required representation/algorithmic limits separately from service capacity and actual registrations/descriptors/in-flight work. Produce an alternative and bounded coordinator occupancy/failure/cost plan for each ring. Never infer names, reuse a stock queue default or claim a measurement from an inventory.\n\nAcceptance criteria:\n- All four coordinator-named rings have individual source identity, owner/transition/overflow/cancel analysis, alternatives and exact unrun measurement/reproduction requirements; unresolved rings stay unverified.\n- No production ring depth, allocation strategy, page size or architecture is selected solely from specs or copied upstream defaults; no duplicate watched/in-flight state appears without consistency proof.\n\nTests:\n- Coordinator-owed ring boundary and ownership cases — passes when For the actual matched protocol, define empty/full/wrap/partial completion, producer-consumer handoff, notification races, teardown/cancel, allocation refusal and independent effect/resource-return witnesses.\n- No identity or measured basis supplied — passes when Keep the affected implementation held, request precise scope/basis, and continue another approved independent derivation rather than performing a broad audit.",
+      "Return precise reproduction and measurement proposals; root executes and decides\n\nFor each completed derivation, give the coordinator exact caller/revision/inputs, independent symptom/effect witnesses, explicit source/budget/cleanup ownership, meaningful guard removals/restoration and paired resource/cost comparisons. Root alone runs audits, profiling, benchmarks, real E2E, chaos/stress/sweeps and reviews uncertainty. Ask for the next approved independent analysis while results are pending.\n\nAcceptance criteria:\n- Root can execute each bounded proposal without guessed source identities, unbounded work, host provisioning or altered security contracts; source findings remain distinct from live reproduction.\n- Actual returned results name source/environment/raw artifacts, before/after/counterfactuals, cleanup and remaining gaps; n/distributions/allocations/copies/faults/parent/kernel/neighbor costs and4–5× misses are retained when applicable.\n\nTests:\n- A source suspicion lacks the exact live symptom — passes when No production fix is proposed as proven; retain it as a hypothesis and return a decisive root-owned reproduction method.\n- One proposed guard removal — passes when Require its corresponding actual forbidden effect or ownership/control failure, exact restoration and a fresh closing case; loss of a log or a scripted substitute does not pass for the real effect.",
+      "Implement only a coordinator-approved measured/reproduced disposition\n\nFor an item with explicit coordinator authorization and path ownership, implement the smallest complete change at the existing platform/hv/arch seam, with explicit typed state/error/cancel behavior, fallible storage and derived constants. Alternatively record a coordinator-accepted no-code disposition supported by the actual evidence. No production implementation is licensed by plan readiness or a source-only research finding.\n\nAcceptance criteria:\n- Each production change has exact root-approved reproduced/measured basis, primary alternatives, D-entry derivation/cold-start/overflow/failure semantics and clear authoritative ownership; no new speculative cache/framework/manager or host/security/crypto change.\n- Only approved targeted unit/light tests run in a new private Kiln envelope; required coordinator heavy/combined/platform work remains explicitly owed, with no panic/OOM/performance/coverage overclaim.\n\nTests:\n- Targeted light compile and behavior checks after explicit approval — passes when Use exact named source/target and approved≤1CPU/1GiB/2GiB envelope; record complete commands and outputs, including all unrun checks and sparse/stub limits.\n- No-code disposition — passes when Coordinator acceptance cites actual evidence and remaining supported-contract limits; it cannot waive a required managed-runtime promise or declare unverified coverage passing.",
+      "Land reviewed signed pieces promptly through coordinator-owned main gates\n\nReturn small signed named-path commits using /Users/adalundhe/.kiln-run/bin/gits and the required Claude Opus5.5 trailer; push only this lane's branch. Research and independently complete pieces are reviewed/landed promptly without waiting for unrelated phases. Root reviews source/evidence, executes applicable combined seven-target and actual host/VM gates and merges/pushes main; this lane never self-merges.\n\nAcceptance criteria:\n- Each checkpoint carries exact commit/source/policy IDs, named paths, applicable R01–R16 proof/gaps, completed light checks, root-owed runs and stable coordinator message keys.\n- Coordinator records reviewed acceptance on actual main/origin/main with revision-specific gates; old source results, skipped hardware or a pushed research branch are not treated as new passing implementation evidence.\n\nTests:\n- Signed checkpoint validation — passes when Commit signature/trailer, changed-path ownership, named-path whitespace/source checks and remote branch identity are verified; no force-push/signing waiver or staged setup deletion occurs.\n- Main acceptance versus integration-only state — passes when Evidence identifies actual main/origin/main accepted revision and pending checks honestly; full runtime completion is not inferred from branch integration.",
+      "Keep the analysis lane active until explicit coordinator release\n\nCycle through the approved independent topic queue and concrete follow-ups while root validates returned pieces. On compaction preserve policy readback, exact scope/refs, signed artifacts, active root ownership, queued versus running status and next actions. Do not stop at a report, create fake activity, launch unapproved campaigns or mark the maintenance goal complete. Closure occurs only after coordinator confirms all lane obligations accepted on main with actual evidence and explicitly releases the lane.\n\nAcceptance criteria:\n- No required derivation, approved implementation, owed coordinator evidence or accepted-main obligation is silently dropped; each remaining dependency and supported-platform uncertainty is recorded.\n- The coordinator's explicit release and actual accepted-main/evidence references are the closure witness; making this plan ready or finishing one report does not meet the maintenance goal.\n\nTests:\n- Report checkpoint with other obligations remaining — passes when Send the bounded signed checkpoint and continue the next approved independent item; preserve the current lane instead of ending it.\n- Proposed final lane closure — passes when Verify explicit coordinator release, actual main evidence and every outstanding owed run/disposition; if any is missing continue the scoped queue without an idle poll loop."
+    ],
+    "runs": 0,
+    "phase": "ready",
+    "research": "01a1c5cfb0fa7605a915fa767f65a9e4"
+  },
+  "ready": {
+    "then": "goals",
+    "goal": "9b0223e190208c2aa5fb869058b7a82c",
+    "run": "01a1c5d67e6377d7903e27a962f607ff",
+    "warnings": []
+  },
+  "limits": [
+    "Planning readiness only; sustained maintenance goal remains open.",
+    "No runtime measurements, compile/tests, heavy audits/campaigns or production edits in this lane.",
+    "Exact next TLS/QUIC source paths and four ring identities remain coordinator scope gates.",
+    "Local headroom hold: root reports31259148KiB below30GiB; no local builds or new full trees/mirrors/large archives until explicit receipt."
+  ]
+}

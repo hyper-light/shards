@@ -1,0 +1,88 @@
+{
+  "kind": "Documentation, source identity and ready-plan structure only; no Rust compile/runtime tests/measurements",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "documentation_parent": "c0db0f6ccd6780d9c703e1ae936674f1795e288f",
+  "utc": "2026-11-10T14:24:02.631673+00:00",
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/README.md",
+        "docs/research/measurements/managed-poller-research/source-identity.json",
+        "docs/research/measurements/managed-poller-research/kiln-plan.json",
+        "docs/research/measurements/managed-poller-research/kiln-research.md"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "Python: exact parent/owned paths,17 base source hashes,29 source identities,10 ready-plan steps with acceptance/tests/valid finding IDs,relative links",
+      "exit_code": 0,
+      "verified_local_blobs": 17,
+      "source_identity_records": 29,
+      "plan_steps": 10,
+      "relative_links": 21
+    }
+  ],
+  "files": [
+    {
+      "path": "docs/research/managed-poller-capacity.md",
+      "sha256": "ad356223c6c07128c4de75cd13be4fba33636561f90dceb2b7279660b1efcd4e"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/README.md",
+      "sha256": "25dcdcc6c3b8f94096ec9107889b7cae1d30795cb9aafcee10da5a15347fdbde"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/source-identity.json",
+      "sha256": "4877d5a26928ebe3f1774866e4a81934b71d9f1a98e604c081f5946e8edffef8"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/kiln-plan.json",
+      "sha256": "716db65aaf35c298a332953f4d7dfca2453eca14f2d0e4b35fbbb03092fb18ca"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/kiln-research.md",
+      "sha256": "7d61309ce61a614b458e5a62407761916add47933b135ee41d3ce00e5b1a90ec"
+    }
+  ],
+  "headroom": {
+    "root_reported_free_kib": 31259148,
+    "required_floor": "30GiB",
+    "local_build_hold": true,
+    "active_local_targets": [],
+    "active_local_caches": [],
+    "runtime_jobs": []
+  },
+  "unrun": [
+    "compile",
+    "unit/integration/E2E",
+    "syscall/cgroup/TLS/QUIC/device fixture",
+    "OOM/fault/mutation",
+    "all-target lint",
+    "VM/namespace/BPF/socket campaign",
+    "audit",
+    "profiling",
+    "benchmark"
+  ],
+  "limits": [
+    "planning readiness is not managed-runtime completion",
+    "No source-path/ring identity guesses or production numeric/API choices",
+    "All runtime and root-acceptance obligations remain open"
+  ]
+}

@@ -419,3 +419,112 @@ the managed plan's unresolved owner-budget or fairness requirements.
    Coordinator owns changed-source lint and real-guest gates. No host platform
    result follows from the Linux document, no unavailable/paused hardware is a
    passing skip, and all tests/costs above remain **unrun** here.
+
+## 8. Concrete capacity contracts for coordinator comparison
+
+This continuation makes the alternatives testable without selecting an API,
+batch number, growth rule or production change. The original two literals remain
+the entire source scope. These are necessary constraints inferred from the
+primary sources above; satisfying them alone would not establish correctness,
+fairness or hard resource accounting.
+
+### Logical service length, allocated space and reservations
+
+Let C be a proposed syscall's **logical service length**, E the target's native
+event size, N the native buffer's allocated capacity, and T the separate token
+buffer's allocated capacity if one is retained. C counts native records, not
+distinct token values: this API does not require unique tokens.
+
+For a positive event wait, a candidate with separate native/token storage needs
+all of the following **before dequeuing**:
+
+* C is positive and within the syscall count/byte bounds from section 2.
+* C <= N and C <= T, with checked layouts and conversions.
+* The actual syscall receives C, even when N is larger. Returning up to N while
+  only T >= C was prepared can reintroduce allocation after dequeue.
+* Retained native and token capacities, allocator overhead and any growth peak
+  fit the actual admission contract. C * (E + size_of::<u64>()) is only requested
+  payload arithmetic, not a proof of total allocator/parent/kernel charges.
+
+The public [`Vec::try_reserve_exact` contract](https://github.com/rust-lang/rust/blob/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs)
+guarantees at least `len + additional`, permits allocator excess, and does not
+promise exact capacity. It takes additional elements relative to **length**,
+not additional space beyond capacity. After clearing, requesting `C - capacity`
+can do nothing and fail to establish capacity C. A candidate must derive the
+argument from current length and its target, with checked arithmetic, then
+validate the resulting usable storage contract.
+
+This is not an observed over-allocation result. The pinned
+[`RawVec::grow_exact`](https://github.com/rust-lang/rust/blob/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs)
+sets its requested capacity; its allocation path comments on the current
+allocator behavior. Independently, a reused buffer can already retain a larger
+capacity from an earlier turn. Logical C must therefore stay independent of N
+even if a particular allocator happens to report exact requested capacities.
+The pinned mio epoll implementation passes allocated capacity as its syscall
+length; that describes mio's contract, not a proof that the same choice fits a
+Shards candidate with separately admitted token/output storage.
+
+The admission input itself is unresolved. The current Poller does not carry a
+hard admitted storage budget, and existing collection lengths are not proven
+exact kernel membership. Giving these quantities symbols does not create such a
+budget or justify a new registration cap. Coordinator data and the surrounding
+resource contract must supply the actual constraints before selection.
+
+For inotify the corresponding distinction is between B, the supplied byte
+length, and the allocated byte capacity. B must fit the next complete record
+under the proved watch contract; the number of reads/records serviced before
+returning to the relay remains a different choice. Queue bytes from FIONREAD,
+the kernel event-count limit and total allocated bytes cannot substitute for
+one another.
+
+### Ownership and transitions without a second watch registry
+
+| Candidate storage arrangement | Required order and lifetime |
+| --- | --- |
+| Retain the current token-Vec result API with reusable native storage | Provision native and token room for the **same logical C**, then enter the syscall. On success only the returned initialized prefix is converted, without allocating. A failed cold reservation occurs before kernel dequeue. Optional later growth refusal can retain the prior valid service buffer only under an explicit progress/error contract. |
+| Caller-owned native storage with a borrowed token view | Fallibly provision storage, wait into it, then expose only its initialized prefix. The view remains valid until the caller finishes consuming it; reuse/growth must wait until that borrow ends. This avoids a separate token-copy buffer, but changes the caller contract and requires live caller evidence. It does not require adding a watched-FD map or changing registration ownership. |
+
+The proposed sequence is `unprepared -> prepared(C) -> waiting -> filled(n) ->
+consumed`, where 0 <= n <= C; reuse returns to prepared state. A syscall error or
+interruption establishes no filled prefix under the current Poller contract.
+Reservation failure is a preparation failure, not an empty successful wait.
+If caller processing fails while records remain filled, the selected contract
+must retain them, reconcile owned terminal state, or report explicit uncertainty;
+clearing the storage is not automatically a retry of a consumed oneshot event.
+These are contract states, not a new production enum or manager.
+
+Current `wait` and registration take `&self`. Moving mutable event storage inside
+Poller would need an explicit rule for simultaneous waits and registrations;
+serializing the whole object with a mutex across a blocking wait could prevent
+another caller from adding/waking it. Caller-owned storage avoids that particular
+shared mutable buffer, but does not itself promise which of multiple simultaneous
+waiters receives a one-shot event. The focused production followers caller has
+one wait loop; do not invent a stronger multi-waiter contract or hold its
+registration-owner locks across the wait.
+
+Cancellation continues through actual existing wake/deadline/ownership paths.
+No proposal here relies on closing a poller fd from another thread as a portable
+wait-cancellation guarantee. A synchronous allocation attempt before waiting
+also needs control-progress and admitted-cost evidence; merely moving a fallible
+step earlier does not prove bounded cancellation latency.
+
+### Additional decisive cases, all unrun and coordinator-owned
+
+These complement sections 5 and 7. C and the other letters below are explicit
+finite fixture inputs chosen inside the coordinator's admitted resources, never
+new runtime policy values. A synthetic reserve/parser case verifies only its
+local contract; it cannot replace the exact caller's live reproduction.
+
+| Case | Setup and independent witness | Candidate requirement / useful counterfactual |
+| --- | --- | --- |
+| Capacity argument semantics | Clear a reusable Vec with old capacity G; request a target C where G < C and C - G <= G. Record requested additional, length and resulting capacity. | Correct preparation must establish capacity >= C. A mutant that treats `additional` as space beyond capacity exposes a no-op reservation. This pure case says nothing about syscall behavior or allocation cost. |
+| Retained space exceeds service grant | Provision native capacity N, then use a lower logical C and token room T = C; make more than C sources actually ready within the fixture envelope. Retain the requested syscall count and raw return count. | The syscall must receive C and return n <= C. Removing only that logical bound can witness n > C; that alone is not yet proof of lost tokens/OOM. No special allocator behavior is needed to construct N > C. |
+| Cold reservation refusal before oneshot | On macOS use one private owned child with validated registration/exit and a separately approved reservation-refusal injector. Preallocate the test's recording fields; restore the injector before reporting. | Refusal must precede dequeue, and a later legitimate wait must still observe the event or reconcile the owned terminal state. Record child status independently. An isolated child fixture proves this ordering, not all daemon caller recovery. |
+| Refusal after consumed oneshot | Only after a candidate and reproduction basis are approved: retain the raw successful kevent count, then remove its pre-dequeue output provision and refuse the ensuing conversion growth. Finish cleanup before asserting. | Establish actual consumed notification plus failed delivery, not merely a timeout. A later empty wait alongside independently verified child exit is meaningful only with the recorded initial successful dequeue. Restore exact source and repeat. |
+| inotify complete prefix | Use a private fixture with known complete record sizes, including one deliberately named-record case separate from Memory's file-watch premise. Independently retain raw bytes and whether another complete record remains readable. | A short successful read must not be interpreted as EAGAIN. EINVAL on the next too-small record must not be accepted as clean drain completion. Consumer-injected records establish parsing only; actual kernel framing needs the real reader. |
+
+Before approving implementation, the coordinator still needs an exact reproduced
+symptom/goal at a named caller, authoritative resource inputs, the selected
+delivery/cancel/failure contract, meaningful counterfactuals and paired costs.
+This refinement supplies concrete comparisons for that decision; it supplies no
+performance claim, architectural selection, new cache or production literal.

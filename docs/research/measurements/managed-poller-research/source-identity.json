@@ -607,5 +607,120 @@
     "Historical libevent/libev releases establish alternatives, not a selected current performance baseline.",
     "inotify source chain includes only the selected file-watch framing, cgroup notification, queue/read/overflow semantics and direct-poll alternative. No repository/kernel audit.",
     "libev ev.c identity already records the same bytes inspected for infy_cb/infy_wd/EV_INOTIFY_BUFSIZE in the second batch."
+  ],
+  "continuation_reads": [
+    {
+      "scope": "Additional-space versus total-capacity semantics, retained/excess capacity versus logical syscall count; no new runtime source scope or measurement",
+      "records": [
+        {
+          "id": "rust:library/alloc/src/vec/mod.rs",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+          "retrieved_utc": "2026-11-10T14:14:18.343925+00:00",
+          "sha256": "d4684df2b3c53ed24632b5450cb272e9eeb19987cb305cacf506358f4f489ca2",
+          "bytes": 158242,
+          "matches_original": true
+        },
+        {
+          "id": "rust:library/alloc/src/raw_vec/mod.rs",
+          "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+          "retrieved_utc": "2026-11-10T14:14:18.423768+00:00",
+          "sha256": "5c51411a79a9c48ce17940080603d7129a7426dec86ae43d1d8924f7bfa8198a",
+          "bytes": 29400,
+          "matches_original": true
+        },
+        {
+          "id": "mio:src/sys/unix/selector/epoll.rs",
+          "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+          "retrieved_utc": "2026-11-10T14:14:18.506005+00:00",
+          "sha256": "689ade2c72f85caa204edada855790b7a617f78bc759487304be24c6ec4efb2d",
+          "bytes": 6883,
+          "matches_original": true
+        }
+      ]
+    }
+  ],
+  "policy_readbacks": [
+    {
+      "role": "implementer",
+      "canonical_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+      "handoff_sha256": "8c630628ff953ae79ec825579eb924279ce26d41e8c06e7c5233a11a9d96cb48",
+      "full_reread_utc": "2026-11-10T14:14:18.506121+00:00",
+      "message_key": "managed-poller-research-continual-policy-read-a0f35743-v1",
+      "owned_paths": [
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/"
+      ]
+    }
+  ],
+  "planning_sources": [
+    {
+      "id": "rfc8446",
+      "type": "IETF Standards Track primary text",
+      "url": "https://www.rfc-editor.org/rfc/rfc8446.txt",
+      "resolved_url": "https://www.rfc-editor.org/rfc/rfc8446.txt",
+      "published": "2018-08",
+      "retrieved_utc": "2026-11-10T14:21:31.164252+00:00",
+      "bytes": 337736,
+      "sha256": "47871bc8820a2c3b6ea89f061055577058862cf543686b82d10131239702b3bd",
+      "status": 200,
+      "scope": "Planning evidence for named future topic; exact Shards source paths/callers not yet supplied, no protocol/crypto changes"
+    },
+    {
+      "id": "rfc9000",
+      "type": "IETF Standards Track primary text",
+      "url": "https://www.rfc-editor.org/rfc/rfc9000.txt",
+      "resolved_url": "https://www.rfc-editor.org/rfc/rfc9000.txt",
+      "published": "2021-05",
+      "retrieved_utc": "2026-11-10T14:21:31.452145+00:00",
+      "bytes": 403442,
+      "sha256": "f88aae47f8b18e102024916e975e919201d8dde689cba79b01079eaedd402e22",
+      "status": 200,
+      "scope": "Planning evidence for named future topic; exact Shards source paths/callers not yet supplied, no protocol/crypto changes"
+    },
+    {
+      "id": "rfc9221",
+      "type": "IETF Standards Track primary text",
+      "url": "https://www.rfc-editor.org/rfc/rfc9221.txt",
+      "resolved_url": "https://www.rfc-editor.org/rfc/rfc9221.txt",
+      "published": "2022-03",
+      "retrieved_utc": "2026-11-10T14:21:31.668678+00:00",
+      "bytes": 18624,
+      "sha256": "ee8c04c5228fd120030ba7a8f6725c2ca609da107ad2ba8c44fdd44f73edb3b4",
+      "status": 200,
+      "scope": "Planning evidence for named future topic; exact Shards source paths/callers not yet supplied, no protocol/crypto changes"
+    }
+  ],
+  "kiln_planning": {
+    "plan": "01a1c5cfb0f6736f910c8f76dcbfc37f",
+    "research": "01a1c5cfb0fa7605a915fa767f65a9e4",
+    "goal_scope": "Sustained constants/derivation lane; planning readiness is not runtime completion",
+    "unresolved_scope": [
+      "TLS Handshake exact paths/callers",
+      "QUIC datagram/credit exact paths/callers and semantic feature",
+      "Four named unmeasured device-ring identities and owned note paths"
+    ]
+  },
+  "checkpoint_history": [
+    {
+      "commit": "df37d254f366e8a7c9d75c876d816927860ee620",
+      "branch": "p/managed-poller-research",
+      "signing_command": "/Users/adalundhe/.kiln-run/bin/gits commit --only <named owned paths>",
+      "gpgsig_header_present": true,
+      "required_trailer_present": true,
+      "pushed": true,
+      "coordinator_message_key": "managed-poller-research-checkpoint-poller-df37-v1",
+      "cryptographic_verification": "Signature created by required gits wrapper; separate verify-commit not run in this lane"
+    },
+    {
+      "commit": "c0db0f6ccd6780d9c703e1ae936674f1795e288f",
+      "branch": "p/managed-poller-research",
+      "signing_command": "/Users/adalundhe/.kiln-run/bin/gits commit --only <named owned paths>",
+      "gpgsig_header_present": true,
+      "required_trailer_present": true,
+      "pushed": true,
+      "coordinator_message_key": "managed-poller-research-checkpoint-inotify-c0db-v1",
+      "cryptographic_verification": "Signature created by required gits wrapper; separate verify-commit not run in this lane"
+    }
   ]
 }

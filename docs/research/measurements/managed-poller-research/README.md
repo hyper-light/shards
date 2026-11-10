@@ -88,8 +88,53 @@ It documents the unnamed-file-record derivation, complete-read framing,
 kernel queue/coalescing/overflow versus userspace storage, errno/invalidation,
 control progress, direct kernfs change-notification alternative, and another
 **unrun** coordinator plan. Neither a number nor architecture was selected.
-After both batches, request the next specific literal
-from root and remain available without manufacturing an idle campaign or waiter.
+Second batch `c0db0f6ccd6780d9c703e1ae936674f1795e288f` was signed/pushed,
+sent under `managed-poller-research-checkpoint-inotify-c0db-v1`, and followed by
+`managed-poller-research-next-scope-after-c0db-v1` requesting the next exact
+literal. Ada then explicitly renewed continual analysis. This lane stays active
+on the existing two questions while the coordinator supplies the next confirmed
+literal, and sends checkpoints without ending work at each checkpoint. No idle
+waiter or manufactured campaign is authorized.
+
+On renewal, the complete canonical five policy/plan files and current handoff
+were re-read. Policies remain byte-identical 24f/d634; the newly read handoff
+SHA-256 is `a0f3574338cbe8aaf0cef97f3f001cd2c0d048dddd24d3000ff21c284113605e`.
+Receipt key: `managed-poller-research-continual-policy-read-a0f35743-v1`.
+The continuation makes native/token storage preparation, logical syscall length
+versus allocated capacity, reserve argument semantics, and decisive test cases
+concrete. It still selects no architecture/number and changes no runtime source.
+The manifest preserves earlier handoff identity and records this later readback
+separately. Root's r582/r583 source/targets/caches are exclusive per that handoff;
+this lane neither inspects nor modifies their live jobs or protected contents.
+
+### Sustained Kiln plan and current continuation
+
+Ada's goal-created plan `01a1c5cfb0f6736f910c8f76dcbfc37f`, research
+`01a1c5cfb0fa7605a915fa767f65a9e4`, is now ready (version 2, ten steps;
+`plans_ready` used `then=goals`, with **no warnings**). The
+[retained plan](kiln-plan.json) has acceptance criteria, test scenarios,
+dependencies and finding IDs for each step. The
+[exact Kiln research Markdown](kiln-research.md) carries the ten findings,
+numbered citations and Kiln's own grades/scores; every cited quote was found.
+Those automated grades and source counts are not live evidence, technical
+certification or a method/architecture choice under R02.
+
+This ready plan does not complete the parent maintenance goal. The approved
+topic queue includes TLS Handshake length/admission, QUIC datagram/credit bounds
+and four named unmeasured device rings. Exact Shards source paths/callers, the
+four ring identities and expanded owned note paths have been requested with
+`managed-poller-research-plan-queue-clarification-v1`; unresolved scope is an
+explicit plan gate. Three primary RFC identities are recorded separately as
+planning sources in the manifest. No guessed device inventory, TLS/crypto code
+change or new repository source scope follows from those protocol documents.
+
+Root now reports local free space **31259148 KiB, below the required 30 GiB**.
+This lane has no active local build targets/caches/jobs and created no target,
+mirror, further worktree or retained archive. All local build/compile and new
+full tree/mirror/large archive actions are held until root supplies a headroom
+receipt. Source, research and planning continue. The hold/no-cache receipt was
+sent with `managed-poller-research-headroom-hold-local-none-v1`; all work/evidence
+and root-exclusive sources/caches remain preserved.
 Signed checkpoints use `/Users/adalundhe/.kiln-run/bin/gits`, named paths and the
 required Claude Opus 5.5 trailer. Only this lane's branch is pushed; no self-main
 merge. Commit IDs are sent in coordinator messages and visible in Git history.
@@ -124,7 +169,8 @@ still required." Named-path staged whitespace and local-link/manifest checks are
 recorded in [checks-poller.json](checks-poller.json) before the first checkpoint
 commit; those hashes belong to that historical documentation version, not the
 expanded note/manifest. The second documentation checks are retained separately
-in [checks-inotify.json](checks-inotify.json). No Rust compile,
+in [checks-inotify.json](checks-inotify.json). The continuation's separate
+documentation record is [checks-contracts.json](checks-contracts.json). No Rust compile,
 unit/integration test, syscall fixture, fault injection, mutation, VM, lint matrix,
 benchmark, profile or audit ran in this batch. All runtime and comparative plans
 in the note are coordinator-owed and unrun; historic evidence is identified at
