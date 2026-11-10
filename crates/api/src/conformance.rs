@@ -11,8 +11,12 @@ use std::io::{Read as _, Write as _};
 use std::net::Shutdown;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use crate::ProcessOperation;
 use crate::record::Learned;
-use crate::{Backend, End, Guest, GuestSpec, Guests, Identity, Refusal, backend_of, min_memory_mib};
+use crate::{
+    Backend, End, Guest, GuestSpec, Guests, Identity, ProcessFailure, Refusal, backend_of, min_memory_mib,
+};
 
 /// What the suite runs against.
 pub struct Subject<'a> {
@@ -317,7 +321,7 @@ pub fn stop_ends_it_and_later_connects_are_refused(s: &Subject<'_>) -> Result<()
 /// A guest whose client's handle is lost without its drop (a crashed client's: nothing of it ran
 /// on) is taken back by `attach` of its identity: the attached guest serves its port and stops as
 /// any guest does; once it has ended, attach of it is refused `Ended` or `Gone`, and attach of an
-/// identity whose start time differs (its pid since given another process) is refused `Gone`. On
+/// identity whose start time differs is refused with its observed start (or simulator `Gone`). On
 /// Windows a guest's VM ends with the process that booted it (D141), so none outlives its client to
 /// be taken back: attach of it answers `Gone`, the guest still its booter's.
 pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Result<(), Failure> {
@@ -342,7 +346,12 @@ pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Resul
         ..identity.clone()
     };
     match s.guests.attach(&other, &s.serving) {
-        Err(Refusal::Gone { .. }) => {}
+        Err(Refusal::Gone { pid, .. }) if pid == other.pid => {}
+        Err(Refusal::Process {
+            pid,
+            expected_started,
+            failure: ProcessFailure::DifferentStart { observed },
+        }) if pid == other.pid && expected_started == other.started && observed == identity.started => {}
         other => {
             return Err(fail(
                 CASE,
@@ -375,7 +384,35 @@ pub fn a_guest_its_client_lost_is_taken_back_by_attach(s: &Subject<'_>) -> Resul
     }
     match s.guests.attach(&identity, &s.serving) {
         Err(Refusal::Ended(_) | Refusal::Gone { .. }) => Ok(()),
-        other => Err(fail(CASE, format!("attach of an ended guest: {:?}", other.err()))),
+        Err(Refusal::Process {
+            pid,
+            expected_started,
+            failure: ProcessFailure::Exited,
+        }) if pid == identity.pid && expected_started == identity.started => Ok(()),
+        Err(Refusal::Process {
+            pid,
+            expected_started,
+            failure: ProcessFailure::DifferentStart { observed },
+        }) if pid == identity.pid && expected_started == identity.started && observed != identity.started => {
+            Ok(())
+        }
+        #[cfg(unix)]
+        Err(Refusal::Process {
+            pid,
+            expected_started,
+            failure:
+                ProcessFailure::Os {
+                    operation: ProcessOperation::PidfdOpen | ProcessOperation::RegisterExit,
+                    code: libc::ESRCH,
+                },
+        }) if pid == identity.pid && expected_started == identity.started => Ok(()),
+        other => Err(fail(
+            CASE,
+            format!(
+                "attach of the independently stopped/awaited guest: {:?}",
+                other.err()
+            ),
+        )),
     }
 }
 

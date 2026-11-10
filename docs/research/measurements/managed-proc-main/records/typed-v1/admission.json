@@ -1,0 +1,16 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r224\",\n  \"why\": \"linux/x86_64 \u00b7 27 of 32 cores idle \u00b7 32 GB free \u00b7 room for 4 CPUs, 1 GiB of memory, 2 GiB of disk\"\n}"
+    }
+  ],
+  "structuredContent": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "",
+    "running": true,
+    "id": "r224",
+    "why": "linux/x86_64 \u00b7 27 of 32 cores idle \u00b7 32 GB free \u00b7 room for 4 CPUs, 1 GiB of memory, 2 GiB of disk"
+  },
+  "isError": false
+}

@@ -1,0 +1,30 @@
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-typed-7df18a17fa/crates/api)
+error[E0433]: cannot find module or crate `io` in this scope
+   --> crates/api/src/taken.rs:215:25
+    |
+215 |                 let e = io::Error::last_os_error();
+    |                         ^^ use of unresolved module or unlinked crate `io`
+    |
+    = help: if you wanted to use a crate named `io`, use `cargo add io` to add it to your `Cargo.toml`
+help: consider importing one of these items
+    |
+ 77 +     use crate::io::Error;
+    |
+ 77 +     use std::error::Error;
+    |
+ 77 +     use std::fmt::Error;
+    |
+ 77 +     use std::io::Error;
+    |
+    = and 2 other candidates
+help: if you import `Error`, refer to it directly
+    |
+215 -                 let e = io::Error::last_os_error();
+215 +                 let e = Error::last_os_error();
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `shards-api` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `shards-api` (lib) due to 1 previous error
+error: could not compile `shards-api` (lib test) due to 1 previous error

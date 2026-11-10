@@ -1,0 +1,5 @@
+34b6943af5831d1bc0e8341d5ea021189d737e78cd8d0114c18ec0a8543770ce  crates/api/src/client.rs
+b591e7832e1f4a29fbadf1100d83d04c73017b4ba7064bcebc14b6d3528e73ad  crates/api/src/taken.rs
+c1e3c27a62ed6dad066a3388f63c329800dca5f078bcd4ea5e4f5b52b130db16  crates/api/src/lib.rs
+aaa3c49a4c142614aed1562fae57fd8d762f95b128736648f298c53c12758d5b  crates/api/src/conformance.rs
+95a1729abc139e7d379f0142ea192bc85c934fb3a8c6c88d3b746f4d2b9b7a3f  docs/research/measurements/managed-proc-main/run-typed-attach.sh

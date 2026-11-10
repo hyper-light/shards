@@ -1,0 +1,39 @@
+{
+  "commands": [
+    "cargo fmt --all -- --check",
+    "python3 scripts/check-development-policy",
+    "git diff --check 1cbd4c4d853957276f702a80e71b9730bb350e94..HEAD"
+  ],
+  "results": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "f62641",
+        "wall_time_seconds": 3.821323917,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "e4ebee",
+        "wall_time_seconds": 6.208e-06,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "2d4d03",
+        "wall_time_seconds": 7.583e-06,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ]
+}

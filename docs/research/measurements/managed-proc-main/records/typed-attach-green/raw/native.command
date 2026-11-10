@@ -1,0 +1,1 @@
+cargo test --locked -j4 --profile test-release -p shards-api --target x86_64-unknown-linux-gnu --lib client::tests::attach_takes_back_a_guest_whose_ --message-format=json-render-diagnostics -- --test-threads=1 --nocapture

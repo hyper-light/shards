@@ -1,0 +1,11 @@
+{
+  "command": "git diff --cached --check",
+  "scope": "initial evidence-only staging; original raw logs retained byte-for-byte",
+  "result": {
+    "chunk_id": "bc2fe3",
+    "wall_time_seconds": 0.000006292,
+    "exit_code": 2,
+    "original_token_count": 108,
+    "output": "docs/research/measurements/managed-proc-main/records/typed-v1/raw/gnu-tests.log:24: new blank line at EOF.\ndocs/research/measurements/managed-proc-main/records/typed-v1/raw/musl-tests.log:24: new blank line at EOF.\ndocs/research/measurements/managed-proc-main/records/typed-v3/raw/gnu-tests.log:24: new blank line at EOF.\ndocs/research/measurements/managed-proc-main/records/typed-v3/raw/musl-tests.log:24: new blank line at EOF.\n"
+  }
+}

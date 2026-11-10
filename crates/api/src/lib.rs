@@ -38,6 +38,10 @@ mod taken;
 #[cfg(test)]
 mod while_runs;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
+mod proc_allocation;
+
 pub use client::Shards;
 
 /// A guest to boot.
@@ -177,6 +181,78 @@ pub mod record {
     }
 }
 
+/// The native operation that could not observe a process identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessOperation {
+    PidfdOpen,
+    KqueueCreate,
+    RegisterExit,
+    OpenStat,
+    ReadStat,
+    ProcPidRusage,
+    PollExit,
+    KeventExit,
+}
+
+/// A failure of the concrete process-identity producers. Observation failure is
+/// not proof that a process has ended or that its PID has been reused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessFailure {
+    /// The exact native error code; its operation supplies the observation stage.
+    Os {
+        operation: ProcessOperation,
+        code: i32,
+    },
+    PidOutOfRange {
+        operation: ProcessOperation,
+    },
+    DescriptorOutOfRange {
+        returned: i64,
+    },
+    IdentifierOutOfRange,
+    PathBounds,
+    /// The reader could not reserve capacity; this does not establish host exhaustion.
+    CapacityUnavailable,
+    BufferBounds,
+    InvalidStartRecord,
+    DifferentStart {
+        observed: u64,
+    },
+    Exited,
+    /// An unexpected I/O representation with no native code. Its payload is not
+    /// represented here; the observation remains uncertain.
+    UnrepresentedIo {
+        operation: ProcessOperation,
+        kind: io::ErrorKind,
+    },
+}
+
+impl std::fmt::Display for ProcessFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Os { operation, code } => write!(f, "{operation:?}: OS error {code}"),
+            Self::PidOutOfRange { operation } => write!(f, "{operation:?}: PID is not representable"),
+            Self::DescriptorOutOfRange { returned } => {
+                write!(f, "descriptor {returned} is not representable")
+            }
+            Self::IdentifierOutOfRange => f.write_str("process event identifier is not representable"),
+            Self::PathBounds => f.write_str("process stat pathname bounds"),
+            Self::CapacityUnavailable => f.write_str("process stat capacity unavailable"),
+            Self::BufferBounds => f.write_str("process stat buffer bounds"),
+            Self::InvalidStartRecord => f.write_str("process stat has no valid starttime"),
+            Self::DifferentStart { observed } => {
+                write!(f, "process started at {observed}: another process's since")
+            }
+            Self::Exited => f.write_str("the held process has ended"),
+            Self::UnrepresentedIo { operation, kind } => {
+                write!(f, "{operation:?}: unrepresented I/O cause ({kind:?})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProcessFailure {}
+
 /// What can't be done, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -195,6 +271,13 @@ pub enum Refusal {
     /// No guest runs as the [`Identity`] names: its VM's process has ended, or its pid now names
     /// another process (its start time differs).
     Gone { pid: u32, why: String },
+    /// A native process identity could not be held or observed. The failure keeps
+    /// its stage and cause; only DifferentStart and Exited assert those outcomes.
+    Process {
+        pid: u32,
+        expected_started: u64,
+        failure: ProcessFailure,
+    },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -223,11 +306,25 @@ impl std::fmt::Display for Refusal {
             Refusal::Channel { port, why } => write!(f, "vsock port {port}: {why}"),
             Refusal::Ended(end) => write!(f, "the guest has ended: {end:?}"),
             Refusal::Gone { pid, why } => write!(f, "no guest runs as pid {pid}: {why}"),
+            Refusal::Process {
+                pid,
+                expected_started,
+                failure,
+            } => {
+                write!(f, "process {pid}, expected start {expected_started}: {failure}")
+            }
         }
     }
 }
 
-impl std::error::Error for Refusal {}
+impl std::error::Error for Refusal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Process { failure, .. } => std::error::Error::source(failure),
+            _ => None,
+        }
+    }
+}
 
 /// A connection to a guest's vsock port: a Unix stream socket, on Windows shards' own
 /// overlapped one (`shards_afunix`), whose one thread's write never waits for another's
@@ -284,8 +381,9 @@ pub trait Guests: Send + Sync {
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
     /// Takes back the guest `identity` names, booted from `spec` by a client whose process has
     /// gone since (a crash: nothing of it ran on, so nothing ended the guest), as [`boot`]'s
-    /// own: the caller's until it drops, which ends it. Refused [`Refusal::Gone`] when no guest
-    /// runs as `identity` names, [`Refusal::Ended`] when that guest has ended. On Windows a
+    /// own: the caller's until it drops, which ends it. Native identity observation failures
+    /// return [`Refusal::Process`], preserving PID/start and the exact failure. A simulator
+    /// may return [`Refusal::Gone`], or [`Refusal::Ended`] when that guest has ended. On Windows a
     /// guest's VM is in a job object that ends with the process that booted it (D141), so no
     /// guest outlives its client there, and attach finds it gone.
     ///

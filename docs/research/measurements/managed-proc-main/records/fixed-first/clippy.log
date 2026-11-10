@@ -1,0 +1,49 @@
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-main-c4ac3e415a/crates/api)
+error: unused import: `Read`
+ --> /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-main-c4ac3e415a/crates/api/../../docs/research/measurements/managed-proc-main/repro.rs:2:29
+  |
+2 | use std::io::{BufRead as _, Read as _, Write as _};
+  |                             ^^^^
+  |
+  = note: `-D unused-imports` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unsafe block missing a safety comment
+  --> crates/api/src/../../../docs/research/measurements/managed-proc-main/allocation.rs:26:13
+   |
+26 |             unsafe { System.alloc(layout) }
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+   = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`
+
+error: unsafe block missing a safety comment
+  --> crates/api/src/../../../docs/research/measurements/managed-proc-main/allocation.rs:33:13
+   |
+33 |             unsafe { System.alloc_zeroed(layout) }
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: unsafe block missing a safety comment
+  --> crates/api/src/../../../docs/research/measurements/managed-proc-main/allocation.rs:40:13
+   |
+40 |             unsafe { System.realloc(at, layout, size) }
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: unsafe block missing a safety comment
+  --> crates/api/src/../../../docs/research/measurements/managed-proc-main/allocation.rs:44:9
+   |
+44 |         unsafe { System.dealloc(at, layout) }
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: could not compile `shards-api` (lib test) due to 5 previous errors

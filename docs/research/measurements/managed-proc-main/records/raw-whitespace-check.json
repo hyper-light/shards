@@ -1,0 +1,14 @@
+{
+  "command": "git show --format= --check 45736e19",
+  "result": {
+    "chunk_id": "9aca65",
+    "wall_time_seconds": 0.000010667,
+    "exit_code": 2,
+    "original_token_count": 555,
+    "output": "docs/research/measurements/managed-proc-main/records/baseline/build.command:1: trailing whitespace.\n+cargo test --locked -j4 --profile test-release -p shards-api --lib --no-run --message-format=json-render-diagnostics \ndocs/research/measurements/managed-proc-main/records/baseline/clippy.command:1: trailing whitespace.\n+cargo clippy --locked -j4 -p shards-api --all-targets -- -D warnings \ndocs/research/measurements/managed-proc-main/records/baseline/tests.command:1: trailing whitespace.\n+/home/adalundhe/managed-proc-main-target/test-release/deps/shards_api-41b64a187874479e taken::linux::tests:: --test-threads=1 --nocapture \ndocs/research/measurements/managed-proc-main/records/baseline/tests.log:18: new blank line at EOF.\ndocs/research/measurements/managed-proc-main/records/fixed-checks/build.command:1: trailing whitespace.\n+cargo test --locked -j4 --profile test-release -p shards-api --lib --no-run --message-format=json-render-diagnostics \ndocs/research/measurements/managed-proc-main/records/fixed-checks/clippy.command:1: trailing whitespace.\n+cargo clippy --locked -j4 -p shards-api --all-targets -- -D warnings \ndocs/research/measurements/managed-proc-main/records/fixed-checks/tests.command:1: trailing whitespace.\n+/home/adalundhe/managed-proc-main-target/test-release/deps/shards_api-41b64a187874479e taken::linux::tests:: --test-threads=1 --nocapture \ndocs/research/measurements/managed-proc-main/records/fixed-checks/tests.log:15: new blank line at EOF.\ndocs/research/measurements/managed-proc-main/records/fixed-first/build.command:1: trailing whitespace.\n+cargo test --locked -j4 --profile test-release -p shards-api --lib --no-run --message-format=json-render-diagnostics \ndocs/research/measurements/managed-proc-main/records/fixed-first/clippy.command:1: trailing whitespace.\n+cargo clippy --locked -j4 -p shards-api --all-targets -- -D warnings \ndocs/research/measurements/managed-proc-main/records/fixed-first/tests.command:1: trailing whitespace.\n+/home/adalundhe/managed-proc-main-target/test-release/deps/shards_api-41b64a187874479e taken::linux::tests:: --test-threads=1 --nocapture \ndocs/research/measurements/managed-proc-main/records/fixed-first/tests.log:15: new blank line at EOF.\n"
+  },
+  "sourceOnlyDiffCheck": {
+    "command": "git diff --check f5cec365d2e435afae5e6f613c92d9d3759ef60f..HEAD -- crates/api/src/taken.rs crates/api/src/lib.rs docs/research/measurements/managed-proc-main/allocation.rs docs/research/measurements/managed-proc-main/reader-tests.rs docs/research/measurements/managed-proc-main/repro.rs docs/research/measurements/managed-proc-main/run-light.sh docs/research/measurements/managed-proc-main/README.md",
+    "exit": 0
+  }
+}
