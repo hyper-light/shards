@@ -2492,6 +2492,23 @@ mod tests {
     }
 
     #[test]
+    fn an_unusable_helper_control_is_not_admitted() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = shards_testdir::TempDir::new("helper-mode").unwrap();
+        let control = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(&*dir)
+            .unwrap();
+        let programs = Programs::new(Ok(OwnedFd::from(control)));
+        eprintln!("unusable_native_control_rejected={}", programs.control.is_err());
+        assert!(
+            programs.control.is_err(),
+            "the native nonblocking setup error was discarded"
+        );
+    }
+
+    #[test]
     fn a_program_is_reserved_before_its_helper_receives_authority() {
         let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
         helper.set_nonblocking(true).unwrap();
