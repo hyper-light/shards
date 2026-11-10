@@ -1,0 +1,98 @@
+     Locking 2 packages to latest Rust 1.98.1 compatible versions
+      Adding libc v0.2.189 (available: v0.2.191)
+   Compiling libc v0.2.189
+   Compiling shards-devcgroup v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v2/devcgroup)
+   Compiling sock-addr-pure v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v2/helper)
+error: couldn't read `/home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/../../../../../docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex`: No such file or directory (os error 2)
+   --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/wire.rs:791:13
+    |
+791 | /             include_str!(
+792 | |                 "../../../../../docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex"
+793 | |             )
+    | |_____________^
+
+error[E0282]: type annotations needed
+  --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:37:13
+   |
+37 |             Ok(duration)
+   |             ^^ cannot infer type of the type parameter `E` declared on the enum `Result`
+   |
+help: consider specifying the generic arguments
+   |
+37 |             Ok::<std::time::Duration, E>(duration)
+   |               ++++++++++++++++++++++++++
+
+error[E0283]: type annotations needed
+  --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:37:13
+   |
+37 |             Ok(duration)
+   |             ^^ cannot infer type of the type parameter `E` declared on the enum `Result`
+...
+42 |                 within: within(millis)?,
+   |                                       - type must be known at this point
+   |
+   = note: multiple `impl`s satisfying `std::io::Error: From<_>` found in the following crates: `alloc`, `core`, `std`:
+           - impl From<ErrorKind> for std::io::Error;
+           - impl From<NulError> for std::io::Error;
+           - impl From<TryReserveError> for std::io::Error;
+           - impl From<std::fs::TryLockError> for std::io::Error;
+help: consider specifying the generic arguments
+   |
+37 |             Ok::<std::time::Duration, E>(duration)
+   |               ++++++++++++++++++++++++++
+
+error[E0283]: type annotations needed
+  --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:37:13
+   |
+37 |             Ok(duration)
+   |             ^^ cannot infer type of the type parameter `E` declared on the enum `Result`
+...
+54 |                     within: within(millis)?,
+   |                                           - type must be known at this point
+   |
+   = note: multiple `impl`s satisfying `std::io::Error: From<_>` found in the following crates: `alloc`, `core`, `std`:
+           - impl From<ErrorKind> for std::io::Error;
+           - impl From<NulError> for std::io::Error;
+           - impl From<TryReserveError> for std::io::Error;
+           - impl From<std::fs::TryLockError> for std::io::Error;
+help: consider specifying the generic arguments
+   |
+37 |             Ok::<std::time::Duration, E>(duration)
+   |               ++++++++++++++++++++++++++
+
+error[E0282]: type annotations needed for `Result<(), _>`
+   --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:634:9
+    |
+634 |     let reports = (|| {
+    |         ^^^^^^^
+...
+642 |         Ok(())
+    |         ------ type must be known at this point
+    |
+help: consider giving `reports` an explicit type, where the type for type parameter `E` is specified
+    |
+634 |     let reports: Result<_, E> = (|| {
+    |                ++++++++++++++
+
+error[E0283]: type annotations needed for `Result<(), _>`
+   --> /home/adalundhe/managed-network-sock-addr-proof-v2/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:634:9
+    |
+634 |     let reports = (|| {
+    |         ^^^^^^^
+...
+658 |     reports?;
+    |            - type must be known at this point
+    |
+    = note: multiple `impl`s satisfying `std::io::Error: From<_>` found in the following crates: `alloc`, `core`, `std`:
+            - impl From<ErrorKind> for std::io::Error;
+            - impl From<NulError> for std::io::Error;
+            - impl From<TryReserveError> for std::io::Error;
+            - impl From<std::fs::TryLockError> for std::io::Error;
+help: consider giving `reports` an explicit type, where the placeholders `_` are specified
+    |
+634 |     let reports: Result<_, E> = (|| {
+    |                ++++++++++++++
+
+Some errors have detailed explanations: E0282, E0283.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `sock-addr-pure` (lib test) due to 6 previous errors

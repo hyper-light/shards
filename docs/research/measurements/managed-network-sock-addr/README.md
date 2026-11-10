@@ -99,11 +99,11 @@ python3 docs/research/measurements/managed-network-sock-addr/light.py \
   "$HOME/managed-network-sock-addr-proof-NEW"
 ```
 
-Actual r123: GNU pure units0, musl pure units0, GNU clippy `-D warnings`0,
+Actual r123:23 GNU pure units0,23 musl pure units0, GNU clippy `-D warnings`0,
 musl clippy `-D warnings`0. Earlier r120/r121 retain helper module/include path
 and source type-inference reds; r122 had both unit suites0 then clippy101 for
 private visibility/collapsible-if, corrected in r123. These are compiler/fixture
-results, never actual routing or BPF verifier results. The subsequent final source-linked r128 has both pure unit suites0 and GNU/musl
+results, never actual routing or BPF verifier results. The subsequent final source-linked r128 has both23-test pure unit suites0 and GNU/musl
 clippy0 with the workspace panic-lint subset, unsafe-op and undocumented-unsafe
 checks explicitly denied (see raw commands). Its only guest-source change is one
 adjacent SAFETY comment after actual r127 lint101. Full workspace lints, actual
@@ -123,7 +123,8 @@ CLONE_FS is **unverified**. Root requires actual runtime reproduction before any
 remedy under R09. No CLONE_FS change or draft exists in this checkpoint. Root owns
 that reproduction; source suspicion is not a confirmed failure.
 
-Raw compiler logs/commands/source snapshots/hashes and test-binary identities are
+See [LIGHT.md](LIGHT.md) for exact jobs/revisions and [light/transfer.json](light/transfer.json)
+for the checked archive identity. Raw compiler logs/commands/source snapshots/hashes and test-binary identities are
 retained in `light/`; no executable binary bytes are in the archive. Initial failed
 helper setups and before-correction source snapshots are preserved. `pack-light.py`
 replays the safe artifact packaging. No source/evidence/compiler cache was deleted.

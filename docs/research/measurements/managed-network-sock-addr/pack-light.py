@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Retain compiler reds/greens and source identities; exclude executable bytes."""
-import base64
 import hashlib
 import io
 import json
@@ -23,6 +22,8 @@ for name in names:
     data=source.read_bytes()
     if data[:4]==b'\x7fELF': binaries.append({'path':str(source),'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
    continue
+  if relative.parts[0]=='source' and source.name not in {'sock_addr.rs','bpf.rs'}: continue
+  if source.name=='fixture.rs': continue # Exact host snapshots identified by signed commits + hash.
   data=source.read_bytes()
   assert data[:4]!=b'\x7fELF'
   files[str(Path(name)/relative)]=data
@@ -35,5 +36,5 @@ with tarfile.open(fileobj=buffer,mode='w:gz') as archive:
   info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o644
   archive.addfile(info,io.BytesIO(data))
 data=buffer.getvalue()
-(home/'managed-network-sock-addr-light-bundle-v1.tgz').write_bytes(data)
-print(json.dumps({'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'entries':len(files),'base64':base64.b64encode(data).decode(),'binaries':binaries}))
+(home/'managed-network-sock-addr-light-bundle-v2.tgz').write_bytes(data)
+print(json.dumps({'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'entries':len(files),'binaries':binaries}))

@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "test", "--offline", "--manifest-path", "/home/adalundhe/managed-network-sock-addr-proof-v5/helper/Cargo.toml", "--lib", "-j4"]

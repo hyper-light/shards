@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "clippy", "--offline", "--manifest-path", "/home/adalundhe/managed-network-sock-addr-proof-v4/helper/Cargo.toml", "--lib", "--target", "x86_64-unknown-linux-gnu", "-j4", "--", "-D", "warnings"]

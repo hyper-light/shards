@@ -1,0 +1,12 @@
+    Checking sock-addr-pure v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v4/helper)
+error: unsafe block missing a safety comment
+   --> /home/adalundhe/managed-network-sock-addr-proof-v4/source/crates/testguest/src/managed_network/intercept/sock_addr.rs:541:16
+    |
+541 |             if unsafe {
+    |                ^^^^^^^^
+    |
+    = help: consider adding a safety comment on the preceding line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+    = note: requested on the command line with `-D clippy::undocumented-unsafe-blocks`
+
+error: could not compile `sock-addr-pure` (lib) due to 1 previous error
