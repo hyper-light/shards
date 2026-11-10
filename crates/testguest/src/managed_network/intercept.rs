@@ -401,24 +401,33 @@ fn record_attempt(client: &ClientCompletion) -> io::Result<()> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AbsenceVerdict {
     ContainedRefusal,
+    NoNewBackendEffectBeforeDeadline,
     DirectBackendEffect,
     Inconclusive,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AbsenceWindow {
+    AttemptUntilJoin,
+    OriginalAbsoluteDeadline,
+}
+
 fn absence_verdict(client: &ClientCompletion, backend: &Completion) -> AbsenceVerdict {
-    if backend.report.accepted > 1
-        || backend.report.receipts > 1
-        || attempt_outcome(client) == AttemptOutcome::Success
-    {
-        AbsenceVerdict::DirectBackendEffect
-    } else if backend.report.accepted == 1
-        && backend.report.receipts == 1
-        && backend.result.is_ok()
-        && attempt_outcome(client) == AttemptOutcome::Refused
-    {
-        AbsenceVerdict::ContainedRefusal
-    } else {
-        AbsenceVerdict::Inconclusive
+    if attempt_outcome(client) == AttemptOutcome::Success {
+        return AbsenceVerdict::DirectBackendEffect;
+    }
+    if backend.report.accepted > 1 || backend.report.receipts > 1 {
+        return AbsenceVerdict::DirectBackendEffect;
+    }
+    if backend.report.accepted != 1 || backend.report.receipts != 1 {
+        return AbsenceVerdict::Inconclusive;
+    }
+    match (attempt_outcome(client), backend.outcome()) {
+        (AttemptOutcome::Refused, WorkerOutcome::Stopped) => AbsenceVerdict::ContainedRefusal,
+        (AttemptOutcome::Deadline, WorkerOutcome::Stopped | WorkerOutcome::Deadline) => {
+            AbsenceVerdict::NoNewBackendEffectBeforeDeadline
+        }
+        _ => AbsenceVerdict::Inconclusive,
     }
 }
 
@@ -466,10 +475,15 @@ fn relay_absent(
     )?;
     out.flush()?;
     drop(out);
-    // Preserve ENOTCONN, deadlines and every other worker error after recording
-    // the known effects. Neither timeout nor setup/I/O error is a passing refusal.
-    completed.result?;
-    match verdict {
+    // Only the checked original-window verdict admits the expected worker
+    // deadline. Keep its WorkerError record; every other I/O error remains fatal.
+    match completed.result {
+        Err(error)
+            if verdict == AbsenceVerdict::NoNewBackendEffectBeforeDeadline
+                && error.kind() == io::ErrorKind::TimedOut => {}
+        result => result?,
+    }
+    let window = match verdict {
         AbsenceVerdict::DirectBackendEffect => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -480,12 +494,13 @@ fn relay_absent(
             result.result?;
             return Err(invalid("relay-absent result is inconclusive"));
         }
-        AbsenceVerdict::ContainedRefusal => {}
-    }
+        AbsenceVerdict::ContainedRefusal => AbsenceWindow::AttemptUntilJoin,
+        AbsenceVerdict::NoNewBackendEffectBeforeDeadline => AbsenceWindow::OriginalAbsoluteDeadline,
+    };
     let mut out = io::stdout().lock();
     writeln!(
         out,
-        "managed-intercept {{\"type\":\"{:?}\",\"no_second_backend_accept_or_receipt\":true}}",
+        "managed-intercept {{\"type\":\"{:?}\",\"verdict\":\"{verdict:?}\",\"window\":\"{window:?}\",\"after_window\":\"Unverified\",\"no_second_backend_accept_or_receipt\":true}}",
         Phase::RelayAbsentChecked
     )?;
     out.flush()
@@ -785,7 +800,7 @@ mod tests {
             report: Report {
                 accepted: 1,
                 receipts: 1,
-                last: None,
+                last: Some(Tuple { local: at, peer: at }),
             },
             result: Ok(()),
         };
@@ -812,7 +827,7 @@ mod tests {
         assert_eq!(attempt_outcome(&timeout), AttemptOutcome::Deadline);
         assert_eq!(
             absence_verdict(&timeout, &baseline()),
-            AbsenceVerdict::Inconclusive
+            AbsenceVerdict::NoNewBackendEffectBeforeDeadline
         );
         let setup = ClientCompletion {
             stage: ClientStage::BeforeConnect,
@@ -850,5 +865,68 @@ mod tests {
             AbsenceVerdict::DirectBackendEffect
         );
         assert_eq!(effects.result.unwrap_err().raw_os_error(), Some(libc::ENOTCONN));
+    }
+
+    #[test]
+    fn deadline_verdict_requires_baseline_counts_and_known_terminal() {
+        let at = SocketAddr::from((BACKEND, 43210));
+        let client = |stage, kind| ClientCompletion {
+            stage,
+            result: Err(io::Error::from(kind)),
+        };
+        let deadline = client(ClientStage::ConnectCall, io::ErrorKind::TimedOut);
+        let backend = |accepted, receipts, last, kind: Option<io::ErrorKind>| Completion {
+            report: Report {
+                accepted,
+                receipts,
+                last,
+            },
+            result: kind.map_or(Ok(()), |kind| Err(io::Error::from(kind))),
+        };
+        let tuple = Some(Tuple { local: at, peer: at });
+        for kind in [None, Some(io::ErrorKind::TimedOut)] {
+            let completed = backend(1, 1, tuple, kind);
+            assert_eq!(
+                absence_verdict(&deadline, &completed),
+                AbsenceVerdict::NoNewBackendEffectBeforeDeadline
+            );
+        }
+        for completed in [
+            backend(0, 0, None, None),
+            backend(1, 0, tuple, None),
+            backend(0, 1, tuple, None),
+            backend(1, 1, tuple, Some(io::ErrorKind::NotConnected)),
+        ] {
+            assert_eq!(
+                absence_verdict(&deadline, &completed),
+                AbsenceVerdict::Inconclusive
+            );
+        }
+        for stage in [ClientStage::BeforeConnect, ClientStage::ConnectedIo] {
+            assert_eq!(
+                absence_verdict(
+                    &client(stage, io::ErrorKind::TimedOut),
+                    &backend(1, 1, tuple, None)
+                ),
+                AbsenceVerdict::Inconclusive
+            );
+        }
+        for completed in [
+            backend(2, 1, tuple, Some(io::ErrorKind::NotConnected)),
+            backend(1, 2, tuple, Some(io::ErrorKind::TimedOut)),
+        ] {
+            assert_eq!(
+                absence_verdict(&deadline, &completed),
+                AbsenceVerdict::DirectBackendEffect
+            );
+        }
+        let success = ClientCompletion {
+            stage: ClientStage::ConnectedIo,
+            result: Ok(Tuple { local: at, peer: at }),
+        };
+        assert_eq!(
+            absence_verdict(&success, &backend(0, 0, None, Some(io::ErrorKind::NotConnected))),
+            AbsenceVerdict::DirectBackendEffect
+        );
     }
 }
