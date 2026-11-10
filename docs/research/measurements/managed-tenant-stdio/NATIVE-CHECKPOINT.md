@@ -1,6 +1,8 @@
 # Partial native stdio fixture checkpoint
 
-Only native case B is implemented; no actual helper/VM/socket run, no complete
+Historical native-only checkpoint, now followed by
+[HOST-CHECKPOINT.md](HOST-CHECKPOINT.md). At this checkpoint only native case B
+was implemented; no actual helper/VM/socket run, no complete
 host B case or inherited-child A implementation. Preserve this checkpoint while
 the separately authorized r662 client-ACK fixture fix is made from96b1019f6.
 Overall lane and remaining queue stay open; ROOT owns all actual campaigns.

@@ -1,0 +1,4 @@
+12912bb8efcfc4dcf8eb1a6b9e4afc2776a2bae4f9e9308abdf26c65dda367b5  crates/shards/tests/managed_output.rs
+b07ce14c30db6fb812aaa33a8da9c00e7f13cdb4bc6738a03c575dca4ca76aff  crates/shards/tests/managed_output/tenant_exit.rs
+df8956c994cd10afe28f03d9e10066dca9fcdd0233a9f955947f53a011d56a15  crates/shards/tests/managed_output/tenant_stdio.rs
+6ad6e7cd35211d20acc6fbd0cfda91326565a6b46be1b2e45c406d80d9bea444  crates/testguest/src/workload.rs

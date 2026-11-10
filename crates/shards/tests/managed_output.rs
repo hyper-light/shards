@@ -493,12 +493,18 @@ impl Fixture {
         agent: &[&str],
         harness: &[&str],
         directives: &str,
-        publish_port: Option<u16>,
+        publish_ports: Option<&[u16]>,
         until: Instant,
     ) {
-        let publication = publish_port.map(|port| {
-            assert_ne!(port, 0, "explicit guest fixture port required");
-            format!("127.0.0.1::{port}")
+        let publication = publish_ports.map(|ports| {
+            assert!(!ports.is_empty(), "explicit guest fixture ports required");
+            ports
+                .iter()
+                .map(|port| {
+                    assert_ne!(*port, 0, "explicit guest fixture port required");
+                    format!("127.0.0.1::{port}")
+                })
+                .collect::<Vec<_>>()
         });
         let (image, _) = common::served();
         std::fs::create_dir(self.context.join("files")).unwrap();
@@ -541,18 +547,15 @@ impl Fixture {
         );
         assert_eq!(built.status, Some(0), "{built}");
         let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
-        let started = match publication.as_deref() {
-            Some(binding) => run(&[
-                "run",
-                "vm",
-                "-d",
-                "--name",
-                "owner-output",
-                "-p",
-                binding,
-                "owner-output:1",
-                "sleep",
-            ]),
+        let started = match publication.as_ref() {
+            Some(bindings) => {
+                let mut args = vec!["run", "vm", "-d", "--name", "owner-output"];
+                for binding in bindings {
+                    args.extend(["-p", binding.as_str()]);
+                }
+                args.extend(["owner-output:1", "sleep"]);
+                run(&args)
+            }
             None => run(&[
                 "run",
                 "vm",

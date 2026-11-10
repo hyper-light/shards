@@ -3,6 +3,9 @@ use super::*;
 use serde_json::{Value, json};
 use std::io::Read as _;
 
+#[path = "tenant_stdio.rs"]
+mod stdio;
+
 struct Inputs {
     port: u16,
     patience: Duration,
@@ -53,6 +56,7 @@ struct Capture {
     wire: u64,
     bytes: Vec<u8>,
     state: StreamState,
+    trace: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +72,16 @@ impl Capture {
             let Event::Record(offset, chunk) = observer.next(until) else {
                 panic!("expected canonical member record before terminal");
             };
+            if let Some(directory) = &self.trace {
+                std::fs::write(
+                    directory.join(format!(
+                        "wire-{}-{}-{offset}.bin",
+                        observer.scope.member, observer.scope.channel as u8
+                    )),
+                    &chunk,
+                )
+                .unwrap();
+            }
             assert!(!chunk.is_empty(), "empty member record");
             assert_eq!(offset, self.wire, "contiguous transport offset");
             self.wire = self
@@ -171,7 +185,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         &["managed-capture", "agent", "exit"],
         &["managed-capture", "harness", "step", &port, &deadline],
         &directives,
-        Some(inputs.port),
+        Some(&[inputs.port]),
         until,
     );
     std::fs::copy(
