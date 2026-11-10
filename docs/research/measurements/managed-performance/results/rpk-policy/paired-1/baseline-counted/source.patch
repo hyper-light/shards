@@ -1,0 +1,35 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index f6053208..70523762 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -493,7 +493,7 @@ dependencies = [
+ [[package]]
+ name = "hyper-quic"
+ version = "0.1.0"
+-source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
++source = "git+https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac276d2d53296de24c2a43837baf66ed1cbd"
+ dependencies = [
+  "aws-lc-rs",
+  "bytes",
+@@ -512,7 +512,7 @@ dependencies = [
+ [[package]]
+ name = "hyper-tls"
+ version = "0.1.0"
+-source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
++source = "git+https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac276d2d53296de24c2a43837baf66ed1cbd"
+ dependencies = [
+  "aws-lc-rs",
+  "brotli",
+diff --git a/crates/remote/Cargo.toml b/crates/remote/Cargo.toml
+index e8bb4184..673312f8 100644
+--- a/crates/remote/Cargo.toml
++++ b/crates/remote/Cargo.toml
+@@ -15,7 +15,7 @@ bytes = "1"
+ # serde_json's `preserve_order` for the whole build: shards' JSON is Docker's, its maps sorted
+ # (hyper-quic's VENDORED.md §20).
+ # EXPERIMENTAL private RPK type-policy measurement; not an adopted production pin.
+-hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
++hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac276d2d53296de24c2a43837baf66ed1cbd", default-features = false }
+ sha2 = "0.11"
+ # A file of its user's alone wherever it is: an identity's, an invitation's.
+ shards-ipc = { path = "../ipc" }

@@ -1,0 +1,9 @@
+{
+  "crates/remote/src/managed.rs": "daede75c8871c8cb2ca624dbdf2d0600913b9b0089adeda001810c2932a441a1",
+  "crates/remote/src/net.rs": "c910d0fe5e26eb797cb37666998be4a8b01a971e7edec66ed815025559d4aa36",
+  "docs/research/measurements/managed-performance/src/main.rs": "0f85aa67272270cadb4fa9336931ee7022a601fa6a42ac0ea0bc9c7e4c4f54e7",
+  "docs/research/measurements/managed-performance/src/shared.rs": "23c77a69ee5bb3e388d748d3854e7120c514b26d1ce6b24d49ce89efc5f9b519",
+  "docs/research/measurements/managed-performance/net_stats.rs": "70a739dbdb7c6e25c9e5d122cac1193d62009d805ef418e0e73065f9a93b07f8",
+  "crates/remote/Cargo.toml": "07c9513dfa29104292cea1474f3d6c7610926340cee0064607786f21efc6b082",
+  "Cargo.lock": "07d6bc4ec8ecbbd8962f7c2f1f1e07539a3cb4cae040f8a0db549cdb7c31ed1d"
+}

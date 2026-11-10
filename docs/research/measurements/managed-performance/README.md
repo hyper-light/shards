@@ -1,5 +1,9 @@
 # Managed-output native performance checkpoint
 
+The later [private RPK policy comparison](RPK-POLICY.md) retains the upstream
+certificate-type experiment, fresh paired native data and allocator calibration.
+Its consumer pin and shared-listener prototype remain experimental.
+
 This is a native loopback experiment, not real-VM output validation, a production
 architecture decision, a leak-freedom proof, or a 4–5× achievement. See
 [source/alternative/resource research](RESEARCH.md) and the exact

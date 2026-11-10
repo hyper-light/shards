@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "--release", "-j4", "-p", "shards-remote", "--lib", "--no-run", "--message-format=json"]

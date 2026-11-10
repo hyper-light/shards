@@ -1,0 +1,18 @@
+diff --git a/docs/research/measurements/managed-performance/src/main.rs b/docs/research/measurements/managed-performance/src/main.rs
+index 05dc07e1..9fb16410 100644
+--- a/docs/research/measurements/managed-performance/src/main.rs
++++ b/docs/research/measurements/managed-performance/src/main.rs
+@@ -110,11 +110,11 @@ mod instrumented {
+ }
+ #[cfg(test)]
+ #[global_allocator]
+-static ALLOCATOR: Count = Count;
++static ALLOCATOR: System = System;
+ fn instrumented() -> bool {
+     #[cfg(test)]
+     {
+-        true
++        false
+     }
+     #[cfg(not(test))]
+     {

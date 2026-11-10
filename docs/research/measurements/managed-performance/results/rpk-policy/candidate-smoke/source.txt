@@ -1,0 +1,6 @@
+5f3f537ef821314b51b0a767d2c619d4cb65ddac
+daede75c8871c8cb2ca624dbdf2d0600913b9b0089adeda001810c2932a441a1  crates/remote/src/managed.rs
+e3cf92dbff95d0302b96199d170ade037361585bf425a766a226ce09d8f0c678  crates/remote/src/net.rs
+2d146deefe9ff01089268303b94ea12e615500281757106bef1fcf0810d2e528  docs/research/measurements/managed-performance/src/main.rs
+1c455b51d53e08720e4472eb1bb8a84272414d28242c3b754be79f3cef9bf5d5  docs/research/measurements/managed-performance/src/shared.rs
+6875004e15fc011626c2a629bf8d606155b0ff1e538d9946b299dcb6fcc3240e  /home/adalundhe/managed-rpk-native-target/release/deps/shards_remote-6fec083e31404586
