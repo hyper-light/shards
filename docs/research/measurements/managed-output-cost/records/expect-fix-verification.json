@@ -1,0 +1,26 @@
+{
+  "source": "ed403164fa1965b1af913a289cae94bb73a9a9c9",
+  "archive_sha256": "9fd8272698652d54013426e30e59a271ae1d9550b5953b6c713644e136d233d9",
+  "archive_bytes": 1575,
+  "raw_files": 14,
+  "source_hashes_match_git_blobs": [
+    "crates/shards/tests/managed_output.rs",
+    "docs/research/measurements/managed-output-cost/fixture.rs",
+    "docs/research/measurements/managed-output-cost/parse.rs",
+    "docs/research/measurements/managed-output-cost/run-light.sh",
+    "Cargo.lock"
+  ],
+  "remote_status_empty": true,
+  "both_parser_exits_zero": true,
+  "changed_paths_from_b9c29de5": [
+    "docs/research/measurements/managed-output-cost/fixture.rs"
+  ],
+  "original_four_expect_calls_absent": true,
+  "four_original_failure_messages_retained": [
+    "files-only declaration and members must fit u32",
+    "channel count must fit usize",
+    "representable phase deadline",
+    "trusted scoped owner metadata"
+  ],
+  "actual_full_caller_clippy_matrix": "Owed to coordinator; synthetic parser checks do not cover fixture.rs type/lint gate"
+}

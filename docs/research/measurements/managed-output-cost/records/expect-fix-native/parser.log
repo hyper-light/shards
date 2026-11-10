@@ -1,0 +1,8 @@
+
+running 3 tests
+test tests::namespace_socket_rows_are_retained_only_for_sampled_owned_inodes ... ok
+test tests::only_exact_socket_inode_links_are_accepted ... ok
+test tests::process_identity_ignores_raw_comm_and_checks_numeric_fields ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

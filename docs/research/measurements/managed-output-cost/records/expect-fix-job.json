@@ -1,0 +1,15 @@
+{
+  "admission": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "",
+    "running": true,
+    "id": "r240",
+    "why": "linux/x86_64 · 25 of 32 cores idle · 47 GB free · room for 4 CPUs, 1 GiB of memory, 2 GiB of disk"
+  },
+  "completion": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "parser-build: exit=0\nparser: exit=0\n",
+    "running": false,
+    "exit_code": 0
+  }
+}

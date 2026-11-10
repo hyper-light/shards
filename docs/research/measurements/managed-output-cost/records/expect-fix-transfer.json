@@ -1,0 +1,9 @@
+{
+  "archive_sha256": "9fd8272698652d54013426e30e59a271ae1d9550b5953b6c713644e136d233d9",
+  "archive_bytes": 1575,
+  "source": "ed403164fa1965b1af913a289cae94bb73a9a9c9\n",
+  "parser": "\nrunning 3 tests\ntest tests::namespace_socket_rows_are_retained_only_for_sampled_owned_inodes ... ok\ntest tests::only_exact_socket_inode_links_are_accepted ... ok\ntest tests::process_identity_ignores_raw_comm_and_checks_numeric_fields ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+  "binary": "04e3723eeef9a09401951406e7451add67ed3994ac34de2ad873ed02b20d11f1  /home/adalundhe/managed-output-cost-target/parser-tests-expect-fix\n",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "uname": "Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux\n"
+}
