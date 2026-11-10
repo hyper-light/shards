@@ -167,8 +167,8 @@ impl ManagedAlloc {
         }
     }
 
-    fn grow_live(&self, size: usize) {
-        let live = self.live_requested_bytes.add(size);
+    fn change_live(&self, change: Change) {
+        let live = self.live_requested_bytes.change(change);
         // MAX propagates Unknown; fetch_max cannot restore a known peak later.
         self.peak_recorded_live_requested_bytes.0.fetch_max(live, Relaxed);
     }
@@ -184,7 +184,7 @@ impl ManagedAlloc {
         } else {
             successes.add(1);
             self.allocation_success_bytes.add(size);
-            self.grow_live(size);
+            self.change_live(Change::Add(size));
         }
     }
 
@@ -197,17 +197,17 @@ impl ManagedAlloc {
         self.realloc_successes.add(1);
         if let Some(growth) = new.checked_sub(old) {
             self.realloc_grown_bytes.add(growth);
-            self.grow_live(growth);
+            self.change_live(Change::Add(growth));
         } else if let Some(shrink) = old.checked_sub(new) {
             self.realloc_shrunk_bytes.add(shrink);
-            self.live_requested_bytes.remove(shrink);
+            self.change_live(Change::Remove(shrink));
         }
     }
 
     fn deallocated(&self, size: usize) {
         self.dealloc_calls.add(1);
         self.deallocated_bytes.add(size);
-        self.live_requested_bytes.remove(size);
+        self.change_live(Change::Remove(size));
     }
 }
 
@@ -319,6 +319,7 @@ mod tests {
         assert_eq!(c.sample(), Count::Unknown);
         let a = ManagedAlloc::new();
         a.deallocated(1); // Pure arithmetic underflow, never an invalid dealloc.
+        assert_eq!(a.snapshot().peak_recorded_live_requested_bytes, Count::Unknown);
         a.allocated(1, AllocationKind::Ordinary, success());
         assert_eq!(a.snapshot().live_requested_bytes, Count::Unknown);
         assert_eq!(a.snapshot().peak_recorded_live_requested_bytes, Count::Unknown);
