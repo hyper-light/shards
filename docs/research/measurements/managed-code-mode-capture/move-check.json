@@ -1,0 +1,6 @@
+{
+  "base": "0219ab2eb2466ee3e9b08064434dc9efd70053d5",
+  "moved_bodies_equal_after_pub_super_and_final_newline_normalization": true,
+  "parent_payload_fixture_and_tests_byte_equal": true,
+  "build_outside_named_test_byte_equal": true
+}

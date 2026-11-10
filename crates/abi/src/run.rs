@@ -672,6 +672,9 @@ pub mod builtin {
     /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
     /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
     pub const DEVICE: u8 = 17;
+    /// On-demand OTLP JSON cgroup metrics. The sole argument is the supervisor's
+    /// canonical microVM ID; no actor-supplied labels or collection authority.
+    pub const METRICS: u8 = 18;
 }
 
 /// A terminal's size in character cells. Zero in either leaves the pty's size alone, as

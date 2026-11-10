@@ -565,6 +565,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
             self.remove_snapshots(&parsed, reply)
         } else if std::ptr::eq(command, &READ_PROCESSES) {
             self.read_processes(&parsed.args, false, asker.client, reply)
+        } else if std::ptr::eq(command, &commands::READ_METRICS) {
+            self.read_metrics(&parsed.args, asker, reply)
         } else if std::ptr::eq(command, &commands::WATCH_PROCESSES) {
             self.read_processes(&parsed.args, true, asker.client, reply)
         } else if std::ptr::eq(command, &IMAGES) {

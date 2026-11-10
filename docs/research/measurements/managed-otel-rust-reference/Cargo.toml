@@ -1,0 +1,23 @@
+[package]
+name = "shards-managed-otel-rust-reference"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+native_codec = { package = "shards-managed-otel-encoder-check", path = "../managed-otel-encoder" }
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics", "with-serde"] }
+serde_json = "=1.0.151"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"

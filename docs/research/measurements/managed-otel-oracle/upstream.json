@@ -1,0 +1,30 @@
+{
+  "collector_core_commit": "e883d737e49935984df6b064e512eed6cdc0d289",
+  "pdata_module": "go.opentelemetry.io/collector/pdata",
+  "pdata_version": "v1.71.0",
+  "proxy_info": {
+    "Version": "v1.71.0",
+    "Time": "2026-11-06T23:11:16Z",
+    "Origin": {
+      "VCS": "git",
+      "URL": "https://github.com/open-telemetry/opentelemetry-collector",
+      "Subdir": "pdata",
+      "Hash": "e883d737e49935984df6b064e512eed6cdc0d289",
+      "Ref": "refs/tags/pdata/v1.71.0"
+    }
+  },
+  "source_sha256": {
+    "pdata/go.mod": "46472b562c6cb1f2b38d54ac13bcf9041cb2ef1804856575dda3833ff5055cdc",
+    "pdata/pmetric/json.go": "a35fe383ace1c0adc52b034d95199cecd958e296b0ee9b3284eabadebd39e4cd",
+    "pdata/pmetric/generated_numberdatapoint.go": "7507a1ca5dfd6c0b8c31a5f4a284eb6b496b65fb0f6eeba4ce62ab36041cebeb",
+    "pdata/internal/generated_proto_numberdatapoint.go": "73435bc57640e92909a45e5a78be9ce34eaa7888df3a79745b7cb98ed9605bac",
+    "pdata/pmetric/pmetricotlp/request.go": "3630b6b0672d871b0862d41f8bd4e29ec08c3e392f71b8c27b2c14a4a7e5077b"
+  },
+  "otelcol_asset": {
+    "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.165.0/otelcol_0.165.0_linux_amd64.tar.gz",
+    "sha256": "78570dd4bd6570bc41eb327869ef913bbf91b87dd8170ebebbf43bec71f6370d",
+    "checksum_url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.165.0/otelcol_0.165.0_linux_amd64.tar.gz.sha256",
+    "checksum_text_sha256": "b26b4931eb134e95d9f9182de894e63b0662c740572996f42d5d29d0d6ce590a",
+    "binary_downloaded": false
+  }
+}

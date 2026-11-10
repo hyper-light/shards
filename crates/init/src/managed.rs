@@ -393,6 +393,10 @@ impl Launch {
 }
 
 impl Owned {
+    pub fn group(&self) -> &std::fs::File {
+        &self._group
+    }
+
     pub fn launched(&mut self) -> Result<(), Failure> {
         if self.state != State::Starting {
             return Err(Failure::protocol(Step::Setup));

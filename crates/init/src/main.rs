@@ -51,6 +51,8 @@ mod managed;
 #[cfg(target_os = "linux")]
 mod members;
 #[cfg(target_os = "linux")]
+mod metrics;
+#[cfg(target_os = "linux")]
 mod net;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod netplan;

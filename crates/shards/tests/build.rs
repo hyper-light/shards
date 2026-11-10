@@ -13262,124 +13262,300 @@ fn code_mode_runs_a_program_with_the_callers_grants() {
     if cannot_run_vms() {
         return;
     }
+    #[path = "common/managed_capture.rs"]
+    mod capture;
+    use capture::{Ask, Event, Metadata, Observer};
+    use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
+    use shards_remote::identity::Identity;
+    use shards_remote::net::Command;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    let until = Instant::now().checked_add(TIMEOUT).unwrap();
+    let records = std::env::var_os("SHARDS_CODE_MODE_CAPTURE_RECORDS").map(std::path::PathBuf::from);
+    if let Some(path) = &records {
+        assert!(path.is_absolute(), "absolute new evidence directory");
+        std::fs::create_dir(path).unwrap();
+    }
+    let save = |name: &str, bytes: &[u8]| {
+        if let Some(path) = &records {
+            std::fs::write(path.join(name), bytes).unwrap();
+        }
+    };
     let (image, _) = served();
     let (port, _repos) = common::writable_registry();
     let home = TempDir::new("code-home");
+    let owner = Identity::load_or_create(&home.join("identity")).unwrap();
+    let mut observers = Vec::<Observer>::new();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
         ("SHARDS_INIT", guest_init().as_os_str()),
     ];
-    let shards = |args: &[&str]| run_shards_env(&[], args, &env, TIMEOUT);
-    let a_program = r#"const me = await shards.whoami();
+    let shards = |args: &[&str]| {
+        let left = until.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "original code-mode deadline");
+        run_shards_env(&[], args, &env, left)
+    };
+    let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let a_program = r#"const me = await shards.whoami();
 const peers = await shards.peers();
 const sent = [];
 for (const p of peers) if (p.send) sent.push((await shards.send(p.name, "from " + me)).id);
 let refused;
 try { await shards.send("agent c", "x"); } catch (e) { refused = e.message; }
 return { me, peers, sent, refused };"#;
-    let c_reach =
-        r#"return [typeof require, typeof fetch, typeof std, typeof os, typeof XMLHttpRequest].join(",");"#;
-    let spin = r#"const t = Date.now(); while (Date.now() - t < 1500) {} return "finished";"#;
-    let mut agents = String::new();
-    for (name, verbs) in [
-        ("a", vec!["srv-run", a_program]),
-        ("b", vec!["srv-receive", "30"]),
-        (
-            "c",
-            vec![
-                "srv-run",
-                c_reach,
-                "throw new TypeError(\"boom\");",
-                "return {;",
-                "const f = (n) => f(n + 1); return f(0);",
-                "srv-run-timeout",
-                "300|while (true) {}",
-                "srv-run-cancel",
-                spin,
-                "srv-run-abandon",
-                "while (true) {}",
-            ],
-        ),
-    ] {
-        let dir = TempDir::new(&format!("code-agent-{name}"));
-        std::fs::create_dir_all(dir.join("bin")).unwrap();
-        std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
-        let command: Vec<&str> = ["bin/testguest", "confined"].into_iter().chain(verbs).collect();
-        let agent = serde_json::json!({ "name": name, "run": { "command": command } });
-        std::fs::write(dir.join("agent.json"), agent.to_string()).unwrap();
-        let tag = format!("127.0.0.1:{port}/team/code-{name}:1");
-        let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
-        assert_eq!(made.status, Some(0), "{}", made.stderr);
-        let pushed = shards(&["push", "agent", &tag]);
-        assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
-        agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
-    }
-    let ctx = context("code-ctx", &format!("FROM {image}\n"));
-    std::fs::write(
-        ctx.join("Agentfile"),
-        format!("FROM {image}\n{agents}NETWORK --ingress=7000 n\nCONNECT --port=7000 a TO b ON n\n"),
-    )
-    .unwrap();
-    let built = shards(&["build", "-t", "code:1", ctx.to_str().unwrap()]);
-    assert_eq!(built.status, Some(0), "{}", built.stderr);
-    // Ready once every agent is, each with its instance and its sandbox, and no program
-    // left running: a worker its program's end, cancellation or abandonment did not end
-    // stays among them, and the run is never ready.
-    let mut ready = |rows: &[Vec<String>]| {
-        let count = |comm: &str| {
-            rows.iter()
-                .filter(|r| r.first().is_some_and(|c| c == comm))
-                .count()
-        };
-        count("confined-ready") == 3
-            && count("shards-server") == 3
-            && count("shards-sandbox") == 3
-            && count("shards-program") == 0
-    };
-    let ran = common::run_watching(
-        &env,
-        &[
+        let c_reach = r#"return [typeof require, typeof fetch, typeof std, typeof os, typeof XMLHttpRequest].join(",");"#;
+        let spin = r#"const t = Date.now(); while (Date.now() - t < 1500) {} return "finished";"#;
+        let mut agents = String::new();
+        for (name, verbs) in [
+            ("a", vec!["srv-run", a_program]),
+            ("b", vec!["srv-receive", "30"]),
+            (
+                "c",
+                vec![
+                    "srv-run",
+                    c_reach,
+                    "throw new TypeError(\"boom\");",
+                    "return {;",
+                    "const f = (n) => f(n + 1); return f(0);",
+                    "srv-run-timeout",
+                    "300|while (true) {}",
+                    "srv-run-cancel",
+                    spin,
+                    "srv-run-abandon",
+                    "while (true) {}",
+                ],
+            ),
+        ] {
+            let dir = TempDir::new(&format!("code-agent-{name}"));
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            std::fs::copy(common::test_guest(), dir.join("bin/testguest")).unwrap();
+            let command: Vec<&str> = ["bin/testguest", "confined"].into_iter().chain(verbs).collect();
+            let agent = serde_json::json!({ "name": name, "run": { "command": command } });
+            std::fs::write(dir.join("agent.json"), agent.to_string()).unwrap();
+            let tag = format!("127.0.0.1:{port}/team/code-{name}:1");
+            let made = shards(&["build", "agent", dir.to_str().unwrap(), "-t", &tag]);
+            save(&format!("agent-{name}-build.log"), made.to_string().as_bytes());
+            assert_eq!(made.status, Some(0), "{}", made.stderr);
+            let pushed = shards(&["push", "agent", &tag]);
+            save(&format!("agent-{name}-push.log"), pushed.to_string().as_bytes());
+            assert_eq!(pushed.status, Some(0), "{}", pushed.stderr);
+            agents.push_str(&format!("AGENT {name} FROM {tag}\n"));
+        }
+        let ctx = context("code-ctx", &format!("FROM {image}\n"));
+        std::fs::write(
+            ctx.join("Agentfile"),
+            format!("FROM {image}\n{agents}NETWORK --ingress=7000 n\nCONNECT --port=7000 a TO b ON n\n"),
+        )
+        .unwrap();
+        let built = shards(&["build", "-t", "code:1", ctx.to_str().unwrap()]);
+        save("image-build.log", built.to_string().as_bytes());
+        save("Agentfile", &std::fs::read(ctx.join("Agentfile")).unwrap());
+        assert_eq!(built.status, Some(0), "{}", built.stderr);
+        let started = shards(&[
             "run",
-            "--rm",
+            "-d",
             "--name",
             "aw-code",
             "code:1",
             "await",
             "confined-ready",
             "3",
-        ],
-        "aw-code",
-        "comm",
-        &mut ready,
-        TIMEOUT,
-    );
-    let all = format!("{}{}", ran.stdout, ran.stderr);
-    assert_eq!(ran.status, Some(0), "{all}");
-    for want in [
-        r#"[agent a] confined srv-run: ok {"me":"agent a","peers":[{"name":"agent b","send":true,"answer":false}],"sent":[1],"refused":"agent a may not send agent c requests"}"#,
-        r#"[agent b] confined srv-receive: [{"from":"agent a","kind":"request","id":1,"text":"from agent a"}]"#,
-        r#"[agent c] confined srv-run: ok "undefined,undefined,undefined,undefined,undefined""#,
-        "[agent c] confined srv-run: refused TypeError: boom",
-        "[agent c] confined srv-run: refused the program ran past its 300 ms, and was ended",
-        r#"[agent c] confined srv-run-cancel stranger: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"\"finished\""}],"isError":false}}"#,
-        r#"[agent c] confined srv-run-cancel own: {"jsonrpc":"2.0","id":2,"error":{"code":-32800,"message":"request cancelled"}}"#,
-        "[agent c] confined srv-run-abandon: abandoned",
-    ] {
-        assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
+        ]);
+        save("start.log", started.to_string().as_bytes());
+        assert_eq!(started.status, Some(0), "{started}");
+        let id = started.stdout.trim();
+        assert!(!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let record = home.join("containers").join(id).join("managed-output");
+        let published = std::fs::read(&record).unwrap();
+        save("managed-output.ready", &published);
+        let metadata = Metadata::parse(std::str::from_utf8(&published).unwrap()).unwrap();
+        assert_eq!(metadata.run, id);
+        assert_eq!(metadata.owner, owner.fingerprint());
+        assert_eq!(metadata.server, owner.fingerprint());
+        assert_eq!(
+            metadata.endpoints.keys().copied().collect::<Vec<_>>(),
+            [(0, 1), (0, 2), (1, 1), (1, 2), (2, 1), (2, 2)]
+        );
+        let mut streams = Vec::new();
+        for (member, label) in [(0, "agent a"), (1, "agent b"), (2, "agent c")] {
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                let index = observers.len();
+                observers.push(Observer::start(
+                    &owner,
+                    &metadata,
+                    metadata.scope(member, channel),
+                    metadata.endpoints[&(member, channel as u8)],
+                    until,
+                ));
+                streams.push((member, label, channel, index));
+            }
+        }
+        let mut output = BTreeMap::<&str, String>::new();
+        let mut cuts = Vec::new();
+        for (member, label, channel, index) in streams {
+            let observer = &observers[index];
+            let mut state = StreamState::New;
+            let mut wire = 0u64;
+            let mut bytes = Vec::new();
+            loop {
+                let event = observer.next(until);
+                let Event::Record(offset, chunk) = event else {
+                    panic!("expected scoped canonical output, got {event:?}");
+                };
+                save(&format!("wire-{member}-{}-{offset}.bin", channel as u8), &chunk);
+                assert_eq!(offset, wire);
+                wire = wire.checked_add(u64::try_from(chunk.len()).unwrap()).unwrap();
+                let record = Record::decode(&chunk).unwrap();
+                assert_eq!(record.member, member);
+                assert_eq!(record.channel, channel);
+                state.accept(record).unwrap();
+                match record.event {
+                    CaptureEvent::Open(actual) => assert_eq!(actual, label),
+                    CaptureEvent::Data(data) => {
+                        assert!(
+                            bytes.len().checked_add(data.len()).unwrap()
+                                <= shards_abi::run::MAX_PAYLOAD as usize,
+                            "bounded controlled fixture capture"
+                        );
+                        bytes.extend_from_slice(data);
+                    }
+                    other => panic!("live fixture actor before owner completion: {other:?}"),
+                }
+                observer.sender.send(Command::Handler(Ask::Ack(wire))).unwrap();
+                let text = std::str::from_utf8(&bytes).unwrap();
+                if channel == Channel::Stderr
+                    || (text.ends_with('\n')
+                        && text
+                            .lines()
+                            .last()
+                            .is_some_and(|line| line.starts_with("confined net=")))
+                {
+                    break;
+                }
+            }
+            save(&format!("member-{member}-{}.bin", channel as u8), &bytes);
+            cuts.push(serde_json::json!({"member":member,"channel":channel as u8,"wire_ack_enqueued":wire,"payload_received":bytes.len(),"state":format!("{state:?}"),"limit":"receipt cut only, not End or future stderr absence"}));
+            if channel == Channel::Stdout {
+                output.insert(label, String::from_utf8(bytes).unwrap());
+            }
+        }
+        save("capture-cuts.json", &serde_json::to_vec_pretty(&cuts).unwrap());
+        // Canonical output is the readiness event. The original worker/actor conditions
+        // remain an independent kernel snapshot, rather than periodic top probes.
+        let top = shards(&["top", "aw-code", "-o", "pid,caught,comm"]);
+        save("guest-processes.log", top.to_string().as_bytes());
+        assert_eq!(top.status, Some(0), "{top}");
+        let rows: Vec<Vec<_>> = top
+            .stdout
+            .lines()
+            .skip(1)
+            .map(|line| line.split_whitespace().collect())
+            .collect();
+        let count = |name: &str| rows.iter().filter(|row| row.last() == Some(&name)).count();
+        assert_eq!(count("confined-ready"), 3, "{top}");
+        assert_eq!(count("shards-server"), 3, "{top}");
+        assert_eq!(count("shards-sandbox"), 3, "{top}");
+        assert_eq!(count("shards-program"), 0, "{top}");
+        // Linux guest SIGUSR1 is 10, the same caught-mask handshake run_watching used.
+        assert!(
+            rows.iter().any(|row| row.last() == Some(&"testguest")
+                && row
+                    .get(1)
+                    .and_then(|mask| u64::from_str_radix(mask.trim_start_matches('<'), 16).ok())
+                    .is_some_and(|mask| mask & (1 << (10 - 1)) != 0)),
+            "main awaits its owner signal: {top}"
+        );
+        let sent = shards(&["kill", "-s", "USR1", "aw-code"]);
+        save("signal.log", sent.to_string().as_bytes());
+        assert_eq!(sent.status, Some(0), "{sent}");
+        let ran = shards(&["wait", "aw-code"]);
+        save("main-wait.log", ran.to_string().as_bytes());
+        assert_eq!(ran.status, Some(0), "{ran}");
+        assert_eq!(ran.stdout.trim(), "0", "main await completed successfully: {ran}");
+        for want in [
+            r#"[agent a] confined srv-run: ok {"me":"agent a","peers":[{"name":"agent b","send":true,"answer":false}],"sent":[1],"refused":"agent a may not send agent c requests"}"#,
+            r#"[agent b] confined srv-receive: [{"from":"agent a","kind":"request","id":1,"text":"from agent a"}]"#,
+            r#"[agent c] confined srv-run: ok "undefined,undefined,undefined,undefined,undefined""#,
+            "[agent c] confined srv-run: refused TypeError: boom",
+            "[agent c] confined srv-run: refused the program ran past its 300 ms, and was ended",
+            r#"[agent c] confined srv-run-cancel stranger: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"\"finished\""}],"isError":false}}"#,
+            r#"[agent c] confined srv-run-cancel own: {"jsonrpc":"2.0","id":2,"error":{"code":-32800,"message":"request cancelled"}}"#,
+            "[agent c] confined srv-run-abandon: abandoned",
+        ] {
+            let (label, want) = want.strip_prefix('[').unwrap().split_once("] ").unwrap();
+            let actual = &output[label];
+            assert!(
+                actual.lines().any(|line| line == want),
+                "no {want:?} in {label}:\n{actual}"
+            );
+        }
+        for (want, what) in [
+            (
+                "[agent c] confined srv-run: refused SyntaxError: ",
+                "syntax error",
+            ),
+            (
+                "[agent c] confined srv-run: refused RangeError: ",
+                "stack overflow",
+            ),
+        ] {
+            let (label, want) = want.strip_prefix('[').unwrap().split_once("] ").unwrap();
+            let actual = &output[label];
+            assert!(
+                actual.lines().any(|line| line.starts_with(want)),
+                "no {what} in {label}:\n{actual}"
+            );
+        }
+        if let Ok(bytes) = std::fs::read(&record) {
+            save("managed-output.before-remove", &bytes);
+        }
+        let removed = shards(&["remove", "vm", "aw-code"]);
+        save("remove.log", removed.to_string().as_bytes());
+        assert_eq!(removed.status, Some(0), "{removed}");
+        assert!(!record.exists(), "private run metadata removed");
+    }));
+    // The explicit cleanup phase has 15s of its own, capped by the original case+15s.
+    let cleanup = Duration::from_secs(15);
+    let cleanup_until = Instant::now()
+        .checked_add(cleanup)
+        .unwrap()
+        .min(until.checked_add(cleanup).unwrap());
+    for observer in &observers {
+        observer.sender.request_stop();
     }
-    for (want, what) in [
-        (
-            "[agent c] confined srv-run: refused SyntaxError: ",
-            "syntax error",
-        ),
-        (
-            "[agent c] confined srv-run: refused RangeError: ",
-            "stack overflow",
-        ),
-    ] {
-        assert!(all.lines().any(|l| l.starts_with(want)), "no {what} in\n{all}");
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_shards_env(
+            &[],
+            &["stop", "daemon"],
+            &env,
+            cleanup_until.saturating_duration_since(Instant::now()),
+        )
+    }));
+    let mut errors = Vec::new();
+    match stopped {
+        Ok(result) => {
+            save("owner-stop.log", result.to_string().as_bytes());
+            if result.status != Some(0) {
+                errors.push(result.to_string());
+            }
+        }
+        Err(_) => errors.push("owner-stop helper panicked; cleanup unknown".to_string()),
     }
+    for observer in &mut observers {
+        if let Err(error) = observer.join(cleanup_until) {
+            errors.push(error);
+        }
+    }
+    save("cleanup.json",&serde_json::to_vec_pretty(&serde_json::json!({"body_passed":body.is_ok(),"owner_stop_observer_join_errors":errors,"limit":"point kernel worker snapshot; full population/kernel resource return unverified"})).unwrap());
+    if let Ok(bytes) = std::fs::read(home.join("daemon.log")) {
+        save("daemon.log", &bytes);
+    }
+    if let Err(panic) = body {
+        std::panic::resume_unwind(panic);
+    }
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 /// A harness is handed an agent's file, and no link, FIFO or giant file in its place

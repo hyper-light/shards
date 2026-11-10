@@ -1,0 +1,37 @@
+{
+  "parent": "11d1c04d27a52133f3447321fd4b7d1057ce0212",
+  "policy_revision": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "host": "macOS-26.4.1-arm64-arm-64bit",
+  "architecture": "arm64",
+  "utc": "2026-11-10T18:50:02.740071+00:00",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+  "source_files": {
+    "crates/init/src/metrics/otlp.rs": "0bb86b2f172e12b8053cf30333ccbabd1a6963a315836a639c79de5a4458f28c",
+    "docs/research/measurements/managed-otel-encoder/check.py": "c41fd973feea5c867f08c1865c2b1958e8687ce6d393a17a30af3a303466407b",
+    "docs/research/measurements/managed-otel-encoder/check.sh": "5f2aded333b739710883b9718903e749ff3e97deac727c9047f09fea2b55d962"
+  },
+  "original_raw_files_verified_unchanged": {
+    "docs/research/measurements/managed-otel-encoder/raw/clippy.log": "02db5a66fa0c60ca8618bd08aac556eac4f3ec863e8630a0d353dba6a0f6e126",
+    "docs/research/measurements/managed-otel-encoder/raw/environment.json": "3e82fb4fe2422bc6efe07ace594e5f4b5cb59bc245993e5d2b9075bfce38b1c7",
+    "docs/research/measurements/managed-otel-encoder/raw/fixture-build.log": "d54175aea4d885fae82e22cd3de12be7f59b7ff6d65738ce99cd1c386a0febc0",
+    "docs/research/measurements/managed-otel-encoder/raw/fixture.json": "c6022062677962720ffee1964f3ff3ffc8697eaa55b6162d34703381c546a3a8",
+    "docs/research/measurements/managed-otel-encoder/raw/json-check.json": "b6e6c62a1fc24ac69720d8093cef32d0e2fc11e3795edf83e3dc9c2a1425cf5a",
+    "docs/research/measurements/managed-otel-encoder/raw/policy.log": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7",
+    "docs/research/measurements/managed-otel-encoder/raw/raw-storage.json": "590865ce8e672241344ad3318ea7200badca7a19f877c3921d779244125402ee",
+    "docs/research/measurements/managed-otel-encoder/raw/unit.log.gz": "f0b280d920fe64bf95056814dcb7d28c2a9557a6016a898009f91455c7b018ce"
+  },
+  "unit_passed": 10,
+  "unit_failed": 0,
+  "strict_clippy_rc": 0,
+  "json_fixture_check_rc": 0,
+  "policy_rc": 0,
+  "rustfmt_rc": 0,
+  "disk_free_bytes": 223279063040,
+  "collector_conformance": "not_run",
+  "vm_e2e": "not_run",
+  "profiles": "not_run",
+  "seven_target_matrix": "not_run"
+}

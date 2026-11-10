@@ -1,0 +1,55 @@
+{
+  "archive_bytes": 19243,
+  "archive_sha256": "39a5999b944f6c87ee202231ef400fb69441f9e17d14d4644041fcdeeeab0e6c",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "files": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    "clippy.toml": {
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 16634,
+      "sha256": "0bb86b2f172e12b8053cf30333ccbabd1a6963a315836a639c79de5a4458f28c"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    "docs/research/measurements/managed-otel-encoder/Cargo.toml": {
+      "bytes": 430,
+      "sha256": "478de5fd8a5473b5ed38846d0ae3a8434709aa87cca81211ec7b1b8049999ab5"
+    },
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": {
+      "bytes": 1058,
+      "sha256": "fceed6875c1ce02b1437fedca57778f2e1fafee8a01a87ef0d44e9f05737bf8a"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/Cargo.toml": {
+      "bytes": 596,
+      "sha256": "4bfc763c75bab28097d53e2590f728eae5b6cdc75fe29fb0de4456efc03235d2"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/check.py": {
+      "bytes": 5865,
+      "sha256": "9414e220a9760ecf0679364b58168b9c53c869a99096b1bfde5e4f22c1aa7a5d"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/run-light.py": {
+      "bytes": 7192,
+      "sha256": "702c3f0c0df9be83b943f59352205b99c7c45881bae9c1eea849764f581b44d9"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+      "bytes": 3080,
+      "sha256": "56855635a6de00f7c52a73a957b91b706d7b4d5a024f410469c3fde877782b7d"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "bytes": 7777,
+      "sha256": "173ee0793820dad057c98629d92ad1e0774d475226737196c0c3cacbbd929806"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+      "bytes": 1732,
+      "sha256": "44673325638c43301b36e18ed5a6c853a7b64763a6c0ae036d44178e74d1ad22"
+    }
+  }
+}

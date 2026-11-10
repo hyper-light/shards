@@ -946,6 +946,55 @@ fn stats(cgroup: &str) -> String {
     )
 }
 
+fn metrics(
+    out: &mut impl io::Write,
+    args: &[Vec<u8>],
+    cgroup: &str,
+    joiner: bool,
+    domains: &[crate::domains::Started],
+) -> io::Result<()> {
+    use crate::metrics::otlp::Scope;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let [id] = args else {
+        return Err(io::ErrorKind::InvalidInput.into());
+    };
+    let run = std::str::from_utf8(id)
+        .ok()
+        .filter(|s| s.len() == 2 * shards_abi::MICROVM_ID_BYTES && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let generation = crate::linux::control_read64(control::GENERATION)?;
+    let mut reader = crate::metrics::Reader::new()?;
+    let count = if joiner {
+        1
+    } else {
+        domains.len().checked_add(2).ok_or(io::ErrorKind::InvalidData)?
+    };
+    let mut samples = Vec::new();
+    samples
+        .try_reserve_exact(count)
+        .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+    let open = |path| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+    };
+    if !joiner {
+        samples.push(reader.snapshot(&open(RUN_CGROUP)?, Scope::Run)?);
+    }
+    samples.push(reader.snapshot(&open(cgroup)?, Scope::Workload)?);
+    if !joiner {
+        for domain in domains {
+            samples.push(reader.snapshot(domain.lifecycle.group(), Scope::Member(domain.member))?);
+        }
+    }
+    if crate::linux::control_read64(control::GENERATION)? != generation {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    crate::metrics::otlp::write(out, run, generation, &samples)
+}
+
 /// Freezes the cgroup at `dir`, or thaws it (D119): `cgroup.freeze` written, then, for a
 /// freeze, `cgroup.events` read until it says `frozen 1`, waiting for the kernel's word
 /// that the file changed (cgroup-v2.rst: a change of `cgroup.events` is a poll(2) event).
@@ -3265,6 +3314,7 @@ fn builtin(
     args: &[Vec<u8>],
     joiner: Option<(libc::pid_t, u32)>,
     workload: libc::pid_t,
+    domains: &[crate::domains::Started],
 ) -> Result<Started, Failure> {
     // A joiner's layers, kept as its root was built (D119): their descriptors, which its
     // diff, size and commit read here as the workload's are read.
@@ -3451,6 +3501,7 @@ fn builtin(
                 .and_then(|()| crate::plug::report_pluggable())
                 .and_then(|()| crate::plug::rehold_run(RUN_CGROUP)),
             run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),
+            run::builtin::METRICS => metrics(&mut out, args, &cgroup, joiner.is_some(), domains),
             // Its answer a line, whose end says it is whole: one its host took past its
             // deadline is still what was given back (reclaim.rs `given`).
             run::builtin::RECLAIM => reclaim_cold(RUN_CGROUP).and_then(|freed| {
@@ -3998,6 +4049,7 @@ impl Exec {
         workload: libc::pid_t,
         joiners: &[(u32, libc::pid_t)],
         hosts: Option<&crate::hostbind::Supervisor>,
+        domains: &[crate::domains::Started],
     ) -> Result<Exec, Option<(u32, String)>> {
         let (token, rest) = payload.split_at_checked(run::TOKEN).ok_or(None)?;
         let (id, spec) = rest.split_at_checked(4).ok_or(None)?;
@@ -4049,7 +4101,7 @@ impl Exec {
                 // Init's own work, in the joiner's namespaces and cgroup.
                 Some(&(id, pid)) if spec.builtin != 0 => {
                     exec.into_joiner = true;
-                    builtin(spec.builtin, &spec.argv, Some((pid, id)), workload)
+                    builtin(spec.builtin, &spec.argv, Some((pid, id)), workload, domains)
                 }
                 Some(&(joiner, pid)) => {
                     // The joiner's process, but for what the exec says (`--privileged`).
@@ -4080,7 +4132,7 @@ impl Exec {
                 }),
             }
         } else if spec.builtin != 0 && running {
-            builtin(spec.builtin, &spec.argv, None, workload)
+            builtin(spec.builtin, &spec.argv, None, workload, domains)
         } else if running {
             // The workload's process, but for what the exec says (`--privileged`), which
             // the run refuses beside its domains as it refused the workload's (D115).
@@ -4994,6 +5046,7 @@ impl Workload {
                                                 .map(|e| (e.id, e.pid))
                                                 .collect::<Vec<_>>(),
                                             hosts,
+                                            &self.domains,
                                         ) {
                                             Ok(e) => execs.push(e),
                                             // Said where the host hears it, which otherwise

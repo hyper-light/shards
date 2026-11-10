@@ -1,0 +1,7 @@
+{
+  "command": "python3 - <<'PY'\nimport pathlib,json,base64,hashlib\np=pathlib.Path.home()/'managed-otel-rust-reference-28e-light-v1/raw.tar.gz'\nd=p.read_bytes()\nprint(json.dumps({'bytes':len(d),'sha256':hashlib.sha256(d).hexdigest(),'chunks':[base64.b64encode(d[i:i+12000]).decode() for i in range(0,len(d),12000)]}))\nPY",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "sync": false,
+  "timeout_s": 600
+}

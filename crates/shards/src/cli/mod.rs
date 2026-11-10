@@ -495,7 +495,9 @@ fn container(
         } else {
             None
         };
-        let output = if let Some(written) = written {
+        let output = if std::ptr::eq(command, &shards_cmdline::commands::READ_METRICS) {
+            Some(save::Output::Stdout(std::io::stdout()))
+        } else if let Some(written) = written {
             match save::output(parsed.string("output"), written) {
                 Ok(output) => Some(output),
                 Err(e) => {
