@@ -1,0 +1,7 @@
+{
+  "command": "python3 - <<'PY'\nimport pathlib,base64,json,hashlib\np=pathlib.Path.home()/'managed-otel-limits-a920-light-v2/raw.tar.gz';d=p.read_bytes()\nprint(json.dumps({'bytes':len(d),'sha256':hashlib.sha256(d).hexdigest(),'chunks':[base64.b64encode(d[i:i+12000]).decode() for i in range(0,len(d),12000)]}))\nPY",
+  "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "sync": false,
+  "timeout_s": 600
+}

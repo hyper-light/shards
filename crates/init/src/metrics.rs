@@ -28,6 +28,13 @@ enum Token<'a> {
     Line,
 }
 
+/// The local configured ceiling, not available memory or an admitted entitlement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryLimit {
+    Finite(u64),
+    Unbounded,
+}
+
 /// One actual kernel page, reused across every file and scope in a request.
 pub struct Reader {
     bytes: Vec<u8>,
@@ -116,6 +123,25 @@ impl Reader {
         self.tokens(group, name, |token| {
             match token {
                 Token::Word(word) if value.is_none() => value = Some(number(word)?),
+                Token::Word(_) => return Err(Failure::Invalid),
+                Token::Long(_) => return Err(Failure::Overflow),
+                Token::Line => {}
+            }
+            Ok(())
+        })?;
+        value.ok_or(Failure::Missing)
+    }
+
+    pub fn memory_limit(&mut self, group: &File) -> Result<MemoryLimit, Failure> {
+        let mut value = None;
+        self.tokens(group, c"memory.max", |token| {
+            match token {
+                Token::Word(word) if value.is_none() => {
+                    value = Some(match word {
+                        b"max" => MemoryLimit::Unbounded,
+                        digits => MemoryLimit::Finite(number(digits)?),
+                    });
+                }
                 Token::Word(_) => return Err(Failure::Invalid),
                 Token::Long(_) => return Err(Failure::Overflow),
                 Token::Line => {}
