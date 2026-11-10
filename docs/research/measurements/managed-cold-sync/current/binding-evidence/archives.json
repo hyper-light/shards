@@ -1,0 +1,36 @@
+[
+  {
+    "label": "current-33df",
+    "sha256": "34dcf1e7a83a1544582039c6c862c0c843aa6906622c6d2077f1152aadd07d71",
+    "bytes": 6512,
+    "members": 12,
+    "remote": "/Users/adalundhe/managed-cold-sync-33df-v1-iu_sg6e5/current33df-evidence.tgz"
+  },
+  {
+    "label": "binding-v1",
+    "path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/binding-v1-evidence.tgz",
+    "encoded_path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/binding-v1-evidence.tgz.b64",
+    "sha256": "543e79071126a34f8d6f7bbb224acda4c8a9006b20b8c8205899836cd124e09f",
+    "bytes": 13257,
+    "encoded_bytes": 17676,
+    "members": 21
+  },
+  {
+    "label": "binding-v2",
+    "path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/v2/binding-v2-evidence.tgz",
+    "encoded_path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/v2/binding-v2-evidence.tgz.b64",
+    "sha256": "b45745a6912c1c51deb5cd9bf48dd7fc6f479273c7e9dca526e88efd766016f0",
+    "bytes": 19753,
+    "encoded_bytes": 26340,
+    "members": 48
+  },
+  {
+    "label": "binding-v3",
+    "path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/v3/binding-v3-evidence.tgz",
+    "encoded_path": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i/v3/binding-v3-evidence.tgz.b64",
+    "sha256": "58e9a0f0a134ffe1750ff113ff6f6aebef34c31286c72969cc5e3a8521ce3a38",
+    "bytes": 19475,
+    "encoded_bytes": 25968,
+    "members": 48
+  }
+]

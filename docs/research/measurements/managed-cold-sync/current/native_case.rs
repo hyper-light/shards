@@ -145,5 +145,12 @@ fn owned_connection_cold_sync_refusal_current() {
             .unwrap(),
         Some(End::Stopped)
     );
+    let mut status = 0;
+    // SAFETY: this test is the stand-in's actual parent. WNOHANG never waits;
+    // ECHILD independently checks that the API already reaped this owned child.
+    let waited = unsafe { libc::waitpid(guest.pid as libc::pid_t, &mut status, libc::WNOHANG) };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!((waited, errno), (-1, Some(libc::ECHILD)));
+    println!("COLD_NATIVE_REAP_ECHILD");
     println!("COLD_OWNED_REAPED");
 }

@@ -33,6 +33,7 @@ pub mod conformance;
 mod said;
 pub mod sim;
 mod stream;
+mod sync;
 #[cfg(unix)]
 mod taken;
 #[cfg(test)]
@@ -43,6 +44,7 @@ mod while_runs;
 mod proc_allocation;
 
 pub use client::{Shards, connect_borrowed};
+pub use sync::{Failure as SyncFailure, Operation as SyncOperation};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,7 +341,7 @@ impl std::error::Error for BorrowFailure {
 /// What can't be done, and why.
 ///
 /// Exhaustive consumers must handle [`Refusal::Process`], [`Refusal::Borrowed`]
-/// and [`Refusal::Allocation`] as well as the existing variants. `Clone`,
+/// [`Refusal::Allocation`] and [`Refusal::Synchronization`] as well as the existing variants. `Clone`,
 /// `PartialEq` and `Eq` remain available; match typed failures rather than text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
@@ -369,8 +371,11 @@ pub enum Refusal {
     },
     /// A finite borrowed connection failed without acquiring the guest's lifetime.
     Borrowed { port: u32, failure: BorrowFailure },
-    /// A post-boot connection resource could not be allocated.
+    /// A required client resource could not be allocated.
     Allocation { what: &'static str },
+    /// Native synchronization preparation or use failed. No terminal outcome is
+    /// inferred from this failure; its operation and native cause are preserved.
+    Synchronization { failure: SyncFailure },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -408,6 +413,7 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
+            Refusal::Synchronization { failure } => std::fmt::Display::fmt(failure, f),
         }
     }
 }
@@ -417,6 +423,7 @@ impl std::error::Error for Refusal {
         match self {
             Self::Process { failure, .. } => std::error::Error::source(failure),
             Self::Borrowed { failure, .. } => Some(failure),
+            Self::Synchronization { failure } => Some(failure),
             _ => None,
         }
     }

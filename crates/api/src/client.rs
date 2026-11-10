@@ -18,8 +18,11 @@ use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
+use triomphe::Arc as ControlArc;
+
+use crate::sync::{self, Condvar, Guard, Mutex as ControlMutex};
 
 use crate::stream::{self, Socket};
 use crate::{
@@ -100,44 +103,30 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
     // Shared: its watcher thread waits on it for the guest's life, past this call, as the guest kills it.
     let process = Arc::new(process);
     // Shared: the guest and its watcher thread, which outlives this call, each hold it while either lives.
-    let shared = Arc::new(Shared {
-        state: Mutex::new(State {
-            exited: false,
-            stopping: false,
-            ready: true,
-            end: None,
-            said: String::new(),
-            ended_as: String::new(),
-            status: None,
-        }),
-        changed: Condvar::new(),
-        tail: Mutex::new(Tail {
-            bytes: VecDeque::new(),
-            keep: 0,
-            drained: true,
-            output: None,
-        }),
-        drained: Condvar::new(),
-        end_mark: end_mark(),
-    });
+    let shared = Shared::prepare(true, 0, true)?;
     let (watched, watcher) = (process.clone(), shared.clone());
     std::thread::Builder::new()
         .name("shards-api-taken".into())
         .spawn(move || {
             let awaited = watched.exited();
-            let mut state = lock(&watcher.state);
-            state.status = Some(Err(match awaited {
-                Ok(()) => NOT_ITS_PARENT.into(),
-                Err(e) => format!("waiting for it: {e}"),
-            }));
-            state.exited = true;
-            watcher.changed.notify_all();
+            if let Ok(mut state) = watcher.state.lock() {
+                state.status = Some(Err(match awaited {
+                    Ok(()) => NOT_ITS_PARENT.into(),
+                    Err(e) => format!("waiting for it: {e}"),
+                }));
+                state.exited = true;
+                if let Err(failure) = watcher.changed.notify_all() {
+                    state.failure = Some(failure);
+                }
+                let _ = state.release();
+            }
         })
         .map_err(|e| Refusal::Boot(format!("taking it back, a thread to watch it: {e}")))?;
     Ok(ShardsGuest {
         ports: spec.ports.clone(),
         vsock: identity.vsock.clone(),
         pid: identity.pid,
+        child: None,
         taken: Some(Taken {
             identity: identity.clone(),
             process,
@@ -181,6 +170,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         writer.try_clone().map_err(piped)?,
         writer.try_clone().map_err(piped)?,
     );
+    let shared = Shared::prepare(false, tail(said), false)?;
     let child = Command::new(&binary)
         .args(&args)
         .stdin(Stdio::null())
@@ -188,27 +178,6 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         .stderr(stderr)
         .spawn()
         .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
-    // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
-    let shared = Arc::new(Shared {
-        state: Mutex::new(State {
-            exited: false,
-            stopping: false,
-            ready: false,
-            end: None,
-            said: String::new(),
-            ended_as: String::new(),
-            status: None,
-        }),
-        changed: Condvar::new(),
-        tail: Mutex::new(Tail {
-            bytes: VecDeque::new(),
-            keep: tail(said),
-            drained: false,
-            output: None,
-        }),
-        drained: Condvar::new(),
-        end_mark: end_mark(),
-    });
     #[cfg(unix)]
     let pid = child.id();
     // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
@@ -227,6 +196,8 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         pid,
         #[cfg(windows)]
         child,
+        #[cfg(unix)]
+        child: Some(child),
         #[cfg(unix)]
         taken: None,
         shared,
@@ -377,10 +348,10 @@ impl Drop for PrivateDir {
 /// What a guest's watchers and callers share.
 #[derive(Debug)]
 struct Shared {
-    state: Mutex<State>,
+    state: ControlMutex<State>,
     /// Signalled as the process ends.
     changed: Condvar,
-    tail: Mutex<Tail>,
+    tail: ControlMutex<Tail>,
     /// Signalled as its output is drained.
     drained: Condvar,
     /// What this process writes into shards' output once shards has ended ([`end_mark`]).
@@ -402,6 +373,8 @@ struct State {
     ended_as: String,
     /// Its exit status, as the watcher reaped it.
     status: Option<Result<std::process::ExitStatus, String>>,
+    /// Observer failure is uncertain, rather than a fabricated guest exit.
+    failure: Option<sync::Failure>,
 }
 
 #[derive(Debug)]
@@ -429,19 +402,88 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn synchronization(failure: sync::Failure) -> Refusal {
+    if failure.code.is_none() {
+        Refusal::Allocation {
+            what: "guest synchronization storage",
+        }
+    } else {
+        Refusal::Synchronization { failure }
+    }
+}
+
+impl Shared {
+    fn prepare(ready: bool, keep: usize, drained: bool) -> Result<ControlArc<Self>, Refusal> {
+        // No live Child is consumed by fallible preparation. Both native pairs
+        // are initialized at stable addresses before the command is spawned.
+        let shared = Self {
+            state: ControlMutex::new(State {
+                exited: false,
+                stopping: false,
+                ready,
+                end: None,
+                said: String::new(),
+                ended_as: String::new(),
+                status: None,
+                failure: None,
+            })
+            .map_err(|(_, failure)| synchronization(failure))?,
+            changed: Condvar::new().map_err(synchronization)?,
+            tail: ControlMutex::new(Tail {
+                bytes: VecDeque::new(),
+                keep,
+                drained,
+                output: None,
+            })
+            .map_err(|(_, failure)| synchronization(failure))?,
+            drained: Condvar::new().map_err(synchronization)?,
+            end_mark: end_mark(),
+        };
+        ControlArc::try_new(shared).map_err(|_| Refusal::Allocation {
+            what: "guest shared state",
+        })
+    }
+
+    fn failed(&self, failure: sync::Failure) -> Result<(), sync::Failure> {
+        // Tail is released before State, preserving the original lock order.
+        if let Ok(mut tail) = self.tail.lock() {
+            tail.drained = true;
+            let notified = self.drained.notify_all();
+            tail.release()?;
+            notified?;
+        }
+        let mut state = self.state.lock()?;
+        state.failure = Some(failure);
+        let notified = self.changed.notify_all();
+        state.release()?;
+        notified
+    }
+}
+
+fn finish<T, R>(guard: Guard<'_, T>, result: Result<R, Refusal>) -> Result<R, Refusal> {
+    guard.release().map_err(synchronization)?;
+    result
+}
+
 /// Starts the thread that reads shards' output into the tail, and the one that waits for it
 /// to exit.
 fn start_threads(
-    shared: &Arc<Shared>,
+    shared: &ControlArc<Shared>,
     child: &Arc<Mutex<Child>>,
     output: io::PipeReader,
     writer: io::PipeWriter,
 ) -> io::Result<()> {
     let exit = Exit::of(child)?;
     let drainer = shared.clone();
+    let draining_child = child.clone();
     std::thread::Builder::new()
         .name("shards-api-drain".into())
-        .spawn(move || drain(&drainer, output))?;
+        .spawn(move || {
+            if let Err(failure) = drain(&drainer, output) {
+                let _ = drainer.failed(failure);
+                let _ = lock(&draining_child).kill();
+            }
+        })?;
     let shared = shared.clone();
     std::thread::Builder::new()
         .name("shards-api-wait".into())
@@ -453,16 +495,18 @@ fn start_threads(
 /// keeps ([`Tail::keep`]). What follows the
 /// mark is not shards': a child it left holding its output (macOS's grants broker, until it
 /// exits) holds no refusal back.
-fn drain(shared: &Shared, mut output: io::PipeReader) {
+fn drain(shared: &Shared, mut output: io::PipeReader) -> Result<(), sync::Failure> {
     let mark = shared.end_mark.as_slice();
-    let keep = lock(&shared.tail).keep;
+    let tail = shared.tail.lock()?;
+    let keep = tail.keep;
+    tail.release()?;
     // A read never returns more than the tail keeps (never nothing: [`tail`]'s report).
     let mut buf = vec![0u8; keep];
     loop {
         match output.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                let mut tail = lock(&shared.tail);
+                let mut tail = shared.tail.lock()?;
                 tail.bytes.extend(buf.get(..n).unwrap_or_default());
                 // The mark may have begun in an earlier read.
                 let from = tail.bytes.len().saturating_sub(n.saturating_add(mark.len()));
@@ -476,6 +520,7 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
                 }
                 let over = tail.bytes.len().saturating_sub(keep);
                 tail.bytes.drain(..over);
+                tail.release()?;
                 if at.is_some() {
                     break;
                 }
@@ -484,10 +529,12 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
             Err(_) => break,
         }
     }
-    let mut tail = lock(&shared.tail);
+    let mut tail = shared.tail.lock()?;
     tail.drained = true;
     tail.output = Some(output);
-    shared.drained.notify_all();
+    let notified = shared.drained.notify_all();
+    tail.release()?;
+    notified
 }
 
 /// The process's exit, awaited without reaping it, so that its pid stays its own (and a
@@ -559,24 +606,25 @@ impl Exit {
     /// Waits for the process to exit, then for its last words, and says how it ended. Its
     /// words end at the end mark this writes after its exit: the drain reaches the mark
     /// through what is in the pipe ahead of it, which is finite, with no clock.
-    fn watch(self, shared: &Shared, mut writer: io::PipeWriter) {
+    fn watch(self, shared: &Shared, writer: io::PipeWriter) {
         let awaited = self.awaited();
-        let drained = lock(&shared.tail).drained;
-        // Where the drain has ended (an error), the pipe holds the mark unread, as its
-        // reader is kept open.
-        if !drained && writer.write_all(&shared.end_mark).is_err() {
-            lock(&shared.tail).drained = true;
-        }
-        drop(writer);
-        let mut tail = lock(&shared.tail);
-        while !tail.drained {
-            tail = shared.drained.wait(tail).unwrap_or_else(PoisonError::into_inner);
-        }
-        let said = String::from_utf8_lossy(tail.bytes.make_contiguous())
-            .trim()
-            .to_string();
-        drop(tail);
-        let mut state = lock(&shared.state);
+        let captured = Self::capture(shared, writer);
+        let mut state = match shared.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                // A failed native State mutex remains refused. No later caller
+                // can enter its old PID state after this independent owned reap.
+                let _ = lock(&self.child).wait();
+                return;
+            }
+        };
+        let said = match captured {
+            Ok(said) => said,
+            Err(failure) => {
+                state.failure = Some(failure);
+                String::new()
+            }
+        };
         if let Err(e) = awaited {
             state.end = Some(End::Failed(format!("waiting for shards: {e}")));
             state.ended_as = format!("waiting for shards: {e}");
@@ -586,7 +634,37 @@ impl Exit {
         state.status = Some(lock(&self.child).wait().map_err(|e| e.to_string()));
         state.said = said;
         state.exited = true;
-        shared.changed.notify_all();
+        if let Err(failure) = shared.changed.notify_all() {
+            state.failure = Some(failure);
+        }
+        let _ = state.release();
+    }
+
+    fn capture(shared: &Shared, mut writer: io::PipeWriter) -> Result<String, sync::Failure> {
+        let tail = shared.tail.lock()?;
+        let drained = tail.drained;
+        tail.release()?;
+        if !drained && writer.write_all(&shared.end_mark).is_err() {
+            let mut tail = shared.tail.lock()?;
+            tail.drained = true;
+            tail.release()?;
+        }
+        drop(writer);
+        let mut tail = shared.tail.lock()?;
+        while !tail.drained {
+            // SAFETY: drained is paired only with Shared::tail, at stable storage.
+            let (next, waited) = unsafe { shared.drained.wait(tail, None) };
+            tail = next;
+            if let Err(failure) = waited {
+                tail.release()?;
+                return Err(failure);
+            }
+        }
+        let said = String::from_utf8_lossy(tail.bytes.make_contiguous())
+            .trim()
+            .to_string();
+        tail.release()?;
+        Ok(said)
     }
 }
 
@@ -599,10 +677,13 @@ struct ShardsGuest {
     /// Ended through it on Windows, which sends a process no signal; the watcher reaps it.
     #[cfg(windows)]
     child: Arc<Mutex<Child>>,
+    /// The same Child owner as the reaper, for cleanup if native State access fails.
+    #[cfg(unix)]
+    child: Option<Arc<Mutex<Child>>>,
     /// What it was taken back by, where it was: its VM process is not this one's child.
     #[cfg(unix)]
     taken: Option<Taken>,
-    shared: Arc<Shared>,
+    shared: ControlArc<Shared>,
     /// Its socket's directory, removed as it drops: none where a guest taken back was given
     /// a socket in a directory this client does not make.
     _dir: Option<PrivateDir>,
@@ -616,6 +697,29 @@ struct Taken {
 }
 
 impl ShardsGuest {
+    fn with_state<R>(&self, action: impl FnOnce(&mut State) -> Result<R, Refusal>) -> Result<R, Refusal> {
+        let mut state = self.shared.state.lock().map_err(synchronization)?;
+        let result = action(&mut state);
+        finish(state, result)
+    }
+
+    fn stop_without_state(&self) {
+        #[cfg(unix)]
+        if let Some(taken) = &self.taken {
+            taken.process.kill();
+            return;
+        }
+        // Child's recorded status protects against PID reuse if State failed.
+        #[cfg(unix)]
+        if let Some(child) = &self.child {
+            let _ = lock(child).kill();
+        }
+        #[cfg(windows)]
+        {
+            let _ = lock(&self.child).kill();
+        }
+    }
+
     /// Its end, once the process has exited and its watcher reaped it.
     fn end(&self, state: &mut State) -> Option<End> {
         if !state.exited {
@@ -643,6 +747,9 @@ impl ShardsGuest {
     /// The refusal for a guest that has ended: `Boot`, with shards' exit and last words,
     /// where it failed or reset before any `CONNECT` was answered, else `Ended`.
     fn gone(&self, state: &mut State) -> Option<Refusal> {
+        if let Some(failure) = state.failure {
+            return Some(synchronization(failure));
+        }
         let end = self.end(state)?;
         // A failure or a reset (a kernel's panic) before any answer is the boot's; a power-off
         // or a stop is a normal end.
@@ -1107,7 +1214,7 @@ impl Guest for ShardsGuest {
         let deadline = began.checked_add(patience);
         let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
         let last = loop {
-            if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
+            if let Some(refusal) = self.with_state(|state| Ok(self.gone(state)))? {
                 return Err(refusal);
             }
             let mut cost = Duration::ZERO;
@@ -1116,7 +1223,10 @@ impl Guest for ShardsGuest {
             let wait = left().filter(|l| !l.is_zero());
             match handshake(&self.vsock, port, wait, &mut cost) {
                 Ok(s) => {
-                    lock(&self.shared.state).ready = true;
+                    self.with_state(|state| {
+                        state.ready = true;
+                        Ok(())
+                    })?;
                     return s.boxed().map_err(|_| Refusal::Allocation {
                         what: "connection storage",
                     });
@@ -1131,13 +1241,17 @@ impl Guest for ShardsGuest {
                 Err(Attempt::Again(_)) => {}
             }
             // Waits out the pause, woken at once by the process's end.
-            let state = lock(&self.shared.state);
+            let state = self.shared.state.lock().map_err(synchronization)?;
             if !state.exited {
                 let pause = pause(cost, began.elapsed(), left().unwrap_or(Duration::MAX));
-                let _ = self.shared.changed.wait_timeout(state, pause);
+                // SAFETY: changed is paired only with Shared::state.
+                let (state, waited) = unsafe { self.shared.changed.wait(state, Some(pause)) };
+                finish(state, waited.map(|_| ()).map_err(synchronization))?;
+            } else {
+                finish(state, Ok(()))?;
             }
         };
-        if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
+        if let Some(refusal) = self.with_state(|state| Ok(self.gone(state)))? {
             return Err(refusal);
         }
         Err(Refusal::Channel {
@@ -1151,12 +1265,17 @@ impl Guest for ShardsGuest {
     }
 
     fn stop(&self) -> Result<(), Refusal> {
-        let mut state = lock(&self.shared.state);
-        if !state.exited {
-            state.stopping = true;
-            self.signal(&state);
+        let result = self.with_state(|state| {
+            if !state.exited {
+                state.stopping = true;
+                self.signal(state);
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            self.stop_without_state();
         }
-        Ok(())
+        result
     }
 
     /// Its VM process's pid and start, as the OS counts it, read while the process is this
@@ -1168,18 +1287,19 @@ impl Guest for ShardsGuest {
         if let Some(taken) = &self.taken {
             return Ok(taken.identity.clone());
         }
-        let mut state = lock(&self.shared.state);
-        if let Some(refusal) = self.gone(&mut state) {
-            return Err(refusal);
-        }
-        #[cfg(unix)]
-        let (pid, started) = (self.pid, crate::taken::started(self.pid));
-        #[cfg(windows)]
-        let (pid, started) = {
-            let child = lock(&self.child);
-            (child.id(), created(&child))
-        };
-        drop(state);
+        let (pid, started) = self.with_state(|state| {
+            if let Some(refusal) = self.gone(state) {
+                return Err(refusal);
+            }
+            #[cfg(unix)]
+            let identity = (self.pid, crate::taken::started(self.pid));
+            #[cfg(windows)]
+            let identity = {
+                let child = lock(&self.child);
+                (child.id(), created(&child))
+            };
+            Ok(identity)
+        })?;
         Ok(Identity {
             pid,
             started: started.map_err(|e| Refusal::Gone {
@@ -1193,26 +1313,25 @@ impl Guest for ShardsGuest {
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
         // None: past `Instant`'s range (`Duration::MAX`): until it ends.
         let deadline = Instant::now().checked_add(timeout);
-        let mut state = lock(&self.shared.state);
+        let mut state = self.shared.state.lock().map_err(synchronization)?;
         loop {
-            if let Some(end) = self.end(&mut state) {
-                return Ok(Some(end));
+            if let Some(failure) = state.failure {
+                return finish(state, Err(synchronization(failure)));
             }
-            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
-                Some(left) if left.is_zero() => return Ok(None),
-                Some(left) => {
-                    self.shared
-                        .changed
-                        .wait_timeout(state, left)
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .0
-                }
-                None => self
-                    .shared
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner),
-            };
+            if let Some(end) = self.end(&mut state) {
+                return finish(state, Ok(Some(end)));
+            }
+            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
+            if left.is_some_and(|left| left.is_zero()) {
+                return finish(state, Ok(None));
+            }
+            // SAFETY: changed is paired only with Shared::state. The original
+            // absolute deadline remains authoritative across every spurious wake.
+            let (next, waited) = unsafe { self.shared.changed.wait(state, left) };
+            state = next;
+            if let Err(failure) = waited {
+                return finish(state, Err(synchronization(failure)));
+            }
         }
     }
 }
@@ -1220,10 +1339,8 @@ impl Guest for ShardsGuest {
 impl Drop for ShardsGuest {
     /// Ends the guest, if it has not ended: no VM outlives its owner.
     fn drop(&mut self) {
-        let mut state = lock(&self.shared.state);
-        if !state.exited {
-            state.stopping = true;
-            self.signal(&state);
+        if self.stop().is_err() {
+            self.stop_without_state();
         }
     }
 }
@@ -1478,11 +1595,14 @@ mod tests {
     /// names a zombie as a process, and a reaped pid as none.
     #[cfg(unix)]
     fn reaped_once_exited(pid: u32, shared: &Shared) -> bool {
-        let mut state = lock(&shared.state);
+        let mut state = shared.state.lock().unwrap();
         while !state.exited {
-            state = shared.changed.wait(state).unwrap();
+            // SAFETY: same State/CV pair as the production wait loop.
+            let (next, waited) = unsafe { shared.changed.wait(state, None) };
+            waited.unwrap();
+            state = next;
         }
-        drop(state);
+        state.release().unwrap();
         let alive = Command::new("kill")
             .args(["-0", &pid.to_string()])
             .stderr(Stdio::null())

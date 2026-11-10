@@ -1,0 +1,11 @@
+{
+  "packed_sha256": "596f27a01c6dc759480eb9058bda3db5341de153e7571213b196cc3d82464bc1",
+  "driver_sha256": "9f958c290a27f6ede08c6bf0283e4b3be379d91f8f8e26bb3a3f250fae1a981f",
+  "parts": {
+    "input": 15,
+    "driver": 2
+  },
+  "private": "/Users/adalundhe/managed-cold-sync-binding-v1-1luhy_9i",
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+  "baseline": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac"
+}
