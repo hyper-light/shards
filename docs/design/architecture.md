@@ -4918,7 +4918,15 @@ connections, local stdio is read and written by threads of their own whose bound
 channels hold the connection's flow control back, so that a reader that stops holds up no
 packet the connection's liveness needs, and other threads wake it with a datagram to its
 own socket, which every target has (Windows' consoles and pipes are no descriptor a poll of
-a socket reaches). The daemon's side (`server.rs`, `daemon/remote.rs`) starts each command
+a socket reaches). An interrupted receive starts another driver turn, checking commands
+and connection timers again while retaining the connections. Linux's
+[signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html) specifies that a socket
+receive with `SO_RCVTIMEO` returns `EINTR` on a caught signal even with `SA_RESTART`.
+`net::tests::an_interrupted_receive_keeps_serving_commands` waits until Linux shows the
+driver blocked in `recvfrom`, targets that thread with a signal in an isolated process,
+then verifies it still handles Stop; without the retry it returns the same socket error
+seen by context commands on Fedora. The daemon's side (`server.rs`, `daemon/remote.rs`)
+starts each command
 by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
 whose owner uses a context of their own never sends a client's command on), says each in
 its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a

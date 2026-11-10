@@ -527,6 +527,9 @@ impl<H: Handler> Driver<H> {
                         e.kind(),
                         std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                     ) => {}
+                // A signal interrupts a timed receive (Linux signal(7)): another turn
+                // checks commands and timers without losing any of the connections.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 // A datagram a peer's ICMP refused (Windows says so on the next read):
                 // its connection's timers deal with it.
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
@@ -827,6 +830,105 @@ impl<H: Handler> Driver<H> {
 mod tests {
     use super::*;
     use crate::tls::{IDLE, QUIET};
+
+    /// A timed socket read is not restarted after a signal, even with SA_RESTART
+    /// (Linux signal(7)). A harmless host signal must leave the driver serving commands.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interrupted_receive_keeps_serving_commands() {
+        const CHILD: &str = "SHARDS_TEST_INTERRUPTED_DRIVER";
+        if std::env::var_os(CHILD).is_none() {
+            // Signal dispositions belong to the process: keep this one away from every
+            // other test, including whichever handlers the test runner already installed.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "net::tests::an_interrupted_receive_keeps_serving_commands",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        use std::os::fd::AsRawFd;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static HEARD: AtomicBool = AtomicBool::new(false);
+        extern "C" fn heard(_: libc::c_int) {
+            HEARD.store(true, Ordering::SeqCst);
+        }
+
+        // SAFETY: a zeroed sigaction has no uninitialized fields; its mask is set below.
+        let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+        action.sa_sigaction = heard as *const () as usize;
+        // SAFETY: action is writable, and the handler only stores a lock-free atomic bool.
+        unsafe {
+            assert_eq!(libc::sigemptyset(&mut action.sa_mask), 0);
+            assert_eq!(libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()), 0);
+        }
+
+        struct Waiting;
+        impl Handler for Waiting {
+            type Command = ();
+            fn connected(&mut self, _: &mut Io<'_>, _: ConnKey, _: &[u8]) -> Result<(), Close> {
+                Ok(())
+            }
+            fn opened(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn readable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn writable(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {}
+            fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, _: Option<u64>) {}
+            fn command(&mut self, _: &mut Io<'_>, _: ()) {}
+            fn done(&self) -> bool {
+                false
+            }
+        }
+
+        let (mut driver, sender) = Driver::bind("127.0.0.1:0".parse().unwrap(), None, Waiting).unwrap();
+        let fd = driver.socket.as_raw_fd();
+        let (started, ready) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // SAFETY: both calls identify this live thread; pthread_self remains valid
+            // until the worker is joined below.
+            let identity = unsafe { (libc::gettid(), libc::pthread_self()) };
+            started.send(identity).unwrap();
+            driver.run()
+        });
+        let (tid, thread) = ready.recv().unwrap();
+        let syscall = format!("/proc/self/task/{tid}/syscall");
+        loop {
+            let call = std::fs::read_to_string(&syscall).unwrap();
+            let mut words = call.split_whitespace();
+            let number = words.next().and_then(|s| s.parse::<libc::c_long>().ok());
+            let socket = words
+                .next()
+                .and_then(|s| i32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+            if number == Some(libc::SYS_recvfrom) && socket == Some(fd) {
+                break;
+            }
+            assert!(!worker.is_finished(), "the driver ended before its receive");
+            std::thread::yield_now();
+        }
+        // SAFETY: the worker is still live, blocked in this socket's recvfrom. Its handler
+        // records delivery without restarting that timed read.
+        assert_eq!(unsafe { libc::pthread_kill(thread, libc::SIGUSR1) }, 0);
+        while !HEARD.load(Ordering::SeqCst) {
+            assert!(!worker.is_finished(), "the driver ended before the signal");
+            std::thread::yield_now();
+        }
+        // The old driver may already have dropped its receiver after EINTR: check its
+        // actual result, rather than letting a failed Stop hide that error.
+        let _ = sender.send(Command::Stop);
+        worker.join().unwrap().unwrap();
+    }
 
     /// A connection's handshake is held to IDLE from its start, and nothing of the driver's
     /// after: an established one lives as long as its peer is heard within QUIET, however
