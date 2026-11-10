@@ -1,0 +1,33 @@
+{
+  "state": "UNIMPLEMENTED proposal; paired.py and frozen native fixture unchanged",
+  "base_head": "4103ca3ddd9ca0dab39a7c58d40a4fad88f1325f",
+  "base_paired_sha256": "dcac1f33d3b19877832bf091661d838f4c59bb91ece58fdcb46b0b5bdb671b4c",
+  "draft_paired_sha256": "ba92da8d970cacd4c2afecb0c50ef7cdbd2be01fc5617d7f30e006aa0e1aab97",
+  "patch_sha256": "016e992f002c2c33c58dc22c88edd4855d4cc90e13a8e4d19c22a5124d90e044",
+  "patch_lines": 22,
+  "command": [
+    "git",
+    "apply",
+    "--check",
+    "docs/research/measurements/managed-allocation-metrics/setup-report.proposed.patch"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": "",
+  "frozen_native_fixture_sha256": "31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7",
+  "scope": "source diff/apply-check only; no unit/compile/caller/native query/actual records/profile/benchmark execution",
+  "policy_check": {
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0,
+    "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "stderr": ""
+  },
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "primary_measurement_record": "eb5654d6f5356cacaca536ff51f14a632fa7e801:docs/research/measurements/managed-coordinator-allocation/README.md",
+  "local_target_or_cache_paths": [],
+  "active_own_remote_jobs": [],
+  "no_child_or_goal_plan_dispatch": true
+}

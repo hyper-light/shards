@@ -67,11 +67,18 @@ same-N strict identity/exit/FD/protocol/cleanup gates, raw failure retention,
 Unknown coverage and explicit type1 sample quantiles. It creates no production
 number, cache, semantic authority, OS adapter or automatic actor cleanup.
 
-Root still owns full normal-helper compilation and supported targets on the
-**new native source**, real native phases and failures, actual paired/interleaved
-release campaigns, parent/foreign-C/daemon/VM/guest/kernel/copy/CPU attribution,
-noise/contention and instrumentation costs, independent guard mutations/exact
-restoration and cleanup. Data/claims from033c are not gates for4fffe or47c6.
+Root now retains source-specific nativef53f gates in main record
+`eb5654d6f5356cacaca536ff51f14a632fa7e801`: matching normal-helper/caller build0,
+ordinary16pass/2ignored, strictN1 functional0 with labelled best-effort/conditional
+queries and actual owner/exit/FD7→12→7, plus full seven-target scripts/lint0.
+Only native4ff was adopted; the paired runner and both pure proposals were not.
+Native4ff remains frozen; all five eaf0 red artifacts and f53f artifacts protected.
+
+Root still owns native error/race/guard/native-host coverage and separate full
+paired review/adoption/actual execution, paired/interleaved release campaigns,
+parent/foreign-C/daemon/VM/guest/kernel/copy/CPU attribution, noise/contention and
+instrumentation costs, independent guard mutations/exact restoration and cleanup.
+Earlier033c or f53f gates are not paired-runner or comparative performance proof.
 The native categories/widths are distinct; ordinary platform values are
 best-effort and deltas conditional. Rust counts are observer-only wrapper
 events/requested bytes, non-atomic phases and recorded lifetime peak.
@@ -99,3 +106,9 @@ startup observation, not assert an artifact-hash cause or optimize production.
 Root must select/approve the next batch; actual optimization only follows ROOT
 measured analysis and scoped acceptance. Continue the approved queue without
 checkpoint-final/idle or marking the parent goal done.
+
+Root requested a next finite PURE proposal after its native gates. The
+[setup aggregate report proposal](SETUP-REPORT-PROPOSAL.md) exposes existing
+before_fixture cumulative values/live/lifetime peak with explicit Unknown cause.
+Its22-line patch is UNAPPLIED, paired source unchanged, no new snapshot or chosen
+artifact-hash/cache optimization. Root approval is required before implementation.

@@ -1,0 +1,24 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-allocation-metrics/HANDOFF.md",
+    "docs/research/measurements/managed-allocation-metrics/QUEUE-CHECKPOINT.md",
+    "docs/research/measurements/managed-allocation-metrics/SETUP-REPORT-PROPOSAL.md",
+    "docs/research/measurements/managed-allocation-metrics/records/setup-report-proposal-source-checks.json",
+    "docs/research/measurements/managed-allocation-metrics/setup-report.proposed.patch"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": "",
+  "classified_artifact": {
+    "path": "docs/research/measurements/managed-allocation-metrics/setup-report.proposed.patch",
+    "sha256": "016e992f002c2c33c58dc22c88edd4855d4cc90e13a8e4d19c22a5124d90e044",
+    "reason": "standard unified-diff blank context marker retained as unapplied proposal data"
+  },
+  "other_paths_check_exit": 0,
+  "source_or_whitespace_rule_relaxation": "NONE"
+}

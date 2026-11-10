@@ -148,3 +148,24 @@ Root's NEW privateLinux target/clone EXCLUSIVE; never touch. Pairedparser/
 runner/delta checkpoints gathered for separate fullROOTreview, NOTautoadopted.
 Continue PURE checks/recordreadiness under same1CPU1GiB2GiB newprivate scopes;
 no children, goal/plan auto dispatch, actorstop/reset, fakekeepalive or selfdone.
+
+NEW ROOT ACTUAL receipt supersedes priorpending: nativecandidate
+f53f7750eb6c74ce6f7de290f6977c08a401f774 normalcarriedhelpers/callerbuild0,
+ordinarymanaged_output16pass0fail2ignore, strictN1FUNCTIONALpilot0; all live
+phasequeries ObservedBestEffort/matchedPIDstart/nativeLinuxaggregate64,
+aftercleanupdaemonVMUnknown(nozero), conditionaldeltas; ownerjoin/heldbothhost
+exitready/FD7→12→7 actual. Full7scripts/lint+format/GPU0 samef53, initial4Finder
+DSStorepreflightstop preserved/hashed; stricttracked/indexcleanv2passes. Source
+ONLY4ff and allraw/hashes landed mainrecordeb5654d6f5356cacaca536ff51f14a632fa7e801.
+Pairedrunner/startuphooks NOTadopted, no benchmark. PROTECT root frozen
+~/root-managed-native-f53f-artifacts-v1 and all5oldred
+~/root-managed-normal-eaf0-artifacts-v1; no ROOTclone/target/cache writes.
+
+ROOT requested finite nextPUREproposal from sampledsetup causeUnknown, no
+artifacthash/cache guess. Sent stablekeymanaged-next-pure-setup-aggregate-report-proposal-v1:
+expose existingbefore_fixture cumulativefields+absoluteLive/lifetimePeak in
+paired normalizedreport, separate top-levelattributionUnknown; no newprobes/
+fixture/startuphooks/optimization. SETUP-REPORT-PROPOSAL.md and22lineUNAPPLIED
+setup-report.proposed.patch concrete against4103ca3dd, patchSHA016e992f...;
+implementation NOTauthorized yet. Finite3syntheticchecks +existing14regressions
+proposed only, no test/executor/profile run. Actualpairedsource remainsdcac1f33.

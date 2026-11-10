@@ -1,0 +1,22 @@
+--- a/docs/research/measurements/managed-allocation-metrics/paired.py
++++ b/docs/research/measurements/managed-allocation-metrics/paired.py
+@@ -261,9 +261,11 @@
+     before = phases["before_fixture"]
+     for name in CUMULATIVE:
+         first = counter(before.get(name))
++        result[f"observer_rust.before_fixture.{name}.process_cumulative"] = first
+         for phase in ("owner_ready_before_recording", "after_shutdown_watch_release_and_fd_sample"):
+             result[f"observer_rust.{phase}.{name}.since_before_fixture"] = counter_difference(first, counter(phases[phase].get(name)))
+     for name in GAUGES:
++        result[f"observer_rust.before_fixture.{name}.absolute"] = counter(before.get(name))
+         for phase in ("owner_ready_before_recording", "after_shutdown_watch_release_and_fd_sample"):
+             result[f"observer_rust.{phase}.{name}.absolute"] = counter(phases[phase].get(name))
+         result[f"observer_rust.after_fixture_drop.{name}.absolute"] = counter(sample.get(name))
+@@ -304,6 +306,7 @@
+         seen.add(key)
+     keys = sorted({key for sample in samples for key in sample.get("metrics", {})})
+     output = {"pairs_requested": n, "samples_requested": 2 * n, "validated_samples": len(samples), "schedule": "AB,BA alternating; serial; no warmup or automatic retry", "order_pairs_requested": {"AB": (n + 1) // 2, "BA": n // 2}, "limitations": "same-N fixture, non-atomic phases, observer Rust only; native faults conditional; parent/kernel/foreign C/process-tree and instrumentation overhead remain separately root-accounted", "variants": {}, "paired_B_minus_A": {}}
++    output["before_fixture_attribution"] = unknown("ProcessCumulativeBeforeFixtureDoesNotIsolateCallSites")
+     for variant in ("A", "B"):
+         rows = [sample for sample in samples if sample["variant"] == variant]
+         output["variants"][variant] = {key: distribution([row["metrics"].get(key, unknown("MetricMissing")) for row in rows], n) for key in keys}
