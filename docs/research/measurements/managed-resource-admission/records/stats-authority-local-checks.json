@@ -1,0 +1,96 @@
+{
+  "source": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "scope": "exact existing Usage declaration/parser only + seven pure offline cases; no production edit/exporter/collector/runtime source sampling",
+  "outcomes": {
+    "v1": {
+      "build": 101,
+      "Rust_compilation": "unrun",
+      "tests": "unrun",
+      "Clippy": "unrun",
+      "binary": null
+    },
+    "v2": {
+      "build": 101,
+      "Rust_compilation": "unrun",
+      "tests": "unrun",
+      "Clippy": "unrun",
+      "binary": null
+    },
+    "v3": {
+      "build": 0,
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "Clippy_D_warnings": 0
+    }
+  },
+  "failures_retained": "v1 missing inherited workspace version; v2 substring also changed private rust-version; all original11/11/19 records preserved/verified",
+  "local_helper_limit": "Python tomllib import unavailable, no install; existing fixture manifest read directly from retained archive",
+  "local_checks": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "63ea2a",
+        "wall_time_seconds": 6.166e-06,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "7abea0",
+        "wall_time_seconds": 0.02036925,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "1c6606",
+        "wall_time_seconds": 7.458e-06,
+        "exit_code": 0,
+        "original_token_count": 11,
+        "output": "AST and new JSON valid; no local compile\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "72317e",
+        "wall_time_seconds": 7.209e-06,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "c03434",
+        "wall_time_seconds": 7.75e-06,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "all_own_jobs_terminal": true,
+  "local_compile": false,
+  "R01_R16": "README account and OTEL-SOURCE-FACTS scope; no full producer/OOM/VM/collector/platform/metrics contract/guarantee/profile claim",
+  "production_delta_from_048": false,
+  "held_campaigns": "not retried/rerouted; allocator injector unimplemented",
+  "raw_whitespace": {
+    "exit_code": 2,
+    "output": "docs/research/measurements/managed-resource-admission/records/stats-parser-v3/units.log:12: new blank line at EOF.\n",
+    "classification": "exact original libtest EOF retained/classified; no blanket exemption"
+  },
+  "all_other_named_paths_diff_check": {
+    "exit_code": 0,
+    "output": ""
+  }
+}

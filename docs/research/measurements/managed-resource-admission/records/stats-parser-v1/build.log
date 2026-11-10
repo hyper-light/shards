@@ -1,0 +1,11 @@
+error: failed to load manifest for workspace member `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light`
+referenced by workspace at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/Cargo.toml`
+
+Caused by:
+  failed to parse manifest at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light/Cargo.toml`
+
+Caused by:
+  error inheriting `version` from workspace root manifest's `workspace.package.version`
+
+Caused by:
+  `workspace.package.version` was not defined

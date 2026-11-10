@@ -1,0 +1,8 @@
+error: failed to load manifest for workspace member `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v2/stats-authority-light`
+referenced by workspace at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v2/Cargo.toml`
+
+Caused by:
+  failed to parse manifest at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v2/stats-authority-light/Cargo.toml`
+
+Caused by:
+  rust-version 0.0.0 is incompatible with the version (1.85.0) required by the specified edition (2024)

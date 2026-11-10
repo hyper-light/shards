@@ -13,7 +13,8 @@
     {"path": "records/caps-v3/units.log", "line": 13, "classification": "original libtest final blank line"},
     {"path": "records/caps-v4/units.log", "line": 14, "classification": "original libtest final blank line"},
     {"path": "records/caps-v5/units.log", "line": 20, "classification": "original libtest final blank line"},
-    {"path": "records/caps-musl-v1/units.log", "line": 20, "classification": "original libtest final blank line"}
+    {"path": "records/caps-musl-v1/units.log", "line": 20, "classification": "original libtest final blank line"},
+    {"path": "records/stats-parser-v3/units.log", "line": 12, "classification": "original libtest final blank line"}
   ],
   "source_and_other_evidence_check": "Recorded separately with exactly this raw source excluded; no production scope exception."
 }

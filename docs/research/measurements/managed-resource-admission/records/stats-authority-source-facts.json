@@ -1,0 +1,349 @@
+{
+  "source_revision": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "kind": "source-only producer/authority trace plus separate pure parser witness; not live collector/VM/profiling or a defect/fix claim",
+  "files": [
+    {
+      "path": "crates/init/src/run.rs",
+      "bytes": 264341,
+      "sha256": "a4b8a68f6b5935c30ccfee839c6fcaf8a62cb93a31fa6906658f6c179634086a"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "bytes": 113664,
+      "sha256": "1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7"
+    },
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "bytes": 26462,
+      "sha256": "6dd07ec06521349f6c2a11d02db956bb612f768a64c1c24ee45d0cc19758efc2"
+    },
+    {
+      "path": "crates/abi/src/run.rs",
+      "bytes": 53408,
+      "sha256": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8"
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "bytes": 161936,
+      "sha256": "8eb26275f014225a0f53d377563ff57f838a90f726d7057203caf3761e3aab70"
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "bytes": 10801,
+      "sha256": "a7e98b6d0f3447b91c8d5133f690fc95e053c6ddbea2d690cb238efcd9a0e349"
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "bytes": 137180,
+      "sha256": "4b801f582cf76ddac4bec248bd3dba9ddb91a9b3b130c6b55bab98a95f89978f"
+    },
+    {
+      "path": "crates/vmm/src/platform/windows_process.rs",
+      "bytes": 17157,
+      "sha256": "581aa06b3bac22a2a8278447b7061c26f5ba0128bee42efcfd91e7dc154e5c9b"
+    }
+  ],
+  "anchors": [
+    {
+      "path": "crates/init/src/run.rs",
+      "needle": "fn stats(cgroup: &str) -> String",
+      "matches": [
+        {
+          "line": 874,
+          "source": "fn stats(cgroup: &str) -> String {"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "needle": "let read = |p: &str|",
+      "matches": [
+        {
+          "line": 875,
+          "source": "let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "needle": "pub const RUN_CGROUP:",
+      "matches": [
+        {
+          "line": 997,
+          "source": "pub const RUN_CGROUP: &str = \"/sys/fs/cgroup/run\";"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "needle": "const WORKLOAD_CGROUP:",
+      "matches": [
+        {
+          "line": 1005,
+          "source": "const WORKLOAD_CGROUP: &str = \"/sys/fs/cgroup/run/workload\";"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "needle": "run::builtin::STATS =>",
+      "matches": [
+        {
+          "line": 3453,
+          "source": "run::builtin::STATS => out.write_all(stats(&cgroup).as_bytes()),"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "needle": "const CGROUPS:",
+      "matches": [
+        {
+          "line": 38,
+          "source": "const CGROUPS: &str = \"/sys/fs/cgroup/run/domains\";"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "needle": "p.commit(d.pids, d.memory)",
+      "matches": [
+        {
+          "line": 1618,
+          "source": ".and_then(|p| p.commit(d.pids, d.memory))"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "needle": "fn read_limit(",
+      "matches": [
+        {
+          "line": 246,
+          "source": "fn read_limit(parent: &File, name: &'static CStr) -> Result<Limit, Refusal> {"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "needle": "pub(super) fn prepare(memory_high:",
+      "matches": [
+        {
+          "line": 448,
+          "source": "pub(super) fn prepare(memory_high: u64) -> Result<Self, Refusal> {"
+        }
+      ]
+    },
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "needle": "fn memory_value(",
+      "matches": [
+        {
+          "line": 303,
+          "source": "fn memory_value(bytes: u64, page: u64) -> Result<Limit, Refusal> {"
+        }
+      ]
+    },
+    {
+      "path": "crates/abi/src/run.rs",
+      "needle": "pub const STATS:",
+      "matches": [
+        {
+          "line": 645,
+          "source": "pub const STATS: u8 = 11;"
+        }
+      ]
+    },
+    {
+      "path": "crates/abi/src/run.rs",
+      "needle": "pub const ROOM:",
+      "matches": [
+        {
+          "line": 670,
+          "source": "pub const ROOM: u8 = 16;"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "needle": "static LAST_USAGE:",
+      "matches": [
+        {
+          "line": 3323,
+          "source": "static LAST_USAGE: std::sync::Mutex<std::collections::BTreeMap<String, Usage>> ="
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "needle": "pub(super) fn usage_of(",
+      "matches": [
+        {
+          "line": 3328,
+          "source": "pub(super) fn usage_of(&self, id: &str) -> Option<Usage> {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "needle": "pub(super) struct Usage",
+      "matches": [
+        {
+          "line": 3354,
+          "source": "pub(super) struct Usage {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "needle": "fn parse(text: &str) -> Usage",
+      "matches": [
+        {
+          "line": 3369,
+          "source": "fn parse(text: &str) -> Usage {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "needle": "lock(&LAST_USAGE).get(id).cloned()",
+      "matches": [
+        {
+          "line": 1088,
+          "source": "lock(&LAST_USAGE).get(id).cloned()"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "struct Sample {",
+      "matches": [
+        {
+          "line": 46,
+          "source": "struct Sample {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "fn sample(&self, id: &str) -> Sample",
+      "matches": [
+        {
+          "line": 57,
+          "source": "fn sample(&self, id: &str) -> Sample {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "let guest = pid.and_then",
+      "matches": [
+        {
+          "line": 62,
+          "source": "let guest = pid.and_then(|_| self.usage_of(id)).unwrap_or_default();"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "fn document(id: &str",
+      "matches": [
+        {
+          "line": 185,
+          "source": "fn document(id: &str, name: &str, now: &Sample, before: Option<&Sample>) -> Value {"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "system_cpu_usage",
+      "matches": [
+        {
+          "line": 190,
+          "source": "\"system_cpu_usage\": s.at.saturating_mul(s.guest.online),"
+        },
+        {
+          "line": 264,
+          "source": "let system = |k: &str| d[k][\"system_cpu_usage\"].as_u64().unwrap() as f64;"
+        },
+        {
+          "line": 274,
+          "source": ".get(\"system_cpu_usage\")"
+        }
+      ]
+    },
+    {
+      "path": "crates/shards/src/daemon/engine/watch.rs",
+      "needle": "json!({ \"footprint\": host.footprint",
+      "matches": [
+        {
+          "line": 231,
+          "source": "json!({ \"footprint\": host.footprint, \"resident\": host.resident, \"cpu_ns\": host.cpu_ns }),"
+        }
+      ]
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "needle": "pub struct Usage {",
+      "matches": [
+        {
+          "line": 2550,
+          "source": "pub struct Usage {"
+        }
+      ]
+    },
+    {
+      "path": "crates/vmm/src/platform/windows_process.rs",
+      "needle": "pub struct Usage {",
+      "matches": [
+        {
+          "line": 25,
+          "source": "pub struct Usage {"
+        }
+      ]
+    }
+  ],
+  "scope_paths": {
+    "run": "/sys/fs/cgroup/run",
+    "default_stats": "/sys/fs/cgroup/run/workload",
+    "managed_domains": "/sys/fs/cgroup/run/domains",
+    "joiner": "selected from joiner cgroup path in existing builtin caller"
+  },
+  "uncertainty": {
+    "guest_missing_or_invalid_fields": "legacy zero/fallback, not typed Unknown",
+    "parser_absent_and_explicit_zero": "equal Usage objects, verified pure",
+    "whole_usage_request_failure": "Option None retained before later consumer-specific flattening",
+    "CLI_paused": "LAST_USAGE by container ID, Usage has no timestamp/generation/field status",
+    "engine_guest_failure": "unwrap_or_default",
+    "engine_host": "Option native process Usage",
+    "sampling": "sequential source reads, no atomic/global/tree completeness established"
+  },
+  "compatibility_placeholders": [
+    "CPU user/kernel split0",
+    "throttling0",
+    "num_procs0",
+    "network packet/error/drop0",
+    "block major/minor0",
+    "aggregate nonlo rx/tx labelled eth0"
+  ],
+  "derived": "engine system_cpu_usage = Sample.at * guest.online with saturation; CLI CPU uses host elapsed duration",
+  "host_fields_currently_exported_in_existing_JSON": [
+    "footprint",
+    "resident",
+    "cpu_ns"
+  ],
+  "not_host_metric_contract": "Native footprint/fault producers differ; faults not in current microvm JSON; shared u64 does not imply native equivalence",
+  "admission_boundary": "strict read_limit/refusal separate; Parent::prepare writes controls, is not a collection getter",
+  "authority": {
+    "guaranteed_owner_claim_producer": null,
+    "runtime_parent_available": null,
+    "runtime_parent_reserved": null,
+    "protected_control_charge": null,
+    "induced_parent_kernel_charge": null,
+    "completeness": null,
+    "meaning": "unknown/not established in this lane; never zero, cap-sum refusal or owner entitlement"
+  },
+  "OTel_ownership": "ROOT export contract/integration/live collector/profiles, peer standard/SDK research; no new external API/instrument/exporter/cache/poll/policy from this record",
+  "tests": "stats-parser-v3 seven offline parser cases only; v1/v2 pre-Rust private manifest101 retained",
+  "held_campaigns": "No helper malformed-control or worker-result allocation-fault retry; no runtime endpoints or allocation fault injected"
+}

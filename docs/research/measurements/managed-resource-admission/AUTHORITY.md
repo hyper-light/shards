@@ -1,5 +1,12 @@
 # P0 authority trace: caps are not guaranteed allocations
 
+Current landed cap source and later musl proof are in MUSL-0E.md; the earlier
+source/check chronology below is historical. ROOT owns the new established-standard
+OTel export contract/integration and live collectors/profiles. OTEL-SOURCE-FACTS.md
+supplies existing stats/cap boundaries and seven pure parser cases, with no new
+external API, exporter, sensor/cache or checked owner-claim producer. The missing
+guaranteed-owner authority remains unchanged.
+
 Source baseline `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; current resource
 implementation `5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7`. This is the concrete
 parent-capability interface prototype and source-contract data returned to ROOT.

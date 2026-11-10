@@ -1,5 +1,32 @@
 # Resource admission implementation handoff
 
+Latest owner requirement: ideally any VM metrics through established OTel
+standards. ROOT owns export contract/integration/live collectors/profiles;
+/root/otel_contract_research owns docs/research/managed-runtime-otel-metrics.md.
+Do NOT edit that file or invent an external API, sensor/poll/cache, equal split
+or owner-guarantee producer. Pushed048ab9dbb9a3d185e2c152fdc85d2672b6381fff holds
+completed0e musl15 proof. No production source edit/rebase.
+
+OTEL-SOURCE-FACTS.md now traces exact33df STATS→Usage→CLI/engine versus held cap
+controls. Default workload/domains are sibling cgroups; existing compatibility
+reads/parses erase per-field unknowns into0. CLI paused LAST_USAGE versus engine
+guest default/optionalhost and existing Docker placeholder/derived fields have
+distinct scopes/provenance. No OTel names/SDK/export protocol selected here.
+
+Actual PURE proof: exact Usage declaration298B hash6d2eba86... plus parse807B
+hash321a62b9..., private cfg(test) wrapper e3234650..., fixture6ae539e0 unchanged
+across3 attempts. V1 inherited missing workspace version; v2 substring replacement
+also set private rust-version0.0.0. Both manifest101 BEFORE Rust/test/Clippy;11raw
+members each retained. V3 known-working manifest prefix: build0/all7PASS0fail
+0ignored0filtered/strictClippy0, no production change. Executable7187944B SHA
+9a3f7118e8f84d630c0a2bdfeaa42c7cc3a95098961f3417ca80598ddaaf7796;
+v3raw5194B/19members SHA6b5e778db7d1067ee21ce1f07dc9912b4dbfe92e1a321b0359841d2f9ae365ac.
+All11/11/19 originals/input files/source fragments/bin hashes verified. NEW own
+33df95b08-stats-parser-v1/v2/v3 source/target/log,1CPU1GiB2GiB serial remote only.
+No runtime STATS/proc/cgroup/native sampling/exporter/VM/helper/worker/allocator
+operation or full daemon/caller compile claim. All jobs terminal; all source/
+caches/binaries/raw preserved. Both rejected campaigns remain HELD.
+
 Current metadata main33df95b08ad8f95bddeaa1c48acf0c64386e0eac advances only the
 managed plan; full updated plan and globalhandoff4074cf388f4cba4022c3c5b725edb00a1cb069397aa2ebe51f298e975e8bf8c1
 read during checkpoint preparation. Receipt managed-policy-current-33df-handoff-refresh-v1

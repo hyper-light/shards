@@ -1,0 +1,12 @@
+{
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "admission": "1 CPU/1 GiB RAM/2 GiB disk; serial; sync:false",
+  "source": "/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v3",
+  "target": "observed rustc host default",
+  "records": "/home/adalundhe/managed-resource-admission-light-33df95b08-stats-parser-v3",
+  "executed": "actual module's targeted pure/private ordinary-file unit tests only",
+  "test_filter": "legacy_usage::tests::",
+  "expected_unit_count": 7,
+  "unrun": "actual run_group/Parent admission, kernel controllers/cgroups, full init caller, helper/VM/resource attribution/profile/benchmark/mutation/matrix",
+  "harness_allowance": "dead_code only for unused production entrypoints in the isolated import; production panic/unsafe lints remain enabled"
+}

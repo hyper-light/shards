@@ -1,0 +1,12 @@
+
+running 7 tests
+test legacy_usage::tests::absent_and_explicit_zero_fields_are_indistinguishable ... ok
+test legacy_usage::tests::complete_numeric_sample_preserves_all_fields ... ok
+test legacy_usage::tests::duplicate_fields_use_the_last_value ... ok
+test legacy_usage::tests::incomplete_lines_leave_other_fields_at_default ... ok
+test legacy_usage::tests::invalid_and_overflowing_values_become_zero ... ok
+test legacy_usage::tests::numeric_u64_max_is_preserved_without_an_overflow_status ... ok
+test legacy_usage::tests::unrecognized_fields_do_not_create_known_values ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

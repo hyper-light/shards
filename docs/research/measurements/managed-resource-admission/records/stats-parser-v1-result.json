@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n    \"output\": \"{\\\"outcomes\\\": {\\\"build\\\": 101}, \\\"records\\\": \\\"/home/adalundhe/managed-resource-admission-light-33df95b08-stats-parser-v1\\\", \\\"source\\\": \\\"/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1\\\", \\\"binary\\\": null, \\\"raw_files\\\": 11}\\nbuild:\\nerror: failed to load manifest for workspace member `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light`\\nreferenced by workspace at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/Cargo.toml`\\n\\nCaused by:\\n  failed to parse manifest at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light/Cargo.toml`\\n\\nCaused by:\\n  error inheriting `version` from workspace root manifest's `workspace.package.version`\\n\\nCaused by:\\n  `workspace.package.version` was not defined\\n\\n\",\n    \"running\": false,\n    \"why\": \"linux/x86_64 \u00b7 29 of 32 cores idle \u00b7 43 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk\",\n    \"exit_code\": 0\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"outcomes\": {\"build\": 101}, \"records\": \"/home/adalundhe/managed-resource-admission-light-33df95b08-stats-parser-v1\", \"source\": \"/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1\", \"binary\": null, \"raw_files\": 11}\nbuild:\nerror: failed to load manifest for workspace member `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light`\nreferenced by workspace at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/Cargo.toml`\n\nCaused by:\n  failed to parse manifest at `/home/adalundhe/managed-resource-admission-source-33df95b08-stats-parser-v1/stats-authority-light/Cargo.toml`\n\nCaused by:\n  error inheriting `version` from workspace root manifest's `workspace.package.version`\n\nCaused by:\n  `workspace.package.version` was not defined\n\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 29 of 32 cores idle \u00b7 43 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

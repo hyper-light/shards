@@ -1,0 +1,20 @@
+{
+  "current_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "role": "implementer",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "loaded": "full current AGENTS/R01\u2013R16/evidence/CLAUDE/33df plan/global+own handoff already loaded; latest owner OTel instruction incorporated before this batch",
+  "owned": "only managed-resource-admission evidence/fixture/input/raw; no production or ROOT OTel contract file edit",
+  "root_keys": [
+    "managed-current-source-otel-authority-048ab9dbb-v1",
+    "managed-stats-authority-existing-source-first-finding-v1"
+  ],
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "envelope": "serial sync:false1CPU/1GiB RAM/2GiB disk; fresh private stats-parser-v1/v2/v3",
+  "live_collection_or_profile": false,
+  "production_edit_or_rebase": false,
+  "held_campaign_retry": false,
+  "local_build": false,
+  "active_local_targets": [],
+  "active_own_jobs": []
+}

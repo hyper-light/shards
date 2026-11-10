@@ -1,0 +1,67 @@
+{
+  "tag": "33df95b08-stats-parser-v2",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "source": {
+    "production_source_commit": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+    "original_path": "crates/shards/src/daemon/commands.rs",
+    "original_file_sha256": "8eb26275f014225a0f53d377563ff57f838a90f726d7057203caf3761e3aab70",
+    "source_chunks": [
+      {
+        "role": "Usage declaration",
+        "source_first_line": 3353,
+        "source_last_line": 3367,
+        "bytes": 298,
+        "sha256": "6d2eba86dac9de23265e89d8e8a54075710844d6b5edd65dc0d1ba5d02213a0f"
+      },
+      {
+        "role": "impl prefix containing exact parse method",
+        "source_first_line": 3368,
+        "source_last_line": 3393,
+        "bytes": 807,
+        "sha256": "321a62b9d0b96912bf367fe3878197b2786771afc4a88932707b567337ac486d"
+      }
+    ],
+    "compiled": "exact existing Usage declaration + parse method only, private cfg(test) wrapper and seven offline cases; not full commands/usage_of/daemon/VM/collector",
+    "private_closure_suffix": "close extracted impl with } then mod tests; then close private cfg(test) module",
+    "test_leaf": {
+      "path": "docs/research/measurements/managed-resource-admission/stats-authority-fixture.rs",
+      "sha256": "6ae539e099cf4f22219930e353c194a13c60b2397d3e2b05c5fdded79ee5370a"
+    },
+    "workspace_adaptation": "existing narrowed cbd workspace/lints, one new std-only fixture crate, no production source or manifest change; no dependency/provider/toolchain change",
+    "files": [
+      {
+        "path": "Cargo.toml",
+        "bytes": 2218,
+        "sha256": "08a58f321b3703f2509ffe495352eddbb91987ee6336d7167f9043f9fdf10078"
+      },
+      {
+        "path": "clippy.toml",
+        "bytes": 526,
+        "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+      },
+      {
+        "path": "stats-authority-light/Cargo.toml",
+        "bytes": 182,
+        "sha256": "ad2b0e4c66d438c321073c67fda21d5b219c59bc2a8646581ce82a17fd9d159e"
+      },
+      {
+        "path": "stats-authority-light/src/legacy_usage/tests.rs",
+        "bytes": 1849,
+        "sha256": "6ae539e099cf4f22219930e353c194a13c60b2397d3e2b05c5fdded79ee5370a"
+      },
+      {
+        "path": "stats-authority-light/src/lib.rs",
+        "bytes": 1152,
+        "sha256": "e3234650760690637b932c230377aef53a9fae228efd219a6aa103f70d939b2c"
+      }
+    ],
+    "forbidden_effects": "no runtime STATS request/proc/cgroup/network/host metrics sample, exporter, OTel API, helper/worker control, allocator refusal, VM or profile",
+    "private_manifest_correction": "fixture package version explicitly0.0.0 like established light harness; v1 nonexistent workspace.version inheritance rejected before Rust. Production source/dependency/provider unchanged."
+  },
+  "archive_sha256": "07a350f418f65c5e2f3537d3f6e1afe5f14d70ea526727bf5781f35671ae8e51",
+  "expected_unit_count": 7,
+  "test_filter": "legacy_usage::tests::",
+  "command_timeout_seconds": 180,
+  "archive_bytes": 2647,
+  "driver_sha256": "89564223c15dd73cbba9318023ab064103eb91fe21f24891f1cbdbffb33c2e09"
+}

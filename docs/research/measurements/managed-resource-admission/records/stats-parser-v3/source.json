@@ -1,0 +1,57 @@
+{
+  "production_source_commit": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "original_path": "crates/shards/src/daemon/commands.rs",
+  "original_file_sha256": "8eb26275f014225a0f53d377563ff57f838a90f726d7057203caf3761e3aab70",
+  "source_chunks": [
+    {
+      "role": "Usage declaration",
+      "source_first_line": 3353,
+      "source_last_line": 3367,
+      "bytes": 298,
+      "sha256": "6d2eba86dac9de23265e89d8e8a54075710844d6b5edd65dc0d1ba5d02213a0f"
+    },
+    {
+      "role": "impl prefix containing exact parse method",
+      "source_first_line": 3368,
+      "source_last_line": 3393,
+      "bytes": 807,
+      "sha256": "321a62b9d0b96912bf367fe3878197b2786771afc4a88932707b567337ac486d"
+    }
+  ],
+  "compiled": "exact existing Usage declaration + parse method only, private cfg(test) wrapper and seven offline cases; not full commands/usage_of/daemon/VM/collector",
+  "private_closure_suffix": "close extracted impl with } then mod tests; then close private cfg(test) module",
+  "test_leaf": {
+    "path": "docs/research/measurements/managed-resource-admission/stats-authority-fixture.rs",
+    "sha256": "6ae539e099cf4f22219930e353c194a13c60b2397d3e2b05c5fdded79ee5370a"
+  },
+  "workspace_adaptation": "existing narrowed cbd workspace/lints, one new std-only fixture crate, no production source or manifest change; no dependency/provider/toolchain change",
+  "files": [
+    {
+      "path": "Cargo.toml",
+      "bytes": 2218,
+      "sha256": "08a58f321b3703f2509ffe495352eddbb91987ee6336d7167f9043f9fdf10078"
+    },
+    {
+      "path": "clippy.toml",
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    {
+      "path": "stats-authority-light/Cargo.toml",
+      "bytes": 147,
+      "sha256": "dafcbe056e6fed41fd77b688d482d7d4dcbcb056c03805abf80bf3ce599a39be"
+    },
+    {
+      "path": "stats-authority-light/src/legacy_usage/tests.rs",
+      "bytes": 1849,
+      "sha256": "6ae539e099cf4f22219930e353c194a13c60b2397d3e2b05c5fdded79ee5370a"
+    },
+    {
+      "path": "stats-authority-light/src/lib.rs",
+      "bytes": 1152,
+      "sha256": "e3234650760690637b932c230377aef53a9fae228efd219a6aa103f70d939b2c"
+    }
+  ],
+  "forbidden_effects": "no runtime STATS request/proc/cgroup/network/host metrics sample, exporter, OTel API, helper/worker control, allocator refusal, VM or profile",
+  "private_manifest_correction": "Copy known working admission-light manifest prefix, replace only complete name line, retain explicit fixture version0.0.0 and rust-version.workspace=true. v1 missing shared version and v2 substring-altered private rust-version both failed before Rust. Production and exact parser/tests unchanged."
+}

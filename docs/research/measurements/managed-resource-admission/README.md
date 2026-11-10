@@ -66,6 +66,11 @@ producers, concrete capability prototype and explicit absence of a checked
 guaranteed-claim producer. ROOT owns that producer/normalization decision; this
 checkpoint adds no guarantee hook, flag or ledger.
 
+[Existing stats facts and pure parser proof](OTEL-SOURCE-FACTS.md) feed ROOT's OTel
+work while preserving that authority boundary. ROOT owns the export contract,
+standard/SDK research and integration; this lane adds no metrics API, collector,
+sensor or cache.
+
 `domains::start` now calls the new `domains/admission.rs`: hold the existing run
 directory, verify cgroup2 and required controllers, enable/read back the domain
 subtree, then apply/read back the existing aggregate pressure and swap settings.
