@@ -6,6 +6,210 @@ use std::path::Path;
 
 mod parse;
 
+#[path = "../managed-allocation-metrics/native_faults.rs"]
+mod native_faults;
+
+struct NativeFaultSample {
+    sample: native_faults::Sample,
+    failure: Option<ObservationFailure>,
+    query_failure: Option<ObservationFailure>,
+}
+
+impl NativeFaultSample {
+    fn unavailable(
+        expected: Option<shards_ipc::Named>,
+        reason: native_faults::Unknown,
+        failure: Option<ObservationFailure>,
+    ) -> Self {
+        let identity =
+            expected.and_then(|n| n.start.map(|start| native_faults::Identity { pid: n.pid, start }));
+        Self {
+            sample: native_faults::Sample::unknown(native_faults::Source::this_host(), identity, reason),
+            failure,
+            query_failure: None,
+        }
+    }
+
+    fn probe(identity: &PinnedProcess) -> Self {
+        let expected = Some(identity.expected);
+        let Some(start) = identity.expected.start else {
+            return Self::unavailable(
+                expected,
+                native_faults::Unknown::MissingIdentity,
+                Some(ObservationFailure::MissingExpectedStart),
+            );
+        };
+        if let Err(error) = identity.check() {
+            return Self::unavailable(expected, native_faults::Unknown::IdentityUnverified, Some(error));
+        }
+        let usage =
+            shards_vmm::platform::process_usage(identity.expected.pid).map_err(ObservationFailure::io);
+        if let Err(error) = identity.check() {
+            let mut outcome =
+                Self::unavailable(expected, native_faults::Unknown::IdentityUnverified, Some(error));
+            outcome.query_failure = usage.err();
+            return outcome;
+        }
+        match usage {
+            Ok(usage) => Self {
+                sample: native_faults::Sample::observed(
+                    native_faults::Source::this_host(),
+                    native_faults::Identity {
+                        pid: identity.expected.pid,
+                        start,
+                    },
+                    usage.faults,
+                ),
+                failure: None,
+                query_failure: None,
+            },
+            Err(error) => {
+                let mut outcome = Self::unavailable(expected, native_faults::Unknown::ReadUnavailable, None);
+                outcome.query_failure = Some(error);
+                outcome
+            }
+        }
+    }
+
+    fn parent(expected: &Result<shards_ipc::Named, ObservationFailure>) -> Self {
+        match expected {
+            Ok(expected) => match PinnedProcess::open(*expected) {
+                Ok(identity) => Self::probe(&identity),
+                Err(error) => Self::unavailable(
+                    Some(*expected),
+                    native_faults::Unknown::ReadUnavailable,
+                    Some(error),
+                ),
+            },
+            Err(error) => {
+                Self::unavailable(None, native_faults::Unknown::MissingIdentity, Some(error.clone()))
+            }
+        }
+        // The temporary self directory drops before any later FD checkpoint.
+    }
+
+    fn host(host: &HostExit) -> Self {
+        match host {
+            HostExit::Watching { identity, .. } => Self::probe(identity),
+            HostExit::Unavailable {
+                expected, failure, ..
+            } => Self::unavailable(
+                *expected,
+                native_faults::Unknown::IdentityUnverified,
+                Some(failure.clone()),
+            ),
+            HostExit::ExitReady(expected) | HostExit::Deadline(expected) => Self::unavailable(
+                Some(*expected),
+                native_faults::Unknown::ProcessExitedOrHandleReleased,
+                None,
+            ),
+        }
+    }
+
+    fn record(&self) -> Value {
+        json!({"source":self.sample.source.label(),"native_bits":self.sample.source.native_bits(),"native_caveat":self.sample.source.caveat(),"expected_identity":self.sample.identity.map(|n| (n.pid,n.start)),"atomic":false,"observation":match self.sample.observation {
+            native_faults::Observation::ObservedBestEffort(value)=>json!({"state":"ObservedBestEffort","value":value,"identity_validation":"matched before and after existing platform query; not a coherent snapshot or quiescence proof"}),
+            native_faults::Observation::Unknown(reason)=>json!({"state":"Unknown","reason":format!("{reason:?}")}),
+        },"failure":self.failure.as_ref().map(ObservationFailure::record),"query_failure":self.query_failure.as_ref().map(ObservationFailure::record)})
+    }
+}
+
+struct NativeFaultPhase {
+    observer_parent: NativeFaultSample,
+    daemon: NativeFaultSample,
+    vm: NativeFaultSample,
+}
+
+impl NativeFaultPhase {
+    fn sample(exits: Option<&ExitProof>, parent: &Result<shards_ipc::Named, ObservationFailure>) -> Self {
+        let unavailable = || {
+            NativeFaultSample::unavailable(
+                None,
+                native_faults::Unknown::MissingIdentity,
+                Some(ObservationFailure::NotPrepared),
+            )
+        };
+        Self {
+            observer_parent: NativeFaultSample::parent(parent),
+            daemon: exits
+                .map(|p| NativeFaultSample::host(&p.daemon))
+                .unwrap_or_else(unavailable),
+            vm: exits
+                .map(|p| NativeFaultSample::host(&p.vm))
+                .unwrap_or_else(unavailable),
+        }
+    }
+
+    fn after_cleanup() -> Self {
+        // This process is still ours. No numeric daemon/VM lookup after their
+        // pinned objects are released, and no exited-process zero is invented.
+        let parent = shards_ipc::started(std::process::id())
+            .map(|start| shards_ipc::Named {
+                pid: std::process::id(),
+                start: Some(start),
+            })
+            .map_err(ObservationFailure::io);
+        let released = || {
+            NativeFaultSample::unavailable(None, native_faults::Unknown::ProcessExitedOrHandleReleased, None)
+        };
+        Self {
+            observer_parent: NativeFaultSample::parent(&parent),
+            daemon: released(),
+            vm: released(),
+        }
+    }
+
+    fn record(&self) -> Value {
+        json!({"observer_parent":self.observer_parent.record(),"daemon":self.daemon.record(),"vm":self.vm.record()})
+    }
+}
+
+#[derive(Default)]
+struct NativeFaultPhases {
+    after_start_and_watch_acquisition: Option<NativeFaultPhase>,
+    owner_ready_before_recording: Option<NativeFaultPhase>,
+    after_proc_recording: Option<NativeFaultPhase>,
+    after_observer_completion: Option<NativeFaultPhase>,
+    after_cleanup: Option<NativeFaultPhase>,
+}
+
+impl NativeFaultPhases {
+    fn record(&self) -> Value {
+        let phase = |value: &Option<NativeFaultPhase>| {
+            value
+                .as_ref()
+                .map(NativeFaultPhase::record)
+                .unwrap_or_else(|| json!({"state":"NotReached"}))
+        };
+        let first = self.after_start_and_watch_acquisition.as_ref();
+        let ready = self.owner_ready_before_recording.as_ref();
+        json!({"scope":"native per-process counters through existing platform::process_usage; observer, owned daemon, VM host separately; no guest/kernel/process-tree completeness","semantics":"non-atomic, synchronous platform probes allocate/read as fixture costs; native categories and widths remain distinct; no quiescence; differences conditional on absent wrap/reset/lossy fallback","after_start_and_watch_acquisition":phase(&self.after_start_and_watch_acquisition),"owner_ready_before_recording":phase(&self.owner_ready_before_recording),"after_proc_recording":phase(&self.after_proc_recording),"after_observer_completion":phase(&self.after_observer_completion),"after_cleanup":phase(&self.after_cleanup),"start_to_ready":{
+            "observer_parent":native_fault_delta(first.map(|p| &p.observer_parent),ready.map(|p| &p.observer_parent)),
+            "daemon":native_fault_delta(first.map(|p| &p.daemon),ready.map(|p| &p.daemon)),
+            "vm":native_fault_delta(first.map(|p| &p.vm),ready.map(|p| &p.vm)),
+        }})
+    }
+}
+
+fn native_fault_delta(before: Option<&NativeFaultSample>, after: Option<&NativeFaultSample>) -> Value {
+    let (Some(before), Some(after)) = (before, after) else {
+        return json!({"state":"Unknown","reason":"PhaseNotReached"});
+    };
+    let delta = native_faults::between(before.sample, after.sample, true);
+    let mut record = json!({"source":before.sample.source.label(),"native_bits":before.sample.source.native_bits(),"identity":before.sample.identity.map(|n| (n.pid,n.start)),"caveat":"no established absence of native wrap/reset or existing platform parser/conversion fallback; conditional difference, never an exact universal fault count"});
+    match delta {
+        native_faults::Delta::ConditionalDifference(value) => {
+            record["state"] = json!("ConditionalDifference");
+            record["value"] = json!(value);
+        }
+        native_faults::Delta::Unknown(reason) => {
+            record["state"] = json!("Unknown");
+            record["reason"] = json!(format!("{reason:?}"));
+        }
+    }
+    record
+}
+
 struct AllocationPhases {
     before_fixture: managed_alloc::Snapshot,
     after_start_and_watch_acquisition: Option<managed_alloc::Snapshot>,
@@ -824,6 +1028,7 @@ fn run(
     until: Instant,
     exits: &mut Option<ExitProof>,
     allocations: &mut AllocationPhases,
+    faults: &mut NativeFaultPhases,
 ) -> Ready {
     let (ready, members) = start(fixture, inputs, until);
     let daemon = named(&fixture.home.join(shards_ipc::PID));
@@ -836,6 +1041,7 @@ fn run(
             start: Some(start),
         })
         .map_err(ObservationFailure::io);
+    faults.after_start_and_watch_acquisition = Some(NativeFaultPhase::sample(exits.as_ref(), &observer));
     let mut channels = Vec::new();
     if let Ready::OwnerChannels { .. } = &ready {
         // Establish every authenticated observer before consuming any channel.
@@ -862,6 +1068,7 @@ fn run(
     }
     fixture.main_progress(left(until));
     allocations.owner_ready_before_recording = Some(MANAGED_ALLOC.snapshot());
+    faults.owner_ready_before_recording = Some(NativeFaultPhase::sample(exits.as_ref(), &observer));
     if let Some(proof) = exits {
         inputs.write("exit-watches.ready.json", &proof.ready_record());
     }
@@ -869,6 +1076,7 @@ fn run(
     let sampled = json!({"checkpoint":ready.record(),"daemon":snapshot(inputs,"daemon",&daemon),"vm":snapshot(inputs,"vm",&vm),"observer_parent":snapshot(inputs,"observer",&observer),"measurement_cost":"one-shot proc reads/serialization and observer drivers are fixture costs; samples are not atomic"});
     inputs.write("snapshots.json", &sampled);
     allocations.after_proc_recording = Some(MANAGED_ALLOC.snapshot());
+    faults.after_proc_recording = Some(NativeFaultPhase::sample(exits.as_ref(), &observer));
     for (member, index, channel) in &channels {
         let observer = &mut fixture.observers[*index];
         if member.id == 1 && *channel == Channel::Stdout {
@@ -882,6 +1090,7 @@ fn run(
     }
     fixture.main_progress(left(until));
     allocations.after_observer_completion = Some(MANAGED_ALLOC.snapshot());
+    faults.after_observer_completion = Some(NativeFaultPhase::sample(exits.as_ref(), &observer));
     inputs.write("control.json", &json!({"state":"MainProgressAfterObserverCancel","stalled_member":if inputs.members>0 { Some(1) } else { None },"members":inputs.members,"exact_payload_channels":channels.len(),"terminal_consumption":"verified after owner stop; before this point non-held ACKs were sent"}));
     ready
 }
@@ -899,12 +1108,20 @@ fn owner_output_resources_at_explicit_member_count() {
         |path: &Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
     inputs.write("inputs.json", &json!({"members":inputs.members,"phase_deadline_ms":inputs.patience.as_millis(),"source":option_env!("SHARDS_OUTPUT_COST_SOURCE_REVISION"),"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"topology":"EXPERIMENTAL2N; unadopted","root_cost_comparison":"not executed by implementer"}));
     let mut allocations = AllocationPhases::new();
+    let mut faults = NativeFaultPhases::default();
     let mut fixture = Fixture::new();
     // None means acquisition was not reached. Some owns all observation resources
     // outside the protocol unwind boundary, including partial acquisition failures.
     let mut exits = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(&mut fixture, &inputs, until, &mut exits, &mut allocations)
+        run(
+            &mut fixture,
+            &inputs,
+            until,
+            &mut exits,
+            &mut allocations,
+            &mut faults,
+        )
     }));
     // Cleanup is a separate explicitly recorded finite phase, using caller patience.
     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
@@ -917,6 +1134,7 @@ fn owner_output_resources_at_explicit_member_count() {
         None => (ObservationFailure::NotPrepared.record(), false, None),
     };
     // Every watch, identity directory and poller is dropped before total FD sampling.
+    faults.after_cleanup = Some(NativeFaultPhase::after_cleanup());
     let released = fd_count();
     allocations.after_shutdown_watch_release_and_fd_sample = Some(MANAGED_ALLOC.snapshot());
     let fd_returned = fds.as_ref().is_some_and(|fds| fds.returned(&released));
@@ -926,6 +1144,7 @@ fn owner_output_resources_at_explicit_member_count() {
         .unwrap_or_else(|| ObservationFailure::NotPrepared.record());
     inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit":exit_record,"exit_observation_fds":fd_record,"host_process_exit_and_kernel_resource_return":"See held exit readiness proof; kernel/full-population return remain Unverified"}));
     inputs.write("allocation-phases.json", &allocations.record());
+    inputs.write("native-fault-phases.json", &faults.record());
     assert!(fd_returned, "exit observation exact FD delta/return: {fd_record}");
     assert!(
         exit_passed,
