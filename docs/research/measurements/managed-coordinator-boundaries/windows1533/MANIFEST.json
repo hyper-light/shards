@@ -1,0 +1,117 @@
+[
+    {
+        "path":  "v1/fetch.log",
+        "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes":  0
+    },
+    {
+        "path":  "v2/fetch.log",
+        "sha256":  "04170767c034cde685236f40664ed52793b640d53393776995ef885d10bc7122",
+        "bytes":  974
+    },
+    {
+        "path":  "v3/cargo.txt",
+        "sha256":  "9b49dba8d2babeee49c10f53ad9060fcdfadb5e9d2a0feab5c168db1005ccba1",
+        "bytes":  37
+    },
+    {
+        "path":  "v3/checkout.log",
+        "sha256":  "84a40052b1b098977c54be8d45b838a1d6a7b5cbe92d8728cb7957fc574de5a3",
+        "bytes":  1008
+    },
+    {
+        "path":  "v3/command.json",
+        "sha256":  "3c3c721734a344306ee24575be513aa9b42ce2d4e25a1e4074599422013ca23f",
+        "bytes":  513
+    },
+    {
+        "path":  "v3/fetch.log",
+        "sha256":  "55b50b1a8054c6008d19c12912c28b6c2668b09452e3f06c0dc39801a912385b",
+        "bytes":  862
+    },
+    {
+        "path":  "v3/policy-read.txt",
+        "sha256":  "4873d6a6660f646bc8e9e890bd1a7d8adde5099cb95fd88ebd288c9341cebed1",
+        "bytes":  182
+    },
+    {
+        "path":  "v3/rustc.txt",
+        "sha256":  "67d86fbf74071a3c2fbf23eb9e4e28e3ecc0f81b6fce3d35f5bbc88b7de1ecfb",
+        "bytes":  201
+    },
+    {
+        "path":  "v3/source.txt",
+        "sha256":  "34ba894908743d3ddfe4b7acf33159e45650984489525c2b613ec1951bb06b57",
+        "bytes":  42
+    },
+    {
+        "path":  "v3/test.exit",
+        "sha256":  "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+        "bytes":  5
+    },
+    {
+        "path":  "v3/test.log",
+        "sha256":  "5e4995c727cf1eb320748f37551675cbf8cd5995d17b9aac2f8a6fbfa2d4c7c9",
+        "bytes":  50984
+    },
+    {
+        "path":  "v4/cargo.txt",
+        "sha256":  "9b49dba8d2babeee49c10f53ad9060fcdfadb5e9d2a0feab5c168db1005ccba1",
+        "bytes":  37
+    },
+    {
+        "path":  "v4/checkout.log",
+        "sha256":  "fe7b4ff6cb71068d0b99ffcbfd67cce89816f7f8b30503abdae0b0e8789df5cb",
+        "bytes":  820
+    },
+    {
+        "path":  "v4/command.json",
+        "sha256":  "3c3c721734a344306ee24575be513aa9b42ce2d4e25a1e4074599422013ca23f",
+        "bytes":  513
+    },
+    {
+        "path":  "v4/fetch.log",
+        "sha256":  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes":  0
+    },
+    {
+        "path":  "v4/nasm.txt",
+        "sha256":  "704870e31f6ee4a468d4d6746dc8c1da2ddf3ce2ea1cfa64c79fe12c87545cc8",
+        "bytes":  43
+    },
+    {
+        "path":  "v4/os-version.post.txt",
+        "sha256":  "4239779faf666e7bd9bc06af9d5afa30ff7b07b775e8d68f743710db0cbaff17",
+        "bytes":  35
+    },
+    {
+        "path":  "v4/policy-read.txt",
+        "sha256":  "4873d6a6660f646bc8e9e890bd1a7d8adde5099cb95fd88ebd288c9341cebed1",
+        "bytes":  182
+    },
+    {
+        "path":  "v4/rustc.txt",
+        "sha256":  "67d86fbf74071a3c2fbf23eb9e4e28e3ecc0f81b6fce3d35f5bbc88b7de1ecfb",
+        "bytes":  201
+    },
+    {
+        "path":  "v4/source.txt",
+        "sha256":  "34ba894908743d3ddfe4b7acf33159e45650984489525c2b613ec1951bb06b57",
+        "bytes":  42
+    },
+    {
+        "path":  "v4/test.exit",
+        "sha256":  "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+        "bytes":  3
+    },
+    {
+        "path":  "v4/test.log",
+        "sha256":  "b039aad2924787348900c6fae264f805b590f74801a50aa080fd4da596015de6",
+        "bytes":  9592
+    },
+    {
+        "path":  "v4/test-artifact.post.json",
+        "sha256":  "4617019d877b9b8c7c01e4207f5d160222e68e06c9121338a6b6e9b61b1311ec",
+        "bytes":  275
+    }
+]

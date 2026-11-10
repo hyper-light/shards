@@ -1,0 +1,81 @@
+{
+  "classification": "Raw Windows logs/recorded CRLF and exact UTF-8 derivative retain original bytes; no source or global whitespace exception. All staged whitespace findings are confined to these captured evidence files.",
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "actual_exit": 2,
+  "finding_lines": 521,
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows-drivers/native-v4-log-decoded.txt",
+      "sha256": "9c7a57a12489c11c863e2281a27c0f34db24a63ef0ee832fa73dd8f93d6df906"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/MANIFEST.json",
+      "sha256": "d7fd3acfd469fe072f81ef11dc9dcd157b8add30386bbf3679f90ba1a7207f73"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/cargo.txt",
+      "sha256": "9b49dba8d2babeee49c10f53ad9060fcdfadb5e9d2a0feab5c168db1005ccba1"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/command.json",
+      "sha256": "3c3c721734a344306ee24575be513aa9b42ce2d4e25a1e4074599422013ca23f"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/policy-read.txt",
+      "sha256": "4873d6a6660f646bc8e9e890bd1a7d8adde5099cb95fd88ebd288c9341cebed1"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/rustc.txt",
+      "sha256": "67d86fbf74071a3c2fbf23eb9e4e28e3ecc0f81b6fce3d35f5bbc88b7de1ecfb"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/source.txt",
+      "sha256": "34ba894908743d3ddfe4b7acf33159e45650984489525c2b613ec1951bb06b57"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v3/test.exit",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/cargo.txt",
+      "sha256": "9b49dba8d2babeee49c10f53ad9060fcdfadb5e9d2a0feab5c168db1005ccba1"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/command.json",
+      "sha256": "3c3c721734a344306ee24575be513aa9b42ce2d4e25a1e4074599422013ca23f"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/nasm.txt",
+      "sha256": "704870e31f6ee4a468d4d6746dc8c1da2ddf3ce2ea1cfa64c79fe12c87545cc8"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/os-version.post.txt",
+      "sha256": "4239779faf666e7bd9bc06af9d5afa30ff7b07b775e8d68f743710db0cbaff17"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/policy-read.txt",
+      "sha256": "4873d6a6660f646bc8e9e890bd1a7d8adde5099cb95fd88ebd288c9341cebed1"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/rustc.txt",
+      "sha256": "67d86fbf74071a3c2fbf23eb9e4e28e3ecc0f81b6fce3d35f5bbc88b7de1ecfb"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/source.txt",
+      "sha256": "34ba894908743d3ddfe4b7acf33159e45650984489525c2b613ec1951bb06b57"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/test-artifact.post.json",
+      "sha256": "4617019d877b9b8c7c01e4207f5d160222e68e06c9121338a6b6e9b61b1311ec"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/windows1533/v4/test.exit",
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    }
+  ]
+}

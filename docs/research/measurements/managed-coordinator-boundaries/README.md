@@ -57,8 +57,24 @@ These are functional corrections and source-specific compilation/native/VM
 results. Pending-before-check priority does not make cancellation atomic against
 a later syscall race. Logical terminal publication, all route classes, hard
 budgets, loss/failure campaigns, remaining native hardware and comparative cost
-remain open. Windows native execution is an additional pending gate, not claimed
-from cross-compilation. The paused Windows ARM VM remains untouched.
+remain open. Additional rootr663 native Windows amd64 managed tests at the same
+candidate1533 passed12/12 on Windows10.0.26200, rustc/cargo1.98.1. This is native
+endpoint/unit coverage, not WHP VM execution. The paused Windows ARM VM remains
+untouched.
+
+[Original Windows records](windows1533/) retain four attempts: the first stopped
+on PowerShell treating Git stderr as a terminating error; the second stopped
+before tests because the old clone had no origin/main tracking ref. Explicit
+tracking-ref fetch and unchanged policy-hash verification preceded the third,
+which failed at build-time because NASM's installed nested path was absent from
+that process PATH. The fourth supplied that existing NASM3.02 path and passed.
+No provider/ASM/crypto/security setting was weakened, no software installed, and
+no failed wrapper/build is called a passing native test. The exact tool payloads
+were retained after execution in [windows-drivers](windows-drivers/), with a
+provenance-marked UTF-8 derivative of the untouched original native log.
+All24 archive files/hashes and the actual native executable's post-run hash are
+retained; the8632B archive SHA256 is
+6d686f4ae00c2ec41b627f1a3560cf64efee825b48a4040d82842632beb8890c.
 
 ## Pending cancellation did not precede the next send
 

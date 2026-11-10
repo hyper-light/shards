@@ -1,0 +1,8 @@
+{
+  "scripts": "Exact tool payloads copied after execution from coordinator session store; not claimed executed as files.",
+  "decoded_log": {
+    "source": "../windows1533/v4/test.log",
+    "source_sha256": "b039aad2924787348900c6fae264f805b590f74801a50aa080fd4da596015de6",
+    "transform": "BOM-selected UTF-16 or UTF-8-sig to UTF-8 text; original bytes unchanged"
+  }
+}

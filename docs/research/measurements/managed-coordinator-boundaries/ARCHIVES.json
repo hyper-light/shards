@@ -73,5 +73,13 @@
     "files": 17,
     "key": "finishguard1533",
     "on": "b24c5c951260dcdfd0972f2aeaf3cf51"
+  },
+  {
+    "files": 24,
+    "name": "root-managed-windows-1533-evidence-v1.tar.gz",
+    "bytes": 8632,
+    "hash": "6d686f4ae00c2ec41b627f1a3560cf64efee825b48a4040d82842632beb8890c",
+    "key": "windows1533",
+    "on": "f766f09294f2e17e3b8a631ffd4e6a4b"
   }
 ]

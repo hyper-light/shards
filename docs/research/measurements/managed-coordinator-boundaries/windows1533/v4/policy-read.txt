@@ -1,0 +1,1 @@
+POLICY_READ coordinator current origin/main AGENTS and R01-R16; rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242; native remote managed unit tests only

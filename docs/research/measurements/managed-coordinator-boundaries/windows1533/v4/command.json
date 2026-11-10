@@ -1,0 +1,16 @@
+{
+    "args":  [
+                 "test",
+                 "--locked",
+                 "-j4",
+                 "-p",
+                 "shards-remote",
+                 "--lib",
+                 "managed::tests",
+                 "--",
+                 "--test-threads=1"
+             ],
+    "root":  "C:\\Users\\corph\\managed-capture-windows-check",
+    "scope":  "native Windows amd64 only; no VMs or system setting changes",
+    "target":  "C:\\Users\\corph\\managed-capture-windows-target"
+}
