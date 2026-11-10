@@ -1,0 +1,20 @@
+--- /home/adalundhe/managed-kernel-tproxy-5d23-v1/build-kernel.original.sh	2026-11-09 23:46:47.161974911 -0800
++++ /home/adalundhe/managed-kernel-tproxy-5d23-v1/input/scripts/build-kernel.sh	2026-11-09 23:46:47.175413792 -0800
+@@ -38,7 +38,7 @@
+ mkdir -p "$out"
+ out=$(cd "$out" && pwd)
+ work=$(mktemp -d)
+-trap 'rm -rf "$work"' EXIT
++trap 'rc=$?; printf "%s\n" "$work" > "$out/source-directory"; exit "$rc"' EXIT
+ 
+ curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$work/linux.tar.xz" \
+     "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$version.tar.xz"
+@@ -89,7 +89,7 @@
+ # Fixed build metadata, so the same inputs produce the same bytes.
+ export KBUILD_BUILD_TIMESTAMP='1970-01-01T00:00:00Z'
+ export KBUILD_BUILD_USER=shards KBUILD_BUILD_HOST=shards KBUILD_BUILD_VERSION=1
+-make -C "$src" ARCH=$karch -j"$(nproc)" "$target"
++make -C "$src" ARCH=$karch -j"${KERNEL_BUILD_JOBS:?assigned CPU count}" "$target"
+ 
+ cp "$src/$built" "$out/$name-$version-$arch$suffix"
+ cp "$src/.config" "$out/config-$version-$arch$suffix"
