@@ -1,0 +1,7 @@
+{
+  "argv": [
+    "scripts/check-development-policy"
+  ],
+  "cwd": "/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-reporting-prototype-09e1efdc11",
+  "CARGO_TARGET_DIR": "/Users/adalundhe/managed-reporting-prototype-target"
+}
