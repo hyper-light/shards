@@ -1,0 +1,14 @@
+{
+  "source_base": "cd5d7212cc61e9196b5afe7a3e2891ba60a74529",
+  "proof": "/home/adalundhe/managed-relay-native-proposal-check-v1",
+  "command": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "exit": 0,
+  "output": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "proposal_sha256": "ef2610f60712b40733f32b2be195b343e85c639d1d872b5b4814dc92e7ecb448",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "scope": "docs-only mechanical policy; no compiler/native/event/pipe/socket/VM/profile",
+  "admission": "Kiln1CPU1GiB2GiB; not a hard cgroup budget"
+}
