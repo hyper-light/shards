@@ -1,5 +1,9 @@
 # Reconnect fixture component checkpoint
 
+Historical pure-component checkpoint. The subsequent
+[body candidate](BODY-CHECKPOINT.md) has exact-source compile/light evidence but
+still needs ROOT's initial-cursor seam and all actual gates.
+
 This checkpoint is the pure retained-record component, not a completed live
 reconnect fixture. No observer/transport/helper/socket/namespace/BPF/VM was executed.
 ROOT owns all actual E2E/mutations, audits/profiling/benchmarks/chaos/stress,

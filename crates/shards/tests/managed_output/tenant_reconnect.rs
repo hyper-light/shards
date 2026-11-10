@@ -1,6 +1,9 @@
 //! One observed unacknowledged Data record, retained as a reconnect fixture witness.
 use shards_abi::run::managed::{Channel, Error, Event, Record, StreamState};
 
+#[path = "tenant_observer.rs"]
+mod fixture;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ReplayError {
     WireOffset { expected: u64, actual: u64 },

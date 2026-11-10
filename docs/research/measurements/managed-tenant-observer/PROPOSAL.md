@@ -1,6 +1,9 @@
 # Borrowed observer disconnect and exact retained-cursor reconnect
 
 Implementation shape submitted to ROOT; no new helper mechanism approved here.
+The owned fixture body now has a source/light candidate in
+[BODY-CHECKPOINT.md](BODY-CHECKPOINT.md). The proposed parent initial-cursor
+seam remains unapplied and outside current ownership; actual execution is ROOT's.
 POLICY_READ IMPLEMENTER canonical main24f48ee5ebf198485117aa93bf47685ad7d7d53f,
 rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
 R01–R16 apply. ROOT owns all actual endpoint/VM/mutation/cleanup campaigns,
