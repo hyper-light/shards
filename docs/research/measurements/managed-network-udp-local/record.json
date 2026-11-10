@@ -1,0 +1,188 @@
+{
+  "source_revision": "b047371dff9e8443409fda99f80ec44694fc7294",
+  "base": "99474d2e94ae8cdfa17cf84340339761031e9d3c",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "actual_socket_namespace_guest_runs": "unrun; coordinator owned",
+  "archive": {
+    "path": "light-raw.tar.gz",
+    "bytes": 11875,
+    "sha256": "7c47d379521ef6b45eed845f087879058f56da2dcb15921f2a1778075389f1d0",
+    "entries": 31,
+    "files": [
+      {
+        "path": "guest/Cargo.lock",
+        "bytes": 387,
+        "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107"
+      },
+      {
+        "path": "guest/artifact-sha256.txt",
+        "bytes": 535,
+        "sha256": "92fcd6fd8a9844d246ea36c7c66223c579f543941ded90e87381b8a59eefe3ab"
+      },
+      {
+        "path": "guest/frozen-binary.json",
+        "bytes": 226,
+        "sha256": "7bccbaa38765dac5db000a864b287956d3b9831629308c1364ba70513a87c240"
+      },
+      {
+        "path": "guest/gnu-clippy.command",
+        "bytes": 171,
+        "sha256": "bd49b66f861795b1090ddda1c9d65a97bc06566aa0aecfb914ead0ffbae7ea48"
+      },
+      {
+        "path": "guest/gnu-clippy.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "guest/gnu-clippy.log",
+        "bytes": 198,
+        "sha256": "9141148f85ad54dcbb5dff80c88a7803d8ced9751f34736d36aa9964fc7a51d2"
+      },
+      {
+        "path": "guest/gnu-pure.command",
+        "bytes": 198,
+        "sha256": "95f2f5854a8323c3d43f19733f20dd29d82d9331b2e3dbcf70b9a3aeb09ea65a"
+      },
+      {
+        "path": "guest/gnu-pure.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "guest/gnu-pure.log",
+        "bytes": 2229,
+        "sha256": "5bdfd7623fb4d784763281f739ca9ec3881b5e7f4369679130c657bbeb4995bb"
+      },
+      {
+        "path": "guest/identity.txt",
+        "bytes": 1700,
+        "sha256": "247ea06365f1dffab680986ae328aecd6205119a17ee806d1a82196645390926"
+      },
+      {
+        "path": "guest/musl-clippy.command",
+        "bytes": 172,
+        "sha256": "546fd4ae31774f4814f8d3c7da3d4d9102a010fce9102aa899947bccd0518bd5"
+      },
+      {
+        "path": "guest/musl-clippy.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "guest/musl-clippy.log",
+        "bytes": 198,
+        "sha256": "790e1542a969131be5c8e035db6256401833f27de2b0819fccb01acb7e52942e"
+      },
+      {
+        "path": "guest/tcp-parser.command",
+        "bytes": 249,
+        "sha256": "c036a4fed20e6a4fefa0ebbb59be6b9798c12482bc4e0869e4e1ec90493246c0"
+      },
+      {
+        "path": "guest/tcp-parser.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "guest/tcp-parser.log",
+        "bytes": 422,
+        "sha256": "3c0b9a2d8ae0a64b353bb3d759c86e7f69994862e9753fb89d6528e8c5103290"
+      },
+      {
+        "path": "guest/udp-parser.command",
+        "bytes": 246,
+        "sha256": "accd9e2d9879e1fd1e0929bcba8e0a9c089c06192205ada6875afede2bf162d1"
+      },
+      {
+        "path": "guest/udp-parser.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "guest/udp-parser.log",
+        "bytes": 419,
+        "sha256": "6287ef79601d41748cbdbfbf068c096bbcae1ef9cdc5051a6b0ba9c70730ff16"
+      },
+      {
+        "path": "host/host-clippy.command",
+        "bytes": 175,
+        "sha256": "42f061201d19d7d4ab4f654b86517b37e2182be269c59bb7a51da939a74b8f7c"
+      },
+      {
+        "path": "host/host-clippy.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "host/host-clippy.log",
+        "bytes": 318,
+        "sha256": "79fc1404568065417b6799b0b386e3aa8a14fed0f6db621f4e4b48d7153b0ad3"
+      },
+      {
+        "path": "host/host-pure.command",
+        "bytes": 159,
+        "sha256": "230af2aec74616a2d2f1c6cbd08b7f8d45f40b02b01b8d3d08105fccf816cc80"
+      },
+      {
+        "path": "host/host-pure.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "host/host-pure.log",
+        "bytes": 27199,
+        "sha256": "cfa9cf46fd6f512761b19ff5ce891808486cb81a1b506fce1691d8644936954b"
+      },
+      {
+        "path": "host/source.json",
+        "bytes": 344,
+        "sha256": "df59935439952870ac20df3ca0334b3989c22bfaf52dc60ff688079943fdba48"
+      },
+      {
+        "path": "host-source/Cargo.lock",
+        "bytes": 2653,
+        "sha256": "a9f97e5997174124a747f58d2401b68bcdf42491ce0667cc36cada798bb9ae6a"
+      },
+      {
+        "path": "host-source/Cargo.toml",
+        "bytes": 128,
+        "sha256": "2d68623d08d10cf4ce7e4f8312ac6596f78c80d8c87ef96d9789e4f451d2be7e"
+      },
+      {
+        "path": "host-source/fixtures.json",
+        "bytes": 51540,
+        "sha256": "aa01d47d4397769cd06aefa70f1889e4041405301e4fc843f9859d27ea3a1595"
+      },
+      {
+        "path": "host-source/lib.rs",
+        "bytes": 9693,
+        "sha256": "090672ed9bacfdb76f5eeadd64a6457c91e23476c44ea27da058f53cdeca877f"
+      }
+    ]
+  },
+  "sources": [
+    {
+      "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "358d5abb98fb41b7a0d07eba2214be6eed3cbc3f52a1228d882e64e0765ce116"
+    },
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "sha256": "1e08e80fa43aa8df766bd859b421e8ab30ec17d67cb171b8d12350f3411ea19a"
+    },
+    {
+      "path": "crates/shards/tests/managed_network.rs",
+      "sha256": "e86a0114ed489ee1bfc52e33a3612826096936a04431aab26f29d736388d5d35"
+    },
+    {
+      "path": "docs/research/measurements/managed-network-udp-local/run-light.sh",
+      "sha256": "82f12aba997a4fe83c80dbfe5085e994ea44a730d62eb984ba103d094de55808"
+    },
+    {
+      "path": "docs/research/measurements/managed-network-udp-local/run-host-light.py",
+      "sha256": "966e92a67c5af16c94e8d76265a11f6a35d51237b13782f06d0f84339b51b339"
+    }
+  ]
+}
