@@ -1,0 +1,17 @@
+[
+  {
+    "mode": "ordinary",
+    "returncode": 0,
+    "stderr": "shards: private static refusal probe\n"
+  },
+  {
+    "mode": "cold-refused",
+    "returncode": -6,
+    "stderr": "memory allocation of 64 bytes failed\nmemory allocation of 64 bytes failed\nskipping backtrace printing to avoid potential recursion\n"
+  },
+  {
+    "mode": "warmed-control",
+    "returncode": 0,
+    "stderr": "shards: private warmed negative control; never a remedy\nshards: private static refusal probe\n"
+  }
+]

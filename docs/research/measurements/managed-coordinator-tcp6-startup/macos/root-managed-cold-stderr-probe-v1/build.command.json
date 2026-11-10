@@ -1,0 +1,1 @@
+["rustc", "--edition=2024", "-C", "opt-level=2", "/Users/adalundhe/root-managed-cold-stderr-probe-v1/probe.rs", "-o", "/Users/adalundhe/root-managed-cold-stderr-probe-v1/probe"]

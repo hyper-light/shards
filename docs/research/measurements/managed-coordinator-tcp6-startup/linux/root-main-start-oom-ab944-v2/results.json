@@ -1,0 +1,22 @@
+[
+  {
+    "case": "typed-green",
+    "exit": 0
+  },
+  {
+    "case": "string-reporting-mutation",
+    "exit": 101
+  },
+  {
+    "case": "typed-restored",
+    "exit": 0
+  },
+  {
+    "case": "ordinary-composer-restored",
+    "exit": 0
+  },
+  {
+    "case": "ordinary-typed-restored",
+    "exit": 0
+  }
+]

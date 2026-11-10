@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--target", "x86_64-unknown-linux-gnu", "-p", "shards-vmm", "--lib", "vm::cmdline::tests::", "--", "--nocapture", "--test-threads=1"]

@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--target", "x86_64-unknown-linux-gnu", "-p", "shards-vmm", "--lib", "vm::tests::a_command_line_start_error_preserves_the_cause_and_message", "--", "--nocapture", "--test-threads=1"]

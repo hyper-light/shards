@@ -1,0 +1,26 @@
+[
+  {
+    "path": "crates/testguest/src/main.rs",
+    "sha256": "9e5927853a03ea819a86c4104d8a7f86c9b2717a9e935a6e0cdf6234f2706037"
+  },
+  {
+    "path": "crates/testguest/src/linux.rs",
+    "sha256": "afabb0bcedc0e2b49a556b56e3a3261bcfad45e8df9a6dc0335ba8c6abcc019f"
+  },
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "sha256": "594cd5f08bfcff0c3efade63bfbf67b0d02237e0ffc5c66b20b34969a0da1f72"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept.rs",
+    "sha256": "0145a911ef5d67ce3e64c932701eaacfde02d589d24e9990ad7f201b0301fea4"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+    "sha256": "f4fa5cf0f1bbad640f1c97dc0d6ef5a281fae521169a9991c3d02d811c94012b"
+  },
+  {
+    "path": "crates/shards/tests/managed_network.rs",
+    "sha256": "f0b3dd7ecd8eca3b491874bfb4e8b84b9d93a31d3edc00db0a6d8207a7f51fbf"
+  }
+]

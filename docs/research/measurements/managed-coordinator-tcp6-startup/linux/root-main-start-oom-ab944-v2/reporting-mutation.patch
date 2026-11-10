@@ -1,0 +1,11 @@
+--- crates/vmm/src/vm/x86_64.rs
++++ crates/vmm/src/vm/x86_64.rs
+@@ -750,7 +750,7 @@
+     #[cfg(test)]
+     if super::ROOT_ARM_CMDLINE.swap(false, std::sync::atomic::Ordering::SeqCst) { super::root_faults::arm(); }
+     let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
+-        .map_err(super::StartError::CommandLine)?;
++        .map_err(|error| super::StartError::Legacy(error.to_string()))?;
+     let boot_state = boot::write_boot_state(
+         &memory,
+         kernel.entry,

@@ -1,0 +1,26 @@
+[    0.009127] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp6", "local-self", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalSelf","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalSelf","relay_mode":"Present","family":"Ipv6","destination":"[2001:db8:1::1]:43415","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::1]:43415 peer=[2001:db8:1::1]:54286 original=Some([2001:db8:1::1]:43415) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[2001:db8:1::1]:43415","peer":"[2001:db8:1::1]:54286"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::1]:54286 peer=[2001:db8:1::1]:43415 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"[2001:db8:1::1]:54286","peer":"[2001:db8:1::1]:43415","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"[2001:db8:1::1]:43415","relay_port":47959}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::1]:43415 peer=[2001:db8:1::1]:54288 original=Some([2001:db8:1::1]:43415) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Relay","local":"[2001:db8:1::1]:43415","peer":"[2001:db8:1::1]:54288"}
+managed-network Sent transport=tcp bytes=7
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::1]:54288 peer=[2001:db8:1::1]:43415 original=None bytes=7 hex=52454c41590080
+managed-intercept {"type":"ClientObservation","reply":"Relay","local":"[2001:db8:1::1]:54288","peer":"[2001:db8:1::1]:43415","hex":"52454c41590080"}
+managed-intercept {"type":"Joined","backend_accepted":1,"relay_accepted":1,"backend_receipts":1,"relay_receipts":1,"backend_terminal":"Stopped","relay_terminal":"Stopped","joined":true}
+managed-intercept {"type":"Intercepted","original":"[2001:db8:1::1]:43415","peer":"[2001:db8:1::1]:54288","client_local":"[2001:db8:1::1]:54288","client_peer":"[2001:db8:1::1]:43415"}
+SHARDS-TEST PASS
+[    0.079258] reboot: Power down

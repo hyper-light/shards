@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--target", "x86_64-unknown-linux-gnu", "-p", "shards-vmm", "--lib", "vm::root_actual_start_oom::typed_start_returns_after_real_construction_under_refusal", "--", "--nocapture", "--test-threads=1"]

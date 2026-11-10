@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (/home/adalundhe/root-main-start-oom-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470)
+
+running 1 test
+test vm::tests::a_command_line_start_error_preserves_the_cause_and_message ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 417 filtered out; finished in 0.00s
+

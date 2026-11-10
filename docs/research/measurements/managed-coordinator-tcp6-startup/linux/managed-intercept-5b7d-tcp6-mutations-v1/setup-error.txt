@@ -1,0 +1,1 @@
+Root driver expected one substring if input.origin != Origin::Forward, but actual source contains runtime line243 and pure-test line683. Assertion failed before edits/case runs; finally restored byte-identically. New driver selects the runtime let output prefix exactly. Original driver.exit1 retained.

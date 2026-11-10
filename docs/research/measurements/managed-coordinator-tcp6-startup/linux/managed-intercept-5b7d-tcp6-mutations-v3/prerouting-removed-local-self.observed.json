@@ -1,0 +1,65 @@
+[
+  {
+    "type": "Namespaces",
+    "origin": "LocalSelf",
+    "router_inode": 4026532020,
+    "backend_inode": 4026532093,
+    "client_inode": 4026532166,
+    "mark": 1,
+    "table": 100,
+    "priority": 100
+  },
+  {
+    "type": "Target",
+    "origin": "LocalSelf",
+    "relay_mode": "Present",
+    "family": "Ipv6",
+    "destination": "[2001:db8:1::1]:50865",
+    "client_inode": 4026532020,
+    "backend_inode": 4026532020,
+    "relay_inode": 4026532020
+  },
+  {
+    "type": "ServerObservation",
+    "role": "Backend",
+    "local": "[2001:db8:1::1]:50865",
+    "peer": "[2001:db8:1::1]:41550"
+  },
+  {
+    "type": "ClientObservation",
+    "reply": "Backend",
+    "local": "[2001:db8:1::1]:41550",
+    "peer": "[2001:db8:1::1]:50865",
+    "hex": "4241434b454e4400ff"
+  },
+  {
+    "type": "Baseline",
+    "destination": "[2001:db8:1::1]:50865",
+    "relay_port": 56963
+  },
+  {
+    "type": "Installed"
+  },
+  {
+    "type": "ServerObservation",
+    "role": "Backend",
+    "local": "[2001:db8:1::1]:50865",
+    "peer": "[2001:db8:1::1]:41566"
+  },
+  {
+    "type": "Joined",
+    "backend_accepted": 2,
+    "relay_accepted": 0,
+    "backend_receipts": 2,
+    "relay_receipts": 0,
+    "backend_terminal": "Error",
+    "relay_terminal": "Stopped",
+    "joined": true
+  },
+  {
+    "type": "WorkerError",
+    "worker": "Backend",
+    "kind": "NotConnected",
+    "errno": 107
+  }
+]

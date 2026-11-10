@@ -1,0 +1,59 @@
+--- crates/vmm/src/vm/mod.rs
++++ crates/vmm/src/vm/mod.rs
+@@ -3428,3 +3428,45 @@
+         assert!(said.iter().any(|s| limit.contains(s)), "{limit}");
+     }
+ }
++
++#[cfg(test)]
++#[path = "/home/adalundhe/root-main-start-oom-ab944-v2/allocation.rs"]
++mod root_faults;
++#[cfg(test)]
++static ROOT_ARM_CMDLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++#[cfg(all(test, hv, target_arch="x86_64", target_os="linux"))]
++mod root_actual_start_oom {
++ use super::*;
++ fn descriptors() -> std::collections::BTreeMap<u32,PathBuf> {
++  let observer=PathBuf::from(format!("/proc/{}/fd",std::process::id()));
++  std::fs::read_dir("/proc/self/fd").unwrap().map(|entry| {
++   let entry=entry.unwrap();(entry.file_name().to_str().unwrap().parse::<u32>().unwrap(),std::fs::read_link(entry.path()).unwrap())
++  }).filter(|(_,target)| *target!=observer).collect()
++ }
++ #[test]
++ fn typed_start_returns_after_real_construction_under_refusal() {
++  let kernel=std::env::var_os("SHARDS_KERNEL").expect("explicit root experimental kernel");
++  let mut cfg=Config::new(kernel.into(),None);cfg.memory_mib=256;cfg.console=Console::Discard;
++  cfg.cmdline="x".repeat(crate::arch::x86_64::layout::CMDLINE_MAX);
++  for phase in ["cold-host","repeated-host"] {
++   let before=descriptors();
++   ROOT_ARM_CMDLINE.store(true,std::sync::atomic::Ordering::SeqCst);
++   let result=start(&cfg);root_faults::reset();
++   let not_reached=ROOT_ARM_CMDLINE.swap(false,std::sync::atomic::Ordering::SeqCst);
++   let after=descriptors();assert!(!not_reached,"actual command-line bridge was not reached");
++   match result {
++    Err(StartError::CommandLine(crate::arch::x86_64::boot::BootError::DoesNotFit{what,at,len})) => {
++     assert_eq!(what,"command line");assert_eq!(at,crate::arch::x86_64::layout::CMDLINE);
++     eprintln!("ACTUAL_TYPED_START_RETURN phase={phase} what={what} at={at} len={len} before={before:?} after={after:?}");
++    }, Err(other)=>panic!("wrong actual startup cause: {other}"),Ok(_)=>panic!("overlong command line unexpectedly booted"),
++   }
++   let added:Vec<_>=after.iter().filter(|(fd,target)|before.get(fd)!=Some(*target)).collect();
++   let removed:Vec<_>=before.iter().filter(|(fd,target)|after.get(fd)!=Some(*target)).collect();
++   assert!(removed.is_empty(),"original process descriptors changed: {removed:?}");
++   if phase=="cold-host" && !before.values().any(|p|p==std::path::Path::new("/dev/kvm")) {
++    let [(_,target)]=added.as_slice() else {panic!("cold-host retained objects differ: {added:?}")};
++    assert_eq!(target.as_path(),std::path::Path::new("/dev/kvm"),"additional object is not the process-wide KVM handle");
++   } else {assert!(added.is_empty(),"unexpected additional objects: {added:?}");}
++  }
++ }
++}
+--- crates/vmm/src/vm/x86_64.rs
++++ crates/vmm/src/vm/x86_64.rs
+@@ -747,6 +747,8 @@
+         cfg!(hv = "whp").then_some(ONE_AT_A_TIME_CMDLINE),
+     ];
+     let mut cmdline_bytes = [0; layout::CMDLINE_MAX];
++    #[cfg(test)]
++    if super::ROOT_ARM_CMDLINE.swap(false, std::sync::atomic::Ordering::SeqCst) { super::root_faults::arm(); }
+     let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
+         .map_err(super::StartError::CommandLine)?;
+     let boot_state = boot::write_boot_state(

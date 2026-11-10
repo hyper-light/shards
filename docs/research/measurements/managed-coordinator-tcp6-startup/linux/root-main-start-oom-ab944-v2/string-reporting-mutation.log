@@ -1,0 +1,20 @@
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-main-safety-e4eb0bfc03/crates/vmm)
+warning: function `fail_after` is never used
+  --> /home/adalundhe/root-main-start-oom-ab944-v2/allocation.rs:62:15
+   |
+62 | pub(crate) fn fail_after<T>(successful: usize, run: impl FnOnce() -> T) -> T {
+   |               ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-vmm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.60s
+     Running unittests src/lib.rs (/home/adalundhe/root-main-start-oom-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470)
+
+running 1 test
+test vm::root_actual_start_oom::typed_start_returns_after_real_construction_under_refusal ... memory allocation of 12 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/adalundhe/root-main-start-oom-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470 'vm::root_actual_start_oom::typed_start_returns_after_real_construction_under_refusal' --nocapture --test-threads=1` (signal: 6, SIGABRT: process abort signal)

@@ -1,0 +1,73 @@
+[
+  {
+    "type": "Namespaces",
+    "origin": "LocalSelf",
+    "router_inode": 4026532020,
+    "backend_inode": 4026532093,
+    "client_inode": 4026532166,
+    "mark": 1,
+    "table": 100,
+    "priority": 100
+  },
+  {
+    "type": "Target",
+    "origin": "LocalSelf",
+    "relay_mode": "Present",
+    "family": "Ipv6",
+    "destination": "[2001:db8:1::1]:33585",
+    "client_inode": 4026532020,
+    "backend_inode": 4026532020,
+    "relay_inode": 4026532020
+  },
+  {
+    "type": "ServerObservation",
+    "role": "Backend",
+    "local": "[2001:db8:1::1]:33585",
+    "peer": "[2001:db8:1::1]:46288"
+  },
+  {
+    "type": "ClientObservation",
+    "reply": "Backend",
+    "local": "[2001:db8:1::1]:46288",
+    "peer": "[2001:db8:1::1]:33585",
+    "hex": "4241434b454e4400ff"
+  },
+  {
+    "type": "Baseline",
+    "destination": "[2001:db8:1::1]:33585",
+    "relay_port": 38497
+  },
+  {
+    "type": "Installed"
+  },
+  {
+    "type": "ServerObservation",
+    "role": "Relay",
+    "local": "[2001:db8:1::1]:33585",
+    "peer": "[2001:db8:1::1]:46292"
+  },
+  {
+    "type": "ClientObservation",
+    "reply": "Relay",
+    "local": "[2001:db8:1::1]:46292",
+    "peer": "[2001:db8:1::1]:33585",
+    "hex": "52454c41590080"
+  },
+  {
+    "type": "Joined",
+    "backend_accepted": 1,
+    "relay_accepted": 1,
+    "backend_receipts": 1,
+    "relay_receipts": 1,
+    "backend_terminal": "Stopped",
+    "relay_terminal": "Stopped",
+    "joined": true
+  },
+  {
+    "type": "Intercepted",
+    "original": "[2001:db8:1::1]:33585",
+    "peer": "[2001:db8:1::1]:46292",
+    "client_local": "[2001:db8:1::1]:46292",
+    "client_peer": "[2001:db8:1::1]:33585"
+  }
+]

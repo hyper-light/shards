@@ -1,0 +1,12 @@
+{
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "config": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+    "sha256": "fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d",
+    "provenance": "root r122 exact5d23+14patches+two-symbol overlay; artifactSHA97819d00 configSHAfb1a17c6",
+    "association": "supplied evidence; not independently inferred from inputs"
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "case": "typed-green",
+    "exit": 101
+  },
+  {
+    "case": "ordinary-composer-restored",
+    "exit": 0
+  },
+  {
+    "case": "ordinary-typed-restored",
+    "exit": 0
+  }
+]

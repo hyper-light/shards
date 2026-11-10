@@ -1,0 +1,6 @@
+{
+  "report_source_sha256": "10628d11f5dabf3ca60603c250fbd1bc045d5967847cb12c5227756de047902e",
+  "allocation_sha256": "90df56ccfa8e6cb4c1289ff91f4262afe039a69336f4aafc434ef6cbd871321a",
+  "probe_sha256": "de33816c19898e4fbcf498a35bb31129493ddbd526db7694f636fccd9a6dd557",
+  "scope": "exact existing report function with static message; separate cold stdio operation probe, not a whole VM or BootError path"
+}

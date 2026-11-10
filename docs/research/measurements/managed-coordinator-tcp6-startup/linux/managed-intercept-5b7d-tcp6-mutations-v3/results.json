@@ -1,0 +1,56 @@
+[
+  {
+    "case": "output-removed-local-self",
+    "origin": "local-self",
+    "exit": 0,
+    "elapsed_ns": 18295403322
+  },
+  {
+    "case": "prerouting-removed-local-loopback",
+    "origin": "local-loopback",
+    "exit": 101,
+    "elapsed_ns": 16707727421
+  },
+  {
+    "case": "prerouting-removed-local-self",
+    "origin": "local-self",
+    "exit": 101,
+    "elapsed_ns": 16007945821
+  },
+  {
+    "case": "fallback-removed",
+    "origin": "forward-relay-absent",
+    "exit": 101,
+    "elapsed_ns": 17929318023
+  },
+  {
+    "case": "restored-local",
+    "origin": "local",
+    "exit": 0,
+    "elapsed_ns": 18107842467
+  },
+  {
+    "case": "restored-local-loopback",
+    "origin": "local-loopback",
+    "exit": 0,
+    "elapsed_ns": 19839774376
+  },
+  {
+    "case": "restored-local-self",
+    "origin": "local-self",
+    "exit": 0,
+    "elapsed_ns": 20051895355
+  },
+  {
+    "case": "restored-forward",
+    "origin": "forward",
+    "exit": 0,
+    "elapsed_ns": 22958512872
+  },
+  {
+    "case": "restored-forward-relay-absent",
+    "origin": "forward-relay-absent",
+    "exit": 0,
+    "elapsed_ns": 51385856052
+  }
+]

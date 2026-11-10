@@ -1,0 +1,20 @@
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-main-safety-e4eb0bfc03/crates/vmm)
+warning: function `fail_after` is never used
+  --> /home/adalundhe/root-main-start-oom-ab944-v2/allocation.rs:62:15
+   |
+62 | pub(crate) fn fail_after<T>(successful: usize, run: impl FnOnce() -> T) -> T {
+   |               ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-vmm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.67s
+     Running unittests src/lib.rs (/home/adalundhe/root-main-start-oom-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470)
+
+running 1 test
+test vm::root_actual_start_oom::typed_start_returns_after_real_construction_under_refusal ... ACTUAL_TYPED_START_RETURN phase=cold-host what=command line at=131072 len=2071 before={0: "pipe:[117472191]", 1: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 2: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log"} after={0: "pipe:[117472191]", 1: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 2: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 3: "/dev/kvm"}
+ACTUAL_TYPED_START_RETURN phase=repeated-host what=command line at=131072 len=2071 before={0: "pipe:[117472191]", 1: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 2: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 3: "/dev/kvm"} after={0: "pipe:[117472191]", 1: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 2: "/home/adalundhe/root-main-start-oom-ab944-v2/typed-restored.log", 3: "/dev/kvm"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 418 filtered out; finished in 0.16s
+

@@ -1,0 +1,26 @@
+[    0.009368] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp4", "local-loopback", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalLoopback","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalLoopback","relay_mode":"Present","family":"Ipv4","destination":"127.0.0.1:55119","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:55119 peer=127.0.0.1:57796 original=Some(127.0.0.1:55119) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"127.0.0.1:55119","peer":"127.0.0.1:57796"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:57796 peer=127.0.0.1:55119 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"127.0.0.1:57796","peer":"127.0.0.1:55119","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"127.0.0.1:55119","relay_port":44603}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:55119 peer=127.0.0.1:57808 original=Some(127.0.0.1:55119) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Relay","local":"127.0.0.1:55119","peer":"127.0.0.1:57808"}
+managed-network Sent transport=tcp bytes=7
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:57808 peer=127.0.0.1:55119 original=None bytes=7 hex=52454c41590080
+managed-intercept {"type":"ClientObservation","reply":"Relay","local":"127.0.0.1:57808","peer":"127.0.0.1:55119","hex":"52454c41590080"}
+managed-intercept {"type":"Joined","backend_accepted":1,"relay_accepted":1,"backend_receipts":1,"relay_receipts":1,"backend_terminal":"Stopped","relay_terminal":"Stopped","joined":true}
+managed-intercept {"type":"Intercepted","original":"127.0.0.1:55119","peer":"127.0.0.1:57808","client_local":"127.0.0.1:57808","client_peer":"127.0.0.1:55119"}
+SHARDS-TEST PASS
+[    0.077809] reboot: Power down

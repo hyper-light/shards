@@ -1,0 +1,15 @@
+{
+  "SHARDS_NETWORK_RECORDS": "/home/adalundhe/managed-intercept-5b7d-both-families-v1/intercept-tcp6-forward-relay-absent",
+  "SHARDS_NETWORK_BOOT_MS": "120000",
+  "SHARDS_NETWORK_CONFIG_PROVENANCE": "root r122 exact5d23+14patches+two-symbol overlay; artifactSHA97819d00 configSHAfb1a17c6",
+  "SHARDS_NETWORK_MEMORY_MIB": "256",
+  "SHARDS_INTERCEPT_ORIGIN": "forward-relay-absent",
+  "SHARDS_NETWORK_CASE_MS": "30000",
+  "SHARDS_NETWORK_CPUS": "1",
+  "SHARDS_INTERCEPT_TABLE": "100",
+  "SHARDS_NETWORK_EFFECTIVE_CONFIG": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_INTERCEPT_MARK": "1",
+  "SHARDS_INTERCEPT_RULE_PRIORITY": "100",
+  "SHARDS_NETWORK_SOURCE_REVISION": "5b7d1bf57990e0ec7aef64601dbe3dee6e4f692c",
+  "SHARDS_INTERCEPT_PROTOCOL": "intercept-tcp6"
+}

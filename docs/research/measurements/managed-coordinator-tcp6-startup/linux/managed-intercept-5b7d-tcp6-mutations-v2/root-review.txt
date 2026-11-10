@@ -1,0 +1,1 @@
+r336 expected all OUTPUT-mark removals to bypass. Actual local cargo101 backend2/2 relay0; loopback cargo0 backend1/relay1. Campaign assumption failed, not a product finding. Source restored byte-identically. No fallback mutation or closing green executed in v2. v3 tests actual PRE rule bundle for same-namespace targets and retains independent OUTPUT-self observation.

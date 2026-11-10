@@ -1,0 +1,4 @@
+{
+  "crates/vmm/src/vm/mod.rs": "95858f8933a9d975db88a2d23c4232a3f6d1ab42dbd950d5054622e2e141a1d1",
+  "crates/vmm/src/vm/x86_64.rs": "1d7b53176cebf2ff9e88b294a4e9053c8f141310bdd56ca6b41c790549a5fb73"
+}

@@ -1,0 +1,11 @@
+--- crates/testguest/src/managed_network/intercept/wire.rs
++++ crates/testguest/src/managed_network/intercept/wire.rs
+@@ -240,7 +240,7 @@
+         intercept,
+         rule(family, b"pre\0", expressions)?,
+     ];
+-    let output = if input.origin != Origin::Forward {
++    let output = if false {
+         let mut expressions = selector(destination)?;
+         mark_accept(&mut expressions, input.mark)?;
+         Some([

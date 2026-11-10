@@ -1,0 +1,10 @@
+--- crates/testguest/src/managed_network/intercept/wire.rs
++++ crates/testguest/src/managed_network/intercept/wire.rs
+@@ -238,7 +238,6 @@
+         Message::nft(family, 0, CREATE_EXCL, table)?,
+         pre,
+         intercept,
+-        rule(family, b"pre\0", expressions)?,
+     ];
+     let output = if input.origin != Origin::Forward {
+         let mut expressions = selector(destination)?;

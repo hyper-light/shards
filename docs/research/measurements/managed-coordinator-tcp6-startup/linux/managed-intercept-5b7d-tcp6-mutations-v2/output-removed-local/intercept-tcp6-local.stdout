@@ -1,0 +1,23 @@
+[    0.008597] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp6", "local", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"Local","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"Local","relay_mode":"Present","family":"Ipv6","destination":"[2001:db8:1::2]:39475","client_inode":4026532020,"backend_inode":4026532093,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::2]:39475 peer=[2001:db8:1::1]:48692 original=Some([2001:db8:1::2]:39475) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[2001:db8:1::2]:39475","peer":"[2001:db8:1::1]:48692"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::1]:48692 peer=[2001:db8:1::2]:39475 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"[2001:db8:1::1]:48692","peer":"[2001:db8:1::2]:39475","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"[2001:db8:1::2]:39475","relay_port":59431}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[2001:db8:1::2]:39475 peer=[2001:db8:1::1]:52114 original=Some([2001:db8:1::2]:39475) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[2001:db8:1::2]:39475","peer":"[2001:db8:1::1]:52114"}
+managed-network Sent transport=tcp bytes=9
+managed-intercept {"type":"Joined","backend_accepted":2,"relay_accepted":0,"backend_receipts":2,"relay_receipts":0,"backend_terminal":"Stopped","relay_terminal":"Stopped","joined":true}
+managed-network failed kind=InvalidInput errno=None: TCP payload differs
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    1.076928] reboot: Power down

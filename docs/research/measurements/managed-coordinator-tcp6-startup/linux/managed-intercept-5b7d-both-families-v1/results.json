@@ -1,0 +1,52 @@
+[
+  {
+    "case": "intercept-tcp6-local-loopback",
+    "exit": 0,
+    "elapsed_ns": 111001457150
+  },
+  {
+    "case": "intercept-tcp6-local-self",
+    "exit": 0,
+    "elapsed_ns": 16337727431
+  },
+  {
+    "case": "intercept-tcp6-local",
+    "exit": 0,
+    "elapsed_ns": 16717059669
+  },
+  {
+    "case": "intercept-tcp6-forward",
+    "exit": 0,
+    "elapsed_ns": 18878838417
+  },
+  {
+    "case": "intercept-tcp6-forward-relay-absent",
+    "exit": 0,
+    "elapsed_ns": 46791096484
+  },
+  {
+    "case": "intercept-tcp4-local-loopback",
+    "exit": 0,
+    "elapsed_ns": 18478074944
+  },
+  {
+    "case": "intercept-tcp4-local-self",
+    "exit": 0,
+    "elapsed_ns": 19740033665
+  },
+  {
+    "case": "intercept-tcp4-local",
+    "exit": 0,
+    "elapsed_ns": 18076493432
+  },
+  {
+    "case": "intercept-tcp4-forward",
+    "exit": 0,
+    "elapsed_ns": 17488707460
+  },
+  {
+    "case": "intercept-tcp4-forward-relay-absent",
+    "exit": 0,
+    "elapsed_ns": 46242899266
+  }
+]

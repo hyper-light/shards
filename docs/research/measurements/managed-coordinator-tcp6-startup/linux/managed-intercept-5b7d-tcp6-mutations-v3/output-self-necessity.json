@@ -1,0 +1,14 @@
+{
+  "cargo_exit": 0,
+  "joined": {
+    "type": "Joined",
+    "backend_accepted": 1,
+    "relay_accepted": 1,
+    "backend_receipts": 1,
+    "relay_receipts": 1,
+    "backend_terminal": "Stopped",
+    "relay_terminal": "Stopped",
+    "joined": true
+  },
+  "scope": "observed necessity of OUTPUT mark for this exact self-address path; not a mandatory guard-removal pass"
+}

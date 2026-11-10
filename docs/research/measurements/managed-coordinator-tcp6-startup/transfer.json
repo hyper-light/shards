@@ -1,0 +1,14 @@
+{
+  "linux": {
+    "name": "managed-root-tcp6-main-oom-raw.tgz",
+    "files": 392,
+    "bytes": 729871,
+    "sha256": "a161decda2c6b247615403faf7a980ce42545866ff195fbb4f89fc7d700ea8da"
+  },
+  "macos": {
+    "name": "managed-root-cold-stderr-raw.tgz",
+    "files": 22,
+    "bytes": 3191,
+    "sha256": "9ef5816b1e2c0d99464088f481ba0900c5c5045080d7be8cf9605c12f6487fae"
+  }
+}

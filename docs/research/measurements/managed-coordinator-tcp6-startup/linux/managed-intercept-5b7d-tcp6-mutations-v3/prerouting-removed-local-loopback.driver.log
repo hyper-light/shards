@@ -1,0 +1,90 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.39s
+     Running tests/managed_network.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_network-cab1fd09da2fdf38)
+
+running 1 test
+test experimental_tcp6_interception_has_distinct_backend_and_relay_observations ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+warning: unused variable: `intercept`
+   --> crates/testguest/src/managed_network/intercept/wire.rs:231:9
+    |
+231 |     let intercept = rule(family, b"pre\0", expressions)?;
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_intercept`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-testguest` (bin "shards-testguest") generated 1 warning (run `cargo fix --bin "shards-testguest" -p shards-testguest` to apply 1 suggestion)
+    Finished `guest` profile [optimized] target(s) in 14.79s
+NETWORK_GUEST_IDENTITY {"boot_ms":120000,"case":"intercept-tcp6-local-loopback","case_ms":30000,"cli":{"path":"/home/adalundhe/managed-capture-check/target/e2e/shards-873d5905db49cfe9/shards"},"config":{"authority":"coordinator-supplied evidence; association with booted kernel not independently verified","path":"/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy","provenance":"root r122 exact5d23+14patches+two-symbol overlay; artifactSHA97819d00 configSHAfb1a17c6","sha256":"sha256:fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d","symbols":[{"supplied_value":"y","symbol":"CONFIG_NFT_SOCKET"},{"supplied_value":"y","symbol":"CONFIG_NFT_TPROXY"},{"supplied_value":"y","symbol":"CONFIG_NF_SOCKET_IPV4"},{"supplied_value":"y","symbol":"CONFIG_NF_SOCKET_IPV6"},{"supplied_value":"y","symbol":"CONFIG_NF_TPROXY_IPV4"},{"supplied_value":"y","symbol":"CONFIG_NF_TPROXY_IPV6"},{"supplied_value":"y","symbol":"CONFIG_IP_MULTIPLE_TABLES"},{"supplied_value":"y","symbol":"CONFIG_IPV6_MULTIPLE_TABLES"}]},"fixture_revision":"5b7d1bf57990e0ec7aef64601dbe3dee6e4f692c","guest":{"path":"/home/adalundhe/managed-capture-check/target/guest/by-process/118189/shards-testguest","sha256":"sha256:b9cdf737ce5048235f90ee25f940802434eb1aabe128168f606af15eed3bf2b8"},"interception":"not installed or verified","kernel":{"path":"/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy","sha256":"sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"},"memory_mib":256,"vcpus":1}
+
+thread 'experimental_tcp6_interception_has_distinct_backend_and_relay_observations' (118190) panicked at crates/shards/tests/managed_network.rs:359:5:
+status Some(0) after 159.353505ms
+--- stdout
+[    0.008375] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp6", "local-loopback", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalLoopback","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalLoopback","relay_mode":"Present","family":"Ipv6","destination":"[::1]:38327","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:38327 peer=[::1]:46372 original=Some([::1]:38327) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[::1]:38327","peer":"[::1]:46372"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:46372 peer=[::1]:38327 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"[::1]:46372","peer":"[::1]:38327","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"[::1]:38327","relay_port":59727}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:38327 peer=[::1]:46382 original=Some([::1]:38327) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[::1]:38327","peer":"[::1]:46382"}
+managed-network Sent transport=tcp bytes=9
+managed-intercept {"type":"Joined","backend_accepted":2,"relay_accepted":0,"backend_receipts":2,"relay_receipts":0,"backend_terminal":"Stopped","relay_terminal":"Stopped","joined":true}
+managed-network failed kind=InvalidInput errno=None: TCP payload differs
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.072408] reboot: Power down
+
+--- stderr
+shards-timing {"released_us":28942,"entry_us":28977,"exit_us":133988,"request_us":0,"answered_us":0,"prefetched":0,"rss_kib":62692,"footprint_kib":60532,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[]}
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    experimental_tcp6_interception_has_distinct_backend_and_relay_observations
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 15.19s
+
+error: test failed, to rerun pass `-p shards --test managed_network`

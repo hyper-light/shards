@@ -1,0 +1,23 @@
+[    0.008375] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp6", "local-loopback", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalLoopback","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalLoopback","relay_mode":"Present","family":"Ipv6","destination":"[::1]:38327","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:38327 peer=[::1]:46372 original=Some([::1]:38327) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[::1]:38327","peer":"[::1]:46372"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:46372 peer=[::1]:38327 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"[::1]:46372","peer":"[::1]:38327","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"[::1]:38327","relay_port":59727}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=[::1]:38327 peer=[::1]:46382 original=Some([::1]:38327) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"[::1]:38327","peer":"[::1]:46382"}
+managed-network Sent transport=tcp bytes=9
+managed-intercept {"type":"Joined","backend_accepted":2,"relay_accepted":0,"backend_receipts":2,"relay_receipts":0,"backend_terminal":"Stopped","relay_terminal":"Stopped","joined":true}
+managed-network failed kind=InvalidInput errno=None: TCP payload differs
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.072408] reboot: Power down
