@@ -1,0 +1,79 @@
+{
+  "classification": "Original captured logs retained byte-identically; source/global whitespace rules unchanged.",
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/daemon.status",
+      "sha256": "be6b8398842d6beb88c8140fbfb6c40bf2ff5e7b989e219034a48508dc44585d"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/observer.status",
+      "sha256": "b3c986d883277431a27b94e5f3dd5cf7bf78684e4047e5100b96a3f52b5ed9d0"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/vm.status",
+      "sha256": "342663176e250c21deb7d1c1eb34387ee96e882cbce4760c59eb53a3c15ebd80"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/test.log",
+      "sha256": "d78fd4d6d49b4bb354a5aab2f961acedb18aabe12679eeb7882d6b6127120305"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.status",
+      "sha256": "3c743f3ef6c6baaa7ec349ba189efb7bae6a7df1849763945b7477aee470026e"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.udp-owned",
+      "sha256": "cc1c8bc9f76a09fa875729873d21a4a1a9f73cc5ed56439bbd7eb3ef194642b3"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.status",
+      "sha256": "78f353007e0808ec06b0e6bce0c5cda365d65f2a4e3876c8d90829e174368b70"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.udp-owned",
+      "sha256": "de2b0047661eea8174fd90673ee69d133ed040d9b9f598d008f809aa841653f7"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/vm.status",
+      "sha256": "3843bea6f7fa6e49f4a6389b8d4917a6a51fc5ae69de25da248299f4b8141c4a"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/test.log",
+      "sha256": "c113f0a69aed700a5cf64cb9d9f36dffed0b5425b0894e0d9f9a3a75b4787a3c"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.status",
+      "sha256": "bb9136b01242b884d21ca418d9454e6793b4211b896576f46d0d698a8bbe4329"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned",
+      "sha256": "d33bae4659da28823f9636245be5120500c3fa045858a8d31ab56c4cc82458d4"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.status",
+      "sha256": "3cbadca6acd34e01dafc7e48f09a2e35fd39b25c06261f7b81f58f32a56435eb"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned",
+      "sha256": "85681201ab300dbb02569feaacbd7ecb45e69bca3f91ce1640fdc30ca720c3a8"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/vm.status",
+      "sha256": "43bb0266e632d2f43f98364aa00a8f2e0634d0ae0a98df57822d4cc850870063"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/test.log",
+      "sha256": "a209bcfd2acb93481ee6a07ef4747d45203d7ab42fa5c7ffc4abf46dacdbbf80"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/allocation033c/ordinary/test.log",
+      "sha256": "ddca9f0c809e98566b60d915aa717af4bdce12f2fcc0a1ad5c250deee960964b"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/matrix033c/lint.log",
+      "sha256": "73f0c32f3f5039d7b4f10695c9f6f085ad7f4e8d9b6c75f127423de7f8e75124"
+    }
+  ],
+  "raw_check_exit": 2,
+  "raw_check_output": "docs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/daemon.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/daemon.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/daemon.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/observer.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/observer.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/observer.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/vm.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/vm.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/records/vm.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-0/test.log:28: new blank line at EOF.\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.udp-owned:1: trailing whitespace.\n+ 3545: 0100007F:8A52 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137507162 2 0000000067c90828 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.udp-owned:2: trailing whitespace.\n+10170: 0100007F:A433 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137507163 2 0000000038d7a243 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.udp-owned:3: trailing whitespace.\n+11790: 0100007F:AA87 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137507161 2 00000000c3bf9033 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/daemon.udp-owned:4: trailing whitespace.\n+19895: 0100007F:CA30 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137507160 2 000000007a7c988e 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.udp-owned:1: trailing whitespace.\n+ 2478: 0100007F:8627 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137537192 2 000000006f2b8d75 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.udp-owned:2: trailing whitespace.\n+ 8227: 0100007F:9C9C 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137537191 2 000000002b0279ae 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.udp-owned:3: trailing whitespace.\n+14122: 0100007F:B3A3 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137537193 2 000000006e03e60f 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/observer.udp-owned:4: trailing whitespace.\n+23304: 0100007F:D781 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137532219 2 00000000e91fc25c 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/vm.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/vm.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/records/vm.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-1/test.log:32: new blank line at EOF.\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:1: trailing whitespace.\n+ 4646: 0100007F:8E9F 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574742 2 000000004fbbedec 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:2: trailing whitespace.\n+ 6087: 0100007F:9440 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574744 2 000000006002d909 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:3: trailing whitespace.\n+ 9169: 0100007F:A04A 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574746 2 00000000b49271d2 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:4: trailing whitespace.\n+13016: 0100007F:AF51 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574740 2 000000006ba9c6aa 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:5: trailing whitespace.\n+20125: 0100007F:CB16 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574741 2 000000007826638b 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:6: trailing whitespace.\n+21914: 0100007F:D213 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574739 2 00000000eeb0aa47 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:7: trailing whitespace.\n+25729: 0100007F:E0FA 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574745 2 00000000f8d2e67c 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/daemon.udp-owned:8: trailing whitespace.\n+27690: 0100007F:E8A3 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137574743 2 00000000f61f01b3 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:1: trailing whitespace.\n+ 2629: 0100007F:86BE 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599004 2 000000002f30a400 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:2: trailing whitespace.\n+ 7436: 0100007F:9985 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599003 2 000000002a0da429 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:3: trailing whitespace.\n+11710: 0100007F:AA37 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599000 2 00000000760b9191 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:4: trailing whitespace.\n+12008: 0100007F:AB61 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599006 2 000000003d3528e7 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:5: trailing whitespace.\n+20185: 0100007F:CB52 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137598999 2 00000000886bfc7d 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:6: trailing whitespace.\n+24522: 0100007F:DC43 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599005 2 0000000041888cdf 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:7: trailing whitespace.\n+27129: 0100007F:E672 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599001 2 000000003bf5aaf2 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/observer.udp-owned:8: trailing whitespace.\n+28333: 0100007F:EB26 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 137599002 2 00000000498f813b 0     \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/vm.status:12: trailing whitespace.\n+Groups:\t10 965 1000 \ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/vm.status:60: trailing whitespace.\n+x86_Thread_features:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/records/vm.status:61: trailing whitespace.\n+x86_Thread_features_locked:\t\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/members-2/test.log:36: new blank line at EOF.\ndocs/research/measurements/managed-coordinator-allocation/allocation033c/ordinary/test.log:65: new blank line at EOF.\ndocs/research/measurements/managed-coordinator-allocation/matrix033c/lint.log:148: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-coordinator-allocation/matrix033c/lint.log:331: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \n"
+}

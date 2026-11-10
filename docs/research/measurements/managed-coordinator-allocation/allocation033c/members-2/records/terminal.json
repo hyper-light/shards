@@ -1,0 +1,33 @@
+{
+  "channels": [
+    {
+      "accepted": 89,
+      "channel": 1,
+      "consumed": 60,
+      "member": 1,
+      "tail": "unknown"
+    },
+    {
+      "accepted": 86,
+      "channel": 2,
+      "consumed": 86,
+      "member": 1,
+      "tail": "unknown"
+    },
+    {
+      "accepted": 91,
+      "channel": 1,
+      "consumed": 91,
+      "member": 2,
+      "tail": "unknown"
+    },
+    {
+      "accepted": 88,
+      "channel": 2,
+      "consumed": 88,
+      "member": 2,
+      "tail": "unknown"
+    }
+  ],
+  "state": "OwnerChannelsAborted"
+}

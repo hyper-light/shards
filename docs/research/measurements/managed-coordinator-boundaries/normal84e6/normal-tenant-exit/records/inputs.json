@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "path": "/home/adalundhe/managed-capture-check/target/e2e/shards-385ff23abe5f7ec9/shards",
+    "sha256": "sha256:385ff23abe5f7ec98b7b61006413d299803c6ed3fb21908e11a98e9e8e9790f3"
+  },
+  "fixture": {
+    "path": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "sha256": "sha256:5a1393fecf3e7caa5811ee0572f305c6b6e97ac5bd7ca5474fcbc05859efc55b"
+  },
+  "init": {
+    "path": "/home/adalundhe/managed-capture-check/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "sha256": "sha256:6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09"
+  },
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "phase_deadline_ms": 300000,
+  "port": 54871,
+  "source": "84e63db080a11550bb5b2d18269b1c43a4dec9b0",
+  "testguest": {
+    "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/3858364/shards-testguest",
+    "sha256": "sha256:022b84307aea53c01a48a60c353fe09632dcc76b4495e9070fcc48b0b56878c0"
+  },
+  "topology": "EXPERIMENTAL2N; not selected final design"
+}

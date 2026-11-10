@@ -1,0 +1,277 @@
+[
+  {
+    "case": "precommit-connected",
+    "test": "cancel::direct_guest_udp4_precommit_cancel_requires_no_backend_effect",
+    "actual_exit": 101,
+    "witnesses": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:51618",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:46056",
+        "original": "127.0.0.1:51618"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:51618",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:46056",
+        "original": "127.0.0.1:51618"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "SockAddrBaselineClient",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:46056",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "4241434b454e4400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:51618",
+        "original": "127.0.0.1:46056"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "SockAddrBaselineClient",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:46056",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:51618",
+        "original": "127.0.0.1:46056"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "ForwardIngress",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:46666",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:33091",
+        "original": "127.0.0.1:46666"
+      },
+      {
+        "type": "CancelBoundary",
+        "state": "Requested",
+        "stage": "BeforeUpstreamSend",
+        "receipt": "ValidatedOwnedIngress",
+        "work_remaining_ns": 29931021164,
+        "kernel_sleep": "Unobserved"
+      },
+      {
+        "type": "Cleanup",
+        "state": "Pending",
+        "stage": "JoinWorkers"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:51618",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:46094",
+        "original": "127.0.0.1:51618"
+      },
+      {
+        "type": "CancelBoundary",
+        "state": "JoinedWithinWorkDeadline",
+        "work_remaining_ns": 29924795840
+      },
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamReceive",
+        "upstream_progress": "KernelAccepted",
+        "ingress_received": 1,
+        "upstream_sent": 1,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      },
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "case": "precommit-unconnected",
+    "test": "cancel::direct_guest_udp4_precommit_cancel_requires_no_backend_effect",
+    "actual_exit": 101,
+    "witnesses": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:50132",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:49586",
+        "original": "127.0.0.1:50132"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:50132",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:49586",
+        "original": "127.0.0.1:50132"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "SockAddrBaselineClient",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:49586",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "4241434b454e4400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:50132",
+        "original": "127.0.0.1:49586"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "SockAddrBaselineClient",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:49586",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:50132",
+        "original": "127.0.0.1:49586"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "ForwardIngress",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:33257",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:59277",
+        "original": "127.0.0.1:33257"
+      },
+      {
+        "type": "CancelBoundary",
+        "state": "Requested",
+        "stage": "BeforeUpstreamSend",
+        "receipt": "ValidatedOwnedIngress",
+        "work_remaining_ns": 29942851710,
+        "kernel_sleep": "Unobserved"
+      },
+      {
+        "type": "Cleanup",
+        "state": "Pending",
+        "stage": "JoinWorkers"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:50132",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:45041",
+        "original": "127.0.0.1:50132"
+      },
+      {
+        "type": "CancelBoundary",
+        "state": "JoinedWithinWorkDeadline",
+        "work_remaining_ns": 29933708445
+      },
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamReceive",
+        "upstream_progress": "KernelAccepted",
+        "ingress_received": 1,
+        "upstream_sent": 1,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      },
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "case": "normal-tenant-exit",
+    "test": "tenant_exit::member_normal_exit_preserves_sibling_and_main_progress",
+    "actual_exit": 101,
+    "teardown": {
+      "host_exit_reaping_kernel_return": "Unverified; coordinator held-watches/independent cleanup campaign owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_and_observer_join": {
+        "completed": true,
+        "error": null
+      },
+      "private_run_cleanup_completed": false,
+      "protocol_completed": false
+    }
+  }
+]

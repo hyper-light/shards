@@ -1,0 +1,17 @@
+{
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_NETWORK_BOOT_MS": "120000",
+  "SHARDS_NETWORK_CASE_MS": "30000",
+  "SHARDS_NETWORK_MEMORY_MIB": "256",
+  "SHARDS_NETWORK_CPUS": "1",
+  "SHARDS_NETWORK_CONFIG_PROVENANCE": "root r122 experimental artifact/output config",
+  "SHARDS_NETWORK_EFFECTIVE_CONFIG": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_SOCK_ADDR_MODE": "connected",
+  "SHARDS_SOCK_ADDR_PRESENTATION": "fixed-original-peer",
+  "SHARDS_SOCK_ADDR_BUFFER_BYTES": "18",
+  "SHARDS_NETWORK_RECORDS": "/home/adalundhe/root-managed-normal-fc7b-v1/normal-tenant-exit",
+  "SHARDS_TENANT_EXIT_PORT": "58765",
+  "SHARDS_TENANT_EXIT_DEADLINE_MS": "300000",
+  "SHARDS_TENANT_EXIT_RECORDS": "/home/adalundhe/root-managed-normal-fc7b-v1/normal-tenant-exit/records"
+}

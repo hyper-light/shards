@@ -1,0 +1,22 @@
+{
+  "daemon": {
+    "identity": {
+      "expected_started": 11670756,
+      "pid": 499377
+    },
+    "readiness_identity": {
+      "state": "Matched"
+    },
+    "state": "Watching"
+  },
+  "vm": {
+    "identity": {
+      "expected_started": 11670762,
+      "pid": 499516
+    },
+    "readiness_identity": {
+      "state": "Matched"
+    },
+    "state": "Watching"
+  }
+}

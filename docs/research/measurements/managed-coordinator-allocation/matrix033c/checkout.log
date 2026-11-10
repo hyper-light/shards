@@ -1,0 +1,2 @@
+Previous HEAD position was 701784572 style: match the checked network command formatter
+HEAD is now at 033c621c4 Register the observer allocator in its single real test caller

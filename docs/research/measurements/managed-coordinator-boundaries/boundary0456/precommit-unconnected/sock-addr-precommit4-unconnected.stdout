@@ -1,0 +1,37 @@
+[    0.010560] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-precommit4", "unconnected", "30000", "18"]
+managed-sock-addr {"type":"PayloadSlots","provided":18,"request_len":9,"reply_len":9,"request_capacity":9,"reply_capacity":9,"charge_scope":"PayloadCapacityOnly","allocator_kernel_console":"Unaccounted"}
+managed-sock-addr {"type":"Target","mode":"Unconnected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:50132","responder":"127.0.0.1:33257","profile":"FixedOriginalPeer","operation":"CancelBeforeUpstreamSend"}
+managed-sock-addr {"type":"ForwardTarget","ingress":"127.0.0.1:33257","upstream":"127.0.0.1:45041","backend":"127.0.0.1:50132","upstream_peer":"127.0.0.1:50132","source_preservation":"MustObserveBackend"}
+managed-sock-addr {"type":"Child","pid":542,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:50132","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:49586","original":"127.0.0.1:50132"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:50132","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:49586","original":"127.0.0.1:50132"}
+managed-sock-addr {"type":"ClientIdentity","pid":542,"namespace":4026532020,"requested":"127.0.0.1:50132","local":"127.0.0.1:49586","mode":"Unconnected","role":"BaselineBackend","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:49586","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:50132","original":"127.0.0.1:49586"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:49586","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:50132","original":"127.0.0.1:49586"}
+managed-sock-addr {"type":"ClientCompletion","role":"BaselineBackend","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0,"signal":null}
+managed-sock-addr {"type":"Program","hook":"Sendmsg4","from":"127.0.0.1:50132","to":"127.0.0.1:33257","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200c3d40000620104007f0000016201180081e90000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Sendmsg4"}
+managed-sock-addr {"type":"Program","hook":"Recvmsg4","from":"127.0.0.1:33257","to":"127.0.0.1:50132","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f00000161121800000000005602020081e90000620104007f00000162011800c3d40000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Recvmsg4"}
+managed-sock-addr {"type":"Child","pid":544,"role":"ForwardedBackend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"ForwardIngress","step":"Binary","ordinal":1,"local":"127.0.0.1:33257","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:59277","original":"127.0.0.1:33257"}
+managed-intercept {"type":"IngressValidated","stage":"BeforeUpstreamSend","step":"Binary","upstream_progress":"NotAttempted","ingress_received":1}
+managed-sock-addr {"type":"CancelBoundary","state":"Requested","stage":"BeforeUpstreamSend","receipt":"ValidatedOwnedIngress","work_remaining_ns":29942851710,"kernel_sleep":"Unobserved"}
+managed-sock-addr {"type":"PreSendRelease","state":"ReleasedAfterCancelRequest"}
+managed-sock-addr {"type":"ChildCancellation","role":"ForwardedBackend","requested":true}
+managed-sock-addr {"type":"ClientIdentity","pid":544,"namespace":4026532020,"requested":"127.0.0.1:50132","local":"127.0.0.1:59277","mode":"Unconnected","role":"ForwardedBackend","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-sock-addr {"type":"ChildReaped","role":"ForwardedBackend","reaped":true,"success":false,"code":null,"signal":9}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":3,"local":"127.0.0.1:50132","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:45041","original":"127.0.0.1:50132"}
+managed-intercept {"type":"HeldReply","stage":"HoldReply","step":"Binary","receipt":"ValidatedBackendDatagram","reply":"NotIssued"}
+managed-sock-addr {"type":"CancelBoundary","state":"JoinedWithinWorkDeadline","work_remaining_ns":29933708445}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"stage":"HoldReply","arrivals":3,"matched":3,"empty":1,"replies_sent":2,"terminal":"Cancelled"}
+managed-intercept {"type":"ForwardCompletion","joined":true,"step":"Binary","stage":"UpstreamReceive","upstream_progress":"KernelAccepted","ingress_received":1,"upstream_sent":1,"upstream_received":0,"client_sent":0,"empty_ingress":0,"empty_reply":0,"terminal":"Cancelled","external_commit":"UnverifiedBeyondIndependentBackendReceipts"}
+managed-sock-addr {"type":"LinkDetached","hook":"Sendmsg4","detached":true}
+managed-sock-addr {"type":"LinkDetached","hook":"Recvmsg4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":2,"links_acquired":2,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+managed-network failed kind=InvalidInput errno=None: backend script/terminal differs
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.117433] reboot: Power down

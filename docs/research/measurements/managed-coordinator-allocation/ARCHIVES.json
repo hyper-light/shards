@@ -1,0 +1,18 @@
+[
+  {
+    "name": "root-managed-allocation-033c-v1.tar.gz",
+    "bytes": 54058,
+    "hash": "fcef1930c545937a48dfcafcee6dbca413ece2c5e0fc287bb0a046895b67a195",
+    "files": 131,
+    "key": "allocation033c",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
+  },
+  {
+    "name": "root-managed-seven-target-033c-v1.tar.gz",
+    "bytes": 3482,
+    "hash": "82dc1fea1e17daf7a32ca3e5db1a4b0197a3a2293823f4d6493c221fac0eb90a",
+    "files": 8,
+    "key": "matrix033c",
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51"
+  }
+]

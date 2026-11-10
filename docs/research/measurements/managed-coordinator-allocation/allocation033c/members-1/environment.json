@@ -1,0 +1,5 @@
+{
+  "SHARDS_OUTPUT_COST_MEMBERS": "1",
+  "SHARDS_OUTPUT_COST_DEADLINE_MS": "300000",
+  "SHARDS_OUTPUT_COST_RECORDS": "/home/adalundhe/root-managed-allocation-033c-v1/members-1/records"
+}

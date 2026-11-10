@@ -1,0 +1,30 @@
+[
+  {
+    "name": "root-managed-boundary-0456-v1.tar.gz",
+    "bytes": 32106,
+    "hash": "a0b6eef9aa5686c25d2efeaae73e7f63a860e771e41528ac20277549c3e1b1b6",
+    "files": 38,
+    "key": "boundary0456"
+  },
+  {
+    "name": "root-managed-normal-0765-v1.tar.gz",
+    "bytes": 21955,
+    "hash": "3e4b72c3a6fb21eaa9500c2695c5f9f060afa7c3ada1f0c1e718f87150164532",
+    "files": 18,
+    "key": "normal0765"
+  },
+  {
+    "name": "root-managed-normal-84e6-v1.tar.gz",
+    "bytes": 21964,
+    "hash": "5a641fd7cab19b01409767551fcf10a9327531549955fcda242d748aef026a7b",
+    "files": 18,
+    "key": "normal84e6"
+  },
+  {
+    "name": "root-managed-normal-fc7b-v1.tar.gz",
+    "bytes": 22495,
+    "hash": "1ccad0a1131ff4ffb007fa624c259ce93f65dd51eca6e0d19809c596d7be6ddc",
+    "files": 19,
+    "key": "normalfc7b"
+  }
+]

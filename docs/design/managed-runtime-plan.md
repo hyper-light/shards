@@ -15,9 +15,15 @@ The proposed tests below are acceptance criteria, not claims that they passed.
 
 ### Current implementation checkpoint
 
-The coordinator's combined branch contains partial lifecycle/capture work and
-an experimental owner-output endpoint; these pieces have not landed on main or
-closed P0–P13. [Central real-VM records](../research/measurements/managed-central-vm/README.md)
+Main now contains partial lifecycle/capture work and an experimental owner-output
+endpoint. These pieces have not closed P0–P13. The
+[receive-cancellation closing record](../research/measurements/managed-coordinator-receive-cancel/README.md)
+names the actual KVM and seven-target gates; the
+[boundary failure record](../research/measurements/managed-coordinator-boundaries/README.md)
+retains the actual pending-cancel backend effect and normal-finish wake failure,
+which remain under correction. The
+[allocation instrumentation record](../research/measurements/managed-coordinator-allocation/README.md)
+contains normal caller and N0/N1/N2 functional pilots, not comparative performance. [Central real-VM records](../research/measurements/managed-central-vm/README.md)
 retain separate-channel/neighbor cases, repeated orphan reaping, thirteen native
 socket boots and the independently reproduced/fixed x86 init-argv bug.
 [Platform records](../research/measurements/managed-central-platform/README.md)

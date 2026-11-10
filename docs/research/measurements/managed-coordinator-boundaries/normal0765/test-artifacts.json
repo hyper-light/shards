@@ -1,0 +1,10 @@
+{
+  "managed_network": {
+    "path": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_network-cab1fd09da2fdf38",
+    "sha256": "a473e6e19ff8f9848a33d1311d29fdad727b5dcdaa8cce2881818aa175bc7b9e"
+  },
+  "managed_output": {
+    "path": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "sha256": "cd281b5a01efef24405567fa28435d309831e20475759690515b4735649ad6e7"
+  }
+}
