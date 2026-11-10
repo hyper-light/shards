@@ -133,7 +133,9 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
     let seed = payload("SHARDS_TURN_PREFILL_SEED_HEX");
     let envelope: usize = supplied("SHARDS_TURN_PREFILL_BYTES").parse().unwrap();
     if request.is_empty() || seed.is_empty() || envelope == 0 {
-        return Err(Failure::Check("nonempty finite caller source and prefill required"));
+        return Err(Failure::Check(
+            "nonempty finite caller source and prefill required",
+        ));
     }
     let prefill: Vec<u8> = seed.iter().copied().cycle().take(envelope).collect();
     let up = supplied("SHARDS_TCP_UP_BYTES").parse().unwrap();
