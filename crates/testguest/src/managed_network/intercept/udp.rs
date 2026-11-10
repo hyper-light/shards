@@ -232,12 +232,9 @@ impl DatagramWorker {
         };
         let thread = std::thread::Builder::new().spawn(move || {
             let mut report = DatagramReport::default();
+            let mut step = Exchange::Binary;
             let mut stage = Stage::ReceiveDatagram;
             let result = (|| loop {
-                let step = Exchange::SCRIPT
-                    .get(report.arrivals % Exchange::SCRIPT.len())
-                    .copied()
-                    .ok_or(Fault::CountOverflow)?;
                 stage = Stage::ReceiveDatagram;
                 let arrival = match udp_arrival(&receiver, SENT.len(), &deadline) {
                     Ok(arrival) => arrival,
@@ -277,8 +274,10 @@ impl DatagramWorker {
                 if n != bytes.len() {
                     return Err(Fault::PartialSend);
                 }
-                if role == Reply::Relay && step == Exchange::Empty {
-                    return Ok(Terminal::ScriptComplete);
+                match (step, role) {
+                    (Exchange::Binary, _) => step = Exchange::Empty,
+                    (Exchange::Empty, Reply::Backend) => step = Exchange::Binary,
+                    (Exchange::Empty, Reply::Relay) => return Ok(Terminal::ScriptComplete),
                 }
             })();
             Completion {
