@@ -859,6 +859,7 @@ mod tests {
         }
 
         use std::os::fd::AsRawFd;
+        use std::os::unix::thread::JoinHandleExt;
         use std::sync::atomic::{AtomicBool, Ordering};
 
         static HEARD: AtomicBool = AtomicBool::new(false);
@@ -896,13 +897,15 @@ mod tests {
         let fd = driver.socket.as_raw_fd();
         let (started, ready) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            // SAFETY: both calls identify this live thread; pthread_self remains valid
-            // until the worker is joined below.
-            let identity = unsafe { (libc::gettid(), libc::pthread_self()) };
-            started.send(identity).unwrap();
+            // SAFETY: gettid identifies this live thread.
+            started.send(unsafe { libc::gettid() }).unwrap();
             driver.run()
         });
-        let (tid, thread) = ready.recv().unwrap();
+        let tid = ready.recv().unwrap();
+        let thread = worker.as_pthread_t();
+        // std's RawPthread is an integer on Linux; musl's libc::pthread_t is a pointer.
+        #[cfg(target_env = "musl")]
+        let thread = thread as libc::pthread_t;
         let syscall = format!("/proc/self/task/{tid}/syscall");
         loop {
             let call = std::fs::read_to_string(&syscall).unwrap();
@@ -917,8 +920,9 @@ mod tests {
             assert!(!worker.is_finished(), "the driver ended before its receive");
             std::thread::yield_now();
         }
-        // SAFETY: the worker is still live, blocked in this socket's recvfrom. Its handler
-        // records delivery without restarting that timed read.
+        // SAFETY: the borrowed pthread identity belongs to worker, still owned and not
+        // joined. It is live, blocked in this socket's recvfrom; its handler records
+        // delivery without restarting that timed read.
         assert_eq!(unsafe { libc::pthread_kill(thread, libc::SIGUSR1) }, 0);
         while !HEARD.load(Ordering::SeqCst) {
             assert!(!worker.is_finished(), "the driver ended before the signal");
