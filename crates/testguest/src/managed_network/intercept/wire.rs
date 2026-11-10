@@ -204,39 +204,64 @@ impl Netlink {
         port: u16,
         deadline: &Deadline,
     ) -> io::Result<()> {
-        let mut table = Vec::new();
-        attr(&mut table, 1, TABLE_NAME)?;
-        let begin = Message {
-            kind: 0x10,
-            flags: REQUEST,
-            body: bytes(&[0, 0, 0, 10])?,
-        };
-        let end = Message {
-            kind: 0x11,
-            flags: REQUEST,
-            body: bytes(&[0, 0, 0, 10])?,
-        };
-        let pre = chain(b"pre\0", b"filter\0", 0)?;
-        let mut expressions = selector(destination)?;
-        load(&mut expressions, &port.to_be_bytes())?;
-        let mut tproxy = Vec::new();
-        be(&mut tproxy, 1, libc::AF_INET as u32)?; // NFTA_TPROXY_FAMILY
-        be(&mut tproxy, 3, 1)?; // NFTA_TPROXY_REG_PORT, NFT_REG_1
-        expression(&mut expressions, b"tproxy\0", &tproxy)?;
-        mark_accept(&mut expressions, input.mark)?;
-        let intercept = rule(b"pre\0", expressions)?;
-        let mut messages = Vec::new();
-        messages.try_reserve_exact(7).map_err(io::Error::other)?; // begin/table/2 chains/2 rules/end
-        messages.extend([begin, Message::nft(0, CREATE_EXCL, table)?, pre, intercept]);
-        if input.origin != Origin::Forward {
-            messages.push(chain(b"out\0", b"route\0", 3)?);
-            let mut expressions = selector(destination)?;
-            mark_accept(&mut expressions, input.mark)?;
-            messages.push(rule(b"out\0", expressions)?);
-        }
-        messages.push(end);
-        self.exchange(&messages, deadline)
+        self.exchange(&interception_messages(input, destination, port)?, deadline)
     }
+}
+
+fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) -> io::Result<Vec<Message>> {
+    let mut table = Vec::new();
+    attr(&mut table, 1, TABLE_NAME)?;
+    let begin = Message {
+        kind: 0x10,
+        flags: REQUEST,
+        body: bytes(&[0, 0, 0, 10])?,
+    };
+    let end = Message {
+        kind: 0x11,
+        flags: REQUEST,
+        body: bytes(&[0, 0, 0, 10])?,
+    };
+    let pre = chain(b"pre\0", b"filter\0", 0)?;
+    let mut expressions = selector(destination)?;
+    load(&mut expressions, &port.to_be_bytes())?;
+    let mut tproxy = Vec::new();
+    be(&mut tproxy, 1, libc::AF_INET as u32)?; // NFTA_TPROXY_FAMILY
+    be(&mut tproxy, 3, 1)?; // NFTA_TPROXY_REG_PORT, NFT_REG_1
+    expression(&mut expressions, b"tproxy\0", &tproxy)?;
+    mark_accept(&mut expressions, input.mark)?;
+    let intercept = rule(b"pre\0", expressions)?;
+    // nft_do_chain advances to the NEXT rule after NFT_BREAK (v6.18,
+    // nf_tables_core.c:255–290). A drop appended to the TPROXY rule is skipped.
+    let mut expressions = selector(destination)?;
+    verdict(&mut expressions, Verdict::Drop)?;
+    let initial = [
+        begin,
+        Message::nft(0, CREATE_EXCL, table)?,
+        pre,
+        intercept,
+        rule(b"pre\0", expressions)?,
+    ];
+    let output = if input.origin != Origin::Forward {
+        let mut expressions = selector(destination)?;
+        mark_accept(&mut expressions, input.mark)?;
+        Some([chain(b"out\0", b"route\0", 3)?, rule(b"out\0", expressions)?])
+    } else {
+        None
+    };
+    let ending = [end];
+    let count = initial
+        .len()
+        .checked_add(output.as_ref().map_or(0, |messages| messages.len()))
+        .and_then(|count| count.checked_add(ending.len()))
+        .ok_or_else(|| invalid("interception message count overflow"))?;
+    let mut messages = Vec::new();
+    messages.try_reserve_exact(count).map_err(io::Error::other)?;
+    messages.extend(initial);
+    if let Some(output) = output {
+        messages.extend(output);
+    }
+    messages.extend(ending);
+    Ok(messages)
 }
 
 fn bytes(input: &[u8]) -> io::Result<Vec<u8>> {
@@ -357,8 +382,19 @@ fn mark_accept(out: &mut Vec<u8>, mark: u32) -> io::Result<()> {
     be(&mut meta, 2, 3)?;
     be(&mut meta, 3, 1)?;
     expression(out, b"meta\0", &meta)?; // NFT_META_MARK, NFTA_META_SREG
+    verdict(out, Verdict::Accept)
+}
+
+// Linux v6.18 include/uapi/linux/netfilter.h: NF_DROP=0, NF_ACCEPT=1.
+#[repr(u32)]
+enum Verdict {
+    Drop = 0,
+    Accept = 1,
+}
+
+fn verdict(out: &mut Vec<u8>, verdict: Verdict) -> io::Result<()> {
     let mut code = Vec::new();
-    be(&mut code, 1, 1)?; // NF_ACCEPT
+    be(&mut code, 1, verdict as u32)?; // NFTA_VERDICT_CODE
     let mut data = Vec::new();
     attr(&mut data, 2 | NESTED, &code)?;
     let mut body = Vec::new();
@@ -475,6 +511,114 @@ mod tests {
         let mut out = Vec::new();
         attr(&mut out, 3, b"x\0").unwrap();
         assert_eq!(out, [6, 0, 3, 0, b'x', 0, 0, 0]);
+    }
+
+    fn attributes(mut input: &[u8]) -> Vec<(u16, &[u8])> {
+        let mut attrs = Vec::new();
+        while !input.is_empty() {
+            let length = usize::from(u16::from_ne_bytes(input[..2].try_into().unwrap()));
+            let kind = u16::from_ne_bytes(input[2..4].try_into().unwrap());
+            assert!((4..=input.len()).contains(&length));
+            attrs.push((kind & !NESTED, &input[4..length]));
+            input = &input[(length + 3) & !3..];
+        }
+        attrs
+    }
+
+    fn attribute(input: &[u8], kind: u16) -> &[u8] {
+        attributes(input).into_iter().find(|(k, _)| *k == kind).unwrap().1
+    }
+
+    fn rule_expressions(message: &Message) -> &[u8] {
+        assert_eq!(message.kind, (10 << 8) | 6);
+        assert_ne!(message.flags & 0x800, 0); // NLM_F_APPEND preserves rule order.
+        attribute(&message.body[4..], 4)
+    }
+
+    fn immediate_code(expression: &[u8]) -> u32 {
+        assert_eq!(attribute(expression, 1), b"immediate\0");
+        let data = attribute(expression, 2);
+        assert_eq!(attribute(data, 1), 0u32.to_be_bytes()); // NFT_REG_VERDICT
+        let verdict = attribute(attribute(data, 2), 2); // NFT_DATA_VERDICT
+        u32::from_be_bytes(attribute(verdict, 1).try_into().unwrap())
+    }
+
+    #[test]
+    fn fallback_is_a_separate_appended_exact_selector_drop() {
+        for (origin, ip) in [
+            ("forward", BACKEND),
+            ("forward-relay-absent", BACKEND),
+            ("local", BACKEND),
+            ("local-loopback", Ipv4Addr::LOCALHOST),
+            ("local-self", ROUTER_BACKEND),
+        ] {
+            let input = Inputs::parse(origin, "1000", "1", "1000", "100").unwrap();
+            let at = SocketAddr::from((ip, 43210));
+            let messages = interception_messages(&input, at, 43211).unwrap();
+            assert_eq!(messages.first().unwrap().kind, 0x10);
+            assert_eq!(messages.last().unwrap().kind, 0x11);
+            let rules: Vec<_> = messages
+                .iter()
+                .filter(|message| message.kind == (10 << 8) | 6)
+                .collect();
+            assert_eq!(rules.len(), if input.origin == Origin::Forward { 2 } else { 3 });
+            let intercept = rules[0];
+            let fallback = rules[1];
+            for message in [intercept, fallback] {
+                assert_eq!(attribute(&message.body[4..], 2), b"pre\0");
+            }
+            let selected = selector(at).unwrap();
+            let intercepted = rule_expressions(intercept);
+            let dropped = rule_expressions(fallback);
+            assert_eq!(&intercepted[..selected.len()], selected);
+            assert_eq!(&dropped[..selected.len()], selected);
+            let selectors = attributes(&selected);
+            let comparisons: Vec<_> = selectors
+                .iter()
+                .filter(|(_, expr)| attribute(expr, 1) == b"cmp\0")
+                .map(|(_, expr)| attribute(attribute(attribute(expr, 2), 3), 1))
+                .collect();
+            assert_eq!(
+                comparisons,
+                [
+                    &[libc::IPPROTO_TCP as u8][..],
+                    &ip.octets(),
+                    &43210u16.to_be_bytes()
+                ]
+            );
+            let intercept_tail = attributes(&intercepted[selected.len()..]);
+            let names: Vec<_> = intercept_tail
+                .iter()
+                .map(|(_, expr)| attribute(expr, 1))
+                .collect();
+            assert_eq!(
+                names,
+                [
+                    b"immediate\0".as_slice(),
+                    b"tproxy\0",
+                    b"immediate\0",
+                    b"meta\0",
+                    b"immediate\0"
+                ]
+            );
+            assert_eq!(immediate_code(intercept_tail.last().unwrap().1), 1); // NF_ACCEPT
+            let drop_tail = attributes(&dropped[selected.len()..]);
+            assert_eq!(drop_tail.len(), 1);
+            assert_eq!(immediate_code(drop_tail[0].1), 0); // NF_DROP
+            // Unmatched packets retain the original base-chain ACCEPT policy.
+            for message in messages.iter().filter(|message| message.kind == (10 << 8) | 3) {
+                assert_eq!(attribute(&message.body[4..], 5), 1u32.to_be_bytes());
+            }
+            if input.origin != Origin::Forward {
+                let output = rules[2];
+                assert_eq!(attribute(&output.body[4..], 2), b"out\0");
+                let expressions = attributes(rule_expressions(output));
+                assert_eq!(immediate_code(expressions.last().unwrap().1), 1);
+                assert_eq!(messages.len(), 8);
+            } else {
+                assert_eq!(messages.len(), 6);
+            }
+        }
     }
 
     #[test]
