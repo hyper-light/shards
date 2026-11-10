@@ -83,8 +83,28 @@ impl Refusal {
         if message.try_reserve_exact(length.0).is_err() {
             return message;
         }
-        let _ = write!(message, "{label}: resource admission {self}");
+        if write!(Reserved(&mut message), "{label}: resource admission {self}").is_err() {
+            return String::new();
+        }
         message
+    }
+}
+
+struct Reserved<'a>(&'a mut String);
+
+impl std::fmt::Write for Reserved<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let remaining = self
+            .0
+            .capacity()
+            .checked_sub(self.0.len())
+            .ok_or(std::fmt::Error)?;
+        if text.len() > remaining {
+            return Err(std::fmt::Error);
+        }
+        // push_str cannot grow: the complete UTF-8 fragment fits actual capacity.
+        self.0.push_str(text);
+        Ok(())
     }
 }
 
@@ -545,6 +565,26 @@ pub(super) fn pressure_headroom(available: u64, pluggable: u64, workload: u64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostic_fragments_never_grow_the_reserved_string() {
+        use std::fmt::Write as _;
+        let mut message = String::new();
+        message.try_reserve_exact(1).unwrap();
+        let capacity = message.capacity();
+        let full = "x".repeat(capacity);
+        Reserved(&mut message).write_str(&full).unwrap();
+        assert!(Reserved(&mut message).write_str("beyond").is_err());
+        assert_eq!(message.capacity(), capacity);
+        assert_eq!(message.len(), capacity);
+        assert_eq!(message, full);
+        let refusal = Refusal::new(c"memory.max", Cause::Readback);
+        assert!(
+            refusal
+                .message("agent \u{00e9}")
+                .starts_with("agent \u{00e9}: resource admission")
+        );
+    }
 
     #[test]
     fn scalar_values_preserve_zero_max_and_overflow() {
