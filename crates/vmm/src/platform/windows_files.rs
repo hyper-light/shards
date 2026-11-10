@@ -38,11 +38,12 @@ use windows_sys::Win32::Foundation::{
     STATUS_OBJECT_NAME_COLLISION, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DELETE, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
-    FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_WRITE_DATA, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
+    DELETE, FILE_ALLOCATION_INFO, FILE_APPEND_DATA, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FULL_DIR_INFO, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
+    FileAllocationInfo, FileAttributeTagInfo, FileDispositionInfo, FileDispositionInfoEx,
     FileFullDirectoryInfo, FlushFileBuffers, GetFileInformationByHandleEx, SYNCHRONIZE,
     SetFileInformationByHandle,
 };
@@ -54,6 +55,39 @@ use windows_sys::Win32::System::Ioctl::{
 /// Every sharing a handle allows, as std's opens and unix.rs's: another may read, write,
 /// rename or delete what this holds open.
 const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+
+/// Acquires real allocation through the held file HANDLE, then extends EOF so
+/// closing that HANDLE cannot discard a reservation beyond EOF (WinFsp2.0).
+/// Caller admission/protection and the HANDLE's lifetime remain separate duties.
+pub fn reserve_file_extent(file: &File, start: u64, length: u64) -> io::Result<()> {
+    let end = start.checked_add(length).ok_or(io::ErrorKind::InvalidInput)?;
+    let meta = file.metadata()?;
+    if length == 0 || !meta.is_file() || meta.len() != start {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let mut allocation = FILE_ALLOCATION_INFO {
+        AllocationSize: i64::try_from(end).map_err(|_| io::ErrorKind::InvalidInput)?,
+    };
+    let bytes = u32::try_from(size_of::<FILE_ALLOCATION_INFO>()).map_err(|_| io::ErrorKind::InvalidInput)?;
+    // SAFETY: held writable file HANDLE, correct class and exact initialized buffer.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileAllocationInfo,
+            (&raw mut allocation).cast(),
+            bytes,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    file.set_len(end)
+}
+
+/// Rust's Windows File::sync_all calls FlushFileBuffers on this held HANDLE.
+pub fn sync_reserved_file(file: &File) -> io::Result<()> {
+    file.sync_all()
+}
 
 /// `name`, if it names an entry of a directory and no more, and nothing else to Windows (the
 /// module's **Names**).

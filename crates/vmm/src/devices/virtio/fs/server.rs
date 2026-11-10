@@ -35,6 +35,9 @@ mod calls;
 mod calls;
 use calls::*;
 
+#[path = "audit.rs"]
+pub mod audit;
+
 /// A share's files as its guest sees them, for a move to another machine (D176 part 6).
 #[path = "server_guest.rs"]
 pub mod guest;
@@ -196,6 +199,7 @@ enum Held {
 
 #[derive(Debug)]
 struct State {
+    audit: Option<audit::Run>,
     /// The shared directory, held for as long as the server: a join share's an empty one,
     /// its volumes reached from it by name.
     root: host::Owned,
@@ -671,6 +675,38 @@ impl Limits {
 }
 
 impl Server {
+    /// Startup acknowledgement from the actual private writer state, after its
+    /// constructor completed every file and directory barrier.
+    pub fn audit_readiness(
+        &self,
+    ) -> Result<shards_abi::run::audit::ExportStatus, shards_abi::run::audit::Error> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .audit
+            .as_ref()
+            .ok_or(shards_abi::run::audit::Error::Bounds)?
+            .readiness()
+    }
+    /// Internal candidate only. Its actual owner capability/caller is composed
+    /// at trusted host registration; ordinary shares never select this mode.
+    pub fn audited(
+        root: host::Owned,
+        config: &shards_abi::run::audit::ExportConfig,
+        budget: u64,
+    ) -> Result<Self, audit::StartFailure> {
+        let mut server =
+            Self::with_budget(root, false, None, budget).map_err(audit::StartFailure::Directory)?;
+        {
+            // Unpublished construction owns the entire server exclusively; no
+            // runtime mutex is held across initial file/directory barriers.
+            let state = server.state.get_mut().unwrap_or_else(PoisonError::into_inner);
+            let writer = audit::Run::create(&state.root, config).map_err(audit::StartFailure::Writer)?;
+            state.windowless = true;
+            state.audit = Some(writer);
+        }
+        Ok(server)
+    }
     /// The server of the directory `root` holds, read-only or not, or of its one name
     /// `only`, alone in its process: it may hold what the process has room for.
     pub fn new(root: host::Owned, read_only: bool, only: Option<CString>) -> Result<Server, String> {
@@ -709,6 +745,7 @@ impl Server {
             read_only,
             only,
             state: Mutex::new(State {
+                audit: None,
                 root,
                 nodes,
                 by_key,
@@ -811,6 +848,9 @@ impl Server {
     /// path reaches: one the guest removed the last name of, which no restore could open.
     pub fn save(&self) -> Result<Vec<u8>, String> {
         let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if s.audit.is_some() {
+            return Err("a private audit writer cannot be snapshotted or replayed".into());
+        }
         if !s.unreached.is_empty() {
             return Err(
                 "a file the microVM has open was removed from its volume with no descriptor left to keep it by"
@@ -945,6 +985,15 @@ impl Server {
     /// directory that is another (its inode is not the saved root's) is refused, as every
     /// node the guest holds would be stale.
     pub fn restore(&self, table: &[u8]) -> Result<(), String> {
+        if self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .audit
+            .is_some()
+        {
+            return Err("a private audit writer cannot restore old writer authority".into());
+        }
         let bad = |e: crate::snapshot::codec::DecodeError| format!("a share's saved tables: {}", e.0);
         let mut r = Reader::new(table);
         let joined = r.bool().map_err(bad)?;
@@ -1211,10 +1260,45 @@ impl Server {
             }
             // Init's word of whose the host's files are, before any confinement: a share's
             // root, or a file bound alone's directory, takes nothing else.
-            op::SETXATTR if owner_control(body).is_some() => {
+            op::SETXATTR if state.audit.is_none() && owner_control(body).is_some() => {
                 set_default_owner(&mut state, nodeid, caller, body)
             }
             _ => match self.confined(&state, opcode, nodeid, body) {
+                Ok(()) if state.audit.is_some() && matches!(opcode, op::IOCTL | op::WRITE | op::FSYNC) => {
+                    let prepared = self.prepare_audit(&mut state, opcode, nodeid, body);
+                    let answer = match prepared {
+                        Ok(audit::Prepared::Ready(answer)) => Ok(answer),
+                        Ok(audit::Prepared::Io(ticket)) => {
+                            // The ledger retains the operation and charges; the
+                            // same pinned file is exclusively owned by this ticket.
+                            drop(state);
+                            let completion = ticket.perform();
+                            state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                            match state.audit.as_mut() {
+                                Some(run) => match run.finish(completion) {
+                                    audit::Finalized::Recorded(answer) => answer,
+                                    audit::Finalized::Unmatched(retained) => {
+                                        // An impossible ownership mismatch is never
+                                        // an ordinary-share fallback or rollback.
+                                        run.close_all();
+                                        drop(state);
+                                        drop(retained);
+                                        state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                                        Err(EIO)
+                                    }
+                                },
+                                None => {
+                                    drop(state);
+                                    drop(completion);
+                                    state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                                    Err(EIO)
+                                }
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    answer.and_then(|answer| Self::audit_answer(answer, &mut r))
+                }
                 Ok(()) => self.dispatch(&mut state, opcode, nodeid, caller, body, &mut r),
                 Err(e) => Err(e),
             },
@@ -1248,6 +1332,24 @@ impl Server {
     /// only the file's lookup and what reads the directory itself, no name moving in or out,
     /// as none does of a file bind mount (EBUSY); a join share, as [`joined_confined`] says.
     fn confined(&self, s: &State, opcode: u32, nodeid: u64, body: &[u8]) -> Result<(), Errno> {
+        if s.audit.is_some()
+            && !matches!(
+                opcode,
+                op::INIT
+                    | op::DESTROY
+                    | op::LOOKUP
+                    | op::GETATTR
+                    | op::OPEN
+                    | op::WRITE
+                    | op::IOCTL
+                    | op::FSYNC
+                    | op::FLUSH
+                    | op::RELEASE
+                    | op::ACCESS
+            )
+        {
+            return Err(EPERM);
+        }
         if s.joined {
             return joined_confined(s, opcode, nodeid, body);
         }
@@ -1273,6 +1375,76 @@ impl Server {
         }
     }
 
+    fn prepare_audit<'a>(
+        &self,
+        s: &mut State,
+        opcode: u32,
+        nodeid: u64,
+        body: &'a [u8],
+    ) -> Result<audit::Prepared<'a>, Errno> {
+        use shards_abi::run::audit as wire;
+        let mut a = Args(body);
+        let fh = a.u64()?;
+        let key = s
+            .handles
+            .get(&fh)
+            .filter(|h| h.node == nodeid)
+            .and_then(|h| s.nodes.get(&h.node))
+            .map(|n| n.key)
+            .ok_or(EPERM)?;
+        let action = match opcode {
+            op::WRITE => {
+                self.writable(s, nodeid)?;
+                let offset = a.u64()?;
+                let size = a.u32()?;
+                let _flags = a.u32()?;
+                let _owner = a.u64()?;
+                let _ = a.u32()?;
+                let _ = a.u32()?;
+                let bytes = a.rest().get(..size as usize).ok_or(EINVAL)?;
+                audit::Action::Write { offset, bytes }
+            }
+            op::FSYNC => audit::Action::Sync,
+            op::IOCTL => {
+                let flags = a.u32()?;
+                let command = a.u32()?;
+                let _pointer = a.u64()?;
+                let input = a.u32()?;
+                let output = a.u32()?;
+                // Restricted native64 copied payload only; never pointer/retry
+                // walking, compat, X32 or native-layout authority.
+                if flags != 0
+                    || command != wire::IOCTL
+                    || usize::try_from(input) != Ok(wire::CONTROL_BYTES)
+                    || usize::try_from(output) != Ok(wire::CONTROL_BYTES)
+                    || a.rest().len() != wire::CONTROL_BYTES
+                {
+                    return Err(EINVAL);
+                }
+                audit::Action::Control(wire::Request::decode(a.rest()).map_err(|_| EINVAL)?)
+            }
+            _ => return Err(EPERM),
+        };
+        s.audit.as_mut().ok_or(EPERM)?.prepare(key, action)
+    }
+    fn audit_answer(answer: audit::Answer, r: &mut Reply) -> Result<(), Errno> {
+        match answer {
+            audit::Answer::Control(reply) => {
+                // fuse_ioctl_out: result, flags, in_iovs, out_iovs are zero.
+                r.u32(0)
+                    .u32(0)
+                    .u32(0)
+                    .u32(0)
+                    .bytes(&reply.encode().map_err(|_| EIO)?);
+            }
+            audit::Answer::Written(n) => {
+                r.u32(u32::try_from(n).map_err(|_| EIO)?).u32(0);
+            }
+            audit::Answer::Synced => {}
+        }
+        Ok(())
+    }
+
     fn dispatch(
         &self,
         s: &mut State,
@@ -1282,6 +1454,9 @@ impl Server {
         body: &[u8],
         r: &mut Reply,
     ) -> Result<(), Errno> {
+        if s.audit.is_some() && matches!(opcode, op::WRITE | op::IOCTL | op::FSYNC | op::FSYNCDIR) {
+            return Err(EPERM);
+        }
         let mut a = Args(body);
         // Each request at debug, and each size it tells ([`Reply::attr`]): what a guest holds
         // of a file for its attributes' second (containers.rs's DAX test on CI's Windows
@@ -1289,6 +1464,9 @@ impl Server {
         crate::debug!("virtio-fs: request {opcode} of node {nodeid}");
         match opcode {
             op::INIT => {
+                if let Some(audit) = s.audit.as_mut() {
+                    audit.begin();
+                }
                 // A session begins: nothing the guest knew before it holds.
                 reset(s);
                 let major = a.u32()?;
@@ -1341,10 +1519,24 @@ impl Server {
                     .u16(0)
                     .bytes(&[0u8; 22]);
             }
-            op::DESTROY => reset(s),
+            op::DESTROY => {
+                if let Some(audit) = s.audit.as_mut() {
+                    audit.close_all();
+                }
+                reset(s);
+            }
             op::LOOKUP => {
                 let name = a.name()?;
+                if s.audit
+                    .as_ref()
+                    .is_some_and(|audit| nodeid != ROOT || !audit.accepts_name(&name))
+                {
+                    return Err(EPERM);
+                }
                 let (id, st, owner) = lookup(s, nodeid, &name)?;
+                if s.audit.as_ref().is_some_and(|audit| !audit.contains(key(&st))) {
+                    return Err(EPERM);
+                }
                 let dax = self.dax_of(s, id, &st);
                 r.entry(id, &st, owner, dax);
             }
@@ -1502,6 +1694,21 @@ impl Server {
             }
             op::OPEN => {
                 let flags = a.u32()?;
+                if s.audit.is_some() {
+                    if flags & (linux::O_CREAT | linux::O_TRUNC | linux::O_APPEND) != 0
+                        || flags & linux::O_ACCMODE != 2
+                    {
+                        return Err(EPERM);
+                    }
+                    room_for_handle(s)?;
+                    let key = s.nodes.get(&nodeid).ok_or(EPERM)?.key;
+                    s.audit.as_mut().ok_or(EPERM)?.open(key)?;
+                    let fh = add_handle(s, nodeid, Some(host::O_RDWR), None);
+                    // FOPEN_DIRECT_IO (Linux6.18 fuse.h): every write reaches the
+                    // checked writer, with no guest cache or writable mmap route.
+                    r.u64(fh).u32(1).u32(0);
+                    return Ok(());
+                }
                 if flags & linux::O_ACCMODE != 0 || flags & linux::O_TRUNC != 0 {
                     self.writable(s, nodeid)?;
                 }
@@ -1634,6 +1841,15 @@ impl Server {
             }
             op::RELEASE | op::RELEASEDIR => {
                 let fh = a.u64()?;
+                if let Some(audit) = s.audit.as_mut()
+                    && let Some(key) = s
+                        .handles
+                        .get(&fh)
+                        .and_then(|h| s.nodes.get(&h.node))
+                        .map(|n| n.key)
+                {
+                    audit.close(key);
+                }
                 release(s, fh);
             }
             op::FLUSH => {}
@@ -2866,7 +3082,7 @@ mod tests {
     use std::os::fd::AsRawFd as _;
 
     /// A request: its header, then `body`.
-    fn req(opcode: u32, nodeid: u64, uid: u32, body: &[u8]) -> Vec<u8> {
+    pub(super) fn req(opcode: u32, nodeid: u64, uid: u32, body: &[u8]) -> Vec<u8> {
         let mut r = Vec::new();
         r.extend_from_slice(&u32::try_from(40 + body.len()).unwrap().to_le_bytes());
         r.extend_from_slice(&opcode.to_le_bytes());
@@ -2880,14 +3096,14 @@ mod tests {
         r
     }
 
-    fn name(n: &str) -> Vec<u8> {
+    pub(super) fn name(n: &str) -> Vec<u8> {
         let mut v = n.as_bytes().to_vec();
         v.push(0);
         v
     }
 
     /// The reply's error and payload.
-    fn answer(server: &Server, r: &[u8]) -> (i32, Vec<u8>) {
+    pub(super) fn answer(server: &Server, r: &[u8]) -> (i32, Vec<u8>) {
         let out = server.handle(r).unwrap();
         let err = i32::from_le_bytes(out[4..8].try_into().unwrap());
         (err, out[16..].to_vec())
@@ -2902,7 +3118,7 @@ mod tests {
 
     /// A directory's handle, as a share's root is opened: on Windows with backup semantics,
     /// which a directory is opened by.
-    fn root_of(p: &std::path::Path) -> host::Owned {
+    pub(super) fn root_of(p: &std::path::Path) -> host::Owned {
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt as _;

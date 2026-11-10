@@ -1526,6 +1526,58 @@ pub fn sync_durable(file: &File) -> io::Result<()> {
     file.sync_data()
 }
 
+/// Allocates a new append extent through the held object and extends its EOF.
+/// This is a storage operation, not owner admission or a persistence guarantee.
+/// No truncate/zero-write emulation substitutes for an unsupported allocation.
+pub fn reserve_file_extent(file: &File, start: u64, length: u64) -> io::Result<()> {
+    let end = start.checked_add(length).ok_or(io::ErrorKind::InvalidInput)?;
+    if length == 0 || !file.metadata()?.is_file() || file.metadata()?.len() != start {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let offset = i64::try_from(start).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let amount = i64::try_from(length).map_err(|_| io::ErrorKind::InvalidInput)?;
+    i64::try_from(end).map_err(|_| io::ErrorKind::InvalidInput)?;
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: held regular file, checked append range fits the native off_t.
+        if unsafe { libc::fallocate(file.as_raw_fd(), 0, offset, amount) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = offset;
+        let mut store = libc::fstore_t {
+            fst_flags: libc::F_ALLOCATEALL,
+            fst_posmode: libc::F_PEOFPOSMODE,
+            fst_offset: 0,
+            fst_length: amount,
+            fst_bytesalloc: 0,
+        };
+        // SAFETY: held file and writable exact fstore_t; require the whole request.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_PREALLOCATE, &mut store) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        file.set_len(end)?;
+    }
+    Ok(())
+}
+
+/// The private journal's actual barrier, with no weaker fallback advertised as
+/// F_FULLFSYNC. Failure remains failure at the caller's explicit commit stage.
+pub fn sync_reserved_file(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: F_FULLFSYNC of the caller's held regular file descriptor.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    file.sync_all()
+}
+
 /// Makes `file` sparse, so that what it holds past what is written takes none of its disk:
 /// a Unix file extended past what is written (ftruncate(2)) is already, its holes taking no
 /// blocks (windows.rs makes an NTFS file so, PM M349).

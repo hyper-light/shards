@@ -38,6 +38,8 @@ pub mod op {
     pub const CREATE: u32 = 35;
     pub const INTERRUPT: u32 = 36;
     pub const DESTROY: u32 = 38;
+    /// Linux6.18 include/uapi/linux/fuse.h, restricted file ioctl.
+    pub const IOCTL: u32 = 39;
     pub const BATCH_FORGET: u32 = 42;
     pub const FALLOCATE: u32 = 43;
     pub const READDIRPLUS: u32 = 44;
