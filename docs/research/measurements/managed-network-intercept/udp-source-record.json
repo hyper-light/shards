@@ -1,0 +1,45 @@
+{
+  "source_revision": "9df26e1f141379fc6207aa0500b911bb06613fc7",
+  "base": "aa6fc4f29390f3a422474071db92e1448071e207",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "actual_guest_runs": "unrun; coordinator owned",
+  "files": [
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "sha256": "a954a0ced7ce095abf5f48c9923f8946c7b50464e6df272d1b41d39bb925ddd1",
+      "bytes": 36585
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "82011483d59201aeaea7b0da08a6cd4b5f3ea86c31e01eb73d6b1252c925822c",
+      "bytes": 35796
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "d25753bc77f730552276a4d0016d3ab93bde48a08ede7aff5c904ab1a9a93722",
+      "bytes": 22165
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "83dc912ea01826d3c13f087efb3d4e6c41ed4af65a32d93a725f07f3f4182fad",
+      "bytes": 35044
+    },
+    {
+      "path": "crates/shards/tests/managed_network.rs",
+      "sha256": "e4bfe29a926d1b833dbdd7871921c8dc50783052c921e1e0f1fd427fdafa6e21",
+      "bytes": 27090
+    },
+    {
+      "path": "docs/research/measurements/managed-network-intercept/run.sh",
+      "sha256": "82d78209eaf988089485a90fbddd60d837d673ab40c38bdb93512a350e87275b",
+      "bytes": 5232
+    },
+    {
+      "path": "docs/research/measurements/managed-network-intercept/run-udp-light.sh",
+      "sha256": "bfd7b4e730a14b6cb3744ad81a950651d7fe1e9cea34f00442fbdd13f48dd318",
+      "bytes": 3476
+    }
+  ]
+}
