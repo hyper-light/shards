@@ -1,0 +1,8 @@
+{
+  "run": "root r276",
+  "source": "e98260de18a0cf3fea19bb965d283e4d423bb40e",
+  "original": "/home/adalundhe/managed-limits-e982-v1/campaign.log",
+  "campaign_sha256": "467395c4ed3026aa6ba8ebd820ce7e18ae3c6a07e721f1a193be1ee80d76cfdd",
+  "role": "coordinator real KVM; copied read-only by implementer",
+  "result": "reported7/0 including one actual finite refusal/recovery; cancellation and parent/kernel resource proof not established"
+}
