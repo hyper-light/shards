@@ -263,6 +263,8 @@ enum Ask {
     Connect(SocketAddr),
     Close,
     Seen(mpsc::SyncSender<shards_remote::net::Seen>),
+    #[cfg(test)]
+    Stats(mpsc::SyncSender<Option<hyper_quic::ConnectionStats>>),
 }
 
 struct Client {
@@ -417,6 +419,11 @@ impl Handler for Client {
                     let _ = sender.try_send(seen);
                 }
             }
+            #[cfg(test)]
+            Ask::Stats(sender) => {
+                let stats = self.conn.and_then(|conn| io.measurement_stats(conn));
+                let _ = sender.try_send(stats);
+            }
         }
     }
     fn done(&self) -> bool {
@@ -477,6 +484,28 @@ impl Drop for Live {
     }
 }
 impl Live {
+    #[cfg(test)]
+    fn stats(&self, phase: &str, connection: usize, patience: Duration) -> Result<()> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or("observer")?
+            .send(Command::Handler(Ask::Stats(send)))?;
+        match receive.recv_timeout(patience)? {
+            Some(stats) => println!(
+                "transport\t{phase}\tconnection={connection}\tstatus=known\ttx_datagrams={}\ttx_bytes={}\trx_datagrams={}\trx_bytes={}\tlost_packets={}\tcrypto_tx={}\tcrypto_rx={}",
+                stats.udp_tx.datagrams,
+                stats.udp_tx.bytes,
+                stats.udp_rx.datagrams,
+                stats.udp_rx.bytes,
+                stats.path.lost_packets,
+                stats.frame_tx.crypto,
+                stats.frame_rx.crypto
+            ),
+            None => println!("transport\t{phase}\tconnection={connection}\tstatus=unknown_retired"),
+        }
+        Ok(())
+    }
     fn seen(&self, patience: Duration) -> Result<()> {
         let (send, receive) = mpsc::sync_channel(1);
         self.sender
@@ -828,6 +857,14 @@ pub(crate) fn run_with(args: Vec<String>) -> Result<()> {
         channel.producer.as_ref().ok_or("producer")?.wait_capacity()?;
     }
     phase("tls_subscribed", before, start.elapsed())?;
+    #[cfg(test)]
+    for (index, channel) in live
+        .iter()
+        .enumerate()
+        .filter(|(_, channel)| channel.sender.is_some())
+    {
+        channel.stats("tls_subscribed", index, patience)?;
+    }
     let start = Instant::now();
     let before = counts();
     let mut workers = Vec::new();
@@ -906,6 +943,18 @@ pub(crate) fn run_with(args: Vec<String>) -> Result<()> {
     for (index, samples) in all {
         for (record, (received, acked)) in samples.into_iter().enumerate() {
             println!("sample\tchannel={index}\trecord={record}\treceive_ns={received}\tapp_ack_ns={acked}");
+        }
+    }
+    #[cfg(test)]
+    for (index, channel) in live
+        .iter()
+        .enumerate()
+        .filter(|(_, channel)| channel.sender.is_some())
+    {
+        if stall && !multiplexed && index == 0 {
+            println!("transport\tworkload\tconnection={index}\tstatus=unknown_cancelled");
+        } else {
+            channel.stats("workload", index, patience)?;
         }
     }
     let start = Instant::now();

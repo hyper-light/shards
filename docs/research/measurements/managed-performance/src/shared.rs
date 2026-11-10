@@ -355,6 +355,10 @@ impl Handler for Clients {
                     let _ = sender.try_send(seen);
                 }
             }
+            Ask::Stats(sender) => {
+                let stats = self.conn.and_then(|conn| io.measurement_stats(conn));
+                let _ = sender.try_send(stats);
+            }
         }
     }
     fn done(&self) -> bool {

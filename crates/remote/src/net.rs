@@ -19,6 +19,10 @@ use hyper_quic::{
 
 use crate::Error;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-performance/net_stats.rs"]
+mod measurement;
+
 /// The largest datagram taken off the socket: QUIC's are at most 65,527 bytes of UDP payload
 /// (RFC 9000 §18.2, max_udp_payload_size), and an IPv6 jumbogram is no UDP datagram std reads.
 pub(crate) const DATAGRAM: usize = 65_527;
