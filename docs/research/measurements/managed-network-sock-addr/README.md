@@ -118,10 +118,12 @@ one pure record-parser test0. `light-host.py` copies the actual host caller but
 uses explicitly inert, type-matching common stubs; it does not compile or run real
 VM helpers and cannot replace coordinator full host compilation.
 
-A source concern about the new mount cleanup thread using setns with shared
-CLONE_FS is **unverified**. Root requires actual runtime reproduction before any
-remedy under R09. No CLONE_FS change or draft exists in this checkpoint. Root owns
-that reproduction; source suspicion is not a confirmed failure.
+The initial CLONE_FS cleanup concern stayed **unverified and unchanged** through
+the source checkpoints above. Later root actual r492/r493 reproduced held setns
+errno22; only then was the minimal held-thread precondition change authorized.
+See [SETNS.md](SETNS.md) for exact source/primary references/light evidence and owed
+after-runs. The already-observed original endpoint/port mismatch remains a failed
+native compatibility result, independent of cleanup.
 
 See [LIGHT.md](LIGHT.md) for exact jobs/revisions and [light/transfer.json](light/transfer.json)
 for the checked archive identity. Raw compiler logs/commands/source snapshots/hashes and test-binary identities are
