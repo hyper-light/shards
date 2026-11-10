@@ -164,6 +164,30 @@ impl Run<'_> {
         );
         tree(&process_rows(&result.stdout).unwrap(), held)
     }
+    fn stop(&mut self, last: Report) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "whole-run stop requested; last confirmed guest observation {last:?}. This is not a terminal reaping result."
+        );
+        let stopped = self.command(&["stop", "vm", "-t", "0", "managed-limits"]);
+        assert_eq!(stopped.status, Some(0), "{stopped}");
+        self.running = false;
+        let state = self.command(&[
+            "inspect",
+            "vm",
+            "--format",
+            "{{.State.Running}} {{.State.Pid}}",
+            "managed-limits",
+        ]);
+        assert_eq!(state.status, Some(0), "{state}");
+        assert_eq!(state.stdout.trim(), "false 0", "{state}");
+        let removed = self.command(&["remove", "vm", "managed-limits"]);
+        assert_eq!(removed.status, Some(0), "{removed}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "stop returned; daemon state not-running/PID0; private run removed. Host/kernel resource campaign remains coordinator-owned."
+        );
+    }
 }
 impl Drop for Run<'_> {
     fn drop(&mut self) {
@@ -265,9 +289,25 @@ fn neighbor(run: &Run<'_>, control: &mut std::net::TcpStream, phase: &str, until
     );
 }
 
+#[derive(Debug)]
+enum EndAt {
+    Recovered,
+    RefusedHeld,
+}
+
 #[test]
 #[ignore = "coordinator real-VM campaign; requires explicit MANAGED_LIMIT_* inputs"]
 fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
+    campaign(EndAt::Recovered);
+}
+
+#[test]
+#[ignore = "coordinator real-VM cancellation; requires explicit MANAGED_LIMIT_* inputs"]
+fn a_finite_held_tenant_population_can_be_cancelled_after_neighbor_progress() {
+    campaign(EndAt::RefusedHeld);
+}
+
+fn campaign(end_at: EndAt) {
     if common::cannot_run_vms() {
         return;
     }
@@ -402,6 +442,44 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         actor_observation
     );
     neighbor(&run, &mut healthy_control, "refused", until);
+    match end_at {
+        EndAt::RefusedHeld => {
+            assert_eq!(
+                run.snapshot("before stopping with children held", budget, budget.children),
+                actor_observation
+            );
+            // Both control streams stay owned through stop. No Release or observer
+            // EOF can start guest cleanup before this whole-run cancellation.
+            run.stop(refused);
+            match std::fs::read(actor.join("recovered")) {
+                Ok(bytes) => panic!(
+                    "recovery was published without Release: {:?}",
+                    Report::decode(&bytes)
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("reading optional recovery publication: {error}"),
+            }
+            match std::fs::read(actor.join("failure")) {
+                Ok(bytes) => {
+                    let terminal = Report::decode(&bytes).unwrap();
+                    assert_eq!(terminal.phase, Phase::Failed);
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "guest failure publication retained after stop: {terminal:?}"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "no guest terminal publication after stop; last confirmed observation remains Refused/held. Host/kernel resource return is unobserved."
+                    );
+                }
+                Err(error) => panic!("reading optional terminal publication: {error}"),
+            }
+            return;
+        }
+        EndAt::Recovered => {}
+    }
     actor_control.write_all(&Command::Release.encode()).unwrap();
     let recovered = report(&actor, "recovered", Phase::Recovered, budget, until);
     assert_eq!(
@@ -426,24 +504,7 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         actor_observation
     );
     neighbor(&run, &mut healthy_control, "recovered", until);
-    let stopped = run.command(&["stop", "vm", "-t", "0", "managed-limits"]);
-    assert_eq!(stopped.status, Some(0), "{stopped}");
-    run.running = false;
-    let state = run.command(&[
-        "inspect",
-        "vm",
-        "--format",
-        "{{.State.Running}} {{.State.Pid}}",
-        "managed-limits",
-    ]);
-    assert_eq!(state.status, Some(0), "{state}");
-    assert_eq!(state.stdout.trim(), "false 0", "{state}");
-    let removed = run.command(&["remove", "vm", "managed-limits"]);
-    assert_eq!(removed.status, Some(0), "{removed}");
-    let _ = writeln!(
-        std::io::stderr(),
-        "stop returned; daemon state not-running/PID0; private run removed. Host/kernel resource campaign remains coordinator-owned."
-    );
+    run.stop(recovered);
 }
 
 #[test]

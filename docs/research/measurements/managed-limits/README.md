@@ -72,8 +72,10 @@ there is no fork-until-failure loop or automatic retry. The example total6 is
 source prediction4 + two explicitly selected held children, not runtime policy.
 
 The supplied native testguest AGENT and HARNESS use ordinary root manifests and
-scoped volumes. Two OS-assigned ports are explicitly declared through existing
-NETWORK/EXPOSE/CONNECT ingress grants. They expose synthetic fixture controls,
+scoped volumes. Two OS-assigned target ports are explicitly declared through existing
+NETWORK/EXPOSE/CONNECT ingress grants. The run also explicitly publishes each
+with `-p 127.0.0.1::TARGET_PORT`, letting the OS choose the host port; grants alone
+do not publish a port. They expose synthetic fixture controls,
 not backend descriptors. No shell supervises the actor. Host-to-guest control uses
 held TCP connections, avoiding unproven remote-filesystem inotify behavior.
 Guest-to-host startup/publication uses the existing host FileWatch seam.
@@ -150,6 +152,31 @@ reaper owner metadata remains a separate guest observation; no reaper thread cou
 was added. The coordinator must rerun actual Fill/refusal/recovery before the
 separately requested held-population cancellation extraction proceeds.
 
+## Root r273: missing explicit host publication
+
+The coordinator's actual KVM run at source `02542f434f083e0f72253f7944b48c9e9bab3a86`
+reached Ready and passed the corrected visible-tree checks, then panicked
+`no published fixture control port` before Fill. The old panic omitted the full
+`read ports` result, so the exact listing cannot be inferred from that panic alone.
+The original full [campaign log](root-r273-before-fill/campaign.log), provenance
+and hashes are retained read-only; original SHA256
+`96bd6c07eaaf913bc88662e137f7ae283d2e61ac0ab264ccff88adf1d6251ade`.
+This again establishes a host fixture failure before exhaustion, not a product bug.
+
+Existing `daemon::commands::read_ports` (`commands.rs:1312` at this base) derives
+rows from the running container's `c.ports`. NETWORK/EXPOSE/CONNECT are checked
+grants; the CLI's explicit `-p` publishes a host binding. Existing
+`tests/build.rs:11247–11262` and managed_lifecycle runs pass separate
+`-p 127.0.0.1::PORT` arguments. The original limits run omitted both publications.
+
+The host-only correction adds two explicit loopback publications for the already
+selected actor and healthy target ports, with OS-assigned public ports. Grants,
+process limits, deadlines, guest code and production code stay unchanged.
+Missing-row diagnostics now retain the target port and full read_ports result,
+including status/stdout/stderr. Compile/pure tests do not establish actual
+publication or control traffic; the coordinator must rerun the real path through
+Fill/refusal/recovery before held-child cancellation proceeds.
+
 ## Waits, alternatives and primary evidence
 
 The Linux PID-controller contract specifies TID accounting and refused fork/clone
@@ -180,8 +207,9 @@ state. Profiling/allocation/copy/kernel and unfairness costs remain unmeasured.
 ## Light checks and exact coordinator invocation
 
 The earlier connection-validation source was `aab5b4ce2a9619ebb2e45dbf455179142aa13827`.
-Current host assertion source is `aa3e4d876cc08a3c9301fd3c89fb28b5321cf3ae`;
-its light result is recorded below.
+Current host fixture source is `cce0ecc969450a4dd52b55a88947fce48990924b`;
+its light result is recorded below. The prior visible-assertion source
+`aa3e4d876cc08a3c9301fd3c89fb28b5321cf3ae` remains historical evidence.
 The earlier boundary-only checkpoint
 `6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a` remains historical evidence.
 Fedora44 amd64 / kernel6.19.10-300.fc44 / Rust1.98.1(48a229cea), LLVM22.1.8;
@@ -199,8 +227,9 @@ and pure units, not a carried-musl executable or live VM result.
 | r54 / `boundary-green` | 6d00dd0c | record2/0, host2/0 including effective boundaries; guest+host strict clippy0, wrapper0. |
 | r56 / `connections-light` | aab5b4ce | record2/0, host3/0 including existing validator rejection and corrected grants; guest+host strict clippy0, wrapper0. |
 | r60 / `visible-parent-light` | aa3e4d876 | record2/0, host5/0 including actual r222-shaped table, synthetic held child and expected ambiguity rejection; guest+host strict clippy0, wrapper0. |
+| r62 / `publish-light` | cce0ecc96 | record2/0, host5/0, guest+host strict clippy0 after explicit host publishing and retained read_ports diagnostics; wrapper0. No real publication/control proof. |
 
-All113 raw identity, source-hash, command, log and exit files remain verbatim in
+All127 raw identity, source-hash, command, log and exit files remain verbatim in
 [light-evidence](light-evidence/), with SHA256SUMS. The first14 files predate the
 durable driver and carry equivalent plain command/identity text; subsequent runs
 use `run-light.py`. Archive transfers were SHA256-verified. Source touching forces
@@ -208,7 +237,7 @@ actual recompile after sync; no stale binary result is reused. Final source hash
 
 - guest actor `da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171`
 - shared codec `241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a`
-- host fixture `083848f6d485f7a8a5b8a924ab92662dc166cb923b2a9fa9f3e4a51b8747a47f`
+- host fixture `09d23973235fadf28b8e2b60478c60fa15ec49e3d096702424d9c11cfdadcfec`
 
 The first constructor used `NETWORK --ingress=7100,7101 control`. The parser,
 instructions parser and `agentfile::check` returned Ok, preserving one raw ingress
@@ -269,8 +298,8 @@ owned target after an empty open-FD check, retained as
 preserved from the earlier batch. No job remains active and no local builds ran.
 
 No real VM, task exhaustion, chaos, sweep, benchmark or profiling run was performed
-by this implementer. The coordinator-owned r222 pre-Fill red is recorded separately
-above and establishes only that fixture failure.
+by this implementer. The coordinator-owned r222 and r273 pre-Fill reds are recorded separately
+above and establish only those fixture failures.
 
 From the reviewed/composed source, in a coordinator-owned private clone/target
 with carried helpers, KVM/HVF/WHP and the ordinary 4CPU/8GiB/**20GiB** VM envelope:
@@ -312,8 +341,8 @@ paused. A skip or source prediction is unverified, never a passing VM result.
 | R06 | One actor cycle, one excess attempt, exact owned children, two nonce barriers; no recursive creation. |
 | R07 | Safety/ownership/deadline rationale comments; source links and bounds recorded. |
 | R08 | No comparative performance claim;4–5× target unmeasured and owed coordinator. |
-| R09 | Coordinator r222 reproduced the host fixture assumption failure before Fill; original raw red retained. No product defect/fix asserted. Corrected actual exhaustion remains owed coordinator. |
-| R10 | Original r222 red and exact visible table, sources, light commands/logs/identity retained. Actual corrected effect/mutations/cleanup logs owed coordinator. |
+| R09 | Coordinator r222/r273 reproduced host fixture assumption/publication failures before Fill; original raw reds retained. No product defect/fix asserted. Corrected actual exhaustion remains owed coordinator. |
+| R10 | Original r222/r273 reds and exact r222 visible table, sources, light commands/logs/identity retained. Actual corrected effect/mutations/cleanup logs owed coordinator. |
 | R11 | Linux-target light checks below only. Seven-target and real supported host VM matrix unrun; macOS arm64 only, paused WinARM preserved. |
 | R12 | Existing public CLI/grant/common platform readiness; testguest is already carried, no new install/root/security/crypto dependency. |
 | R13 | One finite fork case; no generic manager, retry engine or broad cleanup. |
