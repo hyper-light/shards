@@ -1,0 +1,79 @@
+{
+  "schema": "managed-notify-failure-checkpoint-v1",
+  "role": "implementer",
+  "agent": "01a1c5bda0bf766683384c0705c0a9bc",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "1d0588b28f839fd0fec049e4bcb00e261e28c3aa",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source_parent": "edb25dd4f8ff5994a05f4da2015d9021f2747e26",
+  "owned_subtree": "docs/research/measurements/managed-memory-notify/failures",
+  "files_before_receipt": [
+    {
+      "path": "HANDOFF.md",
+      "sha256": "384f29e4296d9507c96f32320fe559a834618f57ca7e439893cf251adf054572",
+      "bytes": 4850
+    },
+    {
+      "path": "README.md",
+      "sha256": "2256a08e2e73711d479eff1458684c34b01cace8ca2b74a61f81aeefd42a0a44",
+      "bytes": 17525
+    },
+    {
+      "path": "evidence/pure-attempt-01.json",
+      "sha256": "0214387ffd5ecd244024caa5ac126b65650ec7b1256a17a28562add6ab920a3e",
+      "bytes": 4689
+    },
+    {
+      "path": "evidence/pure-attempt-02.json",
+      "sha256": "19a545461a51db3ddd8d9709afa22d4acefeb8fed6cece0c43fd7a237580e7d6",
+      "bytes": 4992
+    },
+    {
+      "path": "evidence/pure-driver.py",
+      "sha256": "7859c0d58a815e88c35a1de184faa4c8366c964a098f6144790a17785ae18afd",
+      "bytes": 3000
+    },
+    {
+      "path": "evidence/source-identity.json",
+      "sha256": "ad1ba381ec63c772b791bc003b8f0afc50fad8717aa09d43181ec1c212da4fb5",
+      "bytes": 7340
+    },
+    {
+      "path": "launcher.py",
+      "sha256": "b10e3895ebe5844e23e0c9f3178ea66d3cf535a204cf14b27a8e7c6273ba95b4",
+      "bytes": 25355
+    },
+    {
+      "path": "nofile-child.c",
+      "sha256": "4ba28b107a0f9b325f021d2106f57721eabef6db1d173df0d0deb114ea28e1ea",
+      "bytes": 5131
+    },
+    {
+      "path": "purechecks.py",
+      "sha256": "e9f8f198e475c3fe5b9276a54bcee435ab5790e6dcd63d15077013fbd905e1a7",
+      "bytes": 4194
+    }
+  ],
+  "actual_light": "final-source nine argument/arithmetic tests0; rounding guard removal1; restorednine0; AST/JSON/links/whitespace0",
+  "mechanical_policy": {
+    "command": "python3 scripts/check-development-policy",
+    "exit_code": 0
+  },
+  "native_C_compile": "UNRUN: ROOT only",
+  "native_launcher_execution": "UNRUN: ROOT only",
+  "native_fixture_execution": "UNRUN by implementer; prior ROOT framing gates are separate, not exhaustion",
+  "unrun": [
+    "Actual child FD admission/control/failure/readiness/errno cases",
+    "Native/helper/loader/exec and cleanup/error/timeout/capture/report cases",
+    "Meaningful real guard-removal/restored cases",
+    "GNU/musl amd64/arm64 coverage",
+    "All profiling/cost/parent/kernel accounting and main combined gates"
+  ],
+  "goal": "SUSTAINED until explicit ROOT release; this checkpoint does not complete lane",
+  "no_child_or_goal_dispatch": true,
+  "active_local_targets_caches_jobs": [],
+  "active_remote_jobs": [],
+  "frozen_fixture_sha256": "bafc3ff31ae9f5a4c484124911c890494860bc88c50fd2d751aed57c2f44aab7",
+  "preserved_helpers": "Untracked managed-poller-research/step9-* untouched/excluded",
+  "signature": "Required signed gits checkpoint; signature-header/trailer/remote identity checked after commit; no independent local crypto verification claimed"
+}

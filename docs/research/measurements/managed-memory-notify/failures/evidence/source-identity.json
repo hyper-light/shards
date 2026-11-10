@@ -1,0 +1,143 @@
+{
+  "schema": "managed-memory-notify-failure-sources-v1",
+  "policy_revision": "1d0588b28f839fd0fec049e4bcb00e261e28c3aa",
+  "role": "implementer",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "sources": [
+    {
+      "repository": "util-linux/util-linux",
+      "ref": "v2.40.2",
+      "revision": "1cebcc34373ed34266f726fff71030a83b4df7da",
+      "path": "sys-utils/prlimit.c",
+      "url": "https://raw.githubusercontent.com/util-linux/util-linux/1cebcc34373ed34266f726fff71030a83b4df7da/sys-utils/prlimit.c",
+      "resolved_url": "https://raw.githubusercontent.com/util-linux/util-linux/1cebcc34373ed34266f726fff71030a83b4df7da/sys-utils/prlimit.c",
+      "bytes": 17081,
+      "sha256": "8f8f75a46ca42a022b4c6bc727d3eb5be881a4f36db7ee6187988b0d1c5337a4",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:57.006083+00:00"
+    },
+    {
+      "repository": "python/cpython",
+      "ref": "v3.14.0",
+      "revision": "ebf955df7a89ed0c7968f79faec1de49f61ed7cb",
+      "path": "Modules/_posixsubprocess.c",
+      "url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Modules/_posixsubprocess.c",
+      "resolved_url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Modules/_posixsubprocess.c",
+      "bytes": 45513,
+      "sha256": "c94ac73b6088ac621a1ba2703473210af1910dc31fcb3828044fed7a9bba8985",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:58.237814+00:00"
+    },
+    {
+      "repository": "python/cpython",
+      "ref": "v3.14.0",
+      "revision": "ebf955df7a89ed0c7968f79faec1de49f61ed7cb",
+      "path": "Lib/subprocess.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Lib/subprocess.py",
+      "resolved_url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Lib/subprocess.py",
+      "bytes": 89440,
+      "sha256": "45652e748cd1ca11e22b378ba3f58aa228039dd729a935f365e2d7231807c6f4",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:58.483504+00:00"
+    },
+    {
+      "repository": "python/cpython",
+      "ref": "v3.14.0",
+      "revision": "ebf955df7a89ed0c7968f79faec1de49f61ed7cb",
+      "path": "Lib/asyncio/unix_events.py",
+      "url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Lib/asyncio/unix_events.py",
+      "resolved_url": "https://raw.githubusercontent.com/python/cpython/ebf955df7a89ed0c7968f79faec1de49f61ed7cb/Lib/asyncio/unix_events.py",
+      "bytes": 35520,
+      "sha256": "7466b4efe773e4e05f4ea94b37ba4bc8d75dddd137357067a9ac02f45e4e906a",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:58.792719+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "kernel/sys.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/sys.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/sys.c",
+      "bytes": 73523,
+      "sha256": "0b656f8809d781b7e684a1a4c4144d925684c69e9f6050c41c6374c5206d2c8d",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:59.156753+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "fs/file.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/file.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/file.c",
+      "bytes": 39514,
+      "sha256": "b85dac20210dc0a5dd9af9de6953153e08facfcf2cad021467450d4182626c83",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:59.423970+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "kernel/pid.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/pid.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/pid.c",
+      "bytes": 22671,
+      "sha256": "c42a4f56e3939c47b7af58390f98815bd1d64cf423c5be224eed74656e8a7e99",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:39:59.623416+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "fs/notify/inotify/inotify_user.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "bytes": 22108,
+      "sha256": "9a98d8a927c6b2ffa2d403cc52bb1cf45a65f30048143be3dc1178d8e6c1cf3e",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:40:02.371583+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "v6.18",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "fs/exec.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/exec.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/exec.c",
+      "bytes": 51521,
+      "sha256": "08569e409280653fe47c1bc44835297cfd9621094bde7cd487f10239b46eff1d",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:47:41.747427+00:00"
+    },
+    {
+      "repository": "torvalds/linux",
+      "ref": "v6.18",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "path": "fs/pidfs.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/pidfs.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/pidfs.c",
+      "bytes": 28598,
+      "sha256": "249d553ba8a69e12bb4c9ac6e94c06415ddc9cf7c6e7bdfb4a114314c357ee02",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:47:42.160820+00:00"
+    }
+  ],
+  "limitations": [
+    "Primary contracts are not live exhaustion/reproduction evidence.",
+    "No native launcher or frozen fixture compiled/executed by implementer.",
+    "Parent source reuses adopted ROOT own-child pidfd seam; ROOT exact review/native execution remain owed, not an expanded runtime mechanism."
+  ],
+  "local_sources": [
+    {
+      "revision": "1d0588b28f839fd0fec049e4bcb00e261e28c3aa",
+      "path": "docs/research/measurements/managed-memory-notify/coordinator/driver.executed.py",
+      "git_blob": "81bf0a78cedee9a8e39c17cc98977e0867cee5f7",
+      "bytes": 44382,
+      "sha256": "6da3ceb3df32d4761f2d7264b63e899b1f54fccad7cc1fc8a98101fb68efdf45",
+      "inspected": "Existing own-child Popen/unreaped/pidfd/readiness/reap/close seam only; no execution."
+    }
+  ]
+}
