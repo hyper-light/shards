@@ -10099,8 +10099,9 @@ the user told).
   and on real microVMs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice`.
   The tests establish or read their launcher's policy rather than assume SCHED_OTHER:
   an SSH session on adacachy inherited SCHED_IDLE, and both tests wrongly expected it
-  to become SCHED_OTHER (2026-11-09). The unit fixture establishes SCHED_OTHER for its
-  shortest-slice check, then checks that SCHED_BATCH and SCHED_IDLE are preserved;
+  to become SCHED_OTHER (2026-11-09). The unit fixture checks its inherited policy's
+  slice and also checks that SCHED_BATCH and SCHED_IDLE are preserved, without needing
+  privilege to leave an inherited idle policy;
   the microVM check compares against its launcher's policy, nice value and slice.
   `run_promptly`'s policy-preserving behavior is unchanged.
 - **A held vCPU goes on as its period ends, by itself** (2026-11-03). The hold's cost to a
