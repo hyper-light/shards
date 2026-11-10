@@ -76,13 +76,14 @@ impl Held {
 mod linux {
     use super::{ProcessFailure, ProcessOperation, io_failure, native_failure};
     use std::ffi::OsStr;
-    use std::io::{self, Read as _};
+    use std::io::Read as _;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
     use std::os::unix::ffi::OsStrExt as _;
     use std::path::Path;
 
     #[cfg(test)]
     mod tests {
+        use std::io;
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/research/measurements/managed-proc-main/repro.rs"
@@ -145,7 +146,7 @@ mod linux {
             bytes.resize(bytes.capacity(), 0);
             let count = loop {
                 match file.read(bytes.get_mut(used..).ok_or(ProcessFailure::BufferBounds)?) {
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) if error.raw_os_error() == Some(libc::EINTR) => {}
                     result => break result.map_err(|error| io_failure(ProcessOperation::ReadStat, error))?,
                 }
             };
@@ -212,7 +213,7 @@ mod linux {
                     return Ok(n > 0);
                 }
                 let e = io::Error::last_os_error();
-                if e.kind() != io::ErrorKind::Interrupted {
+                if e.raw_os_error() != Some(libc::EINTR) {
                     return Err(io_failure(ProcessOperation::PollExit, e));
                 }
             }
@@ -237,7 +238,6 @@ mod linux {
 #[cfg(not(target_os = "linux"))]
 mod macos {
     use super::{ProcessFailure, ProcessOperation, io_failure, native_failure};
-    use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 
     pub(super) fn started(pid: u32) -> Result<u64, ProcessFailure> {
@@ -315,7 +315,7 @@ mod macos {
                     return Ok(n > 0);
                 }
                 let e = io::Error::last_os_error();
-                if e.kind() != io::ErrorKind::Interrupted {
+                if e.raw_os_error() != Some(libc::EINTR) {
                     return Err(io_failure(ProcessOperation::KeventExit, e));
                 }
             }

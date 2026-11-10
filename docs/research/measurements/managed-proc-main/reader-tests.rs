@@ -255,11 +255,21 @@ fn typed_display_clone_and_unknown_observation_survive_refusal() {
     let result = crate::proc_allocation::after(0, || {
         let cloned = refusal.clone();
         let equal = cloned == refusal;
-        let written = write!(output, "{cloned}");
+        let no_source = std::error::Error::source(&cloned).is_none();
+        let written = (|| {
+            write!(output, "{cloned}")?;
+            let mut next = std::error::Error::source(&cloned);
+            while let Some(cause) = next {
+                write!(output, ": {cause}")?;
+                next = cause.source();
+            }
+            Ok::<(), io::Error>(())
+        })();
         let unknown = io_failure(ProcessOperation::ReadStat, io::ErrorKind::InvalidInput.into());
-        (equal, written, unknown)
+        (equal, written, unknown, no_source)
     });
     assert!(result.0);
+    assert!(result.3);
     result.1.unwrap();
     assert_eq!(storage, EXPECTED.as_bytes());
     assert_eq!(

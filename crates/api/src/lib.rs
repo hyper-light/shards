@@ -320,7 +320,7 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Process { failure, .. } => Some(failure),
+            Self::Process { failure, .. } => std::error::Error::source(failure),
             _ => None,
         }
     }
