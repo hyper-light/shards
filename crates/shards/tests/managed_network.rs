@@ -7,6 +7,9 @@
 )]
 mod common;
 
+#[path = "managed_network/cancel.rs"]
+mod cancel;
+
 use serde_json::json;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
