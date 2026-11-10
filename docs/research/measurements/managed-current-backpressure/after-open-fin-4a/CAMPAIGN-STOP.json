@@ -1,0 +1,85 @@
+{
+  "outcome": "CoverageMiss",
+  "campaign_state": "StoppedOriginalDeadline",
+  "source_revision": "9764144d5a7170c1ba6607ecd0222a0015db12de",
+  "policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer / assigned adversarial",
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "private_scope": "/home/adalundhe/managed-after-open-fin-4a-v1",
+  "original_budget_start_epoch_s": 1794349989.118,
+  "original_deadline_epoch_s": 1794353589.118,
+  "original_deadline_utc": "2026-11-10 23:33:09.118 UTC",
+  "first_observed_expired_clock": {
+    "current_time": "2026-11-10 23:33:17 UTC"
+  },
+  "elapsed_from_reported_clock_s": 3607.8819999694824,
+  "elapsed_rounded": "60m08s",
+  "clock_precision_note": "The clock receipt reports integer seconds; the fractional elapsed is derived from the original recorded deadline, not a subsecond observation.",
+  "gates": {
+    "remote_policy": {
+      "status": "Passed",
+      "exit": 0,
+      "job": "r171"
+    },
+    "original_tool_preflight": {
+      "status": "FailedBeforeCompilation",
+      "exit": 1,
+      "job": "r171",
+      "cause": "PATH Zig0.17 versus pinned0.16"
+    },
+    "private_pinned_toolchain": {
+      "status": "Verified",
+      "job": "r172",
+      "zig": "0.16.0",
+      "archive_sha256": "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
+    },
+    "normal_fullcaller_build": {
+      "status": "Passed",
+      "exit": 0,
+      "job": "r172",
+      "cargo_elapsed_display": "5m09s",
+      "pinned_setup_and_compile_elapsed_s": 448.3796571409912
+    },
+    "pure": {
+      "status": "NotRun",
+      "executed_tests": 0,
+      "cause": "Normal full-envelope admission refused; original deadline expired"
+    },
+    "strict_fullcaller_clippy": {
+      "status": "NotRun",
+      "cause": "Normal full-envelope admission refused; original deadline expired"
+    },
+    "native_after_open_empty_finish": {
+      "status": "NotRun",
+      "executed_cases": 0,
+      "job_id": null
+    },
+    "vm_mutation_profile": {
+      "status": "NotRunAndNotAuthorizedInThisCampaign"
+    }
+  },
+  "artifact": {
+    "path": "/home/adalundhe/managed-after-open-fin-4a-v1/artifacts/managed_output",
+    "target": "/home/adalundhe/managed-after-open-fin-4a-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "sha256": "ab5d5820d183da87955f75aa3b31a1a85f39a94319e6ffe88ac9e33c4c791a17",
+    "fresh": false
+  },
+  "last_adacachy_headroom": "0 of32 cores idle, under original2CPU requirement; no lowered ask or guard bypass",
+  "resource_request": "GNU2CPU/4GiB/24GiB j4, unchanged",
+  "source_or_binary_changed": false,
+  "executed_case_retries": 0,
+  "time_extension": false,
+  "fedora": {
+    "authorization": "Denied: home filesystem read-only",
+    "operations": 0,
+    "new_scope_created": false,
+    "old_scope_reused": false,
+    "proposal_texts": "Preserved historical unexecuted evidence only"
+  },
+  "cleanup_scope": "No check/native job or actor was running; no kill/cleanup/delete operation was required or performed.",
+  "remaining_coverage": "After-Open/no-ACK FIN/replay/ACK/owned-return/joins/FD behavior unverified. No protocol defect or whole-case pass inferred.",
+  "remote_raw_records": "Original records/build and records/build-pinned-zig-v1 remain on adacachy. Full raw logs/CLI hash have not been transferred or independently verified locally; no new archive was created.",
+  "overall_lane_released": false,
+  "resume_rule": "No remaining campaign launch is authorized after expiration. A new explicit ROOT assignment/budget is required; never silently reset this campaign."
+}

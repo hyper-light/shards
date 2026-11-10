@@ -20,7 +20,7 @@
     "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01"
   },
   "execution_approval": "ROOT GO exact ONE stdout AfterOpenEmptyFinish case, current user message after976 source review",
-  "hardware_state": "r172 COMPLETE0 fullcaller; next original full2CPU4GiB24GiB check admission refused at0idle, no check job/command/native actor",
+  "hardware_state": "Campaign stopped after original budget expired before normal check admission; last adacachy headroom0idle",
   "case_started": false,
   "build_started": true,
   "native_job_id": null,
@@ -90,10 +90,11 @@
   "current_policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
   "fedora_alternative": "NOT AUTHORIZED: home filesystem read-only. No Fedora command/scope/write/rebuild/reuse executed. Historical proposal retained only.",
   "campaign_original_until_epoch_s": 1794353589.118,
-  "campaign_state": "HeldForNormalAdmission before original deadline; no pure/Clippy/native command has executed",
+  "campaign_state": "StoppedOriginalDeadline: CoverageMiss; pure/Clippy/native not run",
   "campaign_stop_condition": "If original deadline expires before pure/Clippy complete: record actual CoverageMiss and stop this campaign; no time extension or executed-case retry",
-  "only_remaining_launch_texts": [
-    "original-deadline-checks.command.txt",
-    "original-deadline-native.command.txt"
-  ]
+  "only_remaining_launch_texts": [],
+  "campaign_stop_observed_utc": "2026-11-10 23:33:17 UTC",
+  "campaign_elapsed_reported_s": 3607.8819999694824,
+  "all_launch_texts_status": "Historical evidence only; no campaign restart authorized after original deadline",
+  "overall_lane_released": false
 }

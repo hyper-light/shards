@@ -1,0 +1,17 @@
+{
+  "kind": "Local closing policy/source evidence check only; no post-deadline campaign test/build/Clippy/native execution",
+  "source": "9764144d5a7170c1ba6607ecd0222a0015db12de",
+  "source_hashes_unchanged": true,
+  "mac_free_bytes": 146634903552,
+  "argv": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "exit": 0,
+  "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "stderr": ""
+}

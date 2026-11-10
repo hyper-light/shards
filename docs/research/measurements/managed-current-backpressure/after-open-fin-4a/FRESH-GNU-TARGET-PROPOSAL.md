@@ -1,5 +1,10 @@
 # Proposed runner change before the first native case
 
+**NOT AUTHORIZED.** ROOT denied this alternative while Fedora's home filesystem
+is read-only. No proposed command or new/old scope there was executed or reused.
+The original campaign subsequently stopped at its deadline; this text remains
+historical proposal evidence only. See CAMPAIGN-STOP.md.
+
 REVIEW REQUIRED; unexecuted alternative. The original frozen adacachy source,
 target, binaryab5d, private compiler, records and all checkpoints stay preserved.
 No native case has run anywhere; pure/strict admission on that scope was refused

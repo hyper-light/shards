@@ -1,5 +1,10 @@
 # Prepared after-Open empty-FIN case
 
+**Campaign STOPPED: original deadline expired before pure/Clippy; native count0.**
+See [CAMPAIGN-STOP.md](CAMPAIGN-STOP.md) and [CAMPAIGN-STOP.json](CAMPAIGN-STOP.json)
+for the actual gates, elapsed time and preserved evidence. No restart or Fedora
+alternative is authorized. The preparation/progress history below is retained.
+
 [PROPOSAL.md](PROPOSAL.md) contains the exact source/interface and observation/
 cleanup contract for ROOT review. **Uncompiled and unexecuted; preparation only.**
 The single same-scope replay attempt has an explicit QUIC admission dependency;
