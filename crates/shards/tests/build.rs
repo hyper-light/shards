@@ -9119,7 +9119,43 @@ fn supplied_member_output_does_not_rewrite_the_main_protocol() {
     );
     assert_eq!(ran.status, Some(0), "{ran}");
     assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
-    assert_eq!(ran.stderr, "main-stderr", "{ran}");
+    let timing = ran
+        .stderr
+        .strip_prefix("main-stderrshards-timing ")
+        .and_then(|s| s.strip_suffix('\n'))
+        .expect("only main stderr and one final host timing diagnostic");
+    assert!(!timing.contains('\n'), "{ran}");
+    let value: serde_json::Value = serde_json::from_str(timing).expect("host timing JSON");
+    let timing = value.as_object().expect("host timing object");
+    let numbers = [
+        "client_rss_kib",
+        "client_us",
+        "released_us",
+        "entry_us",
+        "exit_us",
+        "request_us",
+        "answered_us",
+        "prefetched",
+        "rss_kib",
+        "footprint_kib",
+        "peak_commit_kib",
+        "hotplug_held_kib",
+        "reported_kib",
+    ];
+    assert_eq!(timing.len(), numbers.len() + 1, "{ran}");
+    for name in numbers {
+        assert!(timing.get(name).is_some_and(serde_json::Value::is_u64), "{ran}");
+    }
+    let markers = timing
+        .get("markers")
+        .and_then(serde_json::Value::as_array)
+        .expect("timing markers");
+    assert!(
+        markers.iter().all(|m| m
+            .as_array()
+            .is_some_and(|p| p.len() == 2 && p.iter().all(serde_json::Value::is_u64))),
+        "{ran}"
+    );
 }
 
 /// An Agentfile's `AGENT`, `HARNESS`, `MCP` and `SKILL` lay out what they bring, each a
