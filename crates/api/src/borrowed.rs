@@ -125,6 +125,10 @@ pub fn connect_borrowed(
 #[path = "../../../docs/research/measurements/managed-borrowed/green.rs"]
 mod tests;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-borrowed/proc-comm.rs"]
+mod proc_comm;
+
 #[cfg(windows)]
 mod windows {
     use super::{ProcessError, ProcessPhase, io};
