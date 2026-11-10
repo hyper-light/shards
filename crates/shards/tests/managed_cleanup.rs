@@ -1,7 +1,6 @@
 //! Real-VM ordinary-child cleanup with an independently owned joiner observing pidfds.
-// Staged Unix supervision proof. Windows coverage is held, not silently certified;
-// see managed-cleanup/readiness.md before composing this fixture.
-#![cfg(unix)]
+// Supervision platform proof and owed native Windows coverage are recorded in
+// managed-cleanup/readiness.md; a compile pass is not a real-VM cleanup result.
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -12,9 +11,10 @@ mod common;
 
 use common::{Run, TempDir, guest_init, kernel};
 use std::io::{self, BufRead as _, BufReader, Write as _};
+#[cfg(unix)]
 use std::os::fd::AsRawFd as _;
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const PATIENCE: Duration = Duration::from_secs(90);
@@ -32,6 +32,8 @@ fn call(home: &Path, args: &[&str]) -> Run {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
+    #[cfg(windows)]
+    Connect,
     Readiness,
     Completion,
 }
@@ -40,12 +42,20 @@ enum Phase {
 enum ClientError {
     Io(io::Error),
     Deadline(Phase),
-    OutputEnded { ready_bytes: usize },
-    InvalidReadiness { bytes: usize },
+    OutputEnded {
+        ready_bytes: usize,
+    },
+    InvalidReadiness {
+        bytes: usize,
+    },
     InvalidPhase,
     ExitNotification,
     MissingStdout,
     Patience,
+    #[cfg(windows)]
+    PipeNames,
+    #[cfg(windows)]
+    ConnectEvent,
 }
 
 impl From<io::Error> for ClientError {
@@ -89,19 +99,40 @@ struct Completed {
     bytes: Vec<u8>,
 }
 
+#[cfg(windows)]
+use shards_ipc::{ExitWatch, Poller};
+#[cfg(unix)]
+use shards_vmm::platform::{ExitWatch, Poller};
+#[cfg(unix)]
+type Output = std::process::ChildStdout;
+#[cfg(windows)]
+type Output = shards_ipc::Stream;
+
 struct Client {
     child: Child,
-    output: Option<BufReader<ChildStdout>>,
-    poller: shards_vmm::platform::Poller,
-    exit: Option<shards_vmm::platform::ExitWatch>,
+    output: Option<BufReader<Output>>,
+    poller: Poller,
+    exit: Option<ExitWatch>,
     status: Option<ExitStatus>,
     state: ClientState,
 }
 
 impl Client {
-    fn spawn(command: &mut Command) -> Result<Self, ClientError> {
-        let poller = shards_vmm::platform::Poller::new()?;
-        let child = command.stdout(Stdio::piped()).spawn()?;
+    fn spawn(command: &mut Command, patience: Duration) -> Result<Self, ClientError> {
+        let deadline = Self::deadline(patience)?;
+        let poller = Poller::new()?;
+        #[cfg(windows)]
+        let (output, writer) = windows_stdout(deadline)?;
+        #[cfg(windows)]
+        command.stdout(writer);
+        #[cfg(unix)]
+        command.stdout(Stdio::piped());
+        let child = command.spawn();
+        // Command retains explicit Stdio handles for reuse. Its parent copy must
+        // close even when spawn failed, rather than keeping this pipe's writer alive.
+        #[cfg(windows)]
+        command.stdout(Stdio::null());
+        let child = child?;
         // Ownership exists before taking stdout or installing any fallible watch.
         let mut client = Self {
             child,
@@ -111,17 +142,25 @@ impl Client {
             status: None,
             state: ClientState::Starting,
         };
+        #[cfg(unix)]
         let output = client.child.stdout.take().ok_or(ClientError::MissingStdout)?;
-        let fd = output.as_raw_fd();
-        // SAFETY: fcntl only reads/sets status flags on this owned pipe descriptor.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error().into());
+        #[cfg(unix)]
+        {
+            let fd = output.as_raw_fd();
+            // SAFETY: fcntl only reads/sets status flags on this owned pipe descriptor.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
+            // SAFETY: the same held descriptor, preserving every existing status flag.
+            if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+                return Err(io::Error::last_os_error().into());
+            }
         }
-        // SAFETY: the same held descriptor, preserving every existing status flag.
-        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
-            return Err(io::Error::last_os_error().into());
-        }
+        #[cfg(windows)]
+        output.set_nonblocking(true)?;
+        #[cfg(unix)]
+        let _ = deadline;
         client.poller.add(&output, Wake::Output as u64)?;
         client.output = Some(BufReader::new(output));
         let watched = client.poller.add_exit(client.child.id(), Wake::Exit as u64);
@@ -241,6 +280,66 @@ impl Client {
     }
 }
 
+#[cfg(windows)]
+fn windows_stdout(deadline: Instant) -> Result<(Output, Stdio), ClientError> {
+    use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows_sys::Win32::Foundation::{
+        GENERIC_WRITE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, OPEN_EXISTING, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT,
+    };
+    use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let next = NEXT
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+        .map_err(|_| ClientError::PipeNames)?;
+    // The listener refuses an existing first instance. PID reuse/name collision is
+    // an error, never permission to connect to someone else's pipe or retry a name.
+    let name = format!(r"\\.\pipe\shards-cleanup-{}-{next}", std::process::id());
+    let listener = shards_ipc::Listener::new(&name)?;
+    let wide: Vec<_> = name.encode_utf16().chain([0]).collect();
+    // SAFETY: a terminated pipe name. This separately opened child writer is
+    // synchronous; the existing listener retains its overlapped server read end.
+    let raw = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+            std::ptr::null_mut(),
+        )
+    };
+    if raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: the new handle is owned exactly once until Command takes its Stdio.
+    let writer = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(ClientError::Deadline(Phase::Connect));
+    }
+    let ms = u32::try_from(left.as_micros().div_ceil(1000)).map_err(|_| ClientError::Patience)?;
+    // INFINITE is a sentinel, never a finite caller deadline.
+    if ms == INFINITE {
+        return Err(ClientError::Patience);
+    }
+    // SAFETY: Listener owns its manual-reset connect event until this returns.
+    match unsafe { WaitForSingleObject(listener.event(), ms) } {
+        WAIT_OBJECT_0 => {}
+        WAIT_TIMEOUT => return Err(ClientError::Deadline(Phase::Connect)),
+        WAIT_FAILED => return Err(io::Error::last_os_error().into()),
+        _ => return Err(ClientError::ConnectEvent),
+    }
+    // Accept exactly once after actual completion; no WouldBlock retry/probe.
+    let output = listener.accept()?;
+    Ok((output, Stdio::from(writer)))
+}
+
 impl Drop for Client {
     fn drop(&mut self) {
         if self.status.is_none() {
@@ -253,16 +352,19 @@ impl Drop for Client {
 }
 
 fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
-    let mut client = Client::spawn(common::interruptible(
-        common::command()
-            .args(args)
-            .env("SHARDS_HOME", home)
-            .env("SHARDS_KERNEL", kernel())
-            .env("SHARDS_INIT", guest_init())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()),
-    ))
+    let mut client = Client::spawn(
+        common::interruptible(
+            common::command()
+                .args(args)
+                .env("SHARDS_HOME", home)
+                .env("SHARDS_KERNEL", kernel())
+                .env("SHARDS_INIT", guest_init())
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        ),
+        patience,
+    )
     .unwrap();
     client
         .await_ready(patience)
@@ -448,35 +550,71 @@ mod native {
             Command::new("python3")
                 .arg(helper)
                 .arg(mode)
-                .stdin(Stdio::null())
+                .arg("stdin")
+                .stdin(Stdio::piped())
                 .stderr(Stdio::inherit()),
+            patience(),
         )
         .unwrap()
     }
 
     /// One waitpid snapshot, not a probe loop. A failing mutation is rescued before
     /// asserting so this test never leaves its own controlled child behind.
-    fn reaped(pid: u32) {
-        let pid = libc::pid_t::try_from(pid).unwrap();
-        let mut status = 0;
-        // SAFETY: exactly the controlled direct child's PID, never wait-any.
-        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        let error = io::Error::last_os_error();
-        if waited == 0 {
-            // SAFETY: waitpid established this is still our unreaped child; no
-            // concurrent waiter exists, so its PID cannot be reassigned.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
+    #[cfg(unix)]
+    struct Returned(u32);
+    #[cfg(windows)]
+    struct Returned(std::os::windows::io::OwnedHandle);
+
+    impl Returned {
+        fn of(client: &Client) -> Self {
+            #[cfg(unix)]
+            {
+                Self(client.child.id())
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsHandle as _;
+                Self(client.child.as_handle().try_clone_to_owned().unwrap())
             }
         }
-        assert_eq!(waited, -1, "controlled child needed explicit rescue: {waited}");
-        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+
+        #[cfg(windows)]
+        fn check(self) {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            // SAFETY: a duplicate of this exact child's held process handle. One
+            // completion observation, never a reused PID or readiness probe loop.
+            assert_eq!(
+                unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) },
+                WAIT_OBJECT_0
+            );
+        }
+
+        #[cfg(unix)]
+        fn check(self) {
+            let pid = self.0;
+            let pid = libc::pid_t::try_from(pid).unwrap();
+            let mut status = 0;
+            // SAFETY: exactly the controlled direct child's PID, never wait-any.
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            let error = io::Error::last_os_error();
+            if waited == 0 {
+                // SAFETY: waitpid established this is still our unreaped child; no
+                // concurrent waiter exists, so its PID cannot be reassigned.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, &mut status, 0);
+                }
+            }
+            assert_eq!(waited, -1, "controlled child needed explicit rescue: {waited}");
+            assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+        }
     }
 
     fn rejected(mode: &str, deadline: bool) {
         let mut client = child(mode);
-        let pid = client.child.id();
+        let returned = Returned::of(&client);
         let result = client.await_ready(patience());
         let expected = if deadline {
             matches!(result, Err(ClientError::Deadline(Phase::Readiness)))
@@ -484,7 +622,7 @@ mod native {
             matches!(result, Err(ClientError::OutputEnded { ready_bytes: 0 }))
         };
         drop(client);
-        reaped(pid);
+        returned.check();
         assert!(expected, "mode={mode} readiness result={result:?}");
     }
 
@@ -510,28 +648,23 @@ mod native {
     #[ignore = "explicit caller-bounded native child fixture"]
     fn normal_release_preserves_output_and_reaps() {
         let mut client = child("normal");
-        let pid = client.child.id();
+        let returned = Returned::of(&client);
         client.await_ready(patience()).unwrap();
-        // SAFETY: this held unreaped Child is the controlled helper, which blocks
-        // SIGUSR1 before publishing readiness and waits for exactly that release.
-        assert_eq!(
-            unsafe { libc::kill(libc::pid_t::try_from(pid).unwrap(), libc::SIGUSR1) },
-            0
-        );
+        client.child.stdin.as_mut().unwrap().write_all(b"r").unwrap();
         let completed = client.finish(patience()).unwrap();
         assert!(completed.status.success());
         assert_eq!(completed.bytes, b"released\n");
         drop(client);
-        reaped(pid);
+        returned.check();
     }
 
     #[test]
     #[ignore = "explicit caller-bounded native child fixture"]
     fn dropping_ready_client_reaps_without_releasing_the_child() {
         let mut client = child("normal");
-        let pid = client.child.id();
+        let returned = Returned::of(&client);
         client.await_ready(patience()).unwrap();
         drop(client);
-        reaped(pid);
+        returned.check();
     }
 }
