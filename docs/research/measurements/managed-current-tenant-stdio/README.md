@@ -32,9 +32,10 @@ challenge/reply, exact suffixes and canonical End/ACK/transport EOF on both
 channels. Current runnable IDs1/2 and files-only declaration hole0 remain checked
 by the existing Fixture. Final actor metadata must be ended/complete and sibling
 aborted/unknown at their exact accepted/consumed wire cuts. Captions alone never
-establish an End. The shared release caption is retained literally; the new
-release-causality record labels only the actual gate EOF and last consumed actor
-states, with later exact suffix/End still mandatory.
+establish an End. The first adapter mistakenly retained the false shared caption;
+the current tested correction says only OwnerReleasedNeighborAfterGateEof. The
+release-causality record retains gate EOF and last consumed actor states, with
+later exact suffix/End still mandatory. Every caller-specific assertion stays.
 
 Actual base28e lacks both native A dispatcher/functions and optional AGENT task
 input. The necessary adapter was first retained unapplied in

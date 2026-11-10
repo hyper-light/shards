@@ -1,0 +1,529 @@
+{
+  "source": "fabd3b33886eba33adbf58f18a5d0ec208029e27",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "files": [
+    {
+      "original": "live-minimum-caption-v4/artifact-verification.json",
+      "bytes": 99,
+      "sha256": "668f3a99510b8c03929d3caad8382c7e20bb941e7ae29feea962d19414321125",
+      "stored": "live-minimum-caption-v4/artifact-verification.json",
+      "stored_bytes": 99,
+      "stored_sha256": "668f3a99510b8c03929d3caad8382c7e20bb941e7ae29feea962d19414321125"
+    },
+    {
+      "original": "live-minimum-caption-v4/environment.json",
+      "bytes": 1667,
+      "sha256": "9927e9b9c478ac0febc0b6e5b33d9dac3f0f52c195843db981b5fa6ed86a4077",
+      "stored": "live-minimum-caption-v4/environment.json",
+      "stored_bytes": 1667,
+      "stored_sha256": "9927e9b9c478ac0febc0b6e5b33d9dac3f0f52c195843db981b5fa6ed86a4077"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/command",
+      "bytes": 281,
+      "sha256": "4358263bae0e7a821d45add494be8cdfd302a9f951a3dae117b754459e73cb8e",
+      "stored": "live-minimum-caption-v4/inherited/command",
+      "stored_bytes": 281,
+      "stored_sha256": "4358263bae0e7a821d45add494be8cdfd302a9f951a3dae117b754459e73cb8e"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/Agentfile",
+      "bytes": 366,
+      "sha256": "a6021aab115ca4c77ac614ba395b06772c06f25a6d1850198c0bc6ade9861d36",
+      "stored": "live-minimum-caption-v4/inherited/records/Agentfile",
+      "stored_bytes": 366,
+      "stored_sha256": "a6021aab115ca4c77ac614ba395b06772c06f25a6d1850198c0bc6ade9861d36"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/actor-control.json",
+      "bytes": 331,
+      "sha256": "24e0ac6117e97890816104750079034755a1084c2c75b6e899b55a7c8e5b7ee7",
+      "stored": "live-minimum-caption-v4/inherited/records/actor-control.json",
+      "stored_bytes": 331,
+      "stored_sha256": "24e0ac6117e97890816104750079034755a1084c2c75b6e899b55a7c8e5b7ee7"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/actor-ports.json",
+      "bytes": 499,
+      "sha256": "7380671f6c63dd2ba7cb1bdd70c7365922ce10e237544727ab5d9adf9638cd6e",
+      "stored": "live-minimum-caption-v4/inherited/records/actor-ports.json",
+      "stored_bytes": 499,
+      "stored_sha256": "7380671f6c63dd2ba7cb1bdd70c7365922ce10e237544727ab5d9adf9638cd6e"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/artifacts.json",
+      "bytes": 1146,
+      "sha256": "1f66ab9e367a1871138ec66816c07c86940805fea9bff1a880470e307d0c303c",
+      "stored": "live-minimum-caption-v4/inherited/records/artifacts.json",
+      "stored_bytes": 1146,
+      "stored_sha256": "1f66ab9e367a1871138ec66816c07c86940805fea9bff1a880470e307d0c303c"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/history-before-cleanup/processes.0",
+      "bytes": 2092,
+      "sha256": "ab541df093a270439daf52f8c280be1a6861719764845211e0e43a7cdcf5f5ec",
+      "stored": "live-minimum-caption-v4/inherited/records/history-before-cleanup/processes.0",
+      "stored_bytes": 2092,
+      "stored_sha256": "ab541df093a270439daf52f8c280be1a6861719764845211e0e43a7cdcf5f5ec"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/history-before-cleanup.json",
+      "bytes": 3185,
+      "sha256": "337c2abcb4a8742cd7a9225e119bfda2b32097f5dcfefe07e94a1c7e270619eb",
+      "stored": "live-minimum-caption-v4/inherited/records/history-before-cleanup.json",
+      "stored_bytes": 3185,
+      "stored_sha256": "337c2abcb4a8742cd7a9225e119bfda2b32097f5dcfefe07e94a1c7e270619eb"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/inherited-end.json",
+      "bytes": 1705,
+      "sha256": "ddc387529222f014ef11a031d042c9cd5092d8d3c8d7bfe3763820cc603e414c",
+      "stored": "live-minimum-caption-v4/inherited/records/inherited-end.json",
+      "stored_bytes": 1705,
+      "stored_sha256": "ddc387529222f014ef11a031d042c9cd5092d8d3c8d7bfe3763820cc603e414c"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/inherited-ready.json",
+      "bytes": 1238,
+      "sha256": "3bdd5115ff026f93973c4fe426e91fee0dde269a1283378caf36c3bf176569d1",
+      "stored": "live-minimum-caption-v4/inherited/records/inherited-ready.json",
+      "stored_bytes": 1238,
+      "stored_sha256": "3bdd5115ff026f93973c4fe426e91fee0dde269a1283378caf36c3bf176569d1"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/inputs.json",
+      "bytes": 347,
+      "sha256": "8286821b6025d8efd83be013bf986da115136445f7eca6762adbfc1d77a1cd23",
+      "stored": "live-minimum-caption-v4/inherited/records/inputs.json",
+      "stored_bytes": 347,
+      "stored_sha256": "8286821b6025d8efd83be013bf986da115136445f7eca6762adbfc1d77a1cd23"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/managed-output.before-cleanup",
+      "bytes": 575,
+      "sha256": "6b8ed81345f14965f907bfe9a88016b749d05f3adc557e7bc24f4b42cd7652a7",
+      "stored": "live-minimum-caption-v4/inherited/records/managed-output.before-cleanup",
+      "stored_bytes": 575,
+      "stored_sha256": "6b8ed81345f14965f907bfe9a88016b749d05f3adc557e7bc24f4b42cd7652a7"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/managed-output.before-stop",
+      "bytes": 575,
+      "sha256": "6b8ed81345f14965f907bfe9a88016b749d05f3adc557e7bc24f4b42cd7652a7",
+      "stored": "live-minimum-caption-v4/inherited/records/managed-output.before-stop",
+      "stored_bytes": 575,
+      "stored_sha256": "6b8ed81345f14965f907bfe9a88016b749d05f3adc557e7bc24f4b42cd7652a7"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/managed-output.ready",
+      "bytes": 433,
+      "sha256": "410ff8183749c8d354c7b7938697a8d9fc9dbc56b3432a08a096b5e54e3fdc15",
+      "stored": "live-minimum-caption-v4/inherited/records/managed-output.ready",
+      "stored_bytes": 433,
+      "stored_sha256": "410ff8183749c8d354c7b7938697a8d9fc9dbc56b3432a08a096b5e54e3fdc15"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/managed-output.stopped",
+      "bytes": 719,
+      "sha256": "0d673ada15d4f004289b62252de9218cd2079a84e9346d1c42b9f2d6d364fbec",
+      "stored": "live-minimum-caption-v4/inherited/records/managed-output.stopped",
+      "stored_bytes": 719,
+      "stored_sha256": "0d673ada15d4f004289b62252de9218cd2079a84e9346d1c42b9f2d6d364fbec"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/ports.json",
+      "bytes": 499,
+      "sha256": "7380671f6c63dd2ba7cb1bdd70c7365922ce10e237544727ab5d9adf9638cd6e",
+      "stored": "live-minimum-caption-v4/inherited/records/ports.json",
+      "stored_bytes": 499,
+      "stored_sha256": "7380671f6c63dd2ba7cb1bdd70c7365922ce10e237544727ab5d9adf9638cd6e"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/processes-after-inherited-eof.json",
+      "bytes": 602,
+      "sha256": "dd96c5895e38998cf8f2e4887bf838cbd2aa54268d95b2e7b6f8b6ab46f9a206",
+      "stored": "live-minimum-caption-v4/inherited/records/processes-after-inherited-eof.json",
+      "stored_bytes": 602,
+      "stored_sha256": "dd96c5895e38998cf8f2e4887bf838cbd2aa54268d95b2e7b6f8b6ab46f9a206"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/release-causality.json",
+      "bytes": 789,
+      "sha256": "7a329cbeb852360145be42bcbf06f548c91557cd7e82e7a9b11aa35f8e6b5c47",
+      "stored": "live-minimum-caption-v4/inherited/records/release-causality.json",
+      "stored_bytes": 789,
+      "stored_sha256": "7a329cbeb852360145be42bcbf06f548c91557cd7e82e7a9b11aa35f8e6b5c47"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/release.json",
+      "bytes": 130,
+      "sha256": "fe6592df01a57dc8c264b502477de2ac05398122e9162cc9d97a103a337e5221",
+      "stored": "live-minimum-caption-v4/inherited/records/release.json",
+      "stored_bytes": 130,
+      "stored_sha256": "fe6592df01a57dc8c264b502477de2ac05398122e9162cc9d97a103a337e5221"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/remove.json",
+      "bytes": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc",
+      "stored": "live-minimum-caption-v4/inherited/records/remove.json",
+      "stored_bytes": 123,
+      "stored_sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/run-cleanup.json",
+      "bytes": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3",
+      "stored": "live-minimum-caption-v4/inherited/records/run-cleanup.json",
+      "stored_bytes": 161,
+      "stored_sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/sibling-before-child-release.json",
+      "bytes": 1305,
+      "sha256": "f68db3b2d439aa88d97cf6e2ee7a7bf5c81d38349a1cb9399a0660d754e71ab0",
+      "stored": "live-minimum-caption-v4/inherited/records/sibling-before-child-release.json",
+      "stored_bytes": 1305,
+      "stored_sha256": "f68db3b2d439aa88d97cf6e2ee7a7bf5c81d38349a1cb9399a0660d754e71ab0"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/stop.json",
+      "bytes": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa",
+      "stored": "live-minimum-caption-v4/inherited/records/stop.json",
+      "stored_bytes": 140,
+      "stored_sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/stopped-state.json",
+      "bytes": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6",
+      "stored": "live-minimum-caption-v4/inherited/records/stopped-state.json",
+      "stored_bytes": 170,
+      "stored_sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/teardown.json",
+      "bytes": 309,
+      "sha256": "5e8e024ff723a24a63570949805af255b9b16de48e82a2524086702a0e8d341d",
+      "stored": "live-minimum-caption-v4/inherited/records/teardown.json",
+      "stored_bytes": 309,
+      "stored_sha256": "5e8e024ff723a24a63570949805af255b9b16de48e82a2524086702a0e8d341d"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-0.bin",
+      "bytes": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-118.bin",
+      "bytes": 30,
+      "sha256": "17e3dd03ed153742d6623b07642fbfebc41f7dc1d0b08601d50335ac4777f888",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-118.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "17e3dd03ed153742d6623b07642fbfebc41f7dc1d0b08601d50335ac4777f888"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-148.bin",
+      "bytes": 28,
+      "sha256": "a59af60e1d432a7de36ce8e92c3e2035b73fbedefa66ef5d1c911957658e347d",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-148.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "a59af60e1d432a7de36ce8e92c3e2035b73fbedefa66ef5d1c911957658e347d"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-176.bin",
+      "bytes": 30,
+      "sha256": "02c475c7d4212e92b07f8164ed8a159ffda122f151e129479828cf0982f1e3df",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-176.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "02c475c7d4212e92b07f8164ed8a159ffda122f151e129479828cf0982f1e3df"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-206.bin",
+      "bytes": 30,
+      "sha256": "2e8c30acb984702606bfcc120772a540fe01fe66d59419bf75597ae18e340849",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-206.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2e8c30acb984702606bfcc120772a540fe01fe66d59419bf75597ae18e340849"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-236.bin",
+      "bytes": 30,
+      "sha256": "55e5f5e636641defe158c9f012a81aa8414bb42d871e98189ea50a4014c532fc",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-236.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "55e5f5e636641defe158c9f012a81aa8414bb42d871e98189ea50a4014c532fc"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-266.bin",
+      "bytes": 24,
+      "sha256": "0d2a0c18a575ea34a2d8a09624728973f992211a470022236727f14a87af3de1",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-266.bin",
+      "stored_bytes": 24,
+      "stored_sha256": "0d2a0c18a575ea34a2d8a09624728973f992211a470022236727f14a87af3de1"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-28.bin",
+      "bytes": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-290.bin",
+      "bytes": 16,
+      "sha256": "5691433a9d5466a2a57cd0cf78ffdf23acf1b1c1c01225b4050b0bd170d5d0f0",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-290.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "5691433a9d5466a2a57cd0cf78ffdf23acf1b1c1c01225b4050b0bd170d5d0f0"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-58.bin",
+      "bytes": 30,
+      "sha256": "08d3c97096e83b975dd7cecb70aeb98988c39f8793ef1039cb67ca4bff1c17b3",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-58.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "08d3c97096e83b975dd7cecb70aeb98988c39f8793ef1039cb67ca4bff1c17b3"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-1-88.bin",
+      "bytes": 30,
+      "sha256": "e1e514cd6290d39b3c1b1ddb3233144e1a9f7ae069735389fb76785175097809",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-1-88.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "e1e514cd6290d39b3c1b1ddb3233144e1a9f7ae069735389fb76785175097809"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-0.bin",
+      "bytes": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-118.bin",
+      "bytes": 30,
+      "sha256": "01b9910269bc17c83d752bf9d3d003141da3ee6533ae98200e65e021c4bbe6dd",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-118.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "01b9910269bc17c83d752bf9d3d003141da3ee6533ae98200e65e021c4bbe6dd"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-148.bin",
+      "bytes": 22,
+      "sha256": "7e5549bd3a0a729ddec304eb10fafdde5c926499a525aa0025058215e7f4ea9a",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-148.bin",
+      "stored_bytes": 22,
+      "stored_sha256": "7e5549bd3a0a729ddec304eb10fafdde5c926499a525aa0025058215e7f4ea9a"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-170.bin",
+      "bytes": 30,
+      "sha256": "9d129d0a40414a9eaac4902321d40c0e89981280ff3286e8829f4713877f27cf",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-170.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "9d129d0a40414a9eaac4902321d40c0e89981280ff3286e8829f4713877f27cf"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-200.bin",
+      "bytes": 30,
+      "sha256": "a03399dc4e74fff81adcd165d69e1b40c58a4ece1922aa5a61f8b07c8e6ad10b",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-200.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "a03399dc4e74fff81adcd165d69e1b40c58a4ece1922aa5a61f8b07c8e6ad10b"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-230.bin",
+      "bytes": 30,
+      "sha256": "82a3458d03052799d53e44cb695556d405b04096676ebd3fe259702c1cdc7255",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-230.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "82a3458d03052799d53e44cb695556d405b04096676ebd3fe259702c1cdc7255"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-260.bin",
+      "bytes": 21,
+      "sha256": "e30704b9f6774a01cbb8eeb7c1fa530143d1d63e0652355ca1d24f7cdb2f56be",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-260.bin",
+      "stored_bytes": 21,
+      "stored_sha256": "e30704b9f6774a01cbb8eeb7c1fa530143d1d63e0652355ca1d24f7cdb2f56be"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-28.bin",
+      "bytes": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-281.bin",
+      "bytes": 16,
+      "sha256": "2cee6c401c1692bdb49cf1d852e8f3532cb32be4434880121ba8c85bbae20239",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-281.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "2cee6c401c1692bdb49cf1d852e8f3532cb32be4434880121ba8c85bbae20239"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-58.bin",
+      "bytes": 30,
+      "sha256": "5521c11ca3f787153175e98e9ee64eb9bf36db9411788ec6caaa5dc6f53cc382",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-58.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "5521c11ca3f787153175e98e9ee64eb9bf36db9411788ec6caaa5dc6f53cc382"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-1-2-88.bin",
+      "bytes": 30,
+      "sha256": "8705f0c3c99bf3a0c0b66d8756f4c7c934dc5456c2c61dd8961dd8f23ea6a99e",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-1-2-88.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "8705f0c3c99bf3a0c0b66d8756f4c7c934dc5456c2c61dd8961dd8f23ea6a99e"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-0.bin",
+      "bytes": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-120.bin",
+      "bytes": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-120.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-150.bin",
+      "bytes": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-150.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-30.bin",
+      "bytes": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-60.bin",
+      "bytes": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-60.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-1-90.bin",
+      "bytes": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-1-90.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-0.bin",
+      "bytes": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-117.bin",
+      "bytes": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-117.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-147.bin",
+      "bytes": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-147.bin",
+      "stored_bytes": 24,
+      "stored_sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-30.bin",
+      "bytes": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-60.bin",
+      "bytes": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-60.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/records/wire-2-2-87.bin",
+      "bytes": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41",
+      "stored": "live-minimum-caption-v4/inherited/records/wire-2-2-87.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/result.json",
+      "bytes": 509,
+      "sha256": "ad761e2d08e1eb087f8be43b4fea08f3855a14c0e4e6979dd7814e8d6a527062",
+      "stored": "live-minimum-caption-v4/inherited/result.json",
+      "stored_bytes": 509,
+      "stored_sha256": "ad761e2d08e1eb087f8be43b4fea08f3855a14c0e4e6979dd7814e8d6a527062"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored": "live-minimum-caption-v4/inherited/test.exit",
+      "stored_bytes": 2,
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original": "live-minimum-caption-v4/inherited/test.log",
+      "bytes": 2944,
+      "sha256": "cc0b091ce84c4cde3cda2a911eae10e63eb26011a452e94f008621c09d9f22f1",
+      "stored": "live-minimum-caption-v4/inherited/test.log.gz",
+      "stored_bytes": 897,
+      "stored_sha256": "6cbbac09a53ce8250655094bc1e2eba93f849f7436e1aac5658782cb8f0e206c"
+    },
+    {
+      "original": "live-minimum-caption-v4/inputs.env",
+      "bytes": 163,
+      "sha256": "cb326bb7d280ca9fa600afb67eb409fb300d978e55db12ed7c9321389ad35001",
+      "stored": "live-minimum-caption-v4/inputs.env",
+      "stored_bytes": 163,
+      "stored_sha256": "cb326bb7d280ca9fa600afb67eb409fb300d978e55db12ed7c9321389ad35001"
+    },
+    {
+      "original": "live-minimum-caption-v4/result.json",
+      "bytes": 716,
+      "sha256": "72e10524a8a38c4c7c6e6d095fea673e97cbeae74c4f78c2f45ec1370abc356f",
+      "stored": "live-minimum-caption-v4/result.json",
+      "stored_bytes": 716,
+      "stored_sha256": "72e10524a8a38c4c7c6e6d095fea673e97cbeae74c4f78c2f45ec1370abc356f"
+    }
+  ],
+  "remote_only": [],
+  "binary_and_source_preservation": "private source/target/cache/frozen unchanged; full CargoJSONL retained remotely",
+  "unknown": "full population/kernel/parent resource return unverified"
+}

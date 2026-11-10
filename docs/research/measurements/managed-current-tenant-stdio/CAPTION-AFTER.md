@@ -46,3 +46,12 @@ after, source and frozen data are preserved. Current-before archives remain
 57,415bytes/230 originals plus13,624bytes/65 originals, linked in RESULTS.md.
 
 Full managed-runtime P0–P13/G25 and this continuing lane remain open for ROOT.
+
+After corrected checkpoint629060747, actual r49 continued the permitted minimum
+positive challenge1/report239 input on the SAME frozen fabd source: exactly1
+passed/0failed/0ignored/23filtered. It retained the exact6-byte child request/
+reply, corrected gate-EOF caption, strict suffix/End/final metadata and all
+cleanup/FD11→11. No source rebuild or rebase occurred. Its separate
+[transfer](raw-minimum-caption/TRANSFER.json) verifies13,657-byte archive
+SHAf9841b1d34dffe18802aa8078e9143883bb535167e932056cb935827e8fcd9a8,
+66 safe regular members/all65 original sizes and hashes, two bounded chunks.
