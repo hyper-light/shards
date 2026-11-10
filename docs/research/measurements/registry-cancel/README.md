@@ -62,7 +62,7 @@ Exact fetched bytes/SHA-256 and pinned URLs are in [sources.json](sources.json).
   spurious returns require rechecking. Reusing a Condvar with a different mutex can
   panic, so every existing/new wait on `Cancelling::rung` uses `Cancelling::live`.
 - [Rust 1.98.1 socket resolver](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/sys/net/connection/socket/mod.rs),
-  `LookupHost::try_from`: synchronous `getaddrinfo`, without a caller cancellation
+  `lookup_host`: synchronous `getaddrinfo`, without a caller cancellation
   token or deadline. Moving the wait does not create an OS cancellation primitive.
 - [Go 1.27.1 dial](https://raw.githubusercontent.com/golang/go/go1.27.1/src/net/dial.go),
   `dialParallel`/`dialSerial`: distinct result, context and fallback-timer events;
