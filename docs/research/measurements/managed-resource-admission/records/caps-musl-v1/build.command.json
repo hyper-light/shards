@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/home/adalundhe/.cargo/bin/cargo",
+    "+1.98.1",
+    "test",
+    "--lib",
+    "--no-run",
+    "--message-format=json",
+    "--target",
+    "x86_64-unknown-linux-musl",
+    "-j",
+    "1"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-0e024f8ed-caps-musl-v1",
+  "timeout_seconds": 180
+}

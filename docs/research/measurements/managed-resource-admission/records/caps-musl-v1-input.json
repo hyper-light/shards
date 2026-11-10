@@ -1,0 +1,88 @@
+{
+  "tag": "0e024f8ed-caps-musl-v1",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "source": {
+    "module_source_commit": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+    "production_source_commit": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+    "compiled": "landed0e admission module body plus ONLY private cfg(test) child declaration;15 pure/private-file tests, no real domains caller/controllers/VM",
+    "harness_workspace_base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24 narrowed libc0.2.189/testdir workspace, unrelated unused vendor patches omitted; exact manifests/lock listed; no production manifest modification",
+    "testdir_and_context_source_commit": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+    "files": [
+      {
+        "path": "Cargo.lock",
+        "bytes": 45787,
+        "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+      },
+      {
+        "path": "Cargo.toml",
+        "bytes": 2224,
+        "sha256": "b404847f1f7b1feab0aedf5d1fe32398eb3d4e85a956dfa85a15ee602a0ea2d9"
+      },
+      {
+        "path": "admission-light/Cargo.toml",
+        "bytes": 260,
+        "sha256": "130a3c3f6a21d5d9250293efe5afdbc19d2834f7915da5df57362913f8b747aa"
+      },
+      {
+        "path": "admission-light/src/lib.rs",
+        "bytes": 164,
+        "sha256": "10a0e482caa7ff53711dacefde125347e5f929d4afad3aa2382e777588f1f7cf"
+      },
+      {
+        "path": "clippy.toml",
+        "bytes": 526,
+        "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+      },
+      {
+        "path": "crates/init/src/domains.rs",
+        "bytes": 113664,
+        "sha256": "1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7"
+      },
+      {
+        "path": "crates/init/src/domains/admission.rs",
+        "bytes": 26528,
+        "sha256": "437f3ec2cf0393afd025c515c866fe0da57afc2602051eabb4821afa94863e13"
+      },
+      {
+        "path": "crates/init/src/domains/extra_cap_cases.rs",
+        "bytes": 4731,
+        "sha256": "d6c78171bec9b2518cac7f3126a71652af8b36ccf129c9f26c5e12cafb78daf5"
+      },
+      {
+        "path": "crates/testdir/Cargo.toml",
+        "bytes": 536,
+        "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1"
+      },
+      {
+        "path": "crates/testdir/src/bin/shards-testhelper.rs",
+        "bytes": 5719,
+        "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123"
+      },
+      {
+        "path": "crates/testdir/src/lib.rs",
+        "bytes": 17917,
+        "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+      }
+    ],
+    "module_derivation": {
+      "production_body_bytes": 26462,
+      "production_body_sha256": "6dd07ec06521349f6c2a11d02db956bb612f768a64c1c24ee45d0cc19758efc2",
+      "private_suffix_utf8": "\n#[cfg(test)]\n#[path = \"extra_cap_cases.rs\"]\nmod extra_cap_cases;\n",
+      "compiled_file_sha256": "437f3ec2cf0393afd025c515c866fe0da57afc2602051eabb4821afa94863e13"
+    },
+    "test_only_leaf": {
+      "path": "docs/research/measurements/managed-resource-admission/cap-correctness.rs",
+      "sha256": "d6c78171bec9b2518cac7f3126a71652af8b36ccf129c9f26c5e12cafb78daf5"
+    },
+    "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "held": "no helpercontrol/worker-result allocationfault retry; no injector, global allocator, actual kernel or VM mutation"
+  },
+  "archive_sha256": "06f745e9ee659e5c2651699a74e1d15668ebd083df45aa9690e1a9a92db19051",
+  "expected_unit_count": 15,
+  "test_filter": "admission::",
+  "command_timeout_seconds": 180,
+  "target": "x86_64-unknown-linux-musl",
+  "archive_bytes": 58123,
+  "driver_sha256": "89564223c15dd73cbba9318023ab064103eb91fe21f24891f1cbdbffb33c2e09"
+}

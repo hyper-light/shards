@@ -1,0 +1,15 @@
+{
+  "role": "implementer",
+  "current_main": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "reads": "Current0e AGENTS/full R01\u2013R16; git diff confirmed all five fully loaded policy/evidence/CLAUDE/plan files identical cbd",
+  "root_key": "managed-landed-0e-cap-musl-scope-policy-v1",
+  "owned": "evidence only: existing six-case leaf unchanged, narrow run-light.py explicit installed target parameter, input/results/records/handoff",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "envelope": "sync:false serial1CPU/1GiB RAM/2GiB disk NEW0e024f8ed-caps-musl-v1 paths",
+  "local_build": false,
+  "active_local_targets": [],
+  "production_rebase_or_edit": false,
+  "injector_or_held_campaign_retry": false
+}

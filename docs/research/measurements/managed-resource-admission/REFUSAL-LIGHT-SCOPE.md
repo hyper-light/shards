@@ -1,5 +1,10 @@
 # Next bounded allocation-refusal check
 
+Disposition after ROOT's main0e landing: this proposal remains unimplemented and
+unselected. ROOT's rejected helper malformed-control and worker-result allocation-
+fault campaigns remain HELD; this document authorizes no retry or alternate lane.
+Ordinary independent cap validation continues separately in MUSL-0E.md.
+
 Status: proposed to ROOT via key
 `managed-next-cap-refusal-light-scope-request-v1`; no injector source or execution
 authorized by that proposal alone. The completed production source72c and the

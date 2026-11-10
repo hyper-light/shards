@@ -1,0 +1,13 @@
+{
+  "source": "User coordinator landing report plus exact git show0e:docs/research/measurements/managed-layer-combined/README.md read in full",
+  "main": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+  "accepted_code_test_source": "0219ab2eb2466ee3e9b08064434dc9efd70053d5",
+  "musl_fix": "185aa85385fc69065241cb088f02b40753a82592",
+  "original_musl_red_source": "f1a3e562796b4635359a4e19df3c8c2416339782",
+  "root_record": "docs/research/measurements/managed-layer-combined/README.md at0e",
+  "root_results": "r778 full7/GPU/fmt0; r779 server36/36/carriedhelpers0/strictKVM1case0; r780 broker actualID0 mutation101/exactrestore36+Clippy0",
+  "ownership": "ROOT executed those combined gates; no rerun/adoption/portability inference for new private test suffix",
+  "missing": "Full management/hierarchical guarantees/control+induced parent/kernel costs/targeted cap guard mutations and actual failure cleanup remain open",
+  "automatic_rejections": "Helper malformed-control and worker-result allocation-fault campaigns held for possible cybersecurity risk per ROOT record, never retried through this lane",
+  "optional_injector": "unimplemented/unselected; no reroute of either held campaign"
+}

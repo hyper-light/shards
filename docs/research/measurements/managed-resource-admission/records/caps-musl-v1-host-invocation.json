@@ -1,0 +1,7 @@
+{
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+  "sync": false,
+  "command": "PYTHONDONTWRITEBYTECODE=1 python3 -c 'import datetime,json,os,pathlib,platform\nprint(json.dumps({'\"'\"'observed_at_utc'\"'\"':datetime.datetime.now(datetime.UTC).isoformat(),'\"'\"'uname'\"'\"':list(os.uname()),'\"'\"'platform'\"'\"':platform.platform(),'\"'\"'boot_id'\"'\"':pathlib.Path('\"'\"'/proc/sys/kernel/random/boot_id'\"'\"').read_text().strip(),'\"'\"'scope'\"'\"':'\"'\"'post-run read-only host observation, not an atomic run/cleanup/kernel-charge witness'\"'\"'}))'",
+  "timeout_s": 60
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/home/adalundhe/.cargo/bin/cargo",
+    "+1.98.1",
+    "clippy",
+    "--all-targets",
+    "--target",
+    "x86_64-unknown-linux-musl",
+    "-j",
+    "1",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-0e024f8ed-caps-musl-v1",
+  "timeout_seconds": 180
+}

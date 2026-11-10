@@ -15,7 +15,16 @@ global handoff. This lane remains implementation/light only; no children/goals.
 
 ## Actual production path
 
-Latest production checkpoint is signed/pushed
+Current production is on main
+`0e024f8ed615eadfda70f9192ea79cd851977e55`, including ROOT's shared musl comparison
+correction. The [combined record](../managed-layer-combined/README.md) identifies
+accepted source0219ab2eb and its exact normal carried-helper/KVM/seven-target
+gates. The older source/GNU-only miss below remains historical evidence.
+[Landed-source musl light validation](MUSL-0E.md) adds build0/all15 cases passed/
+strict Clippy0 against that exact module body plus only the private test child.
+No production source was changed or rebased for that validation.
+
+The frozen pre-integration production checkpoint is signed/pushed
 `72c202955bb5604aef495a91619c6bf885f6f1a0`. ROOT explicitly authorized removal
 of the superseded `run::workload_headroom` after the real init check exposed its
 unused warning. Both `rg` and the tracked-source search found only its definition,
@@ -175,9 +184,11 @@ read verified the own v1–v4 source/record/binary hashes; it did not establish
 process/population cleanup. Its exact command/result are in
 `records/post-restart-owned-inventory-{invocation,result}.json`.
 
-ROOT owes actual musl/full carried-helper compilation, live cgroup/kernel-rounded
-readback and refusal/unused rollback/FD/identity/lifecycle/cleanup cases, bounded
-mutation/restoration, host/backend/target integration and all profiling,
+ROOT has now recorded actual musl/full carried-helper compilation, the normal
+KVM caller and seven-target gates at accepted0219, linked above. Targeted
+controller/readback refusal, fractional-page kernel readback, unused rollback,
+failure-path FD/identity/population cleanup and cap-guard mutation/restoration
+remain owed, alongside full host/backend integration and all profiling,
 attribution and benchmarks. This is a new admission requirement; source
 observations about earlier behavior are not reproduced defects or measured gains.
 
@@ -204,6 +215,11 @@ refusal may substitute. Protected control and induced parent/kernel charges,
 execution/flow resource owners and the strict-mode declaration/actual caller
 remain OPEN production work, not established by these readbacks.
 
+[The actual control-owner trace](CONTROL-CALLER.md) follows the existing
+pre-clone Launch → Owned transfer without introducing a new lease type or
+changing acquisition. Its exact source facts keep physical parent/kernel/control
+charge data unknown, rather than turning acquired descriptors into entitlement.
+
 ## R01–R16 account
 
 | Rule | Evidence / remaining limit |
@@ -216,6 +232,6 @@ remain OPEN production work, not established by these readbacks.
 | R06/R07/R13 | Narrow domains resource sites, focused new module, unsafe obligations documented. Root review/full caller proof pending. |
 | R08/R14 | No resource/performance/competitive claim. Parent/kernel/foreign costs and paired profiles remain root-owned and unrun. |
 | R09/R10 | New requirement, not an unreproduced defect fix. Actual pre-start admission failure retained; kernel red/green/mutation still owed. |
-| R11/R12 | GNU real init check/Clippy0 and nine private-file units0; ROOT's actual musl101 exposes a missed supported target. ROOT owns the correction and exact seven-target/helper/VM gates; none is inherited from GNU. One Linux guest implementation; ARM Windows paused. |
+| R11/R12 | Earlier GNU-only proof missed ROOT's actual musl101; ROOT corrected it and recorded exact combined source0219 seven-target/helper/KVM gates. New landed0e musl15 cases/build/strict Clippy0 are a separate isolated check. One Linux guest implementation; ARM Windows paused. |
 | R15 | Implementer scope only; no children/goals/main merge. Root owns integration/audits/profiling/benchmarking and assigned actual gates. |
 | R16 | Local below30GiB reported; no local build/large copy/cache deletion. No active own local target; frozen source/evidence/binaries preserved. |

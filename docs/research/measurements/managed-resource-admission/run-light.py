@@ -23,6 +23,15 @@ def main(given):
     tag = given["tag"]
     assert os.uname().sysname == "Linux" and os.geteuid() != 0
     assert shutil.disk_usage(home).free >= 2 * 1024**3
+    cargo, rustup = shutil.which("cargo"), shutil.which("rustup")
+    assert cargo and rustup
+    target_args = []
+    if "target" in given:
+        installed = subprocess.check_output(
+            [rustup, "target", "list", "--installed", "--toolchain", "1.98.1"], text=True
+        ).splitlines()
+        assert given["target"] in installed, "requested target not installed; no toolchain mutation/fallback"
+        target_args = ["--target", given["target"]]
     source = home / ("managed-resource-admission-source-" + tag)
     target = home / ("managed-resource-admission-target-" + tag)
     records = home / ("managed-resource-admission-light-" + tag)
@@ -47,6 +56,7 @@ def main(given):
         "executed": "actual module's targeted pure/private ordinary-file unit tests only",
         "test_filter": given.get("test_filter", "admission::tests::"),
         "expected_unit_count": given.get("expected_unit_count"),
+        "target": given.get("target", "observed rustc host default"),
         "unrun": "actual run_group/Parent admission, kernel controllers/cgroups, full init caller, helper/VM/resource attribution/profile/benchmark/mutation/matrix",
         "harness_allowance": "dead_code only for unused production entrypoints in the isolated import; production panic/unsafe lints remain enabled",
     }, indent=2) + "\n")
@@ -60,9 +70,6 @@ def main(given):
         "RUSTC_WRAPPER": "", "RUSTC_WORKSPACE_WRAPPER": "", "TMPDIR": str(target / "tmp"),
     })
     (target / "tmp").mkdir()
-    cargo = shutil.which("cargo")
-    rustup = shutil.which("rustup")
-    assert cargo and rustup
     rustc = pathlib.Path(subprocess.check_output([rustup, "which", "--toolchain", "1.98.1", "rustc"], text=True).strip())
     environment["RUSTC"] = str(rustc)
     (records / "environment.json").write_text(json.dumps({k: environment[k] for k in [
@@ -90,7 +97,7 @@ def main(given):
         return code, output
 
     outcomes = {}
-    outcomes["build"], output = run("build", [cargo, "+1.98.1", "test", "--lib", "--no-run", "--message-format=json", "-j", "1"])
+    outcomes["build"], output = run("build", [cargo, "+1.98.1", "test", "--lib", "--no-run", "--message-format=json", *target_args, "-j", "1"])
     binary = None
     if outcomes["build"] == 0:
         artifacts = []
@@ -112,7 +119,7 @@ def main(given):
             if marker.encode() not in unit_output:
                 outcomes["unit_count"] = "Unexpected unit coverage"
                 (records / "unit_count.log").write_bytes(unit_output)
-        outcomes["clippy"], _ = run("clippy", [cargo, "+1.98.1", "clippy", "--all-targets", "-j", "1", "--", "-D", "warnings"])
+        outcomes["clippy"], _ = run("clippy", [cargo, "+1.98.1", "clippy", "--all-targets", *target_args, "-j", "1", "--", "-D", "warnings"])
         assert digest(binary) == identity["sha256"]
     (records / "outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")
     for name in ("Cargo.lock",):

@@ -1,7 +1,9 @@
 # Additional existing-cap correctness checks
 
-Production stays frozen at `72c202955bb5604aef495a91619c6bf885f6f1a0` while
-ROOT owns its combined musl correction and integration. These six tests live only
+This is the first GNU checkpoint; [MUSL-0E.md](MUSL-0E.md) records the later
+landed-source musl validation. Production stayed frozen at
+`72c202955bb5604aef495a91619c6bf885f6f1a0` while ROOT handled its combined musl
+correction and integration. These six tests live only
 in `cap-correctness.rs`, under this evidence directory. The private light package
 appends a `cfg(test)` child declaration to the exact original admission module
 body, then imports that module with the real libc/testdir and workspace lints.

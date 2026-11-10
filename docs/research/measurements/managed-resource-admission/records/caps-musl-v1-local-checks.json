@@ -1,0 +1,79 @@
+{
+  "tested_module_source": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+  "current_plan_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "actual_target": "x86_64-unknown-linux-musl",
+  "build": 0,
+  "passed": 15,
+  "failed": 0,
+  "ignored": 0,
+  "filtered": 0,
+  "Clippy_D_warnings": 0,
+  "source_derivation": "exact landed body6dd07ec0 plus private cfg(test) child only; no production edit or rebase",
+  "local_checks": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "c1e2ca",
+        "wall_time_seconds": 7.5e-06,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "c53820",
+        "wall_time_seconds": 0.06156025,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "279835",
+        "wall_time_seconds": 9.167e-06,
+        "exit_code": 0,
+        "original_token_count": 14,
+        "output": "AST and new JSON records valid; no local compilation\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "be6c54",
+        "wall_time_seconds": 7.292e-06,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "877b27",
+        "wall_time_seconds": 8e-06,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "local_compile": false,
+  "all_own_jobs_terminal": true,
+  "R01_R16": "README full account/MUSL-0E scope; root combined gates remain exact0219 and no full management/guarantee/attribution/cleanup claim",
+  "held_campaigns": "no helper-control/worker-result fault retry; optional injector unimplemented/unselected",
+  "host_identity": "separate post-run observation only, not atomic per-command kernel pin",
+  "unknown_costs": "control-caller-facts-0e.json null facts are unknown, not zero or a guarantee",
+  "staged_raw_check": {
+    "exit_code": 2,
+    "output": "docs/research/measurements/managed-resource-admission/records/caps-musl-v1/units.log:20: new blank line at EOF.\n",
+    "classification": "original libtest EOF retained, exact named raw path only"
+  },
+  "all_other_named_paths_check": {
+    "exit_code": 0,
+    "output": ""
+  }
+}

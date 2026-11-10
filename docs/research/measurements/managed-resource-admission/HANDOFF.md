@@ -1,6 +1,43 @@
 # Resource admission implementation handoff
 
-Latest evidence checkpoint53a0897d7a9ca2763f1b27b7b1c8673710ec8c8a signed/pushed,
+Current metadata main33df95b08ad8f95bddeaa1c48acf0c64386e0eac advances only the
+managed plan; full updated plan and globalhandoff4074cf388f4cba4022c3c5b725edb00a1cb069397aa2ebe51f298e975e8bf8c1
+read during checkpoint preparation. Receipt managed-policy-current-33df-handoff-refresh-v1
+records that later refresh separately from the original0e run readback. AGENTS/
+rules/evidence/CLAUDE and admission/domains/managed source byte-identical0e..33df;
+ruleshashdf2 unchanged. Keep actual musl run pinned0e, no rerun inferred at33df.
+CONTROL-CALLER.md follows the real Launch→Owned held resource seam; ROOT owns
+missing checked charge/guarantee producer and any lifecycle integration. The
+source list is not measured FD/kernel budget and triggers no optimization.
+
+CURRENT LANDED BASELINE: main0e024f8ed615eadfda70f9192ea79cd851977e55. ROOT
+managed-layer-combined/README.md identifies exact accepted0219ab2eb2466ee3e9b08064434dc9efd70053d5,
+muslfix185aa85385fc69065241cb088f02b40753a82592, full7/GPU/fmt0, native36/strictClippy0,
+normal carriedhelpers/KVM1case0 and brokerID actualdestID0 mutation/restoration.
+No full management/guarantee/attribution completion inferred. ROOT frozen0219
+binaries and all protected source/evidence/cache scopes remain untouched.
+
+Next ordinary independent light batch COMPLETE: landed0e module body6dd07ec06521349f6c2a11d02db956bb612f768a64c1c24ee45d0cc19758efc2,
+only private cfg(test) suffix derivative437f3ec2cf0393afd025c515c866fe0da57afc2602051eabb4821afa94863e13.
+Actual x86_64-unknown-linux-musl build0/all15pass0fail0ignored0filtered/Clippy0,
+same six-case leafd6c78171 unchanged. Executable7654064B SHA
+d430e9fa3a34cc1aaae94f1bf719534e9abe47abd6c9f210bb98301a0e05dc8f.
+Original raw6100B/19members SHA462c51308882e9e0c9bd2309ac3a6f5c60a995e90f53e6ffaade6cfa81ea9883,
+all member/source/prefix/suffix/binary hashes verified aftertests. MUSL-0E.md and
+records/caps-musl-v1 hold exact commands/input/tool/environment/artifact identities.
+NEW own0e024f8ed-caps-musl-v1 paths, serial1CPU/1GiB/2GiB; no target installation,
+fallback, local compile, real cgroup/VM/fault injector. Source72c and earlierb956
+checkpoint preserved, branch not rebased; all own jobs terminal, final binaries/
+caches/evidence preserved.
+Policy full current0e AGENTS/R01–R16 re-read, all five policy files identicalcbd,
+hashdf2 unchanged; readback managed-landed-0e-cap-musl-scope-policy-v1.
+
+ROOT's auto-review-rejected malformed-helpercontrol and worker-result-allocationfault
+campaigns remain HELD for possible cybersecurity risk, never retried throughthis
+lane. Earlier optional cap-refusal proposal is unimplemented/unselected; do not
+treat it as authorization or an alternate path for either held campaign.
+
+Earlier evidence checkpoint53a0897d7a9ca2763f1b27b7b1c8673710ec8c8a signed/pushed,
 push awaited exit0. Production remains72c below. Next finite allocation-refusal
 light scope sent to ROOT for selection, keys
 managed-next-cap-refusal-light-scope-request-v1 and
@@ -11,7 +48,7 @@ approval from elapsed time or the one agents_wait result showing ROOT writing.
 Keep lane open; no children/goals/stop/auto-dispatch/main merge. ROOT may supply
 an urgent actual-cap red/guest scope instead; no actual guest assigned yet.
 
-LATEST FROZEN PRODUCTION: signed/pushed72c202955bb5604aef495a91619c6bf885f6f1a0,
+FROZEN PRE-INTEGRATION PRODUCTION: signed/pushed72c202955bb5604aef495a91619c6bf885f6f1a0,
 branch p/managed-resource-admission-v1; remote ls-remote confirmed that full SHA.
 Only run.rs change is ROOT-authorized obsolete workload_headroom/comment removal,
 14 deleted lines after rg/all-tracked-source search found no real caller. New

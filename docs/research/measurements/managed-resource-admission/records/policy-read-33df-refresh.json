@@ -1,0 +1,17 @@
+{
+  "current_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "role": "implementer",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "later_refresh": "Detected updated global handoff during checkpoint preparation; full current handoff and current plan read before subsequent changes. Original musl run stays under its earlier exact0e receipt, not retrospectively relabelled33df.",
+  "handoff_path": "/Users/adalundhe/g121-handoff.md",
+  "handoff_sha256": "4074cf388f4cba4022c3c5b725edb00a1cb069397aa2ebe51f298e975e8bf8c1",
+  "plan_sha256": "3802f5b560c8e932811c7152de72acf7161893ab02341b23b8e19994c89d17b9",
+  "root_key": "managed-policy-current-33df-handoff-refresh-v1",
+  "held_campaigns": "helper malformed-control; worker-result allocation-fault; no retry/reword/reroute",
+  "injector": "unimplemented/unselected",
+  "owned": "same evidence/explicit-target driver only; production and frozen sources untouched",
+  "local_build": false,
+  "active_local_targets": [],
+  "active_own_jobs": []
+}

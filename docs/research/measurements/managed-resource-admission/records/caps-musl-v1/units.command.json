@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/home/adalundhe/managed-resource-admission-target-0e024f8ed-caps-musl-v1/target/x86_64-unknown-linux-musl/debug/deps/managed_resource_admission_light-a8377c45af2bde25",
+    "admission::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-0e024f8ed-caps-musl-v1",
+  "timeout_seconds": 180
+}

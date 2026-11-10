@@ -1,0 +1,44 @@
+{
+  "key": "caps-musl-v1",
+  "records": "/home/adalundhe/managed-resource-admission-light-0e024f8ed-caps-musl-v1",
+  "archive": "/home/adalundhe/managed-resource-admission-light-0e024f8ed-caps-musl-v1.tar.gz",
+  "bytes": 6100,
+  "sha256": "462c51308882e9e0c9bd2309ac3a6f5c60a995e90f53e6ffaade6cfa81ea9883",
+  "members": 19,
+  "outcomes": {
+    "build": 0,
+    "units": 0,
+    "clippy": 0
+  },
+  "units": "\nrunning 15 tests\ntest admission::extra_cap_cases::adopted_existing_parent_is_never_rolled_back_as_new ... ok\ntest admission::extra_cap_cases::creation_and_rollback_follow_held_parent_after_path_replacement ... ok\ntest admission::extra_cap_cases::each_missing_lifetime_control_prevents_commit ... ok\ntest admission::extra_cap_cases::explicit_zero_task_cap_stays_zero_after_commit ... ok\ntest admission::extra_cap_cases::oversized_or_overflowing_scalar_never_becomes_max_or_zero ... ok\ntest admission::extra_cap_cases::unavailable_controller_refuses_before_subtree_write ... ok\ntest admission::tests::controller_words_are_exact_and_io_failure_is_not_availability ... ok\ntest admission::tests::diagnostic_fragments_never_grow_the_reserved_string ... ok\ntest admission::tests::memory_readback_uses_kernel_page_rounding_and_max_sentinel ... ok\ntest admission::tests::missing_malformed_and_mismatched_controls_are_refusals ... ok\ntest admission::tests::names_never_resolve_outside_the_held_parent ... ok\ntest admission::tests::prepared_commit_holds_objects_and_transfer_preserves_ownership ... ok\ntest admission::tests::pressure_arithmetic_does_not_invent_a_reservation ... ok\ntest admission::tests::scalar_values_preserve_zero_max_and_overflow ... ok\ntest admission::tests::unused_new_groups_roll_back_without_removing_existing_or_nonempty_objects ... ok\n\ntest result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\n",
+  "binary": {
+    "path": "/home/adalundhe/managed-resource-admission-target-0e024f8ed-caps-musl-v1/target/x86_64-unknown-linux-musl/debug/deps/managed_resource_admission_light-a8377c45af2bde25",
+    "bytes": 7654064,
+    "sha256": "d430e9fa3a34cc1aaae94f1bf719534e9abe47abd6c9f210bb98301a0e05dc8f"
+  },
+  "elf": {
+    "class_bits": 64,
+    "machine": 62,
+    "type": 3,
+    "PT_INTERP_present": false
+  },
+  "source_files_verified": [
+    "Cargo.toml",
+    "admission-light/Cargo.toml",
+    "admission-light/src/lib.rs",
+    "clippy.toml",
+    "crates/init/src/domains.rs",
+    "crates/init/src/domains/admission.rs",
+    "crates/init/src/domains/extra_cap_cases.rs",
+    "crates/testdir/Cargo.toml",
+    "crates/testdir/src/bin/shards-testhelper.rs",
+    "crates/testdir/src/lib.rs"
+  ],
+  "Cargo_lock": "cargo-regenerated exact dependency lock retained in original records; initial input lock separately retained",
+  "production_prefix_verified": {
+    "production_body_bytes": 26462,
+    "production_body_sha256": "6dd07ec06521349f6c2a11d02db956bb612f768a64c1c24ee45d0cc19758efc2",
+    "private_suffix_utf8": "\n#[cfg(test)]\n#[path = \"extra_cap_cases.rs\"]\nmod extra_cap_cases;\n",
+    "compiled_file_sha256": "437f3ec2cf0393afd025c515c866fe0da57afc2602051eabb4821afa94863e13"
+  }
+}

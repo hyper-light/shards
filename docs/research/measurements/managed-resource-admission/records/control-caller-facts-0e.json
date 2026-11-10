@@ -1,0 +1,94 @@
+{
+  "source_revision": "0e024f8ed615eadfda70f9192ea79cd851977e55",
+  "current_metadata_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "production_unchanged_between": true,
+  "files": [
+    {
+      "path": "crates/init/src/domains/admission.rs",
+      "bytes": 26462,
+      "sha256": "6dd07ec06521349f6c2a11d02db956bb612f768a64c1c24ee45d0cc19758efc2"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "bytes": 113664,
+      "sha256": "1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "bytes": 41983,
+      "sha256": "7850fa6a28c65a1063cd349748f227ecc874bb381507a0565e39c500d7f07d1e"
+    }
+  ],
+  "call_sites": [
+    {
+      "path": "crates/init/src/domains.rs",
+      "line": 1618,
+      "source": ".and_then(|p| p.commit(d.pids, d.memory))"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "line": 1620,
+      "source": "let cgroup = admitted.group();"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "line": 1779,
+      "source": "let mut launch = crate::managed::Launch::new(last_cap, cgroup)"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "line": 1797,
+      "source": "let pid = unsafe { libc::syscall(libc::SYS_clone3, &raw mut args, std::mem::size_of::<CloneArgs>()) };"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "line": 1816,
+      "source": ".parent(pid, admitted.into_file())"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 253,
+      "source": "pub fn new(last_cap: u32, group: &std::fs::File) -> io::Result<Self> {"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 265,
+      "source": "events: open_at(group, c\"cgroup.events\", libc::O_RDONLY)?,"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 266,
+      "source": "kill: open_at(group, c\"cgroup.kill\", libc::O_WRONLY)?,"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 373,
+      "source": "pub fn parent(self, pid: libc::pid_t, group: std::fs::File) -> io::Result<Owned> {"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 384,
+      "source": "kill: self.kill,"
+    },
+    {
+      "path": "crates/init/src/managed.rs",
+      "line": 385,
+      "source": "events: self.events,"
+    }
+  ],
+  "runtime_claim_data": {
+    "owner_guaranteed_claim_producer": null,
+    "protected_control_physical_reserve": null,
+    "parent_available": null,
+    "parent_reserved": null,
+    "induced_parent_allocations": null,
+    "pipe_socket_kernel_charge": null,
+    "runtime_FD_highwater": null,
+    "resource_return_under_failures": null
+  },
+  "unknown_means": "not measured/not established, never zero or a grant",
+  "existing_lease_seam": "pre-clone managed::Launch -> managed::Owned via Launch::parent; no new lease type/flag/ledger implemented",
+  "control_readiness": "Launch obtains its own kill/events before clone and transfers them to Owned; Committed also temporarily holds its own pair",
+  "not_claimed": "No reproduced missing-control defect, optimized acquisition, measured resource savings, hard parent guarantee, cap guard mutation or actual kernel charge attribution",
+  "provenance": "readonly exact source trace; actual musl ordinary-file tests are distinct evidence in caps-musl-v1"
+}
