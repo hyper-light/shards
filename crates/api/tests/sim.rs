@@ -153,17 +153,6 @@ mod client {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    /// How soon after shards' end its refusal comes, with a child holding shards' output
-    /// (`record::Learned`). Recorded, the slowest (M463): macOS-HVF 4.277875 ms, Linux-KVM
-    /// 299.915 µs (beside the whole shards-api suite).
-    static REFUSED_AFTER_END: Learned = Learned::new(
-        "REFUSED_AFTER_END",
-        &[
-            ("macOS-HVF", Duration::from_nanos(4_277_875)),
-            ("Linux-KVM", Duration::from_nanos(299_915)),
-        ],
-    );
-
     /// A stand-in for `shards` that runs `body` whatever it is asked.
     /// A stand-in for `shards` that runs `body` whatever it is asked. Written to a file of
     /// its own and installed by install(1), so no descriptor of this process ever writes
@@ -382,57 +371,6 @@ exit 3"#
             Err(Refusal::Boot(why)) => assert!(why.ends_with(report), "{} bytes: {why:.200}", why.len()),
             other => panic!("{:?}", other.err()),
         }
-    }
-
-    /// shards' refusal comes as shards ends, with its last words, though a child it left
-    /// holds its output open (macOS's grants broker until it exits): the end of its words is
-    /// a fact, not a clock. Timed from shards' last act, as a new script's first start can
-    /// take seconds on macOS, and held to `REFUSED_AFTER_END` (D215).
-    #[test]
-    fn a_child_holding_shards_output_holds_no_refusal_back() {
-        let dir = shards_testdir::TempDir::new("api-held").unwrap();
-        let (pid, ending) = (dir.path().join("pid"), dir.path().join("ending"));
-        assert!(
-            std::process::Command::new("mkfifo")
-                .arg(&ending)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let bin = stand_in(
-            &dir,
-            &format!(
-                "sleep 1000 & echo $! > '{}'; echo 'no kernel at kernel' >&2; echo > '{}'; exit 7",
-                pid.display(),
-                ending.display()
-            ),
-        );
-        let g = Shards
-            .boot(&GuestSpec {
-                binary: Some(bin),
-                ..spec("")
-            })
-            .unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let refused = g.connect(ECHO, patience()).err();
-            tx.send((refused, Instant::now()))
-        });
-        std::fs::read(&ending).unwrap();
-        let ended = Instant::now();
-        let (refused, at) = rx.recv_timeout(patience()).unwrap();
-        let holder = std::fs::read_to_string(&pid).unwrap();
-        let _ = std::process::Command::new("kill").arg(holder.trim()).status();
-        match refused {
-            Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
-            other => panic!("{other:?}"),
-        }
-        let took = at.saturating_duration_since(ended);
-        assert!(
-            took < REFUSED_AFTER_END.get(),
-            "refused {took:?} after shards' end"
-        );
-        REFUSED_AFTER_END.saw(took);
     }
 
     /// Measures how long past its patience an unserved connect's refusal comes, the

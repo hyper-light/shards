@@ -1676,3 +1676,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../../docs/research/measurements/managed-borrowed/red.rs"]
 mod borrowed_repro;
+
+#[cfg(all(test, unix))]
+#[path = "../../../docs/research/measurements/managed-borrowed/held-output.rs"]
+mod held_output;
