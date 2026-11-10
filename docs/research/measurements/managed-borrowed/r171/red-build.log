@@ -1,0 +1,20 @@
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/abi)
+   Compiling const-oid v0.10.2
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.3.1
+   Compiling hybrid-array v0.4.15
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/testdir)
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+error: couldn't read `crates/api/src/../../../docs/research/measurements/managed-borrowed/old_patch_handshake.rs`: No such file or directory (os error 2)
+ --> crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:6:1
+  |
+6 | mod reference;
+  | ^^^^^^^^^^^^^^
+
+error: could not compile `shards-api` (lib test) due to 1 previous error

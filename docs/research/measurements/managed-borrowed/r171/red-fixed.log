@@ -1,0 +1,55 @@
+warning: taking a mutable reference to a `const` item
+  --> crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:35:62
+   |
+35 |         let result = reference::handshake(&path, 1234, wait, &mut Duration::ZERO);
+   |                                                              ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: each usage of a `const` item creates a new temporary
+   = note: the mutable reference will refer to this temporary, not the original `const` item
+note: `const` item defined here
+  --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/time.rs:151:4
+   = note: `#[warn(const_item_mutation)]` on by default
+
+warning: taking a mutable reference to a `const` item
+  --> crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:82:57
+   |
+82 |     let result = handshake(&path, 1234, Some(patience), &mut Duration::ZERO);
+   |                                                         ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: each usage of a `const` item creates a new temporary
+   = note: the mutable reference will refer to this temporary, not the original `const` item
+note: `const` item defined here
+  --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/time.rs:151:4
+
+warning: `shards-api` (lib test) generated 2 warnings
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-41b64a187874479e)
+
+running 3 tests
+test client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget ... current_handshake patience=200ms elapsed=501.503476ms accepted_late_reply=true
+
+thread 'client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget' (2245237) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:89:5:
+per-read waits accepted a reply beyond the total finite budget
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test client::borrowed_repro::old_patch_overflow_is_refused_before_io ... old_patch patience=18446744073709551615.999999999s actual_CONNECT_observed=true withheld_still_blocked=true
+
+thread 'client::borrowed_repro::old_patch_overflow_is_refused_before_io' (2245245) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:49:5:
+borrowed zero/overflow dialed and waited for withheld muxer reply
+FAILED
+test client::borrowed_repro::old_patch_zero_is_expired_before_io ... old_patch patience=0ns actual_CONNECT_observed=true withheld_still_blocked=true
+
+thread 'client::borrowed_repro::old_patch_zero_is_expired_before_io' (2245248) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:49:5:
+borrowed zero/overflow dialed and waited for withheld muxer reply
+FAILED
+
+failures:
+
+failures:
+    client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget
+    client::borrowed_repro::old_patch_overflow_is_refused_before_io
+    client::borrowed_repro::old_patch_zero_is_expired_before_io
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.91s
+
+error: test failed, to rerun pass `-p shards-api --lib`
