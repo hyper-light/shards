@@ -191,11 +191,9 @@ impl Child {
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
         if raw < 0 {
             let e = io::Error::last_os_error();
+            drop(gate);
             // SAFETY: this is still our held unreaped child, not a discovered PID.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, std::ptr::null_mut(), 0);
-            }
+            end_birth(pid);
             return Err(e.into());
         }
         let raw = match i32::try_from(raw) {
@@ -203,11 +201,8 @@ impl Child {
             Err(_) => {
                 // Linux pidfd_open returns an int; retain owned-child cleanup even if
                 // an unexpected syscall result violates that ABI invariant.
-                // SAFETY: the child is held live, unreaped and was created just above.
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                    libc::waitpid(pid, std::ptr::null_mut(), 0);
-                }
+                drop(gate);
+                end_birth(pid);
                 return Err(Failure::Protocol);
             }
         };
@@ -254,6 +249,8 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         if !self.reaped {
+            // EOF also releases this raw Linux child's gate if signaling is refused.
+            let _ = self.gate.shutdown(std::net::Shutdown::Write);
             // SAFETY: signal through the held pidfd, then reap only its owned child.
             unsafe {
                 libc::syscall(
@@ -271,6 +268,20 @@ impl Drop for Child {
                     break;
                 }
             }
+        }
+    }
+}
+
+/// Parent-only failure before a pidfd can be retained; the closed gate already
+/// releases this exact raw child. No discovered/reused PID is accepted here.
+fn end_birth(pid: libc::pid_t) {
+    // SAFETY: caller still owns this unreaped child immediately after fork.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    loop {
+        // SAFETY: waitpid selects only that owned child, never a population sweep.
+        let n = unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        if n >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            break;
         }
     }
 }
