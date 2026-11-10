@@ -1,0 +1,15 @@
+{
+  "packed_sha256": "7a14968630f4f5a47c27df8e943884f6e914dcb70247b4100e0957699f92676e",
+  "driver_sha256": "669d4d76304dcc3081bb6692c6881f815698cc2cfbe32d22f1c30f929ea9bd6d",
+  "parts": {
+    "input": 17,
+    "driver": 1
+  },
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private": "/home/adalundhe/managed-cold-sync-linux-0aad-v1-iqt96o7k",
+  "policy_revision": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "source_revision": "0aad84439f2b6231a0028713f40bf74d4bf7646c",
+  "production_revision": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "outer_seconds": 600
+}

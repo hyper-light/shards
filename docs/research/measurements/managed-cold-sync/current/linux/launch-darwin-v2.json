@@ -1,0 +1,32 @@
+{
+  "local": "/Users/adalundhe/managed-cold-sync-portability-darwin-input-v2",
+  "private": "/Users/adalundhe/managed-cold-sync-portability-darwin-v2-7nfs68wa",
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+  "needs": "macos/arm64,cpus=1,mem=1g,disk=2g",
+  "parts": {
+    "concurrent_run": 1,
+    "input": 18,
+    "binding_run": 2,
+    "driver": 1
+  },
+  "run": {
+    "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "output": "",
+    "running": true,
+    "id": "r251",
+    "why": "macos/aarch64 · 31 of 32 cores idle · 47 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk"
+  },
+  "identities": {
+    "revision": "0aad84439f2b6231a0028713f40bf74d4bf7646c",
+    "production_revision": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+    "policy_revision": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+    "candidate": true,
+    "test_portability": true,
+    "darwin_ordinary": true,
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "packed_sha256": "610a0ef427624fba4ed6eabdbf6ab87c4a0e3b31d16615095d0753e42cf423dd",
+    "driver_sha256": "f28c28b55ec08ed4e416bfe91abddf0a3444281242ac07893365175344af045f",
+    "binding_run_sha256": "3720f962c635b3e187f72623c4d0c50d3eeacb4180d195bf69ec60c1336fdd1f",
+    "concurrent_run_sha256": "4327a6ce7adf3ca490388f514112e43ed9dc8415660f972a7ca19aa44b01a5b6"
+  }
+}

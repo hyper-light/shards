@@ -31,6 +31,7 @@ pub(crate) enum WaitStatus {
     TimedOut,
 }
 
+#[cfg(target_vendor = "apple")]
 impl Failure {
     fn native(operation: Operation, code: i32) -> Self {
         Self {

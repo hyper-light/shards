@@ -1,0 +1,58 @@
+{
+  "source_base": "0aad84439f2b6231a0028713f40bf74d4bf7646c",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "checks": [
+    {
+      "argv": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/api/src/sync.rs",
+        "crates/api/src/client.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-cold-sync/current/linux/verify.py"
+      ],
+      "exit": 0,
+      "stdout": "{\"archive\": \"linux\", \"sha256\": \"1cb22624dc1afd0df1c96464f575534dfa165c4bc5ed88896dd8532f301c65e0\", \"payloads_verified\": 113, \"all_safe_unique_regular\": true}\n{\"archive\": \"darwin\", \"sha256\": \"3b3eb843935af4213ec13a9535430cfe1ed012f3c84c2954e41c44e74e36b180\", \"payloads_verified\": 108, \"all_safe_unique_regular\": true}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "python_ast": "all scoped .py parsed",
+  "source_sha256": {
+    "crates/api/src/sync.rs": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c",
+    "crates/api/src/client.rs": "3941532a6ab8c450ba532001b19dca657a6327391c04c3666ee69b3635ad9a32",
+    "crates/api/src/lib.rs": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+    "docs/research/measurements/managed-cold-sync/current/linux/collect.py": "ced1121fc4f4e5608a84ad36cb51c8981022c8d0777cb65c96b845876e3ea942",
+    "docs/research/measurements/managed-cold-sync/current/linux/darwin_run.py": "f28c28b55ec08ed4e416bfe91abddf0a3444281242ac07893365175344af045f",
+    "docs/research/measurements/managed-cold-sync/current/linux/prepare.py": "e76d2a0613ea38c04bb2895f592564470a2c1c7d40aff6de00976250351c5970",
+    "docs/research/measurements/managed-cold-sync/current/linux/run.py": "45536db28754a516beb6ff627667a7b39bcf531e7cb59f70101ff8e5f673a08e",
+    "docs/research/measurements/managed-cold-sync/current/linux/verify.py": "323af11f7a160799b369e324f03bc39ec664ffc48cc854a2627d5966ed8e5934"
+  }
+}

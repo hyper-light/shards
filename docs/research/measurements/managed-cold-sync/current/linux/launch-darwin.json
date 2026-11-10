@@ -1,0 +1,17 @@
+{
+  "local": "/Users/adalundhe/managed-cold-sync-portability-darwin-input-v1",
+  "packed_sha256": "61d935d97a3a68f5d2279bd914bcb3c6846603386af8112cccadf8c746664eee",
+  "driver_sha256": "49808ad998e371de26e704176882cecdb48d930236e0483a36b674e5c17dd16e",
+  "binding_run_sha256": "3720f962c635b3e187f72623c4d0c50d3eeacb4180d195bf69ec60c1336fdd1f",
+  "concurrent_run_sha256": "4327a6ce7adf3ca490388f514112e43ed9dc8415660f972a7ca19aa44b01a5b6",
+  "sync_sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c",
+  "parts": {
+    "input": 18,
+    "driver": 1,
+    "binding_run": 2,
+    "concurrent_run": 1
+  },
+  "private": "/Users/adalundhe/managed-cold-sync-portability-darwin-v1-wgeg_azx",
+  "disk_free": 2439009546240,
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf"
+}

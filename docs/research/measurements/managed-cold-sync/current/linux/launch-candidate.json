@@ -1,0 +1,14 @@
+{
+  "local": "/Users/adalundhe/managed-cold-sync-linux-input-candidate-v2",
+  "packed_sha256": "633caa5f5667634460ed11d1026efd4ecd58751ca0c52dc9b11f7974e0897378",
+  "driver_sha256": "2b9b272e80e1fc2e22f7ffa0c9b762f907d92adb6898170e0d395acfe6055e1a",
+  "binding_run_sha256": null,
+  "concurrent_run_sha256": null,
+  "sync_sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c",
+  "parts": {
+    "input": 17,
+    "driver": 1
+  },
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private": "/home/adalundhe/managed-cold-sync-linux-0aad-v1-iqt96o7k/candidate-v1"
+}
