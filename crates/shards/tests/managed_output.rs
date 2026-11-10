@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use hyper_quic::{ClientConfig, StreamId};
 use sha2::{Digest as _, Sha256};
-use shards_abi::run::managed::Channel;
+use shards_abi::run::managed::{Channel, Event as CaptureEvent, Record, StreamState};
 use shards_remote::frame::{self, Tag};
 use shards_remote::identity::{Fingerprint, Identity};
 use shards_remote::managed::{self, Admitted, Reason, RunId, Scope};
@@ -47,6 +47,7 @@ impl std::fmt::Debug for Event {
 
 enum Ask {
     Connect(SocketAddr),
+    Ack(u64),
     AckAndFinish(u64),
     Cancel,
 }
@@ -173,6 +174,10 @@ impl Handler for Client {
                 self.finish = true;
                 self.flush(io);
             }
+            Ask::Ack(offset) => {
+                self.pending.extend_from_slice(&managed::consumed(offset));
+                self.flush(io);
+            }
             Ask::Cancel => {
                 if let Some(conn) = self.conn {
                     io.close(conn, 0, "ordinary fixture observer cancel");
@@ -194,6 +199,7 @@ impl Handler for Client {
 }
 
 struct Observer {
+    scope: Scope,
     sender: Sender<Ask>,
     events: mpsc::Receiver<Event>,
     ended: mpsc::Receiver<Result<(), shards_remote::Error>>,
@@ -246,6 +252,7 @@ impl Observer {
             .unwrap();
         sender.send(Command::Handler(Ask::Connect(address))).unwrap();
         Self {
+            scope,
             sender,
             events,
             ended,
@@ -259,27 +266,44 @@ impl Observer {
             .unwrap_or_else(|error| panic!("observer event before deadline: {error}"))
     }
 
-    fn exact(&self, expected: &[u8]) {
+    fn exact(&self, label: &str, expected: &[u8]) -> (u64, u64) {
         let until = Instant::now() + WITHIN;
         let mut bytes = Vec::new();
+        let mut wire = 0u64;
+        let mut state = StreamState::New;
         while bytes.len() < expected.len() {
             match self.next(until) {
                 Event::Record(offset, chunk) => {
                     assert!(!chunk.is_empty(), "empty member record");
-                    assert_eq!(offset, u64::try_from(bytes.len()).unwrap());
-                    bytes.extend_from_slice(&chunk);
-                    assert!(
-                        expected.starts_with(&bytes),
-                        "member bytes differ at offset {offset}; lengths actual={} expected={}; controlled_fixture_bytes={bytes:02x?}",
-                        bytes.len(),
-                        expected.len()
-                    );
+                    assert_eq!(offset, wire);
+                    wire = wire.checked_add(u64::try_from(chunk.len()).unwrap()).unwrap();
+                    let record = Record::decode(&chunk).unwrap();
+                    assert_eq!(record.member, self.scope.member);
+                    assert_eq!(record.channel, self.scope.channel);
+                    state.accept(record).unwrap();
+                    match record.event {
+                        CaptureEvent::Open(actual) => assert_eq!(actual, label),
+                        CaptureEvent::Data(payload) => {
+                            bytes.extend_from_slice(payload);
+                            assert!(
+                                expected.starts_with(&bytes),
+                                "member bytes differ at offset {offset}; lengths actual={} expected={}; controlled_fixture_bytes={bytes:02x?}",
+                                bytes.len(),
+                                expected.len()
+                            );
+                            if bytes.len() == expected.len() {
+                                return (offset, wire);
+                            }
+                        }
+                        other => panic!("unexpected capture event {other:?}"),
+                    }
+                    self.sender.send(Command::Handler(Ask::Ack(wire))).unwrap();
                 }
                 Event::Failed(error) => panic!("observer failed: {error}"),
                 other => panic!("expected member record, got {other:?}"),
             }
         }
-        assert_eq!(bytes.len(), expected.len());
+        panic!("nonempty fixture output required");
     }
 
     fn refused(&self, expected: Option<Reason>) {
@@ -293,9 +317,9 @@ impl Observer {
         }
     }
 
-    fn ack_and_finish(&self, bytes: usize) {
+    fn ack_and_finish(&self, wire: u64) {
         self.sender
-            .send(Command::Handler(Ask::AckAndFinish(u64::try_from(bytes).unwrap())))
+            .send(Command::Handler(Ask::AckAndFinish(wire)))
             .unwrap();
         // QUIC FIN follows the consumed frame in the same ordered stream. The service
         // processes controls before its End branch emits this typed close reason.
@@ -412,6 +436,7 @@ struct Fixture {
     metadata: Option<Metadata>,
     record: Option<PathBuf>,
     observers: Vec<Observer>,
+    observed: BTreeMap<(u32, u8), (u64, u64)>,
     initial_fds: Option<usize>,
 }
 
@@ -426,6 +451,7 @@ impl Fixture {
             metadata: None,
             record: None,
             observers: Vec::new(),
+            observed: BTreeMap::new(),
             initial_fds: None,
         }
     }
@@ -554,8 +580,9 @@ impl Fixture {
     fn consume(&mut self, member: u32, label: &str, channel: Channel) {
         let observer = self.observe(member, channel, None, false);
         let expected = payload(label, channel);
-        self.observers[observer].exact(&expected);
-        self.observers[observer].ack_and_finish(expected.len());
+        let (_, wire) = self.observers[observer].exact(declared_label(member), &expected);
+        self.observers[observer].ack_and_finish(wire);
+        self.observed.insert((member, channel as u8), (wire, wire));
         let _ = writeln!(
             std::io::stdout(),
             "managed-owner consumed member={member} channel={} bytes={}",
@@ -627,6 +654,14 @@ impl Fixture {
     }
 }
 
+fn declared_label(member: u32) -> &'static str {
+    match member {
+        1 => "agent helper",
+        2 => "harness driver",
+        _ => panic!("fixture has no runnable member {member}"),
+    }
+}
+
 fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
     if common::cannot_run_vms() {
         return None;
@@ -649,7 +684,9 @@ fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
 fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent() {
     let Some(fixture) = with_fixture(|fixture| {
         let held = fixture.observe(1, Channel::Stdout, None, false);
-        fixture.observers[held].exact(&payload("agent", Channel::Stdout));
+        let (start, end) =
+            fixture.observers[held].exact(declared_label(1), &payload("agent", Channel::Stdout));
+        fixture.observed.insert((1, Channel::Stdout as u8), (end, start));
         fixture.consume(1, "agent", Channel::Stderr);
         fixture.main_progress();
         fixture.observers[held]
@@ -667,15 +704,11 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
     };
     // Cancellation preserves a record awaiting ACK instead of manufacturing
     // consumption or holding owner teardown behind its stalled observer.
-    let held = u64::try_from(payload("agent", Channel::Stdout).len()).unwrap();
-    assert_eq!(fixture.terminal(1, Channel::Stdout), (held, 0));
-    for (member, label, channel) in [
-        (1, "agent", Channel::Stderr),
-        (2, "harness", Channel::Stdout),
-        (2, "harness", Channel::Stderr),
-    ] {
-        let length = u64::try_from(payload(label, channel).len()).unwrap();
-        assert_eq!(fixture.terminal(member, channel), (length, length));
+    for (&(member, channel), &expected) in &fixture.observed {
+        assert_eq!(
+            fixture.terminal(member, Channel::try_from(channel).unwrap()),
+            expected
+        );
     }
 }
 
@@ -701,8 +734,10 @@ fn private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_sc
     for (member, channel) in [(1, Channel::Stdout), (1, Channel::Stderr), (2, Channel::Stdout)] {
         assert_eq!(fixture.terminal(member, channel), (0, 0));
     }
-    let length = u64::try_from(payload("harness", Channel::Stderr).len()).unwrap();
-    assert_eq!(fixture.terminal(2, Channel::Stderr), (length, length));
+    assert_eq!(
+        fixture.terminal(2, Channel::Stderr),
+        fixture.observed[&(2, Channel::Stderr as u8)]
+    );
 }
 
 #[test]
