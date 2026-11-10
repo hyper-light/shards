@@ -40,25 +40,25 @@ impl ControlQueue {
             state: ControlState::Open,
         })
     }
-    pub fn push(&mut self, abort: managed::Abort) -> io::Result<()> {
+    pub fn push(&mut self, abort: managed::Abort) -> Result<(), Failure> {
         if !matches!(self.state, ControlState::Open) {
-            return Err(invalid("managed control scope already ending"));
+            return Err(invalid(managed::Error::State));
         }
         let payload = abort.encode().map_err(invalid)?;
         let end = self
             .bytes
             .len()
             .checked_add(run::HEADER + managed::ABORT_LEN)
-            .ok_or_else(|| invalid("managed terminal reservation overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Capacity))?;
         if end > self.bytes.capacity() {
-            return Err(invalid("managed terminal reservation exhausted"));
+            return Err(invalid(managed::Error::Capacity));
         }
         self.bytes
             .extend_from_slice(&run::header(kind::MANAGED_ABORT, managed::ABORT_LEN as u32));
         self.bytes.extend_from_slice(&payload);
         Ok(())
     }
-    pub fn end(&mut self) -> io::Result<()> {
+    pub fn end(&mut self) -> Result<(), Failure> {
         if !matches!(self.state, ControlState::Open) {
             return Ok(());
         }
@@ -66,9 +66,9 @@ impl ControlQueue {
             .bytes
             .len()
             .checked_add(run::HEADER)
-            .ok_or_else(|| invalid("managed terminal reservation overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Capacity))?;
         if end > self.bytes.capacity() {
-            return Err(invalid("managed terminal reservation exhausted"));
+            return Err(invalid(managed::Error::Capacity));
         }
         self.bytes
             .extend_from_slice(&run::header(kind::MANAGED_CONTROL_END, 0));
@@ -81,15 +81,15 @@ impl ControlQueue {
     pub fn pending(&self) -> bool {
         self.cursor < self.bytes.len()
     }
-    pub fn write(&mut self, fd: RawFd) -> io::Result<()> {
+    pub fn write(&mut self, fd: RawFd) -> Result<(), Failure> {
         let bytes = self
             .bytes
             .get(self.cursor..)
-            .ok_or_else(|| invalid("managed terminal cursor"))?;
+            .ok_or_else(|| invalid(managed::Error::Offset))?;
         self.cursor = self
             .cursor
             .checked_add(crate::run::write(fd, bytes)?)
-            .ok_or_else(|| invalid("managed terminal cursor overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Offset))?;
         if self.cursor == self.bytes.len() {
             self.bytes.clear();
             self.cursor = 0;
@@ -184,8 +184,70 @@ pub struct Capture {
     next: usize,
 }
 
-fn invalid(why: impl ToString) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, why.to_string())
+#[derive(Debug)]
+pub enum MemberCause {
+    AllocationRefused(std::collections::TryReserveError),
+    AllocatorCapacity { allocated: usize, admitted: usize },
+    ReadPreparation { errno: i32 },
+}
+impl MemberCause {
+    pub fn errno(&self) -> i32 {
+        match self {
+            Self::AllocationRefused(_) | Self::AllocatorCapacity { .. } => libc::ENOMEM,
+            Self::ReadPreparation { errno } => *errno,
+        }
+    }
+}
+impl std::fmt::Display for MemberCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AllocationRefused(error) => write!(f, "allocation refused: {error}"),
+            Self::AllocatorCapacity { allocated, admitted } => {
+                write!(f, "allocator retained {allocated} bytes past admitted {admitted}")
+            }
+            Self::ReadPreparation { errno } => write!(f, "pipe preparation errno {errno}"),
+        }
+    }
+}
+#[derive(Debug)]
+pub enum Failure {
+    Protocol(managed::Error),
+    Transport(io::Error),
+    Member {
+        member: u32,
+        channel: Channel,
+        cause: MemberCause,
+    },
+}
+impl Failure {
+    pub fn transient(&self) -> bool {
+        matches!(self, Self::Transport(error)
+            if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted))
+    }
+}
+impl From<io::Error> for Failure {
+    fn from(error: io::Error) -> Self {
+        Self::Transport(error)
+    }
+}
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protocol(error) => write!(f, "managed protocol: {error}"),
+            Self::Transport(error) => write!(f, "managed transport: {error}"),
+            Self::Member {
+                member,
+                channel,
+                cause,
+            } => {
+                write!(f, "managed member {member} {channel:?}: {cause}")
+            }
+        }
+    }
+}
+impl std::error::Error for Failure {}
+fn invalid(why: managed::Error) -> Failure {
+    Failure::Protocol(why)
 }
 
 impl Capture {
@@ -296,18 +358,18 @@ impl Capture {
         matches!(self.state, State::Running(Output::Idle))
     }
 
-    fn take_credit(&mut self, member: u32, channel: Channel, terminal: bool) -> io::Result<()> {
+    fn take_credit(&mut self, member: u32, channel: Channel, terminal: bool) -> Result<(), Failure> {
         let pair = self
             .credits
-            .get_mut(usize::try_from(member).map_err(invalid)?)
-            .ok_or_else(|| invalid("managed member credit"))?;
+            .get_mut(usize::try_from(member).map_err(|_| invalid(managed::Error::Member))?)
+            .ok_or_else(|| invalid(managed::Error::Member))?;
         let [out, err] = pair;
         let slot = match channel {
             Channel::Stdout => out,
             Channel::Stderr => err,
         };
         if !matches!(*slot, CreditState::Granted(_)) {
-            return Err(invalid("managed channel has no admitted credit"));
+            return Err(invalid(managed::Error::State));
         }
         *slot = if terminal {
             CreditState::Closed
@@ -317,15 +379,15 @@ impl Capture {
         Ok(())
     }
 
-    pub fn progress(&mut self) -> io::Result<()> {
+    pub fn progress(&mut self) -> Result<(), Failure> {
         let fd = self.fd();
         if let State::Hello { bytes, written } = &mut self.state {
             let pending = bytes
                 .get(*written..)
-                .ok_or_else(|| invalid("managed hello cursor"))?;
+                .ok_or_else(|| invalid(managed::Error::Offset))?;
             *written = written
                 .checked_add(crate::run::write(fd, pending)?)
-                .ok_or_else(|| invalid("managed hello cursor overflow"))?;
+                .ok_or_else(|| invalid(managed::Error::Offset))?;
             if *written == bytes.len() {
                 self.state = State::Running(Output::Idle)
             }
@@ -335,18 +397,18 @@ impl Capture {
             let pending = self
                 .outgoing
                 .get(*written..)
-                .ok_or_else(|| invalid("managed output cursor"))?;
+                .ok_or_else(|| invalid(managed::Error::Offset))?;
             *written = written
                 .checked_add(crate::run::write(fd, pending)?)
-                .ok_or_else(|| invalid("managed output cursor overflow"))?;
+                .ok_or_else(|| invalid(managed::Error::Offset))?;
             if *written == self.outgoing.len() {
                 self.outgoing.clear();
                 self.state = State::Running(Output::Idle);
                 if let Some((member, channel)) = self.buffer_owner {
                     let [out, err] = self
                         .credits
-                        .get_mut(usize::try_from(member).map_err(invalid)?)
-                        .ok_or_else(|| invalid("managed buffer owner"))?;
+                        .get_mut(usize::try_from(member).map_err(|_| invalid(managed::Error::Member))?)
+                        .ok_or_else(|| invalid(managed::Error::Member))?;
                     let slot = match channel {
                         Channel::Stdout => out,
                         Channel::Stderr => err,
@@ -357,7 +419,7 @@ impl Capture {
                             self.outgoing = Vec::new();
                             self.buffer_owner = None;
                         }
-                        _ => return Err(invalid("managed buffer credit state")),
+                        _ => return Err(invalid(managed::Error::State)),
                     }
                 }
             }
@@ -365,42 +427,42 @@ impl Capture {
         let pending = self
             .incoming
             .get_mut(self.received..)
-            .ok_or_else(|| invalid("managed credit cursor"))?;
+            .ok_or_else(|| invalid(managed::Error::Offset))?;
         let n = match crate::run::read(fd, pending) {
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
                 return Ok(());
             }
-            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
             got => got?,
         };
         self.received = self
             .received
             .checked_add(n)
-            .ok_or_else(|| invalid("managed credit cursor overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Offset))?;
         if self.received == self.incoming.len() {
             let (header, payload) = self
                 .incoming
                 .split_first_chunk::<{ run::HEADER }>()
-                .ok_or_else(|| invalid("managed credit header"))?;
+                .ok_or_else(|| invalid(managed::Error::Header))?;
             if run::parse_header(*header) != Some((kind::MANAGED_CREDIT, managed::CREDIT_LEN as u32)) {
-                return Err(invalid("managed credit frame"));
+                return Err(invalid(managed::Error::Header));
             }
             let credit = managed::Credit::decode(payload).map_err(invalid)?;
-            let capacity = usize::try_from(credit.capacity).map_err(invalid)?;
+            let capacity = usize::try_from(credit.capacity).map_err(|_| invalid(managed::Error::Capacity))?;
             if capacity > self.capacity {
-                return Err(invalid("managed credit changes admission"));
+                return Err(invalid(managed::Error::Capacity));
             }
             let pair = self
                 .credits
-                .get_mut(usize::try_from(credit.member).map_err(invalid)?)
-                .ok_or_else(|| invalid("managed member credit"))?;
+                .get_mut(usize::try_from(credit.member).map_err(|_| invalid(managed::Error::Member))?)
+                .ok_or_else(|| invalid(managed::Error::Member))?;
             let [out, err] = pair;
             let slot = match credit.channel {
                 Channel::Stdout => out,
                 Channel::Stderr => err,
             };
             if *slot != CreditState::Waiting {
-                return Err(invalid("duplicate or closed managed channel credit"));
+                return Err(invalid(managed::Error::State));
             }
             *slot = CreditState::Granted(capacity);
             if self.buffer_owner == Some((credit.member, credit.channel))
@@ -408,7 +470,7 @@ impl Capture {
                 && self.outgoing.capacity()
                     > capacity
                         .checked_add(run::HEADER)
-                        .ok_or_else(|| invalid("managed capacity overflow"))?
+                        .ok_or_else(|| invalid(managed::Error::Capacity))?
             {
                 self.outgoing = Vec::new();
                 self.buffer_owner = None;
@@ -418,18 +480,18 @@ impl Capture {
         Ok(())
     }
 
-    pub fn advance(&mut self, index: usize, channel: Channel) -> io::Result<()> {
+    pub fn advance(&mut self, index: usize, channel: Channel) -> Result<(), Failure> {
         self.next = index
             .checked_mul(2)
             .and_then(|n| n.checked_add(if channel == Channel::Stdout { 1 } else { 2 }))
-            .ok_or_else(|| invalid("managed scheduler cursor overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Offset))?;
         Ok(())
     }
-    pub fn abort_member(&mut self, member: u32) -> io::Result<()> {
+    pub fn abort_member(&mut self, member: u32) -> Result<(), Failure> {
         let pair = self
             .credits
-            .get_mut(usize::try_from(member).map_err(invalid)?)
-            .ok_or_else(|| invalid("managed abort member"))?;
+            .get_mut(usize::try_from(member).map_err(|_| invalid(managed::Error::Member))?)
+            .ok_or_else(|| invalid(managed::Error::Member))?;
         *pair = [CreditState::Closed; 2];
         if self.buffer_owner.is_some_and(|(owner, _)| owner == member) && self.drained() {
             self.outgoing = Vec::new();
@@ -438,19 +500,19 @@ impl Capture {
         Ok(())
     }
 
-    fn space(&mut self, payload: usize, capacity: usize, owner: (u32, Channel)) -> io::Result<()> {
+    fn space(&mut self, payload: usize, capacity: usize, owner: (u32, Channel)) -> Result<(), Failure> {
         let record = managed::HEADER
             .checked_add(payload)
             .filter(|n| *n <= capacity)
-            .ok_or_else(|| invalid("managed record exceeds admission"))?;
+            .ok_or_else(|| invalid(managed::Error::Capacity))?;
         let n = run::HEADER
             .checked_add(record)
-            .ok_or_else(|| invalid("managed frame length overflow"))?;
+            .ok_or_else(|| invalid(managed::Error::Capacity))?;
         if self.buffer_owner != Some(owner)
             || self.outgoing.capacity()
                 > capacity
                     .checked_add(run::HEADER)
-                    .ok_or_else(|| invalid("managed capacity overflow"))?
+                    .ok_or_else(|| invalid(managed::Error::Capacity))?
         {
             self.outgoing = Vec::new();
             self.buffer_owner = Some(owner);
@@ -458,35 +520,51 @@ impl Capture {
         if self.outgoing.capacity() < n {
             self.outgoing
                 .try_reserve_exact(n.saturating_sub(self.outgoing.len()))
-                .map_err(io::Error::other)?;
+                .map_err(|error| Failure::Member {
+                    member: owner.0,
+                    channel: owner.1,
+                    cause: MemberCause::AllocationRefused(error),
+                })?;
         }
         if self.outgoing.capacity()
             > capacity
                 .checked_add(run::HEADER)
-                .ok_or_else(|| invalid("managed capacity overflow"))?
+                .ok_or_else(|| invalid(managed::Error::Capacity))?
         {
-            return Err(invalid("managed allocation exceeds admission"));
+            return Err(Failure::Member {
+                member: owner.0,
+                channel: owner.1,
+                cause: MemberCause::AllocatorCapacity {
+                    allocated: self.outgoing.capacity(),
+                    admitted: capacity
+                        .checked_add(run::HEADER)
+                        .ok_or_else(|| invalid(managed::Error::Capacity))?,
+                },
+            });
         }
         self.outgoing.resize(n, 0);
         Ok(())
     }
 
-    fn frame(&mut self, record: Record<'_>) -> io::Result<()> {
+    fn frame(&mut self, record: Record<'_>) -> Result<(), Failure> {
         let n = record.encoded_len().map_err(invalid)?;
         let capacity = self
             .allowance(record.member, record.channel)
-            .ok_or_else(|| invalid("managed channel credit"))?;
+            .ok_or_else(|| invalid(managed::Error::State))?;
         self.space(
             n.checked_sub(managed::HEADER)
-                .ok_or_else(|| invalid("managed header length"))?,
+                .ok_or_else(|| invalid(managed::Error::Header))?,
             capacity,
             (record.member, record.channel),
         )?;
         let (header, payload) = self
             .outgoing
             .split_first_chunk_mut::<{ run::HEADER }>()
-            .ok_or_else(|| invalid("managed frame header"))?;
-        *header = run::header(kind::MANAGED, u32::try_from(n).map_err(invalid)?);
+            .ok_or_else(|| invalid(managed::Error::Header))?;
+        *header = run::header(
+            kind::MANAGED,
+            u32::try_from(n).map_err(|_| invalid(managed::Error::Capacity))?,
+        );
         record.encode(payload).map_err(invalid)?;
         self.take_credit(
             record.member,
@@ -497,7 +575,13 @@ impl Capture {
         Ok(())
     }
 
-    pub fn open(&mut self, member: u32, channel: Channel, label: &str, pipe: &mut Pipe) -> io::Result<bool> {
+    pub fn open(
+        &mut self,
+        member: u32,
+        channel: Channel,
+        label: &str,
+        pipe: &mut Pipe,
+    ) -> Result<bool, Failure> {
         if !self.ready(member, channel) || pipe.state != StreamState::New {
             return Ok(false);
         }
@@ -512,37 +596,45 @@ impl Capture {
         Ok(true)
     }
 
-    pub fn read(&mut self, member: u32, channel: Channel, pipe: &mut Pipe) -> io::Result<()> {
+    pub fn read(&mut self, member: u32, channel: Channel, pipe: &mut Pipe) -> Result<(), Failure> {
         if !self.ready(member, channel) {
             return Ok(());
         }
         let (Some(fd), StreamState::Open { offset }) = (pipe.fd(), pipe.state) else {
-            return Err(invalid("managed pipe read state"));
+            return Err(invalid(managed::Error::State));
         };
         let mut available: libc::c_int = 0;
         // SAFETY: FIONREAD writes one c_int for this owned pipe descriptor.
         if unsafe { libc::ioctl(fd, libc::FIONREAD, &raw mut available) } != 0 {
-            return Err(io::Error::last_os_error());
+            let error = io::Error::last_os_error();
+            let errno = error.raw_os_error().filter(|n| *n > 0).ok_or(error)?;
+            return Err(Failure::Member {
+                member,
+                channel,
+                cause: MemberCause::ReadPreparation { errno },
+            });
         }
-        let available = usize::try_from(available).map_err(invalid)?.max(1);
+        let available = usize::try_from(available)
+            .map_err(|_| invalid(managed::Error::Payload))?
+            .max(1);
         let capacity = self
             .allowance(member, channel)
-            .ok_or_else(|| invalid("managed channel credit"))?;
+            .ok_or_else(|| invalid(managed::Error::State))?;
         let available = available.min(
             capacity
                 .checked_sub(managed::HEADER)
-                .ok_or_else(|| invalid("managed payload capacity"))?,
+                .ok_or_else(|| invalid(managed::Error::Capacity))?,
         );
         self.space(available, capacity, (member, channel))?;
         let body_at = run::HEADER + managed::HEADER;
         let data = self
             .outgoing
             .get_mut(body_at..)
-            .ok_or_else(|| invalid("managed data buffer"))?;
+            .ok_or_else(|| invalid(managed::Error::Payload))?;
         let (event, len) = match crate::run::read(fd, data) {
             Ok(0) => (Event::End, 0),
             Ok(n) => (
-                Event::Data(data.get(..n).ok_or_else(|| invalid("managed read past buffer"))?),
+                Event::Data(data.get(..n).ok_or_else(|| invalid(managed::Error::Payload))?),
                 n,
             ),
             Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {
@@ -579,19 +671,19 @@ impl Capture {
         self.outgoing.truncate(
             body_at
                 .checked_add(len)
-                .ok_or_else(|| invalid("managed output overflow"))?,
+                .ok_or_else(|| invalid(managed::Error::Offset))?,
         );
         let (header, rest) = self
             .outgoing
             .split_first_chunk_mut::<{ run::HEADER }>()
-            .ok_or_else(|| invalid("managed frame header"))?;
+            .ok_or_else(|| invalid(managed::Error::Header))?;
         *header = run::header(
             kind::MANAGED,
-            u32::try_from(managed::HEADER + len).map_err(invalid)?,
+            u32::try_from(managed::HEADER + len).map_err(|_| invalid(managed::Error::Capacity))?,
         );
         *rest
             .first_chunk_mut::<{ managed::HEADER }>()
-            .ok_or_else(|| invalid("managed record header"))? = inner;
+            .ok_or_else(|| invalid(managed::Error::Header))? = inner;
         self.state = State::Running(Output::Sending { written: 0 });
         Ok(())
     }
@@ -669,7 +761,11 @@ mod tests {
             assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const limit) }, 0);
             let refused = capture.space(capacity - managed::HEADER, capacity, (0, Channel::Stderr));
             let code = match refused {
-                Err(error) if error.raw_os_error() == Some(libc::ENOMEM) => 0,
+                Err(Failure::Member {
+                    member: 0,
+                    channel: Channel::Stderr,
+                    cause: MemberCause::AllocationRefused(_),
+                }) => 0,
                 Err(_) => 2,
                 Ok(()) => 3,
             };
@@ -688,6 +784,42 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success(), "allocation refusal result: {status}");
+    }
+
+    #[test]
+    fn missing_credit_capacity_is_a_protocol_refusal_not_physical_oom() {
+        let capacity = managed::HEADER + size_of::<i32>();
+        let (mut capture, _peer) = fixture(1, capacity);
+        assert!(matches!(
+            capture.space(capacity, capacity, (0, Channel::Stdout)),
+            Err(Failure::Protocol(managed::Error::Capacity))
+        ));
+        assert_eq!(capture.outgoing.capacity(), 0);
+    }
+
+    #[test]
+    fn native_read_preparation_failure_names_only_its_member_and_channel() {
+        let capacity = managed::HEADER + size_of::<i32>();
+        let (mut capture, mut peer) = fixture(2, capacity);
+        grant(&mut capture, &mut peer, 0, Channel::Stderr, capacity);
+        grant(&mut capture, &mut peer, 1, Channel::Stdout, capacity);
+        let mut pipe = Pipe {
+            fd: Some(OwnedFd::from(File::open("/dev/null").unwrap())),
+            state: StreamState::Open { offset: 7 },
+        };
+        assert!(matches!(
+            capture.read(0, Channel::Stderr, &mut pipe),
+            Err(Failure::Member {
+                member: 0,
+                channel: Channel::Stderr,
+                cause: MemberCause::ReadPreparation { errno: libc::ENOTTY },
+            })
+        ));
+        capture.abort_member(0).unwrap();
+        pipe.abort();
+        assert!(capture.ready(1, Channel::Stdout));
+        assert!(!capture.ready(0, Channel::Stderr));
+        assert!(matches!(pipe.state, StreamState::Aborted { offset: 7, .. }));
     }
 
     #[test]

@@ -1,0 +1,14 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.04s
+     Running unittests src/main.rs (target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 6 tests
+test capture::tests::allocation_refusal_keeps_its_resource_cause ... 
+running 1 test
+ok
+test capture::tests::missing_credit_capacity_is_a_protocol_refusal_not_physical_oom ... ok
+test capture::tests::native_pipes_preserve_binary_channels_offsets_and_actual_eof ... ok
+test capture::tests::native_read_preparation_failure_names_only_its_member_and_channel ... ok
+test capture::tests::reserved_control_orders_abort_then_explicit_end_without_output_credit ... ok
+test capture::tests::sparse_sibling_and_stderr_credit_do_not_depend_on_noisy_stdout_ack ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.01s

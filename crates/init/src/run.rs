@@ -4282,6 +4282,25 @@ fn apply_lifecycle(domain: &mut crate::domains::Started, update: crate::managed:
     }
 }
 
+fn capture_failure(
+    domain: &mut crate::domains::Started,
+    failure: crate::capture::Failure,
+) -> Result<(), Failure> {
+    match failure {
+        crate::capture::Failure::Member { member, cause, .. } if member == domain.member => {
+            let errno = cause.errno();
+            let update = domain
+                .lifecycle
+                .quarantine(crate::managed::QuarantineCause::Capture { errno })
+                .map_err(|fault| setup_failed(format!("{}: shared boundary: {fault}", domain.label)))?;
+            apply_lifecycle(domain, update);
+            domain.abort_output(errno);
+            Ok(())
+        }
+        boundary => Err(setup_failed(format!("managed output boundary: {boundary}"))),
+    }
+}
+
 /// Whose a polled descriptor is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -4424,7 +4443,7 @@ impl Workload {
                     let result = self
                         .capture_control
                         .as_mut()
-                        .ok_or_else(|| io::Error::other("missing managed terminal reservation"))
+                        .ok_or(crate::capture::Failure::Protocol(run::managed::Error::State))
                         .and_then(|control| {
                             control.push(run::managed::Abort {
                                 member: domain.member,
@@ -4446,13 +4465,17 @@ impl Workload {
             }
             if let Some(capture) = self.capture.as_mut() {
                 for domain in &mut self.domains {
-                    for (channel, pipe) in [
-                        (run::managed::Channel::Stdout, &mut domain.stdout),
-                        (run::managed::Channel::Stderr, &mut domain.stderr),
-                    ] {
-                        if let Err(e) = capture.open(domain.member, channel, &domain.label, pipe) {
-                            fatal = Some(setup_failed(format!("managed output: {e}")));
-                            break 'relay;
+                    for channel in [run::managed::Channel::Stdout, run::managed::Channel::Stderr] {
+                        let pipe = match channel {
+                            run::managed::Channel::Stdout => &mut domain.stdout,
+                            run::managed::Channel::Stderr => &mut domain.stderr,
+                        };
+                        if let Err(error) = capture.open(domain.member, channel, &domain.label, pipe) {
+                            if let Err(failure) = capture_failure(domain, error) {
+                                fatal = Some(failure);
+                                break 'relay;
+                            }
+                            break;
                         }
                     }
                 }
@@ -5054,7 +5077,7 @@ impl Workload {
                     Owner::Capture => {
                         if let Some(capture) = self.capture.as_mut()
                             && let Err(e) = capture.progress()
-                            && !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
+                            && !e.transient()
                         {
                             fatal = Some(setup_failed(format!("managed output connection: {e}")));
                             break 'relay;
@@ -5065,16 +5088,21 @@ impl Workload {
                         else {
                             continue;
                         };
-                        if domain.lifecycle.quarantined() {
+                        if domain.lifecycle.quarantined()
+                            || !matches!(domain.output_control, crate::capture::OutputControl::Active)
+                        {
                             continue;
                         }
                         let pipe = match channel {
                             run::managed::Channel::Stdout => &mut domain.stdout,
                             run::managed::Channel::Stderr => &mut domain.stderr,
                         };
-                        if let Err(e) = capture.read(domain.member, channel, pipe) {
-                            fatal = Some(setup_failed(format!("managed output read: {e}")));
-                            break 'relay;
+                        if let Err(error) = capture.read(domain.member, channel, pipe) {
+                            if let Err(failure) = capture_failure(domain, error) {
+                                fatal = Some(failure);
+                                break 'relay;
+                            }
+                            continue;
                         }
                         if !capture.drained()
                             && let Err(e) = capture.advance(i, channel)
