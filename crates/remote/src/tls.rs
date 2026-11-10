@@ -100,22 +100,49 @@ fn verify_signature(
 
 /// The server side, which a daemon listening for clients accepts connections under.
 pub fn server(identity: &Identity) -> Result<ServerConfig, Error> {
+    server_with(identity, None, transport(true)?, ALPN)
+}
+
+pub(crate) fn owner_server(
+    identity: &Identity,
+    owner: Fingerprint,
+    transport: TransportConfig,
+    alpn: &[u8],
+) -> Result<ServerConfig, Error> {
+    server_with(identity, Some(owner), transport, alpn)
+}
+
+fn server_with(
+    identity: &Identity,
+    owner: Option<Fingerprint>,
+    transport: TransportConfig,
+    alpn: &[u8],
+) -> Result<ServerConfig, Error> {
     let resolver = AlwaysResolvesServerRawPublicKeys::new(certified(identity)?);
     let mut tls = rustls::ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| Error::new(format!("TLS: {e}")))?
-        .with_client_cert_verifier(Box::new(AnyClient))
+        .with_client_cert_verifier(Box::new(AnyClient(owner)))
         .with_cert_resolver(Box::new(resolver));
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     tls.max_early_data_size = 0;
     let crypto = QuicServerConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
     let mut config = ServerConfig::with_crypto(Box::new(crypto));
-    config.transport_config(transport(true)?);
+    config.transport_config(transport);
     Ok(config)
 }
 
 /// The client side, which connects to the daemon whose key's SHA-256 is `daemon`.
 pub fn client(identity: &Identity, daemon: Fingerprint) -> Result<ClientConfig, Error> {
+    client_with(identity, daemon, transport(false)?, ALPN)
+}
+
+pub(crate) fn client_with(
+    identity: &Identity,
+    daemon: Fingerprint,
+    transport: TransportConfig,
+    alpn: &[u8],
+) -> Result<ClientConfig, Error> {
     let resolver = AlwaysResolvesClientRawPublicKeys::new(certified(identity)?);
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])
@@ -123,11 +150,11 @@ pub fn client(identity: &Identity, daemon: Fingerprint) -> Result<ClientConfig, 
         .dangerous()
         .with_custom_certificate_verifier(Box::new(Pinned(daemon)))
         .with_client_cert_resolver(Box::new(resolver));
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     tls.enable_early_data = false;
     let crypto = QuicClientConfig::try_from(tls).map_err(|e| Error::new(format!("QUIC's TLS: {e}")))?;
     let mut config = ClientConfig::new(Box::new(crypto));
-    config.transport_config(transport(false)?);
+    config.transport_config(transport);
     Ok(config)
 }
 
@@ -187,7 +214,7 @@ impl ServerCertVerifier for Pinned {
 
 /// Any client's Ed25519 key, which the daemon judges once the handshake is done.
 #[derive(Debug)]
-struct AnyClient;
+struct AnyClient(Option<Fingerprint>);
 
 impl ClientCertVerifier for AnyClient {
     fn offer_client_auth(&self) -> bool {
@@ -208,7 +235,11 @@ impl ClientCertVerifier for AnyClient {
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
-        if identity::is_ed25519(end_entity) {
+        if identity::is_ed25519(end_entity)
+            && self
+                .0
+                .is_none_or(|owner| identity::fingerprint(end_entity) == owner)
+        {
             Ok(ClientCertVerified::assertion())
         } else {
             Err(rustls::Error::InvalidCertificate(

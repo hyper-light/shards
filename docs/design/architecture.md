@@ -5858,6 +5858,35 @@ of moby's stringid.GenerateRandomID (`containers::new_id`); it was read up to 4 
 | `JOIN_MAX` (remote invite.rs) | `NAME_MAX + 1 + 32` | `NAME_MAX + 1 + PROOF` | RFC 2104 §2; FIPS 180-4 §1 |
 | `MADE_MOST` (remote server.rs) | 4 KiB | `2 * 32` = 64 | moby pkg/stringid `GenerateRandomID`; cli/request.rs `CidFile::write` |
 
+#### Managed owner-output transport under D180 (P1/P3 component)
+
+The managed output service reuses the native QUIC driver and TLS raw-key identity,
+with a distinct ALPN and one owning identity/subscription. It carries whole checked
+capture records, retains one admitted record until a contiguous application ACK,
+and never owns the VM through an observer connection. No persistent spool is implied.
+The caller must retain an actual resource reservation for its explicit allowances;
+a protocol window is not host authority or proof of kernel attribution. The service
+is a component pending daemon/guest integration and root real-VM/cost gates.
+[Interface, alternatives, states and evidence](../research/measurements/managed-output/README.md).
+
+| Production literal/bound | Derivation/source |
+| --- | --- |
+| Frame tag1byte + length4bytes | existing D180 wire, u8+u32BE; unchanged remote framing |
+| Offset/generation8bytes | their u64BE encoding, checked before advance |
+| Run fingerprint32bytes | existing SHA-256 Fingerprint type |
+| Subscription48bytes/control53bytes | fingerprint + generation + cursor; plus existing frame head |
+| Data head13bytes | frame head + starting cursor |
+| One connection/subscription/pending record/command slot | the explicit one-owner/one-producer service contract; no per-child capacity multiplication |
+| Zero initial cursor/no UNI streams/no QUIC datagrams/pre-accept buffered bytes | no prior records, one bidirectional subscription, no DATAGRAM application protocol/early-data queue |
+| Record/transport/crypto/datagram capacities and patience | explicit caller-retained admission, checked for zero/overflow/protocol field bounds; no hidden default |
+| Receive turns | admitted queued datagram bytes divided by RFC9000 maximum UDP payload (existing driver DATAGRAM), at least one before bind |
+| One-nanosecond bounded timer floor | smallest nonzero Duration, avoiding socket timeout zero; actual OS rounding remains measured, not hardcoded |
+| Excluded ports80/443 | owner's explicit output-endpoint requirement; OS otherwise chooses |
+| Protocol revision/close code1 | managed-output/1 protocol discriminator and local refusal code; not a tuning parameter |
+
+Linux light tests/clippy pass; authentication/native byte delivery, adversarial
+cleanup, all other targets and allocation/kernel accounting remain coordinator gates.
+
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
