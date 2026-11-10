@@ -1,0 +1,11 @@
+--- a/crates/init/src/managed.rs
++++ b/crates/init/src/managed.rs
+@@ -851,7 +851,7 @@
+             loop {
+                 let pid = libc::syscall(
+                     libc::SYS_wait4,
+-                    -1,
++                    ACTOR,
+                     &raw mut status,
+                     libc::WNOHANG,
+                     std::ptr::null_mut::<libc::rusage>(),
