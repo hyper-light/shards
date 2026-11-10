@@ -1,0 +1,165 @@
+ Downloading crates ...
+  Downloaded pem v4.0.0
+  Downloaded subtle v2.6.1
+  Downloaded powerfmt v0.2.0
+  Downloaded untrusted v0.9.0
+  Downloaded equivalent v1.0.2
+  Downloaded asn1-rs-impl v0.2.0
+  Downloaded untrusted v0.7.1
+  Downloaded num-conv v0.2.2
+  Downloaded asn1-rs-derive v0.6.0
+  Downloaded time-core v0.1.9
+  Downloaded dunce v1.0.5
+  Downloaded cfg-if v1.0.5
+  Downloaded rusticata-macros v4.1.0
+  Downloaded lazy_static v1.5.0
+  Downloaded displaydoc v0.2.7
+  Downloaded fs_extra v1.3.0
+  Downloaded zeroize v1.9.0
+  Downloaded data-encoding v2.11.1
+  Downloaded synstructure v0.13.2
+  Downloaded thiserror-impl v2.0.21
+  Downloaded deranged v0.5.8
+  Downloaded bit-vec v0.9.1
+  Downloaded shlex v2.0.1
+  Downloaded num-integer v0.1.47
+  Downloaded foldhash v0.2.0
+  Downloaded quote v1.0.47
+  Downloaded asn1-rs v0.7.2
+  Downloaded autocfg v1.5.1
+  Downloaded oid-registry v0.8.1
+  Downloaded jobserver v0.1.35
+  Downloaded cmake v0.1.58
+  Downloaded pkg-config v0.3.34
+  Downloaded rquickjs v0.14.0
+  Downloaded yasna v0.6.0
+  Downloaded getrandom v0.2.17
+  Downloaded thiserror v2.0.21
+  Downloaded once_cell v1.21.4
+  Downloaded unicode-ident v1.0.26
+  Downloaded rcgen v0.14.10
+  Downloaded num-traits v0.2.19
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded time-macros v0.2.32
+  Downloaded find-msvc-tools v0.1.14
+  Downloaded allocator-api2 v0.2.21
+  Downloaded proc-macro2 v1.0.107
+  Downloaded serde_core v1.0.229
+  Downloaded der-parser v10.0.0
+  Downloaded rustls-webpki v0.103.16
+  Downloaded serde v1.0.229
+  Downloaded serde_derive v1.0.229
+  Downloaded minimal-lexical v0.2.1
+  Downloaded base64 v0.23.1
+  Downloaded num-bigint v0.4.8
+  Downloaded memchr v2.8.3
+  Downloaded nom v7.1.3
+  Downloaded cc v1.5.1
+  Downloaded x509-parser v0.18.1
+  Downloaded hashbrown v0.17.1
+  Downloaded rquickjs-core v0.14.0
+  Downloaded time v0.3.55
+  Downloaded syn v2.0.119
+  Downloaded syn v3.0.6
+  Downloaded rustls v0.23.46
+  Downloaded libc v0.2.189
+  Downloaded ring v0.17.14
+   Compiling libc v0.2.189
+   Compiling jobserver v0.1.35
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling cc v1.5.1
+   Compiling cmake v0.1.58
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-rs)
+   Compiling zeroize v1.9.0
+   Compiling rquickjs-sys v0.14.0 (/home/adalundhe/native-effect-broker-v1/source/vendor/rquickjs-sys)
+   Compiling rustls-pki-types v1.15.1
+   Compiling allocator-api2 v0.2.21
+   Compiling deranged v0.5.8
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.0
+   Compiling equivalent v1.0.2
+   Compiling foldhash v0.2.0
+   Compiling num-conv v0.2.2
+   Compiling time v0.3.55
+   Compiling hashbrown v0.17.1
+   Compiling base64 v0.23.1
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling pem v4.0.0
+   Compiling rquickjs-core v0.14.0
+   Compiling yasna v0.6.0
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling rcgen v0.14.10
+   Compiling rquickjs v0.14.0
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/native-effect-broker-v1/source/crates/testdir)
+   Compiling shards-server v0.1.0 (/home/adalundhe/native-effect-broker-v1/source/crates/server)
+error[E0618]: expected function, found `json::Value`
+   --> crates/server/src/broker.rs:931:20
+    |
+856 |     fn args(bytes: &[u8]) -> Value {
+    |     ------------------------------ this function of the same name is available here, but it's shadowed by the local binding
+...
+919 |         let args = args(br#"{"to":"agent peer","text":"x"}"#);
+    |             ---- `args` has type `json::Value`
+...
+931 |         let args = args(br#"{"to":"agent peer","text":"x","id":7}"#);
+    |                    ^^^^---------------------------------------------
+    |                    |
+    |                    call expression requires function
+
+warning: unused import: `Write`
+ --> crates/server/src/broker.rs:3:22
+  |
+3 | use std::fmt::{self, Write as _};
+  |                      ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error: lifetime may not live long enough
+   --> crates/server/src/broker.rs:952:13
+    |
+951 |           let submit = |ledger: &mut Ledger| {
+    |                                 -          - return type of closure is Result<Terminal<'2>, broker::Refusal>
+    |                                 |
+    |                                 let's call the lifetime of this reference `'1`
+952 | /             Request::receive("answer", Some(&args))
+953 | |                 .unwrap()
+954 | |                 .unwrap()
+955 | |                 .authorize(context(), Some(ledger.peer(&fd)))
+956 | |                 .and_then(|a| a.reserve(Format::Program))
+957 | |                 .map(Reserved::execute)
+    | |_______________________________________^ returning this value requires that `'1` must outlive `'2`
+
+error[E0621]: explicit lifetime required in the type of `args`
+    --> crates/server/src/server.rs:1238:16
+     |
+1238 |         return Some(Dispatched::Effect(terminal));
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ lifetime `'a` required
+     |
+help: add explicit lifetime `'a` to the type of `args`
+     |
+1204 |     args: Option<&'a json::Value>,
+     |                   +++++++++
+
+Some errors have detailed explanations: E0618, E0621.
+For more information about an error, try `rustc --explain E0618`.
+warning: `shards-server` (bin "shards-server" test) generated 1 warning
+error: could not compile `shards-server` (bin "shards-server" test) due to 3 previous errors; 1 warning emitted

@@ -1,0 +1,51 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking shards-server v0.1.0 (/home/adalundhe/native-effect-broker-v1/source/crates/server)
+error: unsafe block missing a safety comment
+   --> crates/server/src/broker.rs:817:13
+    |
+817 |             unsafe {
+    |             ^^^^^^^^
+    |
+    = help: consider adding a safety comment on the preceding line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+    = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`
+
+error: unsafe block missing a safety comment
+   --> crates/server/src/broker.rs:849:13
+    |
+849 |             unsafe { libc::recv(fd.as_raw_fd(), (&raw mut byte).cast(), 1, libc::MSG_DONTWAIT) },
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider adding a safety comment on the preceding line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: unsafe block missing a safety comment
+    --> crates/server/src/server.rs:2275:13
+     |
+2275 |             unsafe {
+     |             ^^^^^^^^
+     |
+     = help: consider adding a safety comment on the preceding line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: unsafe block missing a safety comment
+    --> crates/server/src/server.rs:2392:13
+     |
+2392 |             unsafe {
+     |             ^^^^^^^^
+     |
+     = help: consider adding a safety comment on the preceding line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: could not compile `shards-server` (bin "shards-server" test) due to 4 previous errors

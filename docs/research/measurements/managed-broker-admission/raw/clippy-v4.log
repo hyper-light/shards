@@ -1,0 +1,83 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/native-effect-broker-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking zeroize v1.9.0
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-sys)
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/native-effect-broker-v1/source/vendor/aws-lc-rs)
+    Checking rustls-pki-types v1.15.1
+    Checking allocator-api2 v0.2.21
+    Checking deranged v0.5.8
+    Checking time-core v0.1.9
+    Checking foldhash v0.2.0
+    Checking equivalent v1.0.2
+    Checking num-conv v0.2.2
+    Checking powerfmt v0.2.0
+    Checking time v0.3.55
+    Checking hashbrown v0.17.1
+    Checking rquickjs-sys v0.14.0 (/home/adalundhe/native-effect-broker-v1/source/vendor/rquickjs-sys)
+    Checking base64 v0.23.1
+    Checking untrusted v0.9.0
+    Checking rustls-webpki v0.103.16
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking yasna v0.6.0
+    Checking libc v0.2.189
+    Checking subtle v2.6.1
+    Checking once_cell v1.21.4
+    Checking rustls v0.23.46
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-effect-broker-v1/source/crates/testdir)
+    Checking rcgen v0.14.10
+    Checking rquickjs v0.14.0
+    Checking shards-server v0.1.0 (/home/adalundhe/native-effect-broker-v1/source/crates/server)
+error: fields `receipt` and `outcome` are never read
+   --> crates/server/src/broker.rs:106:9
+    |
+105 | pub(crate) struct Terminal<'a> {
+    |                   -------- fields in this struct
+106 |     pub receipt: Option<Receipt<'a>>,
+    |         ^^^^^^^
+107 |     pub outcome: Outcome,
+    |         ^^^^^^^
+    |
+    = note: `Terminal` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: method `receipt` is never used
+   --> crates/server/src/broker.rs:665:12
+    |
+664 | impl<'a, 'b> Reserved<'a, 'b> {
+    | ----------------------------- method in this implementation
+665 |     pub fn receipt(&self) -> &Receipt<'b> {
+    |            ^^^^^^^
+
+error: this `if` statement can be collapsed
+   --> crates/server/src/broker.rs:228:9
+    |
+228 | /         if let Some(id) = self.id {
+229 | |             if !peer.answer || !peer.asked.contains(&id) {
+230 | |                 return Err(denied(Reason::RequestNotOwned));
+231 | |             }
+232 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+228 ~         if let Some(id) = self.id
+229 ~             && (!peer.answer || !peer.asked.contains(&id)) {
+230 |                 return Err(denied(Reason::RequestNotOwned));
+231 ~             }
+    |
+
+error: could not compile `shards-server` (bin "shards-server") due to 3 previous errors

@@ -25,7 +25,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::sandbox;
+use crate::{broker, sandbox};
 
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
@@ -35,7 +35,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 #[path = "../../init/src/json.rs"]
 #[allow(dead_code)]
-mod json;
+pub(super) mod json;
 use json::Value;
 
 /// The name its certificate is for, which a client asks for.
@@ -504,12 +504,12 @@ enum Body {
     File(String, Vec<u8>),
 }
 
-const REQUEST: u8 = 1;
-const ANSWER: u8 = 2;
+pub(super) const REQUEST: u8 = 1;
+pub(super) const ANSWER: u8 = 2;
 /// A request, and an answer, that carry a file: its name's length (2 bytes, big-endian),
 /// its name, and its bytes.
-const REQUEST_FILE: u8 = 3;
-const ANSWER_FILE: u8 = 4;
+pub(super) const REQUEST_FILE: u8 = 3;
+pub(super) const ANSWER_FILE: u8 = 4;
 
 /// The channels init gave it: one a line, `FD\tLABEL\tSEND\tANSWER`.
 fn channels(spec: &str) -> Result<Vec<Peer>, String> {
@@ -638,9 +638,10 @@ fn take(peer: &mut Peer) {
 }
 
 /// A message's head: its kind, and its ID, 8 bytes.
-const MESSAGE_HEAD: usize = 1 + 8;
+pub(super) const MESSAGE_HEAD: usize = 1 + 8;
 
 /// What came of sending a peer a message.
+#[cfg(test)]
 #[derive(Debug, PartialEq, Eq)]
 enum Put {
     Sent,
@@ -650,31 +651,20 @@ enum Put {
     Long(usize),
 }
 
-impl Put {
-    /// The tool's answer for a message to `to` that went, as `sent`, or its refusal, the
-    /// asker told to ask `again` (`send`, `answer`).
-    fn said(self, to: &str, again: &str, sent: impl FnOnce() -> String) -> Result<String, String> {
-        match self {
-            Put::Sent => Ok(sent()),
-            Put::Full => Err(format!(
-                "{to} has not taken what was sent it; {again} again later"
-            )),
-            Put::Long(most) => Err(format!("a message to {to} holds at most {most} bytes")),
-        }
-    }
-}
-
 /// Sends `peer` a message of `kind`.
+#[cfg(test)]
 fn put(peer: &Peer, kind: u8, id: u64, text: &str) -> Put {
     put_bytes(peer, kind, id, text.as_bytes())
 }
 
 /// What a file's message holds beside its bytes: its name's length (2 bytes) and its name.
+#[cfg(test)]
 fn file_head(name: &str) -> usize {
     2usize.saturating_add(name.len())
 }
 
 /// Sends `peer` a file handed across, named `name`, as `kind`.
+#[cfg(test)]
 fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> Put {
     let Ok(len) = u16::try_from(name.len()) else {
         return Put::Long(peer.most.saturating_sub(MESSAGE_HEAD + file_head(name)));
@@ -687,6 +677,7 @@ fn put_file(peer: &Peer, kind: u8, id: u64, name: &str, bytes: &[u8]) -> Put {
     )
 }
 
+#[cfg(test)]
 fn put_bytes(peer: &Peer, kind: u8, id: u64, payload: &[u8]) -> Put {
     if payload.len() > peer.most.saturating_sub(MESSAGE_HEAD) {
         return Put::Long(peer.most.saturating_sub(MESSAGE_HEAD));
@@ -1165,15 +1156,16 @@ fn worker_end(code: i32, status: i32) -> String {
 
 /// A program's call, a frame's JSON (`{"name": ..., "args": {...}}`), made as the caller's
 /// MCP call of that tool is: its answer, JSON with the tool's `value` or its `error`.
-fn call_for_program(p: &Prepared, peers: &mut [Peer], bytes: &[u8]) -> String {
+fn call_for_program(p: &Prepared, peers: &mut [Peer], bytes: &[u8]) -> broker::Reply {
     let Ok(msg) = json::parse(bytes) else {
-        return r#"{"error":"a call that is no JSON"}"#.to_string();
+        return broker::Reply::Literal(r#"{"error":"a call that is no JSON"}"#);
     };
     let name = msg.get("name").and_then(Value::str).unwrap_or_default();
-    match call(p, peers, name, msg.get("args")) {
-        Some(Ok(value)) => format!(r#"{{"value":{value}}}"#),
-        Some(Err(why)) => format!(r#"{{"error":{}}}"#, quote(&why)),
-        None => format!(r#"{{"error":{}}}"#, quote(&format!("no tool {name}"))),
+    match call(p, peers, name, msg.get("args"), broker::Format::Program) {
+        Some(Dispatched::Effect(reply)) => reply,
+        Some(Dispatched::Value(Ok(value))) => format!(r#"{{"value":{value}}}"#).into(),
+        Some(Dispatched::Value(Err(why))) => format!(r#"{{"error":{}}}"#, quote(&why)).into(),
+        None => format!(r#"{{"error":{}}}"#, quote(&format!("no tool {name}"))).into(),
     }
 }
 
@@ -1383,14 +1375,52 @@ enum Answered {
 
 /// Tool `name` called with `args` by the caller, for its MCP call or a program's (D136):
 /// its value, as JSON, or why it failed; None for no such tool.
+enum Dispatched {
+    Value(Result<String, String>),
+    Effect(broker::Reply),
+}
+
 fn call(
     p: &Prepared,
     peers: &mut [Peer],
     name: &str,
     args: Option<&Value>,
-) -> Option<Result<String, String>> {
-    let arg = |k: &str| args.and_then(|a| a.get(k));
-    Some(match name {
+    format: broker::Format,
+) -> Option<Dispatched> {
+    if let Some(request) = broker::Request::receive(name, args) {
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => return Some(Dispatched::Effect(format.refused(error, &p.label, ""))),
+        };
+        let to = request.destination();
+        let peer = peers
+            .iter_mut()
+            .find(|peer| peer.label == to)
+            .map(|peer| broker::Peer {
+                label: &peer.label,
+                fd: std::os::fd::AsFd::as_fd(&peer.fd),
+                send: peer.send,
+                answer: peer.answer,
+                most: peer.most,
+                last: &mut peer.last,
+                sent: &mut peer.sent,
+                asked: &mut peer.asked,
+            });
+        let context = broker::Context {
+            principal: &p.label,
+            scratch: p.scratch.as_ref().map(std::os::fd::AsFd::as_fd),
+            evidence: broker::Evidence::MemoryOnly,
+        };
+        let terminal = match request
+            .authorize(context, peer)
+            .and_then(|authorized| authorized.reserve(format))
+        {
+            Ok(reserved) => reserved.execute().present(),
+            Err(error) => format.refused(error, &p.label, to),
+        };
+        return Some(Dispatched::Effect(terminal));
+    }
+    let value = match name {
         "whoami" => Ok(quote(&p.label)),
         "mcp" => Ok(p.offered.clone()),
         "peers" => {
@@ -1406,21 +1436,6 @@ fn call(
                 })
                 .collect();
             Ok(format!("[{}]", list.join(",")))
-        }
-        "send" => {
-            let to = arg("to").and_then(Value::str).unwrap_or_default();
-            let body = arg("text").and_then(Value::str).unwrap_or_default();
-            match peers.iter_mut().find(|q| q.label == to) {
-                Some(q) if q.send => {
-                    let next = q.last.wrapping_add(1);
-                    put(q, REQUEST, next, body).said(to, "send", || {
-                        q.last = next;
-                        q.sent.push(next);
-                        format!(r#"{{"id":{next}}}"#)
-                    })
-                }
-                _ => Err(format!("{} may not send {to} requests", p.label)),
-            }
         }
         "receive" => {
             let mut got = Vec::new();
@@ -1448,150 +1463,21 @@ fn call(
             }
             Ok(format!("[{}]", got.join(",")))
         }
-        "answer" => {
-            let to = arg("to").and_then(Value::str).unwrap_or_default();
-            let to_id = arg("id").and_then(Value::u64);
-            let body = arg("text").and_then(Value::str).unwrap_or_default();
-            match (peers.iter_mut().find(|q| q.label == to), to_id) {
-                (Some(q), Some(n)) if q.asked.contains(&n) => {
-                    put(q, ANSWER, n, body).said(to, "answer", || {
-                        q.asked.retain(|a| *a != n);
-                        "{}".to_string()
-                    })
-                }
-                _ => Err(format!(
-                    "{} has no request of {to}'s to answer by that ID",
-                    p.label
-                )),
-            }
-        }
-        "hand" => {
-            let to = arg("to").and_then(Value::str).unwrap_or_default();
-            let path = arg("path").and_then(Value::str).unwrap_or_default();
-            let to_id = arg("id").and_then(Value::u64);
-            // The grant first, as for a text: nothing is read where nothing may go.
-            match (peers.iter_mut().find(|q| q.label == to), to_id) {
-                (Some(q), None) if q.send => handed(p, path, q.most).and_then(|(name, bytes)| {
-                    let next = q.last.wrapping_add(1);
-                    put_file(q, REQUEST_FILE, next, &name, &bytes).said(to, "send", || {
-                        q.last = next;
-                        q.sent.push(next);
-                        format!(r#"{{"id":{next}}}"#)
-                    })
-                }),
-                (Some(q), Some(n)) if q.asked.contains(&n) => {
-                    handed(p, path, q.most).and_then(|(name, bytes)| {
-                        put_file(q, ANSWER_FILE, n, &name, &bytes).said(to, "answer", || {
-                            q.asked.retain(|a| *a != n);
-                            "{}".to_string()
-                        })
-                    })
-                }
-                (_, None) => Err(format!("{} may not send {to} requests", p.label)),
-                (_, Some(_)) => Err(format!(
-                    "{} has no request of {to}'s to answer by that ID",
-                    p.label
-                )),
-            }
-        }
         _ => return None,
-    })
+    };
+    Some(Dispatched::Value(value))
 }
 
-/// The file its caller hands across (AGENTFILE_ARCH §9.4): `path`, in the caller's scratch
-/// as it sees it (`/tmp/...`), opened beneath that scratch as the kernel resolves it
-/// (openat2(2): through no symbolic or magic link, onto no other mount, never above it)
-/// without waiting, so that a FIFO cannot stall it, and a regular file and no other kind,
-/// read whole within what a message to the peer it goes to holds (`message`, [`Peer`]'s
-/// `most`): its name and its bytes. A link, a FIFO or a giant file the caller planted
-/// redirects, stalls and exhausts nothing.
-fn handed(p: &Prepared, path: &str, message: usize) -> Result<(String, Vec<u8>), String> {
-    use std::os::unix::fs::FileTypeExt as _;
-    let scratch = p
-        .scratch
-        .as_ref()
-        .ok_or("its caller has no scratch, /tmp, to hand files from")?;
-    let rel = path
-        .strip_prefix("/tmp/")
-        .filter(|r| !r.is_empty())
-        .ok_or_else(|| format!("{path} is not in /tmp, the scratch files are handed from"))?;
-    let name = rel.rsplit('/').next().unwrap_or(rel).to_string();
-    let most = message.saturating_sub(MESSAGE_HEAD + file_head(&name));
-    let at = std::ffi::CString::new(rel).map_err(|_| format!("{path} holds a NUL"))?;
-    // struct open_how (include/uapi/linux/openat2.h): flags, mode, resolve.
-    let how: [u64; 3] = [
-        (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC) as u64,
-        0,
-        RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV,
-    ];
-    // SAFETY: openat2(2) beneath a descriptor of its own, with a NUL-terminated path and an
-    // open_how of the size given.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            scratch.as_raw_fd(),
-            at.as_ptr(),
-            how.as_ptr(),
-            std::mem::size_of_val(&how),
-        )
-    };
-    if fd < 0 {
-        let e = io::Error::last_os_error();
-        return Err(match e.raw_os_error() {
-            Some(libc::ELOOP) => format!(
-                "{path} is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch"
-            ),
-            Some(libc::EXDEV) => format!("{path} lies past the caller's scratch"),
-            Some(libc::ENXIO) => format!("{path} is a socket, not a regular file"),
-            Some(libc::EACCES) => format!(
-                "{path}: its server may not read it; a file handed across is one the caller's group may read"
-            ),
-            _ => format!("{path}: {e}"),
-        });
-    }
-    let fd = RawFd::try_from(fd).map_err(|_| format!("{path}: no descriptor"))?;
-    // SAFETY: the descriptor openat2 just made, owned here alone.
-    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
-    let meta = file.metadata().map_err(|e| format!("{path}: {e}"))?;
-    let kind = meta.file_type();
-    if !kind.is_file() {
-        let what = if kind.is_dir() {
-            "a directory"
-        } else if kind.is_fifo() {
-            "a FIFO"
-        } else if kind.is_socket() {
-            "a socket"
-        } else if kind.is_block_device() || kind.is_char_device() {
-            "a device"
-        } else {
-            "no regular file"
-        };
-        return Err(format!("{path} is {what}, not a regular file"));
-    }
-    if meta.len() > most as u64 {
-        return Err(format!(
-            "{path} is {} bytes, more than the {most} a file handed across holds",
-            meta.len()
-        ));
-    }
-    let mut bytes = Vec::new();
-    (&file)
-        .take(most as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("{path}: {e}"))?;
-    if bytes.len() > most {
-        return Err(format!(
-            "{path} grew past the {most} bytes a file handed across holds"
-        ));
-    }
-    Ok((name, bytes))
+#[cfg(test)]
+fn handed(p: &Prepared, path: &str, message: usize) -> Result<(String, Vec<u8>), broker::Refusal> {
+    broker::read_for_test(p.scratch.as_ref().map(std::os::fd::AsFd::as_fd), path, message)
 }
 
 /// openat2(2)'s `resolve` flags (include/uapi/linux/openat2.h).
-const RESOLVE_NO_XDEV: u64 = 0x01;
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-const RESOLVE_BENEATH: u64 = 0x08;
+pub(super) const RESOLVE_NO_XDEV: u64 = 0x01;
+pub(super) const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+pub(super) const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+pub(super) const RESOLVE_BENEATH: u64 = 0x08;
 
 /// `bytes` in Base64, the standard alphabet with padding (RFC 4648 §4).
 fn base64(bytes: &[u8]) -> String {
@@ -1814,7 +1700,7 @@ fn header_value(said: &str) -> Option<String> {
 /// What a `tools/call` came to: its tool's result, a program's answer to come, or a
 /// refusal, its whole answer.
 enum Called {
-    Result(String),
+    Result(broker::Reply),
     Later(u64),
     Refused(String),
 }
@@ -1845,17 +1731,22 @@ fn tool(
                 Some(code) => {
                     match programs.start(code, timeout.filter(|&t| t > 0), conn, session, write(id), modern) {
                         Ok(id) => return Called::Later(id),
-                        Err(why) => text(&why.to_string(), true),
+                        Err(why) => {
+                            return Called::Result(
+                                broker::Format::Mcp.display_refusal(format_args!("{why}")),
+                            );
+                        }
                     }
                 }
                 None => text("run takes a program, its code", true),
             }
         }
-        Some(name) => match call(p, peers, name, args) {
-            // Who it is, as the text it is.
-            Some(Ok(_)) if name == "whoami" => text(&p.label, false),
-            Some(Ok(value)) => text(&value, false),
-            Some(Err(why)) => text(&why, true),
+        .into(),
+        Some(name) => match call(p, peers, name, args, broker::Format::Mcp) {
+            Some(Dispatched::Effect(reply)) => reply,
+            Some(Dispatched::Value(Ok(_))) if name == "whoami" => text(&p.label, false).into(),
+            Some(Dispatched::Value(Ok(value))) => text(&value, false).into(),
+            Some(Dispatched::Value(Err(why))) => text(&why, true).into(),
             None => return Called::Refused(error(id, -32602, "no such tool")),
         },
         None => return Called::Refused(error(id, -32602, "no such tool")),
@@ -1912,7 +1803,12 @@ fn rpc(
         Some("ping") => "{}".to_string(),
         Some("tools/list") => TOOLS.to_string(),
         Some("tools/call") => match tool(p, peers, programs, conn, session, id, msg, false) {
-            Called::Result(result) => result,
+            Called::Result(result) => {
+                return Answered::Now(format!(
+                    r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+                    write(id)
+                ));
+            }
             Called::Later(program) => return Answered::Later(program),
             Called::Refused(answer) => return Answered::Now(answer),
         },
@@ -2236,30 +2132,17 @@ mod tests {
             handed(&p, "/tmp/out.txt", message),
             Ok(("out.txt".to_string(), b"hello".to_vec()))
         );
-        let refused = |path: &str| handed(&p, path, message).unwrap_err();
-        assert!(
-            refused("/tmp/key").contains("is a symbolic link"),
-            "{}",
-            refused("/tmp/key")
-        );
-        assert_eq!(refused("/tmp/pipe"), "/tmp/pipe is a FIFO, not a regular file");
-        assert_eq!(refused("/tmp/d"), "/tmp/d is a directory, not a regular file");
-        assert_eq!(
-            refused("/tmp/big"),
-            format!(
-                "/tmp/big is {} bytes, more than the {most} a file handed across holds",
-                most + 1
-            )
-        );
-        assert_eq!(refused("/tmp/../x"), "/tmp/../x lies past the caller's scratch");
-        assert_eq!(
-            refused("/x"),
-            "/x is not in /tmp, the scratch files are handed from"
-        );
+        let refused = |path: &str| handed(&p, path, message).unwrap_err().reason;
+        assert_eq!(refused("/tmp/key"), broker::Reason::FileIo(Some(libc::ELOOP)));
+        assert_eq!(refused("/tmp/pipe"), broker::Reason::FileKind);
+        assert_eq!(refused("/tmp/d"), broker::Reason::FileKind);
+        assert_eq!(refused("/tmp/big"), broker::Reason::TooLong);
+        assert_eq!(refused("/tmp/../x"), broker::Reason::FileIo(Some(libc::EXDEV)));
+        assert_eq!(refused("/x"), broker::Reason::Path);
         p.scratch = None;
         assert_eq!(
-            handed(&p, "/tmp/out.txt", message).unwrap_err(),
-            "its caller has no scratch, /tmp, to hand files from"
+            handed(&p, "/tmp/out.txt", message).unwrap_err().reason,
+            broker::Reason::NoScratch
         );
     }
 
@@ -2711,25 +2594,257 @@ mod tests {
     fn a_programs_call_is_its_callers() {
         let p = prepare_for_test();
         assert_eq!(
-            call_for_program(&p, &mut [], br#"{"name":"whoami","args":{}}"#),
+            call_for_program(&p, &mut [], br#"{"name":"whoami","args":{}}"#).as_str(),
             r#"{"value":"agent t"}"#
         );
+        let refused = call_for_program(
+            &p,
+            &mut [],
+            br#"{"name":"send","args":{"to":"agent x","text":"hi"}}"#,
+        );
+        let refused = json::parse(refused.as_bytes()).unwrap();
         assert_eq!(
-            call_for_program(
-                &p,
-                &mut [],
-                br#"{"name":"send","args":{"to":"agent x","text":"hi"}}"#
-            ),
-            r#"{"error":"agent t may not send agent x requests"}"#
+            refused.get("error").and_then(Value::str),
+            Some("agent t may not send agent x requests")
         );
         assert_eq!(
-            call_for_program(&p, &mut [], br#"{"name":"spawn","args":{}}"#),
+            refused
+                .get("broker")
+                .and_then(|v| v.get("cause"))
+                .and_then(|v| v.get("kind"))
+                .and_then(Value::str),
+            Some("grant")
+        );
+        assert_eq!(
+            call_for_program(&p, &mut [], br#"{"name":"spawn","args":{}}"#).as_str(),
             r#"{"error":"no tool spawn"}"#
         );
         assert_eq!(
-            call_for_program(&p, &mut [], b"{"),
+            call_for_program(&p, &mut [], b"{").as_str(),
             r#"{"error":"a call that is no JSON"}"#
         );
+    }
+
+    #[test]
+    fn broker_http_and_program_callers_share_the_actual_peer_admission() {
+        let mut p = prepare_for_test();
+        let mut fds = [-1; 2];
+        assert_eq!(
+            // SAFETY: socketpair writes the two supplied descriptors.
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    fds.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        // SAFETY: the successful descriptors are transferred here alone.
+        let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let peer = |fd| Peer {
+            label: "agent peer".into(),
+            most: message_most(&fd).unwrap(),
+            fd,
+            send: true,
+            answer: true,
+            held: None,
+            sent: vec![],
+            last: 0,
+            asked: vec![],
+            gone: false,
+        };
+        let mut peers = [peer(mine)];
+        let mut target = peer(theirs);
+        let program = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"send","args":{"to":"agent peer","text":"program","principal":"forged"}}"#,
+        );
+        let program = json::parse(program.as_bytes()).unwrap();
+        assert_eq!(
+            program
+                .get("value")
+                .and_then(|v| v.get("id"))
+                .and_then(Value::u64),
+            Some(1)
+        );
+        assert_eq!(
+            program
+                .get("broker")
+                .and_then(|v| v.get("principal"))
+                .and_then(Value::str),
+            Some("agent t")
+        );
+        take(&mut target);
+        assert!(
+            matches!(target.held.take(), Some(Message { id: 1, request: true, body: Body::Text(text) }) if text == "program")
+        );
+        let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"send","arguments":{"to":"agent peer","text":"http"}}}"#;
+        let http = format!(
+            "POST /mcp HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        let Some((Reply::Now(answer), _, _)) =
+            request(&p, &mut peers, &mut no_programs(), 1, http.as_bytes())
+        else {
+            panic!("HTTP call did not answer");
+        };
+        let answer = String::from_utf8(answer).unwrap();
+        assert!(answer.contains(r#""text":"{\"id\":2}""#), "{answer}");
+        let body = answer.split_once("\r\n\r\n").unwrap().1;
+        let body = json::parse(body.as_bytes()).unwrap();
+        let metadata = body
+            .get("result")
+            .and_then(|v| v.get("structuredContent"))
+            .unwrap();
+        assert_eq!(metadata.get("operation").and_then(Value::str), Some("send"));
+        assert_eq!(metadata.get("request").and_then(Value::u64), Some(2));
+        assert_eq!(
+            metadata
+                .get("effect")
+                .and_then(|v| v.get("kind"))
+                .and_then(Value::str),
+            Some("kernel_accepted")
+        );
+        assert_eq!(
+            metadata
+                .get("effect")
+                .and_then(|v| v.get("bytes"))
+                .and_then(Value::u64),
+            Some((MESSAGE_HEAD + 4) as u64)
+        );
+        take(&mut target);
+        assert!(
+            matches!(target.held.take(), Some(Message { id: 2, request: true, body: Body::Text(text) }) if text == "http")
+        );
+        assert_eq!(peers[0].last, 2);
+        assert_eq!(peers[0].sent, [1, 2]);
+
+        let tmp = shards_testdir::TempDir::new("broker-call").unwrap();
+        std::fs::write(tmp.join("out"), b"real-file").unwrap();
+        p.scratch = Some(std::fs::File::open(&*tmp).unwrap().into());
+        let reply = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"hand","args":{"to":"agent peer","path":"/tmp/out"}}"#,
+        );
+        let reply = json::parse(reply.as_bytes()).unwrap();
+        assert_eq!(
+            reply.get("value").and_then(|v| v.get("id")).and_then(Value::u64),
+            Some(3)
+        );
+        assert_eq!(
+            reply
+                .get("broker")
+                .and_then(|v| v.get("operation"))
+                .and_then(Value::str),
+            Some("hand_request")
+        );
+        take(&mut target);
+        assert!(
+            matches!(target.held.take(), Some(Message { id: 3, request: true, body: Body::File(name, bytes) }) if name == "out" && bytes == b"real-file")
+        );
+
+        peers[0].asked.push(9);
+        target.sent.push(9);
+        let reply = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"answer","args":{"to":"agent peer","text":"once","id":9}}"#,
+        );
+        let reply = json::parse(reply.as_bytes()).unwrap();
+        assert!(matches!(reply.get("value"), Some(Value::Object(fields)) if fields.is_empty()));
+        assert_eq!(
+            reply
+                .get("broker")
+                .and_then(|v| v.get("request"))
+                .and_then(Value::u64),
+            Some(9)
+        );
+        take(&mut target);
+        assert!(
+            matches!(target.held.take(), Some(Message { id: 9, request: false, body: Body::Text(text) }) if text == "once")
+        );
+        let duplicate = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"answer","args":{"to":"agent peer","text":"twice","id":9}}"#,
+        );
+        assert!(duplicate.as_str().contains("has no request"));
+        let malformed = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"hand","args":{"to":"agent peer","path":"/tmp/out","id":"wrong"}}"#,
+        );
+        assert!(malformed.as_str().contains("id is missing or has the wrong type"));
+        take(&mut target);
+        assert!(target.held.is_none());
+        peers[0].last = u64::MAX;
+        let exhausted = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"send","args":{"to":"agent peer","text":"no wrap"}}"#,
+        );
+        assert!(exhausted.as_str().contains("exhausted"));
+        take(&mut target);
+        assert!(target.held.is_none());
+        assert_eq!(peers[0].last, u64::MAX);
+        assert!(peers[0].asked.is_empty());
+        eprintln!(
+            "BROKER_CALLER program_id=1 http_id=2 hand_id=3 answer_id=9 duplicate=no_packet malformed=no_packet exhausted=no_packet local_kernel_acceptance_only=true"
+        );
+    }
+
+    #[test]
+    fn broker_exhausted_caller_identity_refuses_before_packet() {
+        let p = prepare_for_test();
+        let mut fds = [-1; 2];
+        assert_eq!(
+            // SAFETY: socketpair writes the two supplied descriptors.
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    fds.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        // SAFETY: the successful descriptors are transferred here alone.
+        let (mine, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let peer = |fd| Peer {
+            label: "agent peer".into(),
+            most: message_most(&fd).unwrap(),
+            fd,
+            send: true,
+            answer: true,
+            held: None,
+            sent: vec![],
+            last: 0,
+            asked: vec![],
+            gone: false,
+        };
+        let mut peers = [peer(mine)];
+        let mut target = peer(theirs);
+        peers[0].last = u64::MAX;
+        let reply = call_for_program(
+            &p,
+            &mut peers,
+            br#"{"name":"send","args":{"to":"agent peer","text":"no wrap"}}"#,
+        );
+        take(&mut target);
+        let observed_id = target.held.as_ref().map(|message| message.id);
+        eprintln!(
+            "BROKER_EXHAUSTED last={} actual_packet_id={observed_id:?} caller_reply={reply}",
+            peers[0].last
+        );
+        assert_eq!(observed_id, None, "an exhausted identity emitted a packet");
+        assert_eq!(peers[0].last, u64::MAX);
+        assert!(reply.as_str().contains("exhausted"));
+        assert!(peers[0].sent.is_empty());
     }
 
     fn prepare_for_test() -> Prepared {

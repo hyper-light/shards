@@ -1,0 +1,23 @@
+{
+  "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "kernel": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "scope": "/home/adalundhe/native-effect-broker-v1",
+  "private_cargo_home": "/home/adalundhe/native-effect-broker-v1/cargo-home",
+  "private_target": "/home/adalundhe/native-effect-broker-v1/target",
+  "disk_free_bytes": 1926716628992,
+  "isolated_lock_retained_packages": 83,
+  "isolated_lock_removed_packages": 129,
+  "isolated_lock_new_or_changed": [],
+  "original_lock_sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1",
+  "isolated_lock_sha256": "346caed7dc97666905232bcf5258f1dc64d0a02eb530eeba09eb29a945be554c",
+  "source_sha256": {
+    "crates/server/src/main.rs": "5dcdb5efd9546353368c2d72d76ae7083e6405c6843eb1821b7c7cc5c365163b",
+    "crates/server/src/server.rs": "47f187092fbac37ca048ea77f414ad65bc57c02c51b9af87797a55a3063c8255",
+    "crates/server/src/broker.rs": "dd8636601f9210315254ab9c77c9526cfcf2f07ff7d6aef81ce496b14f61eb01"
+  }
+}
