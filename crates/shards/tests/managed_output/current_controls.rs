@@ -215,7 +215,7 @@ fn receipt_value(receipt: &ControlReceipt) -> Value {
             json!({"kind":"Write","accepted":accepted,"pending":pending})
         }
         ControlReceipt::Read { bytes, ended } => json!({"kind":"Read","bytes":bytes,"ended":ended}),
-        ControlReceipt::Finish { error } => json!({"kind":"Finish","error":error}),
+        ControlReceipt::Finish { error, pending } => json!({"kind":"Finish","error":error,"pending":pending}),
         ControlReceipt::WriteError(error) => json!({"kind":"WriteError","error":error}),
     }
 }
@@ -227,7 +227,7 @@ fn check_receipts(receipts: &[ControlReceipt], submitted: usize, finish: bool) {
         match receipt {
             ControlReceipt::Write { accepted, pending } => writes.accept(*accepted, *pending).unwrap(),
             ControlReceipt::Read { .. } => {}
-            ControlReceipt::Finish { error } => {
+            ControlReceipt::Finish { error, .. } => {
                 assert!(error.is_none(), "actual send-side FIN failure: {error:?}");
                 finishes = finishes.checked_add(1).unwrap();
             }

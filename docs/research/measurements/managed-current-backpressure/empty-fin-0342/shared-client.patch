@@ -1,0 +1,21 @@
+diff --git a/crates/shards/tests/common/managed_capture.rs b/crates/shards/tests/common/managed_capture.rs
+index ee1d25801..e004b3f38 100644
+--- a/crates/shards/tests/common/managed_capture.rs
++++ b/crates/shards/tests/common/managed_capture.rs
+@@ -42,7 +42,7 @@ impl std::fmt::Debug for Event {
+ pub(super) enum ControlReceipt {
+     Write { accepted: usize, pending: usize },
+     Read { bytes: usize, ended: bool },
+-    Finish { error: Option<String> },
++    Finish { error: Option<String>, pending: usize },
+     WriteError(String),
+ }
+ 
+@@ -114,6 +114,7 @@ impl Client {
+             if let Some(receipts) = &self.control_receipts {
+                 let _ = receipts.send(ControlReceipt::Finish {
+                     error: result.as_ref().err().map(ToString::to_string),
++                    pending: self.pending.len(),
+                 });
+             }
+             if let Err(error) = result {

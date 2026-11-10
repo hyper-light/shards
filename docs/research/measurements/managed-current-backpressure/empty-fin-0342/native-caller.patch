@@ -1,0 +1,165 @@
+diff --git a/crates/shards/tests/managed_output/current_controls.rs b/crates/shards/tests/managed_output/current_controls.rs
+index 4e1b89bc5..4f7c1d0ac 100644
+--- a/crates/shards/tests/managed_output/current_controls.rs
++++ b/crates/shards/tests/managed_output/current_controls.rs
+@@ -215,7 +215,7 @@ fn receipt_value(receipt: &ControlReceipt) -> Value {
+             json!({"kind":"Write","accepted":accepted,"pending":pending})
+         }
+         ControlReceipt::Read { bytes, ended } => json!({"kind":"Read","bytes":bytes,"ended":ended}),
+-        ControlReceipt::Finish { error } => json!({"kind":"Finish","error":error}),
++        ControlReceipt::Finish { error, pending } => json!({"kind":"Finish","error":error,"pending":pending}),
+         ControlReceipt::WriteError(error) => json!({"kind":"WriteError","error":error}),
+     }
+ }
+@@ -227,7 +227,7 @@ fn check_receipts(receipts: &[ControlReceipt], submitted: usize, finish: bool) {
+         match receipt {
+             ControlReceipt::Write { accepted, pending } => writes.accept(*accepted, *pending).unwrap(),
+             ControlReceipt::Read { .. } => {}
+-            ControlReceipt::Finish { error } => {
++            ControlReceipt::Finish { error, .. } => {
+                 assert!(error.is_none(), "actual send-side FIN failure: {error:?}");
+                 finishes = finishes.checked_add(1).unwrap();
+             }
+diff --git a/crates/shards/tests/managed_output/current_controls/native_terminal.rs b/crates/shards/tests/managed_output/current_controls/native_terminal.rs
+index ee4fa2c92..c62df4cea 100644
+--- a/crates/shards/tests/managed_output/current_controls/native_terminal.rs
++++ b/crates/shards/tests/managed_output/current_controls/native_terminal.rs
+@@ -6,6 +6,7 @@ use shards_remote::managed::{Control, Endpoint, Producer, State};
+ enum TerminalControl {
+     DuplicateAck,
+     Resubscribe,
++    EmptyFinish,
+ }
+ 
+ struct NativeInput {
+@@ -40,6 +41,10 @@ impl NativeInput {
+         };
+         let errno = required("ERRNO").parse().unwrap();
+         assert!(errno > 0, "positive supplied canonical cause");
++        if matches!(control, TerminalControl::EmptyFinish) {
++            assert_eq!(channel, Channel::Stdout);
++            assert_eq!(errno, 5, "assigned owner-supplied cause");
++        }
+         let run = required("RUN");
+         assert!(!run.is_empty());
+         let generation = required("GENERATION").parse().unwrap();
+@@ -86,6 +91,24 @@ fn encoded(scope: Scope, offset: u64, event: CaptureEvent<'_>) -> Vec<u8> {
+     bytes
+ }
+ 
++fn check_empty_finish(receipts: &[ControlReceipt]) {
++    let mut finishes = 0usize;
++    for receipt in receipts {
++        match receipt {
++            ControlReceipt::Finish { error, pending } => {
++                assert!(error.is_none(), "actual empty-pending FIN failure: {error:?}");
++                assert_eq!(*pending, 0, "actual pending buffer at finish");
++                finishes = finishes.checked_add(1).unwrap();
++            }
++            ControlReceipt::Read { .. } => {}
++            ControlReceipt::Write { .. } | ControlReceipt::WriteError(_) => {
++                panic!("empty control must not submit stream bytes: {receipt:?}");
++            }
++        }
++    }
++    assert_eq!(finishes, 1, "one actual successful FIN receipt");
++}
++
+ struct Worker {
+     producer: Producer,
+     control: Control,
+@@ -233,6 +256,22 @@ impl Native {
+                     Some(receipts),
+                 )
+             }
++            TerminalControl::EmptyFinish => {
++                let (sender, receipts) = mpsc::channel();
++                (
++                    Ask::RawControl {
++                        bytes: Vec::new(),
++                        finish: true,
++                        receipts: sender,
++                    },
++                    Vec::new(),
++                    Some(receipts),
++                )
++            }
++        };
++        let reason = match input.control {
++            TerminalControl::EmptyFinish => Reason::Closed,
++            TerminalControl::DuplicateAck | TerminalControl::Resubscribe => Reason::Protocol,
+         };
+         std::fs::write(input.directory.join("postterminal-control.bin"), &bytes).unwrap();
+         observer.sender.send(Command::Handler(command)).unwrap();
+@@ -240,10 +279,7 @@ impl Native {
+         let Event::Lost(Some(code)) = event else {
+             panic!("selected terminal control must report typed refusal");
+         };
+-        assert_eq!(
+-            Reason::try_from(u32::try_from(code).unwrap()),
+-            Ok(Reason::Protocol)
+-        );
++        assert_eq!(Reason::try_from(u32::try_from(code).unwrap()), Ok(reason));
+         assert!(
+             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
+         );
+@@ -252,11 +288,21 @@ impl Native {
+             u64::try_from(data.len()).unwrap(),
+             CaptureEvent::Data(&data),
+         );
+-        let Err(managed::Rejected::Closed(returned)) = worker.producer.submit(refused.clone()) else {
++        let candidate = refused.clone();
++        let allocation = candidate.as_ptr();
++        let capacity = candidate.capacity();
++        let Err(managed::Rejected::Closed(returned)) = worker.producer.submit(candidate) else {
+             panic!("postterminal payload must return with typed Closed");
+         };
+         assert_eq!(returned, refused);
+-        input.write("control-refusal.json", &json!({"selected_control":format!("{:?}",input.control),"submitted_bytes":bytes.len(),"reason":format!("{:?}",Reason::Protocol),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len()}));
++        if matches!(input.control, TerminalControl::EmptyFinish) {
++            assert_eq!(returned.as_ptr(), allocation);
++            assert_eq!(returned.capacity(), capacity);
++            assert_eq!(worker.producer.capacity(), 0);
++            std::fs::write(input.directory.join("postterminal-candidate.bin"), &refused).unwrap();
++            std::fs::write(input.directory.join("postterminal-returned.bin"), &returned).unwrap();
++        }
++        input.write("control-refusal.json", &json!({"selected_control":format!("{:?}",input.control),"submitted_bytes":bytes.len(),"reason":format!("{reason:?}"),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len(),"same_allocation":returned.as_ptr()==allocation,"capacity_submitted":capacity,"capacity_returned":returned.capacity(),"producer_capacity":worker.producer.capacity()}));
+         observer.sender.request_stop();
+         let observer = self.observer.as_mut().unwrap();
+         let joined = observer.join(input.until);
+@@ -266,8 +312,13 @@ impl Native {
+         }
+         if let Some(receipts) = receipts {
+             let receipts: Vec<_> = receipts.try_iter().collect();
+-            input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":bytes.len(),"finish_requested":false,"meaning":"actual local acceptance/read receipts; not peer ACK or daemon metadata"}));
+-            check_receipts(&receipts, bytes.len(), false);
++            input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":bytes.len(),"finish_requested":matches!(input.control,TerminalControl::EmptyFinish),"meaning":"actual local acceptance/read/finish receipts; not peer ACK or daemon metadata; empty FIN is not an Io::write return0"}));
++            if matches!(input.control, TerminalControl::EmptyFinish) {
++                assert!(bytes.is_empty());
++                check_empty_finish(&receipts);
++            } else {
++                check_receipts(&receipts, bytes.len(), false);
++            }
+         }
+         input.write("observer-stop.json", &json!({"joined":joined.is_ok(),"error":joined.as_ref().err(),"post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count(),"owner_control":snapshot(&worker.control)}));
+         joined.unwrap();
+@@ -275,6 +326,9 @@ impl Native {
+         assert!(
+             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
+         );
++        if matches!(input.control, TerminalControl::EmptyFinish) {
++            assert_eq!(worker.producer.capacity(), 0);
++        }
+     }
+ 
+     fn cleanup(&mut self, input: &NativeInput) -> Vec<String> {
+@@ -346,3 +400,9 @@ fn canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit() {
+ fn canonical_aborted_resubscribe_preserves_errno_and_terminal_credit() {
+     exercise(TerminalControl::Resubscribe);
+ }
++
++#[test]
++#[ignore = "assigned native stdout/errno5; one real empty-pending FIN after Aborted/ACK/End, explicit bounds and fresh records"]
++fn canonical_aborted_empty_finish_preserves_errno_credit_and_owned_return() {
++    exercise(TerminalControl::EmptyFinish);
++}
