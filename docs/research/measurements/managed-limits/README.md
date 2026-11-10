@@ -2,8 +2,10 @@
 
 This is a fixture implementation for G10/P2/P12, not evidence of a product defect
 or a passing exhaustion campaign. The coordinator owns the actual VM run,
-mutations, repetition, audits and parent/kernel resource measurements. This branch
-starts at combined `4d3f454f194a0b6927423f0f859071147c43786d`; no production init,
+mutations, repetition, audits and parent/kernel resource measurements. The original fixture
+started at combined `4d3f454f194a0b6927423f0f859071147c43786d`. The current host
+correction branches from `0b2813008ea2df68fe4a48bf65bf60f61af76342` in private
+`p/managed-limits-cancel`; the original branch/worktree remain unchanged. No production init,
 pids policy, guest security, runtime dependencies or installed deliverables change.
 
 Policy readback: implementer, canonical main
@@ -31,12 +33,23 @@ controller counts threads, not just process leaders. This prediction is an
 explicit **fixture input**, not an observed entitlement guarantee.
 
 The host takes exactly one trusted `top -o pid,ppid,uid,nlwp` snapshot at each
-barrier. It checks the actor's UID and root-owned parent, both server UID rows
-and their parent relation, and each process's real reported thread count.
-A mismatch fails before fill; labels alone cannot satisfy this check. At refusal,
-children must be immediate children of the observed actor with the same UID.
-After recovery the same observable tree must contain zero actor children.
-Actor records also report namespace PID/PPID, real UID, `/proc/1` owner and Threads.
+barrier. It requires exactly one limited-UID actor root whose parent is outside
+that UID population, a nonzero/nonself numeric PPID, the two server UID rows and
+their parent relation, and each visible process's real reported thread count.
+All held children must be immediate children of that actor with the same UID.
+The same observed actor PID/PPID/UID/Threads tuple must remain unchanged across
+before-Fill, Refused and Recovered snapshots. These are retained barrier facts,
+not PID lifetime handles or admission authority. Actor records independently report
+namespace PID/PPID, real UID, `/proc/1` metadata owner and its own Threads.
+
+The managed reaper's row/threads are **not observed by top**: existing
+`init::procs::dump` (`procs.rs:133–137` at this base) deliberately omits processes
+whose executable is init's, except its separate outer REAPER exception. In root
+r222 the actor935 had PPID933, but row933 was absent. Its visible actor plus
+server/helper tasks summed to3; that is not the total tenant count and does not
+establish parent UID/thread count or cgroup membership. `reserved=4` remains the
+explicit source prediction; the fixture never subtracts this partial visible
+count to increase child admission or silently adjust the declared budget.
 
 Direct tenant `pids.current`, `pids.max`, `cgroup.procs` and membership are
 **unavailable through this fixture's public observation seam**. Main's cgroup
@@ -109,6 +122,34 @@ stderr diagnostics. Public constants describe only this test schema. The raw
 child's exit codes and gate bytes are fixed synthetic control choices; production
 policy constants are untouched.
 
+## Root r222: missing reaper-row fixture assumption
+
+The coordinator's actual KVM run at combined
+`3f7aeba45e90ad815e5477b8c840865507946ab8` reached Ready with declared tasks6 /
+reserved4 / children2, namespace actorPID2/PPID1/UID200000, `/proc/1` owner0,
+actor Threads1 and descriptors5. It then failed **before Fill** with
+`no actor below a root-owned reaper`. The visible table had limited actor935 /
+PPID933 and server923+helper929, while reaper933 and healthy reaper1720 were
+omitted. That was a fixture false assumption, not a product defect; the run
+proves no fork refusal, recovery or cancellation behavior. The earlier synthetic
+unit included a root parent row and therefore did not exercise the real visibility
+contract.
+
+The original full [campaign log](root-r222-before-fill/campaign.log), exact
+[visible table](root-r222-before-fill/top.txt), original path/source provenance
+and hashes are retained byte-for-byte from the coordinator-owned log. The
+original SHA256 is `49d4bdbbca08841253c148e014d6fc151f6f7fb15c742aa817a4f73b390c5d38`.
+The copy was read-only; no root source/cache or original evidence changed.
+
+The approved correction changes only host assertions and observations. One pure
+test uses that exact actual table, one labeled synthetic case adds a held child,
+and an ambiguity case requires rejection rather than selecting the first actor.
+It does not fabricate an unlisted reaper row or total. No guest record, production
+visibility, process limit, timeout, policy or grant changed. Existing namespace
+reaper owner metadata remains a separate guest observation; no reaper thread count
+was added. The coordinator must rerun actual Fill/refusal/recovery before the
+separately requested held-population cancellation extraction proceeds.
+
 ## Waits, alternatives and primary evidence
 
 The Linux PID-controller contract specifies TID accounting and refused fork/clone
@@ -138,7 +179,9 @@ state. Profiling/allocation/copy/kernel and unfairness costs remain unmeasured.
 
 ## Light checks and exact coordinator invocation
 
-Current checked source is `aab5b4ce2a9619ebb2e45dbf455179142aa13827`.
+The earlier connection-validation source was `aab5b4ce2a9619ebb2e45dbf455179142aa13827`.
+Current host assertion source is `aa3e4d876cc08a3c9301fd3c89fb28b5321cf3ae`;
+its light result is recorded below.
 The earlier boundary-only checkpoint
 `6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a` remains historical evidence.
 Fedora44 amd64 / kernel6.19.10-300.fc44 / Rust1.98.1(48a229cea), LLVM22.1.8;
@@ -155,8 +198,9 @@ and pure units, not a carried-musl executable or live VM result.
 | r53 / `boundary-red` | a4a743ef | record2/0; host1pass/1fail (exit101), actual boundary[]; guest+host clippy0, wrapper1. |
 | r54 / `boundary-green` | 6d00dd0c | record2/0, host2/0 including effective boundaries; guest+host strict clippy0, wrapper0. |
 | r56 / `connections-light` | aab5b4ce | record2/0, host3/0 including existing validator rejection and corrected grants; guest+host strict clippy0, wrapper0. |
+| r60 / `visible-parent-light` | aa3e4d876 | record2/0, host5/0 including actual r222-shaped table, synthetic held child and expected ambiguity rejection; guest+host strict clippy0, wrapper0. |
 
-All98 raw identity, source-hash, command, log and exit files remain verbatim in
+All113 raw identity, source-hash, command, log and exit files remain verbatim in
 [light-evidence](light-evidence/), with SHA256SUMS. The first14 files predate the
 durable driver and carry equivalent plain command/identity text; subsequent runs
 use `run-light.py`. Archive transfers were SHA256-verified. Source touching forces
@@ -164,7 +208,7 @@ actual recompile after sync; no stale binary result is reused. Final source hash
 
 - guest actor `da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171`
 - shared codec `241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a`
-- host fixture `a28b29b5e42309ee321190917f576987315fab1e723f73944694cc5b2f861a5d`
+- host fixture `083848f6d485f7a8a5b8a924ab92662dc166cb923b2a9fa9f3e4a51b8747a47f`
 
 The first constructor used `NETWORK --ingress=7100,7101 control`. The parser,
 instructions parser and `agentfile::check` returned Ok, preserving one raw ingress
@@ -193,6 +237,11 @@ observed the existing rejection diagnostic `NETWORK --ingress=7100,7101 on netwo
 control: no port, range of ports or Unix socket ...`; it did not inspect that text
 to select a result. No guest/task/production source changed in this follow-up.
 
+The r60 ambiguity unit intentionally panics and is marked should_panic; its
+passing result establishes guard rejection, not a runtime panic. Host test output
+can interleave because these pure units run in parallel. The exact actual r222
+table is preserved separately without synthetic rows.
+
 The original `scripts/check-development-policy` first failed because this sparse
 checkout omitted `.github/workflows/ci.yml`; adding the existing tracked `.github`
 (and required vendor sources) to sparse checkout made it pass. No policy was
@@ -203,19 +252,25 @@ certificate trust chain.
 Light replay in the owned clone with the unchanged4CPU8GiB10GiB envelope:
 
 ```sh
-CARGO_TARGET_DIR="$HOME/managed-limits-target" \
+CARGO_TARGET_DIR="$HOME/managed-limits-cancel-target" \
 python3 docs/research/measurements/managed-limits/run-light.py \
-  --evidence "$HOME/managed-limits-evidence/reviewed-light"
+  --evidence "$HOME/managed-limits-cancel-evidence/reviewed-light"
 ```
 
 That path must not already exist. It sets SHARDS_HELPERS=skip, runs exactly the
-four light commands and never invokes the ignored VM test or actor. The final
-remote clone is `~/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad`,
-target `~/managed-limits-target`, external evidence `~/managed-limits-evidence`.
-No job remains active; original endpoint target was copied read-only after an
-empty open-FD check and remains preserved. This lane made no local builds.
+four light commands and never invokes the ignored VM test or actor. The current correction clone is
+`~/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2`,
+target `~/managed-limits-cancel-target`, external evidence
+`~/managed-limits-cancel-evidence`; all are private to this lane. The prior
+`managed-tenant-limits-d0af2755ad` clone, `~/managed-limits-target` and evidence
+remain unchanged. The new target was a read-only reflink copy of that inactive
+owned target after an empty open-FD check, retained as
+`visible-parent-source-open-fds.txt`. The original endpoint target remains
+preserved from the earlier batch. No job remains active and no local builds ran.
 
-No real VM, task exhaustion, chaos, sweep, benchmark or profiling run was performed.
+No real VM, task exhaustion, chaos, sweep, benchmark or profiling run was performed
+by this implementer. The coordinator-owned r222 pre-Fill red is recorded separately
+above and establishes only that fixture failure.
 
 From the reviewed/composed source, in a coordinator-owned private clone/target
 with carried helpers, KVM/HVF/WHP and the ordinary 4CPU/8GiB/**20GiB** VM envelope:
@@ -257,11 +312,11 @@ paused. A skip or source prediction is unverified, never a passing VM result.
 | R06 | One actor cycle, one excess attempt, exact owned children, two nonce barriers; no recursive creation. |
 | R07 | Safety/ownership/deadline rationale comments; source links and bounds recorded. |
 | R08 | No comparative performance claim;4–5× target unmeasured and owed coordinator. |
-| R09 | No reproduced product defect asserted and no production fix attempted. Actual exhaustion proof owed coordinator. |
-| R10 | Sources, light commands/logs/identity retained below; actual effect/mutations/cleanup logs owed coordinator. |
+| R09 | Coordinator r222 reproduced the host fixture assumption failure before Fill; original raw red retained. No product defect/fix asserted. Corrected actual exhaustion remains owed coordinator. |
+| R10 | Original r222 red and exact visible table, sources, light commands/logs/identity retained. Actual corrected effect/mutations/cleanup logs owed coordinator. |
 | R11 | Linux-target light checks below only. Seven-target and real supported host VM matrix unrun; macOS arm64 only, paused WinARM preserved. |
 | R12 | Existing public CLI/grant/common platform readiness; testguest is already carried, no new install/root/security/crypto dependency. |
 | R13 | One finite fork case; no generic manager, retry engine or broad cleanup. |
 | R14 | All profiling/benchmarks/parent+kernel accounting root-owned; no fast/leak-free/allocation-free claim. |
 | R15 | Scoped implementation/light tests only, signed named-path checkpoint, no children or main merge; all heavy gates returned. |
-| R16 | Private clone/target4CPU8GiB10GiB light envelope, original inactive endpoint target preserved read-only; Mac >30GiB, no local builds or cleanup. |
+| R16 | Private clone/target4CPU8GiB10GiB light envelope, inactive owned target copied read-only after FD check, prior source/evidence preserved; Mac >30GiB, no local builds or cleanup. |

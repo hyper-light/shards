@@ -210,7 +210,7 @@ fn connect(run: &Run<'_>, port: u16, until: Instant) -> std::net::TcpStream {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|address| address.rsplit(':').next())
         .and_then(|port| port.parse().ok())
-        .unwrap_or_else(|| panic!("no published fixture control port"));
+        .unwrap_or_else(|| panic!("no published fixture control port {port}/tcp: {ports}"));
     let left = until.saturating_duration_since(Instant::now());
     assert!(!left.is_zero());
     let stream = std::net::TcpStream::connect_timeout(
@@ -354,6 +354,8 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     assert_eq!(built.status, Some(0), "{built}");
     let actor_bind = format!("{}:/limits", actor.display());
     let healthy_bind = format!("{}:/healthy", healthy.display());
+    let actor_publish = format!("127.0.0.1::{actor_port}");
+    let healthy_publish = format!("127.0.0.1::{healthy_port}");
     drop(ports);
     let until = Instant::now().checked_add(patience).unwrap();
     run.running = true;
@@ -367,6 +369,10 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         &actor_bind,
         "-v",
         &healthy_bind,
+        "-p",
+        &actor_publish,
+        "-p",
+        &healthy_publish,
         "managed-limits:1",
         "sleep",
     ]);
