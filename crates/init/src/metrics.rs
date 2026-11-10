@@ -28,6 +28,8 @@ enum Token<'a> {
     Line,
 }
 
+pub use otlp::Limit;
+
 /// One actual kernel page, reused across every file and scope in a request.
 pub struct Reader {
     bytes: Vec<u8>,
@@ -125,6 +127,34 @@ impl Reader {
         value.ok_or(Failure::Missing)
     }
 
+    pub fn memory_limit(&mut self, group: &File) -> Result<Limit, Failure> {
+        self.limit(group, c"memory.max")
+    }
+
+    /// Task/TID ceiling, including threads, not a count of process leaders.
+    pub fn task_limit(&mut self, group: &File) -> Result<Limit, Failure> {
+        self.limit(group, c"pids.max")
+    }
+
+    fn limit(&mut self, group: &File, name: &'static CStr) -> Result<Limit, Failure> {
+        let mut value = None;
+        self.tokens(group, name, |token| {
+            match token {
+                Token::Word(word) if value.is_none() => {
+                    value = Some(match word {
+                        b"max" => Limit::Unbounded,
+                        digits => Limit::Finite(number(digits)?),
+                    });
+                }
+                Token::Word(_) => return Err(Failure::Invalid),
+                Token::Long(_) => return Err(Failure::Overflow),
+                Token::Line => {}
+            }
+            Ok(())
+        })?;
+        value.ok_or(Failure::Missing)
+    }
+
     fn cpu(&mut self, group: &File) -> Result<u64, Failure> {
         enum State {
             Key,
@@ -208,6 +238,8 @@ impl Reader {
         let cpu_usec = self.cpu(group);
         let memory_bytes = self.scalar(group, c"memory.current");
         let threads = self.scalar(group, c"pids.current");
+        let memory_limit = self.memory_limit(group);
+        let task_limit = self.task_limit(group);
         let (read_bytes, write_bytes) = match self.io(group) {
             Ok((r, w)) => (Ok(r), Ok(w)),
             Err(e) => (Err(e), Err(e)),
@@ -224,6 +256,8 @@ impl Reader {
             cpu_usec,
             memory_bytes,
             threads,
+            memory_limit,
+            task_limit,
             read_bytes,
             write_bytes,
         })

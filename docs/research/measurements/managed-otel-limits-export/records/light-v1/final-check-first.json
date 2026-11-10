@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "python3",
+    "-"
+  ],
+  "stdin": "import pathlib,subprocess,json,hashlib,re\nr=pathlib.Path.cwd();d=pathlib.Path('docs/research/measurements/managed-otel-limits-export');result=json.loads((d/'records/light-v1/result.json').read_bytes())\nallowed={\n 'crates/init/src/metrics.rs','crates/init/src/metrics/otlp.rs','crates/init/src/metrics/tests.rs',\n 'docs/research/measurements/managed-otel-encoder/fixture.rs','docs/research/measurements/managed-otel-encoder/check.py',\n 'docs/research/measurements/managed-otel-rust-reference/src/main.rs','docs/research/measurements/managed-otel-rust-reference/src/reference.rs','docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs','docs/research/measurements/managed-otel-rust-reference/check.py',\n 'docs/research/measurements/managed-otel/profile/src/main.rs'}\nchanged=set(subprocess.check_output(['git','diff','--name-only']).decode().splitlines());assert changed==allowed,(changed^allowed)\nfor name in sorted(allowed|{str(d/'run-light.py')}):\n b=pathlib.Path(name).read_bytes();m={'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest()};assert result['source_files_after_format'][name]==m,(name,m);print(name,m['bytes'],m['sha256'])\nfor p in [d/'README.md',d/'D229.md']:\n for target in re.findall(r'\\]\\(([^)]+)\\)',p.read_text()):\n  if not target.startswith(('http:','https:','#')):assert (p.parent/target).exists(),(p,target)\nprint('new evidence files',len([p for p in d.rglob('*') if p.is_file()]),'total bytes',sum(p.stat().st_size for p in d.rglob('*') if p.is_file()))\nprint('source identity/ownership/live links: passed')\n",
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-otel-limits",
+  "reported_exit_code": 1,
+  "tool_chunk_id": "d9f1a2",
+  "diagnostic_representation": "Exact failure excerpt copied from combined exec tool output; not an original separately captured stderr file. All source identity lines before it passed.",
+  "diagnostic": "Traceback (most recent call last):\n  File \"<stdin>\", line 13, in <module>\nAssertionError: (PosixPath('docs/research/measurements/managed-otel-limits-export/README.md'), '../../managed-cgroup-limit-otlp-contract.md')\n",
+  "diagnosis": {
+    "git_ls_files": "S docs/research/managed-cgroup-limit-otlp-contract.md",
+    "head_blob": "fb473cc7767adcc58b6ea93ecdd7a58b3f8f8a4f",
+    "cause": "Disk-only Path.exists rejected a valid Git-tracked contract omitted by sparse checkout. Relative link is correct; no source or documentation link changed."
+  }
+}

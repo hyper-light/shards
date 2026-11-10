@@ -1,0 +1,29 @@
+[package]
+name = "shards-managed-otel-limits-light"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+members = ["testdir"]
+default-members = ["."]
+
+[lib]
+path = "../../../../crates/init/src/managed_otel_limits_light.rs"
+
+[dependencies]
+libc = "=0.2.191"
+
+[dev-dependencies]
+shards-testdir = { path = "testdir" }
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"

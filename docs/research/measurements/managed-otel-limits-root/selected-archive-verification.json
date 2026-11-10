@@ -1,0 +1,12 @@
+{
+  "raw": {
+    "archive_sha256": "1d61cf2bcd43092016f0701d5a4bc5e0c368ec2ab2e0f803f1453bdf7c28a5f0",
+    "archive_bytes": 41172,
+    "verified_unique_regular_members": 100
+  },
+  "source": {
+    "archive_sha256": "03a28a41d67864723c62aeea9e4526c4893f6899dbe794c72cd057e43936878f",
+    "archive_bytes": 46813,
+    "verified_unique_regular_members": 29
+  }
+}

@@ -98,6 +98,8 @@ fn main() -> io::Result<()> {
         cpu_usec: Ok(1_000_001),
         memory_bytes: Ok(0),
         threads: Ok(4),
+        memory_limit: Ok(native_codec::Limit::Finite(0)),
+        task_limit: Ok(native_codec::Limit::Unbounded),
         read_bytes: Ok(12),
         write_bytes: Ok(34),
     };
@@ -106,6 +108,8 @@ fn main() -> io::Result<()> {
         cpu_usec: Err(Failure::Missing),
         memory_bytes: Err(Failure::Io(2)),
         threads: Err(Failure::Invalid),
+        memory_limit: Err(Failure::Io(2)),
+        task_limit: Err(Failure::Invalid),
         read_bytes: Err(Failure::Overflow),
         ..healthy
     };
@@ -114,6 +118,8 @@ fn main() -> io::Result<()> {
         cpu_usec: Ok(u64::MAX),
         memory_bytes: Ok(u64::MAX),
         threads: Ok(i64::MAX as u64),
+        memory_limit: Ok(native_codec::Limit::Finite(u64::MAX)),
+        task_limit: Ok(native_codec::Limit::Finite(i64::MAX as u64)),
         read_bytes: Ok(0),
         write_bytes: Ok(i64::MAX as u64),
         ..healthy

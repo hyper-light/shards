@@ -1,0 +1,11 @@
+{
+  "admission": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "archive": {
+    "bytes": 12295,
+    "sha256": "19a30f64d6d2f0b97cba834a66d695d89fabaaaf82c158016e23caf3dfe162ef"
+  },
+  "exit_code": 0,
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "running": false,
+  "why": "linux/x86_64 \u00b7 16 of 32 cores idle \u00b7 47 GB free \u00b7 room for 1 CPU, 256 MiB of memory, 1 GiB of disk"
+}

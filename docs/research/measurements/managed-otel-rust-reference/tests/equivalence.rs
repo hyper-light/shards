@@ -18,8 +18,7 @@ fn the_shared_fixture_decodes_identically_through_official_types() {
             .unwrap();
         assert!(output.status.success(), "{mode}: {:?}", output.stderr);
         assert!(output.stderr.is_empty(), "{mode}: {:?}", output.stderr);
-        decoded
-            .push(serde_json::from_slice::<ExportMetricsServiceRequest>(&output.stdout).unwrap());
+        decoded.push(serde_json::from_slice::<ExportMetricsServiceRequest>(&output.stdout).unwrap());
     }
     for request in &decoded {
         assert_eq!(Some(request), decoded.first());

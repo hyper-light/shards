@@ -20647,6 +20647,17 @@ claimed tool identities. Source-specific correction gates, the rest of the real
 VM matrix, admitted aggregate costs/control survival, complete process/management
 observations and transport outcomes for a future HTTP exporter remain owed.
 
+Local `memory.max` and `pids.max` now travel through the same Reader/Snapshot
+and serializer. The [pinned contract and alternatives](../research/managed-cgroup-limit-otlp-contract.md)
+and [literals table](../research/measurements/managed-otel-limits-export/D229.md)
+define exact nonnegative signed-int Gauges, omission on symbolic max/error and
+six finite/unbounded/unavailable state indicators per scope. These are local
+configured ceilings, not availability, ancestor ceilings or guarantees. Numeric
+encoding overflow retains finite state and reports the existing typed diagnostic.
+No resource identity, cache, ancestor walk, cadence or authority is added.
+Implementer light GNU/musl/reference checks are recorded separately; ROOT's
+current whole-caller/Collector/transition/cost and combined gates remain pending.
+
 ### D59: owned native domain lifetime
 
 Implementation slice P2 of [the management plan](managed-runtime-plan.md) extends

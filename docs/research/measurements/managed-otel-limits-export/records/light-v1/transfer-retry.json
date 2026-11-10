@@ -1,0 +1,22 @@
+{
+  "input": {
+    "command": "python3 - <<'PY'\nimport pathlib,json,hashlib,base64\np=pathlib.Path.home()/'managed-otel-limits-export-18d-light-v1/raw.tar.gz';b=p.read_bytes()\nprint(json.dumps({'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()}))\nPY",
+    "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "sync": false,
+    "timeout_s": 600
+  },
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "exit_code": 0,
+  "running": false,
+  "why": "linux/x86_64 \u00b7 20 of 32 cores idle \u00b7 52 GB free \u00b7 room for 1 CPU, 256 MiB of memory, 1 GiB of disk",
+  "output_representation": "Original base64 output decoded to raw.tar.gz; this receipt retains output bytes/SHA, not redundant encoded payload.",
+  "output_bytes": 41172,
+  "output_sha256": "1d61cf2bcd43092016f0701d5a4bc5e0c368ec2ab2e0f803f1453bdf7c28a5f0",
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

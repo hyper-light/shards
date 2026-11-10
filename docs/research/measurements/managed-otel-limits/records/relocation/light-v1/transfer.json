@@ -1,0 +1,7 @@
+{
+  "command": "python3 - <<'PY'\nimport pathlib,base64,json,hashlib\np=pathlib.Path.home()/'managed-otel-limits-relocate-a41-light-v1/raw.tar.gz';b=p.read_bytes()\nprint(json.dumps({'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()}))\nPY",
+  "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "sync": false,
+  "timeout_s": 600
+}

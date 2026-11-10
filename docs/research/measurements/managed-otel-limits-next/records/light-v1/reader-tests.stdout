@@ -1,0 +1,20 @@
+
+running 15 tests
+test metrics::tests::cpu_key_and_number_survive_an_actual_page_boundary ... ok
+test metrics::tests::duplicate_selected_io_fields_on_one_device_are_invalid ... ok
+test metrics::tests::empty_io_is_zero_but_missing_io_remains_an_io_failure ... ok
+test metrics::tests::full_u64_values_are_not_narrowed_and_larger_numbers_overflow ... ok
+test metrics::tests::io_numbers_and_cross_device_sums_are_checked ... ok
+test metrics::tests::kernel_fields_are_selected_by_key_and_scope_is_preserved ... ok
+test metrics::tests::limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors ... ok
+test metrics::tests::limits_distinguish_finite_zero_full_u64_and_symbolic_max ... ok
+test metrics::tests::limits_fixed_name_open_preserves_missing_and_symlink_errno ... ok
+test metrics::tests::limits_keep_fixed_names_and_held_groups_independent_after_errors ... ok
+test metrics::tests::limits_missing_malformed_duplicate_and_overflow_values_stay_errors ... ok
+test metrics::tests::missing_cpu_usage_does_not_erase_independent_metrics ... ok
+test metrics::tests::scalar_extra_tokens_are_invalid_across_whitespace_and_lines ... ok
+test metrics::tests::selected_io_tokens_survive_an_actual_page_boundary ... ok
+test metrics::tests::unknown_fields_longer_than_a_page_do_not_hide_selected_fields ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.01s
+

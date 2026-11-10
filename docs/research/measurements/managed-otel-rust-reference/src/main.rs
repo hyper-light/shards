@@ -5,7 +5,7 @@ extern crate self as shards_managed_otel_encoder_check;
 use std::ffi::OsStr;
 use std::io::{self, Write};
 
-pub use native_codec::{Failure, Scope, Snapshot};
+pub use native_codec::{Failure, Limit, Scope, Snapshot};
 
 mod reference;
 

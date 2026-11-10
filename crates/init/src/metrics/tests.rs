@@ -1,7 +1,13 @@
-use super::{Failure, Reader, Scope, Snapshot};
+use super::{Failure, Limit, Reader, Scope, Snapshot};
 use shards_testdir::TempDir;
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt as _;
+
+type LimitReader = fn(&mut Reader, &File) -> Result<Limit, Failure>;
+const LIMIT_READERS: [(&str, LimitReader); 2] = [
+    ("memory.max", Reader::memory_limit),
+    ("pids.max", Reader::task_limit),
+];
 
 // These are private regular files with kernel-format contents, not real cgroups.
 struct Group {
@@ -226,4 +232,161 @@ fn unknown_fields_longer_than_a_page_do_not_hide_selected_fields() {
     assert_other_metrics(sample);
     assert_eq!(sample.read_bytes, Ok(11));
     assert_eq!(sample.write_bytes, Ok(17));
+}
+
+#[test]
+fn limits_distinguish_finite_zero_full_u64_and_symbolic_max() {
+    let mut reader = Reader::new().unwrap();
+    let largest = u64::MAX.to_string();
+    for (text, expected) in [
+        ("0\n", Limit::Finite(0)),
+        ("47", Limit::Finite(47)),
+        (largest.as_str(), Limit::Finite(u64::MAX)),
+        ("max\n", Limit::Unbounded),
+        (" \tmax\r\n", Limit::Unbounded),
+    ] {
+        for (name, read) in LIMIT_READERS {
+            let group = Group::new(&[(name, text)]);
+            assert_eq!(read(&mut reader, &group.held), Ok(expected), "{name}: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn limits_missing_malformed_duplicate_and_overflow_values_stay_errors() {
+    let mut reader = Reader::new().unwrap();
+    let overflow = (u128::from(u64::MAX) + 1).to_string();
+    let long = "9".repeat(super::TOKEN_BYTES.checked_add(1).unwrap());
+    for (text, expected) in [
+        ("", Failure::Missing),
+        (" \t\r\n", Failure::Missing),
+        ("MAX", Failure::Invalid),
+        ("-1", Failure::Invalid),
+        ("+1", Failure::Invalid),
+        ("NaN", Failure::Invalid),
+        ("ma x", Failure::Invalid),
+        ("max 0", Failure::Invalid),
+        ("0 max", Failure::Invalid),
+        ("max\nmax", Failure::Invalid),
+        (overflow.as_str(), Failure::Overflow),
+        (long.as_str(), Failure::Overflow),
+    ] {
+        for (name, read) in LIMIT_READERS {
+            let group = Group::new(&[(name, text)]);
+            assert_eq!(read(&mut reader, &group.held), Err(expected), "{name}: {text:?}");
+        }
+    }
+}
+
+#[test]
+fn limits_fixed_name_open_preserves_missing_and_symlink_errno() {
+    let mut reader = Reader::new().unwrap();
+    for (name, read) in LIMIT_READERS {
+        let group = Group::new(&[("other", "47\n")]);
+        assert_eq!(
+            read(&mut reader, &group.held),
+            Err(Failure::Io(libc::ENOENT)),
+            "{name}"
+        );
+        std::os::unix::fs::symlink("other", group.directory.join(name)).unwrap();
+        assert_eq!(
+            read(&mut reader, &group.held),
+            Err(Failure::Io(libc::ELOOP)),
+            "{name}"
+        );
+        assert_eq!(fs::read(group.directory.join("other")).unwrap(), b"47\n");
+    }
+}
+
+#[test]
+fn limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors() {
+    let mut reader = Reader::new().unwrap();
+    let page = page_size();
+    let buffer = (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity());
+    assert_eq!(buffer.1, page);
+    let group = Group::complete("usage_usec 31\n", "47\n", "3\n", "8:0 rbytes=11 wbytes=17\n");
+    let largest = u64::MAX.to_string();
+    for (token, expected) in [
+        (largest.as_str(), Ok(Limit::Finite(u64::MAX))),
+        ("max", Ok(Limit::Unbounded)),
+        ("invalid", Err(Failure::Invalid)),
+        ("0", Ok(Limit::Finite(0))),
+    ] {
+        let text = if token.len() > 1 {
+            across_page(page, "", token, "\n")
+        } else {
+            token.to_owned()
+        };
+        for (name, read) in LIMIT_READERS {
+            fs::write(group.directory.join(name), &text).unwrap();
+            assert_eq!(read(&mut reader, &group.held), expected, "{name}");
+        }
+        let snapshot = reader.snapshot(&group.held, Scope::Workload).unwrap();
+        assert_other_metrics(snapshot);
+        assert_eq!(snapshot.read_bytes, Ok(11));
+        assert_eq!(snapshot.write_bytes, Ok(17));
+        assert_eq!(
+            (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+            buffer
+        );
+    }
+}
+
+#[test]
+fn limits_keep_fixed_names_and_held_groups_independent_after_errors() {
+    let mut reader = Reader::new().unwrap();
+    let buffer = (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity());
+    let group = Group::new(&[("memory.max", "47\n"), ("pids.max", "3\n")]);
+    let other = Group::new(&[("memory.max", "max\n"), ("pids.max", "invalid\n")]);
+    assert_eq!(reader.memory_limit(&group.held), Ok(Limit::Finite(47)));
+    assert_eq!(reader.task_limit(&group.held), Ok(Limit::Finite(3)));
+    assert_eq!(reader.memory_limit(&other.held), Ok(Limit::Unbounded));
+    assert_eq!(reader.task_limit(&other.held), Err(Failure::Invalid));
+    fs::write(other.directory.join("pids.max"), "max\n").unwrap();
+    assert_eq!(reader.task_limit(&other.held), Ok(Limit::Unbounded));
+    assert_eq!(reader.task_limit(&group.held), Ok(Limit::Finite(3)));
+    assert_eq!(reader.memory_limit(&group.held), Ok(Limit::Finite(47)));
+    assert_eq!(
+        (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+        buffer
+    );
+}
+
+#[test]
+fn snapshots_keep_actual_limit_results_and_reuse_the_one_page() {
+    let mut reader = Reader::new().unwrap();
+    let buffer = (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity());
+    let group = Group::complete("usage_usec 31\n", "47\n", "3\n", "8:0 rbytes=11 wbytes=17\n");
+    let signed_max = i64::MAX.to_string();
+    let unsigned_max = u64::MAX.to_string();
+    for (text, expected) in [
+        ("0", Ok(Limit::Finite(0))),
+        (signed_max.as_str(), Ok(Limit::Finite(i64::MAX as u64))),
+        (unsigned_max.as_str(), Ok(Limit::Finite(u64::MAX))),
+        ("max", Ok(Limit::Unbounded)),
+        ("malformed", Err(Failure::Invalid)),
+        ("", Err(Failure::Missing)),
+    ] {
+        for name in ["memory.max", "pids.max"] {
+            fs::write(group.directory.join(name), text).unwrap();
+        }
+        let sample = reader.snapshot(&group.held, Scope::Workload).unwrap();
+        assert_other_metrics(sample);
+        assert_eq!(sample.memory_limit, expected);
+        assert_eq!(sample.task_limit, expected);
+        assert_eq!(
+            (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+            buffer
+        );
+    }
+    fs::write(group.directory.join("memory.max"), "0").unwrap();
+    fs::remove_file(group.directory.join("pids.max")).unwrap();
+    let missing = reader.snapshot(&group.held, Scope::Member(7)).unwrap();
+    assert_eq!(missing.memory_limit, Ok(Limit::Finite(0)));
+    assert_eq!(missing.task_limit, Err(Failure::Io(libc::ENOENT)));
+    std::os::unix::fs::symlink("memory.max", group.directory.join("pids.max")).unwrap();
+    let symlink = reader.snapshot(&group.held, Scope::Run).unwrap();
+    assert_eq!(symlink.memory_limit, Ok(Limit::Finite(0)));
+    assert_eq!(symlink.task_limit, Err(Failure::Io(libc::ELOOP)));
+    assert_eq!(fs::read(group.directory.join("memory.max")).unwrap(), b"0");
 }

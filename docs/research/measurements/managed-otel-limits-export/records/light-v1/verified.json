@@ -1,0 +1,170 @@
+{
+  "method": "All original safe unique regular source/raw members checked against original byte lengths and SHA256 before copying exactly eight owned formatted Rust files. Local pre-format bytes matched source package; copied bytes match actual post-format compiled source hashes. No private wrapper or unowned source copied.",
+  "source_archive": {
+    "bytes": 46813,
+    "sha256": "03a28a41d67864723c62aeea9e4526c4893f6899dbe794c72cd057e43936878f"
+  },
+  "source_payload_count": 29,
+  "raw_archive": {
+    "bytes": 41172,
+    "sha256": "1d61cf2bcd43092016f0701d5a4bc5e0c368ec2ab2e0f803f1453bdf7c28a5f0"
+  },
+  "raw_original_payload_count": 99,
+  "raw_embedded_manifest_count": 1,
+  "copied_formatted_sources": {
+    "crates/init/src/metrics.rs": {
+      "input_before_format": {
+        "bytes": 10201,
+        "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+      },
+      "tested_after_format": {
+        "bytes": 10201,
+        "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+      },
+      "changed_by_formatter": false
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "input_before_format": {
+        "bytes": 22430,
+        "sha256": "ac31852903e5b4e12e0734d335942a3e98253afaa4123fd42113ab475f977e83"
+      },
+      "tested_after_format": {
+        "bytes": 22937,
+        "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+      },
+      "changed_by_formatter": true
+    },
+    "crates/init/src/metrics/tests.rs": {
+      "input_before_format": {
+        "bytes": 15202,
+        "sha256": "5fda3217098069d78d80f3456c81be45f292ee67c9b6b2e6bf2a44dff0e13be0"
+      },
+      "tested_after_format": {
+        "bytes": 15236,
+        "sha256": "7211b1570c857d374f4ca261755e86cf52f2eca1a4985ff944321c9b4d9141bb"
+      },
+      "changed_by_formatter": true
+    },
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": {
+      "input_before_format": {
+        "bytes": 1358,
+        "sha256": "8a919b3584a57c46da60981aae070a361977dd4fa765d3a0d16c77009fb08568"
+      },
+      "tested_after_format": {
+        "bytes": 1358,
+        "sha256": "8a919b3584a57c46da60981aae070a361977dd4fa765d3a0d16c77009fb08568"
+      },
+      "changed_by_formatter": false
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+      "input_before_format": {
+        "bytes": 3104,
+        "sha256": "8e14eddc2da4548f9aee95d2facfcf07e82acd8fd4f3df72470cc48fa61f8095"
+      },
+      "tested_after_format": {
+        "bytes": 3104,
+        "sha256": "8e14eddc2da4548f9aee95d2facfcf07e82acd8fd4f3df72470cc48fa61f8095"
+      },
+      "changed_by_formatter": false
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "input_before_format": {
+        "bytes": 11001,
+        "sha256": "c2d5b7c74b1c09afaaa56dd87af2132127a7cffb2fd88b5908ab4d8aba1f910c"
+      },
+      "tested_after_format": {
+        "bytes": 11347,
+        "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+      },
+      "changed_by_formatter": true
+    },
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+      "input_before_format": {
+        "bytes": 1722,
+        "sha256": "d3855af24182e832c406fe4e8254cb74cf9f65ffbc8c358b922c935e0d01443e"
+      },
+      "tested_after_format": {
+        "bytes": 1709,
+        "sha256": "3db77bd5b7a1b92ac150648a2c0cd0103d20ca70e76da6ad8414a9108d8eda3c"
+      },
+      "changed_by_formatter": true
+    },
+    "docs/research/measurements/managed-otel/profile/src/main.rs": {
+      "input_before_format": {
+        "bytes": 5955,
+        "sha256": "f4099923a3a891fa34852ff76b0fd98c9ef6904c6763919b61df3c9b7584086a"
+      },
+      "tested_after_format": {
+        "bytes": 5955,
+        "sha256": "f4099923a3a891fa34852ff76b0fd98c9ef6904c6763919b61df3c9b7584086a"
+      },
+      "changed_by_formatter": false
+    }
+  },
+  "test_results": {
+    "reader-codec-tests-x86_64-unknown-linux-gnu.stdout": {
+      "passed": 27,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reader-codec-tests-x86_64-unknown-linux-musl.stdout": {
+      "passed": 27,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reference-tests-0.stdout": {
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0
+    },
+    "reference-tests-1.stdout": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0
+    }
+  },
+  "command_phases": 29,
+  "all_command_exit_codes_zero": true,
+  "measurement": false,
+  "profiles_executed": false,
+  "private_tmp_remaining_files": [],
+  "payload_receipt": {
+    "modes": {
+      "native-stream": {
+        "explicit_unknown_start_fields": 0,
+        "metrics": 18,
+        "payload_bytes": 10150,
+        "payload_sha256": "614db829d86ed49806a4c6efb965a99d5fae37442e6790f44c750958d469a62b",
+        "points": 41,
+        "receipt_sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce",
+        "resources": 3
+      },
+      "official-compact-buffer": {
+        "explicit_unknown_start_fields": 41,
+        "metrics": 18,
+        "payload_bytes": 13099,
+        "payload_sha256": "62d2837b2faaa7748a527cf62aec03ab925add70fbc3b2b9b753957b10b3c7b7",
+        "points": 41,
+        "receipt_sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce",
+        "resources": 3
+      },
+      "official-pretty-buffer": {
+        "explicit_unknown_start_fields": 41,
+        "metrics": 18,
+        "payload_bytes": 34568,
+        "payload_sha256": "3312c65ddc64983b282c7493e2653e9f969fe7d5bf0c3246cdf5213fff9a1f47",
+        "points": 41,
+        "receipt_sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce",
+        "resources": 3
+      }
+    },
+    "scope": "fixed shared Snapshot fixture; encoding only",
+    "semantic_receipts_equal": true
+  },
+  "tools": {
+    "rustc-version": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
+    "cargo-version": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "rustfmt-version": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)",
+    "clippy-version": "clippy 0.1.98 (48a229ceae 2026-09-01)"
+  }
+}

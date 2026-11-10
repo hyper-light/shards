@@ -9,6 +9,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
 use crate::{Failure, Scope, Snapshot};
+use native_codec::Limit;
 
 type Value = number_data_point::Value;
 
@@ -62,6 +63,8 @@ enum Instrument {
     Memory,
     Tasks,
     Io,
+    MemoryLimit,
+    TaskLimit,
 }
 
 impl Instrument {
@@ -71,6 +74,8 @@ impl Instrument {
             Self::Memory => ("shards.cgroup.memory.usage", "By", false),
             Self::Tasks => ("shards.cgroup.task.count", "{task}", false),
             Self::Io => ("shards.cgroup.disk.io", "By", true),
+            Self::MemoryLimit => ("shards.cgroup.memory.limit", "By", false),
+            Self::TaskLimit => ("shards.cgroup.task.limit", "{task}", false),
         }
     }
 }
@@ -78,10 +83,10 @@ impl Instrument {
 struct Observation {
     instrument: Instrument,
     direction: Option<&'static str>,
-    value: Result<Value, Failure>,
+    value: Result<Option<Value>, Failure>,
 }
 
-fn observations(sample: &Snapshot) -> io::Result<[Observation; 5]> {
+fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
     let cpu = match sample.cpu_usec {
         Ok(usec) => {
             // Parse the same exact decimal rational as the native wire. Casting
@@ -97,20 +102,32 @@ fn observations(sample: &Snapshot) -> io::Result<[Observation; 5]> {
         direction,
         value: value.and_then(|number| {
             i64::try_from(number)
-                .map(Value::AsInt)
+                .map(|n| Some(Value::AsInt(n)))
                 .map_err(|_| Failure::Overflow)
+        }),
+    };
+    let limit = |instrument, value: Result<Limit, Failure>| Observation {
+        instrument,
+        direction: None,
+        value: value.and_then(|value| match value {
+            Limit::Finite(n) => i64::try_from(n)
+                .map(|n| Some(Value::AsInt(n)))
+                .map_err(|_| Failure::Overflow),
+            Limit::Unbounded => Ok(None),
         }),
     };
     Ok([
         Observation {
             instrument: Instrument::Cpu,
             direction: None,
-            value: cpu,
+            value: cpu.map(Some),
         },
         signed(Instrument::Memory, None, sample.memory_bytes),
         signed(Instrument::Tasks, None, sample.threads),
         signed(Instrument::Io, Some("read"), sample.read_bytes),
         signed(Instrument::Io, Some("write"), sample.write_bytes),
+        limit(Instrument::MemoryLimit, sample.memory_limit),
+        limit(Instrument::TaskLimit, sample.task_limit),
     ])
 }
 
@@ -121,10 +138,10 @@ fn directions(direction: Option<&str>) -> Vec<KeyValue> {
         .collect()
 }
 
-fn gauge(name: &str, points: Vec<NumberDataPoint>) -> Metric {
+fn gauge(name: &str, unit: &str, points: Vec<NumberDataPoint>) -> Metric {
     Metric {
         name: name.into(),
-        unit: "{error}".into(),
+        unit: unit.into(),
         data: Some(metric::Data::Gauge(Gauge { data_points: points })),
         ..Default::default()
     }
@@ -138,6 +155,8 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
         Instrument::Memory,
         Instrument::Tasks,
         Instrument::Io,
+        Instrument::MemoryLimit,
+        Instrument::TaskLimit,
     ] {
         let points: Vec<_> = observations
             .iter()
@@ -146,11 +165,16 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
                 observation
                     .value
                     .ok()
+                    .flatten()
                     .map(|value| point(sample.time_unix_nano, value, directions(observation.direction)))
             })
             .collect();
         if !points.is_empty() {
             let (name, unit, monotonic) = instrument.fields();
+            if matches!(instrument, Instrument::MemoryLimit | Instrument::TaskLimit) {
+                metrics.push(gauge(name, unit, points));
+                continue;
+            }
             metrics.push(Metric {
                 name: name.into(),
                 unit: unit.into(),
@@ -163,9 +187,32 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
             });
         }
     }
+    let mut states = Vec::new();
+    for (instrument, value) in [
+        (Instrument::MemoryLimit, sample.memory_limit),
+        (Instrument::TaskLimit, sample.task_limit),
+    ] {
+        let observed = match value {
+            Ok(Limit::Finite(_)) => "finite",
+            Ok(Limit::Unbounded) => "unbounded",
+            Err(_) => "unavailable",
+        };
+        for state in ["finite", "unbounded", "unavailable"] {
+            states.push(point(
+                sample.time_unix_nano,
+                Value::AsInt(i64::from(u8::from(state == observed))),
+                vec![
+                    string("shards.cgroup.metric", instrument.fields().0),
+                    string("shards.cgroup.limit.state", state),
+                ],
+            ));
+        }
+    }
+    metrics.push(gauge("shards.cgroup.limit.state", "1", states));
     let failures = observations.iter().filter(|value| value.value.is_err()).count();
     metrics.push(gauge(
         "shards.cgroup.collection.error.count",
+        "{error}",
         vec![point(
             sample.time_unix_nano,
             Value::AsInt(i64::try_from(failures).map_err(io::Error::other)?),
@@ -194,7 +241,7 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
         })
         .collect();
     if !errors.is_empty() {
-        metrics.push(gauge("shards.cgroup.collection.error", errors));
+        metrics.push(gauge("shards.cgroup.collection.error", "{error}", errors));
     }
     Ok(metrics)
 }
@@ -231,4 +278,52 @@ fn resource(run: &str, microvm: &str, generation: u64, sample: &Snapshot) -> io:
         }],
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn complete_official_requests_match_native_for_the_fixed_limit_boundary_corpus() {
+        for value in [
+            Ok(Limit::Finite(0)),
+            Ok(Limit::Finite(i64::MAX as u64)),
+            Ok(Limit::Finite(i64::MAX as u64 + 1)),
+            Ok(Limit::Finite(u64::MAX)),
+            Ok(Limit::Unbounded),
+            Err(Failure::Missing),
+            Err(Failure::Invalid),
+            Err(Failure::Overflow),
+            Err(Failure::Io(2)),
+        ] {
+            for scope in [Scope::Run, Scope::Workload, Scope::Member(u32::MAX)] {
+                let sample = Snapshot {
+                    scope,
+                    time_unix_nano: u64::MAX,
+                    cpu_usec: Ok(1_000_001),
+                    memory_bytes: Ok(0),
+                    threads: Ok(4),
+                    read_bytes: Ok(12),
+                    write_bytes: Ok(34),
+                    memory_limit: value,
+                    task_limit: Ok(Limit::Unbounded),
+                };
+                for sample in [
+                    sample,
+                    Snapshot {
+                        memory_limit: Ok(Limit::Unbounded),
+                        task_limit: value,
+                        ..sample
+                    },
+                ] {
+                    let mut bytes = Vec::new();
+                    native_codec::write(&mut bytes, "run", "vm", u64::MAX, &[sample]).unwrap();
+                    let native: ExportMetricsServiceRequest = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(native, request("run", "vm", u64::MAX, &[sample]).unwrap());
+                }
+            }
+        }
+    }
 }
