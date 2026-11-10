@@ -1,0 +1,31 @@
+[    0.011221] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-udp4", "connected", "30000", "destination-only"]
+managed-sock-addr {"type":"Target","mode":"Connected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:34975","responder":"127.0.0.1:55299","profile":"DestinationOnly"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:34975","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:42493","original":"127.0.0.1:34975"}
+managed-sock-addr {"type":"Child","pid":543,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:34975","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:42493","original":"127.0.0.1:34975"}
+managed-sock-addr {"type":"ClientIdentity","pid":543,"namespace":4026532020,"requested":"127.0.0.1:34975","local":"127.0.0.1:42493","mode":"Connected","peer":"127.0.0.1:34975","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:42493","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:34975","original":"127.0.0.1:42493"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:42493","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:34975","original":"127.0.0.1:42493"}
+managed-sock-addr {"type":"ClientCompletion","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0}
+managed-sock-addr {"type":"Program","hook":"Connect4","from":"127.0.0.1:34975","to":"127.0.0.1:55299","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200889f0000620104007f00000162011800d8030000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Connect4"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Binary","ordinal":1,"local":"127.0.0.1:55299","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:37451","original":"127.0.0.1:55299"}
+managed-sock-addr {"type":"Child","pid":545,"role":"Relay","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Empty","ordinal":2,"local":"127.0.0.1:55299","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:37451","original":"127.0.0.1:55299"}
+managed-sock-addr {"type":"ClientIdentity","pid":545,"namespace":4026532020,"requested":"127.0.0.1:34975","local":"127.0.0.1:37451","mode":"Connected","peer":"127.0.0.1:55299","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Binary","ordinal":1,"local":"127.0.0.1:37451","reported":7,"flags":0,"copied_hex":"52454c41590080","metadata":"Known","peer":"127.0.0.1:55299","original":"127.0.0.1:37451"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Empty","ordinal":2,"local":"127.0.0.1:37451","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:55299","original":"127.0.0.1:37451"}
+managed-sock-addr {"type":"Error","stage":"Compatibility","kind":"InvalidInput","errno":null}
+managed-sock-addr {"type":"ClientCompletion","expected":"Relay","stage":"Compatibility","exchanges":2,"compatibility":"Mismatch","script":"Complete","success":false}
+managed-network failed kind=InvalidInput errno=None: original endpoint/port or datagram compatibility differs
+managed-sock-addr {"type":"ChildReaped","role":"Relay","reaped":true,"success":false,"code":1}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"Cancelled"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Relay","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"ScriptComplete"}
+managed-sock-addr {"type":"LinkDetached","hook":"Connect4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":1,"links_acquired":1,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+managed-network failed kind=InvalidInput errno=None: hooked native compatibility failed
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.104720] reboot: Power down

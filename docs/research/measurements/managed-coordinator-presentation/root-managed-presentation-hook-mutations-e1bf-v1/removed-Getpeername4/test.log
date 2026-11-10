@@ -1,0 +1,89 @@
+
+running 1 test
+test direct_guest_socket_address_udp4_requires_original_native_tuple ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+warning: variant `Getpeername4` is never constructed
+  --> crates/testguest/src/managed_network/intercept/sock_addr/bpf.rs:10:5
+   |
+ 6 | pub(super) enum Hook {
+   |                 ---- variant in this enum
+...
+10 |     Getpeername4,
+   |     ^^^^^^^^^^^^
+   |
+   = note: `Hook` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards-testguest` (bin "shards-testguest") generated 1 warning
+    Finished `guest` profile [optimized] target(s) in 16.85s
+NETWORK_GUEST_IDENTITY {"boot_ms":120000,"case":"sock-addr-udp4-connected-fixed-original-peer","case_ms":30000,"cli":{"path":"/home/adalundhe/managed-capture-check/target/e2e/shards-f5009eb19d002d6d/shards"},"config":{"authority":"coordinator-supplied evidence; association with booted kernel not independently verified","path":"/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy","provenance":"root r122 experimental artifact/output config","sha256":"sha256:fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d","symbols":[{"supplied_value":"y","symbol":"CONFIG_NFT_SOCKET"},{"supplied_value":"y","symbol":"CONFIG_NFT_TPROXY"},{"supplied_value":"y","symbol":"CONFIG_NF_SOCKET_IPV4"},{"supplied_value":"y","symbol":"CONFIG_NF_SOCKET_IPV6"},{"supplied_value":"y","symbol":"CONFIG_NF_TPROXY_IPV4"},{"supplied_value":"y","symbol":"CONFIG_NF_TPROXY_IPV6"},{"supplied_value":"y","symbol":"CONFIG_IP_MULTIPLE_TABLES"},{"supplied_value":"y","symbol":"CONFIG_IPV6_MULTIPLE_TABLES"},{"supplied_value":"y","symbol":"CONFIG_BPF_SYSCALL"},{"supplied_value":"y","symbol":"CONFIG_CGROUP_BPF"}]},"fixture_revision":"not-embedded-retain-source-sha256","guest":{"path":"/home/adalundhe/managed-capture-check/target/guest/by-process/1718538/shards-testguest","sha256":"sha256:4489d43ec62e41bc9ab0ddd2f97eef054bc02df75ae936e1308edd358c56ebfa"},"interception":"not installed or verified","kernel":{"path":"/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy","sha256":"sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"},"memory_mib":256,"vcpus":1}
+
+thread 'direct_guest_socket_address_udp4_requires_original_native_tuple' (1718539) panicked at crates/shards/tests/managed_network.rs:794:9:
+assertion `left == right` failed: one program for each selected hook: status Some(0) after 176.334233ms
+--- stdout
+[    0.011002] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-udp4", "connected", "30000", "fixed-original-peer"]
+managed-sock-addr {"type":"Target","mode":"Connected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:53394","responder":"127.0.0.1:51002","profile":"FixedOriginalPeer"}
+managed-sock-addr {"type":"Child","pid":542,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:53394","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:41327","original":"127.0.0.1:53394"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:53394","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:41327","original":"127.0.0.1:53394"}
+managed-sock-addr {"type":"ClientIdentity","pid":542,"namespace":4026532020,"requested":"127.0.0.1:53394","local":"127.0.0.1:41327","mode":"Connected","peer":"127.0.0.1:53394","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:41327","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:53394","original":"127.0.0.1:41327"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:41327","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:53394","original":"127.0.0.1:41327"}
+managed-sock-addr {"type":"ClientCompletion","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0}
+managed-sock-addr {"type":"Program","hook":"Connect4","from":"127.0.0.1:53394","to":"127.0.0.1:51002","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200d0920000620104007f00000162011800c73a0000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Connect4"}
+managed-sock-addr {"type":"Program","hook":"Recvmsg4","from":"127.0.0.1:51002","to":"127.0.0.1:53394","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200c73a0000620104007f00000162011800d0920000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Recvmsg4"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Binary","ordinal":1,"local":"127.0.0.1:51002","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:38764","original":"127.0.0.1:51002"}
+managed-sock-addr {"type":"Child","pid":544,"role":"Relay","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Empty","ordinal":2,"local":"127.0.0.1:51002","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:38764","original":"127.0.0.1:51002"}
+managed-sock-addr {"type":"ClientIdentity","pid":544,"namespace":4026532020,"requested":"127.0.0.1:53394","local":"127.0.0.1:38764","mode":"Connected","peer":"127.0.0.1:51002","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Binary","ordinal":1,"local":"127.0.0.1:38764","reported":7,"flags":0,"copied_hex":"52454c41590080","metadata":"Known","peer":"127.0.0.1:53394","original":"127.0.0.1:38764"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Empty","ordinal":2,"local":"127.0.0.1:38764","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:53394","original":"127.0.0.1:38764"}
+managed-sock-addr {"type":"Error","stage":"Compatibility","kind":"InvalidInput","errno":null}
+managed-sock-addr {"type":"ClientCompletion","expected":"Relay","stage":"Compatibility","exchanges":2,"compatibility":"Mismatch","script":"Complete","success":false}
+managed-network failed kind=InvalidInput errno=None: original endpoint/port or datagram compatibility differs
+managed-sock-addr {"type":"ChildReaped","role":"Relay","reaped":true,"success":false,"code":1}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"Cancelled"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Relay","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"ScriptComplete"}
+managed-sock-addr {"type":"LinkDetached","hook":"Connect4","detached":true}
+managed-sock-addr {"type":"LinkDetached","hook":"Recvmsg4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":2,"links_acquired":2,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+managed-network failed kind=InvalidInput errno=None: hooked native compatibility failed
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.104647] reboot: Power down
+
+--- stderr
+shards-timing {"released_us":21924,"entry_us":21931,"exit_us":151037,"request_us":0,"answered_us":0,"prefetched":0,"rss_kib":61404,"footprint_kib":59308,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[]}
+
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    direct_guest_socket_address_udp4_requires_original_native_tuple
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 11 filtered out; finished in 17.31s
+

@@ -1,0 +1,26 @@
+[
+  {
+    "path": ".DS_Store",
+    "bytes": 8196,
+    "sha256": "61a11969cf9022809a39dc93e0cb650c8613c08c640fcd4faf0a9a1e35e1a435",
+    "classification": "untracked macOS metadata; preserved in place"
+  },
+  {
+    "path": "crates/.DS_Store",
+    "bytes": 14340,
+    "sha256": "3e0b49a26b5abf7d00da19a9cbc4598068eb07f1e9ce3d4a528aaca2e811338f",
+    "classification": "untracked macOS metadata; preserved in place"
+  },
+  {
+    "path": "docs/.DS_Store",
+    "bytes": 8196,
+    "sha256": "7c8228f7818372aca6043b1142574699a68bf55dc171b87f0b30cf5909212a4e",
+    "classification": "untracked macOS metadata; preserved in place"
+  },
+  {
+    "path": "docs/research/.DS_Store",
+    "bytes": 6148,
+    "sha256": "2d3b36d7647bb5f2a3803f023bf57430b08ffb41dd0f7305810afae68224779a",
+    "classification": "untracked macOS metadata; preserved in place"
+  }
+]

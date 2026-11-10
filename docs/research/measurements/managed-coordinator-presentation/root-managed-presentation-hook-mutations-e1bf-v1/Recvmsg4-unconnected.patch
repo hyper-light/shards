@@ -1,0 +1,11 @@
+--- crates/testguest/src/managed_network/intercept/sock_addr.rs
++++ crates/testguest/src/managed_network/intercept/sock_addr.rs
+@@ -29,7 +29,7 @@
+             (Self::DestinationOnly, Mode::Connected) => &[Connect4],
+             (Self::DestinationOnly, Mode::Unconnected) => &[Sendmsg4],
+             (Self::FixedOriginalPeer, Mode::Connected) => &[Connect4, Recvmsg4, Getpeername4],
+-            (Self::FixedOriginalPeer, Mode::Unconnected) => &[Sendmsg4, Recvmsg4],
++            (Self::FixedOriginalPeer, Mode::Unconnected) => &[Sendmsg4],
+         }
+     }
+ }

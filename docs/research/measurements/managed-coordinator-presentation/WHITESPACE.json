@@ -1,0 +1,43 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "exact_exit": 2,
+  "output_sha256": "e4595def273e68d0f01d8690edbecd91fbd48de44b14175399d751864528e86e",
+  "raw_paths_and_line_counts": {
+    "docs/research/measurements/managed-coordinator-presentation/matrix-3f68/root-managed-seven-target-3f68-v1/lint.log": 2,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/connected-destination-only/sock-addr-udp4-connected-destination-only.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/connected-destination-only/test.log": 32,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/connected-fixed-original-peer/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/unconnected-destination-only/test.log": 32,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-e1bf-v1/unconnected-fixed-original-peer/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Connect4/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Connect4/test.log": 35,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Getpeername4/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Getpeername4/test.log": 35,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Recvmsg4-connected/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Recvmsg4-connected/test.log": 35,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Recvmsg4-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Recvmsg4-unconnected/test.log": 32,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Sendmsg4/sock-addr-udp4-unconnected-fixed-original-peer.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/removed-Sendmsg4/test.log": 32,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Connect4/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Connect4/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Getpeername4/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Getpeername4/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Recvmsg4-connected/sock-addr-udp4-connected-fixed-original-peer.stdout": 34,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Recvmsg4-connected/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Recvmsg4-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Recvmsg4-unconnected/test.log": 1,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Sendmsg4/sock-addr-udp4-unconnected-fixed-original-peer.stdout": 31,
+    "docs/research/measurements/managed-coordinator-presentation/root-managed-presentation-hook-mutations-e1bf-v1/restored-Sendmsg4/test.log": 1
+  },
+  "other_staged_paths_exit": 0,
+  "preservation": "Original CRLF console and compiler whitespace retained byte-for-byte; all raw SHA256s verified. No source or global whitespace rule changed."
+}

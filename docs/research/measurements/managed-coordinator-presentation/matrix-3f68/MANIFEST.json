@@ -1,0 +1,52 @@
+[
+  {
+    "path": "root-managed-seven-target-3f68-v1/checkout.log",
+    "bytes": 188,
+    "sha256": "9bcff668e845cbfb4d3a9c528a51d62526d55bdfcf45d319892ec912ca051757"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/command.txt",
+    "bytes": 60,
+    "sha256": "4832f7b72006b28940c952b8d8d42a28a2e051c2f88a171687b1bd995e6ac24b"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/disk.txt",
+    "bytes": 188,
+    "sha256": "0dc06736bf4798c45735cca7cb5025d89dc488aa149f18aaddc1a20ae174d239"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/fetch.log",
+    "bytes": 176,
+    "sha256": "c095b3d0d6310b8c9721040a59ed8f2797f5e7e37a9487721b9ae9010627882f"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/lint.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/lint.log",
+    "bytes": 37009,
+    "sha256": "16de2ed743fa4bac4a0e6458d80ad7533d891c2c8279887574e0af0e7d4e8aff"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/preflight-metadata.json",
+    "bytes": 846,
+    "sha256": "307606e2d093f229d6a0c43184243f96b52c35c7a73a028de5f2ef4bf62727fd"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/rustc.txt",
+    "bytes": 192,
+    "sha256": "e2211d4c0760a2a3b03eab88e42f8848952b7aa2ed649277a8fdbf3ce1838fd4"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/source.txt",
+    "bytes": 41,
+    "sha256": "0bdbdd2207bbfd15ed5554f0f2cd7bfee02a3ef8e7b79d84c7e8a9d318a13b11"
+  },
+  {
+    "path": "root-managed-seven-target-3f68-v1/status.txt",
+    "bytes": 78,
+    "sha256": "486afe27d39cddb2c5ecfc7ef31ce5db3648f5b0fec0a8361cdde82a2507c27f"
+  }
+]

@@ -1,0 +1,311 @@
+[
+  {
+    "label": "removed-Connect4",
+    "mode": "connected",
+    "actual_exit": 101,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 2,
+      "links_acquired": 2,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": {
+      "actual_additional_backend_arrivals": [
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Binary",
+          "ordinal": 3,
+          "local": "127.0.0.1:35743",
+          "reported": 9,
+          "flags": 0,
+          "copied_hex": "5245515545535400ff",
+          "metadata": "Known",
+          "peer": "127.0.0.1:41824",
+          "original": "127.0.0.1:35743"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Empty",
+          "ordinal": 4,
+          "local": "127.0.0.1:35743",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:41824",
+          "original": "127.0.0.1:35743"
+        }
+      ]
+    }
+  },
+  {
+    "label": "restored-Connect4",
+    "mode": "connected",
+    "actual_exit": 0,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 3,
+      "links_acquired": 3,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": "strict exact original endpoint, data and owned cleanup passed"
+  },
+  {
+    "label": "removed-Sendmsg4",
+    "mode": "unconnected",
+    "actual_exit": 101,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 1,
+      "links_acquired": 1,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": {
+      "actual_additional_backend_arrivals": [
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Binary",
+          "ordinal": 3,
+          "local": "127.0.0.1:46650",
+          "reported": 9,
+          "flags": 0,
+          "copied_hex": "5245515545535400ff",
+          "metadata": "Known",
+          "peer": "127.0.0.1:60199",
+          "original": "127.0.0.1:46650"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Empty",
+          "ordinal": 4,
+          "local": "127.0.0.1:46650",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:60199",
+          "original": "127.0.0.1:46650"
+        }
+      ]
+    }
+  },
+  {
+    "label": "restored-Sendmsg4",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 2,
+      "links_acquired": 2,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": "strict exact original endpoint, data and owned cleanup passed"
+  },
+  {
+    "label": "removed-Recvmsg4-connected",
+    "mode": "connected",
+    "actual_exit": 101,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 2,
+      "links_acquired": 2,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": {
+      "actual_receive_peer_leak": [
+        {
+          "type": "UdpArrival",
+          "role": "SockAddrHookClient",
+          "step": "Binary",
+          "ordinal": 1,
+          "local": "127.0.0.1:41858",
+          "reported": 7,
+          "flags": 0,
+          "copied_hex": "52454c41590080",
+          "metadata": "Known",
+          "peer": "127.0.0.1:43403",
+          "original": "127.0.0.1:41858"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "SockAddrHookClient",
+          "step": "Empty",
+          "ordinal": 2,
+          "local": "127.0.0.1:41858",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:43403",
+          "original": "127.0.0.1:41858"
+        }
+      ]
+    }
+  },
+  {
+    "label": "restored-Recvmsg4-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 3,
+      "links_acquired": 3,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": "strict exact original endpoint, data and owned cleanup passed"
+  },
+  {
+    "label": "removed-Recvmsg4-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 101,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 1,
+      "links_acquired": 1,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": {
+      "actual_receive_peer_leak": [
+        {
+          "type": "UdpArrival",
+          "role": "SockAddrHookClient",
+          "step": "Binary",
+          "ordinal": 1,
+          "local": "127.0.0.1:55766",
+          "reported": 7,
+          "flags": 0,
+          "copied_hex": "52454c41590080",
+          "metadata": "Known",
+          "peer": "127.0.0.1:53743",
+          "original": "127.0.0.1:55766"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "SockAddrHookClient",
+          "step": "Empty",
+          "ordinal": 2,
+          "local": "127.0.0.1:55766",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:53743",
+          "original": "127.0.0.1:55766"
+        }
+      ]
+    }
+  },
+  {
+    "label": "restored-Recvmsg4-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 2,
+      "links_acquired": 2,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": "strict exact original endpoint, data and owned cleanup passed"
+  },
+  {
+    "label": "removed-Getpeername4",
+    "mode": "connected",
+    "actual_exit": 101,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 2,
+      "links_acquired": 2,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": {
+      "actual_getpeername": {
+        "type": "ClientIdentity",
+        "pid": 544,
+        "namespace": 4026532020,
+        "requested": "127.0.0.1:53394",
+        "local": "127.0.0.1:38764",
+        "mode": "Connected",
+        "peer": "127.0.0.1:51002",
+        "peer_error": null,
+        "cgroup_hex": "303a3a2f736f636b2d616464722d636c69656e740a"
+      },
+      "receive_peers_still_original": true
+    }
+  },
+  {
+    "label": "restored-Getpeername4",
+    "mode": "connected",
+    "actual_exit": 0,
+    "cleanup": {
+      "type": "Cleanup",
+      "state": "Observed",
+      "backend_joined": true,
+      "relay_joined": true,
+      "hook_setup": "Ready",
+      "links_required": 3,
+      "links_acquired": 3,
+      "link_detached": true,
+      "cgroup_removed": true,
+      "after_window": "Unverified"
+    },
+    "witness": "strict exact original endpoint, data and owned cleanup passed"
+  }
+]

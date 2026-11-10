@@ -1,0 +1,10 @@
+removed-Connect4 actual exit 101 actual witness checked; cleanup complete
+restored-Connect4 actual exit 0 actual witness checked; cleanup complete
+removed-Sendmsg4 actual exit 101 actual witness checked; cleanup complete
+restored-Sendmsg4 actual exit 0 actual witness checked; cleanup complete
+removed-Recvmsg4-connected actual exit 101 actual witness checked; cleanup complete
+restored-Recvmsg4-connected actual exit 0 actual witness checked; cleanup complete
+removed-Recvmsg4-unconnected actual exit 101 actual witness checked; cleanup complete
+restored-Recvmsg4-unconnected actual exit 0 actual witness checked; cleanup complete
+removed-Getpeername4 actual exit 101 actual witness checked; cleanup complete
+restored-Getpeername4 actual exit 0 actual witness checked; cleanup complete

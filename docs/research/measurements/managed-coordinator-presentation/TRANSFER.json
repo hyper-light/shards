@@ -1,0 +1,11 @@
+{
+  "archive": "/Users/adalundhe/g121-presentation-e1bf-records-v1.tgz",
+  "bytes": 68851,
+  "sha256": "aa09dbb2a30b5349536f6525b9a56b1c3e345fbc69ece17ea4e94decc67c7c2a",
+  "files": 156,
+  "root_runs": [
+    "r511",
+    "r514"
+  ],
+  "source": "e1bf8e03445748472448b173a93ec386af958543"
+}

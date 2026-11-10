@@ -1,0 +1,31 @@
+[    0.011701] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-udp4", "unconnected", "30000", "fixed-original-peer"]
+managed-sock-addr {"type":"Target","mode":"Unconnected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:54631","responder":"127.0.0.1:47233","profile":"FixedOriginalPeer"}
+managed-sock-addr {"type":"Child","pid":544,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:54631","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:59511","original":"127.0.0.1:54631"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:54631","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:59511","original":"127.0.0.1:54631"}
+managed-sock-addr {"type":"ClientIdentity","pid":544,"namespace":4026532020,"requested":"127.0.0.1:54631","local":"127.0.0.1:59511","mode":"Unconnected","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:59511","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:54631","original":"127.0.0.1:59511"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:59511","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:54631","original":"127.0.0.1:59511"}
+managed-sock-addr {"type":"ClientCompletion","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0}
+managed-sock-addr {"type":"Program","hook":"Sendmsg4","from":"127.0.0.1:54631","to":"127.0.0.1:47233","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200d5670000620104007f00000162011800b8810000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Sendmsg4"}
+managed-sock-addr {"type":"Program","hook":"Recvmsg4","from":"127.0.0.1:47233","to":"127.0.0.1:54631","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200b8810000620104007f00000162011800d5670000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Recvmsg4"}
+managed-sock-addr {"type":"Child","pid":546,"role":"Relay","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Binary","ordinal":1,"local":"127.0.0.1:47233","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:46856","original":"127.0.0.1:47233"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Empty","ordinal":2,"local":"127.0.0.1:47233","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:46856","original":"127.0.0.1:47233"}
+managed-sock-addr {"type":"ClientIdentity","pid":546,"namespace":4026532020,"requested":"127.0.0.1:54631","local":"127.0.0.1:46856","mode":"Unconnected","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Binary","ordinal":1,"local":"127.0.0.1:46856","reported":7,"flags":0,"copied_hex":"52454c41590080","metadata":"Known","peer":"127.0.0.1:54631","original":"127.0.0.1:46856"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Empty","ordinal":2,"local":"127.0.0.1:46856","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:54631","original":"127.0.0.1:46856"}
+managed-sock-addr {"type":"ClientCompletion","expected":"Relay","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Relay","reaped":true,"success":true,"code":0}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"Cancelled"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Relay","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"ScriptComplete"}
+managed-sock-addr {"type":"LinkDetached","hook":"Sendmsg4","detached":true}
+managed-sock-addr {"type":"LinkDetached","hook":"Recvmsg4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":2,"links_acquired":2,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+SHARDS-TEST PASS
+[    0.145327] reboot: Power down
