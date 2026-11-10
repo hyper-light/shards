@@ -2492,6 +2492,24 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_program_refusal_formats_without_requesting_storage() {
+        let failure = ProgramAdmission::Socket(io::Error::from_raw_os_error(libc::EMFILE));
+        let mut storage = [0u8; 512]; // Caller-owned fixture display space, not a runtime bound.
+        let mut out = io::Cursor::new(storage.as_mut_slice());
+        let (result, allocations) =
+            crate::program_admission_allocation::during(usize::MAX, || write!(out, "{failure}"));
+        eprintln!(
+            "actual_refusal_display_allocations={allocations} formatted={}",
+            result.is_ok()
+        );
+        result.unwrap();
+        assert_eq!(
+            allocations, 0,
+            "typed failure presentation requested heap storage"
+        );
+    }
+
+    #[test]
     fn an_unusable_helper_control_is_not_admitted() {
         use std::os::unix::fs::OpenOptionsExt as _;
         let dir = shards_testdir::TempDir::new("helper-mode").unwrap();
