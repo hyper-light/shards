@@ -6,6 +6,9 @@
 //! The `shards` command links this crate and the standard library alone, so that it
 //! starts fast (docs/research/platform-measurements.md M23).
 
+#[cfg(target_os = "linux")]
+pub mod child_fds;
+
 use std::path::{Path, PathBuf};
 
 /// shards' home: `SHARDS_HOME`, or `shards` in this user's data directory:

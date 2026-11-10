@@ -1,0 +1,21 @@
+{
+  "source_revision": "b96b526c82cbe596bbd3ea5fc9c6e75f0a30ad83",
+  "owner": "full native effects agent 01a1c7677b8b7719af7ac5752c6f68c6",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/mod.rs",
+      "bytes": 104,
+      "sha256": "fab2829aa12be971e44f507e0ff9d11cf70673114382fcc89c55234b45fa71f6"
+    },
+    {
+      "path": "crates/server/src/native_effects/file.rs",
+      "bytes": 6050,
+      "sha256": "4ab73715229f6699c940151c99b92a59afe97526539193fb83fcff8739ab84c2"
+    },
+    {
+      "path": "crates/server/src/native_effects/file/tests.rs",
+      "bytes": 4753,
+      "sha256": "c6a47060eef85f1f4681e067506266b5d6625528d667b11132ad087c820ca4e1"
+    }
+  ]
+}

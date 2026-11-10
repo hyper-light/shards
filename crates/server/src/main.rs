@@ -9,6 +9,8 @@ mod program_admission_allocation;
 #[cfg(target_os = "linux")]
 mod broker;
 #[cfg(target_os = "linux")]
+mod native_effects;
+#[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
 mod server;
