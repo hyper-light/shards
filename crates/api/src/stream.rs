@@ -132,12 +132,14 @@ mod waits {
                 .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
                 .flatten();
             loop {
-                if deadline.is_some_and(|at| Instant::now() >= at) {
-                    return Err(io::ErrorKind::WouldBlock.into());
-                }
                 match op() {
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                        if deadline.is_some_and(|at| Instant::now() >= at) {
+                            return Err(io::ErrorKind::WouldBlock.into());
+                        }
+                        continue;
+                    }
                     done => return done,
                 }
                 let wait = match deadline {
