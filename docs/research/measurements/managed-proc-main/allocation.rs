@@ -23,6 +23,7 @@ unsafe impl GlobalAlloc for Refused {
         if refuse() {
             std::ptr::null_mut()
         } else {
+            // SAFETY: forward the caller's valid allocation layout unchanged.
             unsafe { System.alloc(layout) }
         }
     }
@@ -30,6 +31,7 @@ unsafe impl GlobalAlloc for Refused {
         if refuse() {
             std::ptr::null_mut()
         } else {
+            // SAFETY: forward the caller's valid zeroed-allocation layout unchanged.
             unsafe { System.alloc_zeroed(layout) }
         }
     }
@@ -37,10 +39,12 @@ unsafe impl GlobalAlloc for Refused {
         if refuse() {
             std::ptr::null_mut()
         } else {
+            // SAFETY: forward the live pointer, original layout and requested size.
             unsafe { System.realloc(at, layout, size) }
         }
     }
     unsafe fn dealloc(&self, at: *mut u8, layout: Layout) {
+        // SAFETY: forward the caller's live allocation and matching layout.
         unsafe { System.dealloc(at, layout) }
     }
 }
