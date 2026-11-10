@@ -1,0 +1,17 @@
+{
+  "source_checkpoint": "6ae7fcdf54ec16dbd17a199bd59fcc0e9bee05ef",
+  "source_and_raw_checkpoint": "dff1fdba3894cbab0a4adec4272683c8c31ec3db",
+  "selection": "test-only source/records, API ancestor chain NOT merged; preferred-size method NOT adopted",
+  "root_comparison": "r282, exact extraction; n4096 per variant",
+  "normal_record_capacity_bytes": {
+    "std": 512,
+    "f26": 512,
+    "preferred": 1024
+  },
+  "p50_ns_observed": {
+    "std": 6538,
+    "f26": 6141.5,
+    "preferred": 8434.5
+  },
+  "limitation": "one host/campaign, no statistical winner or4x claim; more retained capacity and no demonstrated latency benefit for preferred hint"
+}

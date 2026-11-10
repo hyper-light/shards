@@ -1,0 +1,14 @@
+Native tested source 6ae7fcdf54ec16dbd17a199bd59fcc0e9bee05ef.
+Evidence-only followup leaves compiled source/Cargo/launcher bytes unchanged.
+
+rustfmt +1.98.1 --edition 2024 --check docs/research/measurements/managed-proc-reader-coordinator/prototypes/src/lib.rs
+exit0
+
+bash -n docs/research/measurements/managed-proc-reader-coordinator/prototypes/run-light.sh
+exit0
+
+git diff --check
+exit0
+
+Current f5 development-policy checker check(Path.cwd()) applied to this worktree:
+exit0; evidence/coordinator review still required.

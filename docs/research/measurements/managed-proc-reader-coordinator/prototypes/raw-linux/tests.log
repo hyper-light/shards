@@ -1,0 +1,11 @@
+
+running 4 tests
+test tests::empty_file_returns_empty_and_directory_returns_error ... ok
+test tests::exact_bytes_from_open_file_after_unlink ... ok
+test tests::initial_and_later_growth_oom_return_errors ... successful_allocations_before_refusal=0 actual_reader_returned_OutOfMemory=true
+successful_allocations_before_refusal=1 actual_reader_returned_OutOfMemory=true
+ok
+test tests::zero_and_capacity_overflow_are_returned_without_error_allocation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

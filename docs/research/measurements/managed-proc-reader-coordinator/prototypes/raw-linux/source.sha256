@@ -1,0 +1,5 @@
+00476aa2ff87bfb55bccc46413e33755b49807b82087ce6d1a5ffe08015301da  docs/research/measurements/managed-proc-reader-coordinator/prototypes/src/lib.rs
+218e8fa5f25576964f09e4795d516ee35028ae50518411f3d511ea91609eefc2  docs/research/measurements/managed-proc-reader-coordinator/prototypes/Cargo.toml
+ea589f73d169cbfad331ef432feef79b6a71530576dff580848af5cfd5547445  docs/research/measurements/managed-proc-reader-coordinator/prototypes/Cargo.lock
+90df56ccfa8e6cb4c1289ff91f4262afe039a69336f4aafc434ef6cbd871321a  docs/research/measurements/managed-borrowed/allocation.rs
+236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc  crates/testdir/src/lib.rs
