@@ -1,0 +1,42 @@
+{
+  "root-managed-output-cost-cfc3-compile-v1/clone.log": {
+    "bytes": 210,
+    "sha256": "d7da3ebba88c48d903e5420661a360115ba926fd2e75a9fa8147fefeb2876176"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/checkout.log": {
+    "bytes": 83,
+    "sha256": "a923a10a43ee8628f4651adb1e4e43fc2df81b6139b39ee6a8b7dd571d6d2910"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/source.txt": {
+    "bytes": 41,
+    "sha256": "7d9c6f0099bffbc5bc102828c99916b769db627f45daa261b0daafc07aa5e983"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/rustc.txt": {
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/command.txt": {
+    "bytes": 88,
+    "sha256": "98482a0ced306dbf2e9114643c40d8164fe522960b8af713eb4eee2e0824891c"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/compile.log": {
+    "bytes": 5760,
+    "sha256": "c2b2afb83eea40678f51d299cf952c3e59cd4c9951d426dd1148172373d3067d"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/compile.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/test-artifact.sha256": {
+    "bytes": 155,
+    "sha256": "8829c47a6675c790eeb2a6396adbe9550c39412fcd3eb6c3ecad2d5369ec0a46"
+  },
+  "root-managed-output-cost-cfc3-compile-v1/source.sha256": {
+    "bytes": 427,
+    "sha256": "05ca707bf26481845509136639ea02c815fee96e6ce875c1de1c4497a17067f4"
+  }
+}

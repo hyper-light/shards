@@ -1,0 +1,80 @@
+== format
+== aarch64-apple-darwin
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling shards v0.7.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.52s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+== x86_64-unknown-linux-gnu
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-44556717882d6025/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_gnu': '/Users/adalundhe/managed-combined-seven-target-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_gnu: /Users/adalundhe/managed-combined-seven-target-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-44556717882d6025/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-44556717882d6025/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/x86_64-unknown-linux-gnu/debug/build/aws-lc-sys-44556717882d6025/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/shards)
+error: used `expect()` on an `Option` value
+  --> crates/shards/tests/../../../docs/research/measurements/managed-output-cost/fixture.rs:19:9
+   |
+19 | /         members
+20 | |             .checked_add(1)
+21 | |             .expect("files-only declaration and members must fit u32");
+   | |______________________________________________________________________^
+   |
+   = note: if this value is `None`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+   = note: requested on the command line with `-D clippy::expect-used`
+
+error: used `expect()` on an `Option` value
+  --> crates/shards/tests/../../../docs/research/measurements/managed-output-cost/fixture.rs:22:9
+   |
+22 | /         usize::try_from(members)
+23 | |             .unwrap()
+24 | |             .checked_mul(2)
+25 | |             .expect("channel count must fit usize");
+   | |___________________________________________________^
+   |
+   = note: if this value is `None`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: used `expect()` on an `Option` value
+  --> crates/shards/tests/../../../docs/research/measurements/managed-output-cost/fixture.rs:31:9
+   |
+31 | /         Instant::now()
+32 | |             .checked_add(patience)
+33 | |             .expect("representable phase deadline");
+   | |___________________________________________________^
+   |
+   = note: if this value is `None`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: used `expect()` on an `Option` value
+   --> crates/shards/tests/../../../docs/research/measurements/managed-output-cost/fixture.rs:164:24
+    |
+164 |         let metadata = Metadata::parse(&text).expect("trusted scoped owner metadata");
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: could not compile `shards` (test "managed_output") due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...

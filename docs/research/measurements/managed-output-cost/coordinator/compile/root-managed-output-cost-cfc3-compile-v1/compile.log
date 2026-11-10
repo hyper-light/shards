@@ -1,0 +1,58 @@
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/root-managed-output-cost-check/vendor/aws-lc-rs)
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/root-managed-output-cost-check/vendor/aws-lc-sys)
+   Compiling shards-abi v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/abi)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/erofs)
+   Compiling shards-template v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/template)
+   Compiling shards-image v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/image)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/ipc)
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/cmdline)
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/agentfile)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/vmm)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/syscall-filter)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/netring)
+   Compiling shards v0.7.0 (/home/adalundhe/root-managed-output-cost-check/crates/shards)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/dns)
+   Compiling shards-net v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/net)
+   Compiling shards-build v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/build)
+   Compiling shards-git v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/git)
+   Compiling shards-rego v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/seccomp)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/archive)
+   Compiling shards-gateway v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/gateway)
+   Compiling shards-zstd v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/zstd)
+   Compiling shards-tui v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/tui)
+   Compiling shards-user v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/user)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/devcgroup)
+   Compiling shards-ext4 v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/ext4)
+   Compiling shards-bus v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/bus)
+   Compiling shards-flate v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/flate)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/root-managed-output-cost-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/root-managed-output-cost-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-gitsign v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/gitsign)
+   Compiling shards-tuf v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/tuf)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-registry v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/registry)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/remote)
+   Compiling shards-sigstore v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/sigstore)
+   Compiling rcgen v0.14.10
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/testguest)
+   Compiling shards-api v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/api)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/root-managed-output-cost-check/crates/testdir)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 5m 07s
+  Executable tests/managed_output.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_output-27c7f5b2529c465b)

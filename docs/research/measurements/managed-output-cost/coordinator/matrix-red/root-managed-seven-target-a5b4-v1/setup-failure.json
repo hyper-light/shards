@@ -1,0 +1,51 @@
+{
+  "run": "r481",
+  "exit": 1,
+  "stage": "clean-check-before-fetch-or-lint",
+  "cause": "seven untracked macOS metadata files",
+  "lint_ran": false,
+  "preserved": [
+    {
+      "path": ".DS_Store",
+      "bytes": 8196,
+      "sha256": "93465c095f8f67ab1b9e420f69a6ce3a43c4a92b24532d61129041ec1c88f532",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/.DS_Store"
+    },
+    {
+      "path": "crates/.DS_Store",
+      "bytes": 14340,
+      "sha256": "df41651dd5518ce0d0c45b85d551470966a68c49ed11284c9e4e5ecbed451160",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/crates/.DS_Store"
+    },
+    {
+      "path": "docs/.DS_Store",
+      "bytes": 8196,
+      "sha256": "38cfe86a5a6c2a35927e3aefac41b1edfe5574d381216856ad9ccbf34f2bf2be",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/docs/.DS_Store"
+    },
+    {
+      "path": "docs/research/.DS_Store",
+      "bytes": 6148,
+      "sha256": "f3ae7df9cc0f354f41eb404273eef07b1f98bc43f16b8d079e81423a9c7c39cb",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/docs/research/.DS_Store"
+    },
+    {
+      "path": "resources/.DS_Store",
+      "bytes": 6148,
+      "sha256": "5639588e07ac451cc222d8d1deea69ca23332d4f556a755f6773e842be99da9d",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/resources/.DS_Store"
+    },
+    {
+      "path": "scripts/.DS_Store",
+      "bytes": 12292,
+      "sha256": "aea566fe035daede3796b929d1f608fae49e62a16cdc6e1590c5b5474e7e6306",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/scripts/.DS_Store"
+    },
+    {
+      "path": "vendor/.DS_Store",
+      "bytes": 6148,
+      "sha256": "b5253f79d24ee3baece119bcaf4d2c621364662aab12cad189ecebf5c2c783f8",
+      "preserved": "/Users/adalundhe/root-managed-seven-target-a5b4-v1/preserved-untracked/vendor/.DS_Store"
+    }
+  ]
+}

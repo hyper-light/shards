@@ -1,0 +1,42 @@
+{
+  "root-managed-seven-target-a5b4-v1/setup-failure.json": {
+    "bytes": 2006,
+    "sha256": "06435ab2be46f50fce6d59ddadd00172655f47d0ce79c1d4354f34238a1b687c"
+  },
+  "root-managed-seven-target-a5b4-v2/lint.log": {
+    "bytes": 6241,
+    "sha256": "f5ce9a41baec74dfdca7dd192f9167e1c9715800c189177120b550a0160ffc53"
+  },
+  "root-managed-seven-target-a5b4-v2/fetch.log": {
+    "bytes": 175,
+    "sha256": "3ca026cd5e7a113d4fde01d8e44ee1e9add5847f479e03ae8d0f1a60288c8707"
+  },
+  "root-managed-seven-target-a5b4-v2/source.txt": {
+    "bytes": 41,
+    "sha256": "f9410725cfceaba0e5bee3e7fd664f985002e87e3d8e7d0d86c230eb2076e280"
+  },
+  "root-managed-seven-target-a5b4-v2/disk.txt": {
+    "bytes": 190,
+    "sha256": "f61a74f0ef35d2c655b0dfc3ade8c7f913a3350c3f3687f0267a1cde583274d0"
+  },
+  "root-managed-seven-target-a5b4-v2/lint.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-seven-target-a5b4-v2/checkout.log": {
+    "bytes": 202,
+    "sha256": "a2def4d0d3839e502ab5176c1ffbd9e7b0f06cdc4663db8dea4bb4a7da635387"
+  },
+  "root-managed-seven-target-a5b4-v2/status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-seven-target-a5b4-v2/import-path.txt": {
+    "bytes": 90,
+    "sha256": "a701ec00475912d035434c858bf711c0e91fa3f76a11711b64c6a1f0295c358e"
+  },
+  "root-managed-seven-target-a5b4-v2/command.txt": {
+    "bytes": 60,
+    "sha256": "4832f7b72006b28940c952b8d8d42a28a2e051c2f88a171687b1bd995e6ac24b"
+  }
+}
