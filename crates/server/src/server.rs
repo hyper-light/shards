@@ -219,6 +219,38 @@ struct Program {
     deadline: Option<(Instant, u64)>,
 }
 
+#[derive(Debug)]
+enum ProgramAdmission {
+    Unavailable,
+    IdentityExhausted,
+    Deadline,
+    Expired,
+    Capacity,
+    Frame(sandbox::FrameFailure),
+    Socket(io::Error),
+    Release(io::Error),
+}
+
+impl std::fmt::Display for ProgramAdmission {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unavailable => out.write_str("code mode is not available here"),
+            Self::IdentityExhausted => out.write_str("code mode's execution identities are exhausted"),
+            Self::Deadline => out.write_str("the program's deadline is not representable"),
+            Self::Expired => out.write_str("the program's deadline expired before worker release"),
+            Self::Capacity => out.write_str("the program's owned tracking storage is unavailable"),
+            Self::Frame(why) => why.fmt(out),
+            Self::Socket(why) => write!(out, "a program's socket: {why}"),
+            Self::Release(why) => write!(out, "code mode's helper: {why}"),
+        }
+    }
+}
+
+struct PreparedProgram {
+    program: Program,
+    peer: UnixStream,
+}
+
 impl Programs {
     pub fn new(control: Result<OwnedFd, String>) -> Programs {
         if let Ok(c) = &control {
@@ -233,8 +265,72 @@ impl Programs {
         }
     }
 
-    /// Starts `code` for request `rpc_id`, made in `session` and awaited on connection
-    /// `conn`: its socket's other end given the helper, the program sent on it first.
+    /// Preparation owns every retained allocation before RUN transfers the program socket.
+    fn prepare(
+        &mut self,
+        code: &str,
+        timeout: Option<u64>,
+        conn: u64,
+        session: Option<&str>,
+        rpc_id: String,
+        modern: bool,
+    ) -> Result<PreparedProgram, ProgramAdmission> {
+        let began = Instant::now();
+        let deadline = timeout
+            .map(|ms| {
+                began
+                    .checked_add(Duration::from_millis(ms))
+                    .map(|at| (at, ms))
+                    .ok_or(ProgramAdmission::Deadline)
+            })
+            .transpose()?;
+        let id = self
+            .next
+            .checked_add(1)
+            .ok_or(ProgramAdmission::IdentityExhausted)?;
+        self.running
+            .try_reserve(1)
+            .map_err(|_| ProgramAdmission::Capacity)?;
+        // Each live request may need one owned cancellation result before another admission.
+        let cancellations = self
+            .running
+            .len()
+            .checked_add(1)
+            .ok_or(ProgramAdmission::Capacity)?;
+        self.cancelled
+            .try_reserve(cancellations)
+            .map_err(|_| ProgramAdmission::Capacity)?;
+        let session = session
+            .map(|source| {
+                let mut owned = String::new();
+                owned
+                    .try_reserve_exact(source.len())
+                    .map_err(|_| ProgramAdmission::Capacity)?;
+                owned.push_str(source);
+                Ok(owned)
+            })
+            .transpose()?;
+        let write =
+            sandbox::prepare_frame(sandbox::PROGRAM, code.as_bytes()).map_err(ProgramAdmission::Frame)?;
+        let (socket, peer) = UnixStream::pair().map_err(ProgramAdmission::Socket)?;
+        socket.set_nonblocking(true).map_err(ProgramAdmission::Socket)?;
+        Ok(PreparedProgram {
+            program: Program {
+                id,
+                socket,
+                read: Vec::new(),
+                write,
+                conn,
+                session,
+                rpc_id,
+                modern,
+                deadline,
+            },
+            peer,
+        })
+    }
+
+    /// A successful RUN is local helper admission, not proof of worker completion.
     fn start(
         &mut self,
         code: &str,
@@ -243,41 +339,47 @@ impl Programs {
         session: Option<&str>,
         rpc_id: String,
         modern: bool,
-    ) -> Result<(), String> {
-        let control = match &self.control {
-            Ok(c) => c.as_raw_fd(),
-            Err(why) => return Err(format!("code mode is not available here: {why}")),
-        };
-        let (ours, theirs) = UnixStream::pair().map_err(|e| format!("a program's socket: {e}"))?;
-        ours.set_nonblocking(true)
-            .map_err(|e| format!("a program's socket: {e}"))?;
-        self.next = self.next.wrapping_add(1);
-        let id = self.next;
-        let program = sandbox::frame(sandbox::PROGRAM, code.as_bytes())?;
-        let mut run = vec![sandbox::RUN];
-        run.extend_from_slice(&id.to_be_bytes());
-        sandbox::send_control(control, &run, Some(theirs.as_raw_fd()))
-            .map_err(|e| format!("code mode's helper: {e}"))?;
-        drop(theirs);
-        self.running.push(Program {
-            id,
-            socket: ours,
-            read: Vec::new(),
-            write: program,
-            conn,
-            session: session.map(str::to_string),
-            rpc_id,
-            modern,
-            deadline: timeout.map(|ms| (Instant::now() + Duration::from_millis(ms), ms)),
-        });
-        Ok(())
+    ) -> Result<u64, ProgramAdmission> {
+        let control = self
+            .control
+            .as_ref()
+            .map_err(|_| ProgramAdmission::Unavailable)?
+            .as_raw_fd();
+        let prepared = self.prepare(code, timeout, conn, session, rpc_id, modern)?;
+        if prepared
+            .program
+            .deadline
+            .is_some_and(|(at, _)| Instant::now() >= at)
+        {
+            return Err(ProgramAdmission::Expired);
+        }
+        let id = prepared.program.id;
+        // Issued identities are never reused, including after a refused native transfer.
+        self.next = id;
+        let mut run = [0; 1 + size_of::<u64>()];
+        for (slot, byte) in run
+            .iter_mut()
+            .zip(std::iter::once(sandbox::RUN).chain(id.to_be_bytes()))
+        {
+            *slot = byte;
+        }
+        sandbox::send_control(control, &run, Some(prepared.peer.as_raw_fd()))
+            .map_err(ProgramAdmission::Release)?;
+        // prepare reserved this slot, with no intervening mutation of the owned vector.
+        self.running.push(prepared.program);
+        Ok(id)
     }
 
     /// Ends program `id`'s worker, if it runs.
     fn stop(&self, id: u64) {
         if let Ok(c) = &self.control {
-            let mut stop = vec![sandbox::STOP];
-            stop.extend_from_slice(&id.to_be_bytes());
+            let mut stop = [0; 1 + size_of::<u64>()];
+            for (slot, byte) in stop
+                .iter_mut()
+                .zip(std::iter::once(sandbox::STOP).chain(id.to_be_bytes()))
+            {
+                *slot = byte;
+            }
             let _ = sandbox::send_control(c.as_raw_fd(), &stop, None);
         }
     }
@@ -1661,8 +1763,8 @@ fn tool(
             match code {
                 Some(code) => {
                     match programs.start(code, timeout.filter(|&t| t > 0), conn, session, write(id), modern) {
-                        Ok(()) => return Called::Later(programs.next),
-                        Err(why) => text(&why, true),
+                        Ok(id) => return Called::Later(id),
+                        Err(why) => text(&why.to_string(), true),
                     }
                 }
                 None => text("run takes a program, its code", true),
@@ -2387,6 +2489,111 @@ mod tests {
         assert!(result.is_err());
         assert!(programs.running.is_empty());
         assert_eq!(programs.next, u64::MAX);
+    }
+
+    #[test]
+    fn a_program_is_reserved_before_its_helper_receives_authority() {
+        let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        helper.set_nonblocking(true).unwrap();
+        let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
+        let prepared = programs
+            .prepare("return 1;", None, 7, Some("owner"), "2".into(), false)
+            .unwrap();
+        assert_eq!(programs.next, 0);
+        assert!(programs.running.is_empty());
+        assert!(programs.running.capacity() > programs.running.len());
+        assert!(programs.cancelled.capacity() > programs.running.len());
+        assert_eq!(
+            prepared.program.write,
+            sandbox::frame(sandbox::PROGRAM, b"return 1;").unwrap()
+        );
+        assert!(
+            matches!(sandbox::recv_control(helper.as_raw_fd()), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
+        drop(prepared);
+        let id = programs
+            .start("return 2;", None, 7, Some("owner"), "3".into(), false)
+            .unwrap();
+        let (bytes, passed) = sandbox::recv_control(helper.as_raw_fd()).unwrap().unwrap();
+        assert!(passed.is_some());
+        assert_eq!(bytes, [vec![sandbox::RUN], id.to_be_bytes().to_vec()].concat());
+        assert_eq!(programs.running.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_native_release_does_not_reuse_its_issued_identity() {
+        let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
+        drop(helper);
+        assert!(matches!(
+            programs.start("return 1;", None, 7, None, "1".into(), false),
+            Err(ProgramAdmission::Release(_))
+        ));
+        assert_eq!(programs.next, 1);
+        assert!(programs.running.is_empty());
+        let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        programs.control = Ok(OwnedFd::from(instance));
+        assert_eq!(
+            programs
+                .start("return 2;", None, 7, None, "2".into(), false)
+                .unwrap(),
+            2
+        );
+        let (bytes, passed) = sandbox::recv_control(helper.as_raw_fd()).unwrap().unwrap();
+        assert_eq!(bytes, [vec![sandbox::RUN], 2u64.to_be_bytes().to_vec()].concat());
+        assert!(passed.is_some());
+    }
+
+    #[test]
+    fn an_expired_program_is_refused_before_native_release() {
+        let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        helper.set_nonblocking(true).unwrap();
+        let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
+        assert!(matches!(
+            programs.start("return 1;", Some(0), 7, None, "1".into(), false),
+            Err(ProgramAdmission::Expired)
+        ));
+        assert_eq!(programs.next, 0);
+        assert!(programs.running.is_empty());
+        assert!(
+            matches!(sandbox::recv_control(helper.as_raw_fd()), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn each_refused_program_allocation_precedes_native_worker_release() {
+        let attempt = |fail_at| {
+            let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+            helper.set_nonblocking(true).unwrap();
+            let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
+            let rpc = "2".to_string();
+            let (result, count) = crate::program_admission_allocation::during(fail_at, || {
+                programs.start("return 1;", None, 7, Some("owner"), rpc, false)
+            });
+            let received = sandbox::recv_control(helper.as_raw_fd());
+            if fail_at == usize::MAX {
+                assert!(result.is_ok());
+                assert!(matches!(received, Ok(Some(_))));
+            } else {
+                eprintln!(
+                    "refused_allocation={fail_at} attempts={count} typed_result={result:?} tracked={}",
+                    programs.running.len()
+                );
+                assert!(matches!(
+                    result,
+                    Err(ProgramAdmission::Capacity | ProgramAdmission::Frame(sandbox::FrameFailure::Capacity))
+                ));
+                assert!(matches!(received, Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+                assert_eq!(programs.next, 0);
+                assert!(programs.running.is_empty());
+            }
+            count
+        };
+        let count = attempt(usize::MAX);
+        assert!(count > 0);
+        for fail_at in 1..=count {
+            attempt(fail_at);
+        }
     }
 
     /// A program's call is made as its caller's MCP call is: its value, or why it failed.

@@ -113,15 +113,49 @@ fn read_exact(fd: RawFd, mut buf: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// A frame: its kind, its length and its bytes; an error for more bytes than its length
-/// can say.
-pub fn frame(kind: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let len = u32::try_from(bytes.len()).map_err(|_| format!("a frame of {} bytes", bytes.len()))?;
-    let mut out = Vec::with_capacity(bytes.len() + 5);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFailure {
+    Length,
+    Capacity,
+}
+
+impl std::fmt::Display for FrameFailure {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(match self {
+            Self::Length => "the frame length is not representable",
+            Self::Capacity => "the frame storage is unavailable",
+        })
+    }
+}
+
+/// Wire storage is reserved fallibly before the helper may acquire its program socket.
+pub fn prepare_frame(kind: u8, bytes: &[u8]) -> Result<Vec<u8>, FrameFailure> {
+    let len = u32::try_from(bytes.len()).map_err(|_| FrameFailure::Length)?;
+    let size = bytes
+        .len()
+        .checked_add(1 + size_of::<u32>())
+        .ok_or(FrameFailure::Length)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(size).map_err(|_| FrameFailure::Capacity)?;
     out.push(kind);
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(bytes);
     Ok(out)
+}
+
+/// Existing worker String boundary. An allocation refusal cannot allocate its diagnostic.
+pub fn frame(kind: u8, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    prepare_frame(kind, bytes).map_err(|failure| {
+        let message = match failure {
+            FrameFailure::Length => "the frame length is not representable",
+            FrameFailure::Capacity => "the frame storage is unavailable",
+        };
+        let mut text = String::new();
+        if text.try_reserve_exact(message.len()).is_ok() {
+            text.push_str(message);
+        }
+        text
+    })
 }
 
 /// A frame read from a buffer: its kind, its bytes, and how much of the buffer it took.

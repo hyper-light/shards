@@ -2,6 +2,10 @@
 //! architecture.md D60): one instance for each agent or harness, which shards-init starts
 //! outside every domain, least-privileged, from the read-only device it lies on.
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-program-admission/allocation.rs"]
+mod program_admission_allocation;
+
 #[cfg(target_os = "linux")]
 mod sandbox;
 #[cfg(target_os = "linux")]
