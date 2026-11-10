@@ -1,0 +1,9 @@
+{
+  "cleanup_ms": 300000,
+  "cursor": "actual unACKed record start; not arbitrary history",
+  "guest_port": 50727,
+  "helper_work_ms": 300000,
+  "host_work_ms": 300000,
+  "owner": "retained Fixture; observers are borrowed",
+  "source": "1ff90db0043554eec18846f8f506f93f25e2ffec"
+}

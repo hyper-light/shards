@@ -20520,3 +20520,11 @@ links actual root KVM before/after, meaningful one-guard failure/restoration,
 real daemon/remote unit callers and exact seven-target/native macOS results at
 b02e8592c. These are functional gates; comparative cost, metadata fault/ordering
 and the complete managed-runtime contract remain unverified.
+
+### Managed terminal metadata and reconnect follow-up
+
+The [coordinator record](measurements/managed-coordinator-terminal-order/README.md)
+retains five actual complete-daemon native metadata/retirement cases and the
+exact seven-target gate at d2288c27, plus the separately failing real-VM
+reconnect and transport-reason diagnostic. Empty-stream cases do not prove
+nonzero ACK delivery, metadata durability, full cleanup or comparative cost.

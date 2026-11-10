@@ -1,0 +1,19 @@
+[
+  {
+    "path": "/home/adalundhe/root-managed-terminal-order-reconnect-d228-text-v1.tar.gz",
+    "size": 77820,
+    "sha256": "98394733e148310c886bac77ce8166e051b551a5ea262895f63ba0a4d8f784d3",
+    "files": 225,
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "destination": "native"
+  },
+  {
+    "path": "/Users/adalundhe/root-managed-seven-d228-text-v1.tar.gz",
+    "size": 5008,
+    "sha256": "ea941154e83236379dfb559b77e27b5fb9965b40c8d90f4183886dca6611f3b4",
+    "files": 14,
+    "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "destination": "matrix"
+  }
+]
+

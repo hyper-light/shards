@@ -1,0 +1,12 @@
+TERMINAL_ORDER event=launcher-limit fsize=1 scope=owned-child
+
+running 1 test
+test daemon::managed::terminal_order_tests::native_file_limit_retains_partial_append_and_known_canonical_errno ... TERMINAL_ORDER event=main-enter case=file-limit semantics=empty-unsubscribed
+shards daemon 981937: managed output metadata member 0 channel 1: File too large (os error 27)
+TERMINAL_ORDER event=driver-return result=Ok(())
+TERMINAL_ORDER event=independent-file-error-probe errno=Some(27)
+TERMINAL_ORDER result=pass case=file-limit bytes=1
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 697 filtered out; finished in 0.00s
+

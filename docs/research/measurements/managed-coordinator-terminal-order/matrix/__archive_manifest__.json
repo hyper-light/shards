@@ -1,0 +1,75 @@
+{
+  "kind": "regular-files-sha256-v1",
+  "members": [
+    {
+      "path": "matrix/cargo.txt",
+      "size": 36,
+      "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6"
+    },
+    {
+      "path": "matrix/checkout.log",
+      "size": 184,
+      "sha256": "3112aa2f94813efa59ed73b3a9746270c043501267b44eab26d157d0c17609e0"
+    },
+    {
+      "path": "matrix/command.json",
+      "size": 54,
+      "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+    },
+    {
+      "path": "matrix/fetch.log",
+      "size": 189,
+      "sha256": "4a873dfd3a13aac6816b55cfb3b9ef53a91fde03279885fddda6dd0218d8ea4a"
+    },
+    {
+      "path": "matrix/free.post.json",
+      "size": 28,
+      "sha256": "718bb464fc49a7b879aae7de83eaca010c8daba86c6f9cdce72032c9b0f1f1c1"
+    },
+    {
+      "path": "matrix/lint.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "matrix/lint.log",
+      "size": 27186,
+      "sha256": "e8bff7f7aca6369c5e3270e907ad8560ddc0111cd7bb980daf5293005a9c4755"
+    },
+    {
+      "path": "matrix/native.command.json",
+      "size": 144,
+      "sha256": "adf57b7c25fd31fd1de6cb7e1a252cf5e52dff3c4362f118b42adf64905bd0d5"
+    },
+    {
+      "path": "matrix/native.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "matrix/native.log",
+      "size": 3187,
+      "sha256": "d5dde7ff1073416e644e657d2bcd22aa97f13b926bfef57486e7d12ef7986dce"
+    },
+    {
+      "path": "matrix/policy.txt",
+      "size": 90,
+      "sha256": "f6fa7ceb37be163293cc07c8ed11bc84d65932ae6e16c8bf8501f7817b2ba9cb"
+    },
+    {
+      "path": "matrix/rustc.txt",
+      "size": 192,
+      "sha256": "e003fd3d385fcd0de16bc6b049124efb20207831dd810fd4ab39ff079bbb12a5"
+    },
+    {
+      "path": "matrix/source.txt",
+      "size": 41,
+      "sha256": "141416830791ee4744bd3c497e37910fa4bfee326c9f285015d7230e77e9fe66"
+    },
+    {
+      "path": "matrix/untracked-preserved.json",
+      "size": 809,
+      "sha256": "743d0f72e5e617764ccb8a495a1d13d40629a191c32d67742c54249a9c1b799e"
+    }
+  ]
+}

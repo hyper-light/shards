@@ -1,0 +1,52 @@
+{
+  "case": "owner-serving-lock",
+  "argv": [
+    "/home/adalundhe/managed-capture-check/target/test-release/deps/shards-33b8dbdd02b1783e",
+    "daemon::managed::terminal_order_tests::native_owner_stop_before_finish_while_metadata_locked",
+    "--exact",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "source_before": {
+    "revision": "d2288c27ea29acbb9809fa2ff1f60176dac440b9",
+    "sha256": {
+      "AGENTS.md": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+      "docs/development-rules.md": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+      "crates/shards/src/daemon/managed.rs": "76f37d6db16e43c291d01561e309ad9ffaaa53874e6359b388f1bde83c4eb077",
+      "crates/shards/src/daemon/managed/terminal_order_tests.rs": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f",
+      "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+      "Cargo.lock": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+    }
+  },
+  "binary": "/home/adalundhe/managed-capture-check/target/test-release/deps/shards-33b8dbdd02b1783e",
+  "binary_sha256": "250a133cac8a7ebc34b16cbda7caced8c13776e33771b85ef72d019f64738b86",
+  "case_ms": 300000,
+  "outer_timeout_seconds": 900.0,
+  "prefix_bytes": null,
+  "limits": "only fresh file-limit child changes RLIMIT_FSIZE/SIGXFSZ; no host settings",
+  "semantics": "real empty/unsubscribed Shared, File and endpoint; no VM/data/ACK/FIN claim",
+  "build_source_association": "ROOT must retain independent source-matching build receipt",
+  "started_unix_ns": 1794328731521583527,
+  "process": "exit observed and reaped by subprocess.run",
+  "metadata_file_size": 68,
+  "source_after": {
+    "revision": "d2288c27ea29acbb9809fa2ff1f60176dac440b9",
+    "sha256": {
+      "AGENTS.md": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+      "docs/development-rules.md": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+      "crates/shards/src/daemon/managed.rs": "76f37d6db16e43c291d01561e309ad9ffaaa53874e6359b388f1bde83c4eb077",
+      "crates/shards/src/daemon/managed/terminal_order_tests.rs": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f",
+      "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+      "Cargo.lock": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+    }
+  },
+  "binary_sha256_after": "250a133cac8a7ebc34b16cbda7caced8c13776e33771b85ef72d019f64738b86",
+  "exit_code": 0,
+  "finished_unix_ns": 1794328731721434341,
+  "native_log_sha256": "09ebbbe55fd3f12c8e807582864ef0eb05e6c8b473fb128397b850136f90ac61",
+  "metadata_sha256": "fa200a35c2525807d0c9bb897584e861f03d7971c98c419b06b5430918f5b1f7",
+  "expected_metadata_hex": "6d656d6265722030206368616e6e656c20312073746174652061626f72746564206163636570746564203020636f6e73756d65642030207461696c20756e6b6e6f776e0a",
+  "failures": [],
+  "outcome": "pass"
+}

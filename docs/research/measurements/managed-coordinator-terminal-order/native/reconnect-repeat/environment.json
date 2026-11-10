@@ -1,0 +1,17 @@
+{
+  "CARGO_BUILD_JOBS": "4",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-capture-check/target",
+  "DOCKER_CONFIG": "/home/adalundhe/root-managed-reconnect-current-repeat-v1/empty-docker",
+  "SHARDS_REQUIRE_VMS": "1",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TENANT_EXIT_SOURCE_REVISION": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "SHARDS_TENANT_STDIO_SOURCE_REVISION": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "SHARDS_TENANT_RECONNECT_SOURCE_REVISION": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "SHARDS_OUTPUT_COST_SOURCE_REVISION": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "SHARDS_TENANT_RECONNECT_PORT": "57475",
+  "SHARDS_TENANT_RECONNECT_DEADLINE_MS": "300000",
+  "SHARDS_TENANT_RECONNECT_WORK_MS": "300000",
+  "SHARDS_TENANT_RECONNECT_CLEANUP_MS": "300000",
+  "SHARDS_TENANT_RECONNECT_RECORDS": "/home/adalundhe/root-managed-reconnect-current-repeat-v1/records"
+}

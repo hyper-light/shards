@@ -1,0 +1,10 @@
+{
+  "full_population_kernel_return": "Unverified; ROOT independent cleanup gates owed",
+  "observer_fd_baseline": 7,
+  "owner_stop_observer_join": {
+    "complete": true,
+    "error": null
+  },
+  "protocol_complete": false,
+  "run_removed": true
+}

@@ -1,0 +1,4 @@
+{
+  "remote_close_processing": "Unverified; local join is not a remote barrier",
+  "state": "BothBorrowedObserversLocallyJoinedOwnerRetained"
+}

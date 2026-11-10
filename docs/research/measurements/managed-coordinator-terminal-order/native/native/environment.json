@@ -1,0 +1,5 @@
+{
+  "CARGO_BUILD_JOBS": "4",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-capture-check/target",
+  "DOCKER_CONFIG": "/home/adalundhe/root-managed-terminal-order-d228-v1/empty-docker"
+}

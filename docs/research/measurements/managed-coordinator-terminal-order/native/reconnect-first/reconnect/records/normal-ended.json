@@ -1,0 +1,21 @@
+{
+  "channels": [
+    {
+      "channel": 1,
+      "member": 1,
+      "payload_hex": "6167656e74007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 26,
+      "state": "Ended { offset: 26 }",
+      "wire_consumed": 102
+    },
+    {
+      "channel": 2,
+      "member": 1,
+      "payload_hex": "6167656e74007374646572720a80fe6572722d7461696c",
+      "payload_offset": 23,
+      "state": "Ended { offset: 23 }",
+      "wire_consumed": 99
+    }
+  ],
+  "state": "Member1BothCanonicalEndAckAndTransportEof"
+}

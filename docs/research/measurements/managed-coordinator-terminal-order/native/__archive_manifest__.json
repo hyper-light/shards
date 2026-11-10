@@ -1,0 +1,1130 @@
+{
+  "kind": "regular-files-sha256-v1",
+  "members": [
+    {
+      "path": "native/artifact.json",
+      "size": 183,
+      "sha256": "b352d56dfa5764e9ab5226339ce20743cb9cc69c50f0f38cd9550e864347e9fc"
+    },
+    {
+      "path": "native/cargo.txt",
+      "size": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "native/checkout.log",
+      "size": 178,
+      "sha256": "162b2b6f76f5f96dbeb21439e76168ecde16239c0148f2ecc6a30142ab98353a"
+    },
+    {
+      "path": "native/compile.command.json",
+      "size": 138,
+      "sha256": "729d118d0026cc7c22004752355ca363a66c6866a750fdbe7191ccea26b1a62f"
+    },
+    {
+      "path": "native/compile.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/compile.jsonl",
+      "size": 153590,
+      "sha256": "0437dcb62f7b651aa3a035467352cb9a4c36d488160948e0807a7e6ffd0661bd"
+    },
+    {
+      "path": "native/compile.log",
+      "size": 1860,
+      "sha256": "d6bc93550cfc777ca2e316300963609a49d87127fe6bfac296176f446e317a9e"
+    },
+    {
+      "path": "native/completion-lock/native.log",
+      "size": 415,
+      "sha256": "12d3c5eb8d3149efc94ea3d18c7aa7fb864be07b3534c4ba2f706b63c52d0b2d"
+    },
+    {
+      "path": "native/completion-lock/owned/metadata",
+      "size": 67,
+      "sha256": "ddbb2fc20a6174cc2373cf21ba878163ba6a58265ad5747861a82b0a59831ee4"
+    },
+    {
+      "path": "native/completion-lock/receipt.json",
+      "size": 3011,
+      "sha256": "aef81a41d0830ff5e57b6ad5dbdd78acf6b0174040ae6cfda0e9c0ba50c61f6d"
+    },
+    {
+      "path": "native/completion-lock.command.json",
+      "size": 550,
+      "sha256": "a370af4102d623469d623fd813304d814bdefc9c01ea801f349576ae94d6a3f2"
+    },
+    {
+      "path": "native/completion-lock.driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/completion-lock.driver.log",
+      "size": 131,
+      "sha256": "655e6967987f19aea16ed3718dde400fc6f597fee7014c1b20edbd93841f141f"
+    },
+    {
+      "path": "native/driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/driver.py",
+      "size": 4328,
+      "sha256": "c81a8f0fd093f1d1e473115a105a9c437a93201e2bb3872b319ce63f1656690a"
+    },
+    {
+      "path": "native/environment.json",
+      "size": 187,
+      "sha256": "49446bf941c684718ec92bc9a49a99a980af5b0741f7c7a8d41c3aa6af9d821a"
+    },
+    {
+      "path": "native/fetch.log",
+      "size": 138,
+      "sha256": "5506f00f4afcb6f898e95c48282035cdba92e96f7999673dbc7f54b362c53c9d"
+    },
+    {
+      "path": "native/file-limit/native.log",
+      "size": 631,
+      "sha256": "06a0d30bc9f7345b6101f7ffd86d377fcf71af175918247caab00db6fb536298"
+    },
+    {
+      "path": "native/file-limit/owned/metadata",
+      "size": 1,
+      "sha256": "62c66a7a5dd70c3146618063c344e531e6d4b59e379808443ce962b3abd63c5a"
+    },
+    {
+      "path": "native/file-limit/receipt.json",
+      "size": 2848,
+      "sha256": "2bd03c04230363f7a5e47586e94cddfbdf53634b40dc4462fa573df25d94e4a1"
+    },
+    {
+      "path": "native/file-limit.command.json",
+      "size": 563,
+      "sha256": "94330ce6f2c4dabbc49fb595c2dd22d8009e7d24f90fc8afcd85175b33822fc8"
+    },
+    {
+      "path": "native/file-limit.driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/file-limit.driver.log",
+      "size": 126,
+      "sha256": "5f99b0a4ca0cf87c3103dbb71f1f99471254c953441edb6bba06c01c423526dd"
+    },
+    {
+      "path": "native/frozen-artifacts.json",
+      "size": 379,
+      "sha256": "4b40b7aebdbe7bfb0729c0848b0f1f506e369d5887b73e19c076c3c58fed0761"
+    },
+    {
+      "path": "native/owner-finished-lock/native.log",
+      "size": 414,
+      "sha256": "2887b6f2d4e495c8c98f52d8691436f1ab65c5c9707cdab3ffeacdc71d8cc16a"
+    },
+    {
+      "path": "native/owner-finished-lock/owned/metadata",
+      "size": 67,
+      "sha256": "ddbb2fc20a6174cc2373cf21ba878163ba6a58265ad5747861a82b0a59831ee4"
+    },
+    {
+      "path": "native/owner-finished-lock/receipt.json",
+      "size": 3006,
+      "sha256": "9f03c3833e32df18c5325b34a472e6655a304ee638da07afb397a087e19a39f5"
+    },
+    {
+      "path": "native/owner-finished-lock.command.json",
+      "size": 558,
+      "sha256": "9ebfe2dff9781c0cd7a83bf7ea181e502d7fd3a92eb4bbde8fff957a3b1978b5"
+    },
+    {
+      "path": "native/owner-finished-lock.driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/owner-finished-lock.driver.log",
+      "size": 135,
+      "sha256": "c6e45de7f159c0d6d28fc2d4791359463b68081386be9b0dd5223711945652aa"
+    },
+    {
+      "path": "native/owner-serving-lock/native.log",
+      "size": 413,
+      "sha256": "09ebbbe55fd3f12c8e807582864ef0eb05e6c8b473fb128397b850136f90ac61"
+    },
+    {
+      "path": "native/owner-serving-lock/owned/metadata",
+      "size": 68,
+      "sha256": "fa200a35c2525807d0c9bb897584e861f03d7971c98c419b06b5430918f5b1f7"
+    },
+    {
+      "path": "native/owner-serving-lock/receipt.json",
+      "size": 3008,
+      "sha256": "4f582847003b512a19364013bae3f6f14099cb805736a9cf106d086df8792190"
+    },
+    {
+      "path": "native/owner-serving-lock.command.json",
+      "size": 556,
+      "sha256": "275907cec58f0735aec004e9c1f3881719800cde558e3c812651009737157051"
+    },
+    {
+      "path": "native/owner-serving-lock.driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/owner-serving-lock.driver.log",
+      "size": 134,
+      "sha256": "2c297d1aa8576c01f29be313dcff1ee55f1bcd4298c2568f33bd2ee940cc8f8c"
+    },
+    {
+      "path": "native/readonly-file/native.log",
+      "size": 518,
+      "sha256": "8ebf53c68d3cfcaf6fa5f6cb80bc7e4a481b96354004673f8e22fa89d75980d7"
+    },
+    {
+      "path": "native/readonly-file/owned/metadata",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "native/readonly-file/receipt.json",
+      "size": 2883,
+      "sha256": "903134c5d39b8872e598da081ba1a5e039ed1532631b03414223aff17af22be4"
+    },
+    {
+      "path": "native/readonly-file.command.json",
+      "size": 546,
+      "sha256": "9bbe32c9df6b3f9fd5f179327f1c5c5ad8c4df5aca1ac4feedf1352f4371ea16"
+    },
+    {
+      "path": "native/readonly-file.driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native/readonly-file.driver.log",
+      "size": 129,
+      "sha256": "e211be8ae62823cb22b4851eac76533da74e9e20c9f2beac11746eb9bc866787"
+    },
+    {
+      "path": "native/results.json",
+      "size": 16160,
+      "sha256": "50114d716f65699dba68b7a3e107b5858e6afab808053a3b7f2f3939cea91ed5"
+    },
+    {
+      "path": "native/rustc.txt",
+      "size": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "native/source.txt",
+      "size": 41,
+      "sha256": "141416830791ee4744bd3c497e37910fa4bfee326c9f285015d7230e77e9fe66"
+    },
+    {
+      "path": "reconnect-first/artifact.json",
+      "size": 191,
+      "sha256": "1fa39a85403e52ffe5c9ad321d49498ffdcfd56bfe5afa612386d6c37b8559ae"
+    },
+    {
+      "path": "reconnect-first/cargo.txt",
+      "size": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "reconnect-first/checkout.log",
+      "size": 180,
+      "sha256": "9c9c995b68f564bf86a3029aada8d75f0697c08fbbaf15665139b8bf7a65e2ca"
+    },
+    {
+      "path": "reconnect-first/compile.command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "reconnect-first/compile.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "reconnect-first/compile.jsonl",
+      "size": 260583,
+      "sha256": "9d6a18fe3279538953644668781bcb50f93134c449cdfea73b77cda587c1ae17"
+    },
+    {
+      "path": "reconnect-first/compile.log",
+      "size": 1859,
+      "sha256": "986b8f586d2a4caed210c1ee5de12891652769b04b7d51764ac7fc8d9a0c41ab"
+    },
+    {
+      "path": "reconnect-first/driver.py",
+      "size": 5184,
+      "sha256": "b68d89699c50d88f1c6d3d5754f47e7eb2000bb6829d8d849d98e68c06abb34f"
+    },
+    {
+      "path": "reconnect-first/environment.json",
+      "size": 781,
+      "sha256": "29abfa913bbae270234d3d79ccc52cd7ec383c31f3d7a9f924eb5ead10363d52"
+    },
+    {
+      "path": "reconnect-first/fetch.log",
+      "size": 179,
+      "sha256": "8719ed416f7fe7107a9e3f615b53d629e58015934e631aeee4cd3d68e3c40427"
+    },
+    {
+      "path": "reconnect-first/reconnect/command.json",
+      "size": 259,
+      "sha256": "ef9b1af9989c70076026a30de20cbef246062669e0f74b38675e5bb25bb1dd2f"
+    },
+    {
+      "path": "reconnect-first/reconnect/environment.json",
+      "size": 302,
+      "sha256": "47c54c5a89f02e663c4264541d2127c12131a160ccdf43699814c6853fb5f1c3"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/0-capture-1-1.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/0-capture-1-1.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/1-capture-1-1.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/1-capture-1-1.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/10-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/10-before-disconnect-2-1.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/11-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/11-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/12-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/12-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "c8f841dca135f013c96c119ab2535c3372298c312fe2259334c8bf16668adc58"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/13-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/13-before-disconnect-2-2.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/14-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/14-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/15-before-disconnect-2-2.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/15-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "f101368b5bb2259f1451e5d6a39ec93b3735c5e0d854d289c47110effeb791ff"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/16-retained-replay-2-1.json",
+      "size": 37,
+      "sha256": "edc9bebe4c8039b7b1b185c147ddc9462de6437dd6f93be16df995749b34ffa0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/2-capture-1-1.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/2-capture-1-1.json",
+      "size": 58,
+      "sha256": "6ab695be93ba929633537d1219f4c1ba5c8b7483932e95ac708f825893e829b3"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/3-capture-1-1.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/3-capture-1-1.json",
+      "size": 58,
+      "sha256": "9d2588b2dfa7a8c4a6d0ed079c2be8d912a203f4bd68dc5dc49fbe2086988b30"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/4-terminal-1-1.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/5-capture-1-2.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/5-capture-1-2.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/6-capture-1-2.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/6-capture-1-2.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/7-capture-1-2.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/7-capture-1-2.json",
+      "size": 58,
+      "sha256": "b7f4092a1deaf2cd0ccb0ec60796570c98a212579e4296e2b30081f99609cf93"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/8-capture-1-2.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/8-capture-1-2.json",
+      "size": 58,
+      "sha256": "44394e103185c3d6786a717e3fc0a2ada17c5d97aa667b25e53b6f1723d4f61b"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/9-terminal-1-2.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/Agentfile",
+      "size": 246,
+      "sha256": "85dcd3a3dae1d4731a4a0ae4282185c0fd38dea4aff94d5729c8796d5fca50fc"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/artifacts.json",
+      "size": 1064,
+      "sha256": "aa75b1b9f9f67e4c142760cd87c989c8e76a9f64cc72b9b0fe83d2ac32e7ebc8"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/borrowed-observers-joined.json",
+      "size": 143,
+      "sha256": "8e6b6f668fea2a6f9efbaba4bf58f744849abae9b67eca305a6c1654e6f7c651"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/inputs.json",
+      "size": 280,
+      "sha256": "70d960fb1a91233299655bcb33e9f379c5cc7a6d8784fc757a03e098f976826a"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/managed-output.after-disconnect",
+      "size": 573,
+      "sha256": "30c5eaabef85adc1d383ccca86533e165fb994cebb43594d3e7baef8fee346a0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/managed-output.before-cleanup",
+      "size": 573,
+      "sha256": "30c5eaabef85adc1d383ccca86533e165fb994cebb43594d3e7baef8fee346a0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/managed-output.ready",
+      "size": 433,
+      "sha256": "4a5a8c597452d7ed53ceb3f184200673cc0b18287fd4484d8ae235db7ff46cd6"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/managed-output.stopped",
+      "size": 713,
+      "sha256": "b7f79734b604cebe62db95e3bcb35dab7a1bdec1e59dd5382f8a76fe810fd483"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/normal-ended.json",
+      "size": 517,
+      "sha256": "d681c9b1d0804f2147f567eed22d10043149cee1ab82f33215135ac2f719c838"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/retained-before-disconnect.json",
+      "size": 686,
+      "sha256": "81edeea0208d63cce47e6b7c591a44f9e397f4c7a424485b257402f6e5532ba0"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "reconnect-first/reconnect/records/teardown.json",
+      "size": 247,
+      "sha256": "2d7558b7ddcb641c26dde2c6009d94171ef4e728d47e6e8b7ee08ff1cf42ce8e"
+    },
+    {
+      "path": "reconnect-first/reconnect/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "reconnect-first/reconnect/test.log",
+      "size": 9097,
+      "sha256": "0c23d378943f70a767c48acf234c841f8fd9d68c938c722f1a88ab01c0ccc9a5"
+    },
+    {
+      "path": "reconnect-first/result.json",
+      "size": 329,
+      "sha256": "575c869c3c98698c2c643757af13c18b8892558f4013bd848e6ba776551ffb49"
+    },
+    {
+      "path": "reconnect-first/rustc.txt",
+      "size": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "reconnect-first/source.txt",
+      "size": 41,
+      "sha256": "4e7ffbd3619bd51ce53e335be35d9b4bfe117f4d4b14bf846e13fad144debd6d"
+    },
+    {
+      "path": "reconnect-repeat/command.json",
+      "size": 259,
+      "sha256": "ef9b1af9989c70076026a30de20cbef246062669e0f74b38675e5bb25bb1dd2f"
+    },
+    {
+      "path": "reconnect-repeat/driver.py",
+      "size": 2906,
+      "sha256": "4945e9023800ec86cde57f044e84e17ee0e7976c846d8e989ab9f7c0af0241c3"
+    },
+    {
+      "path": "reconnect-repeat/environment.json",
+      "size": 1084,
+      "sha256": "a27d8a3512d82823df8566370f63f987cb4dcbf0b5ea9dac6a02b40e39a64dd0"
+    },
+    {
+      "path": "reconnect-repeat/frozen-artifacts.json",
+      "size": 1883,
+      "sha256": "a0bd32910dc507439c2a756eff305c1b6a088b6a2099dbe2e276e068910ef019"
+    },
+    {
+      "path": "reconnect-repeat/records/0-capture-1-1.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "reconnect-repeat/records/0-capture-1-1.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-repeat/records/1-capture-1-1.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "reconnect-repeat/records/1-capture-1-1.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-repeat/records/10-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "reconnect-repeat/records/10-before-disconnect-2-1.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-repeat/records/11-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "reconnect-repeat/records/11-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-repeat/records/12-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "reconnect-repeat/records/12-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "c8f841dca135f013c96c119ab2535c3372298c312fe2259334c8bf16668adc58"
+    },
+    {
+      "path": "reconnect-repeat/records/13-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "reconnect-repeat/records/13-before-disconnect-2-2.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-repeat/records/14-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "reconnect-repeat/records/14-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-repeat/records/15-before-disconnect-2-2.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "reconnect-repeat/records/15-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "f101368b5bb2259f1451e5d6a39ec93b3735c5e0d854d289c47110effeb791ff"
+    },
+    {
+      "path": "reconnect-repeat/records/16-retained-replay-2-1.json",
+      "size": 37,
+      "sha256": "edc9bebe4c8039b7b1b185c147ddc9462de6437dd6f93be16df995749b34ffa0"
+    },
+    {
+      "path": "reconnect-repeat/records/2-capture-1-1.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "reconnect-repeat/records/2-capture-1-1.json",
+      "size": 58,
+      "sha256": "6ab695be93ba929633537d1219f4c1ba5c8b7483932e95ac708f825893e829b3"
+    },
+    {
+      "path": "reconnect-repeat/records/3-capture-1-1.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "reconnect-repeat/records/3-capture-1-1.json",
+      "size": 58,
+      "sha256": "9d2588b2dfa7a8c4a6d0ed079c2be8d912a203f4bd68dc5dc49fbe2086988b30"
+    },
+    {
+      "path": "reconnect-repeat/records/4-terminal-1-1.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-repeat/records/5-capture-1-2.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "reconnect-repeat/records/5-capture-1-2.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-repeat/records/6-capture-1-2.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "reconnect-repeat/records/6-capture-1-2.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-repeat/records/7-capture-1-2.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "reconnect-repeat/records/7-capture-1-2.json",
+      "size": 58,
+      "sha256": "b7f4092a1deaf2cd0ccb0ec60796570c98a212579e4296e2b30081f99609cf93"
+    },
+    {
+      "path": "reconnect-repeat/records/8-capture-1-2.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "reconnect-repeat/records/8-capture-1-2.json",
+      "size": 58,
+      "sha256": "44394e103185c3d6786a717e3fc0a2ada17c5d97aa667b25e53b6f1723d4f61b"
+    },
+    {
+      "path": "reconnect-repeat/records/9-terminal-1-2.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-repeat/records/Agentfile",
+      "size": 246,
+      "sha256": "4674f16705e0ec4f6cf4b469058a09777e2ad038b1e090d0789d9d9a0037c6fe"
+    },
+    {
+      "path": "reconnect-repeat/records/artifacts.json",
+      "size": 1064,
+      "sha256": "30bd289826950a710250a51342f4a6fcdffe5686035ea9d9b90e525508e58a57"
+    },
+    {
+      "path": "reconnect-repeat/records/borrowed-observers-joined.json",
+      "size": 143,
+      "sha256": "8e6b6f668fea2a6f9efbaba4bf58f744849abae9b67eca305a6c1654e6f7c651"
+    },
+    {
+      "path": "reconnect-repeat/records/inputs.json",
+      "size": 280,
+      "sha256": "a3a5e7f2216027bb4561b7e7cec3005423b913f248c1c80200a1e2baae0ed5c8"
+    },
+    {
+      "path": "reconnect-repeat/records/managed-output.after-disconnect",
+      "size": 573,
+      "sha256": "0ebb1e4ced4bdb2f475d91ae77dc3fa09dd127de4fe6f60b921c5aa8c498f95a"
+    },
+    {
+      "path": "reconnect-repeat/records/managed-output.before-cleanup",
+      "size": 573,
+      "sha256": "0ebb1e4ced4bdb2f475d91ae77dc3fa09dd127de4fe6f60b921c5aa8c498f95a"
+    },
+    {
+      "path": "reconnect-repeat/records/managed-output.ready",
+      "size": 433,
+      "sha256": "7cad26c59aee5cee476f04fb4eca8e8da7892a5e3e93c8e4dd4ff9b4e4f0f155"
+    },
+    {
+      "path": "reconnect-repeat/records/managed-output.stopped",
+      "size": 713,
+      "sha256": "98e157e2db968258db331794b7aecaad7f86de230bbf8b1cedf9c0441ed1c96f"
+    },
+    {
+      "path": "reconnect-repeat/records/normal-ended.json",
+      "size": 517,
+      "sha256": "d681c9b1d0804f2147f567eed22d10043149cee1ab82f33215135ac2f719c838"
+    },
+    {
+      "path": "reconnect-repeat/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "reconnect-repeat/records/retained-before-disconnect.json",
+      "size": 686,
+      "sha256": "81edeea0208d63cce47e6b7c591a44f9e397f4c7a424485b257402f6e5532ba0"
+    },
+    {
+      "path": "reconnect-repeat/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "reconnect-repeat/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "reconnect-repeat/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "reconnect-repeat/records/teardown.json",
+      "size": 247,
+      "sha256": "2d7558b7ddcb641c26dde2c6009d94171ef4e728d47e6e8b7ee08ff1cf42ce8e"
+    },
+    {
+      "path": "reconnect-repeat/result.json",
+      "size": 306,
+      "sha256": "886b80221c816edaae929f49990d8ece4e8d083960dc780e0c14572d9b8e396b"
+    },
+    {
+      "path": "reconnect-repeat/source.txt",
+      "size": 41,
+      "sha256": "4e7ffbd3619bd51ce53e335be35d9b4bfe117f4d4b14bf846e13fad144debd6d"
+    },
+    {
+      "path": "reconnect-repeat/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "reconnect-repeat/test.log",
+      "size": 8707,
+      "sha256": "bbf092ec80a7d1013c9daf150dcc05574b1937c156dca0aad505c76856ac5e78"
+    },
+    {
+      "path": "reconnect-diagnostic/artifact.json",
+      "size": 191,
+      "sha256": "a0a7cabb977fd76f7a5b233ed84b0f5b0a31cbb0781c74249e876c4508cfe1d0"
+    },
+    {
+      "path": "reconnect-diagnostic/cargo.txt",
+      "size": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "reconnect-diagnostic/checkout.log",
+      "size": 174,
+      "sha256": "d9793d785d957345d383611cac88a0a82d7cd312f5df7c5d38149f36f7c68548"
+    },
+    {
+      "path": "reconnect-diagnostic/compile.command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "reconnect-diagnostic/compile.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "reconnect-diagnostic/compile.jsonl",
+      "size": 260583,
+      "sha256": "95a6eebef8ad76612db04ae5ed3410c6730b14de5ed7589ce1c5779da42cecdd"
+    },
+    {
+      "path": "reconnect-diagnostic/compile.log",
+      "size": 1859,
+      "sha256": "b2f5cb0bd032bbf491d15721a5b258b185eb352cc72eb2bd22483360c44437bf"
+    },
+    {
+      "path": "reconnect-diagnostic/driver.py",
+      "size": 5187,
+      "sha256": "a87ff9e97e4b57267f2512a1cd574738345dfc959005e0034febf34da5b06896"
+    },
+    {
+      "path": "reconnect-diagnostic/environment.json",
+      "size": 784,
+      "sha256": "5fb7375a06434e8c5148518dc123ea4489256deed37bb35b12a3916d2716645d"
+    },
+    {
+      "path": "reconnect-diagnostic/fetch.log",
+      "size": 128,
+      "sha256": "1ddd9233d37e9c8064175e7bfbc1bce2bd7b560a6c8c603ce876b2e17d2c7c44"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/command.json",
+      "size": 259,
+      "sha256": "ef9b1af9989c70076026a30de20cbef246062669e0f74b38675e5bb25bb1dd2f"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/environment.json",
+      "size": 305,
+      "sha256": "8cd2db93339c45e84ca4d8449c3a1446d0c4f83bd7a106b4b326b3f852d6bb6a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/0-capture-1-1.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/0-capture-1-1.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/1-capture-1-1.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/1-capture-1-1.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/10-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/10-before-disconnect-2-1.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/11-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/11-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/12-before-disconnect-2-1.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/12-before-disconnect-2-1.json",
+      "size": 58,
+      "sha256": "c8f841dca135f013c96c119ab2535c3372298c312fe2259334c8bf16668adc58"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/13-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/13-before-disconnect-2-2.json",
+      "size": 57,
+      "sha256": "7af08ce280011fcafc45734520b04ab2c331c1c05cdef78284906464e213f70a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/14-before-disconnect-2-2.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/14-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "5b1da8c725343b384b8a4957a6781ac00a95e7ac7db68e2af4ce84010f2fd040"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/15-before-disconnect-2-2.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/15-before-disconnect-2-2.json",
+      "size": 58,
+      "sha256": "f101368b5bb2259f1451e5d6a39ec93b3735c5e0d854d289c47110effeb791ff"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/16-retained-replay-2-1.json",
+      "size": 37,
+      "sha256": "edc9bebe4c8039b7b1b185c147ddc9462de6437dd6f93be16df995749b34ffa0"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/2-capture-1-1.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/2-capture-1-1.json",
+      "size": 58,
+      "sha256": "6ab695be93ba929633537d1219f4c1ba5c8b7483932e95ac708f825893e829b3"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/3-capture-1-1.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/3-capture-1-1.json",
+      "size": 58,
+      "sha256": "9d2588b2dfa7a8c4a6d0ed079c2be8d912a203f4bd68dc5dc49fbe2086988b30"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/4-terminal-1-1.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/5-capture-1-2.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/5-capture-1-2.json",
+      "size": 57,
+      "sha256": "f326da6263c2daeaa6413c1b29c70e3f898933d83ac89c5519528e6944f7de33"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/6-capture-1-2.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/6-capture-1-2.json",
+      "size": 58,
+      "sha256": "9393be47c2e1b5f8bf6914060ed764bb581261ab56691c5ffdb00f546991e00c"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/7-capture-1-2.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/7-capture-1-2.json",
+      "size": 58,
+      "sha256": "b7f4092a1deaf2cd0ccb0ec60796570c98a212579e4296e2b30081f99609cf93"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/8-capture-1-2.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/8-capture-1-2.json",
+      "size": 58,
+      "sha256": "44394e103185c3d6786a717e3fc0a2ada17c5d97aa667b25e53b6f1723d4f61b"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/9-terminal-1-2.json",
+      "size": 29,
+      "sha256": "dade13604b0a1340ab8c0ad79e55f36d2d37ca61c847b5594da20495e03a4bc0"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/Agentfile",
+      "size": 246,
+      "sha256": "a76da8be525d9abf5f78b399f21ec8da1a7a6aba5c9db7082a6b0be25c92cc2b"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/artifacts.json",
+      "size": 1064,
+      "sha256": "57a7e39c07fce9a916fe473f2e4dc84e04fc54fc26135a02e40dbc823b71ebe5"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/borrowed-observers-joined.json",
+      "size": 143,
+      "sha256": "8e6b6f668fea2a6f9efbaba4bf58f744849abae9b67eca305a6c1654e6f7c651"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/inputs.json",
+      "size": 280,
+      "sha256": "cb473681b3b6bb2e7c290e9629a9eaec137f5fa2e6731289b3f07b4f7649116b"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/managed-output.after-disconnect",
+      "size": 573,
+      "sha256": "db0a0e8f0c3ceecf13864f7721437a95ad57d290412dbb0efdb94dacf0b31c4f"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/managed-output.before-cleanup",
+      "size": 573,
+      "sha256": "db0a0e8f0c3ceecf13864f7721437a95ad57d290412dbb0efdb94dacf0b31c4f"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/managed-output.ready",
+      "size": 433,
+      "sha256": "5a758cf934fedeae147f2233509496ba412a4e274762e17bac3160dc29e24922"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/managed-output.stopped",
+      "size": 713,
+      "sha256": "a05a2ed1e40c26d46eff6bfe68ea2a3ad23dc48a33197a18215fc6081802ba56"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/normal-ended.json",
+      "size": 517,
+      "sha256": "d681c9b1d0804f2147f567eed22d10043149cee1ab82f33215135ac2f719c838"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/retained-before-disconnect.json",
+      "size": 686,
+      "sha256": "81edeea0208d63cce47e6b7c591a44f9e397f4c7a424485b257402f6e5532ba0"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/records/teardown.json",
+      "size": 247,
+      "sha256": "2d7558b7ddcb641c26dde2c6009d94171ef4e728d47e6e8b7ee08ff1cf42ce8e"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "reconnect-diagnostic/reconnect/test.log",
+      "size": 8809,
+      "sha256": "80fdbee2d2df1dcd33be0948f680d01d68ec0c67aa1c0c662e5476cd0bb5ebfc"
+    },
+    {
+      "path": "reconnect-diagnostic/result.json",
+      "size": 329,
+      "sha256": "575c869c3c98698c2c643757af13c18b8892558f4013bd848e6ba776551ffb49"
+    },
+    {
+      "path": "reconnect-diagnostic/rustc.txt",
+      "size": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "reconnect-diagnostic/source.txt",
+      "size": 41,
+      "sha256": "17e06eccad81e3f5c30ba3af90675bb5a2ddc8db8c20aa8ff21b594299aded90"
+    }
+  ]
+}

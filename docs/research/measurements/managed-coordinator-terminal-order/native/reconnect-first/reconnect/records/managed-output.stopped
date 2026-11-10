@@ -1,0 +1,14 @@
+shards managed output 1
+server 066ee5d8d9fea40da6c3f41d3f7548d34965537eb8609b33acc191ecbdd95f79
+owner 066ee5d8d9fea40da6c3f41d3f7548d34965537eb8609b33acc191ecbdd95f79
+run e6f494e32804511de7f08eaef1c83d56dba467685fc6ca562405e43bf25e81ff
+generation 1
+capacity 30
+member 1 channel 1 address 127.0.0.1:38898
+member 1 channel 2 address 127.0.0.1:53718
+member 2 channel 1 address 127.0.0.1:57789
+member 2 channel 2 address 127.0.0.1:41996
+member 1 channel 1 state ended accepted 102 consumed 102 tail complete
+member 1 channel 2 state ended accepted 99 consumed 99 tail complete
+member 2 channel 1 state aborted accepted 90 consumed 60 tail unknown
+member 2 channel 2 state aborted accepted 87 consumed 60 tail unknown

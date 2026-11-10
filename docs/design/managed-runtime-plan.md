@@ -522,6 +522,12 @@ covert channel or abuse of deliberately delegated read/write/credential authorit
 
 ## 12. Current coordinator checkpoint
 
+The [terminal metadata follow-up](../research/measurements/managed-coordinator-terminal-order/README.md)
+adds actual complete-daemon empty-stream metadata-lock/error/partial-append
+cases and an exact seven-target gate at d2288c27. The same record retains a
+separate real-VM reconnect failure before application subscription; no admission
+workaround or completed reconnect guarantee is claimed.
+
 The [canonical terminal closing record](../research/measurements/managed-terminal-proof/README.md)
 retains strict normal and post-stdio-EOF KVM red/green cases, the exact completion
 guard removal with actual false-abort metadata and restored passes, full real
