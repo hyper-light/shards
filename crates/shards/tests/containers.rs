@@ -16113,9 +16113,10 @@ fn a_workload_past_its_cgroup_is_held_to_its_cpus_by_its_host() {
 /// On Linux a run's vCPUs and its hold's governor run at the fair scheduler's shortest
 /// slice, at their weight as before (D191, PM M440): on a host whose CPUs are busy each
 /// takes its CPU as it wakes. Every vCPU thread of a `--cpus 1` run's VM process, and its
-/// governor, as sched_getattr(2) reads them: SCHED_OTHER at the nice value of the
-/// processes that started it (this test's), and 100 µs where the
-/// host's kernel takes a thread's slice (6.12 and later). A VM process whose seccomp filter
+/// governor, as sched_getattr(2) reads them: the policy and nice value of the
+/// process that started it (this test's). SCHED_OTHER gets 100 µs where the host's
+/// kernel takes a thread's slice (6.12 and later); a launcher's other policy keeps
+/// its own slice, as run_promptly promises. A VM process whose seccomp filter
 /// refused the call would have ended at its first vCPU.
 #[cfg(target_os = "linux")]
 #[test]
@@ -16171,13 +16172,23 @@ fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
     let vcpus = seen.iter().filter(|t| t.0.starts_with("vcpu")).count();
     assert_eq!(vcpus, host, "{seen:?}");
     assert_eq!(seen.iter().any(|t| t.0 == "hold"), host > 1, "{seen:?}");
-    let slice = if takes_slices { 100_000 } else { 0 };
-    // SAFETY: getpriority(2) of this process.
-    let own = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    // The launcher may use SCHED_IDLE or SCHED_BATCH. The VMM deliberately keeps
+    // those policies and their slices; only SCHED_OTHER requests the shortest slice.
+    // SAFETY: an all-zero sched_attr is a valid value for the kernel to fill.
+    let mut own: libc::sched_attr = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::sched_attr>() as u32;
+    // SAFETY: this thread's attributes, into `own`, which has `size` bytes.
+    let got = unsafe { libc::syscall(libc::SYS_sched_getattr, 0, &mut own as *mut _, size, 0) };
+    assert_eq!(got, 0, "{}", std::io::Error::last_os_error());
+    let slice = if takes_slices && own.sched_policy == libc::SCHED_OTHER as u32 {
+        100_000
+    } else {
+        own.sched_runtime
+    };
     for (name, policy, nice, runtime) in &seen {
         assert_eq!(
             (*policy, *nice, *runtime),
-            (libc::SCHED_OTHER as u32, own, slice),
+            (own.sched_policy, own.sched_nice, slice),
             "{name} on Linux {release}: {seen:?}"
         );
     }

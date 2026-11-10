@@ -2845,6 +2845,13 @@ mod usage_tests {
         let version = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
         let takes_slices = version >= (6, 12);
         std::thread::spawn(move || {
+            // The test may inherit SCHED_IDLE from its launcher. Establish the policy
+            // whose slice this fixture checks; run_promptly must not change policies.
+            let mut other = attr();
+            other.sched_policy = libc::SCHED_OTHER as u32;
+            // SAFETY: sched_setattr(2) of the calling thread from its own attributes.
+            let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &other as *const _, 0) };
+            assert_eq!(set, 0, "{}", io::Error::last_os_error());
             // A weight of its own first, which an unprivileged thread may take.
             // SAFETY: gettid(2) has no preconditions.
             let tid = unsafe { libc::gettid() };
@@ -2873,6 +2880,24 @@ mod usage_tests {
             let left = attr();
             assert_eq!(left.sched_policy, libc::SCHED_BATCH as u32);
             assert_ne!(left.sched_runtime, PROMPT_SLICE_NS);
+        })
+        .join()
+        .unwrap();
+        std::thread::spawn(|| {
+            let mut idle = attr();
+            idle.sched_policy = libc::SCHED_IDLE as u32;
+            idle.sched_runtime = 0;
+            // SAFETY: sched_setattr(2) of the calling thread from its own attributes.
+            let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &idle as *const _, 0) };
+            assert_eq!(set, 0, "{}", io::Error::last_os_error());
+            let before = attr();
+            run_promptly().unwrap();
+            let after = attr();
+            assert_eq!(
+                (after.sched_policy, after.sched_nice, after.sched_runtime),
+                (before.sched_policy, before.sched_nice, before.sched_runtime),
+                "a launcher's idle policy is kept"
+            );
         })
         .join()
         .unwrap();

@@ -10097,6 +10097,12 @@ the user told).
   later contended and 5.8 sooner idle: contention costs slice 1's start no more than
   idleness does. Tested: platform's `a_prompt_thread_has_the_shortest_slice_at_its_own_weight`,
   and on real microVMs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice`.
+  The tests establish or read their launcher's policy rather than assume SCHED_OTHER:
+  an SSH session on adacachy inherited SCHED_IDLE, and both tests wrongly expected it
+  to become SCHED_OTHER (2026-11-09). The unit fixture establishes SCHED_OTHER for its
+  shortest-slice check, then checks that SCHED_BATCH and SCHED_IDLE are preserved;
+  the microVM check compares against its launcher's policy, nice value and slice.
+  `run_promptly`'s policy-preserving behavior is unchanged.
 - **A held vCPU goes on as its period ends, by itself** (2026-11-03). The hold's cost to a
   memory-heavy run on a contended host (PM M292: fills 9 and 16% longer, n 8) did not
   repeat (PM M441: n 16, the held arm the quicker in 9 rounds of 16, the host's drift
