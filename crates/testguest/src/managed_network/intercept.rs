@@ -9,6 +9,7 @@ use std::os::unix::fs::MetadataExt;
 use std::thread::JoinHandle;
 
 pub(super) mod sock_addr;
+pub(super) mod tcp_forward;
 pub(super) mod udp;
 mod wire;
 use wire::Netlink;
@@ -240,29 +241,18 @@ fn listen(at: SocketAddr, mode: SocketMode) -> io::Result<TcpListener> {
 
 /// Two fixed workers at most. On every terminal path Drop wakes accept/read/write
 /// and joins; the original absolute deadline bounds even a missed cancellation.
-struct Worker {
+struct Worker<T = Completion> {
     cancel: OwnedFd,
-    state: WorkerState,
+    state: WorkerState<T>,
 }
 
-enum WorkerState {
-    Running(JoinHandle<Completion>),
+enum WorkerState<T> {
+    Running(JoinHandle<T>),
     Joined,
 }
 impl Worker {
     fn start(listener: TcpListener, reply: Reply, deadline: &Deadline) -> io::Result<Self> {
-        // SAFETY: eventfd returns a new owned descriptor.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: fd is the uniquely owned newly created eventfd.
-        let cancel = unsafe { OwnedFd::from_raw_fd(fd) };
-        let deadline = Deadline {
-            at: deadline.at,
-            cancel: Some(cancel.as_raw_fd()),
-        };
-        let thread = std::thread::Builder::new().spawn(move || {
+        Self::spawn(deadline, move |deadline| {
             let mut report = Report::default();
             let result = (|| loop {
                 let (mut stream, peer) =
@@ -286,10 +276,17 @@ impl Worker {
                 };
                 report.last = Some(tuple);
                 let received = tcp_receive(&mut stream, SENT, &deadline)?;
-                report.receipts = report.receipts.checked_add(1).ok_or_else(|| invalid("receipt count overflow"))?;
+                report.receipts = report
+                    .receipts
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("receipt count overflow"))?;
                 observed(&received, tuple.local, tuple.peer, Some(tuple.local))?;
                 let mut out = io::stdout().lock();
-                writeln!(out, "managed-intercept {{\"type\":\"ServerObservation\",\"role\":\"{reply:?}\",\"local\":\"{}\",\"peer\":\"{}\"}}", tuple.local, tuple.peer)?;
+                writeln!(
+                    out,
+                    "managed-intercept {{\"type\":\"ServerObservation\",\"role\":\"{reply:?}\",\"local\":\"{}\",\"peer\":\"{}\"}}",
+                    tuple.local, tuple.peer
+                )?;
                 out.flush()?;
                 drop(out);
                 tcp_send(&mut stream, reply.bytes(), &deadline)?;
@@ -299,12 +296,35 @@ impl Worker {
                 }
             })();
             Completion { report, result }
-        })?;
+        })
+    }
+}
+
+impl<T: Send + 'static> Worker<T> {
+    fn spawn(
+        deadline: &Deadline,
+        operation: impl FnOnce(Deadline) -> T + Send + 'static,
+    ) -> io::Result<Self> {
+        // SAFETY: eventfd returns a new descriptor, immediately uniquely owned.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful eventfd has transferred sole descriptor ownership.
+        let cancel = unsafe { OwnedFd::from_raw_fd(fd) };
+        let deadline = Deadline {
+            at: deadline.at,
+            cancel: Some(cancel.as_raw_fd()),
+        };
+        let thread = std::thread::Builder::new().spawn(move || operation(deadline))?;
         Ok(Self {
             cancel,
             state: WorkerState::Running(thread),
         })
     }
+}
+
+impl<T> Worker<T> {
     fn wake(&self) {
         let word = 1u64;
         // SAFETY: eventfd takes one uint64. Even a failed/interrupted wake cannot
@@ -317,7 +337,7 @@ impl Worker {
             )
         };
     }
-    fn finish(&mut self) -> io::Result<Completion> {
+    fn finish(&mut self) -> io::Result<T> {
         self.wake();
         match std::mem::replace(&mut self.state, WorkerState::Joined) {
             WorkerState::Running(thread) => thread
@@ -532,7 +552,7 @@ fn relay_absent(
     )?;
     out.flush()
 }
-impl Drop for Worker {
+impl<T> Drop for Worker<T> {
     fn drop(&mut self) {
         self.wake();
         if let WorkerState::Running(thread) = std::mem::replace(&mut self.state, WorkerState::Joined) {

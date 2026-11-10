@@ -1,0 +1,125 @@
+{
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer + assigned adversarial relay tester",
+  "scope": "Core code compilation, not normal host/helpers or live campaign. Minimal libc/devcgroup check crate compiles the actual managed_network module tree. No native I/O/test execution.",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+  "sync": false,
+  "first_unformatted_copy": "/home/adalundhe/relay-tcp-forward-cbd3-light-v1",
+  "result": {
+    "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+    "root": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2",
+    "checks": [
+      {
+        "name": "format",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--edition",
+          "2024",
+          "--config",
+          "skip_children=true",
+          "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/source/crates/testguest/src/managed_network/intercept.rs",
+          "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/source/crates/testguest/src/managed_network/intercept/tcp_forward.rs"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/format.log",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "policy",
+        "status": 0,
+        "command": [
+          "python3",
+          "scripts/check-development-policy"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/policy.log",
+        "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+      },
+      {
+        "name": "toolchain",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustc",
+          "-Vv"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/toolchain.log",
+        "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/x86_64-unknown-linux-gnu.log",
+        "sha256": "3c566e09e630fd9ccc9028137c56b11c595e567f16dde08ca8966eccbac7c355"
+      },
+      {
+        "name": "x86_64-unknown-linux-musl",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v2/x86_64-unknown-linux-musl.log",
+        "sha256": "a308616b649e34dbc072a778f7aa54e034acd407989e968c81443e3f808f77ff"
+      }
+    ],
+    "cpu_affinity": [
+      0
+    ],
+    "rlimit_as_bytes": 1073741824,
+    "private_bytes": 25567232,
+    "native_execution": false,
+    "formatted_sources": [
+      {
+        "path": "crates/testguest/src/managed_network/intercept.rs",
+        "sha256": "259e662ec44148fd03f40b3ab51b566d3a5f670404e44e2979e22b0f8c174001"
+      },
+      {
+        "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+        "sha256": "acc72f8be871a76ae14ba5ffb353b3cacf48f51aab9e32892fbf513ad7d75d50"
+      }
+    ]
+  },
+  "logs": {
+    "format.log": "",
+    "policy.log": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "toolchain.log": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+    "x86_64-unknown-linux-gnu.log": "    Updating crates.io index\n     Locking 1 package to latest Rust 1.98.1 compatible version\n      Adding libc v0.2.189 (available: v0.2.191)\n Downloading crates ...\n  Downloaded libc v0.2.189\n   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v2/check/devcgroup)\n    Checking relay-tcp-pump-check v0.0.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v2/check)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.54s\n",
+    "x86_64-unknown-linux-musl.log": "   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v2/check/devcgroup)\n    Checking relay-tcp-pump-check v0.0.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v2/check)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.31s\n"
+  },
+  "pending": [
+    "parser and direct-guest orchestration",
+    "independent backend/client scripts and host leaf",
+    "unapplied host registration patch",
+    "native and real KVM scenarios/mutations/restoration",
+    "production shared extraction and init caller wiring",
+    "all-route/native presentation and aggregate/kernel resource coverage",
+    "ROOT final integration/audit/profile/benchmark/matrix"
+  ]
+}
