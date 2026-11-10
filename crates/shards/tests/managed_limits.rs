@@ -15,12 +15,11 @@ fn input(name: &str) -> u32 {
         .unwrap_or_else(|_| panic!("{name} must be a positive u32"))
 }
 
-fn publish(directory: &Path, name: &str, bytes: &[u8]) {
-    let pending = directory.join(format!("{name}.pending"));
-    let mut file = std::fs::File::create(&pending).unwrap();
-    file.write_all(bytes).unwrap();
-    file.sync_all().unwrap();
-    std::fs::rename(pending, directory.join(name)).unwrap();
+fn agentfile(base: &str, budget: Budget, actor_port: u16, healthy_port: u16) -> String {
+    format!(
+        "FROM {base}\nAGENT --processes={} limited FROM ./limited\nHARNESS healthy FROM ./healthy\nVOLUME --chown=limited /limits FOR limited\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={actor_port},{healthy_port} control\nEXPOSE --agents=limited {actor_port} AS ingress FOR control\nEXPOSE --harnesses=healthy {healthy_port} AS ingress FOR control\nCONNECT limited WITH limited ON control\nCONNECT healthy WITH healthy ON control\n",
+        budget.tasks
+    )
 }
 
 fn published(directory: &Path, name: &str, until: Instant) -> Vec<u8> {
@@ -88,7 +87,7 @@ fn tree(rows: &[Process], expected_reserved: u32, held: u32) -> u32 {
     let actor = actors
         .iter()
         .find(|actor| rows.iter().any(|p| p.pid == actor.parent && p.uid == 0))
-        .expect("no actor below a root-owned reaper");
+        .unwrap_or_else(|| panic!("no actor below a root-owned reaper"));
     let reaper = rows.iter().find(|p| p.pid == actor.parent).unwrap();
     assert_eq!(actor.threads, 1);
     assert_eq!(reaper.threads, 1);
@@ -130,7 +129,7 @@ impl Run<'_> {
     }
     fn snapshot(&self, phase: &str, budget: Budget, held: u32) {
         let result = self.command(&["top", "managed-limits", "-o", "pid,ppid,uid,nlwp"]);
-        eprintln!("{phase} trusted process snapshot:\n{result}");
+        let _ = writeln!(std::io::stderr(), "{phase} trusted process snapshot:\n{result}");
         assert_eq!(result.status, Some(0));
         tree(&process_rows(&result.stdout).unwrap(), budget.reserved, held);
     }
@@ -141,9 +140,10 @@ impl Drop for Run<'_> {
             let _ = self.command(&["stop", "vm", "-t", "0", "managed-limits"]);
         }
         let result = self.command(&["stop", "daemon"]);
-        eprintln!("private daemon teardown: {result}");
+        let _ = writeln!(std::io::stderr(), "private daemon teardown: {result}");
         if let Some((_, home)) = self.env.iter().find(|(key, _)| *key == "SHARDS_HOME") {
-            eprintln!(
+            let _ = writeln!(
+                std::io::stderr(),
                 "private daemon log:\n{}",
                 std::fs::read_to_string(Path::new(home).join("daemon.log")).unwrap_or_default()
             );
@@ -153,7 +153,7 @@ impl Drop for Run<'_> {
 
 fn report(root: &Path, name: &str, phase: Phase, budget: Budget, until: Instant) -> Report {
     let report = Report::decode(&published(root, name, until)).unwrap();
-    eprintln!("{name} actor observation: {report:?}");
+    let _ = writeln!(std::io::stderr(), "{name} actor observation: {report:?}");
     assert_eq!(report.phase, phase);
     assert_eq!(report.budget, budget);
     assert_eq!(
@@ -179,7 +179,7 @@ fn connect(run: &Run<'_>, port: u16, until: Instant) -> std::net::TcpStream {
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|address| address.rsplit(':').next())
         .and_then(|port| port.parse().ok())
-        .expect("no published fixture control port");
+        .unwrap_or_else(|| panic!("no published fixture control port"));
     let left = until.saturating_duration_since(Instant::now());
     assert!(!left.is_zero());
     let stream = std::net::TcpStream::connect_timeout(
@@ -228,7 +228,10 @@ fn neighbor(run: &Run<'_>, control: &mut std::net::TcpStream, phase: &str, until
     ]);
     assert_eq!(result.status, Some(0), "{result}");
     assert_eq!(result.stdout, hex, "{result}");
-    eprintln!("fresh HARNESS and main nonce answered after {phase}: {hex}");
+    let _ = writeln!(
+        std::io::stderr(),
+        "fresh HARNESS and main nonce answered after {phase}: {hex}"
+    );
 }
 
 #[test]
@@ -305,7 +308,11 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         )
         .unwrap();
     }
-    std::fs::write(context.join("Agentfile"), format!("FROM {base}\nAGENT --processes={} limited FROM ./limited\nHARNESS healthy FROM ./healthy\nVOLUME --chown=limited /limits FOR limited\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={actor_port},{healthy_port} control\nEXPOSE --agents=limited {actor_port} AS ingress FOR control\nEXPOSE --harnesses=healthy {healthy_port} AS ingress FOR control\nCONNECT limited WITH limited ON control\nCONNECT healthy WITH healthy ON control\n", budget.tasks)).unwrap();
+    std::fs::write(
+        context.join("Agentfile"),
+        agentfile(&base, budget, actor_port, healthy_port),
+    )
+    .unwrap();
     let built = run.command(&[
         "build",
         "image",
@@ -390,13 +397,14 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     assert_eq!(state.stdout.trim(), "false 0", "{state}");
     let removed = run.command(&["remove", "vm", "managed-limits"]);
     assert_eq!(removed.status, Some(0), "{removed}");
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr(),
         "stop returned; daemon state not-running/PID0; private run removed. Host/kernel resource campaign remains coordinator-owned."
     );
 }
 
 #[test]
-fn process_observation_checks_threads_and_parentage() {
+fn fixture_process_observation_checks_threads_and_parentage() {
     let rows = process_rows(
         "PID PPID UID NLWP\n10 1 0 1\n11 10 200000 1\n12 1 4394304 1\n13 12 4394304 1\n14 11 200000 1\n",
     )
@@ -404,4 +412,37 @@ fn process_observation_checks_threads_and_parentage() {
     assert_eq!(tree(&rows, 4, 1), 11);
     assert!(process_rows("PID PPID UID NLWP\n1 2 x 1\n").is_err());
     assert!(process_rows("PID PPID UID NLWP\n1 2 3 1 extra\n").is_err());
+}
+
+#[test]
+fn fixture_agentfile_preserves_the_finite_task_declaration_and_grants() {
+    use shards_agentfile::{
+        agentfile::{Directive, Processes},
+        instructions::Kind,
+    };
+    let budget = Budget::new(6, 4, 2).unwrap();
+    let text = agentfile("scratch", budget, 7100, 7101);
+    let parsed =
+        shards_agentfile::parser::parse_as(text.as_bytes(), shards_agentfile::parser::Dialect::Agentfile)
+            .unwrap();
+    let instructions =
+        shards_agentfile::instructions::parse(&parsed, &shards_agentfile::lint::Linter::default()).unwrap();
+    shards_agentfile::agentfile::check(&instructions).unwrap();
+    let directives = instructions.stages[0]
+        .commands
+        .iter()
+        .filter_map(|command| match &command.kind {
+            Kind::Agentfile(directive) => Some(directive.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        matches!(&directives[0], Directive::Agent(domain) if domain.processes == Processes::AtMost(budget.tasks))
+    );
+    assert!(matches!(&directives[1], Directive::Harness(domain) if domain.processes == Processes::Unbounded));
+    let _ = writeln!(
+        std::io::stderr(),
+        "checked fixture normalized declaration: {}",
+        String::from_utf8(shards_agentfile::agentfile::spec(&directives)).unwrap()
+    );
 }
