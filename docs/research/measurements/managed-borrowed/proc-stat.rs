@@ -45,9 +45,15 @@ fn missing_or_invalid_start_field_is_nonallocating_invalid_data() {
 }
 
 #[test]
-fn proc_read_and_start_path_return_allocation_failure() {
-    let read = crate::allocation::fail_after(0, || std::fs::read("/proc/self/stat"));
-    assert_eq!(read.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
+fn proc_reader_and_start_path_return_allocation_failure() {
+    for successful in [0, 1] {
+        let file = std::fs::File::open("/proc/self/stat").unwrap();
+        let read = crate::allocation::fail_after(successful, || read_stat(file));
+        assert_eq!(read.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
+        println!(
+            "actual_proc_reader_successful_allocations_before_refusal={successful} returned_OutOfMemory=true"
+        );
+    }
     let started = crate::allocation::fail_after(0, || started(std::process::id()));
     assert_eq!(started.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
     let stat = record(b"own \xff)", b"123456");
@@ -56,6 +62,28 @@ fn proc_read_and_start_path_return_allocation_failure() {
         123456
     );
     println!(
-        "proc_read_oom_returned=true start_path_oom_returned=true field_parse_under_refused_allocations=true"
+        "actual_proc_reader_oom_returned=true start_path_oom_returned=true field_parse_under_refused_allocations=true"
     );
+}
+
+#[test]
+fn proc_reader_preserves_bytes_and_empty_eof_and_io_error() {
+    let dir = shards_testdir::TempDir::new("proc-read").unwrap();
+    let path = dir.join("stat");
+    let content = record(b"own \xff) ) \xfe", b"123456");
+    std::fs::write(&path, &content).unwrap();
+    assert_eq!(read_stat(std::fs::File::open(&path).unwrap()).unwrap(), content);
+    std::fs::write(&path, b"").unwrap();
+    assert!(read_stat(std::fs::File::open(&path).unwrap()).unwrap().is_empty());
+    assert_eq!(
+        read_stat(std::fs::File::open(&dir).unwrap()).unwrap_err().kind(),
+        io::ErrorKind::IsADirectory
+    );
+}
+
+#[test]
+#[ignore = "historical direct-std probe: actual32-byte abort retained at eee20469; not the production reader"]
+fn std_proc_read_oom_repro() {
+    let read = crate::allocation::fail_after(0, || std::fs::read("/proc/self/stat"));
+    assert_eq!(read.unwrap_err().kind(), io::ErrorKind::OutOfMemory);
 }
