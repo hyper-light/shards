@@ -1,0 +1,82 @@
+{
+  "driver.log": {
+    "bytes": 6154,
+    "sha256": "c079bb53c81db66d9b4893319fd774b9a769667a440e455d49b7d99ada5e6f9d"
+  },
+  "full-library.command.json": {
+    "bytes": 161,
+    "sha256": "8578ae82c8080cd01f9e874e6192cd03d5d760731bb26e84f56dd43f93dc31d5"
+  },
+  "full-library.log": {
+    "bytes": 20323,
+    "sha256": "ced626bf79599a540bc9ed1f8de0382868dc006369e2c507adfa3ade02c9c0eb"
+  },
+  "installed-targets.txt": {
+    "bytes": 192,
+    "sha256": "f6316c0bfdc3c726cb01c8a3fcbecd2092c838d45d28c7eeeb19a1ba0829ec99"
+  },
+  "native-lib-clippy.command.json": {
+    "bytes": 92,
+    "sha256": "5c2167ff84e26ba75fbf3da46a63d5abbfa5b41f9ca015fa5427349dbc7d56c8"
+  },
+  "native-lib-clippy.log": {
+    "bytes": 608,
+    "sha256": "eefec7e659386c16cfb09c990be29cfd85a276c2e8dbcc789c88c5c7f3fc3282"
+  },
+  "owned-max.command.json": {
+    "bytes": 238,
+    "sha256": "798d5d7679052195b95fac474e309c0791558ef274277fc06e39b8bf2e0f88e9"
+  },
+  "owned-max.log": {
+    "bytes": 15773,
+    "sha256": "9fb6b1b5aaff67950e35dc4234a9d24f80b8cf234b5ff23b3cc5bdabd6004375"
+  },
+  "owned-zero.command.json": {
+    "bytes": 220,
+    "sha256": "8b89ae46d76b13538fcaed437e60d96ff8c4e0ba95ba314fa5e03dbe73a8b7e5"
+  },
+  "owned-zero.log": {
+    "bytes": 15755,
+    "sha256": "3550d3fe688e0979ff885aeb432c755363923e40d7938c0c5f6e6e12be7ea013"
+  },
+  "results.json": {
+    "bytes": 3956,
+    "sha256": "409d3ebe0b3085a01bfafb0cce097a2f6aecd6ee3f1ccec6b483a00a026ed4d6"
+  },
+  "run-checks.py": {
+    "bytes": 5980,
+    "sha256": "cc34b000bf501afcf968655b00112cc17fff0ab0ef924a95d85c50a38bbab699"
+  },
+  "rustc.txt": {
+    "bytes": 192,
+    "sha256": "e2211d4c0760a2a3b03eab88e42f8848952b7aa2ed649277a8fdbf3ce1838fd4"
+  },
+  "storage.txt": {
+    "bytes": 58,
+    "sha256": "6b616e3f884f79e53ea6d8349c02260fcb15118923fa1c261d71baf38c337003"
+  },
+  "uname.txt": {
+    "bytes": 147,
+    "sha256": "a8819b89ffeb83f242c37a5cd3918fdc2fe6be74f5bf53e319e6ff8da537fa48"
+  },
+  "windows-check.command.json": {
+    "bytes": 113,
+    "sha256": "587146a23c4fa4922dc9835563e4518783b5d5593c06696d80ed59b0ea0acba4"
+  },
+  "windows-check.log": {
+    "bytes": 1288,
+    "sha256": "2072a6e3a407c571b206fd6da8340bafa7a9c3f774c96ad21d273069edb7cd1e"
+  },
+  "windows-lib-clippy.command.json": {
+    "bytes": 130,
+    "sha256": "ceeb1eacc70479c8ebef4ff8430d1823a4cb8b612da004d806092451c7fbcec1"
+  },
+  "windows-lib-clippy.log": {
+    "bytes": 384,
+    "sha256": "6849782bdff52f97e98c5c20c395bb141d2d737f811e0350634d17264674033e"
+  },
+  "source/source-hashes.json": {
+    "bytes": 3766,
+    "sha256": "60ff20565c72119b097007b290e2924c9a67aa1c73af250de25ce010c3164c7d"
+  }
+}

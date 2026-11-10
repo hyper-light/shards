@@ -1,0 +1,43 @@
+{
+  "policy": {
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0,
+    "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+  },
+  "fmt": {
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  "new_evidence_whitespace": {
+    "command": [
+      "git",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  "source_unchanged": {
+    "command": [
+      "git",
+      "diff",
+      "51fa61cef6c2e0435e8549a6014c1024dc497fc0",
+      "--",
+      "Cargo.lock",
+      "crates/api",
+      "crates/afunix"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "candidate": "51fa61cef6c2e0435e8549a6014c1024dc497fc0",
+  "source_archive_sha256": "88de55575d66ceb5d385b2c25ba457e2278fd829513b6a019490ae99755ff95e",
+  "source_files_verified": 37,
+  "free_before_bytes": 94803128320,
+  "driver_nofile_before": [
+    10240,
+    9223372036854775807
+  ],
+  "scope": "Actual API unit library and owned fake-muxer regression; Windows compile only. No VM or Mutex change.",
+  "full-library": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 480,
+    "summary": [
+      "running 46 tests",
+      "test result: ok. 43 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 2.22s"
+    ],
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/artifacts/full-library-api-unit",
+        "bytes": 1649832,
+        "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8",
+        "fresh": false,
+        "manifest_path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/source/crates/api/Cargo.toml"
+      }
+    ],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "owned-zero": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 180,
+    "summary": [
+      "running 1 test",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.00s"
+    ],
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/artifacts/owned-zero-api-unit",
+        "bytes": 1649832,
+        "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8",
+        "fresh": true,
+        "manifest_path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/source/crates/api/Cargo.toml"
+      }
+    ],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "owned-max": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 180,
+    "summary": [
+      "running 1 test",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 45 filtered out; finished in 0.01s"
+    ],
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/artifacts/owned-max-api-unit",
+        "bytes": 1649832,
+        "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8",
+        "fresh": true,
+        "manifest_path": "/Users/adalundhe/managed-borrowed-combined-51fa-v1/source/crates/api/Cargo.toml"
+      }
+    ],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "native-lib-clippy": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 180,
+    "summary": [],
+    "artifacts": [],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "windows-check": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 180,
+    "summary": [],
+    "artifacts": [],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "windows-lib-clippy": {
+    "exit": 0,
+    "timed_out": false,
+    "outer_seconds": 180,
+    "summary": [],
+    "artifacts": [],
+    "post_exit_group": {
+      "ps_exit": 0,
+      "error": "",
+      "rows": [],
+      "limit": "One process-group observation, not a full escaped-descendant/reaping/kernel-return proof."
+    }
+  },
+  "free_after_bytes": 93839982592,
+  "driver_nofile_after": [
+    10240,
+    9223372036854775807
+  ]
+}

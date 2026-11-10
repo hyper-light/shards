@@ -1,0 +1,14 @@
+{
+  "artifacts/full-library-api-unit": {
+    "bytes": 1649832,
+    "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8"
+  },
+  "artifacts/owned-max-api-unit": {
+    "bytes": 1649832,
+    "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8"
+  },
+  "artifacts/owned-zero-api-unit": {
+    "bytes": 1649832,
+    "sha256": "f1960cc491b5805d9a6eb6946bab0affa5ae8b7e36bfdbdf3c709951d360f9b8"
+  }
+}
