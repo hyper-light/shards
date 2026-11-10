@@ -1,0 +1,396 @@
+{
+  "status": "PreparationOnly_NoBuildOrActor",
+  "role": "implementer/assigned adversarial",
+  "agent": "01a1c5d2ee5871a2a9a9cdc9f56793f0",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "created_utc": "2026-11-10T23:49:09.777273+00:00",
+  "policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "owned_paths": [
+    "docs/research/measurements/managed-audit-wire-adversarial/"
+  ],
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial",
+  "branch": "p/managed-audit-wire-adversarial-v1",
+  "base": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+  "constructor_revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+  "constructor_delta_paths": [
+    "crates/abi/src/run/audit.rs",
+    "crates/vmm/src/devices/virtio/fs/audit.rs",
+    "crates/vmm/src/devices/virtio/fs/server.rs"
+  ],
+  "constructor_delta_applied": false,
+  "include_applied": false,
+  "fixture_leaf_implemented": false,
+  "corpus_generated": false,
+  "corpus_dependency": "ROOT relay requested exact real broker codec output/bounds. Private Linux-only encoder is not exported to native ARM Mac VMM. No duplicated codec or guessed bound.",
+  "owner_api_document": {
+    "revision": "8ac004cc1b91f5bfd0269260f5eacc9497de0ffc",
+    "path": "docs/research/measurements/managed-audit-producer/NATIVE-FUSE-FIXTURE.md",
+    "bytes": 5944,
+    "sha256": "59271b4ab981b5ca88fc94df19e8f41fa14203eea87cb335ff49f0bad08e66c1"
+  },
+  "owner_api_confirmed_by_root_queue_at": 1794353979557,
+  "policy_receipt_delivery_seq": 8049,
+  "codec_dependency_message_seq": 8062,
+  "frozen_api_readback_seq": 8074,
+  "policy_files": [
+    {
+      "path": "AGENTS.md",
+      "revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    {
+      "path": "docs/development-rules.md",
+      "revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    {
+      "path": "CLAUDE.md",
+      "revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+    },
+    {
+      "path": "docs/design/managed-runtime-plan.md",
+      "revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+      "bytes": 53208,
+      "sha256": "26d29c598856b132d97ddb3fea8c33f80ce23f36d4d191f70dad3a28c56f6a82"
+    }
+  ],
+  "handoff": {
+    "path": "/Users/adalundhe/g121-handoff.md",
+    "bytes": 65194,
+    "sha256": "dd06dcece06cf9f07ad2039c87ba77f042c68bb3e54efb62a758e01b46e27061"
+  },
+  "files": [
+    {
+      "path": "crates/abi/src/run/audit.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "04ad5e5c388446b87a277b01720d7f98507390a2",
+          "bytes": 31067,
+          "sha256": "a2653258a8c02500f58986e1ddc3225569e72f8fe950dabb3e496c2ebaf09bf6"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "638dd0b436ce76b486824e27324b7ce4c20ee952",
+          "bytes": 32026,
+          "sha256": "7a4f80ff0a780bed72c425cf6b8e935806a82a7989395a9ae460bb2b2b4d66ea"
+        }
+      ],
+      "selected_for_product_delta": true
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/audit.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "857bee444d6f65b0ce1f1a443c770cd0ea3e6790",
+          "bytes": 46755,
+          "sha256": "164067c0d97fd64a08f8edbe82377a15fb34278f23d7a5e601c5182a673e4d7c"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "1f30c1c7860bfa750b4924cbcc541464d307b357",
+          "bytes": 49056,
+          "sha256": "48f5f487121df35d1632c7e923435fb2539e43287db0a795a16dd04cf009a172"
+        }
+      ],
+      "selected_for_product_delta": true
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/server.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "16a66302eb4c0ae1655c046327b9bd91390a129f",
+          "bytes": 245505,
+          "sha256": "0ff23bdabe3a0bd29054e3aa313aec5b03ab20e7bda70b23c86cf958d68ec440"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "49469ba37be4f881d491e9a32e56277c6007097b",
+          "bytes": 245948,
+          "sha256": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64"
+        }
+      ],
+      "selected_for_product_delta": true
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/mod.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "d42d51743f98f6886925a11154260bff830e82ec",
+          "bytes": 97233,
+          "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "d42d51743f98f6886925a11154260bff830e82ec",
+          "bytes": 97233,
+          "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/proto.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "0edc2e77984f751a5a33693ffd540a849b5fd6b4",
+          "bytes": 5711,
+          "sha256": "b0105b60918f740e2e79a2a77d1ed83ac94e2e11f97f1bc76dd3e1994bf967f6"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "0edc2e77984f751a5a33693ffd540a849b5fd6b4",
+          "bytes": 5711,
+          "sha256": "b0105b60918f740e2e79a2a77d1ed83ac94e2e11f97f1bc76dd3e1994bf967f6"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/host.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "0d4668e0aca95065f9a3aca04e4d58b1d9dd8906",
+          "bytes": 13752,
+          "sha256": "7a2d4c62cf27058b15a621fffb40fa49292db7e37174885a1b9962a6c036de08"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "0d4668e0aca95065f9a3aca04e4d58b1d9dd8906",
+          "bytes": 13752,
+          "sha256": "7a2d4c62cf27058b15a621fffb40fa49292db7e37174885a1b9962a6c036de08"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/src/platform/mod.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "f797689a5fc2b0b9fbbe045be07b5e4559ab892c",
+          "bytes": 34343,
+          "sha256": "3d93b83dd4225f784fb0bc84df8bee7397bc4009b96368ba286a8ac37c4174ff"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "f797689a5fc2b0b9fbbe045be07b5e4559ab892c",
+          "bytes": 34343,
+          "sha256": "3d93b83dd4225f784fb0bc84df8bee7397bc4009b96368ba286a8ac37c4174ff"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "17d461ba5c1e67d07381e05fc142e65f0b79179e",
+          "bytes": 139361,
+          "sha256": "e468a11610e4d65e734531f17797fe554ab1d84e03e41708cfd79e9746794e7d"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "17d461ba5c1e67d07381e05fc142e65f0b79179e",
+          "bytes": 139361,
+          "sha256": "e468a11610e4d65e734531f17797fe554ab1d84e03e41708cfd79e9746794e7d"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/src/lib.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "5f9bad38030466b4dd27bb613bc4739c15d152ae",
+          "bytes": 470,
+          "sha256": "9c0377831c85d8ad4298fc6fbfc6a39b3f7c059439ba6bae7e5f550e4983265c"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "5f9bad38030466b4dd27bb613bc4739c15d152ae",
+          "bytes": 470,
+          "sha256": "9c0377831c85d8ad4298fc6fbfc6a39b3f7c059439ba6bae7e5f550e4983265c"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/vmm/Cargo.toml",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "25999e51aea0af4f50ee4fa6d270f26584a68bc8",
+          "bytes": 1531,
+          "sha256": "45ce0d7f4894ea41c2b70cfeda0e463f6732d931da1088eb5e5e07dff10c6085"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "25999e51aea0af4f50ee4fa6d270f26584a68bc8",
+          "bytes": 1531,
+          "sha256": "45ce0d7f4894ea41c2b70cfeda0e463f6732d931da1088eb5e5e07dff10c6085"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/ipc/src/unix.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "4caca58036caff24169ba2e7e2224f31abbbaac1",
+          "bytes": 100444,
+          "sha256": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "4caca58036caff24169ba2e7e2224f31abbbaac1",
+          "bytes": 100444,
+          "sha256": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/testdir/src/lib.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "6a6286eaea746ffb6c8492478a0d50459fccc608",
+          "bytes": 17917,
+          "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "6a6286eaea746ffb6c8492478a0d50459fccc608",
+          "bytes": 17917,
+          "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/server/src/broker.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "d0d9ee5e98fe34e57959fb86b170be7fae7de3a3",
+          "bytes": 62673,
+          "sha256": "41ba3b420c2be8dff14ab627b6edd3d4cba0773fc21788c5b08b74265c3be5c3"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "c298e6a880eda5ad14db56eedbc1028a397bd581",
+          "bytes": 63647,
+          "sha256": "24e0275f22eb2639924fdbb097d370b081fb9d8cccc8e24c048181ae4879e450"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/server/src/broker/audit.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "d3642f6566b90cbb591c4ae87e7992928145ab95",
+          "bytes": 11376,
+          "sha256": "b817575c57916bd0d0bea1e827dd066eab329707c3025426bd921e853300249f"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "5d7f49741f6ee6f0139ce486a8294ffe2442216f",
+          "bytes": 24471,
+          "sha256": "7a8f84b06e2a0a3f8f41ce59d9c6063cdc878945f66a1bf7e6479ba603c1bf94"
+        }
+      ],
+      "selected_for_product_delta": false
+    },
+    {
+      "path": "crates/server/src/main.rs",
+      "versions": [
+        {
+          "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+          "blob": "06b7b18d8584e96255aae5ba08f26942385816ac",
+          "bytes": 1131,
+          "sha256": "09791b2ff7639102db73eb0bac368f113f53aaaef15b4565e02048727c838ab3"
+        },
+        {
+          "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+          "blob": "06b7b18d8584e96255aae5ba08f26942385816ac",
+          "bytes": 1131,
+          "sha256": "09791b2ff7639102db73eb0bac368f113f53aaaef15b4565e02048727c838ab3"
+        }
+      ],
+      "selected_for_product_delta": false
+    }
+  ],
+  "sparse_patterns": [
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/rustfmt.toml",
+    "/clippy.toml",
+    "/docs/development-rules.md",
+    "/docs/development-evidence.md",
+    "/docs/design/managed-runtime-plan.md",
+    "/docs/research/measurements/managed-audit-wire-adversarial/",
+    "/scripts/check-development-policy",
+    "/scripts/lint",
+    "/resources/supported-targets.txt",
+    "/.github/workflows/ci.yml",
+    "/.github/workflows/release.yml"
+  ],
+  "private_worktree_setup": {
+    "no_checkout_initial_index_was_empty": true,
+    "initial_status_showed_new_worktree_missing_index_deletions": true,
+    "resolution": "git read-tree -mu HEAD populated only this new private sparse worktree index before any task files were added",
+    "baseline_index_diff_empty": true,
+    "baseline_worktree_diff_empty": true
+  },
+  "local_available_bytes": 142205370368,
+  "local_floor_bytes": 32212254720,
+  "active_local_targets_or_caches": [],
+  "runner": null,
+  "target": null,
+  "future_envelope_unexecuted": {
+    "host": "writable normally admitted macOS/aarch64, runner not yet allocated",
+    "cpus": 2,
+    "memory_bytes": 2147483648,
+    "disk_bytes": 4294967296,
+    "scope_seconds": 600,
+    "cargo_jobs": 2,
+    "build_seconds": 180,
+    "case_seconds": 30,
+    "cleanup_seconds": 15,
+    "parent_seconds": 45
+  },
+  "builds": [],
+  "native_cases_run": 0,
+  "registration_or_source_edits": [],
+  "protected_old_fin": {
+    "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-network-assertions",
+    "checkpoint": "9045904db87ad94673ffa7aa2b02f35994fd7f70",
+    "source": "9764144d5a7170c1ba6607ecd0222a0015db12de",
+    "artifact_sha256": "ab5d5820d183da87955f75aa3b31a1a85f39a94319e6ffe88ac9e33c4c791a17",
+    "status": "Stopped_CoverageMiss_OriginalDeadlineExpired_NoRestart"
+  }
+}

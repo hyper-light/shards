@@ -1,0 +1,44 @@
+{
+  "status": "PreparationOnly",
+  "messages": [
+    {
+      "id": "from-agent-01a148884a4770fdaf0111f3f792a248-dbf738542b178551af4c55800440f7ff",
+      "text": "For your new audit-wire PREPARATION only: current signed constructor source is ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a (supersedes8c817 parent API); exact concrete fixture contract signed8ac004cc1b91f5bfd0269260f5eacc9497de0ffc at managed-audit-producer-v1/docs/research/measurements/managed-audit-producer/NATIVE-FUSE-FIXTURE.md. Server::audited(root:host::Owned,&ExportConfig,budget:u64)->Result<Server,StartFailure>, common base fallible map reserve, DirectoryNative/NotDirectory/StateCapacity typed. Actual public fs::answer/write_frame/read_frame, UnixStream and FUSE40Bheader/16Breply, IOCTL fixed176B; private status24B. Native source-v13 lane reports3codec+6writer/constructor+strict+3child0 (ROOT raw not reviewed; not full wire/VM). Read only signed documented closure and preserve constructor updates; no active startup/mounter/Hand bytes or whole old branch adoption. Return exact fixture and include token proposal before builds/actors, as assigned; original FIN deadline outcome still must be recorded honestly first.",
+      "at": 1794353979557
+    },
+    {
+      "id": "from-agent-01a148884a4770fdaf0111f3f792a248-05c6d581544d84a99d1c283f540cfae5",
+      "text": "ROOT assigned audit owner a finite cfg(test)-only authoritative corpus emission from SAME actual Count/intent_record/AuditReservation + terminal_shapes/terminal_record, with fake fixture identities/members1,3 and exact source/input/codec bounds. No copied encoder or production API; native ordinary Linux generation within bounded new disposable scope only. Keep your portable full-FUSE proposal symbolic until actual emitted bytes/bounds arrive. Do not choose abc I/T sizes, duplicate/move serializers or infer native proof from crosscompile. Continue ordinary frame/ownership/cleanup fixture preparation without build/actors; constructor contract current8ac/ba78. Overall lane stays assigned; FIN exhausted remains coverage miss.",
+      "at": 1794354444326
+    }
+  ],
+  "meaning": "ROOT confirms ba78/8ac API and assigned audit owner cfg(test)-only corpus generation. This lane keeps symbolic bounds and performs no build/actor/emission. Exact fixture IDs1,3 with files-only2 supersede the provisional0,2 design.",
+  "raw_constructor_patch_diffcheck": {
+    "chunk_id": "f9b6e4",
+    "wall_time_seconds": 0.000008791,
+    "exit_code": 2,
+    "original_token_count": 29,
+    "output": "docs/research/measurements/managed-audit-wire-adversarial/constructor-refinement.patch:123: trailing whitespace.\n+ \n"
+  },
+  "diffcheck_excluding_only_exact_preserved_constructor_patch": {
+    "chunk_id": "0d8a84",
+    "wall_time_seconds": 0.000014042,
+    "exit_code": 0,
+    "original_token_count": 0,
+    "output": ""
+  },
+  "no_production_delta": {
+    "chunk_id": "9d5a08",
+    "wall_time_seconds": 0.000008959,
+    "exit_code": 0,
+    "original_token_count": 153,
+    "output": "31cf6e322961e4f71fb65d7236f55f1fd8d517404dccf2813972f1cd974930a4  docs/research/measurements/managed-audit-wire-adversarial/include.patch\n3449d714d0ef0e0cda4e02751e735bfa23685acbb5a63c28e937bf8f969b4312  docs/research/measurements/managed-audit-wire-adversarial/constructor-refinement.patch\n0a7bcd6d30781853722e9165034d9a085292fbc3a71cdafeb782e42db2368ef0  docs/research/measurements/managed-audit-wire-adversarial/PROPOSAL.md\ndbdceaaee4df2b6b84b123f33268e9d0de66d0854b14b4887ce1448b161579b8  docs/research/measurements/managed-audit-wire-adversarial/source-scope.json\n8c817dbaf3e1bac2f038c83175c4f690580785a0\n"
+  },
+  "old_fin_preserved": {
+    "chunk_id": "86eb7a",
+    "wall_time_seconds": 0.013250917,
+    "exit_code": 0,
+    "original_token_count": 32,
+    "output": "## p/managed-after-open-fin-proposal-v1...origin/p/managed-after-open-fin-proposal-v1\n9045904db87ad94673ffa7aa2b02f35994fd7f70\n"
+  }
+}

@@ -1,0 +1,215 @@
+diff --git a/crates/abi/src/run/audit.rs b/crates/abi/src/run/audit.rs
+index 04ad5e5c3..638dd0b43 100644
+--- a/crates/abi/src/run/audit.rs
++++ b/crates/abi/src/run/audit.rs
+@@ -475,7 +475,9 @@ pub enum Retained {
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum ExportCause {
+     Config(Error),
+-    Directory,
++    DirectoryNative(i32),
++    NotDirectory,
++    StateCapacity,
+     Capacity,
+     Allocation,
+     Filesystem(i32),
+@@ -515,7 +517,9 @@ impl ExportStatus {
+                     Error::Allocation => 6,
+                 },
+             ),
+-            Some(ExportCause::Directory) => (2, 0, 0, 0, 0),
++            Some(ExportCause::DirectoryNative(code)) => (2, 0, 1, 0, code),
++            Some(ExportCause::NotDirectory) => (9, 0, 0, 0, 0),
++            Some(ExportCause::StateCapacity) => (10, 0, 0, 0, 0),
+             Some(ExportCause::Capacity) => (3, 0, 0, 0, 0),
+             Some(ExportCause::Allocation) => (4, 0, 0, 0, 0),
+             Some(ExportCause::Filesystem(code)) => (5, 0, 1, 0, code),
+@@ -569,7 +573,7 @@ impl ExportStatus {
+                 6 => Error::Allocation,
+                 _ => return Err(Error::Tag),
+             })),
+-            2 => Some(ExportCause::Directory),
++            2 => Some(ExportCause::DirectoryNative(code)),
+             3 => Some(ExportCause::Capacity),
+             4 => Some(ExportCause::Allocation),
+             5 => Some(ExportCause::Filesystem(code)),
+@@ -586,6 +590,8 @@ impl ExportStatus {
+             }),
+             7 => Some(ExportCause::Encoding),
+             8 => Some(ExportCause::ExistingObject),
++            9 => Some(ExportCause::NotDirectory),
++            10 => Some(ExportCause::StateCapacity),
+             _ => return Err(Error::Tag),
+         };
+         let status = match (tag, cause, retained) {
+@@ -863,6 +869,9 @@ mod tests {
+             )
+             .is_err()
+         );
++        let mut old_directory = [0; EXPORT_STATUS_BYTES];
++        old_directory[..3].copy_from_slice(&[VERSION, 2, 2]);
++        assert_eq!(ExportStatus::decode(&old_directory), Err(Error::Reserved));
+         for status in [
+             ExportStatus::Ready {
+                 remaining: 0,
+@@ -879,6 +888,18 @@ mod tests {
+                 cause: ExportCause::ExistingObject,
+                 retained: Retained::Unknown,
+             },
++            ExportStatus::Refused {
++                cause: ExportCause::DirectoryNative(i32::MIN),
++                retained: Retained::Unknown,
++            },
++            ExportStatus::Refused {
++                cause: ExportCause::NotDirectory,
++                retained: Retained::Unknown,
++            },
++            ExportStatus::Refused {
++                cause: ExportCause::StateCapacity,
++                retained: Retained::Unknown,
++            },
+             ExportStatus::Refused {
+                 cause: ExportCause::Filesystem(i32::MIN),
+                 retained: Retained::Unknown,
+diff --git a/crates/vmm/src/devices/virtio/fs/audit.rs b/crates/vmm/src/devices/virtio/fs/audit.rs
+index 857bee444..1f30c1c78 100644
+--- a/crates/vmm/src/devices/virtio/fs/audit.rs
++++ b/crates/vmm/src/devices/virtio/fs/audit.rs
+@@ -219,9 +219,24 @@ pub struct CreateFailure {
+     pub cause: CreateCause,
+     retained: Run,
+ }
++#[derive(Debug, Clone, Copy)]
++pub enum DirectoryFailure {
++    DirectoryNative(Errno),
++    NotDirectory,
++    StateCapacity,
++}
++impl std::fmt::Display for DirectoryFailure {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::DirectoryNative(errno) => write!(out, "the shared directory: errno {errno}"),
++            Self::NotDirectory => out.write_str("the shared directory is not a directory"),
++            Self::StateCapacity => out.write_str("the shared directory's state storage is unavailable"),
++        }
++    }
++}
+ #[derive(Debug)]
+ pub enum StartFailure {
+-    Directory(String),
++    Directory(DirectoryFailure),
+     Writer(CreateFailure),
+ }
+ impl std::fmt::Display for CreateCause {
+@@ -263,7 +278,14 @@ impl StartFailure {
+     pub fn status(&self) -> shards_abi::run::audit::ExportStatus {
+         use shards_abi::run::audit::{ExportCause, ExportStatus, Retained};
+         let (cause, retained) = match self {
+-            Self::Directory(_) => (ExportCause::Directory, Retained::Unknown),
++            Self::Directory(error) => (
++                match error {
++                    DirectoryFailure::DirectoryNative(errno) => ExportCause::DirectoryNative(*errno),
++                    DirectoryFailure::NotDirectory => ExportCause::NotDirectory,
++                    DirectoryFailure::StateCapacity => ExportCause::StateCapacity,
++                },
++                Retained::Unknown,
++            ),
+             Self::Writer(error) => (
+                 match error.cause {
+                     CreateCause::Capacity => ExportCause::Capacity,
+@@ -1212,6 +1234,43 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn private_audit_constructor_refuses_regular_root_without_changing_its_bytes() {
++        let dir = shards_testdir::TempDir::new("audit-root-kind").unwrap();
++        let path = dir.join("root-file");
++        std::fs::write(&path, b"retain-existing-root").unwrap();
++        let file = std::fs::File::open(&path).unwrap();
++        #[cfg(unix)]
++        let root = std::os::fd::OwnedFd::from(file);
++        #[cfg(windows)]
++        let root = std::os::windows::io::OwnedHandle::from(file);
++        let config = wire::ExportConfig::new(
++            StorageRequest::new(
++                wire::JOURNAL_HEADER_BYTES as u64,
++                wire::Retention::UntilOwnerDeletion,
++            )
++            .unwrap(),
++            vec![scope(0)],
++        )
++        .unwrap();
++        let error = match Server::audited(root, &config, 0) {
++            Ok(_) => panic!("regular file granted a directory producer"),
++            Err(error) => error,
++        };
++        assert!(matches!(
++            error,
++            StartFailure::Directory(DirectoryFailure::NotDirectory)
++        ));
++        assert_eq!(
++            error.status(),
++            wire::ExportStatus::Refused {
++                cause: wire::ExportCause::NotDirectory,
++                retained: wire::Retained::Unknown,
++            }
++        );
++        assert_eq!(std::fs::read(&path).unwrap(), b"retain-existing-root");
++    }
++
+     #[test]
+     fn private_audit_constructor_reports_real_readiness_and_never_truncates_existing_data() {
+         let dir = shards_testdir::TempDir::new("audit-retained").unwrap();
+diff --git a/crates/vmm/src/devices/virtio/fs/server.rs b/crates/vmm/src/devices/virtio/fs/server.rs
+index 16a66302e..49469ba37 100644
+--- a/crates/vmm/src/devices/virtio/fs/server.rs
++++ b/crates/vmm/src/devices/virtio/fs/server.rs
+@@ -695,8 +695,7 @@ impl Server {
+         config: &shards_abi::run::audit::ExportConfig,
+         budget: u64,
+     ) -> Result<Self, audit::StartFailure> {
+-        let mut server =
+-            Self::with_budget(root, false, None, budget).map_err(audit::StartFailure::Directory)?;
++        let mut server = Self::base(root, false, None, budget).map_err(audit::StartFailure::Directory)?;
+         {
+             // Unpublished construction owns the entire server exclusively; no
+             // runtime mutex is held across initial file/directory barriers.
+@@ -721,11 +720,27 @@ impl Server {
+         only: Option<CString>,
+         budget: u64,
+     ) -> Result<Server, String> {
+-        let st = stat_fd(root.raw()).map_err(|e| format!("the shared directory: errno {e}"))?;
++        Self::base(root, read_only, only, budget).map_err(|error| error.to_string())
++    }
++
++    fn base(
++        root: host::Owned,
++        read_only: bool,
++        only: Option<CString>,
++        budget: u64,
++    ) -> Result<Server, audit::DirectoryFailure> {
++        let st = stat_fd(root.raw()).map_err(audit::DirectoryFailure::DirectoryNative)?;
+         if !is_dir(&st) {
+-            return Err("the shared directory is not a directory".into());
++            return Err(audit::DirectoryFailure::NotDirectory);
+         }
+         let mut nodes = HashMap::new();
++        nodes
++            .try_reserve(1)
++            .map_err(|_| audit::DirectoryFailure::StateCapacity)?;
++        let mut by_key = HashMap::new();
++        by_key
++            .try_reserve(1)
++            .map_err(|_| audit::DirectoryFailure::StateCapacity)?;
+         nodes.insert(
+             ROOT,
+             Node {
+@@ -738,7 +753,6 @@ impl Server {
+                 volume: NO_VOLUME,
+             },
+         );
+-        let mut by_key = HashMap::new();
+         let (dev, ino) = key(&st);
+         by_key.insert((NO_VOLUME, dev, ino), ROOT);
+         Ok(Server {

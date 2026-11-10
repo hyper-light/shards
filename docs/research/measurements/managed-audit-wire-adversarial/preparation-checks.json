@@ -1,0 +1,42 @@
+{
+  "kind": "static_preparation_only",
+  "revision": "8c817dbaf3e1bac2f038c83175c4f690580785a0",
+  "checks": [
+    {
+      "command": "python3 scripts/check-development-policy",
+      "chunk_id": "fbed8e",
+      "wall_time_seconds": 0.000009334,
+      "exit_code": 0,
+      "original_token_count": 21,
+      "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    },
+    {
+      "command": "git apply --cached --check docs/research/measurements/managed-audit-wire-adversarial/include.patch",
+      "chunk_id": "8d842f",
+      "wall_time_seconds": 0.000007625,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "command": "git apply --cached --check docs/research/measurements/managed-audit-wire-adversarial/constructor-refinement.patch",
+      "chunk_id": "5dc226",
+      "wall_time_seconds": 0.0000065,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    }
+  ],
+  "builds": [],
+  "native_cases": 0,
+  "unrun": [
+    "fixture compilation",
+    "Clippy",
+    "native full FUSE case",
+    "any mounted FUSE or VM",
+    "faults/crash/mutation",
+    "profiles/benchmarks",
+    "seven-target integration"
+  ],
+  "note": "Both apply --check calls validate against the pristine private index; they do not apply a patch or register a fixture."
+}
