@@ -1522,7 +1522,7 @@ mod tests {
         let again = Shards.attach(&identity, &spec);
         assert!(
             matches!(again, Err(Refusal::Process {
-            pid, expected_started, failure: crate::ProcessFailure::Os {
+            pid, expected_started, failure: crate::ProcessFailure::Exited | crate::ProcessFailure::Os {
                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit,
                 code: libc::ESRCH,
             }
@@ -1663,7 +1663,7 @@ mod tests {
         let again = Shards.attach(&identity, &spec);
         assert!(
             matches!(again, Err(Refusal::Process {
-            pid, expected_started, failure: crate::ProcessFailure::Os {
+            pid, expected_started, failure: crate::ProcessFailure::Exited | crate::ProcessFailure::Os {
                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit,
                 code: libc::ESRCH,
             }
