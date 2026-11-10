@@ -88,6 +88,7 @@ pub(in super::super) struct Inputs {
     pub(in super::super) upstream: UdpSocket,
     pub(in super::super) backend: SocketAddr,
     pub(in super::super) slots: Slots,
+    pub(in super::super) receive_entered: Option<OwnedFd>,
 }
 #[derive(Clone, Copy, Debug)]
 enum Stage {
@@ -140,6 +141,20 @@ pub(in super::super) struct Completion {
     stage: Stage,
     progress: UpstreamProgress,
     pub(in super::super) result: Result<Terminal, Fault>,
+}
+impl Completion {
+    pub(in super::super) fn cancelled_upstream_receive(&self) -> bool {
+        matches!(self.result, Ok(Terminal::Cancelled))
+            && matches!(self.step, Exchange::Binary)
+            && matches!(self.stage, Stage::UpstreamReceive)
+            && matches!(self.progress, UpstreamProgress::KernelAccepted)
+            && self.report.ingress == 1
+            && self.report.upstream_sent == 1
+            && self.report.upstream_received == 0
+            && self.report.client_sent == 0
+            && self.report.empty_ingress == 0
+            && self.report.empty_reply == 0
+    }
 }
 fn increment(value: &mut usize) -> Result<(), Fault> {
     *value = value.checked_add(1).ok_or(Fault::CountOverflow)?;
@@ -210,6 +225,14 @@ pub(super) fn run(mut input: Inputs, deadline: &Deadline, cancel: &OwnedFd) -> C
             progress = UpstreamProgress::KernelAccepted;
             increment(&mut report.upstream_sent)?;
             stage = Stage::UpstreamReceive;
+            if let Some(entered) = &input.receive_entered {
+                let mut out = io::stdout().lock();
+                writeln!(out, "managed-intercept {{\"type\":\"ReceiveStageEntered\",\"stage\":\"{stage:?}\",\"step\":\"{step:?}\",\"upstream_progress\":\"{progress:?}\",\"kernel_sleep\":\"Unobserved\"}}")
+                    .map_err(Fault::Io)?;
+                out.flush().map_err(Fault::Io)?;
+                drop(out);
+                notify(entered, deadline).map_err(Fault::Io)?;
+            }
             let received =
                 udp_arrival_into(&input.upstream, &mut input.slots.reply, deadline).map_err(Fault::Io)?;
             increment(&mut report.upstream_received)?;
@@ -332,6 +355,30 @@ mod tests {
             peer.observe("127.0.0.1:42".parse().unwrap()),
             Err(Fault::Tuple)
         ));
+    }
+    #[test]
+    fn cancellation_witness_keeps_send_facts_and_rejects_expiry_or_wrong_stage() {
+        let mut done = Completion {
+            report: Report {
+                ingress: 1,
+                upstream_sent: 1,
+                ..Report::default()
+            },
+            step: Exchange::Binary,
+            stage: Stage::UpstreamReceive,
+            progress: UpstreamProgress::KernelAccepted,
+            result: Ok(Terminal::Cancelled),
+        };
+        assert!(done.cancelled_upstream_receive());
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        assert!(!done.cancelled_upstream_receive());
+        assert_eq!((done.report.ingress, done.report.upstream_sent), (1, 1));
+        done.result = Ok(Terminal::Cancelled);
+        done.stage = Stage::IngressReceive;
+        assert!(!done.cancelled_upstream_receive());
+        done.stage = Stage::UpstreamReceive;
+        done.report.upstream_received = 1;
+        assert!(!done.cancelled_upstream_receive());
     }
     #[test]
     fn empty_and_truncated_borrowed_messages_stay_distinct() {

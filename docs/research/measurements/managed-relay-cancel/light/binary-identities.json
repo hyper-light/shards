@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/home/adalundhe/managed-relay-cancel-proof-v1/target/debug/deps/sock_addr_pure-4d6f0df4c08ddec3",
+    "bytes": 10499968,
+    "sha256": "d90fdfd91826d637d705975c237130d45ebcbebcfa64851e8c4baa669f0cb8a2"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-cancel-proof-v1/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-17b6cd79e23383e8",
+    "bytes": 10800816,
+    "sha256": "22620b05c045834fe531cd7089e1b49f991c8837fd21df5194aefd8af6cc3d79"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-cancel-host-v1/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11541080,
+    "sha256": "ff7e8b69355c6938d9a3414a9abd09a57ab0577fcb938ce94265431d93aff2f3"
+  }
+]

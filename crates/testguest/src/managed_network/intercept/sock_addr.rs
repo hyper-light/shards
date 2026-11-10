@@ -3,7 +3,7 @@ use super::*;
 use std::fs::{self, OpenOptions};
 use std::net::SocketAddrV4;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use udp::{DatagramWorker, Exchange, Mode, Work};
@@ -45,6 +45,7 @@ enum HookSetup {
 enum ControllerKind {
     ScriptedResponder,
     BufferedRelay { buffer_bytes: usize },
+    CancelUpstreamReceive { buffer_bytes: usize },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClientRole {
@@ -123,6 +124,16 @@ impl Inputs {
                 mode: mode(how)?,
                 within: within(millis)?,
             }),
+            ["sock-addr-cancel4", how, millis, budget] => Ok(Role::Controller {
+                kind: ControllerKind::CancelUpstreamReceive {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
             ["sock-addr-client4", how, millis, target, role] => {
                 let destination: SocketAddrV4 =
                     target.parse().map_err(|_| invalid("expected IPv4 endpoint"))?;
@@ -173,6 +184,8 @@ enum Stage {
     Compatibility,
     JoinWorkers,
     RemoveCgroup,
+    AwaitCancellationBoundary,
+    CancelRelay,
 }
 fn error(stage: Stage, error: &io::Error) {
     let mut out = io::stdout().lock();
@@ -390,14 +403,14 @@ impl Drop for OwnedClient {
     }
 }
 
-fn exec_client(
+fn start_client(
     namespace: &Namespace,
     cgroup: &Cgroup,
     mode: Mode,
     destination: SocketAddrV4,
     role: ClientRole,
     deadline: &Deadline,
-) -> io::Result<bool> {
+) -> io::Result<RunningClient> {
     let path = PathBuf::from(match role {
         ClientRole::BaselineBackend => "/tmp/sock-addr-baseline.report",
         ClientRole::ScriptedResponder | ClientRole::ForwardedBackend => "/tmp/sock-addr-hook.report",
@@ -448,7 +461,7 @@ fn exec_client(
         });
     }
     let role = role.argument();
-    let mut owned = OwnedClient {
+    let owned = OwnedClient {
         child: at(Stage::ExecClient, command.spawn())?,
         state: ChildState::Running,
     };
@@ -463,51 +476,96 @@ fn exec_client(
     }
     // SAFETY: successful pidfd_open returned a new CLOEXEC descriptor.
     let pidfd = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).map_err(io::Error::other)?) };
-    let wait = at(
-        Stage::WaitChild,
-        deadline.io(pidfd.as_raw_fd(), libc::POLLIN, || {
-            let mut poll = libc::pollfd {
-                fd: pidfd.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: one initialized pollfd, zero-time readiness check before wait.
-            if unsafe { libc::poll(&raw mut poll, 1, 0) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            if poll.revents != 0 {
-                Ok(())
-            } else {
-                Err(io::ErrorKind::WouldBlock.into())
-            }
-        }),
-    );
-    if wait.is_err() {
-        let killed = owned.child.kill();
-        if let Err(e) = &killed {
-            error(Stage::ReapChild, e);
+    Ok(RunningClient {
+        owned,
+        pidfd,
+        output,
+        path,
+        role,
+    })
+}
+struct RunningClient {
+    owned: OwnedClient,
+    pidfd: OwnedFd,
+    output: File,
+    path: PathBuf,
+    role: &'static str,
+}
+#[derive(Clone, Copy, Debug)]
+enum ChildEnd {
+    Natural,
+    Cancelled,
+}
+impl RunningClient {
+    fn finish(mut self, deadline: &Deadline, end: ChildEnd) -> io::Result<ExitStatus> {
+        let role = self.role;
+        if matches!(end, ChildEnd::Cancelled) {
+            self.owned.child.kill()?;
+            record(format_args!(
+                "{{\"type\":\"ChildCancellation\",\"role\":\"{role}\",\"requested\":true}}"
+            ))?;
         }
+        let wait = at(
+            Stage::WaitChild,
+            deadline.io(self.pidfd.as_raw_fd(), libc::POLLIN, || {
+                let mut poll = libc::pollfd {
+                    fd: self.pidfd.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one initialized pollfd, zero-time readiness check before wait.
+                if unsafe { libc::poll(&raw mut poll, 1, 0) } < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if poll.revents != 0 {
+                    Ok(())
+                } else {
+                    Err(io::ErrorKind::WouldBlock.into())
+                }
+            }),
+        );
+        if wait.is_err() {
+            let killed = self.owned.child.kill();
+            if let Err(e) = &killed {
+                error(Stage::ReapChild, e);
+            }
+            record(format_args!(
+                "{{\"type\":\"ChildCleanup\",\"state\":\"Pending\",\"kill_ok\":{},\"reaped\":false}}",
+                killed.is_ok()
+            ))?;
+        }
+        let status = self.owned.reap();
+        // Copy the finite child report only after reap: no detached pipe reader and
+        // no cross-process console writes erase actual tuple/datagram observations.
+        let mut reader = self.output;
+        use std::io::{Seek, SeekFrom};
+        reader.seek(SeekFrom::Start(0))?;
+        io::copy(&mut reader, &mut io::stdout().lock())?;
+        io::stdout().flush()?;
         record(format_args!(
-            "{{\"type\":\"ChildCleanup\",\"state\":\"Pending\",\"kill_ok\":{},\"reaped\":false}}",
-            killed.is_ok()
+            "{{\"type\":\"ChildReaped\",\"role\":\"{role}\",\"reaped\":true,\"success\":{},\"code\":{},\"signal\":{}}}",
+            status.success(),
+            status.code().map_or_else(|| "null".to_owned(), |c| c.to_string()),
+            status
+                .signal()
+                .map_or_else(|| "null".to_owned(), |signal| signal.to_string())
         ))?;
+        fs::remove_file(self.path)?;
+        wait?;
+        Ok(status)
     }
-    let status = owned.reap();
-    // Copy the finite child report only after reap: no detached pipe reader and
-    // no cross-process console writes erase actual tuple/datagram observations.
-    let mut reader = output;
-    use std::io::{Seek, SeekFrom};
-    reader.seek(SeekFrom::Start(0))?;
-    io::copy(&mut reader, &mut io::stdout().lock())?;
-    io::stdout().flush()?;
-    record(format_args!(
-        "{{\"type\":\"ChildReaped\",\"role\":\"{role}\",\"reaped\":true,\"success\":{},\"code\":{}}}",
-        status.success(),
-        status.code().map_or_else(|| "null".to_owned(), |c| c.to_string())
-    ))?;
-    fs::remove_file(path)?;
-    wait?;
-    Ok(status.success())
+}
+fn exec_client(
+    namespace: &Namespace,
+    cgroup: &Cgroup,
+    mode: Mode,
+    destination: SocketAddrV4,
+    role: ClientRole,
+    deadline: &Deadline,
+) -> io::Result<bool> {
+    start_client(namespace, cgroup, mode, destination, role, deadline)?
+        .finish(deadline, ChildEnd::Natural)
+        .map(|status| status.success())
 }
 
 // The current mount namespace/PID1 remains untouched. Only this new mount
@@ -670,7 +728,8 @@ fn controller(
     }
     let payload = match kind {
         ControllerKind::ScriptedResponder => Payload::Scripted,
-        ControllerKind::BufferedRelay { buffer_bytes } => {
+        ControllerKind::BufferedRelay { buffer_bytes }
+        | ControllerKind::CancelUpstreamReceive { buffer_bytes } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -702,6 +761,7 @@ fn controller(
     let operation = match kind {
         ControllerKind::ScriptedResponder => "ScriptedResponder",
         ControllerKind::BufferedRelay { .. } => "BufferedRelay",
+        ControllerKind::CancelUpstreamReceive { .. } => "CancelUpstreamReceive",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -717,7 +777,15 @@ fn controller(
     let mut hook_setup = HookSetup::NotStarted;
     let comparison_role = match kind {
         ControllerKind::ScriptedResponder => ClientRole::ScriptedResponder,
-        ControllerKind::BufferedRelay { .. } => ClientRole::ForwardedBackend,
+        ControllerKind::BufferedRelay { .. } | ControllerKind::CancelUpstreamReceive { .. } => {
+            ClientRole::ForwardedBackend
+        }
+    };
+    // Only this explicit coordinator fixture has the two finite boundary signals.
+    let cancellation = if matches!(kind, ControllerKind::CancelUpstreamReceive { .. }) {
+        Some((udp::notification()?, udp::notification()?))
+    } else {
+        None
     };
     let work = match payload {
         Payload::Scripted => Work::Scripted {
@@ -739,6 +807,10 @@ fn controller(
                 upstream,
                 backend: destination.into(),
                 slots,
+                receive_entered: cancellation
+                    .as_ref()
+                    .map(|(entered, _)| entered.try_clone())
+                    .transpose()?,
             })
         }
     };
@@ -757,15 +829,21 @@ fn controller(
         .count()
         .checked_mul(backend_scripts)
         .ok_or_else(|| invalid("expected empty count overflow"))?;
-    let mut backend = DatagramWorker::start(
-        Work::Scripted {
+    let backend_work = match &cancellation {
+        Some((_, receipt)) => Work::HeldReply {
+            receiver: backend.try_clone()?,
+            sender: backend,
+            destination: destination.into(),
+            receipt: receipt.try_clone()?,
+        },
+        None => Work::Scripted {
             receiver: backend.try_clone()?,
             sender: backend,
             destination: destination.into(),
             role: Reply::Backend,
         },
-        &deadline,
-    )?;
+    };
+    let mut backend = DatagramWorker::start(backend_work, &deadline)?;
     let mut relay = None;
     let result = (|| {
         if !at(
@@ -810,6 +888,38 @@ fn controller(
         }
         hook_setup = HookSetup::Ready;
         relay = Some(DatagramWorker::start(work, &deadline)?);
+        if let Some((entered, receipt)) = &cancellation {
+            let client = start_client(&namespace, &cgroup, mode, destination, comparison_role, &deadline)?;
+            // Both independent receipt and explicit stage entry must precede the
+            // cancel request. Neither notification claims an observed kernel sleep.
+            let boundary = (|| {
+                at(
+                    Stage::AwaitCancellationBoundary,
+                    udp::notified(receipt, &deadline),
+                )?;
+                at(
+                    Stage::AwaitCancellationBoundary,
+                    udp::notified(entered, &deadline),
+                )?;
+                let left = deadline.left()?;
+                let worker = relay
+                    .as_ref()
+                    .ok_or_else(|| invalid("relay worker not started"))?;
+                at(Stage::CancelRelay, worker.request_cancel(&deadline))?;
+                record(format_args!(
+                    "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"UpstreamReceive\",\"receipt\":\"ValidatedBackendDatagram\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
+                    left.as_nanos()
+                ))
+            })();
+            // Even a failed boundary/cancel report ends and reaps this owned child
+            // before the existing worker/link/cgroup cleanup path proceeds.
+            let status = client.finish(&deadline, ChildEnd::Cancelled);
+            boundary?;
+            if status?.signal() != Some(libc::SIGKILL) {
+                return Err(invalid("waiting client was not reaped after owned cancellation"));
+            }
+            return Ok(());
+        }
         if !at(
             Stage::ExecClient,
             exec_client(&namespace, &cgroup, mode, destination, comparison_role, &deadline),
@@ -824,6 +934,11 @@ fn controller(
     ));
     let backend = at(Stage::JoinWorkers, backend.finish());
     let relay = relay.as_mut().map(DatagramWorker::finish);
+    let cancellation_deadline = if cancellation.is_some() && result.is_ok() {
+        deadline.left().and_then(|left| record(format_args!("{{\"type\":\"CancelBoundary\",\"state\":\"JoinedWithinWorkDeadline\",\"work_remaining_ns\":{}}}", left.as_nanos())))
+    } else {
+        Ok(())
+    };
     let reports: io::Result<()> = (|| {
         udp::worker_record(Reply::Backend, &backend)?;
         match &relay {
@@ -870,10 +985,26 @@ fn controller(
     result?;
     pending?;
     reports?;
+    cancellation_deadline?;
     let backend = backend?.scripted()?;
+    let (expected_backend, expected_empty) = if cancellation.is_some() {
+        (
+            Exchange::SCRIPT
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| invalid("held backend count overflow"))?,
+            Exchange::SCRIPT
+                .into_iter()
+                .filter(|step| matches!(step, Exchange::Empty))
+                .count(),
+        )
+    } else {
+        (expected_backend, expected_empty)
+    };
     if backend.report.arrivals != expected_backend
         || backend.report.matched != expected_backend
         || backend.report.empty != expected_empty
+        || (cancellation.is_some() && backend.report.replies_sent != Exchange::SCRIPT.len())
         || !matches!(backend.result, Ok(udp::Terminal::Cancelled))
     {
         return Err(invalid("backend script/terminal differs"));
@@ -904,6 +1035,11 @@ fn controller(
                 || !matches!(relay.result, Ok(udp::Terminal::ScriptComplete))
             {
                 return Err(invalid("forwarded legs/terminal differ"));
+            }
+        }
+        (ControllerKind::CancelUpstreamReceive { .. }, udp::Completion::Forwarded(relay)) => {
+            if !relay.cancelled_upstream_receive() {
+                return Err(invalid("relay did not cancel at the upstream receive boundary"));
             }
         }
         _ => return Err(invalid("comparison completion type differs")),
@@ -984,6 +1120,31 @@ mod tests {
                 Inputs::parse(&["sock-addr-client4", "connected", "1000", "127.0.0.1:41", word]).unwrap();
             assert!(matches!(parsed.0, Role::Client {role: actual, ..} if actual == role));
             assert_eq!(role.argument(), word);
+        }
+    }
+    #[test]
+    fn cancel_command_is_explicit_and_fixes_only_the_existing_presentation() {
+        for mode in ["connected", "unconnected"] {
+            let parsed = Inputs::parse(&["sock-addr-cancel4", mode, "1000", "18"]).unwrap();
+            assert!(matches!(
+                parsed.0,
+                Role::Controller {
+                    kind: ControllerKind::CancelUpstreamReceive { buffer_bytes: 18 },
+                    presentation: Presentation::FixedOriginalPeer,
+                    ..
+                }
+            ));
+        }
+        for words in [
+            vec!["sock-addr-cancel4", "connected", "1000"],
+            vec!["sock-addr-cancel4", "connected", "1000", "bad"],
+            vec!["sock-addr-cancel4", "other", "1000", "18"],
+            vec!["sock-addr-cancel4", "connected", "1000", "18", "extra"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
         }
     }
     #[test]
