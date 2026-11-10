@@ -27,6 +27,39 @@ pub(crate) struct Held {
 }
 
 impl Held {
+    pub(crate) fn find_checked(pid: u32, expected: u64) -> Result<Self, crate::ProcessError> {
+        use crate::{ProcessError, ProcessPhase};
+        if pid == 0 || libc::pid_t::try_from(pid).is_err() {
+            return Err(ProcessError::InvalidPid);
+        }
+        let os = os::Held::open(pid).map_err(|source| ProcessError::Io {
+            phase: ProcessPhase::Open,
+            source,
+        })?;
+        let found = os::started(pid).map_err(|source| ProcessError::Io {
+            phase: ProcessPhase::Start,
+            source,
+        })?;
+        if found != expected {
+            return Err(ProcessError::Changed { expected, found });
+        }
+        let held = Held { os, pid };
+        held.check()?;
+        Ok(held)
+    }
+
+    pub(crate) fn check(&self) -> Result<(), crate::ProcessError> {
+        use crate::{ProcessError, ProcessPhase};
+        match self.os.exited(false) {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(ProcessError::Ended),
+            Err(source) => Err(ProcessError::Io {
+                phase: ProcessPhase::Exit,
+                source,
+            }),
+        }
+    }
+
     /// Process `pid`, where it started at `started` and has not exited; else why none is.
     /// Held before its start is read: a process given `pid` once it has gone shows another
     /// start, and one that has gone since shows its end.
@@ -63,7 +96,8 @@ mod linux {
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 
     pub(super) fn started(pid: u32) -> io::Result<u64> {
-        let at = format!("/proc/{pid}/stat");
+        let at = crate::channel::message(format_args!("/proc/{pid}/stat"))
+            .map_err(|()| io::Error::from(io::ErrorKind::OutOfMemory))?;
         let stat = std::fs::read_to_string(&at)?;
         // Its command, field 2, is in parentheses and may hold any byte but NUL, a ')' too:
         // fields 3 on follow the last ')', starttime the 20th of them (field 22).
@@ -71,7 +105,7 @@ mod linux {
             .and_then(|i| stat.get(i.saturating_add(1)..))
             .and_then(|fields| fields.split_ascii_whitespace().nth(19))
             .and_then(|f| f.parse().ok())
-            .ok_or_else(|| io::Error::other(format!("{at}: no starttime in {stat:?}")))
+            .ok_or_else(|| io::ErrorKind::InvalidData.into())
     }
 
     /// A process held by a pidfd (pidfd_open(2), Linux 5.3), readable once it has exited.

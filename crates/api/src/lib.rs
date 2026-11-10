@@ -28,6 +28,11 @@ use std::net::Shutdown;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/managed-borrowed/allocation.rs"]
+mod allocation;
+mod borrowed;
+mod channel;
 mod client;
 pub mod conformance;
 mod said;
@@ -38,6 +43,8 @@ mod taken;
 #[cfg(test)]
 mod while_runs;
 
+pub use borrowed::{BorrowError, ProcessError, ProcessPhase, connect_borrowed};
+pub use channel::{HandshakeError, HandshakePhase, ReplyError};
 pub use client::Shards;
 
 /// A guest to boot.
@@ -195,6 +202,8 @@ pub enum Refusal {
     /// No guest runs as the [`Identity`] names: its VM's process has ended, or its pid now names
     /// another process (its start time differs).
     Gone { pid: u32, why: String },
+    /// Storage for a connection could not be allocated; reporting this does not allocate.
+    Allocation { what: &'static str },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -223,6 +232,7 @@ impl std::fmt::Display for Refusal {
             Refusal::Channel { port, why } => write!(f, "vsock port {port}: {why}"),
             Refusal::Ended(end) => write!(f, "the guest has ended: {end:?}"),
             Refusal::Gone { pid, why } => write!(f, "no guest runs as pid {pid}: {why}"),
+            Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
         }
     }
 }

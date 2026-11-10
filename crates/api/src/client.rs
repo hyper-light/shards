@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::stream::{self, Socket};
+#[cfg(test)]
+use crate::stream;
+use crate::stream::Socket;
 use crate::{End, Guest, GuestSpec, Guests, Identity, Init, Refusal, Stream, allowed, backend, check};
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
@@ -57,7 +59,8 @@ fn tail(said: usize) -> usize {
 /// hybrid vsock answer (firecracker `docs/vsock.md`, "Host-Initiated Connections": `OK
 /// <assigned_hostside_port>\n`), as shards' muxer writes it
 /// (`crates/vmm/src/devices/virtio/vsock/conn.rs:372`).
-const ANSWER: usize = "OK ".len() + "4294967295".len() + "\n".len();
+#[cfg(test)]
+const ANSWER: usize = crate::channel::ANSWER;
 
 impl Guests for Shards {
     fn backend(&self) -> Result<crate::Backend, Refusal> {
@@ -685,6 +688,11 @@ impl ShardsGuest {
 #[cfg(windows)]
 fn created(child: &Child) -> io::Result<u64> {
     use std::os::windows::io::AsRawHandle as _;
+    created_handle(child.as_raw_handle())
+}
+
+#[cfg(windows)]
+pub(crate) fn created_handle(handle: std::os::windows::io::RawHandle) -> io::Result<u64> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::GetProcessTimes;
     let zero = FILETIME {
@@ -692,11 +700,10 @@ fn created(child: &Child) -> io::Result<u64> {
         dwHighDateTime: 0,
     };
     let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY: GetProcessTimes of the process handle `child` holds open, into FILETIMEs of
-    // ours.
+    // SAFETY: the caller holds this process handle open; FILETIMEs are ours.
     let ok = unsafe {
         GetProcessTimes(
-            child.as_raw_handle(),
+            handle,
             &raw mut created,
             &raw mut exited,
             &raw mut kernel,
@@ -749,6 +756,7 @@ fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
 enum Attempt {
     Again(String),
     Refused(String),
+    Allocation,
 }
 
 /// One `CONNECT <port>` over a new connection to `vsock`, its answer awaited at most `wait`
@@ -763,65 +771,19 @@ fn handshake(
     wait: Option<Duration>,
     cost: &mut Duration,
 ) -> Result<Socket, Attempt> {
-    let began = Instant::now();
-    // Its own work, the connect and the ask, as far as it got: not its wait for the answer.
-    let done = |cost: &mut Duration| *cost = began.elapsed();
-    let mut s = stream::connect(vsock, wait).map_err(|e| {
-        done(cost);
-        match e.kind() {
-            // Not yet bound, or bound and not yet listening: the VM is starting. Or its
-            // muxer's queue is full (Linux's EAGAIN) or the connect still under way at its
-            // wait's end: the VM takes no connection now.
-            io::ErrorKind::NotFound
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::WouldBlock
-            | io::ErrorKind::TimedOut => Attempt::Again(format!("dialing: {e}")),
-            // Windows' full queue, its EAGAIN (PM M205).
-            #[cfg(windows)]
-            _ if e.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS) => {
-                Attempt::Again(format!("dialing: {e}"))
-            }
-            _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
+    // Legacy owned zero/MAX map to no clock; borrowed callers supply their checked
+    // absolute deadline directly to the same handshake implementation.
+    let deadline = wait.and_then(|left| Instant::now().checked_add(left));
+    crate::channel::handshake(vsock, port, deadline, cost).map_err(|error| {
+        if error.allocation() {
+            return Attempt::Allocation;
         }
-    })?;
-    if wait.is_some() {
-        let timeouts = Stream::set_write_timeout(&s, wait).and_then(|()| Stream::set_read_timeout(&s, wait));
-        timeouts.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
-    }
-    let asked = s.write_all(format!("CONNECT {port}\n").as_bytes());
-    done(cost);
-    asked.map_err(|e| Attempt::Again(format!("asking: {e}")))?;
-    let mut line = Vec::with_capacity(ANSWER);
-    let mut byte = [0u8; 1];
-    while line.last() != Some(&b'\n') {
-        if line.len() >= ANSWER {
-            return Err(Attempt::Refused(format!(
-                "answered {:?}, no line",
-                String::from_utf8_lossy(&line)
-            )));
+        match crate::channel::message(format_args!("{error}")) {
+            Ok(why) if error.retryable() => Attempt::Again(why),
+            Ok(why) => Attempt::Refused(why),
+            Err(()) => Attempt::Allocation,
         }
-        match s.read(&mut byte) {
-            // The guest did not accept: its device closes the connection.
-            Ok(0) => {
-                return Err(Attempt::Again(
-                    "closed unanswered (the guest does not listen there)".into(),
-                ));
-            }
-            Ok(_) => line.extend_from_slice(&byte),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(Attempt::Again(format!("awaiting its answer: {e}"))),
-        }
-    }
-    let answer = String::from_utf8_lossy(&line);
-    let ok = answer
-        .strip_prefix("OK ")
-        .is_some_and(|n| n.trim_end().parse::<u32>().is_ok());
-    if !ok {
-        return Err(Attempt::Refused(format!("answered {answer:?}, not OK")));
-    }
-    let cleared = Stream::set_write_timeout(&s, None).and_then(|()| Stream::set_read_timeout(&s, None));
-    cleared.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
-    Ok(s)
+    })
 }
 
 impl Guest for ShardsGuest {
@@ -843,7 +805,14 @@ impl Guest for ShardsGuest {
             match handshake(&self.vsock, port, wait, &mut cost) {
                 Ok(s) => {
                     lock(&self.shared.state).ready = true;
-                    return Ok(Box::new(s));
+                    return s.boxed().map_err(|_| Refusal::Allocation {
+                        what: "connection stream",
+                    });
+                }
+                Err(Attempt::Allocation) => {
+                    return Err(Refusal::Allocation {
+                        what: "connection handshake",
+                    });
                 }
                 Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
                 Err(Attempt::Again(why)) if left().is_some_and(|l| l.is_zero()) => break why,
@@ -861,7 +830,11 @@ impl Guest for ShardsGuest {
         }
         Err(Refusal::Channel {
             port,
-            why: format!("no OK within {patience:?}: {last}"),
+            why: crate::channel::message(format_args!("no OK within {patience:?}: {last}")).map_err(
+                |()| Refusal::Allocation {
+                    what: "connection refusal",
+                },
+            )?,
         })
     }
 
@@ -1263,6 +1236,32 @@ mod tests {
         assert_eq!(dials.load(Ordering::SeqCst), 4);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn owned_connection_oom_is_typed_before_error_formatting() {
+        let dir = shards_testdir::TempDir::new("api-oom").unwrap();
+        let bin = dir.join("shards");
+        installed(&bin, "#!/bin/sh\nexec sleep 1000\n");
+        let guest = start(&GuestSpec {
+            binary: Some(bin),
+            ..spec()
+        })
+        .unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&guest.vsock).unwrap();
+        let refused =
+            crate::allocation::fail_after(0, || guest.connect(1024, crate::conformance::UNSERVED_PATIENCE));
+        assert!(matches!(
+            refused,
+            Err(Refusal::Allocation {
+                what: "connection handshake"
+            })
+        ));
+        drop(listener);
+        let (pid, shared) = (guest.pid, guest.shared.clone());
+        drop(guest);
+        assert!(reaped_once_exited(pid, &shared));
+    }
+
     /// Measures `c` of `pause`: what one refused dial takes, `SHARDS_API_DIALS_N` (default
     /// 1000) of each kind, printed as n, p50, p90, p99 and max
     /// (docs/research/measurements/shards-api-waits/run.sh): to a socket not bound yet
@@ -1415,6 +1414,7 @@ mod tests {
                 Ok(_) => "connected".to_string(),
                 Err(Attempt::Again(why)) => format!("again: {why}"),
                 Err(Attempt::Refused(why)) => format!("refused: {why}"),
+                Err(Attempt::Allocation) => "allocation refused".to_string(),
             }
         });
         let said = crate::while_runs::answer(&rx, worker, patience);

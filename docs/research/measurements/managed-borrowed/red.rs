@@ -96,3 +96,19 @@ fn a_current_handshake_dribble_cannot_renew_the_total_budget() {
         "per-read waits accepted a reply beyond the total finite budget"
     );
 }
+
+#[test]
+fn legacy_refusal_bridge_oom_returns_typed_without_allocating() {
+    let dir = shards_testdir::TempDir::new("borrow-bridge").unwrap();
+    let path = dir.join("missing");
+    let mut cost = Duration::ZERO;
+    let result = crate::allocation::fail_after(0, || {
+        handshake(
+            &path,
+            1234,
+            Some(crate::conformance::UNSERVED_PATIENCE),
+            &mut cost,
+        )
+    });
+    assert!(matches!(result, Err(Attempt::Allocation)));
+}

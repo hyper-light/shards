@@ -1232,6 +1232,7 @@ dependencies = [
  "shards-abi",
  "shards-afunix",
  "shards-testdir",
+ "triomphe",
  "windows-sys 0.61.2",
 ]
 
@@ -1759,6 +1760,12 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
 ]
+
+[[package]]
+name = "triomphe"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc"
 
 [[package]]
 name = "twox-hash"

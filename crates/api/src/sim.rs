@@ -319,13 +319,24 @@ impl Guest for SimGuest {
                         ),
                     });
                 }
-                let (ours, theirs) = stream::pair().map_err(|e| Refusal::Channel {
-                    port,
-                    why: format!("a socket pair: {e}"),
+                let (ours, theirs) = stream::pair().map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::OutOfMemory {
+                        Refusal::Allocation {
+                            what: "connection pair",
+                        }
+                    } else {
+                        Refusal::Channel {
+                            port,
+                            why: format!("a socket pair: {e}"),
+                        }
+                    }
+                })?;
+                let ours = ours.boxed().map_err(|_| Refusal::Allocation {
+                    what: "connection stream",
                 })?;
                 state.pending.push_back((port, theirs));
                 self.shared.changed.notify_all();
-                return Ok(Box::new(ours));
+                return Ok(ours);
             }
             state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
                 Some(left) if left.is_zero() => {
