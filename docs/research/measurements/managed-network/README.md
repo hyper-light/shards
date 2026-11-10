@@ -153,7 +153,38 @@ This is a repeatable experiment, not a release build or proof of interception.
 One successful build does not establish reproducible independent builds, arm64,
 boot compatibility, feature-failure behavior, packet mediation or measured cost.
 Runtime source/destination observations and the real-guest comparison remain
-required before selecting any product mechanism. Build result pending.
+required before selecting any product mechanism.
+
+Coordinator run r122 passed on Fedora amd64, host UID1000, with rootless Podman,
+8 assigned CPUs and 16 GiB memory. Source was combined revision
+5d231e1b36ad37f9de7451bce1207a4fc859153b, driver 4241dff8. The pinned builder
+used GCC12.2.0 and binutils2.40; exact snapshot packages are in
+[`kernel-build/out/toolchain.txt`](kernel-build/out/toolchain.txt). Every existing
+patch applied with zero fuzz and every requested fragment survived olddefconfig.
+The effective config enables NFT_SOCKET/NFT_TPROXY and both families' socket,
+tproxy and defragmentation dependencies. Both policy-routing families and
+CRYPTO_SELFTESTS remain enabled.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Experimental x86_64 kernel | 97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae |
+| Effective built config | fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d |
+
+The 27,760,784-byte kernel remains at the runner's private
+`~/managed-kernel-tproxy-5d23-v1/out/`; it is not a production pin or a committed
+binary. [`kernel-build/`](kernel-build/) retains the full log, source/inputs,
+two exact script substitutions, rootless/image identity, effective config,
+toolchain and exit0, with checksums. The evidence transfer archive has SHA-256
+134daa7fb5a80e06e90981cdcb736273d33637f40f576fd1889cd756b315e2ae.
+No runtime mediation, boot, arm64 build, independent reproducibility or kernel
+cost comparison is established by this build. Those gates remain open.
+
+Resumed POLICY_READ for this coordinator batch: c921a0b12b06d495b354907162e991376edffd41,
+rules SHA-256 1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d.
+All R01–R16 apply. The only new files are the experimental build/replay record;
+production source/config/pin is unchanged. No runtime tuning constant, cache,
+state machine or installed binary is introduced. Root owns all subsequent
+real-guest, mutation, cost and platform gates under the newest user bootstrap.
 
 ## Light validation and rule account
 

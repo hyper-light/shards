@@ -1,0 +1,8 @@
+Client:        Podman Engine
+Version:       5.8.1
+API Version:   5.8.1
+Go Version:    go1.26.0-X:nodwarf5
+Git Commit:    c6077f645788743258a1a749f8005b4fb3cbe533
+Built:         Tue Mar 10 17:00:00 2026
+Build Origin:  Fedora Project
+OS/Arch:       linux/amd64

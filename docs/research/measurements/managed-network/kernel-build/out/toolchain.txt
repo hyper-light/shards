@@ -1,0 +1,15 @@
+gcc (Debian 12.2.0-14+deb12u1) 12.2.0
+GNU ld (GNU Binutils for Debian) 2.40
+bc 1.07.1-3+b1
+binutils 2.40-2
+bison 2:3.8.2+dfsg-1+b1
+build-essential 12.9
+ca-certificates 20230311+deb12u1
+curl 7.88.1-10+deb12u15
+flex 2.6.4-8.2
+gcc-12 12.2.0-14+deb12u1
+libc6-dev 2.36-9+deb12u14
+libelf-dev 0.188-2.1
+libssl-dev 3.0.20-1~deb12u2
+patch 2.7.6-7
+xz-utils 5.4.1-1+deb12u1
