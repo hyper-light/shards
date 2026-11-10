@@ -1,0 +1,21 @@
+{
+  "available_bytes": 41041145856,
+  "sources": [
+    {
+      "path": "crates/vmm/src/arch/x86_64/mod.rs",
+      "sha256": "3c33a25a986aaa0de18b67faf21f06db818caa849dd8e8d36b492a295d542ee1"
+    },
+    {
+      "path": "crates/vmm/src/arch/x86_64/boot.rs",
+      "sha256": "12dbc033ea35c7dd25e8b3f90c6ff8573f05342dace00685f5390445157c4c07"
+    },
+    {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-kernel-argv/crates/vmm/src/vm/cmdline.rs",
+      "sha256": "6878c49291097f2775f8d1148f0ca93964be1107bc855f632f4622f157480814"
+    },
+    {
+      "path": "/Users/adalundhe/g121-managed-kernel-argv-native-v1/wrapper.rs",
+      "sha256": "e2218e4db65191986e57e28f3a06cdbad49feee959ae9ba65cc3a30ddc088000"
+    }
+  ]
+}

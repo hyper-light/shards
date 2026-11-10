@@ -1,0 +1,21 @@
+{
+  "available_bytes": 2029546676224,
+  "sources": [
+    {
+      "path": "crates/vmm/src/arch/x86_64/mod.rs",
+      "sha256": "3c33a25a986aaa0de18b67faf21f06db818caa849dd8e8d36b492a295d542ee1"
+    },
+    {
+      "path": "crates/vmm/src/arch/x86_64/boot.rs",
+      "sha256": "12dbc033ea35c7dd25e8b3f90c6ff8573f05342dace00685f5390445157c4c07"
+    },
+    {
+      "path": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/vmm/src/vm/cmdline.rs",
+      "sha256": "6878c49291097f2775f8d1148f0ca93964be1107bc855f632f4622f157480814"
+    },
+    {
+      "path": "/home/adalundhe/main-kernel-argv-pure/wrapper.rs",
+      "sha256": "bfc5bb36f5c51f44519977752da472f2b9ba766bd049ab4011f644eaf438a7f1"
+    }
+  ]
+}

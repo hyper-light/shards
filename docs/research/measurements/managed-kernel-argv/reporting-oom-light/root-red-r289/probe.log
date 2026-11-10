@@ -1,0 +1,12 @@
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/managed-capture-check/crates/vmm)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 15.04s
+     Running unittests src/lib.rs (/home/adalundhe/managed-capture-target/test-release/deps/shards_vmm-b7567d55d24cd3f7)
+
+running 1 test
+test vm::cmdline::root_oom_bridge_probe::rejected_cmdline_reporting_returns_under_allocator_refusal ... actual_boot_error_before_refusal=Err(DoesNotFit { what: "command line", at: 131072, len: 2065 })
+memory allocation of 12 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p shards-vmm --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/adalundhe/managed-capture-target/test-release/deps/shards_vmm-b7567d55d24cd3f7 'vm::cmdline::root_oom_bridge_probe::rejected_cmdline_reporting_returns_under_allocator_refusal' --exact --nocapture --test-threads=1` (signal: 6, SIGABRT: process abort signal)

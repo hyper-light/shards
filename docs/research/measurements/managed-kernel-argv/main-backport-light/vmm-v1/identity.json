@@ -1,0 +1,9 @@
+{
+  "source": "b8b8e897e3e056c6ba14c9401c38f4f232b5a0b9\n",
+  "status": "",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "targets": "aarch64-unknown-linux-gnu\naarch64-unknown-linux-musl\nx86_64-pc-windows-msvc\nx86_64-unknown-linux-gnu\nx86_64-unknown-linux-musl\n",
+  "kernel": "Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux\n",
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc",
+  "target": "/home/adalundhe/main-kernel-argv-target"
+}

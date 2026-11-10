@@ -1,0 +1,32 @@
+[
+  {
+    "name": "linux-v6.18-params",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/kernel/params.c",
+    "bytes": 24171,
+    "sha256": "ccec22eec5120d7812c58d812c47f02bff04a13e4d2b94aefec9fe877d456b95"
+  },
+  {
+    "name": "linux-v6.18-cmdline",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/lib/cmdline.c",
+    "bytes": 5983,
+    "sha256": "18d94acd858d0cfbdbe4b4a6b06d14402c8ef12065fa9eda8a69aef581d58c8a"
+  },
+  {
+    "name": "linux-v6.18-ctype",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/lib/ctype.c",
+    "bytes": 1426,
+    "sha256": "1675d7654e76e66979b031d05570f73438f1f3808fca8c6f1d51274181ad2d59"
+  },
+  {
+    "name": "linux-v6.18-x86-setup",
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/arch/x86/include/asm/setup.h",
+    "bytes": 3993,
+    "sha256": "30b300b7b174894e34f2aac2b0fe26e5c2eae3ce066a4d13dd754bdac413b589"
+  },
+  {
+    "name": "linux-loader-v0.13.2-cmdline",
+    "url": "https://raw.githubusercontent.com/rust-vmm/linux-loader/v0.13.2/src/cmdline/mod.rs",
+    "bytes": 31676,
+    "sha256": "11524a1f1402e71ab65af353bb742b0a5f764fef9fe6e10b246913a3d0e40b2a"
+  }
+]

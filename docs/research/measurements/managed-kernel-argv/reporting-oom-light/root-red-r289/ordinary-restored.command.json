@@ -1,0 +1,1 @@
+["timeout", "900", "cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards-vmm", "--lib", "vm::cmdline::tests::", "--", "--nocapture", "--test-threads=1"]

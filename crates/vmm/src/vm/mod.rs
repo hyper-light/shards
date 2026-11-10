@@ -17,10 +17,44 @@ use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
 
+/// A boot refusal kept typed until presentation; other startup errors retain their
+/// existing owned messages while those seams are migrated.
+#[derive(Debug)]
+pub enum StartError {
+    CommandLine(crate::arch::x86_64::boot::BootError),
+    Legacy(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
+            Self::Legacy(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for StartError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CommandLine(error) => std::error::Error::source(error),
+            Self::Legacy(_) => None,
+        }
+    }
+}
+
+impl From<String> for StartError {
+    fn from(message: String) -> Self {
+        Self::Legacy(message)
+    }
+}
+
 #[cfg(all(hv, target_arch = "aarch64"))]
 mod aarch64;
 #[cfg(all(hv, target_arch = "aarch64"))]
 use aarch64 as machine;
+#[cfg(all(hv, target_arch = "x86_64"))]
+mod cmdline;
 #[cfg(all(hv, target_arch = "x86_64"))]
 mod x86_64;
 #[cfg(all(hv, target_arch = "x86_64"))]
@@ -2404,7 +2438,7 @@ pub enum ExitReason {
 }
 
 /// Boots a VM and waits for it to exit.
-pub fn run(cfg: &Config) -> Result<ExitReason, String> {
+pub fn run(cfg: &Config) -> Result<ExitReason, StartError> {
     let (_, running) = start(cfg)?;
     Ok(running.wait())
 }
@@ -2627,6 +2661,35 @@ mod tests {
     use crate::snapshot::MachineConfig;
     #[cfg(unix)]
     use crate::snapshot::Snapshot;
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_command_line_start_error_preserves_the_cause_and_message() {
+        use crate::arch::x86_64::{boot::BootError, layout};
+        use std::error::Error as _;
+        use std::io::Write as _;
+
+        let told = [b'x'; layout::CMDLINE_MAX];
+        let mut composed = [0; layout::CMDLINE_MAX];
+        let error = cmdline::with_machine_options(std::str::from_utf8(&told).unwrap(), &[], &mut composed)
+            .map_err(StartError::CommandLine)
+            .unwrap_err();
+        let StartError::CommandLine(cause) = &error else {
+            panic!("the command-line refusal lost its typed cause");
+        };
+        assert!(matches!(
+            cause,
+            BootError::DoesNotFit { what: "command line", at, len }
+                if *at == layout::CMDLINE && *len == layout::CMDLINE_MAX as u64
+        ));
+        assert!(error.source().is_none());
+        const EXPECTED: &[u8] = b"command line at 0x20000+0x800 does not fit guest RAM";
+        let mut bytes = [0; EXPECTED.len()];
+        let mut output = bytes.as_mut_slice();
+        write!(output, "{error}").unwrap();
+        assert!(output.is_empty());
+        assert_eq!(&bytes, EXPECTED);
+    }
 
     /// A guest whose console nobody reads boots `quiet`, unless its command line names a
     /// level itself; one whose console is read boots as it is told.

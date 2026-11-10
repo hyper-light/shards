@@ -1,0 +1,216 @@
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index b7d8151d..aa5de0b8 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -1282,7 +1282,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
+         let slot = &handing;
+         let code = serve_workload(cfg.vsock.take(), source, move |vsock| {
+             cfg.vsock = Some(vsock);
+-            let started = restore_vm(cfg);
++            let started = restore_vm(cfg).map_err(vm::StartError::from);
+             if let (Ok((handle, _)), Some(to)) = (&started, to)
+                 && let Some(h) = to.hand_after(handle, RECORD_FOR)
+             {
+@@ -1296,7 +1296,7 @@ pub fn restore(args: impl Iterator<Item = OsString>) -> ExitCode {
+         return code;
+     }
+     let (hold, console) = (cfg.hold, cfg.console);
+-    let started = restore_vm(cfg);
++    let started = restore_vm(cfg).map_err(vm::StartError::from);
+     if hold && let Ok((handle, _)) = &started {
+         wait_for_release(handle);
+     }
+@@ -1450,7 +1450,7 @@ fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
+     cfg.console = Console::Discard;
+     serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
+         cfg.vsock = Some(vsock);
+-        restore_vm(cfg)
++        restore_vm(cfg).map_err(vm::StartError::from)
+     })
+ }
+ 
+@@ -1479,14 +1479,14 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
+ fn serve_workload(
+     given: Option<VsockHost>,
+     source: Source<'_>,
+-    start: impl FnOnce(VsockHost) -> Result<(Handle, Running), String>,
++    start: impl FnOnce(VsockHost) -> Result<(Handle, Running), vm::StartError>,
+ ) -> ExitCode {
+     use crate::spec::NOT_RUN;
+     use crate::workload::{self, Request};
+-    let failed = |e: String| {
+-        report(e);
++    fn failed(message: impl Display) -> ExitCode {
++        report(message);
+         ExitCode::from(NOT_RUN)
+-    };
++    }
+     /// The command, resolved before anything starts.
+     enum Command {
+         Given {
+@@ -1881,7 +1881,7 @@ fn serve_workload(
+                 None => ExitCode::from(ended.status),
+             },
+             Ok((Err(e), false)) => failed(e),
+-            Err(_) => failed("the guest stopped without running the command".into()),
++            Err(_) => failed("the guest stopped without running the command"),
+         }
+     }
+ }
+@@ -1981,7 +1981,7 @@ fn max_rss_kib() -> u64 {
+ /// Starts the VM `cfg` describes, once this process is confined to the files it names, the
+ /// snapshot directory it saves to and its vsock socket: on Linux by Landlock, on macOS by
+ /// what its spawner grants it (D30). A warm VM's run log comes open from its daemon.
+-fn start(cfg: &Config) -> Result<(Handle, Running), String> {
++fn start(cfg: &Config) -> Result<(Handle, Running), vm::StartError> {
+     // Whole paths: grants and Landlock's rules name each file whole, a VM on macOS runs in
+     // its sandbox's container rather than the caller's directory, and a snapshot records
+     // its files by absolute path anyway.
+@@ -2828,7 +2828,7 @@ fn confine(paths: &crate::confine::Paths) -> Result<(), String> {
+ /// in its snapshot. A reset whose console no one read quotes what the guest said there last,
+ /// and tells `said_to`, its spawner's, whether that was all it said.
+ fn supervise(
+-    started: Result<(Handle, Running), String>,
++    started: Result<(Handle, Running), vm::StartError>,
+     console: Console,
+     template: bool,
+     said_to: Option<std::fs::File>,
+diff --git a/crates/vmm/src/vm/mod.rs b/crates/vmm/src/vm/mod.rs
+index c4618081..c9f7948f 100644
+--- a/crates/vmm/src/vm/mod.rs
++++ b/crates/vmm/src/vm/mod.rs
+@@ -17,6 +17,38 @@ use crate::devices::virtio::gpu;
+ #[cfg(hv)]
+ use crate::devices::virtio::{head, mem, pmem, vsock};
+ 
++/// A boot refusal kept typed until presentation; other startup errors retain their
++/// existing owned messages while those seams are migrated.
++#[derive(Debug)]
++pub enum StartError {
++    CommandLine(crate::arch::x86_64::boot::BootError),
++    Legacy(String),
++}
++
++impl std::fmt::Display for StartError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
++            Self::Legacy(message) => f.write_str(message),
++        }
++    }
++}
++
++impl std::error::Error for StartError {
++    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
++        match self {
++            Self::CommandLine(error) => Some(error),
++            Self::Legacy(_) => None,
++        }
++    }
++}
++
++impl From<String> for StartError {
++    fn from(message: String) -> Self {
++        Self::Legacy(message)
++    }
++}
++
+ #[cfg(all(hv, target_arch = "aarch64"))]
+ mod aarch64;
+ #[cfg(all(hv, target_arch = "aarch64"))]
+@@ -2406,7 +2438,7 @@ pub enum ExitReason {
+ }
+ 
+ /// Boots a VM and waits for it to exit.
+-pub fn run(cfg: &Config) -> Result<ExitReason, String> {
++pub fn run(cfg: &Config) -> Result<ExitReason, StartError> {
+     let (_, running) = start(cfg)?;
+     Ok(running.wait())
+ }
+@@ -2630,6 +2662,32 @@ mod tests {
+     #[cfg(unix)]
+     use crate::snapshot::Snapshot;
+ 
++    #[cfg(target_arch = "x86_64")]
++    #[test]
++    fn a_command_line_start_error_preserves_the_cause_and_message() {
++        use crate::arch::x86_64::{boot::BootError, layout};
++        use std::error::Error as _;
++        use std::io::Write as _;
++
++        let told = [b'x'; layout::CMDLINE_MAX];
++        let mut composed = [0; layout::CMDLINE_MAX];
++        let error = cmdline::with_machine_options(std::str::from_utf8(&told).unwrap(), &[], &mut composed)
++            .map_err(StartError::CommandLine)
++            .unwrap_err();
++        let cause = error.source().unwrap().downcast_ref::<BootError>().unwrap();
++        assert!(matches!(
++            cause,
++            BootError::DoesNotFit { what: "command line", at, len }
++                if *at == layout::CMDLINE && *len == layout::CMDLINE_MAX as u64
++        ));
++        const EXPECTED: &[u8] = b"command line at 0x20000+0x800 does not fit guest RAM";
++        let mut bytes = [0; EXPECTED.len()];
++        let mut output = bytes.as_mut_slice();
++        write!(output, "{error}").unwrap();
++        assert!(output.is_empty());
++        assert_eq!(&bytes, EXPECTED);
++    }
++
+     /// A guest whose console nobody reads boots `quiet`, unless its command line names a
+     /// level itself; one whose console is read boots as it is told.
+     #[test]
+diff --git a/crates/vmm/src/vm/runtime.rs b/crates/vmm/src/vm/runtime.rs
+index 2bdfed3c..3b193646 100644
+--- a/crates/vmm/src/vm/runtime.rs
++++ b/crates/vmm/src/vm/runtime.rs
+@@ -1195,10 +1195,10 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
+ }
+ 
+ /// Boots a VM.
+-pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
++pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
+     check_host()?;
+     check_vcpus(cfg.vcpus)?;
+-    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join)
++    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join).map_err(super::StartError::from)
+ }
+ 
+ /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
+diff --git a/crates/vmm/src/vm/unsupported.rs b/crates/vmm/src/vm/unsupported.rs
+index 17f5101f..6946a25c 100644
+--- a/crates/vmm/src/vm/unsupported.rs
++++ b/crates/vmm/src/vm/unsupported.rs
+@@ -11,8 +11,8 @@ fn no_backend() -> String {
+     )
+ }
+ 
+-pub fn start(_cfg: &Config) -> Result<(Handle, Running), String> {
+-    Err(no_backend())
++pub fn start(_cfg: &Config) -> Result<(Handle, Running), super::StartError> {
++    Err(no_backend().into())
+ }
+ 
+ pub fn restore(_cfg: &RestoreConfig) -> Result<(Handle, Running), String> {
+diff --git a/crates/vmm/src/vm/x86_64.rs b/crates/vmm/src/vm/x86_64.rs
+index 7cf46f9b..4ad79927 100644
+--- a/crates/vmm/src/vm/x86_64.rs
++++ b/crates/vmm/src/vm/x86_64.rs
+@@ -661,7 +661,7 @@ fn assigning(
+     Ok((vm, assigned, given))
+ }
+ 
+-pub fn build(cfg: &Config) -> Result<Machine, String> {
++pub fn build(cfg: &Config) -> Result<Machine, super::StartError> {
+     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
+     let mut config = super::machine_config(cfg)?;
+     let layer = super::boot_layer(cfg)?;
+@@ -748,7 +748,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
+     ];
+     let mut cmdline_bytes = [0; layout::CMDLINE_MAX];
+     let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
+-        .map_err(|e| e.to_string())?;
++        .map_err(super::StartError::CommandLine)?;
+     let boot_state = boot::write_boot_state(
+         &memory,
+         kernel.entry,

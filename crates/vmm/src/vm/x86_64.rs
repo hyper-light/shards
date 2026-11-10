@@ -661,7 +661,7 @@ fn assigning(
     Ok((vm, assigned, given))
 }
 
-pub fn build(cfg: &Config) -> Result<Machine, String> {
+pub fn build(cfg: &Config) -> Result<Machine, super::StartError> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let layer = super::boot_layer(cfg)?;
@@ -741,17 +741,18 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
     config.share_window_mib = a.share_window_mib;
     config.gpu = a.gpu_window;
     let told = super::kernel_cmdline(cfg);
-    let mut cmdline = match &a.pci {
-        Some(_) => format!("{told} {MACHINE_CMDLINE}"),
-        None => format!("{told} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}"),
-    };
-    if cfg!(hv = "whp") {
-        cmdline = format!("{cmdline} {ONE_AT_A_TIME_CMDLINE}");
-    }
+    let required = [
+        Some(MACHINE_CMDLINE),
+        a.pci.is_none().then_some(NO_PCI_CMDLINE),
+        cfg!(hv = "whp").then_some(ONE_AT_A_TIME_CMDLINE),
+    ];
+    let mut cmdline_bytes = [0; layout::CMDLINE_MAX];
+    let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
+        .map_err(super::StartError::CommandLine)?;
     let boot_state = boot::write_boot_state(
         &memory,
         kernel.entry,
-        &cmdline,
+        cmdline,
         &boot::ZeroPage {
             ram,
             initrd,
