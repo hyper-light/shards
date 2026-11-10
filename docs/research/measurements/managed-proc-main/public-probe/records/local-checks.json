@@ -1,0 +1,54 @@
+[
+  {
+    "command": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "docs/research/measurements/managed-proc-main/public-probe/src/main.rs"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-n",
+      "docs/research/measurements/managed-proc-main/public-probe/run-light.sh"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "scripts/check-development-policy"
+    ],
+    "exit": 0,
+    "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--exit-code",
+      "5df05d7d7392426b15119a67405dece4dae4e749",
+      "--",
+      "crates/api",
+      "Cargo.toml",
+      "Cargo.lock"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+]

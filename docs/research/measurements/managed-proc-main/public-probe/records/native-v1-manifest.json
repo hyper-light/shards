@@ -1,0 +1,97 @@
+[
+  {
+    "path": "binary.json",
+    "bytes": 191,
+    "sha256": "6e8c96fbaba89c99fe0649d2af6b39872a1c5d34dfc86dbeb3cdbf3820825a9a"
+  },
+  {
+    "path": "build.command",
+    "bytes": 171,
+    "sha256": "9faedce8a5f11d999bc1f2f4c672c1c733b771ac473b4bef72a4498429e55c3f"
+  },
+  {
+    "path": "build.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "build.log",
+    "bytes": 14491,
+    "sha256": "95c50f61f26338f190a442c6280114a2929c7428482666aa998e9de9f61b9be9"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "clippy.command",
+    "bytes": 136,
+    "sha256": "9474cdc7320b2208b25a151da0a193ec71e70753268ee3e89b6a301e93527ae8"
+  },
+  {
+    "path": "clippy.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "clippy.log",
+    "bytes": 862,
+    "sha256": "c446953b4f5dd8ed01ffefaa5e27906e6b778df8de56eea9effcc70ad0554178"
+  },
+  {
+    "path": "oom.command",
+    "bytes": 81,
+    "sha256": "7b8371949e4baecdc54d0826e74a5827c518fa2e683519552f1d70280637b827"
+  },
+  {
+    "path": "oom.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "oom.log",
+    "bytes": 121,
+    "sha256": "a90b20f87d221bf78305a91f97366601b0e2471ea44c4b5a4bce07d83f5c757c"
+  },
+  {
+    "path": "raw-comm.command",
+    "bytes": 86,
+    "sha256": "3d578a5c4c42fba0b2e54d03edca48f1ad5a94c1ce54befc43674845afc8ff28"
+  },
+  {
+    "path": "raw-comm.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "raw-comm.log",
+    "bytes": 141,
+    "sha256": "259bd4579d42d58c46f3868e1d9d2aa11595739d698b220bd2eb209e10412dc6"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "source.sha256",
+    "bytes": 1396,
+    "sha256": "40bb5b08ad441ad5f9dd5aacc361a7123ff3ac63b40f383e2e87589c0632c350"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "b7c61e19745afa3880fa82bda13f03fd164627a337402f8976a4f1ef7dcf6880"
+  },
+  {
+    "path": "status.txt",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "uname.txt",
+    "bytes": 119,
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  }
+]

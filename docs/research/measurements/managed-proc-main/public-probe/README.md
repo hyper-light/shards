@@ -50,6 +50,40 @@ probe clippy. It uses only `~/managed-proc-public-target` and
 Raw source/toolchain/commands/exits/logs are retained; binaries stay remote.
 No native result is claimed until its retained output is reviewed.
 
+## Native light result
+
+Fedora GNU amd64 r236, exact source
+`c42b6129d2aaa1dc66f1c6ab9f9138afe9a137fb`: release build, `oom`, `raw-comm`,
+and strict probe clippy all exit0. One admitted 4CPU/1GiB/2GiB request sufficed.
+Actual compiler was pinned Rust1.98.1 (`48a229ceaefd4985c50990b14116b6d856af0985`),
+Linux6.19.10-300.fc44 amd64. Cargo records both API and probe as `fresh: false`.
+Binary SHA256 is
+`c821940799e593f029dddfae097432e0057e2bde7a94bdd3d9b68b9c6d73c392`;
+immutable copy remains `~/managed-proc-public-evidence/v1/probe.bin`.
+
+| Mode | Actual public result and cleanup |
+| --- | --- |
+| `oom` | Own PID4162915, original start10566276, expected10566277; exact scoped `CapacityUnavailable`; FDs9→9. |
+| `raw-comm` | Own PID4162916, original start10566276, expected10566277; exact scoped `DifferentStart` observed10566276; real invalidUTF8 stat bytes and restored original name verified before final check/report. |
+
+Raw commands/exits/build/toolchain/source hashes and mode output are under
+[records/native-v1](records/native-v1). The original 3645-byte raw archive has
+SHA256 `8d55f26b8ab4f677cd2f5b2dc17319e298179585e9e234b846f66f466b258453`;
+the extracted19 files and13 actual-source hashes were checked against the
+manifest and source Git blobs. [Job](records/native-v1-job.json),
+[transfer](records/native-v1-transfer.json),
+[verification](records/native-v1-verification.json) and
+[manifest](records/native-v1-manifest.json) retain provenance. No binary is
+committed. The product API/Cargo source tree is byte-identical to5df.
+
+Private synced checkout (inactive after r236):
+`/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-public-probe-771d41ab38`.
+Coordinator replays/mutations must use their own checkout/target rather than
+overwrite these source/artifacts. Direct frozen binary commands are
+`~/managed-proc-public-evidence/v1/probe.bin oom` and
+`~/managed-proc-public-evidence/v1/probe.bin raw-comm`; the coordinator should
+record their own replay results separately.
+
 Policy receipt: implementer, full canonical g121-main AGENTS/R01–R16/evidence,
 CLAUDE/managed plan/current handoff; revision
 `f5cec365d2e435afae5e6f613c92d9d3759ef60f`, rules SHA256
