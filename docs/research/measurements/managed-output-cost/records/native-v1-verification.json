@@ -1,0 +1,18 @@
+{
+  "source": "0fb2f849bf07f1a9e74bfde5af4c434d71ad30a2",
+  "archive_sha256": "e6f56693c7246e71845ce321b0bf0ff1c813ae07ebab317813298afb5ceef961",
+  "archive_bytes": 1559,
+  "raw_files": 14,
+  "source_hashes_match_git_blobs": [
+    "crates/shards/tests/managed_output.rs",
+    "docs/research/measurements/managed-output-cost/fixture.rs",
+    "docs/research/measurements/managed-output-cost/parse.rs",
+    "docs/research/measurements/managed-output-cost/run-light.sh",
+    "Cargo.lock"
+  ],
+  "remote_status_empty": true,
+  "both_exits_zero": true,
+  "production_unchanged": true,
+  "full_caller_compile": "Unrun; coordinator owns actual real guest artifacts and full compile",
+  "real_fixture_resources": "Unrun"
+}
