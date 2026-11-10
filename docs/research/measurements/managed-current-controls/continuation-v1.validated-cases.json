@@ -1,0 +1,1528 @@
+{
+  "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "full_fixture": {
+    "path": "/home/adalundhe/managed-current-controls-28e-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "frozen": "/home/adalundhe/managed-current-controls-28e-v1/artifacts/managed_output",
+    "sha256": "6217535e1bdfc54e81334318d68f4359c6d2648234f81c2e67a6156c4f614a69",
+    "fresh": false,
+    "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+    "elapsed_s": 380.2774209850004
+  },
+  "continuation_vm": [
+    {
+      "case": "ack-partial",
+      "channel": "stdout",
+      "run": "a72d621d11f05feb8775c3a6f21f600142a7b93b95026685778843dd201fddc3",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "ack-partial",
+      "channel": "stderr",
+      "run": "95eb86e90b7ab098104c218ad58095fd779daf490417e867804f4c87659904ea",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "ack-replay",
+      "channel": "stdout",
+      "run": "7951b0c2e22e24ffa835fd851bfea3cedd2e546f65014edff7d9f1bd43abaeb2",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 58 consumed 28 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "ack-replay",
+      "channel": "stderr",
+      "run": "d10e097889936bd2400e7bba1f46d11cf1ea56cec12cd2d4550aea9495651ebd",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 58 consumed 28 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "ack-forward",
+      "channel": "stdout",
+      "run": "fa6ca51536afa7d968f70cf77642590d8547ab4a206a95e5914882aa3f860083",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "ack-forward",
+      "channel": "stderr",
+      "run": "4c61e2981acd693e6f52c9f2d3ef3a4018986a691789597d342bc29e49c90067",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-unknown-tag",
+      "channel": "stdout",
+      "run": "9e7f670aae1812f11a37cab87d72fb2d6f6677ccf3fbb481156ebfe2436d5b3a",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-unknown-tag",
+      "channel": "stderr",
+      "run": "7de6533ce815ff01eee6d51416ab758ecc23b4b34520fa52e8f47408cc7c78b8",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-wrong-tag",
+      "channel": "stdout",
+      "run": "296a2b89f0730ab8aa3051913fadef66f18821e8f877106f21f416b63f97979a",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-wrong-tag",
+      "channel": "stderr",
+      "run": "7fbd5fa9b6299c4a203c2643f5ae7bc0e131ba26e957326ca9b6ea99ea2a26ca",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-overdeclared",
+      "channel": "stdout",
+      "run": "64fab23d4cd83464ee5b65038965980bfea42f3a259efb8f68b645720bf2dd27",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-overdeclared",
+      "channel": "stderr",
+      "run": "1a11595251914e9668ec349be865301a8093e751fc4ec05e42e259b8034ee1c2",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-ack-length",
+      "channel": "stdout",
+      "run": "b7a3d5772da0de279aac34c5a6ded38330fdbd84c2710c6a2dcec7279bb7d046",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 12,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 12
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-ack-length",
+      "channel": "stderr",
+      "run": "f1d21505a9f55ec7d391579aed701c34a87b100f53d64995d9666182d1c80c37",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 12,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 12
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-short-header",
+      "channel": "stdout",
+      "run": "71ea307704233d2d3477dc55e54e1dc7a7accd4410fb7baac12559c7b11a40e1",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 4,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 4
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-short-header",
+      "channel": "stderr",
+      "run": "699d1f9b690691d52f78e84bd0c572e3a38bf333ac227b234e13a907eb8eeef0",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 4,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 4
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-short-ack",
+      "channel": "stdout",
+      "run": "0155133eae0dfe23f86c7a2cdcae9c93ca9a015a5d8371deefd99aa81eab370b",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 12,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 12
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "control-short-ack",
+      "channel": "stderr",
+      "run": "c9258ee29698a6a0f8370ad2ccaf88916254af1b28b5704cac7993b01470db65",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 12,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 12
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-duplicate",
+      "channel": "stdout",
+      "run": "ad1a702f8f758ff11fa9c569f5cffbb69919b33fad7e4781120712227f4fe3ba",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-duplicate",
+      "channel": "stderr",
+      "run": "e421bbd5398e5f211655003a7f1410e7c76cbbf3caa1b5e55c495bddfb725aba",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-forward",
+      "channel": "stdout",
+      "run": "9711b97e4c13124766759bf5de1195dfd47d20d2b73887b704bfb8087810f758",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-forward",
+      "channel": "stderr",
+      "run": "5e4123962081ca73c9433c09b9e524f2e96b8cd0c0cecf6aa839f709e45f9dc4",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-finish",
+      "channel": "stdout",
+      "run": "7779ec9a003a2b14def777af0e17daf8ed563170025bbd050cfca5639ac58983",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-finish",
+      "channel": "stderr",
+      "run": "30e25418fd62a2c9c38c25779fd2ef7cde5db26abd146148cb406045cb95435c",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+      "actual_io": null,
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-resubscribe",
+      "channel": "stdout",
+      "run": "8d30573d126e9e2ca13433fd43b5baee596914a3572b55e9fa1b776db9bc2a36",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 43,
+            "kind": "Write",
+            "pending": 15
+          },
+          {
+            "accepted": 15,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "case": "terminal-end-resubscribe",
+      "channel": "stderr",
+      "run": "ece38fe3062ba2b53e0f2c6f3eb8cd4372e23f07b9f567056a9b79444f275196",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Protocol",
+      "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 43,
+            "kind": "Write",
+            "pending": 15
+          },
+          {
+            "accepted": 15,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    }
+  ],
+  "continuation_native": [
+    {
+      "selection": "duplicate_ack",
+      "channel": "stdout",
+      "supplied_errno": 5,
+      "run": "064d4149-bb58-4c48-80c8-75957ce77777",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "DuplicateAck",
+        "submitted_bytes": 13
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": null,
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "duplicate_ack",
+      "channel": "stderr",
+      "supplied_errno": 5,
+      "run": "e4114ce7-93f5-404f-8a27-a3e472a10973",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 23, errno: 5 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 23, errno: 5 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 39,
+        "returned_payload_sha256": "sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f",
+        "selected_control": "DuplicateAck",
+        "submitted_bytes": 13
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Aborted(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": null,
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "duplicate_ack",
+      "channel": "stdout",
+      "supplied_errno": 2147483647,
+      "run": "b1283960-fb18-4306-bcc8-6e24bbe821de",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 2147483647 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 2147483647 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "DuplicateAck",
+        "submitted_bytes": 13
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": null,
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "duplicate_ack",
+      "channel": "stderr",
+      "supplied_errno": 2147483647,
+      "run": "ebc0e4e5-35b6-4fb2-9e9e-743e3a383aff",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 23, errno: 2147483647 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 23, errno: 2147483647 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 39,
+        "returned_payload_sha256": "sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f",
+        "selected_control": "DuplicateAck",
+        "submitted_bytes": 13
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Aborted(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": null,
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "resubscribe",
+      "channel": "stderr",
+      "supplied_errno": 5,
+      "run": "f827c588-0468-40c3-909b-606015496709",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 23, errno: 5 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 23, errno: 5 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 39,
+        "returned_payload_sha256": "sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f",
+        "selected_control": "Resubscribe",
+        "submitted_bytes": 58
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Aborted(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 52,
+            "kind": "Write",
+            "pending": 6
+          },
+          {
+            "accepted": 6,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "resubscribe",
+      "channel": "stdout",
+      "supplied_errno": 2147483647,
+      "run": "9eda7090-d671-4d4d-bbf3-6d92324b1952",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 2147483647 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 2147483647 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "Resubscribe",
+        "submitted_bytes": 58
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 55,
+            "kind": "Write",
+            "pending": 3
+          },
+          {
+            "accepted": 3,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "selection": "resubscribe",
+      "channel": "stderr",
+      "supplied_errno": 2147483647,
+      "run": "692458e7-3a57-446c-a01b-c8fbea16728c",
+      "exit": 0,
+      "executed_tests": 1,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 23, errno: 2147483647 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 23, errno: 2147483647 }",
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 39,
+        "returned_payload_sha256": "sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f",
+        "selected_control": "Resubscribe",
+        "submitted_bytes": 58
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 87,
+          "consumed": 87,
+          "state": "Aborted(Progress { accepted: 87, consumed: 87 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 52,
+            "kind": "Write",
+            "pending": 6
+          },
+          {
+            "accepted": 6,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    }
+  ],
+  "total_unique_vm_including_requested": 28,
+  "total_unique_native_including_requested": 8,
+  "prior_requested_archive_sha256": "c6397b7a3db9c1cdedfd733ea6de617b46ba41193c183d5f85c698ffda755c96",
+  "main_advanced_while_source_frozen": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "full_management": "P0\u2013P13/G25 OPEN; no lane release",
+  "no_source_or_binary_change_since_requested_proof": true
+}

@@ -1,6 +1,15 @@
 {
-  "archive": "requested-v1.tar.gz",
-  "original_member_paths_and_hashes": "requested-v1.member-hashes.json",
-  "verified_transfer": "transfer-requested-v1.json",
-  "note": "Raw stdout/stderr/control/record/main bytes are retained in the compressed archive unchanged. Selected JSON copies preserve exact original bytes."
+  "archives": [
+    {
+      "archive": "requested-v1.tar.gz",
+      "original_paths_and_hashes": "requested-v1.member-hashes.json",
+      "verified_transfer": "transfer-requested-v1.json"
+    },
+    {
+      "archive": "continuation-v1.tar.gz",
+      "original_paths_and_hashes": "continuation-v1.member-hashes.json",
+      "verified_transfer": "transfer-continuation-v1.json"
+    }
+  ],
+  "note": "All original raw stdout/stderr/control/canonical/main bytes remain compressed unchanged. Selected JSON copies preserve exact original bytes; no broad whitespace waiver."
 }

@@ -1,5 +1,10 @@
 # Current shared-client control adaptation
 
+Continuation: [the enumerated frozen queue](CONTINUATION.md) adds26 real VM
+cases and7 native cases, all0. Together with the requested batch this source has
+28 actual VM and8 native selected passes. Main advanced to a920 during those
+runs; source/binaries stayed frozen as directed. No lane/management closure.
+
 Actual follow-up: [requested current-caller proof](RESULTS.md) passed the fresh
 normal caller/matching guest builds, two real KVM header-FIN channels, one native
 canonical-Aborted Subscribe case, seven pure checks and scoped Clippy. The173

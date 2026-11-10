@@ -1,0 +1,55 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-current-controls-28e-v1';source=base/'source';records=base/'records/collection-continuation-v1';records.mkdir();revision='2c57ac6d7c410b90fc61a6f186a506eedde840ee'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision and not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+fixture=json.loads((base/'records/build/fixture.json').read_text());assert hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+scope=json.loads((base/'records/build/source-scope.json').read_text())
+for name,digest in scope['owned'].items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+prior=json.loads((base/'records/collection-requested-v1/validated-cases.json').read_text());runs={r['run'] for r in prior['vm_cases']};native_runs={r['run'] for r in prior['native_cases']}
+groups=[('ack-v1',['ack-partial','ack-replay','ack-forward']),('controls-v1',['control-unknown-tag','control-wrong-tag','control-overdeclared','control-ack-length','control-short-header','control-short-ack']),('terminal-v1',['terminal-end-duplicate','terminal-end-forward','terminal-end-finish','terminal-end-resubscribe'])]
+summary=[];folders=[]
+for suffix,cases in groups:
+ for case in cases:
+  for channel,number in [('stdout',1),('stderr',2)]:
+   folder=base/'cases'/f'{case}-{channel}-{suffix}';folders.append(folder);rec=folder/'records'
+   assert (folder/'actual-case-exit').read_text().strip()=='0' and '1 passed; 0 failed; 0 ignored;' in (folder/'actual-case-stdout').read_text()
+   assert json.loads((rec/'inputs.json').read_text())['caller_declared_source']==revision and json.loads((rec/'artifacts.json').read_text())['fixture']['sha256']=='sha256:'+fixture['sha256']
+   t=json.loads((rec/'teardown.json').read_text());assert t['protocol_complete'] and t['run_removed'] and t['owner_stop_observer_join']['complete'] and t['observer_fds']['before']==t['observer_fds']['after']
+   event=[json.loads(p.read_text()) for p in rec.glob('[0-9]*-refusal-*.json')];expected=4 if case in ['control-short-header','control-short-ack'] else 1
+   assert len(event)==1 and event[0]['kind']=='Lost' and event[0]['code']==expected
+   a=json.loads((rec/'attempt.json').read_text());assert (rec/'invalid-control.bin').stat().st_size==a['control_bytes'] and json.loads((rec/'refusal.json').read_text())['post_join_records']==0
+   metadata=(rec/'managed-output.stopped').read_text();run=next(line[4:] for line in metadata.splitlines() if line.startswith('run '));assert run not in runs;runs.add(run)
+   state,tail=('ended','complete') if case.startswith('terminal-') else ('aborted','unknown')
+   row=f'member 1 channel {number} state {state} accepted {a["observed_cursor_before_attempt"]} consumed {a["last_valid_ack"]} tail {tail}';assert row in metadata.splitlines()
+   receipts=None
+   if (rec/'io-receipts.json').exists():
+    receipts=json.loads((rec/'io-receipts.json').read_text());writes=[v for v in receipts['actual'] if v['kind']=='Write'];finishes=[v for v in receipts['actual'] if v['kind']=='Finish'];assert receipts['driver_joined'] and sum(v['accepted'] for v in writes)==a['control_bytes'] and writes[-1]['pending']==0 and len(finishes)==int(a['finish']) and all(v['error'] is None for v in finishes)
+   if case.startswith('control-') or case=='terminal-end-resubscribe':assert receipts is not None
+   for stem in ['main-after-refusal-raw','main-after-neighbor-raw']:assert (rec/f'{stem}.stdout.bin').read_bytes()==b'main-progress\n' and (rec/f'{stem}.stderr.bin').read_bytes().startswith(b'main-error\n')
+   assert (rec/'before-release.json').exists() and (rec/'release.json').exists() and (rec/'progress.json').exists()
+   summary.append({'case':case,'channel':channel,'run':run,'executed_tests':1,'exit':0,'reason':event[0]['reason'],'target_row':row,'actual_io':receipts,'cleanup':t,'main_raw_bytes_retained':True})
+assert len(summary)==26 and len(runs)==28
+native=[]
+for selection,channel,errno in [('duplicate_ack','stdout',5),('duplicate_ack','stderr',5),('duplicate_ack','stdout',2147483647),('duplicate_ack','stderr',2147483647),('resubscribe','stderr',5),('resubscribe','stdout',2147483647),('resubscribe','stderr',2147483647)]:
+ folder=base/'records/native-terminal-v1'/f'{selection}-{channel}-{errno}';rec=folder/'records';assert (folder/'exit').read_text().strip()=='0' and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
+ inp=json.loads((rec/'inputs.json').read_text());assert inp['source']==revision and inp['fixture_sha256']=='sha256:'+fixture['sha256'] and inp['supplied_errno']==errno and inp['run'] not in native_runs;native_runs.add(inp['run'])
+ canonical=json.loads((rec/'canonical.json').read_text());r=json.loads((rec/'control-refusal.json').read_text());o=json.loads((rec/'observer-stop.json').read_text());owner=json.loads((rec/'owner-stop.json').read_text());t=json.loads((rec/'teardown.json').read_text())
+ assert canonical['actual_transport_end'] and canonical['canonical_state']==r['canonical_state'] and canonical['canonical_state'].endswith(f'errno: {errno} }}') and r['reason']=='Protocol' and r['control']==canonical['control'] and r['control']['state'].startswith('Finished(')
+ assert o['joined'] and o['post_join_records']==0 and o['owner_control']==canonical['control'] and owner['finish_after_abort']=='Err(Closed)' and owner['control']['state'].startswith('Aborted(')
+ assert owner['control']['accepted']==canonical['control']['accepted'] and owner['control']['consumed']==canonical['control']['consumed'] and t['protocol_complete'] and t['cleanup_completed'] and t['observer_fds']['before']==t['observer_fds']['after']
+ receipts=None
+ if selection=='resubscribe':
+  receipts=json.loads((rec/'io-receipts.json').read_text());writes=[v for v in receipts['actual'] if v['kind']=='Write'];assert receipts['driver_joined'] and sum(v['accepted'] for v in writes)==(rec/'postterminal-control.bin').stat().st_size and writes[-1]['pending']==0
+ native.append({'selection':selection,'channel':channel,'supplied_errno':errno,'run':inp['run'],'exit':0,'executed_tests':1,'canonical':canonical,'refusal':r,'observer':o,'owner':owner,'actual_io':receipts,'cleanup':t})
+assert len(native)==7 and len(native_runs)==8
+summary_doc={'source':revision,'base':scope['base'],'full_fixture':fixture,'continuation_vm':summary,'continuation_native':native,'total_unique_vm_including_requested':len(runs),'total_unique_native_including_requested':len(native_runs),'prior_requested_archive_sha256':'c6397b7a3db9c1cdedfd733ea6de617b46ba41193c183d5f85c698ffda755c96','main_advanced_while_source_frozen':'a920c85b5c0c9d40aafc4f4cce32432c7c0aed79','full_management':'P0–P13/G25 OPEN; no lane release','no_source_or_binary_change_since_requested_proof':True}
+(records/'validated-cases.json').write_text(json.dumps(summary_doc,indent=2)+'\n')
+roots=[base/'records/ack-v1',base/'records/controls-v1',base/'records/terminal-v1',base/'records/native-terminal-v1',records,*folders]
+files=sorted({p for root in roots for p in root.rglob('*') if p.is_file() and not p.is_symlink() and 'tmp' not in p.relative_to(root).parts});manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-continuation-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'regular_members':len(manifest)+1,'source':revision,'actual_vm':26,'actual_native':7,'current_source_total_vm':28,'current_source_total_native':8,'originals_preserved':True};(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

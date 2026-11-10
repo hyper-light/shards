@@ -1,0 +1,27 @@
+python3 - <<'PY'
+import pathlib,os,subprocess,json,hashlib
+base=pathlib.Path.home()/'managed-current-controls-28e-v1';source=base/'source';artifacts=base/'artifacts';records=base/'records/controls-v1';records.mkdir()
+fixture=json.loads((base/'records/build/fixture.json').read_text());binary=pathlib.Path(fixture['frozen']);assert hashlib.sha256(binary.read_bytes()).hexdigest()==fixture['sha256']
+for name,digest in json.loads((base/'records/build/source-scope.json').read_text())['owned'].items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(base/'target'),'CARGO_BUILD_JOBS':'4','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache'),'SHARDS_TEST_GUESTS':str(artifacts),'SHARDS_TEST_KERNEL':str(artifacts/'experimental-kernel'),'SHARDS_KERNEL':str(artifacts/'experimental-kernel'),'SHARDS_ADVERSARIAL_PORT':'32197','SHARDS_ADVERSARIAL_PHASE_MS':'240000','SHARDS_ADVERSARIAL_WORK_MS':'240000','SHARDS_ADVERSARIAL_CLEANUP_MS':'15000','SHARDS_ADVERSARIAL_OUTER_MS':'255000','SHARDS_ADVERSARIAL_SOURCE_REVISION':'2c57ac6d7c410b90fc61a6f186a506eedde840ee'})
+cases=[('control-unknown-tag','stdout'),('control-wrong-tag','stdout'),('control-overdeclared','stdout'),('control-ack-length','stdout'),('control-short-header','stdout'),('control-short-ack','stdout'),('control-unknown-tag','stderr'),('control-wrong-tag','stderr'),('control-overdeclared','stderr'),('control-ack-length','stderr'),('control-short-header','stderr'),('control-short-ack','stderr')]
+summary=[]
+for case,channel in cases:
+ folder=base/'cases'/f'{case}-{channel}-controls-v1';folder.mkdir();tmp=folder/'tmp';tmp.mkdir()
+ runenv=env|{'SHARDS_ADVERSARIAL_CASE':case,'SHARDS_ADVERSARIAL_CHANNEL':channel,'SHARDS_ADVERSARIAL_RECORDS':str(folder/'records'),'TMPDIR':str(tmp)}
+ (folder/'environment.json').write_text(json.dumps({k:v for k,v in runenv.items() if k.startswith('SHARDS_') or k in ['TMPDIR','XDG_CACHE_HOME','ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR']},indent=2)+'\n')
+ args=['timeout','--signal=KILL','255s',str(binary),'--ignored','--exact','tenant_exit::current_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main','--nocapture','--test-threads=1']
+ (folder/'actual-case-command.json').write_text(json.dumps(args)+'\n')
+ with (folder/'actual-case-stdout').open('wb') as out,(folder/'actual-case-stderr').open('wb') as err:r=subprocess.run(args,cwd=source,env=runenv,stdout=out,stderr=err,timeout=270)
+ (folder/'actual-case-exit').write_text(str(r.returncode)+'\n')
+ item={'case':case,'channel':channel,'exit':r.returncode,'stdout':(folder/'actual-case-stdout').read_text(errors='replace'),'stderr':(folder/'actual-case-stderr').read_text(errors='replace'),'actual':{name:(folder/'records'/name).read_text() if (folder/'records'/name).exists() else None for name in ['attempt.json','refusal.json','teardown.json','managed-output.stopped','io-receipts.json','1-refusal-1-1.json']}}
+ summary.append(item);print(json.dumps({'case':case,'channel':channel,'exit':r.returncode,'stdout':item['stdout'],'stderr':item['stderr'],'teardown':item['actual']['teardown.json'],'io_receipts':item['actual']['io-receipts.json']}),flush=True);(records/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+ if r.returncode:raise SystemExit(r.returncode)
+ assert '1 passed; 0 failed; 0 ignored;' in item['stdout']
+ for name in ['main-after-refusal-raw','main-after-neighbor-raw']:
+  assert (folder/'records'/f'{name}.stdout.bin').read_bytes()==b'main-progress\n'
+  assert (folder/'records'/f'{name}.stderr.bin').read_bytes().startswith(b'main-error\n')
+PY
