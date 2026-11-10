@@ -1,0 +1,27 @@
+[package]
+name = "managed-performance"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+count-alloc = []
+
+[dependencies]
+shards-remote = { path = "../../../../crates/remote" }
+shards-abi = { path = "../../../../crates/abi" }
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac276d2d53296de24c2a43837baf66ed1cbd", default-features = false }
+libc = "0.2"
+
+[patch.crates-io]
+aws-lc-rs = { path = "../../../../vendor/aws-lc-rs" }
+aws-lc-sys = { path = "../../../../vendor/aws-lc-sys" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
