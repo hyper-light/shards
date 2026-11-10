@@ -1,0 +1,37 @@
+{
+  "scope": "native endpoint behavior only; no VM/interception/performance claim",
+  "revision": "9d003774-minus-zero-guard",
+  "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "euid": 1000,
+  "within_ms": 120000,
+  "selected": [
+    "v4-tcp-zero-deadline"
+  ],
+  "binary_sha256": "fd498dd7e25cb1a9128ba6f45b509ae313b279e3650faedb4368ba14ac6cdd4d",
+  "results": [
+    {
+      "case": "v4-tcp-zero-deadline",
+      "status": 1,
+      "passed": false,
+      "elapsed_ns": 1966683,
+      "stdout": "v4-tcp-zero-deadline.stdout",
+      "stderr": "v4-tcp-zero-deadline.stderr",
+      "stdout_sha256": "aaafd80589a85be96d442a850a2e2aeccd0c335c2a860aed4056afa6d1b224de",
+      "stderr_sha256": "cd96da746a39b4f0b62d9ca7f63d099b46cf52102a63c6ad8504e93df732bdda",
+      "command_arg_lengths": [
+        65,
+        15,
+        4,
+        3,
+        11,
+        0,
+        0,
+        1,
+        6
+      ],
+      "command_sha256": "5ba51486582e06e385ee0b5c3e7de95c7391214c98edc3829f9e41208a3c51d1"
+    }
+  ],
+  "full_manifest_sha256": "9195ea343ced29cc94666a0f5c08a347dfcd8f3a15ff304d5bb00494682c1b86",
+  "full_manifest_remote_path": "/home/adalundhe/managed-network-native-check/mutation-zero/results.json"
+}

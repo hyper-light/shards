@@ -51,6 +51,12 @@ pub fn main() {
             "share" => share(),
             "slates_fs_dax" => slates_fs_dax(),
             "bpf" => bpf_costs(),
+            // Kernel argv after -- reaches the same native probe parser. Keep PID1
+            // inside this setup/report/poweroff path instead of exiting it directly.
+            "managed-network" => loopback_up().and_then(|()| match crate::managed_network::main() {
+                0 => Ok(()),
+                _ => Err("managed-network probe failed; see its errno/state record".into()),
+            }),
             "stepcgroup" => step_cgroup_costs(),
             other => Err(format!("unknown test {other:?}")),
         },

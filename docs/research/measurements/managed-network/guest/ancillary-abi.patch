@@ -1,0 +1,35 @@
+--- a/crates/testguest/src/managed_network.rs
++++ b/crates/testguest/src/managed_network.rs
+@@ -614,7 +614,14 @@
+     message.msg_iov = &raw mut vector;
+     message.msg_iovlen = 1;
+     message.msg_control = control.as_mut_ptr().cast();
+-    message.msg_controllen = size_of_val(&control);
++    // libc exposes socklen_t on musl and size_t on GNU. The same checked
++    // conversion is intentionally an identity conversion on the latter ABI.
++    #[allow(clippy::useless_conversion)]
++    {
++        message.msg_controllen = size_of_val(&control)
++            .try_into()
++            .map_err(|_| invalid("ancillary capacity exceeds ABI field"))?;
++    }
+     let n = deadline.io(socket.as_raw_fd(), libc::POLLIN, || {
+         // SAFETY: every msg buffer above lives through recvmsg; MSG_TRUNC returns the
+         // actual datagram length, including when an empty/short buffer truncates it.
+@@ -651,9 +658,14 @@
+         } else {
+             size_of::<libc::sockaddr_in6>()
+         };
++        // Compare in the buffer's address-sized type on both libc ABIs.
++        #[allow(clippy::useless_conversion)]
++        let (header_len, capacity) = (
++            usize::try_from(h.cmsg_len).map_err(|_| invalid("ancillary header length overflows"))?,
++            usize::try_from(message.msg_controllen).map_err(|_| invalid("ancillary capacity overflows"))?,
++        );
+         // SAFETY: CMSG_LEN computes the ABI header plus requested data length.
+-        if h.cmsg_len < unsafe { libc::CMSG_LEN(bytes as _) } as usize || h.cmsg_len > message.msg_controllen
+-        {
++        if header_len < unsafe { libc::CMSG_LEN(bytes as _) } as usize || header_len > capacity {
+             return Err(invalid("short UDP original destination record"));
+         }
+         // SAFETY: header/data lengths above were checked; destination is initialized

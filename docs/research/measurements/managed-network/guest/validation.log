@@ -1,0 +1,17 @@
+COMMAND ['scripts/check-development-policy']
+Development policy checks passed; evidence/coordinator review is still required.
+
+EXIT 0
+COMMAND ['rustfmt', '--check', '--edition', '2024', 'crates/testguest/src/main.rs', 'crates/testguest/src/linux.rs', 'crates/testguest/src/managed_network.rs', 'crates/shards/tests/managed_network.rs']
+
+EXIT 0
+COMMAND ['git', 'diff', '--check']
+
+EXIT 0
+COMMAND ['bash', '-n', 'docs/research/measurements/managed-network/guest/run.sh']
+
+EXIT 0
+Embedded Python syntax passed.
+All composed native checkpoint records byte-identical; only retained ABI patch alters engine source.
+Final tested source hashes and archived records verified after transfer.
+No VM/socket campaign executed by implementer.

@@ -1,0 +1,16 @@
+{
+  "coordinator_run": "r122",
+  "build_context": "combined 5d231e1b36ad37f9de7451bce1207a4fc859153b plus two-symbol experimental overlay; rootless pinned Debian builder, as reported by coordinator",
+  "verification": "implementer read-only SHA256 check passed; no implementer boot or runtime claim",
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae",
+    "bytes": 27760784
+  },
+  "config": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+    "sha256": "fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d",
+    "bytes": 97612,
+    "role": "coordinator supplied effective build output; host fixture keeps its association claim separate from runtime socket observations"
+  }
+}
