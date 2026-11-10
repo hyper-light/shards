@@ -5,7 +5,7 @@
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::Stream;
 
@@ -18,10 +18,46 @@ pub(crate) struct Socket {
     inner: shards_afunix::UnixStream,
     /// How long a read and a write wait, in ns, 0 for ever: shared by its clones, as a
     /// socket's own timeouts are.
-    waits: std::sync::Arc<[std::sync::atomic::AtomicU64; 2]>,
-    /// Whether a read or a write that would wait fails at once instead (`set_nonblocking`),
-    /// shared by its clones as its waits are.
-    nonblocking: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shared: triomphe::Arc<Shared>,
+}
+
+#[derive(Debug, Default)]
+struct Shared {
+    waits: [std::sync::atomic::AtomicU64; 2],
+    nonblocking: std::sync::atomic::AtomicBool,
+}
+
+impl Socket {
+    /// One operation on the already nonblocking OS socket, including Interrupted.
+    /// Readiness-only handshakes must not enter the normal wait/retry path.
+    pub(crate) fn read_nowait(&self, buf: &mut [u8]) -> io::Result<usize> {
+        (&self.inner).read(buf)
+    }
+
+    pub(crate) fn write_nowait(&self, buf: &[u8]) -> io::Result<usize> {
+        (&self.inner).write(buf)
+    }
+
+    fn shared() -> io::Result<triomphe::Arc<Shared>> {
+        triomphe::Arc::try_new(Shared::default()).map_err(|_| io::ErrorKind::OutOfMemory.into())
+    }
+
+    /// Fixed, nonzero Socket storage, using Box's documented Global layout contract.
+    fn allocation() -> io::Result<std::ptr::NonNull<Socket>> {
+        // SAFETY: Socket is Sized and nonzero (it contains an owned OS socket and pointer).
+        let at = unsafe { std::alloc::alloc(std::alloc::Layout::new::<Socket>()) };
+        std::ptr::NonNull::new(at.cast()).ok_or_else(|| io::ErrorKind::OutOfMemory.into())
+    }
+
+    pub(crate) fn boxed(self) -> io::Result<Box<dyn Stream>> {
+        let at = Self::allocation()?;
+        // SAFETY: fresh Global storage of Socket's exact layout, initialized once; Box
+        // receives its sole ownership and will drop/deallocate it with that same layout.
+        unsafe {
+            at.as_ptr().write(self);
+            Ok(Box::from_raw(at.as_ptr()))
+        }
+    }
 }
 
 /// Connects to the Unix socket at `path`, waiting on its listener no longer than `wait`
@@ -32,14 +68,34 @@ pub(crate) struct Socket {
 /// bound there, as a blocking one waits for room for as long as its send timeout, for ever
 /// as std leaves it (unix(7)). On Windows its connect is under way until afunix.sys ends it,
 /// waited out within `wait` (`shards_afunix::UnixStream::connect_within`).
+#[cfg(test)]
 pub(crate) fn connect(path: &Path, wait: Option<Duration>) -> io::Result<Socket> {
+    let deadline = wait
+        .map(|wait| {
+            Instant::now()
+                .checked_add(wait)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+        })
+        .transpose()?;
+    connect_until(path, deadline)
+}
+
+pub(crate) fn connect_until(path: &Path, deadline: Option<Instant>) -> io::Result<Socket> {
     #[cfg(unix)]
     let inner = {
-        let _ = wait;
+        let _ = deadline;
         unix::connect(path)?
     };
     #[cfg(windows)]
-    let inner = shards_afunix::UnixStream::connect_within(path, wait)?;
+    let inner = shards_afunix::UnixStream::connect_until(path, deadline)?;
+    Socket::new(inner)
+}
+
+pub(crate) fn connect_nowait(path: &Path) -> io::Result<Socket> {
+    #[cfg(unix)]
+    let inner = unix::connect(path)?;
+    #[cfg(windows)]
+    let inner = shards_afunix::UnixStream::connect_ready(path)?;
     Socket::new(inner)
 }
 
@@ -67,7 +123,7 @@ mod waits {
     impl Socket {
         pub(super) fn set_wait(&self, which: usize, timeout: Option<Duration>) -> io::Result<()> {
             let ns = nanos(timeout)?;
-            if let Some(wait) = self.waits.get(which) {
+            if let Some(wait) = self.shared.waits.get(which) {
                 wait.store(ns, Ordering::Relaxed);
             }
             Ok(())
@@ -84,7 +140,7 @@ mod waits {
             which: usize,
             mut op: impl FnMut() -> io::Result<T>,
         ) -> io::Result<T> {
-            if self.nonblocking.load(Ordering::Relaxed) {
+            if self.shared.nonblocking.load(Ordering::Relaxed) {
                 return loop {
                     match op() {
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -92,14 +148,29 @@ mod waits {
                     }
                 };
             }
-            let ns = self.waits.get(which).map_or(0, |w| w.load(Ordering::Relaxed));
-            let deadline = (ns != 0)
-                .then(|| Instant::now().checked_add(Duration::from_nanos(ns)))
-                .flatten();
+            let ns = self
+                .shared
+                .waits
+                .get(which)
+                .map_or(0, |w| w.load(Ordering::Relaxed));
+            let deadline = if ns == 0 {
+                None
+            } else {
+                Some(
+                    Instant::now()
+                        .checked_add(Duration::from_nanos(ns))
+                        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
+                )
+            };
             loop {
                 match op() {
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                        if deadline.is_some_and(|at| Instant::now() >= at) {
+                            return Err(io::ErrorKind::WouldBlock.into());
+                        }
+                        continue;
+                    }
                     done => return done,
                 }
                 let wait = match deadline {
@@ -126,10 +197,7 @@ mod waits {
     pub(super) fn nanos(timeout: Option<Duration>) -> io::Result<u64> {
         match timeout {
             None => Ok(0),
-            Some(t) if t.is_zero() => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cannot set a 0 duration timeout",
-            )),
+            Some(t) if t.is_zero() => Err(io::ErrorKind::InvalidInput.into()),
             Some(t) => Ok(u64::try_from(t.as_nanos()).unwrap_or(u64::MAX)),
         }
     }
@@ -152,10 +220,7 @@ mod unix {
         let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
         let bytes = path.as_os_str().as_bytes();
         if bytes.len() >= addr.sun_path.len() || bytes.contains(&0) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("{}: no Unix socket's path", path.display()),
-            ));
+            return Err(io::ErrorKind::InvalidInput.into());
         }
         addr.sun_family = libc::sa_family_t::try_from(libc::AF_UNIX).map_err(io::Error::other)?;
         for (to, from) in addr.sun_path.iter_mut().zip(bytes) {
@@ -216,8 +281,7 @@ mod unix {
             no_sigpipe(&inner)?;
             Ok(Socket {
                 inner,
-                waits: std::sync::Arc::default(),
-                nonblocking: std::sync::Arc::default(),
+                shared: Socket::shared()?,
             })
         }
 
@@ -316,8 +380,7 @@ impl Socket {
         inner.set_nonblocking(true)?;
         Ok(Socket {
             inner,
-            waits: std::sync::Arc::default(),
-            nonblocking: std::sync::Arc::default(),
+            shared: Socket::shared()?,
         })
     }
 
@@ -332,13 +395,13 @@ impl Read for Socket {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Waited for in poll(2), which sees a peer's half-close that a read waiting on a
         // macOS socket can sleep through (PM M236).
-        self.waiting(waits::READ, || (&self.inner).read(buf))
+        self.waiting(waits::READ, || self.read_nowait(buf))
     }
 }
 
 impl Write for Socket {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.waiting(waits::WRITE, || (&self.inner).write(buf))
+        self.waiting(waits::WRITE, || self.write_nowait(buf))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -348,11 +411,22 @@ impl Write for Socket {
 
 impl Stream for Socket {
     fn try_clone(&self) -> io::Result<Box<dyn Stream>> {
-        Ok(Box::new(Socket {
-            inner: self.inner.try_clone()?,
-            waits: self.waits.clone(),
-            nonblocking: self.nonblocking.clone(),
-        }))
+        let inner = self.inner.try_clone()?;
+        let at = Self::allocation()?;
+        // Each additional strong count belongs to this independently owned socket and
+        // ALREADY allocated box. Forgotten boxes retain their nonoverlapping allocation.
+        // On the supported 64-bit targets Socket occupies at least two pointer widths:
+        // even the entire usize address space holds fewer than isize::MAX such boxes,
+        // plus the one original possibly unboxed Socket. Thus Triomphe's refcount-abort
+        // precondition is unreachable here. No Arc/count/raw API escapes this module.
+        // SAFETY: as in boxed; no fallible operation remains after storage is acquired.
+        unsafe {
+            at.as_ptr().write(Socket {
+                inner,
+                shared: self.shared.clone(),
+            });
+            Ok(Box::from_raw(at.as_ptr()))
+        }
     }
 
     fn handle(&self) -> crate::Handle<'_> {
@@ -363,7 +437,9 @@ impl Stream for Socket {
     }
 
     fn set_nonblocking(&self, on: bool) -> io::Result<()> {
-        self.nonblocking.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.shared
+            .nonblocking
+            .store(on, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -445,6 +521,17 @@ mod tests {
         a.read_exact(&mut got).unwrap();
         assert_eq!(&got, b"late");
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
+    }
+
+    #[test]
+    fn already_queued_data_is_read_before_waiting_out_a_timeout() {
+        let (mut a, mut b) = pair().unwrap();
+        b.write_all(b"x").unwrap();
+        // The shortest nonzero timeout bounds waiting, not the initial nonblocking I/O.
+        a.set_read_timeout(Some(Duration::from_nanos(1))).unwrap();
+        let mut byte = [0; 1];
+        assert_eq!(a.read(&mut byte).unwrap(), 1);
+        assert_eq!(&byte, b"x");
     }
 
     /// A timeout is kept as given, to its nanosecond: none rounded down to a shorter one or

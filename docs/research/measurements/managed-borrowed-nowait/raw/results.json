@@ -1,0 +1,32 @@
+{
+  "before": {
+    "exit": 101,
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/native-borrowed-nowait-20261110-v1/artifacts/before-api-unit",
+        "bytes": 1603448,
+        "sha256": "ffad5247872c7f75323e251b61433ccb40a77aa6d92dca5990454337334f61bd"
+      }
+    ],
+    "ran_two": true,
+    "expected_contract_result": true
+  },
+  "after": {
+    "exit": 101,
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/native-borrowed-nowait-20261110-v1/artifacts/after-api-unit",
+        "bytes": 1603448,
+        "sha256": "ffad5247872c7f75323e251b61433ccb40a77aa6d92dca5990454337334f61bd"
+      }
+    ],
+    "ran_two": true,
+    "expected_contract_result": false
+  },
+  "clippy": {
+    "exit": 0
+  },
+  "storage": {
+    "free_after_bytes": 95003361280
+  }
+}

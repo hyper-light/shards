@@ -1,0 +1,62 @@
+{
+  "format": {
+    "command": [
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "--config-path",
+      "rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "crates/api/src/client.rs",
+      "crates/api/src/lib.rs",
+      "crates/api/src/stream.rs",
+      "crates/afunix/src/lib.rs",
+      "docs/research/measurements/managed-borrowed-nowait/focused.rs",
+      "docs/research/measurements/managed-borrowed-nowait/contract.rs"
+    ],
+    "exit": 0
+  },
+  "policy": {
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0
+  },
+  "diff": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0
+  },
+  "excluded": {
+    "command": [
+      "git",
+      "diff",
+      "--quiet",
+      "3b3817eea489d107fb9820f0f46c4fe429709fa3",
+      "--",
+      "Cargo.toml",
+      "Cargo.lock",
+      "crates/api/Cargo.toml",
+      "crates/api/src/taken.rs",
+      "crates/api/src/sim.rs",
+      "docs/research/measurements/managed-native-borrowed"
+    ],
+    "exit": 0
+  },
+  "staged-diff": {
+    "command": [
+      "/Users/adalundhe/.kiln-run/bin/gits",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+}

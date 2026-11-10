@@ -22,7 +22,10 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::stream::{self, Socket};
-use crate::{End, Guest, GuestSpec, Guests, Identity, Init, Refusal, Stream, allowed, backend, check};
+use crate::{
+    BorrowFailure, End, Guest, GuestSpec, Guests, HandshakeError, HandshakePhase, Identity, Init, Refusal,
+    ReplyError, Stream, allowed, backend, check,
+};
 
 /// The guests the `shards` binary boots: [`GuestSpec::binary`], else `SHARDS_BIN`, else
 /// `shards` on `PATH`.
@@ -58,6 +61,7 @@ fn tail(said: usize) -> usize {
 /// <assigned_hostside_port>\n`), as shards' muxer writes it
 /// (`crates/vmm/src/devices/virtio/vsock/conn.rs:372`).
 const ANSWER: usize = "OK ".len() + "4294967295".len() + "\n".len();
+const REQUEST: usize = "CONNECT ".len() + "4294967295".len() + "\n".len();
 
 impl Guests for Shards {
     fn backend(&self) -> Result<crate::Backend, Refusal> {
@@ -687,6 +691,11 @@ impl ShardsGuest {
 #[cfg(windows)]
 fn created(child: &Child) -> io::Result<u64> {
     use std::os::windows::io::AsRawHandle as _;
+    created_handle(child.as_raw_handle())
+}
+
+#[cfg(windows)]
+fn created_handle(handle: std::os::windows::io::RawHandle) -> io::Result<u64> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::GetProcessTimes;
     let zero = FILETIME {
@@ -694,11 +703,10 @@ fn created(child: &Child) -> io::Result<u64> {
         dwHighDateTime: 0,
     };
     let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-    // SAFETY: GetProcessTimes of the process handle `child` holds open, into FILETIMEs of
-    // ours.
+    // SAFETY: the caller holds this process handle open; FILETIMEs are ours.
     let ok = unsafe {
         GetProcessTimes(
-            child.as_raw_handle(),
+            handle,
             &raw mut created,
             &raw mut exited,
             &raw mut kernel,
@@ -751,79 +759,343 @@ fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
 enum Attempt {
     Again(String),
     Refused(String),
+    Allocation,
 }
 
-/// One `CONNECT <port>` over a new connection to `vsock`, its answer awaited at most `wait`
-/// (never zero); with none, as long as the guest takes to answer, which shards' device
-/// bounds: it ends a request the guest leaves unanswered at Firecracker's
-/// `CONN_REQUEST_TIMEOUT_MS` (`crates/vmm/src/devices/virtio/vsock/conn.rs:26-27`), and the
-/// connection with the VM's process.
-/// `cost` is set to its own work, the connect and the ask, for `pause`.
+/// The existing owned-client String boundary, with fallible growth and no
+/// allocating fallback. Borrowed errors never pass through this boundary.
+fn message(args: std::fmt::Arguments<'_>) -> Result<String, ()> {
+    struct Text(String);
+    impl std::fmt::Write for Text {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.try_reserve(text.len()).map_err(|_| std::fmt::Error)?;
+            self.0.push_str(text);
+            Ok(())
+        }
+    }
+    let mut text = Text(String::new());
+    std::fmt::write(&mut text, args).map_err(|_| ())?;
+    Ok(text.0)
+}
+
+impl HandshakeError {
+    fn io(phase: HandshakePhase, source: io::Error) -> Self {
+        Self::Io {
+            phase,
+            kind: source.kind(),
+            code: source.raw_os_error(),
+        }
+    }
+
+    fn retryable(&self) -> bool {
+        match self {
+            Self::Expired { .. } | Self::Closed => true,
+            Self::Io {
+                phase: HandshakePhase::Dial,
+                kind,
+                code,
+            } => {
+                matches!(
+                    kind,
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                ) || {
+                    #[cfg(windows)]
+                    {
+                        *code == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = code;
+                        false
+                    }
+                }
+            }
+            Self::Io {
+                phase: HandshakePhase::Write | HandshakePhase::Read,
+                ..
+            } => true,
+            Self::Io { .. } | Self::Reply(_) => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HandshakeWait {
+    Ready,
+    Until(Instant),
+    Unbounded,
+}
+
+fn remaining(wait: HandshakeWait, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
+    match wait {
+        HandshakeWait::Until(at) => {
+            let left = at.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                Err(HandshakeError::Expired { phase })
+            } else {
+                Ok(Some(left))
+            }
+        }
+        HandshakeWait::Ready | HandshakeWait::Unbounded => Ok(None),
+    }
+}
+
+/// Existing owned-client adapter: zero and unrepresentable patience keep their
+/// documented one-dial/no-clock behavior. Borrowed calls use a finite deadline directly.
 fn handshake(
     vsock: &Path,
     port: u32,
     wait: Option<Duration>,
     cost: &mut Duration,
 ) -> Result<Socket, Attempt> {
+    let deadline = wait
+        .map(|wait| Instant::now().checked_add(wait).ok_or(()))
+        .transpose()
+        .map_err(
+            |()| match message(format_args!("{}", BorrowFailure::DeadlineOverflow)) {
+                Ok(why) => Attempt::Refused(why),
+                Err(()) => Attempt::Allocation,
+            },
+        )?;
+    let wait = deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until);
+    handshake_until(vsock, port, wait, cost).map_err(|error| {
+        if matches!(
+            error,
+            HandshakeError::Io {
+                kind: io::ErrorKind::OutOfMemory,
+                ..
+            }
+        ) {
+            return Attempt::Allocation;
+        }
+        let why = match message(format_args!("{error}")) {
+            Ok(why) => why,
+            Err(()) => return Attempt::Allocation,
+        };
+        if error.retryable() {
+            Attempt::Again(why)
+        } else {
+            Attempt::Refused(why)
+        }
+    })
+}
+
+/// One shared CONNECT/OK exchange. Each partial I/O uses the original absolute
+/// deadline; reading only through the newline leaves subsequent payload untouched.
+fn handshake_until(
+    vsock: &Path,
+    port: u32,
+    wait: HandshakeWait,
+    cost: &mut Duration,
+) -> Result<Socket, HandshakeError> {
+    use HandshakePhase::{ClearTimeouts, Dial, Read, Write};
     let began = Instant::now();
-    // Its own work, the connect and the ask, as far as it got: not its wait for the answer.
-    let done = |cost: &mut Duration| *cost = began.elapsed();
-    let mut s = stream::connect(vsock, wait).map_err(|e| {
-        done(cost);
-        match e.kind() {
-            // Not yet bound, or bound and not yet listening: the VM is starting. Or its
-            // muxer's queue is full (Linux's EAGAIN) or the connect still under way at its
-            // wait's end: the VM takes no connection now.
-            io::ErrorKind::NotFound
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::WouldBlock
-            | io::ErrorKind::TimedOut => Attempt::Again(format!("dialing: {e}")),
-            // Windows' full queue, its EAGAIN (PM M205).
-            #[cfg(windows)]
-            _ if e.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS) => {
-                Attempt::Again(format!("dialing: {e}"))
-            }
-            _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
-        }
+    remaining(wait, Dial)?;
+    let connected = match wait {
+        HandshakeWait::Ready => stream::connect_nowait(vsock),
+        HandshakeWait::Until(at) => stream::connect_until(vsock, Some(at)),
+        HandshakeWait::Unbounded => stream::connect_until(vsock, None),
+    };
+    let mut s = connected.map_err(|source| {
+        *cost = began.elapsed();
+        HandshakeError::io(Dial, source)
     })?;
-    if wait.is_some() {
-        let timeouts = Stream::set_write_timeout(&s, wait).and_then(|()| Stream::set_read_timeout(&s, wait));
-        timeouts.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
-    }
-    let asked = s.write_all(format!("CONNECT {port}\n").as_bytes());
-    done(cost);
-    asked.map_err(|e| Attempt::Again(format!("asking: {e}")))?;
-    let mut line = Vec::with_capacity(ANSWER);
-    let mut byte = [0u8; 1];
-    while line.last() != Some(&b'\n') {
-        if line.len() >= ANSWER {
-            return Err(Attempt::Refused(format!(
-                "answered {:?}, no line",
-                String::from_utf8_lossy(&line)
-            )));
-        }
-        match s.read(&mut byte) {
-            // The guest did not accept: its device closes the connection.
-            Ok(0) => {
-                return Err(Attempt::Again(
-                    "closed unanswered (the guest does not listen there)".into(),
-                ));
+    let mut request = [0; REQUEST];
+    let mut unused = request.as_mut_slice();
+    writeln!(&mut unused, "CONNECT {port}").map_err(|source| HandshakeError::io(Write, source))?;
+    let used = REQUEST.saturating_sub(unused.len());
+    let mut ask = request
+        .get(..used)
+        .ok_or(HandshakeError::Reply(ReplyError::NotOk))?;
+    while !ask.is_empty() {
+        let sent = match wait {
+            HandshakeWait::Ready => s.write_nowait(ask),
+            _ => {
+                Stream::set_write_timeout(&s, remaining(wait, Write)?)
+                    .map_err(|source| HandshakeError::io(Write, source))?;
+                s.write(ask)
             }
-            Ok(_) => line.extend_from_slice(&byte),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(Attempt::Again(format!("awaiting its answer: {e}"))),
+        };
+        *cost = began.elapsed();
+        remaining(wait, Write)?;
+        match sent {
+            Ok(0) => return Err(HandshakeError::io(Write, io::ErrorKind::WriteZero.into())),
+            Ok(n) => ask = ask.get(n..).ok_or(HandshakeError::Reply(ReplyError::NotOk))?,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted && !matches!(wait, HandshakeWait::Ready) => {}
+            Err(source) => return Err(HandshakeError::io(Write, source)),
         }
     }
-    let answer = String::from_utf8_lossy(&line);
-    let ok = answer
-        .strip_prefix("OK ")
+    let mut line = [0; ANSWER];
+    let mut used = 0usize;
+    loop {
+        let byte = line
+            .get_mut(used..used.saturating_add(1))
+            .ok_or(HandshakeError::Reply(ReplyError::TooLong))?;
+        let read = match wait {
+            HandshakeWait::Ready => s.read_nowait(byte),
+            _ => {
+                Stream::set_read_timeout(&s, remaining(wait, Read)?)
+                    .map_err(|source| HandshakeError::io(Read, source))?;
+                s.read(byte)
+            }
+        };
+        remaining(wait, Read)?;
+        match read {
+            Ok(0) => return Err(HandshakeError::Closed),
+            Ok(_) => {
+                used = used.saturating_add(1);
+                if byte.first() == Some(&b'\n') {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted && !matches!(wait, HandshakeWait::Ready) => {}
+            Err(source) => return Err(HandshakeError::io(Read, source)),
+        }
+    }
+    let ok = line
+        .get(..used)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|answer| answer.strip_prefix("OK "))
         .is_some_and(|n| n.trim_end().parse::<u32>().is_ok());
     if !ok {
-        return Err(Attempt::Refused(format!("answered {answer:?}, not OK")));
+        return Err(HandshakeError::Reply(ReplyError::NotOk));
     }
-    let cleared = Stream::set_write_timeout(&s, None).and_then(|()| Stream::set_read_timeout(&s, None));
-    cleared.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
+    Stream::set_write_timeout(&s, None)
+        .and_then(|()| Stream::set_read_timeout(&s, None))
+        .map_err(|source| HandshakeError::io(ClearTimeouts, source))?;
+    remaining(wait, ClearTimeouts)?;
     Ok(s)
+}
+
+/// Connect to a running guest without acquiring its lifetime.
+///
+/// Zero patience makes one readiness-only attempt: connect and every handshake
+/// operation must complete without waiting. Pending or interrupted I/O returns
+/// its typed phase/cause and closes the connection. Positive patience starts one
+/// deadline before identity validation; unrepresentable patience returns Bounds
+/// before identity or dial. There is one dial and no retry. Dropping the returned stream
+/// closes only that connection. The supplied identity/socket remain trusted input;
+/// matching a PID/start is not authentication of the socket's peer.
+///
+/// Synchronous OS calls and scheduling are not hard real-time bounded. Readiness
+/// waits use the original deadline, and late completion is refused.
+pub fn connect_borrowed(
+    identity: &Identity,
+    port: u32,
+    patience: Duration,
+) -> Result<Box<dyn Stream>, Refusal> {
+    let began = Instant::now();
+    let refused = |failure| Refusal::Borrowed { port, failure };
+    let wait = if patience.is_zero() {
+        HandshakeWait::Ready
+    } else {
+        let deadline = began
+            .checked_add(patience)
+            .filter(|_| patience != Duration::MAX)
+            .ok_or_else(|| {
+                message(format_args!("{}", BorrowFailure::DeadlineOverflow))
+                    .map(|why| Refusal::Bounds {
+                        what: "patience",
+                        why,
+                    })
+                    .unwrap_or(Refusal::Allocation {
+                        what: "connection diagnostic",
+                    })
+            })?;
+        HandshakeWait::Until(deadline)
+    };
+    let process_failure = |failure| Refusal::Process {
+        pid: identity.pid,
+        expected_started: identity.started,
+        failure,
+    };
+    #[cfg(unix)]
+    let held = crate::taken::Held::find(identity.pid, identity.started).map_err(process_failure)?;
+    #[cfg(windows)]
+    let held = borrowed_windows::Held::find(identity.pid, identity.started).map_err(process_failure)?;
+    let mut cost = Duration::ZERO;
+    let stream = handshake_until(&identity.vsock, port, wait, &mut cost).map_err(|cause| {
+        refused(match cause {
+            HandshakeError::Io {
+                kind: io::ErrorKind::OutOfMemory,
+                ..
+            } => BorrowFailure::CapacityUnavailable,
+            cause => BorrowFailure::Channel(cause),
+        })
+    })?;
+    held.check().map_err(process_failure)?;
+    if matches!(wait, HandshakeWait::Until(at) if Instant::now() >= at) {
+        return Err(refused(BorrowFailure::Expired));
+    }
+    let stream = stream
+        .boxed()
+        .map_err(|_| refused(BorrowFailure::CapacityUnavailable))?;
+    if matches!(wait, HandshakeWait::Until(at) if Instant::now() >= at) {
+        return Err(refused(BorrowFailure::Expired));
+    }
+    Ok(stream)
+}
+
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/managed-borrowed-nowait/focused.rs"]
+mod borrowed_tests;
+
+#[cfg(windows)]
+mod borrowed_windows {
+    use crate::{ProcessFailure, ProcessOperation};
+    use std::io;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+    use windows_sys::Win32::Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+
+    fn failure(operation: ProcessOperation, source: io::Error) -> ProcessFailure {
+        match source.raw_os_error() {
+            Some(code) => ProcessFailure::Os { operation, code },
+            None => ProcessFailure::UnrepresentedIo {
+                operation,
+                kind: source.kind(),
+            },
+        }
+    }
+
+    pub(super) struct Held(OwnedHandle);
+
+    impl Held {
+        pub(super) fn find(pid: u32, expected: u64) -> Result<Self, ProcessFailure> {
+            // SAFETY: only query/synchronize access; non-inheritable and no termination right.
+            let handle =
+                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid) };
+            if handle.is_null() {
+                return Err(failure(ProcessOperation::OpenProcess, io::Error::last_os_error()));
+            }
+            // SAFETY: successful OpenProcess transfers its sole handle ownership here;
+            // all return paths close it, without a watcher or a Guest lifetime owner.
+            let held = Self(unsafe { OwnedHandle::from_raw_handle(handle) });
+            let observed = super::created_handle(held.0.as_raw_handle())
+                .map_err(|source| failure(ProcessOperation::GetProcessTimes, source))?;
+            if observed != expected {
+                return Err(ProcessFailure::DifferentStart { observed });
+            }
+            held.check()?;
+            Ok(held)
+        }
+
+        pub(super) fn check(&self) -> Result<(), ProcessFailure> {
+            // SAFETY: a zero-time state observation of the held synchronize handle,
+            // not a lifecycle wait or periodic process probe.
+            match unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) } {
+                WAIT_TIMEOUT => Ok(()),
+                WAIT_OBJECT_0 => Err(ProcessFailure::Exited),
+                WAIT_FAILED => Err(failure(ProcessOperation::WaitForExit, io::Error::last_os_error())),
+                returned => Err(ProcessFailure::UnexpectedWait { returned }),
+            }
+        }
+    }
 }
 
 impl Guest for ShardsGuest {
@@ -845,7 +1117,14 @@ impl Guest for ShardsGuest {
             match handshake(&self.vsock, port, wait, &mut cost) {
                 Ok(s) => {
                     lock(&self.shared.state).ready = true;
-                    return Ok(Box::new(s));
+                    return s.boxed().map_err(|_| Refusal::Allocation {
+                        what: "connection storage",
+                    });
+                }
+                Err(Attempt::Allocation) => {
+                    return Err(Refusal::Allocation {
+                        what: "connection storage",
+                    });
                 }
                 Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
                 Err(Attempt::Again(why)) if left().is_some_and(|l| l.is_zero()) => break why,
@@ -863,7 +1142,11 @@ impl Guest for ShardsGuest {
         }
         Err(Refusal::Channel {
             port,
-            why: format!("no OK within {patience:?}: {last}"),
+            why: message(format_args!("no OK within {patience:?}: {last}")).map_err(|()| {
+                Refusal::Allocation {
+                    what: "connection diagnostic",
+                }
+            })?,
         })
     }
 
@@ -1417,6 +1700,7 @@ mod tests {
                 Ok(_) => "connected".to_string(),
                 Err(Attempt::Again(why)) => format!("again: {why}"),
                 Err(Attempt::Refused(why)) => format!("refused: {why}"),
+                Err(Attempt::Allocation) => "allocation unavailable".to_string(),
             }
         });
         let said = crate::while_runs::answer(&rx, worker, patience);

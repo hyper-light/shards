@@ -1,0 +1,26 @@
+{
+  "artifacts/after-api-unit": {
+    "bytes": 1603448,
+    "sha256": "ffad5247872c7f75323e251b61433ccb40a77aa6d92dca5990454337334f61bd"
+  },
+  "artifacts/after-v2-api-unit": {
+    "bytes": 1650328,
+    "sha256": "2914b3c5eb4b280b0e7fd1cedfa4ee5bc10dac1604355c0efdf9368291fb5f14"
+  },
+  "artifacts/after-v3-api-unit": {
+    "bytes": 1649896,
+    "sha256": "99556910993e9aa1d863ee4cfdfe79f20c0ca57e06db80787a24c7f9a46c7cc2"
+  },
+  "artifacts/before-api-unit": {
+    "bytes": 1603448,
+    "sha256": "ffad5247872c7f75323e251b61433ccb40a77aa6d92dca5990454337334f61bd"
+  },
+  "artifacts/before-v2-api-unit": {
+    "bytes": 1603480,
+    "sha256": "70b464da6a68b6e993bac738c456d0533edaa5833d775a80ecfef4d965ecba8f"
+  },
+  "artifacts/before-v3-api-unit": {
+    "bytes": 1603496,
+    "sha256": "214db503970cee76336d5957b910b4976bb0dc45c25c8cccb78e704909c683b9"
+  }
+}

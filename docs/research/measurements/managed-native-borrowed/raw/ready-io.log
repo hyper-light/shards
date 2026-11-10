@@ -1,0 +1,8 @@
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (/home/adalundhe/native-borrowed-eb565-v1/target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 1 test
+test stream::tests::already_queued_data_is_read_before_waiting_out_a_timeout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 55 filtered out; finished in 0.00s
+

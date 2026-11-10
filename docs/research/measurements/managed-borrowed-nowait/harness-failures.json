@@ -1,0 +1,8 @@
+{
+  "prepare-v1": "Host python3 lacks tomllib; import failed before directory creation/build/test. Replaced with exact Cargo.lock package-block identity comparison, no dependency installation.",
+  "admission-linux": "Two Fedora1CPU1GiB2GiB requests rejected; no source/build execution. Linux/cargo inventory had no idleCPU.",
+  "admission-mac276": "AdmittedCPU/memory, but free disk5,922,738,176B failed32GiBpreflight before directory creation/build. No cleanup/bypass.",
+  "v1-after-invalid": "Same private Cargo target across two source directories reused baseline test binary (Cargo after artifact fresh=true, identical ffad5247 hash), despite verified distinctsource. This after run is INVALID, not product failure/pass; retained untouched.",
+  "v2-after-fixture-red": "Separate fresh targets produced distinct70b464/2914b3 binaries. Overflow contract passed; zero Read/WouldBlock contract assertion passed. Then accepted-peer set_read_timeout(Some200ms) returned EINVAL22 at contract.rs30; after remains1pass1fail. No causal product diagnosis or production change.",
+  "v3": "ROOT-approved test-fixture-only correction: peer.set_nonblocking(true), progress/expected-request-length-bounded read with no WouldBlock/Interrupted retry, exact CONNECT, independent immediate EOF and second accept WouldBlock. Product hashes unchanged. Fresh distinct before/after binaries; before2contractreds, after2pass; seven focused and one readyIO pass, libclippy0."
+}

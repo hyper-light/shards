@@ -1,0 +1,6 @@
+{
+  "file": "source-v1.tar.gz",
+  "bytes": 131385,
+  "sha256": "d028d96e5642b1b5fbde6b527adf0cfd5fc3ce7c77f56f096e0d6292f48cda84",
+  "limit": "private light source subset; no unrelated repo/vendor or caches"
+}

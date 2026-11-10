@@ -1,0 +1,22 @@
+[
+  {
+    "stage": "first source transfer",
+    "result": "spawn /usr/bin/bash: Argument list too long (os error 7); no process execution",
+    "correction": "verified archive transferred in16000-character base64 pieces"
+  },
+  {
+    "stage": "focused with original full lock",
+    "result": "cargo101 before compilation: lock needs update for smaller test workspace",
+    "raw": "raw/focused.log"
+  },
+  {
+    "stage": "generate-lockfile light attempt",
+    "result": "generate0 followed by identity assertion1 before compilation; libc0.2.191 and sha20.11.1 rejected",
+    "raw": "raw/generate-lockfile-Cargo.lock and rejected-generated-package-identities.json"
+  },
+  {
+    "stage": "local raw extraction",
+    "result": "TypeError: extractall() got an unexpected keyword argument filter; no members extracted",
+    "correction": "all members flat/regular, magic checked, exclusive file creation; hashes verified"
+  }
+]

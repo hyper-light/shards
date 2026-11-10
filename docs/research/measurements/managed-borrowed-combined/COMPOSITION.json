@@ -1,0 +1,65 @@
+{
+  "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "selected": [
+    "3b3817eea489d107fb9820f0f46c4fe429709fa3",
+    "d086894864cd5b3152fbf17b355186f99824155b"
+  ],
+  "role": "implementer",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "selected_path_set_exact": 92,
+  "all_selected_source_files_identical_to_d086": true,
+  "source_sha256": {
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+    "crates/api/Cargo.toml": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+    "crates/api/src/client.rs": "8d8b2dac91a3c419956bb41168705c5a15f21d51d7c043b6dd7f4f027443121b",
+    "crates/api/src/lib.rs": "b104a092604c73276eca05c387ecc93aa4a81d092b8b6a6f3e56dc5cc245106c",
+    "crates/api/src/stream.rs": "38dcbeda1f68d32ea1b4c03ef7d521af771eac479a800afddecde4dfcd21ed86",
+    "crates/api/src/taken.rs": "e83cd5fd233bb523bf4bf282365baed27373bf7f1efe36fdd79032f6a565cfd8",
+    "crates/afunix/src/lib.rs": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc"
+  },
+  "cargo_identity": {
+    "only_added_package": "triomphe0.1.17",
+    "only_changed_existing_package": "shards-api0.1.0 dependency edge",
+    "removed_packages": []
+  },
+  "other_native_fixture_adoption": false,
+  "current_main_api_parser_runtime_base_changes": "No API/afunix/Cargo commits from eb5654 base to cbd; exact source comparison plus package identity checked.",
+  "checks": "pending actual combined-revision Mac library/owned regression, strictlibclippy and admitted Windows compile; previous d086 results remain revision-specific",
+  "local_mechanical": {
+    "full_cargo_fmt_all_check": 0,
+    "policy": {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    },
+    "staged_whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 2,
+      "output": "docs/research/measurements/managed-native-borrowed/raw/final-focused.log:16: new blank line at EOF.\ndocs/research/measurements/managed-native-borrowed/raw/focused-v3.log:41: new blank line at EOF.\ndocs/research/measurements/managed-native-borrowed/raw/light-Cargo.lock:139: new blank line at EOF.\ndocs/research/measurements/managed-native-borrowed/raw/ready-io.log:8: new blank line at EOF.\n"
+    },
+    "source_whitespace": {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "Cargo.lock",
+        "crates/api",
+        "crates/afunix"
+      ],
+      "exit": 0,
+      "output": ""
+    }
+  },
+  "retained_raw_whitespace": "Four original3b evidence files have blank-at-EOF warnings only; exact historical bytes retained, not a source waiver or passing full staged diff claim."
+}

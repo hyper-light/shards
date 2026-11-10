@@ -1,0 +1,9 @@
+{
+  "archive_sha256": "6e55981a5dc16c69c1bb965ba14f2c53ea0437e014f80b3e1b7bcea9fcb34e66",
+  "bytes": 15357,
+  "members": 42,
+  "all_regular_member_hashes_verified": true,
+  "no_executable_content": true,
+  "originals": "/tmp/shards-borrowed-nowait-records-v3",
+  "runner": "b24c5c951260dcdfd0972f2aeaf3cf51"
+}

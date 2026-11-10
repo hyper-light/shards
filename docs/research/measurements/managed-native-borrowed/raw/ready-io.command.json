@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j1", "--profile", "test-release", "-p", "shards-api", "--lib", "stream::tests::already_queued_data_is_read_before_waiting_out_a_timeout", "--", "--exact", "--test-threads=1", "--nocapture"]

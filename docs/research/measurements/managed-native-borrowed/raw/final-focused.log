@@ -1,0 +1,16 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/native-borrowed-eb565-v1/source-v2/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 8.74s
+     Running unittests src/lib.rs (/home/adalundhe/native-borrowed-eb565-v1/target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 8 tests
+test client::borrowed_tests::changed_identity_is_rejected_before_dial ... ok
+test client::borrowed_tests::dribbled_reply_does_not_renew_deadline ... ok
+test client::borrowed_tests::exact_bytes_clone_and_half_close ... ok
+test client::borrowed_tests::malformed_and_closed_replies_remain_typed ... ok
+test client::borrowed_tests::private_refcounts_are_bounded_by_retained_socket_storage ... ok
+test client::borrowed_tests::shared_state_box_and_clone_oom_return_without_error_allocation ... ignored, coordinator-owned allocation-failure check; never a whole-library passing gate
+test client::borrowed_tests::withheld_reply_expires_before_fixture_release ... ok
+test client::borrowed_tests::zero_and_overflow_are_typed_before_process_or_dial_io ... ok
+
+test result: ok. 7 passed; 0 failed; 1 ignored; 0 measured; 48 filtered out; finished in 0.50s
+

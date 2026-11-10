@@ -1,0 +1,11 @@
+{
+  "all_35_packaged_hashes_match_local_transfer": true,
+  "current_repo_source_hashes_match": true,
+  "exceptions": "Only derivative small-workspace Cargo.toml and exact original17-package lock closure; repository Cargo files unchanged.",
+  "production_files": {
+    "crates/api/src/client.rs": "8d8b2dac91a3c419956bb41168705c5a15f21d51d7c043b6dd7f4f027443121b",
+    "crates/api/src/lib.rs": "b104a092604c73276eca05c387ecc93aa4a81d092b8b6a6f3e56dc5cc245106c",
+    "crates/api/src/stream.rs": "38dcbeda1f68d32ea1b4c03ef7d521af771eac479a800afddecde4dfcd21ed86",
+    "crates/afunix/src/lib.rs": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc"
+  }
+}

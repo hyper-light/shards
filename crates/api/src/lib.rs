@@ -42,7 +42,7 @@ mod while_runs;
 #[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
 mod proc_allocation;
 
-pub use client::Shards;
+pub use client::{Shards, connect_borrowed};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +192,9 @@ pub enum ProcessOperation {
     ProcPidRusage,
     PollExit,
     KeventExit,
+    OpenProcess,
+    GetProcessTimes,
+    WaitForExit,
 }
 
 /// A failure of the concrete process-identity producers. Observation failure is
@@ -219,6 +222,9 @@ pub enum ProcessFailure {
         observed: u64,
     },
     Exited,
+    UnexpectedWait {
+        returned: u32,
+    },
     /// An unexpected I/O representation with no native code. Its payload is not
     /// represented here; the observation remains uncertain.
     UnrepresentedIo {
@@ -244,6 +250,7 @@ impl std::fmt::Display for ProcessFailure {
                 write!(f, "process started at {observed}: another process's since")
             }
             Self::Exited => f.write_str("the held process has ended"),
+            Self::UnexpectedWait { returned } => write!(f, "unexpected process wait result {returned}"),
             Self::UnrepresentedIo { operation, kind } => {
                 write!(f, "{operation:?}: unrepresented I/O cause ({kind:?})")
             }
@@ -253,11 +260,87 @@ impl std::fmt::Display for ProcessFailure {
 
 impl std::error::Error for ProcessFailure {}
 
+/// The phase of the shared Firecracker CONNECT handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakePhase {
+    Dial,
+    Write,
+    Read,
+    ClearTimeouts,
+}
+
+/// A reply that does not satisfy the existing CONNECT/OK grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyError {
+    TooLong,
+    NotOk,
+}
+
+/// A handshake's phase and observed I/O cause, without allocating error text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandshakeError {
+    Expired {
+        phase: HandshakePhase,
+    },
+    Io {
+        phase: HandshakePhase,
+        kind: io::ErrorKind,
+        code: Option<i32>,
+    },
+    Closed,
+    Reply(ReplyError),
+}
+
+impl std::fmt::Display for HandshakeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expired { phase } => write!(f, "{phase:?}: handshake deadline expired"),
+            Self::Io { phase, kind, code } => write!(f, "{phase:?}: {kind:?} (OS {code:?})"),
+            Self::Closed => f.write_str("closed unanswered (the guest does not listen there)"),
+            Self::Reply(ReplyError::TooLong) => f.write_str("answered past the longest OK, no line"),
+            Self::Reply(ReplyError::NotOk) => f.write_str("answered not OK"),
+        }
+    }
+}
+
+impl std::error::Error for HandshakeError {}
+
+/// Borrowed-connect failures. Process observations use [`Refusal::Process`];
+/// unrepresentable patience uses [`Refusal::Bounds`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BorrowFailure {
+    Expired,
+    /// Retained for callers of earlier revisions; new patience overflow is Bounds.
+    DeadlineOverflow,
+    Channel(HandshakeError),
+    CapacityUnavailable,
+}
+
+impl std::fmt::Display for BorrowFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expired => f.write_str("borrowed connection deadline expired"),
+            Self::DeadlineOverflow => f.write_str("borrowed connection deadline is not representable"),
+            Self::Channel(error) => error.fmt(f),
+            Self::CapacityUnavailable => f.write_str("borrowed connection storage unavailable"),
+        }
+    }
+}
+
+impl std::error::Error for BorrowFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Channel(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// What can't be done, and why.
 ///
-/// Exhaustive consumers must handle [`Refusal::Process`] as well as the existing
-/// variants. `Clone`, `PartialEq` and `Eq` remain available; preserve the typed
-/// failure and requested identity instead of classifying its display text.
+/// Exhaustive consumers must handle [`Refusal::Process`], [`Refusal::Borrowed`]
+/// and [`Refusal::Allocation`] as well as the existing variants. `Clone`,
+/// `PartialEq` and `Eq` remain available; match typed failures rather than text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// This host has no backend shards boots Linux with.
@@ -284,6 +367,10 @@ pub enum Refusal {
         expected_started: u64,
         failure: ProcessFailure,
     },
+    /// A finite borrowed connection failed without acquiring the guest's lifetime.
+    Borrowed { port: u32, failure: BorrowFailure },
+    /// A post-boot connection resource could not be allocated.
+    Allocation { what: &'static str },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -319,6 +406,8 @@ impl std::fmt::Display for Refusal {
             } => {
                 write!(f, "process {pid}, expected start {expected_started}: {failure}")
             }
+            Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
+            Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
         }
     }
 }
@@ -327,6 +416,7 @@ impl std::error::Error for Refusal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Process { failure, .. } => std::error::Error::source(failure),
+            Self::Borrowed { failure, .. } => Some(failure),
             _ => None,
         }
     }

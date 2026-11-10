@@ -1,0 +1,44 @@
+{
+  "before": {
+    "exit": 101,
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/native-borrowed-nowait-20261110-v1/artifacts/before-v3-api-unit",
+        "bytes": 1603496,
+        "sha256": "214db503970cee76336d5957b910b4976bb0dc45c25c8cccb78e704909c683b9",
+        "cargo_fresh": false
+      }
+    ],
+    "ran_two": true,
+    "expected_contract_result": true
+  },
+  "after": {
+    "exit": 0,
+    "artifacts": [
+      {
+        "path": "/Users/adalundhe/native-borrowed-nowait-20261110-v1/artifacts/after-v3-api-unit",
+        "bytes": 1649896,
+        "sha256": "99556910993e9aa1d863ee4cfdfe79f20c0ca57e06db80787a24c7f9a46c7cc2",
+        "cargo_fresh": false
+      }
+    ],
+    "ran_two": true,
+    "expected_contract_result": true
+  },
+  "focused-regressions-v3": {
+    "exit": 0,
+    "expected_count": 7,
+    "expected_summary": true
+  },
+  "ready-io-v3": {
+    "exit": 0,
+    "expected_count": 1,
+    "expected_summary": true
+  },
+  "clippy": {
+    "exit": 0
+  },
+  "storage": {
+    "free_after_bytes": 94775848960
+  }
+}
