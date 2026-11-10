@@ -14,7 +14,7 @@ for resource in resources:
     assert attributes["shards.microvm.id"] == {
         "stringValue": 'é—🦀"\\/\x00\x08\t\n\r\x1b\x1f'
     }
-    assert attributes["shards.microvm.generation"] == {
+    assert attributes["shards.microvm.restore.generation"] == {
         "stringValue": str(2**64 - 1)
     }
     scope = resource["scopeMetrics"]

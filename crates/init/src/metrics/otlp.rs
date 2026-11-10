@@ -32,6 +32,7 @@ pub struct Snapshot {
 
 /// One ExportMetricsServiceRequest, with cumulative kernel values. Unknown counter
 /// birth times are omitted, not replaced with each collection's timestamp.
+/// `generation` is the VMM lineage restore count, not a management epoch.
 pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapshot]) -> io::Result<()> {
     if samples.iter().any(|s| s.time_unix_nano == 0) {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -49,10 +50,10 @@ pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapsh
 fn resource(out: &mut impl Write, run: &str, generation: u64, sample: &Snapshot) -> io::Result<()> {
     out.write_all(b"{\"resource\":{\"attributes\":[")?;
     attribute(out, "shards.microvm.id", run)?;
-    // Generation is an exact u64 identity, whereas AnyValue.int_value is int64.
+    // The VMM lineage restore count is u64; AnyValue.int_value is int64.
     write!(
         out,
-        ",{{\"key\":\"shards.microvm.generation\",\"value\":{{\"stringValue\":\"{generation}\"}}}},"
+        ",{{\"key\":\"shards.microvm.restore.generation\",\"value\":{{\"stringValue\":\"{generation}\"}}}},"
     )?;
     let scope = match sample.scope {
         Scope::Run => "run",
@@ -288,7 +289,7 @@ mod tests {
         }
         assert_eq!(
             text.matches(
-                "\"shards.microvm.generation\",\"value\":{\"stringValue\":\"18446744073709551615\"}"
+                "\"shards.microvm.restore.generation\",\"value\":{\"stringValue\":\"18446744073709551615\"}"
             )
             .count(),
             3
@@ -296,6 +297,7 @@ mod tests {
         assert_eq!(text.matches("\"shards.member.id\"").count(), 1);
         assert!(text.contains("\"intValue\":\"4294967295\""));
         assert!(!text.contains("startTimeUnixNano"));
+        assert!(!text.contains("\"shards.microvm.generation\""));
         run.time_unix_nano = 1;
         assert!(encode(&[run]).contains("\"timeUnixNano\":\"1\""));
     }

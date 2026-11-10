@@ -17,11 +17,11 @@ evidence directory only. No modules, runtime callers or dependencies were added.
 ## Contract and decision limits
 
 One `write` invocation serializes one `ExportMetricsServiceRequest` JSON object
-followed by one newline, into a caller-owned `std::io::Write`. It takes trusted
-run/generation identities and already collected cgroup snapshots. It does not
+followed by one newline, into a caller-owned `std::io::Write`. It takes a trusted
+run identity, the VMM lineage restore count and collected cgroup snapshots. It does not
 collect, retain, cache, poll, queue, retry, authenticate or authorize anything.
 The root-owned producer remains responsible for admission, observation provenance,
-clock meaning, sampling boundaries and trustworthy generation/member association.
+clock meaning, sampling boundaries and trustworthy restore-count/member association.
 
 Each run/workload/member cgroup is a distinct ResourceMetrics entry. A parent's
 counters include descendants; these scopes must not be summed as disjoint usage.
@@ -31,9 +31,13 @@ the emitted `shards.cgroup.task.count` is subtree TIDs from `pids.current`.
 
 The instrumentation scope is `shards.init`. Custom `shards.cgroup.*` names avoid
 claiming standard process/container semantics that do not fit these aggregates.
-No semantic-convention schema URL or SDK identity is invented. Generation is
-always a decimal **stringValue**, including small generations, because its full
-u64 identity range does not fit AnyValue's signed int64.
+No semantic-convention schema URL or SDK identity is invented. The resource key
+`shards.microvm.restore.generation` is always a decimal **stringValue**, including
+small counts, because its full u64 range does not fit AnyValue's signed int64.
+It means only `shards_abi::control::GENERATION`: zero at initial boot and one more
+for each restore of that guest lineage. It is not the owner-output management
+generation and does not establish restart-safe identity or a universal management
+epoch. See the [contract follow-up](restore-label-v1/README.md).
 
 | Instrument | Unit and data | Meaning |
 | --- | --- | --- |
@@ -126,11 +130,12 @@ On this arm64 Mac, rustc1.98.1/cargo1.98.1, private target
 - rustfmt, git diff whitespace and development-policy check passed. The policy
   script explicitly does not establish evidence/coordinator compliance.
 
-Repeat the light checks from this worktree with `sh
-docs/research/measurements/managed-otel-encoder/check.sh`. This Mac recipe uses
-lockf; root's supported-target gates own portability. Synthetic fixture values
-and test seeds are not observations or runtime policy constants. Raw original
-results and environment/source hashes are in `raw/`; no binaries are committed.
+The original 11d1 checkpoint's raw results and environment/source hashes remain
+in `raw/` unchanged. Repeat the current light checks with `sh
+docs/research/measurements/managed-otel-encoder/check.sh`; it now writes only to
+`restore-label-v1/raw/` with a separate target. This Mac recipe uses lockf; root's
+supported-target gates own portability. Synthetic fixture values and test seeds
+are not observations or runtime policy constants. No binaries are committed.
 The first staged whitespace check rejected libtest's final blank line in unit.log;
 the exact original bytes are retained as unit.log.gz with sizes/hashes in
 raw-storage.json. They were not trimmed or normalized. This was an evidence-file
