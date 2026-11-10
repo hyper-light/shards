@@ -50,8 +50,13 @@ closure and exact hashes are recorded before compilation. An earlier guarded
 formatter-only source packet is retained at `~/relay-turn-pressure-format-2300-v1`;
 it created no Cargo target. No local target/cache, ROOT source/cache or VM.
 
-This source checkpoint has unrun compile/native cases. Actual GNU/musl outcomes
-will retain missing events/errors as failures. This seam is not the full pump
+The first8cd source checkpoint had unrun compile/native cases. The
+[actual validation record](VALIDATION.md) now retains GNU/musl check/strict lint/
+build0 and the FIRST native case per libc passing0 at sourceb84005a21. Real
+prefill8064, same-turn pending3/send-WouldBlock retention, independent drain and
+exact13-byte forwarding/EOF are recorded separately. Four preparation failures
+before native actors remain retained; no byte/queue/time input was tuned.
+This seam is not the full pump
 scheduler, bidirectional TCP, VSOCK, interception, resource guarantee or a
 performance result. Original pressure miss and all remaining management gaps
 remain open regardless of this fixture's result.
