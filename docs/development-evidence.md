@@ -2,8 +2,9 @@
 
 Use this checklist with [R01–R16](development-rules.md) for each implementation
 batch. Link existing records rather than duplicate them. The coordinator owns
-evidence review and final combined gates; agents return their scoped implementation,
-audit, live-test or measurement evidence under R15. Keep unrun results explicit.
+all audits, profiling, benchmarking, heavy real E2E, chaos, sweeps, evidence review
+and final combined gates. Agents return scoped implementation and targeted
+unit/light integration evidence under R15, with owed coordinator runs explicit.
 
 - **Identity:** task/gap IDs, Git revision, policy SHA-256, coordinator/implementer,
   owned paths, environment/toolchain/kernel/architecture and supported target scope.
