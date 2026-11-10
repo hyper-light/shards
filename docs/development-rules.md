@@ -134,7 +134,8 @@ required behavior, evidence or error path in the name of brevity.
 
 ## R14 — Profile allocations and faults
 
-The coordinator assigns, reviews and integrates profiling and optimization of
+The main coordinator performs all profiling and benchmarking, and reviews
+optimization of
 allocations, reallocations, copies, retained memory and page faults, alongside CPU,
 latency and throughput. Count induced parent
 and kernel costs, not just child RSS. Compare equivalent live workloads, retain raw
@@ -143,13 +144,17 @@ fast, allocation-free or leak-free without the relevant evidence.
 
 ## R15 — Roles, adversarial validation and merges
 
-Use scoped subagents for parallel implementation, tests and integration. The
-coordinator assigns validation and resource envelopes, reviews evidence and owns
-the final combined gates and merges. Ada explicitly authorized recurring agent
-lanes for live E2E/break/stress testing, constants/research, implementation quality,
-resource/performance optimization and adversarial multi-tenant VM testing.
-Delegate those campaigns with exact source/path/runner ownership, policy readback
-and evidence requirements. Preserve implementing agents; completed batches receive
+Use scoped subagents for parallel implementation and targeted unit/light
+integration tests. The main coordinator owns **all audits, profiling,
+benchmarking, heavy real E2E, chaos, stress campaigns and sweeps**, including
+adversarial multi-tenant validation. These are not delegated campaigns. Agents
+return owed coordinator runs when their implementation/light checks finish.
+This role split follows Ada's current policy bootstrap and supersedes older
+instructions permitting broader agent campaigns.
+
+Delegate implementation with exact source/path/runner ownership, resource
+envelopes, policy readback, light-test scope and evidence-return requirements.
+Preserve implementing agents; completed batches receive
 the next scoped assignment as capacity permits. Runtime concurrency and runner
 headroom remain binding; never report queued work as running.
 Agents return small tested signed commits, evidence and remaining work at each
