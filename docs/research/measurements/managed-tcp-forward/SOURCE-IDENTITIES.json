@@ -1,0 +1,929 @@
+{
+  "format": "managed-tcp-forward-proposal-evidence-v1",
+  "status": "proposal only; forwarding code and all native/VM campaigns unimplemented/unrun",
+  "reviewed_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "branch": "p/managed-tcp-forward-proposal",
+  "recorded_on": "2026-11-10",
+  "role": "IMPLEMENTER",
+  "implementer": "01a1c5d2ee0e7248982c95a59f1fd905",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "owned_paths": [
+    "docs/research/measurements/managed-tcp-forward/PROPOSAL.md",
+    "docs/research/measurements/managed-tcp-forward/SOURCE-IDENTITIES.json",
+    "docs/research/measurements/managed-tcp-forward/INTERFACE-EXAMPLE.md"
+  ],
+  "policy": {
+    "canonical_root": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing",
+    "canonical_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+    "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+    "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+    "readback_key": "relay-policy-tcp-proposal-eb565-d634-resume-v2",
+    "full_reads": [
+      "AGENTS.md",
+      "docs/development-rules.md R01–R16",
+      "docs/development-evidence.md",
+      "CLAUDE.md",
+      "docs/design/managed-runtime-plan.md",
+      "/Users/adalundhe/g121-handoff.md"
+    ],
+    "constraints": "ROOT owns all audits, actual native/socket/VM campaigns, mutations, profiles, benchmarks, matrix and main merges. No children/automatic goal dispatch. Existing refs/binaries preserved; no local builds or protected ROOT source/cache writes."
+  },
+  "pins": {
+    "rust_toolchain_file": "rust-toolchain.toml",
+    "rust_toolchain": "1.98.1",
+    "cargo_msrv": "1.98.1",
+    "libc": {
+      "version": "0.2.189",
+      "registry_checksum": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+      "scope": "Rust FFI crate, not a GNU C library or musl runtime pin"
+    },
+    "hyper_quic": {
+      "version": "0.1.0",
+      "revision": "233b7fcef7a363327c5439b191724a38065062cd",
+      "default_features": false
+    },
+    "hyper_tls": {
+      "version": "0.1.0",
+      "revision": "233b7fcef7a363327c5439b191724a38065062cd",
+      "scope": "conformed runtime TLS dependency; no provider or cryptographic changes"
+    },
+    "registry_rustls": {
+      "version": "0.23.46",
+      "registry_checksum": "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf",
+      "scope": "separate registry package, not the identity of hyper-tls"
+    },
+    "quinn_vendor": {
+      "version": "0.11.18",
+      "upstream_revision": "eaec0db4bcb698f76df736d89938743c88a2ad5f",
+      "archive_sha256_as_recorded_upstream": "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc",
+      "archive_downloaded_or_verified_by_this_lane": false
+    },
+    "kernel": {
+      "base_research_tag": "v6.18",
+      "stable_research_tag": "v6.18.48",
+      "scope": "source comparison with the existing experimental fixture kernel, not a product kernel pin change; actual executed artifact/config identity is ROOT-owned"
+    }
+  },
+  "local_sources": {
+    "scope": "Targeted source/caller and existing evidence reads, not a delegated audit. Full policy/plan/handoff reads are separate above.",
+    "files": [
+      {
+        "path": "Cargo.toml",
+        "git_blob_sha1": "7dae13acc848860d15ee2ef48ecde05ec8ee826e",
+        "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f",
+        "bytes": 3885
+      },
+      {
+        "path": "Cargo.lock",
+        "git_blob_sha1": "5da9bf3774e0336ac8d6d3cd5dc87f988cb524dc",
+        "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1",
+        "bytes": 45787
+      },
+      {
+        "path": "rust-toolchain.toml",
+        "git_blob_sha1": "6c0e18d27147c5d7f876bd38d128e8fe04c2c4e5",
+        "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+        "bytes": 700
+      },
+      {
+        "path": "AGENTS.md",
+        "git_blob_sha1": "cfc3019c09da85d8e48b752f80667d89685d9d0b",
+        "sha256": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+        "bytes": 1757
+      },
+      {
+        "path": "docs/development-rules.md",
+        "git_blob_sha1": "813288bad9c1f8ecd269a89d35ba35e37dc393a1",
+        "sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+        "bytes": 10874
+      },
+      {
+        "path": "docs/development-evidence.md",
+        "git_blob_sha1": "a25586c29d1564bc97b90c291fcee74153e25282",
+        "sha256": "a84c60f20e3a06a294bd5b091c1f43cfd5cc4b33ef1bd22a50cd94cea07bb97b",
+        "bytes": 3207
+      },
+      {
+        "path": "CLAUDE.md",
+        "git_blob_sha1": "83720166eb8802f9e2dc916e94a996561f72c4aa",
+        "sha256": "54c3ad93162608248419fe54c42d14bd00ed3cf6aebaf99b78a1c4d83acd28a1",
+        "bytes": 16962
+      },
+      {
+        "path": "docs/design/managed-runtime-plan.md",
+        "git_blob_sha1": "0204b9123785b5c99f5a4177014147855a058834",
+        "sha256": "9aafc728a11f6aa529873221827223320512f88ff579ba23d00ee0edfb3f24e8",
+        "bytes": 47650
+      },
+      {
+        "path": "crates/testguest/src/main.rs",
+        "git_blob_sha1": "01eb8c414d16067c7bcb4eeb7f1f76aebfc20ac0",
+        "sha256": "9e5927853a03ea819a86c4104d8a7f86c9b2717a9e935a6e0cdf6234f2706037",
+        "bytes": 1372
+      },
+      {
+        "path": "crates/testguest/src/managed_network.rs",
+        "git_blob_sha1": "f3306c334eb982ce8f535a8595b70b78c792c350",
+        "sha256": "5c44f5b696fbd8084a2ffe89ac9018972113226dafd1597117a2fc95f4b7d93f",
+        "bytes": 42972
+      },
+      {
+        "path": "crates/testguest/src/managed_network/intercept.rs",
+        "git_blob_sha1": "59b605b8923083fd5d111c9b668ac19f54c6d52e",
+        "sha256": "cd699813c5b41c595c7ea000b56d8a757a7fabc12d736a04852d77cd54bf675b",
+        "bytes": 35914
+      },
+      {
+        "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+        "git_blob_sha1": "d312352809da0f8823aa80f59742ab48f1b6a45d",
+        "sha256": "05461b491ba32ee357b353beeb383438c8ba1aec8c27bbeacb6e1c51b36b9b93",
+        "bytes": 34664
+      },
+      {
+        "path": "crates/testguest/src/managed_network/intercept/sock_addr/bpf.rs",
+        "git_blob_sha1": "c75d3e8feaf1dace6cd2d1d88191ef00cdcb7612",
+        "sha256": "9aad0283c896f1a192f204a99537fd7804dffe30d25a1227560e8fc201ffde01",
+        "bytes": 11503
+      },
+      {
+        "path": "crates/testguest/src/managed_network/intercept/udp/forward.rs",
+        "git_blob_sha1": "54f1169ebf4b4898ccead1e8e733255019d206a6",
+        "sha256": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61",
+        "bytes": 17822
+      },
+      {
+        "path": "crates/net-process/src/main.rs",
+        "git_blob_sha1": "7aa87ff50af0c68654ed71ed380a8e68269f59f9",
+        "sha256": "d8efecd1f2a930b54243ef826d041398157b1a5fb480f4cd4fe47e9f59f44b42",
+        "bytes": 13683
+      },
+      {
+        "path": "crates/net/src/lib.rs",
+        "git_blob_sha1": "b7f601394e2413f54e9c71072ac2ccc18081cdbe",
+        "sha256": "06057e05358aa814e0f48f09e9f603c0c4328643cff7af3bef621a79a01ad220",
+        "bytes": 146353
+      },
+      {
+        "path": "crates/net/src/tcp.rs",
+        "git_blob_sha1": "f545dd5f1c89307d5fc05ea6f377962f08d3dbda",
+        "sha256": "36589428109980b3cd8c39cac16b66b6e15f75029b6005569dcc4514588338b2",
+        "bytes": 67763
+      },
+      {
+        "path": "crates/net/src/ring.rs",
+        "git_blob_sha1": "445c1d1f7429eadf4d85936467ff9fc1d688446e",
+        "sha256": "d542aac00011bc51c87329d6d465612102a100096a8c178a9d659530a9b4cacf",
+        "bytes": 12781
+      },
+      {
+        "path": "crates/net/src/poll.rs",
+        "git_blob_sha1": "de2200e0887f824c081a57635647086bc0c46f8d",
+        "sha256": "a4c99470737cad2b5896efeba3d55b559d6d24989c2d345fb86a09103af3d00b",
+        "bytes": 33687
+      },
+      {
+        "path": "crates/remote/Cargo.toml",
+        "git_blob_sha1": "b760830ab962df79be31ca464cf59d59211f83c5",
+        "sha256": "41040d0ab3b20bec76774ac970d76a5e8ff074fbbf46c9587075ee10257d0abf",
+        "bytes": 1326
+      },
+      {
+        "path": "crates/remote/src/managed.rs",
+        "git_blob_sha1": "1c763de205aa5bc5535249fedf442f825e2a522f",
+        "sha256": "5782d2f9d9c83cf2db6d4d1baf3152cd1f3daf5aef9856ebce788bdcbf098bab",
+        "bytes": 38021
+      },
+      {
+        "path": "crates/remote/src/net.rs",
+        "git_blob_sha1": "28a81675aa84eba864540429bbc11de31b40ab71",
+        "sha256": "e3cf92dbff95d0302b96199d170ade037361585bf425a766a226ce09d8f0c678",
+        "bytes": 48062
+      },
+      {
+        "path": "crates/shards/tests/managed_network.rs",
+        "git_blob_sha1": "e0eafd5c1efe29789efcafc9ed88ad3efc30b22d",
+        "sha256": "f0a28cabd99ae2b97884dc3039698e0f95fd6327ffc23029b67e96290167afc3",
+        "bytes": 49086
+      },
+      {
+        "path": "scripts/check-development-policy",
+        "git_blob_sha1": "4df3e1b3f4e731109250f94a0917e72acd5f0f3b",
+        "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac",
+        "bytes": 3326
+      },
+      {
+        "path": "docs/research/measurements/managed-central-intercept/README.md",
+        "git_blob_sha1": "043341df5d724f429b977e2fbe2f4acec7a6c91e",
+        "sha256": "109dc884b5a0720917185064a1477a784072d52e66495ccdd18cea8aa5e8fc3e",
+        "bytes": 3715
+      },
+      {
+        "path": "docs/research/measurements/managed-central-followup/README.md",
+        "git_blob_sha1": "a1fb4ac1ea59d802d25d023dc2d06d2cd6bb8e4c",
+        "sha256": "685c394217917a3a00e91fb9809c5ae399c8a9eaf0cff9fa18aee217d12c6724",
+        "bytes": 7297
+      },
+      {
+        "path": "docs/research/measurements/managed-coordinator-forward/README.md",
+        "git_blob_sha1": "deeccf6b6b1701140ebccc7378361576ba13e3d3",
+        "sha256": "43787925d5185ee96ae381ad40a1833420be046abb84463bce54ea892477bbe2",
+        "bytes": 8594
+      },
+      {
+        "path": "docs/research/measurements/managed-coordinator-boundaries/README.md",
+        "git_blob_sha1": "fd98db516146d0bc4d8ed1a572d5732ba82ea3bf",
+        "sha256": "1bb3886b80d6ec3f8d6ea3becc144b77fa0c3fccc25a7d6207338021287bbdb5",
+        "bytes": 14469
+      },
+      {
+        "path": "docs/research/platform-measurements.md",
+        "git_blob_sha1": "810a77771f10b061bc2aee3b2f0d0900a8668ba9",
+        "sha256": "ddfe24590e2e02b146c2e5e67c29dc2d224b460b42fd65d038c616578beaf884",
+        "bytes": 1488804
+      }
+    ]
+  },
+  "primary_code": [
+    {
+      "id": "hyper_cargo",
+      "url": "https://github.com/hyper-light/hyper-raft/blob/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/Cargo.toml",
+      "git_blob_sha1": "1e04e5eb3acad15ab8a00b36d5a69fc2b95e310e",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "dependency names/features and quinn-proto provenance"
+      ]
+    },
+    {
+      "id": "hyper_vendored",
+      "url": "https://github.com/hyper-light/hyper-raft/blob/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/VENDORED.md",
+      "git_blob_sha1": "ce0c0a5aa1bd1a582383e629d0795cdb91ae5e43",
+      "retrieval": {
+        "lines": [
+          1,
+          110
+        ],
+        "scope": "partial contents; Git blob SHA identifies the complete upstream file"
+      },
+      "inspected": [
+        "conformance provenance; only lines1–110 retrieved"
+      ]
+    },
+    {
+      "id": "hyper_vendor_identity",
+      "url": "https://github.com/hyper-light/hyper-raft/blob/233b7fcef7a363327c5439b191724a38065062cd/vendor/quinn-proto/VENDORED.md",
+      "git_blob_sha1": "f4a5c7945387263a2fa7c076e4bc3c06346f4024",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "upstream archive checksum and VCS identity"
+      ]
+    },
+    {
+      "id": "hyper_streams",
+      "url": "https://github.com/hyper-light/hyper-raft/blob/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/streams/mod.rs",
+      "git_blob_sha1": "ed2b0733330c4045082ef7580353315bdfed7f66",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "RecvStream::read/stop",
+        "SendStream::write/write_source/finish/reset",
+        "StreamEvent"
+      ]
+    },
+    {
+      "id": "tokio_bidi",
+      "url": "https://github.com/tokio-rs/tokio/blob/tokio-1.48.0/tokio/src/io/util/copy_bidirectional.rs",
+      "git_blob_sha1": "ea40a3b4c9560a6d8fa115bc87f094eb9b11cc0e",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "TransferState",
+        "transfer_one_direction",
+        "copy_bidirectional and with_sizes"
+      ]
+    },
+    {
+      "id": "envoy_tcp",
+      "url": "https://github.com/envoyproxy/envoy/blob/v1.36.0/source/common/network/connection_impl.cc",
+      "git_blob_sha1": "31da05c565c21bbd4ac9cc8d5d697d388616e44c",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "enableHalfClose",
+        "onReadReady",
+        "onWriteReady",
+        "bothSidesHalfClosed and watermark callbacks"
+      ]
+    },
+    {
+      "id": "rust_tcp",
+      "url": "https://github.com/rust-lang/rust/blob/1.98.1/library/std/src/net/tcp.rs",
+      "git_blob_sha1": "b673abdff7ba1fda7501d99d1a16963ff3d7afdb",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "connect_timeout",
+        "take_error",
+        "set_nonblocking",
+        "Read/Write/flush/shutdown"
+      ]
+    },
+    {
+      "id": "rust_socket_unix",
+      "url": "https://github.com/rust-lang/rust/blob/1.98.1/library/std/src/sys/net/connection/socket/unix.rs",
+      "git_blob_sha1": "41850574c96fae1098fb03307b7bbbe7d0b55ef1",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "connect_timeout",
+        "shutdown",
+        "set_nonblocking"
+      ]
+    },
+    {
+      "id": "rust_socket_mod",
+      "url": "https://github.com/rust-lang/rust/blob/1.98.1/library/std/src/sys/net/connection/socket/mod.rs",
+      "git_blob_sha1": "66aa2a804db22161f590bbd14dc66d6a6b05127c",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "TcpStream::write/peer_addr and MSG_NOSIGNAL"
+      ]
+    },
+    {
+      "id": "libc_unix",
+      "url": "https://github.com/rust-lang/libc/blob/0.2.189/src/unix/mod.rs",
+      "git_blob_sha1": "6c64020d49e85eecebe695d211223b60e0a84bf9",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "connect/shutdown/send/recv/poll FFI declarations"
+      ]
+    },
+    {
+      "id": "linux_tcp",
+      "url": "https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c",
+      "git_blob_sha1": "8a18aeca7ab07480844946120f51a0555699b4c3",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "tcp_poll",
+        "tcp_sendmsg_locked",
+        "tcp_shutdown",
+        "__tcp_close"
+      ]
+    },
+    {
+      "id": "linux_tproxy",
+      "url": "https://github.com/torvalds/linux/blob/v6.18/net/netfilter/nft_tproxy.c",
+      "git_blob_sha1": "50481280abd2658b757829732eb51f5efd9fca95",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "protocol selection, transparent-socket condition and hook validation"
+      ]
+    },
+    {
+      "id": "linux_connect4",
+      "url": "https://github.com/torvalds/linux/blob/v6.18/tools/testing/selftests/bpf/progs/connect4_prog.c",
+      "git_blob_sha1": "9e9ebf27b8784ed31750d4cb6bfeb35d74715306",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "socket type selection, destination rewrite and bpf_bind"
+      ]
+    },
+    {
+      "id": "linux_stable_tcp",
+      "url": "https://github.com/gregkh/linux/blob/v6.18.48/net/ipv4/tcp.c",
+      "git_blob_sha1": "db80b81a74cbb759791949ce34f1088ca8c54671",
+      "retrieval": {
+        "lines": [
+          536,
+          650
+        ],
+        "scope": "partial contents; Git blob SHA identifies the complete upstream file"
+      },
+      "inspected": [
+        "tcp_poll"
+      ]
+    },
+    {
+      "id": "linux_stable_tproxy",
+      "url": "https://github.com/gregkh/linux/blob/v6.18.48/net/netfilter/nft_tproxy.c",
+      "git_blob_sha1": "f2101af8c867f4cf461c9bd9d43a74ee07033572",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "protocol selection, transparent-socket condition and hook validation"
+      ]
+    },
+    {
+      "id": "linux_tproxy_doc",
+      "url": "https://github.com/torvalds/linux/blob/v6.18/Documentation/networking/tproxy.rst",
+      "git_blob_sha1": "75e4990cc3db1ad6a459d57899662203a11fa05b",
+      "retrieval": {
+        "scope": "full file retrieved; targeted symbols inspected"
+      },
+      "inspected": [
+        "transparent socket/policy-route requirements and REDIRECT comparison"
+      ]
+    }
+  ],
+  "standards_and_api_docs": [
+    {
+      "id": "rfc9293",
+      "url": "https://www.rfc-editor.org/rfc/rfc9293.html",
+      "identity": "RFC 9293, August2022",
+      "inspected": [
+        "3.5.3 reset",
+        "3.6/3.6.1 close/half-close",
+        "3.9.1.4 CLOSE"
+      ]
+    },
+    {
+      "id": "rfc9000",
+      "url": "https://www.rfc-editor.org/rfc/rfc9000.html",
+      "identity": "RFC 9000, May2021",
+      "inspected": [
+        "3 stream states/termination",
+        "4 stream and connection flow control",
+        "19.4 RESET_STREAM"
+      ]
+    },
+    {
+      "id": "rfc9001",
+      "url": "https://www.rfc-editor.org/rfc/rfc9001.html",
+      "identity": "RFC 9001, May2021",
+      "inspected": [
+        "2/3 TLS records versus QUIC packet protection",
+        "9.2 application 0-RTT requirement; no policy change proposed"
+      ]
+    },
+    {
+      "id": "linux_man_connect",
+      "url": "https://man7.org/linux/man-pages/man2/connect.2.html",
+      "identity": "Linux man-pages6.19 HTML, rendering2026-09-09; retrieved2026-11-10",
+      "scope": "documented API contract, not passing runtime evidence"
+    },
+    {
+      "id": "linux_man_poll",
+      "url": "https://man7.org/linux/man-pages/man2/poll.2.html",
+      "identity": "Linux man-pages6.19 HTML, rendering2026-09-09; retrieved2026-11-10",
+      "scope": "documented API contract, not passing runtime evidence"
+    },
+    {
+      "id": "linux_man_send",
+      "url": "https://man7.org/linux/man-pages/man2/send.2.html",
+      "identity": "Linux man-pages6.19 HTML, rendering2026-09-09; retrieved2026-11-10",
+      "scope": "documented API contract, not passing runtime evidence"
+    },
+    {
+      "id": "linux_man_recv",
+      "url": "https://man7.org/linux/man-pages/man2/recv.2.html",
+      "identity": "Linux man-pages6.19 HTML, rendering2026-09-09; retrieved2026-11-10",
+      "scope": "documented API contract, not passing runtime evidence"
+    },
+    {
+      "id": "linux_man_shutdown",
+      "url": "https://man7.org/linux/man-pages/man2/shutdown.2.html",
+      "identity": "Linux man-pages6.19 HTML, rendering2026-09-09; retrieved2026-11-10",
+      "scope": "documented API contract, not passing runtime evidence"
+    },
+    {
+      "id": "posix_connect_unavailable",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/connect.html",
+      "retrieval": "403 Forbidden",
+      "used_to_support_claims": false
+    }
+  ],
+  "research": {
+    "id": "01a1c5d332c07528b80098796389b351",
+    "scope": "Kiln citation grades describe source support; they are not native test results or adoption approval.",
+    "findings": [
+      {
+        "id": "f9",
+        "claim": "TCP closes its sending and receiving directions independently; a buffered native forwarding experiment must drain each accepted byte prefix before closing that direction and keep the opposite direction live.",
+        "inferred": true,
+        "grade": "B",
+        "score": 72,
+        "why": "1 independent source (a standard); 1 of 1 quotes found where cited; inferred from them",
+        "citations": [
+          {
+            "source": "s2",
+            "at": "§3.6.1",
+            "quote": "the two directions of a TCP connection are closed independently",
+            "quote_check": "found"
+          }
+        ],
+        "note": "Protocol design inference, not evidence of Shards forwarding implementation or actual guest behavior."
+      },
+      {
+        "id": "f10",
+        "claim": "Linux nonblocking connect completion requires a readiness wait followed by checking SO_ERROR; writability alone is not successful connection evidence.",
+        "inferred": false,
+        "grade": "A",
+        "score": 99,
+        "why": "2 independent sources (official docs, code); 2 of 2 quotes found where cited",
+        "citations": [
+          {
+            "source": "s3",
+            "at": "ERRORS/EINPROGRESS",
+            "quote": "SO_ERROR is zero",
+            "quote_check": "found"
+          },
+          {
+            "source": "s6",
+            "at": "connect_timeout",
+            "quote": "let e = self.take_error()?.unwrap_or_else(|| {",
+            "quote_check": "found"
+          }
+        ],
+        "note": "Earlier long normalized quote did not match raw source formatting; narrowed literal quotes plus independently read Rust implementation. This documents API behavior, not passing Shards forwarding evidence."
+      },
+      {
+        "id": "f11",
+        "claim": "Tokio's established bidirectional copy handles each transfer as Running, ShuttingDown, Done, shuts down the opposite writer after EOF, and continues the remaining direction.",
+        "inferred": false,
+        "grade": "A",
+        "score": 90,
+        "why": "1 independent source (code); 2 of 2 quotes found where cited",
+        "citations": [
+          {
+            "source": "s4",
+            "at": "TransferState and transition",
+            "quote": "TransferState::ShuttingDown(count) => {",
+            "quote_check": "found"
+          },
+          {
+            "source": "s4",
+            "at": "copy_bidirectional docs",
+            "quote": "the other direction will continue.",
+            "quote_check": "found"
+          }
+        ],
+        "note": "Earlier prose normalized Markdown did not match exact Rustdoc spelling; cites now retain raw words. Prior art only: no Tokio runtime, default capacity or cancellation policy adopted."
+      },
+      {
+        "id": "f12",
+        "claim": "QUIC stream data receipt and application consumption are different receive states; a FIN/transport acknowledgement does not prove a managed application consumed bytes.",
+        "inferred": false,
+        "grade": "A",
+        "score": 90,
+        "why": "1 independent source (a standard); 1 of 1 quotes found where cited",
+        "citations": [
+          {
+            "source": "s5",
+            "at": "§3.2",
+            "quote": "The \"Data Recvd\" state persists until stream data has been delivered to the application.",
+            "quote_check": "found"
+          }
+        ],
+        "note": "TCP fixture will keep kernel-accepted write counts, independent backend/client read receipts and EOF facts distinct. QUIC is existing control transport, not a new TCP payload path."
+      }
+    ],
+    "quote_correction": "f10/f11 initially used prose-normalized long quotes that the raw-page checker did not find; final literal excerpts and independent Rust source now check found. Not a runtime failure."
+  },
+  "root_feedback": {
+    "received": "User supplied actual ROOT feedback after the previous native-draft dependency",
+    "source": "fcc6f85c271b701bfb739511498f88cf15821c34",
+    "raw_root_private": "~/root-managed-native-cancel-fcc6-v1",
+    "outcomes": "GNU+musl retained source-hashed binaries: three exact ignored filters each; six cases0, one test passed each. Pending/Expired token retained and attempts0; own HUP BrokenPipe/ERR Other attempts0; held pidfd exit readiness and parent FD return asserted.",
+    "limits": "Counter-only admission evidence, not external commit proof; draft not main adopted; full normal caller/helpers/source/matrix context remains separate. Relay did not execute these native cases."
+  },
+  "light_checks": {
+    "scope": "Actual guest source/module tree plus signature-only appendix, minimal libc/devcgroup check crate. No native/test binary executed. Cargo check compiles dependency build tooling and emits metadata; not normal host/helpers/matrix.",
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "sync": false,
+    "needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+    "actual_cpu_affinity": [
+      0
+    ],
+    "rlimit_as_bytes": 1073741824,
+    "private_env": {
+      "CARGO_BUILD_JOBS": "1",
+      "CARGO_INCREMENTAL": "0",
+      "NUM_JOBS": "1",
+      "CARGO_HOME": "<private-root>/cargo-home",
+      "CARGO_TARGET_DIR": "<private-root>/target"
+    },
+    "checked_interface_sha256": "2a3afa5e3f9e0ef32a01e1dde8b9d447511b6e64d935270624ce8da49b6afa7b",
+    "v1": {
+      "result": {
+        "base_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+        "root": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1",
+        "source": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/source",
+        "target": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/target",
+        "cargo_home": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/cargo-home",
+        "cpu_affinity": [
+          0
+        ],
+        "rlimit_as_bytes": 1073741824,
+        "allocated_private_bytes": 24690688,
+        "identities": [
+          {
+            "path": "interface.rs",
+            "bytes": 1597,
+            "sha256": "2a3afa5e3f9e0ef32a01e1dde8b9d447511b6e64d935270624ce8da49b6afa7b"
+          },
+          {
+            "path": "source/crates/testguest/src/managed_network.rs",
+            "bytes": 44570,
+            "sha256": "bad76ebfa274cf03ab0f88578fb45b49ab51427265f75b8b01b9b9981c9c889b"
+          },
+          {
+            "path": "check/Cargo.toml",
+            "bytes": 217,
+            "sha256": "02bb5b39e80dc39cb0ded08ef8723f3e5bbe181145a02798d5403a7ef1187b59"
+          },
+          {
+            "path": "check/lib.rs",
+            "bytes": 102,
+            "sha256": "5bc981fce4c6137bf30501713f22dd29f882cdef8cb650cfe07c6ca9da68ca8d"
+          },
+          {
+            "path": "check/devcgroup/Cargo.toml",
+            "bytes": 119,
+            "sha256": "5c550a0180144c2cf6dcb23a2e0e138e34ae2d2f229e1a3f389e54590b7efc23"
+          },
+          {
+            "path": "check/Cargo.lock",
+            "bytes": 465,
+            "sha256": "abbce5e67618f47e424b41d98079fe25f529c19e66af0da6a850cf7e559ac420"
+          }
+        ],
+        "checks": [
+          {
+            "name": "policy",
+            "command": [
+              "python3",
+              "scripts/check-development-policy"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/source",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/policy.log",
+            "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+          },
+          {
+            "name": "rustc-version",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "rustc",
+              "-Vv"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/rustc-version.log",
+            "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+          },
+          {
+            "name": "cargo-version",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "-V"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/cargo-version.log",
+            "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+          },
+          {
+            "name": "x86_64-unknown-linux-gnu",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "check",
+              "--lib",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "-j",
+              "1"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check",
+            "status": 101,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/x86_64-unknown-linux-gnu.log",
+            "sha256": "4e17078108dcbac396f75947caa799e44229a68667b5fd89af4809f5bb2290b3"
+          },
+          {
+            "name": "x86_64-unknown-linux-musl",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "check",
+              "--lib",
+              "--target",
+              "x86_64-unknown-linux-musl",
+              "-j",
+              "1"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check",
+            "status": 101,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v1/x86_64-unknown-linux-musl.log",
+            "sha256": "025e8146861778a6d309eb1d57463d3dbc8a8cc645717050f1d2c19516d15398"
+          }
+        ],
+        "native_or_test_execution": false,
+        "scope": "actual guest module plus signature-only appendix; minimal libc+devcgroup check crate, not normal host/helpers/matrix"
+      },
+      "logs": {
+        "policy.log": "Development policy checks passed; evidence/coordinator review is still required.\n",
+        "rustc-version.log": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "cargo-version.log": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+        "x86_64-unknown-linux-gnu.log": "    Updating crates.io index\n     Locking 1 package to latest Rust 1.98.1 compatible version\n      Adding libc v0.2.189 (available: v0.2.191)\n Downloading crates ...\n  Downloaded libc v0.2.189\n   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check/devcgroup)\n    Checking relay-tcp-interface-check v0.0.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check)\nerror[E0583]: file not found for module `intercept`\n  --> ../source/crates/testguest/src/managed_network.rs:11:1\n   |\n11 | mod intercept;\n   | ^^^^^^^^^^^^^^\n   |\n   = help: to create the module `intercept`, create file \"../source/crates/testguest/src/intercept.rs\" or \"../source/crates/testguest/src/intercept/mod.rs\"\n   = note: if there is a `mod intercept` elsewhere in the crate already, import it with `use crate::...` instead\n\nFor more information about this error, try `rustc --explain E0583`.\nerror: could not compile `relay-tcp-interface-check` (lib) due to 1 previous error\n",
+        "x86_64-unknown-linux-musl.log": "   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check/devcgroup)\n    Checking relay-tcp-interface-check v0.0.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v1/check)\nerror[E0583]: file not found for module `intercept`\n  --> ../source/crates/testguest/src/managed_network.rs:11:1\n   |\n11 | mod intercept;\n   | ^^^^^^^^^^^^^^\n   |\n   = help: to create the module `intercept`, create file \"../source/crates/testguest/src/intercept.rs\" or \"../source/crates/testguest/src/intercept/mod.rs\"\n   = note: if there is a `mod intercept` elsewhere in the crate already, import it with `use crate::...` instead\n\nFor more information about this error, try `rustc --explain E0583`.\nerror: could not compile `relay-tcp-interface-check` (lib) due to 1 previous error\n"
+      },
+      "source_manifest_sha256": "52a40b6a4feb960ace1be96c9a011ec88120c89e57282eaa0431f90aa12de33b",
+      "diagnosis": "Both E0583: private external #[path] wrapper resolved mod intercept from the wrong directory. Retained unchanged; not a production defect."
+    },
+    "v2": {
+      "result": {
+        "base_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+        "root": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2",
+        "source": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/source",
+        "target": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/target",
+        "cargo_home": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/cargo-home",
+        "cpu_affinity": [
+          0
+        ],
+        "rlimit_as_bytes": 1073741824,
+        "allocated_private_bytes": 25477120,
+        "identities": [
+          {
+            "path": "interface.rs",
+            "bytes": 1597,
+            "sha256": "2a3afa5e3f9e0ef32a01e1dde8b9d447511b6e64d935270624ce8da49b6afa7b"
+          },
+          {
+            "path": "source/crates/testguest/src/managed_network.rs",
+            "bytes": 44570,
+            "sha256": "bad76ebfa274cf03ab0f88578fb45b49ab51427265f75b8b01b9b9981c9c889b"
+          },
+          {
+            "path": "check/Cargo.toml",
+            "bytes": 259,
+            "sha256": "7610773c63d2d18fbcaa2932abcd47b61f56dee7c1168b40bd44d5fe4f16ed97"
+          },
+          {
+            "path": "source/crates/testguest/src/interface_root.rs",
+            "bytes": 42,
+            "sha256": "7a12e0a8977cc5a4a868bd70425dfb2b4e58fbf4b8096e06204f9c7238f289d1"
+          },
+          {
+            "path": "check/devcgroup/Cargo.toml",
+            "bytes": 119,
+            "sha256": "5c550a0180144c2cf6dcb23a2e0e138e34ae2d2f229e1a3f389e54590b7efc23"
+          },
+          {
+            "path": "check/Cargo.lock",
+            "bytes": 465,
+            "sha256": "abbce5e67618f47e424b41d98079fe25f529c19e66af0da6a850cf7e559ac420"
+          }
+        ],
+        "checks": [
+          {
+            "name": "policy",
+            "command": [
+              "python3",
+              "scripts/check-development-policy"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/source",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/policy.log",
+            "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+          },
+          {
+            "name": "rustc-version",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "rustc",
+              "-Vv"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/rustc-version.log",
+            "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+          },
+          {
+            "name": "cargo-version",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "-V"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/cargo-version.log",
+            "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+          },
+          {
+            "name": "x86_64-unknown-linux-gnu",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "check",
+              "--lib",
+              "--target",
+              "x86_64-unknown-linux-gnu",
+              "-j",
+              "1"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/x86_64-unknown-linux-gnu.log",
+            "sha256": "adc3a2f383d4582bb571d4d398293873fb0185d548dff4f4518cb779470d4e37"
+          },
+          {
+            "name": "x86_64-unknown-linux-musl",
+            "command": [
+              "rustup",
+              "run",
+              "1.98.1",
+              "cargo",
+              "check",
+              "--lib",
+              "--target",
+              "x86_64-unknown-linux-musl",
+              "-j",
+              "1"
+            ],
+            "cwd": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check",
+            "status": 0,
+            "log": "/home/adalundhe/relay-tcp-proposal-eb565-light-v2/x86_64-unknown-linux-musl.log",
+            "sha256": "56f69759a10a74390f25b230ab29708b9e90833dca0cb0998e997d1137f3b7da"
+          }
+        ],
+        "native_or_test_execution": false,
+        "scope": "actual guest module plus signature-only appendix; minimal libc+devcgroup check crate, not normal host/helpers/matrix"
+      },
+      "logs": {
+        "policy.log": "Development policy checks passed; evidence/coordinator review is still required.\n",
+        "rustc-version.log": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "cargo-version.log": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+        "x86_64-unknown-linux-gnu.log": "    Updating crates.io index\n     Locking 1 package to latest Rust 1.98.1 compatible version\n      Adding libc v0.2.189 (available: v0.2.191)\n Downloading crates ...\n  Downloaded libc v0.2.189\n   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check/devcgroup)\n    Checking relay-tcp-interface-check v0.0.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.12s\n",
+        "x86_64-unknown-linux-musl.log": "   Compiling libc v0.2.189\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check/devcgroup)\n    Checking relay-tcp-interface-check v0.0.0 (/home/adalundhe/relay-tcp-proposal-eb565-light-v2/check)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.53s\n"
+      },
+      "source_manifest_sha256": "52a40b6a4feb960ace1be96c9a011ec88120c89e57282eaa0431f90aa12de33b",
+      "correction": "Only private check crate root/layout corrected. Original guest source identity and interface block unchanged; no production source edit.",
+      "run_id": "r28",
+      "exit_code": 0
+    },
+    "final_document_validation": {
+      "status": 0,
+      "root": "/home/adalundhe/relay-tcp-proposal-eb565-docs-v2",
+      "scope": "JSON syntax, Markdown fences/local link paths and exact actual-compiled interface checked on the final prose snapshot. This receipt was appended afterward; the snapshot SHA identifies the pre-receipt JSON and is not a self-hash of this signed file.",
+      "validated_source_identities_snapshot_sha256": "50197f6f8b76f92fc4cdc066d720b06008984d70bbc565b8fd8cc2d6dda830ed",
+      "proposal_sha256": "b2e69957970861540e8d331faa7c62b4d31850b65caf5e61d199ba1a3109d1f5",
+      "interface_document_sha256": "2a54f95e212a8a3f9561ec7c6bec49dde29c61e1003d99a93c79b2e266bb7db2",
+      "relative_links_checked": 23,
+      "relative_link_method": "Target path membership in captured Git-blob-identified source manifest plus new documents. Anchors not programmatically checked; M210 heading was read in source.",
+      "interface_sha256": "2a3afa5e3f9e0ef32a01e1dde8b9d447511b6e64d935270624ce8da49b6afa7b",
+      "private_original_source_files_rechecked": 20,
+      "allocated_private_bytes": 90112,
+      "actual_cpu_affinity": [0],
+      "rlimit_as_bytes": 1073741824,
+      "exit_code": 0,
+      "native_or_test_execution": false
+    },
+    "local_target_or_cache_paths": [],
+    "active_own_remote_jobs": []
+  },
+  "not_run": [
+    "TCP forwarding implementation",
+    "native/socket/namespace/BPF/VM scenarios",
+    "guard mutations/restoration",
+    "normal host/carried helpers",
+    "whole-workspace or seven-target lint",
+    "actual supported KVM/HVF/WHP matrix",
+    "profiles/benchmarks/allocations/faults/kernel-parent accounting",
+    "paused Windows ARM VM"
+  ]
+}
