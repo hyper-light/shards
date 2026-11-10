@@ -764,28 +764,12 @@ fn socket_address_presentation_profile_has_no_default() {
     assert_eq!(fixed.argument(), "fixed-original-peer");
 }
 
-#[test]
-#[ignore = "coordinator alone loads hooks and runs actual guest compatibility comparison"]
-fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
-    let input = Inputs::supplied();
-    let mode = required("SHARDS_SOCK_ADDR_MODE");
-    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
-    let presentation = SockAddrPresentation::parse(&required("SHARDS_SOCK_ADDR_PRESENTATION")).unwrap();
-    let profile = presentation.argument();
-    let name = format!("sock-addr-udp4-{mode}-{profile}");
-    let millis = input.case_ms.to_string();
-    let run = input.boot(&name, &["sock-addr-udp4", &mode, &millis, profile]);
-    let records = sock_addr_records(&run.stdout);
-    // Raw boot/identity/status are durable before any compatibility assertion.
-    let one = |kind: &str| {
-        let selected: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
-        assert_eq!(selected.len(), 1, "{kind}: {run}");
-        selected[0]
-    };
-    let target = one("Target");
-    assert_ne!(target["backend"], target["responder"]);
-    assert_eq!(target["profile"], format!("{presentation:?}"));
-    let hooks = presentation.hooks(&mode);
+fn assert_sock_addr_hooks_and_cleanup(
+    records: &[serde_json::Value],
+    target: &serde_json::Value,
+    hooks: &[&str],
+    run: &common::Run,
+) {
     for hook in hooks {
         let programs: Vec<_> = records
             .iter()
@@ -819,6 +803,45 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
             "no unnamed extra hook: {run}"
         );
     }
+    let cleanup = records
+        .iter()
+        .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
+        .expect("joined/detached/removed facts");
+    assert_eq!(cleanup["hook_setup"], "Ready");
+    assert_eq!(cleanup["links_required"], hooks.len());
+    assert_eq!(cleanup["links_acquired"], hooks.len());
+    for fact in [
+        "backend_joined",
+        "relay_joined",
+        "link_detached",
+        "cgroup_removed",
+    ] {
+        assert_eq!(cleanup[fact], true, "{fact}: {run}");
+    }
+}
+
+#[test]
+#[ignore = "coordinator alone loads hooks and runs actual guest compatibility comparison"]
+fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
+    let input = Inputs::supplied();
+    let mode = required("SHARDS_SOCK_ADDR_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let presentation = SockAddrPresentation::parse(&required("SHARDS_SOCK_ADDR_PRESENTATION")).unwrap();
+    let profile = presentation.argument();
+    let name = format!("sock-addr-udp4-{mode}-{profile}");
+    let millis = input.case_ms.to_string();
+    let run = input.boot(&name, &["sock-addr-udp4", &mode, &millis, profile]);
+    let records = sock_addr_records(&run.stdout);
+    // Raw boot/identity/status are durable before any compatibility assertion.
+    let one = |kind: &str| {
+        let selected: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
+        assert_eq!(selected.len(), 1, "{kind}: {run}");
+        selected[0]
+    };
+    let target = one("Target");
+    assert_ne!(target["backend"], target["responder"]);
+    assert_eq!(target["profile"], format!("{presentation:?}"));
+    assert_sock_addr_hooks_and_cleanup(&records, target, presentation.hooks(&mode), &run);
     let identities: Vec<_> = records.iter().filter(|r| r["type"] == "ClientIdentity").collect();
     assert_eq!(identities.len(), 2, "both fresh exec clients must report: {run}");
     assert_ne!(identities[0]["pid"], identities[1]["pid"]);
@@ -868,21 +891,6 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
             assert_eq!(arrival["copied_hex"], if index == 0 { binary } else { "" });
             assert_eq!(arrival["reported"], if index == 0 { binary.len() / 2 } else { 0 });
         }
-    }
-    let cleanup = records
-        .iter()
-        .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
-        .expect("joined/detached/removed facts");
-    assert_eq!(cleanup["hook_setup"], "Ready");
-    assert_eq!(cleanup["links_required"], hooks.len());
-    assert_eq!(cleanup["links_acquired"], hooks.len());
-    for fact in [
-        "backend_joined",
-        "relay_joined",
-        "link_detached",
-        "cgroup_removed",
-    ] {
-        assert_eq!(cleanup[fact], true, "{fact}: {run}");
     }
     for role in ["Backend", "Relay"] {
         let worker = records
@@ -1182,55 +1190,7 @@ fn direct_guest_two_leg_udp4_records_buffers_and_backend_source_change() {
         assert_eq!(reaped[0]["success"], true);
         assert_eq!(reaped[0]["code"], 0);
     }
-    let hooks = presentation.hooks(&mode);
-    for hook in hooks {
-        for kind in ["Program", "LinkAttached", "LinkDetached"] {
-            assert_eq!(
-                records
-                    .iter()
-                    .filter(|r| r["type"] == kind && r["hook"] == *hook)
-                    .count(),
-                1,
-                "{kind}/{hook}: {run}"
-            );
-        }
-    }
-    for kind in ["Program", "LinkAttached", "LinkDetached"] {
-        assert_eq!(
-            records.iter().filter(|r| r["type"] == kind).count(),
-            hooks.len(),
-            "no extra {kind}: {run}"
-        );
-    }
-    for record in records.iter().filter(|r| r["type"] == "LinkDetached") {
-        assert_eq!(record["detached"], true);
-    }
-    for record in records.iter().filter(|r| r["type"] == "Program") {
-        let reverse = matches!(record["hook"].as_str(), Some("Recvmsg4" | "Getpeername4"));
-        assert_eq!(
-            record["from"],
-            target[if reverse { "responder" } else { "backend" }]
-        );
-        assert_eq!(
-            record["to"],
-            target[if reverse { "backend" } else { "responder" }]
-        );
-    }
-    let cleanup = records
-        .iter()
-        .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
-        .unwrap();
-    assert_eq!(cleanup["hook_setup"], "Ready");
-    assert_eq!(cleanup["links_acquired"], hooks.len());
-    assert_eq!(cleanup["links_required"], hooks.len());
-    for fact in [
-        "backend_joined",
-        "relay_joined",
-        "link_detached",
-        "cgroup_removed",
-    ] {
-        assert_eq!(cleanup[fact], true, "{fact}: {run}");
-    }
+    assert_sock_addr_hooks_and_cleanup(&records, target, presentation.hooks(&mode), &run);
     assert!(!records.iter().any(|r| matches!(
         r["type"].as_str(),
         Some("Error" | "HookError" | "ForwardError" | "UdpError" | "PayloadRefusal")
