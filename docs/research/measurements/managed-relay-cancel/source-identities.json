@@ -1,0 +1,14 @@
+{
+  "base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "branch": "p/adversarial-relay-cancel",
+  "role": "implementer",
+  "policy_file_revision": "f5cec365",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source": {
+    "crates/testguest/src/managed_network.rs": "723181c009fa07e4684d10b8e37131a73adaf2ecef5af7cf6dd346c20d945948",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "d464b2cd1ac000d87a97f2d10b04738957829fff188ca3795baf9fcb83a96ccb",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "ec12509c7f360c46411b6f10edb04154071cc6de357b86ec53acf249592f4133",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "3e883c9f7ca473ac5f3f408040dda899f3af7b0361d6996198b582a1f85603b4",
+    "crates/shards/tests/managed_network/cancel.rs": "0d2c5c55bfd4b5a457c738730975fe8db32399c70c66d45336d477c571f28954"
+  }
+}

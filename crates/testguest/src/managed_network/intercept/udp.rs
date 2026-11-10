@@ -71,6 +71,7 @@ enum Stage {
     ReceiveDatagram,
     ValidateDatagram,
     ReplySend,
+    HoldReply,
     Record,
 }
 #[derive(Debug)]
@@ -81,6 +82,7 @@ pub(super) enum Fault {
     Tuple,
     PartialSend,
     CountOverflow,
+    UnexpectedDatagram,
 }
 impl Fault {
     fn tag(&self) -> &'static str {
@@ -91,6 +93,7 @@ impl Fault {
             Self::Tuple => "Tuple",
             Self::PartialSend => "PartialSend",
             Self::CountOverflow => "CountOverflow",
+            Self::UnexpectedDatagram => "UnexpectedDatagram",
         }
     }
     fn io(&self) -> Option<&io::Error> {
@@ -109,6 +112,7 @@ impl Fault {
             Self::Tuple => invalid("UDP fixture original/peer tuple differs"),
             Self::PartialSend => invalid("UDP fixture send was partial"),
             Self::CountOverflow => invalid("UDP fixture arrival count overflow"),
+            Self::UnexpectedDatagram => invalid("held backend received an unexpected extra datagram"),
         }
     }
 }
@@ -187,6 +191,7 @@ pub(super) struct DatagramReport {
     pub(super) arrivals: usize,
     pub(super) matched: usize,
     pub(super) empty: usize,
+    pub(super) replies_sent: usize,
 }
 impl DatagramReport {
     fn consume(&mut self, arrival: &UdpArrival) -> Result<(), Fault> {
@@ -226,7 +231,52 @@ pub(super) enum Work {
         destination: SocketAddr,
         role: Reply,
     },
+    HeldReply {
+        receiver: UdpSocket,
+        sender: UdpSocket,
+        destination: SocketAddr,
+        receipt: OwnedFd,
+    },
     Forwarded(forward::Inputs),
+}
+
+// One notification per boundary; values are the eventfd ABI's uint64 words.
+pub(super) fn notification() -> io::Result<OwnedFd> {
+    // SAFETY: eventfd returns a new descriptor, uniquely owned below.
+    let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd is the newly created unique eventfd.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+}
+pub(super) fn notify(fd: &OwnedFd, deadline: &Deadline) -> io::Result<()> {
+    let word = 1u64;
+    deadline.io(fd.as_raw_fd(), libc::POLLOUT, || {
+        // SAFETY: eventfd reads exactly the initialized uint64 word.
+        let n = unsafe { libc::write(fd.as_raw_fd(), (&raw const word).cast(), size_of_val(&word)) };
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else if n != size_of_val(&word) as isize {
+            Err(io::ErrorKind::WriteZero.into())
+        } else {
+            Ok(())
+        }
+    })
+}
+pub(super) fn notified(fd: &OwnedFd, deadline: &Deadline) -> io::Result<()> {
+    deadline.io(fd.as_raw_fd(), libc::POLLIN, || {
+        let mut word = 0u64;
+        // SAFETY: eventfd writes into exactly one initialized uint64 word.
+        let n = unsafe { libc::read(fd.as_raw_fd(), (&raw mut word).cast(), size_of_val(&word)) };
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else if n != size_of_val(&word) as isize || word != 1 {
+            Err(invalid("expected exactly one boundary notification"))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 pub(super) struct DatagramWorker {
@@ -239,13 +289,7 @@ enum WorkerState {
 }
 impl DatagramWorker {
     pub(super) fn start(work: Work, deadline: &Deadline) -> io::Result<Self> {
-        // SAFETY: eventfd returns a new descriptor, owned immediately below.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: fd is this newly created unique eventfd.
-        let cancel = unsafe { OwnedFd::from_raw_fd(fd) };
+        let cancel = notification()?;
         let receiver_cancel = cancel.try_clone()?;
         let deadline = Deadline {
             at: deadline.at,
@@ -264,6 +308,21 @@ impl DatagramWorker {
                 role,
                 &deadline,
                 &receiver_cancel,
+                ReplyPlan::Respond,
+            )),
+            Work::HeldReply {
+                receiver,
+                sender,
+                destination,
+                receipt,
+            } => Completion::Scripted(scripted(
+                receiver,
+                sender,
+                destination,
+                Reply::Backend,
+                &deadline,
+                &receiver_cancel,
+                ReplyPlan::Baseline(receipt),
             )),
             Work::Forwarded(input) => Completion::Forwarded(forward::run(input, &deadline, &receiver_cancel)),
         })?;
@@ -271,6 +330,9 @@ impl DatagramWorker {
             cancel,
             state: WorkerState::Running(thread),
         })
+    }
+    pub(super) fn request_cancel(&self, deadline: &Deadline) -> io::Result<()> {
+        notify(&self.cancel, deadline)
     }
     fn wake(&self) {
         let word = 1u64;
@@ -300,6 +362,11 @@ impl Drop for DatagramWorker {
         }
     }
 }
+enum ReplyPlan {
+    Respond,
+    Baseline(OwnedFd),
+    AwaitForwardedBinary(OwnedFd),
+}
 fn scripted(
     receiver: UdpSocket,
     sender: UdpSocket,
@@ -307,6 +374,7 @@ fn scripted(
     role: Reply,
     deadline: &Deadline,
     receiver_cancel: &OwnedFd,
+    mut plan: ReplyPlan,
 ) -> ScriptedCompletion {
     let mut report = DatagramReport::default();
     let mut step = Exchange::Binary;
@@ -340,6 +408,38 @@ fn scripted(
         stage = Stage::ValidateDatagram;
         let metadata = validate(arrival, step.request(), destination, None)?;
         report.matched = report.matched.checked_add(1).ok_or(Fault::CountOverflow)?;
+        if let ReplyPlan::AwaitForwardedBinary(receipt) = &plan {
+            stage = Stage::HoldReply;
+            let mut out = io::stdout().lock();
+            writeln!(out, "managed-intercept {{\"type\":\"HeldReply\",\"stage\":\"{stage:?}\",\"step\":\"{step:?}\",\"receipt\":\"ValidatedBackendDatagram\",\"reply\":\"NotIssued\"}}")
+                .map_err(Fault::Io)?;
+            out.flush().map_err(Fault::Io)?;
+            drop(out);
+            notify(receipt, deadline).map_err(Fault::Io)?;
+            // The same decoder waits for cancellation. A new datagram is a typed
+            // failure; readiness cannot cause a synthetic WouldBlock spin.
+            return match udp_arrival(&receiver, SENT.len(), deadline) {
+                Err(error)
+                    if error.kind() == io::ErrorKind::ConnectionAborted
+                        && cancellation_observed(receiver_cancel) =>
+                {
+                    Ok(Terminal::Cancelled)
+                }
+                Err(error) => Err(Fault::Io(error)),
+                Ok(arrival) => {
+                    report.consume(&arrival)?;
+                    arrival_record(
+                        "BackendUnexpected",
+                        step,
+                        report.arrivals,
+                        receiver.local_addr().map_err(Fault::Io)?,
+                        arrival.view(),
+                    )
+                    .map_err(Fault::Io)?;
+                    Err(Fault::UnexpectedDatagram)
+                }
+            };
+        }
         stage = Stage::ReplySend;
         let bytes = step.response(role);
         let n = deadline
@@ -350,9 +450,15 @@ fn scripted(
         if n != bytes.len() {
             return Err(Fault::PartialSend);
         }
+        report.replies_sent = report.replies_sent.checked_add(1).ok_or(Fault::CountOverflow)?;
         match (step, role) {
             (Exchange::Binary, _) => step = Exchange::Empty,
-            (Exchange::Empty, Reply::Backend) => step = Exchange::Binary,
+            (Exchange::Empty, Reply::Backend) => {
+                if let ReplyPlan::Baseline(receipt) = plan {
+                    plan = ReplyPlan::AwaitForwardedBinary(receipt);
+                }
+                step = Exchange::Binary;
+            }
             (Exchange::Empty, Reply::Relay) => return Ok(Terminal::ScriptComplete),
         }
     })();
@@ -456,8 +562,12 @@ pub(super) fn worker_record(role: Reply, completed: &io::Result<Completion>) -> 
         Ok(Completion::Scripted(completed)) => {
             write!(
                 out,
-                "managed-intercept {{\"type\":\"UdpWorkerCompletion\",\"role\":\"{role:?}\",\"joined\":true,\"arrivals\":{},\"matched\":{},\"empty\":{},\"terminal\":\"",
-                completed.report.arrivals, completed.report.matched, completed.report.empty
+                "managed-intercept {{\"type\":\"UdpWorkerCompletion\",\"role\":\"{role:?}\",\"joined\":true,\"stage\":\"{:?}\",\"arrivals\":{},\"matched\":{},\"empty\":{},\"replies_sent\":{},\"terminal\":\"",
+                completed.stage,
+                completed.report.arrivals,
+                completed.report.matched,
+                completed.report.empty,
+                completed.report.replies_sent
             )?;
             match &completed.result {
                 Ok(terminal) => write!(out, "{terminal:?}")?,
