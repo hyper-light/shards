@@ -254,6 +254,10 @@ impl std::fmt::Display for ProcessFailure {
 impl std::error::Error for ProcessFailure {}
 
 /// What can't be done, and why.
+///
+/// Exhaustive consumers must handle [`Refusal::Process`] as well as the existing
+/// variants. `Clone`, `PartialEq` and `Eq` remain available; preserve the typed
+/// failure and requested identity instead of classifying its display text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     /// This host has no backend shards boots Linux with.
@@ -273,6 +277,8 @@ pub enum Refusal {
     Gone { pid: u32, why: String },
     /// A native process identity could not be held or observed. The failure keeps
     /// its stage and cause; only DifferentStart and Exited assert those outcomes.
+    /// Other failures leave observation uncertain; an OS code alone does not
+    /// establish a terminal guest state.
     Process {
         pid: u32,
         expected_started: u64,
@@ -381,11 +387,13 @@ pub trait Guests: Send + Sync {
     fn boot(&self, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
     /// Takes back the guest `identity` names, booted from `spec` by a client whose process has
     /// gone since (a crash: nothing of it ran on, so nothing ended the guest), as [`boot`]'s
-    /// own: the caller's until it drops, which ends it. Native identity observation failures
-    /// return [`Refusal::Process`], preserving PID/start and the exact failure. A simulator
-    /// may return [`Refusal::Gone`], or [`Refusal::Ended`] when that guest has ended. On Windows a
-    /// guest's VM is in a job object that ends with the process that booted it (D141), so no
-    /// guest outlives its client there, and attach finds it gone.
+    /// own: the caller's until it drops, which ends it. On Unix, native identity observation
+    /// failures return [`Refusal::Process`], preserving the requested PID/start and exact
+    /// [`ProcessFailure`]. An uncertain observation is not proof the guest ended; inspect
+    /// the typed cause rather than infer a terminal state from its OS code alone.
+    /// A simulator may return [`Refusal::Gone`] or [`Refusal::Ended`]. On Windows a guest's
+    /// VM is in a job object that ends with the process that booted it (D141), so no guest
+    /// outlives its client there, and attach returns [`Refusal::Gone`].
     ///
     /// [`boot`]: Guests::boot
     fn attach(&self, identity: &Identity, spec: &GuestSpec) -> Result<Box<dyn Guest>, Refusal>;
