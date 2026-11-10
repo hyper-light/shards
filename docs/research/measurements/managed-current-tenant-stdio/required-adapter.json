@@ -14,6 +14,7 @@
   "original_bytes": 18675,
   "original_sha256": "59847ec0795ba10ce1b303f3dc62f7679bc9c8910de88fd082a21a88d44f862b",
   "stored_sha256": "9157c03da3a91d05e97f2832d16dc04397e09bc05d2c918b4326e7a5400d5dd6",
-  "applied": false,
-  "actual_campaign_executed": false
+  "applied": true,
+  "actual_campaign_executed": false,
+  "authority": "ROOT explicit exact adapter approval after source1d190 review"
 }

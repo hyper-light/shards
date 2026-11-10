@@ -209,6 +209,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Vec<(u32, Cha
         ],
         &["managed-capture", "harness", "step", &port, &work],
         &directives,
+        None,
         Some(&[input.actor, input.base.port]),
         until,
     );

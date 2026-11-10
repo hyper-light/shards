@@ -33,17 +33,27 @@ release-causality record labels only the actual gate EOF and last consumed actor
 states, with later exact suffix/End still mandatory.
 
 Actual base28e lacks both native A dispatcher/functions and optional AGENT task
-input. The necessary adapter is therefore retained UNAPPLIED in
+input. The necessary adapter was first retained unapplied in
 required-adapter.patch.gz, original18,675bytes SHA256
 59847ec0795ba10ce1b303f3dc62f7679bc9c8910de88fd082a21a88d44f862b.
-Apply-check0 on28e; no compile/live result yet. It selects exact old0ea native A
+Apply-check0 on28e. It selects exact old0ea native A
 additions and the previously approved positive-u32 task input/AGENTline; existing
 default/normal/stdio/broker callers each pass None. No second entrypoint, wrapper,
-grant/profile/header/allocator/security change. Those paths are outside the newly
-assigned leaf/registration scope, so source/hash were sent to ROOT before a live
-campaign; ROOT wiring/authority is pending. The new leaf cannot compile against
-the old signature and must not run an unwired native mode or silently fall back
-to an implicit task default. This dependency is not a product defect.
+grant/profile/header/allocator/security change. Those paths were outside the
+initial leaf/registration scope, so source/hash were sent to ROOT before a live
+campaign. ROOT explicitly reviewed1d190e510 and exact18,675-byte adapter, then
+authorized its application in this private current branch. It is now applied and
+formatted; source-freeze-v1.json records all seven relevant hashes before compile.
+Whole native workload SHA256b548fbee772ae87a822e0603fa0588d326f0829039057235c3460944b06a2315
+matches preserved0ea exactly. Moved capture SHA256431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d
+is unchanged from28e. No unwired mode/default fallback ran. No product defect or
+fix is inferred from this compatibility composition.
+
+Actual r26 unchanged-base preparation completed0: normal full CLI/carried helper
+and matching static guest builds, seven frozen artifact hashes. It has no new A
+leaf/VM pass. Source412,276KiB, target2,067,036KiB, cache19,612KiB and frozen331,868KiB
+are scoped disk observations only. Final composed-source build and both fresh
+selected cases remain pending at this source-freeze checkpoint.
 
 ## Bounded actual campaign contract
 
