@@ -2,8 +2,8 @@
 
 Original proposal, submitted before any new native helper mechanism. Case B now
 has the source/light checkpoint in [HOST-CHECKPOINT.md](HOST-CHECKPOINT.md); its
-actual runtime results remain ROOT-owed. Case A remains the next owned source
-item. Original POLICY_READ
+actual runtime results remain ROOT-owed. Case A source/light evidence is now in
+[INHERITED-CHECKPOINT.md](INHERITED-CHECKPOINT.md). Original POLICY_READ
 IMPLEMENTER canonical main24f48ee5ebf198485117aa93bf47685ad7d7d53f,
 rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
 ROOT owns actual VM/socket/namespace/mutation/cleanup runs, audits/profiles and

@@ -484,6 +484,7 @@ impl Fixture {
             &["managed-capture", "harness"],
             "",
             None,
+            None,
             Instant::now() + WITHIN,
         );
     }
@@ -493,9 +494,19 @@ impl Fixture {
         agent: &[&str],
         harness: &[&str],
         directives: &str,
+        agent_tasks: Option<u32>,
         publish_ports: Option<&[u16]>,
         until: Instant,
     ) {
+        let processes = agent_tasks
+            .map(|tasks| {
+                assert!(
+                    tasks > 0,
+                    "AGENT --processes numeric grammar requires positive u32"
+                );
+                format!("--processes={tasks} ")
+            })
+            .unwrap_or_default();
         let publication = publish_ports.map(|ports| {
             assert!(!ports.is_empty(), "explicit guest fixture ports required");
             ports
@@ -534,7 +545,7 @@ impl Fixture {
             ]),
         )
         .unwrap();
-        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
+        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT {processes}helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
         let built = self.command(
             &[
                 "build",
