@@ -13285,7 +13285,6 @@ fn a_harness_is_handed_files_and_no_link_fifo_or_giant() {
         r#"[agent a] confined srv-receive: [{"from":"harness h","kind":"request","id":1,"text":"files"}]"#,
         "[agent a] confined srv-hand /tmp/key: refused /tmp/key is a symbolic link, or lies past one: a file handed across is a regular file of the caller's scratch",
         "[agent a] confined srv-hand /tmp/pipe: refused /tmp/pipe is a FIFO, not a regular file",
-        "[agent a] confined srv-hand /tmp/big: refused /tmp/big is 2097152 bytes, more than the 1048571 a file handed across holds",
         "[agent a] confined srv-hand /tmp/../etc/passwd: refused /tmp/../etc/passwd lies past the caller's scratch",
         "[agent a] confined srv-hand /etc/passwd: refused /etc/passwd is not in /tmp, the scratch files are handed from",
         "[agent a] confined srv-hand /tmp/out.txt: ok {}",
@@ -13293,6 +13292,17 @@ fn a_harness_is_handed_files_and_no_link_fifo_or_giant() {
     ] {
         assert!(all.lines().any(|l| l == want), "no {want:?} in\n{all}");
     }
+    // The peer's sequenced-packet socket sets the bound (D60), not a fixed file cap.
+    // Its reported bound must explain why this file is refused, while the small file
+    // above still reaches the harness whole.
+    let prefix = "[agent a] confined srv-hand /tmp/big: refused /tmp/big is 2097152 bytes, more than the ";
+    let most = all
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .and_then(|line| line.strip_suffix(" a file handed across holds"))
+        .and_then(|n| n.parse::<u64>().ok())
+        .expect("the refusal names its socket's bound");
+    assert!((1..2097152).contains(&most), "the socket holds {most} bytes");
 }
 
 /// The in-VM server speaks MCP 2026-07-28 and the revisions before it (D138): an agent
