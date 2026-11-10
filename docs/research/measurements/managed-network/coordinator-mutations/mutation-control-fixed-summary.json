@@ -1,0 +1,60 @@
+{
+  "scope": "native endpoint behavior only; no VM/interception/performance claim",
+  "revision": "9d003774",
+  "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "euid": 1000,
+  "within_ms": 120000,
+  "selected": [
+    "v4-tcp-zero-deadline",
+    "v4-udp-too-large"
+  ],
+  "binary_sha256": "314a581dfc0651b56cc8d4362622d948edf7629de8bcf754c3475e16897e20fe",
+  "results": [
+    {
+      "case": "v4-tcp-zero-deadline",
+      "status": 1,
+      "passed": true,
+      "elapsed_ns": 1422560,
+      "stdout": "v4-tcp-zero-deadline.stdout",
+      "stderr": "v4-tcp-zero-deadline.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "cd96da746a39b4f0b62d9ca7f63d099b46cf52102a63c6ad8504e93df732bdda",
+      "command_arg_lengths": [
+        65,
+        15,
+        4,
+        3,
+        11,
+        0,
+        0,
+        1,
+        6
+      ],
+      "command_sha256": "5ba51486582e06e385ee0b5c3e7de95c7391214c98edc3829f9e41208a3c51d1"
+    },
+    {
+      "case": "v4-udp-too-large",
+      "status": 1,
+      "passed": true,
+      "elapsed_ns": 1627158,
+      "stdout": "v4-udp-too-large.stdout",
+      "stderr": "v4-udp-too-large.stderr",
+      "stdout_sha256": "b52d3c1134bd5f2b52b99d04116afe5f33830db0e5146c6c9f7d3b775c8fe98a",
+      "stderr_sha256": "b3d8e96db257d80383f9358e04166278c50416b768450474e0140260d4c03d90",
+      "command_arg_lengths": [
+        65,
+        15,
+        4,
+        3,
+        11,
+        131016,
+        0,
+        6,
+        6
+      ],
+      "command_sha256": "327b82322ff6c9d8d7dc5f7421d26d39fbf7496c97e567a236141328c66c1f88"
+    }
+  ],
+  "full_manifest_sha256": "9fc04c33e6f1395f113227b5f67d473d927dc1bbacf49d2cd556cd27ca823502",
+  "full_manifest_remote_path": "/home/adalundhe/managed-network-native-check/mutation-control-fixed/results.json"
+}

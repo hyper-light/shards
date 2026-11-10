@@ -1,0 +1,32 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/init/main.c",
+    "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+    "sha256": "64a6b91514fb324ce41e874d7cc8312de9489c6df763873a09168bb222efa91d",
+    "bytes": 40020,
+    "purpose": "kernel argv after -- and quoted empty arguments for direct fixture, not a live kernel-parser result"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/lib/cmdline.c",
+    "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+    "sha256": "18d94acd858d0cfbdbe4b4a6b06d14402c8ef12065fa9eda8a69aef581d58c8a",
+    "bytes": 5983,
+    "purpose": "kernel argv after -- and quoted empty arguments for direct fixture, not a live kernel-parser result"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/rust-lang/libc/ef0906e20828777175f65caa7e681a0ce33c559a/src/new/musl/sys/socket.rs",
+    "revision": "ef0906e20828777175f65caa7e681a0ce33c559a",
+    "package": "libc0.2.189",
+    "sha256": "ed9de77a5937115aada325ce3d68b31e24e7ac21691dc2cb52c4e4695aa1e1dd",
+    "bytes": 1873,
+    "purpose": "actual checked libc binding source: musl socklen_t vs GNU size_t ancillary lengths"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/rust-lang/libc/ef0906e20828777175f65caa7e681a0ce33c559a/src/unix/linux_like/linux/gnu/mod.rs",
+    "revision": "ef0906e20828777175f65caa7e681a0ce33c559a",
+    "package": "libc0.2.189",
+    "sha256": "df5cb173336a5381f3a668af12c89495fd161bcaa5ff3a46b0f9e7222a3bda2e",
+    "bytes": 44342,
+    "purpose": "actual checked libc binding source: musl socklen_t vs GNU size_t ancillary lengths"
+  }
+]

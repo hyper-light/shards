@@ -1,0 +1,141 @@
+{
+  "archive": "light-results.tar.gz",
+  "sha256": "a18793c60d1ffa5d8bfd7cdb2a8c8ce7b90de029f89c7a25df53e217535e29fb",
+  "files": [
+    {
+      "path": "abi-checked/gnu-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "abi-checked/gnu-clippy.log",
+      "bytes": 1718,
+      "sha256": "0903ddbaf0efdfb932e221e034c11e4329ab70780f1a7d1d38a08ff46705f54e"
+    },
+    {
+      "path": "abi-checked/musl-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "abi-checked/musl-clippy.log",
+      "bytes": 2196,
+      "sha256": "02889691e0f2713d4ac7aebd0e6c30c7d150b826160d52b7f149c86b2cb82261"
+    },
+    {
+      "path": "abi-checked/source.sha256",
+      "bytes": 402,
+      "sha256": "dd7f2176644deb7719c00c97acafd6fb9165964c8e89638e6a49d817ea3e5ac1"
+    },
+    {
+      "path": "abi-final/gnu-clippy.exit",
+      "bytes": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "abi-final/gnu-clippy.log",
+      "bytes": 2388,
+      "sha256": "ebdd4811e3761ca7a5ee9a5fc5ef96a32e4a507c5068bc79714876064d890f9f"
+    },
+    {
+      "path": "abi-final/musl-clippy.exit",
+      "bytes": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "abi-final/musl-clippy.log",
+      "bytes": 3300,
+      "sha256": "d556b33c39e77d71f69caf62dceff6d27ff4ce462b54543acd214e4f938884de"
+    },
+    {
+      "path": "abi-final/source.sha256",
+      "bytes": 402,
+      "sha256": "b3a2c3f6ac0bf19ae4b2328dc8c01c098e67aebeca8c1103907a549ad096bc48"
+    },
+    {
+      "path": "environment.txt",
+      "bytes": 155,
+      "sha256": "820ff32296c71366cdb3fc9aa367c064785d36a1dbfc2cacc17bd0a6fbc91c72"
+    },
+    {
+      "path": "final/guest-musl-check.exit",
+      "bytes": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "final/guest-musl-check.log",
+      "bytes": 4680,
+      "sha256": "73303a85098460052f09a871a0c2318130da915b603c997826a1839637c4c630"
+    },
+    {
+      "path": "final/host-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "final/host-clippy.log",
+      "bytes": 1635,
+      "sha256": "1ce4cd63f9f32fff03891c261ed499563d3cf8c65bede93ce4e1c634df1666bd"
+    },
+    {
+      "path": "final/parse.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "final/parse.log",
+      "bytes": 1952,
+      "sha256": "36005f9b5c2bb1510d2adee1c1b46f78372a52c811dcf7aa9663abdcc23c5b33"
+    },
+    {
+      "path": "final/source.sha256",
+      "bytes": 402,
+      "sha256": "534c95b4d7139404e194d6612478fa40c29729228cfd64be26025d0ab827a5d9"
+    },
+    {
+      "path": "guest-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guest-clippy.log",
+      "bytes": 2509,
+      "sha256": "449ffb02dcad84aea35fcb3e58bdfaf191747b6e5639b228b2ea60087bd8678b"
+    },
+    {
+      "path": "host-clippy.exit",
+      "bytes": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "host-clippy.log",
+      "bytes": 7454,
+      "sha256": "25661d48c4c7dabcb35d964ca10b075ae8506a6a985bff4a6f6ec4a7fcf7aaf1"
+    },
+    {
+      "path": "parse.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "parse.log",
+      "bytes": 7367,
+      "sha256": "8284f445bd1e67e12c0f71263a32de023d9237d3cc517dc4aa9f002fee75ad61"
+    },
+    {
+      "path": "parser-binary.json",
+      "bytes": 359,
+      "sha256": "a21e75a6c5ba1e92f0a3e68b73ab93bb3a52c6ad67f950674a17076c7be95c28"
+    },
+    {
+      "path": "source.sha256",
+      "bytes": 402,
+      "sha256": "fbed768a2fe86964f978905e80d58442e2910f55e8f7eb8bb1034bf5c34ce5b3"
+    },
+    {
+      "path": "source.txt",
+      "bytes": 41,
+      "sha256": "2491c79608269ce6756a223290336af245995f0f4c7d1957b4c53b2d43e1915b"
+    }
+  ]
+}

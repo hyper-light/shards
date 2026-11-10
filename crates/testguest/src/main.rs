@@ -7,6 +7,8 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod managed_lifecycle;
 #[cfg(target_os = "linux")]
+mod managed_network;
+#[cfg(target_os = "linux")]
 mod managed_reap;
 #[cfg(target_os = "linux")]
 mod workload;
@@ -18,6 +20,11 @@ fn main() {
     // workload.
     if std::process::id() == 1 && std::env::var_os("shards_test").is_some() {
         linux::main();
+    } else if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "managed-network")
+    {
+        std::process::exit(managed_network::main());
     } else {
         workload::main();
     }

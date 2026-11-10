@@ -1,0 +1,119 @@
+{
+  "base": "5d231e1b36ad37f9de7451bce1207a4fc859153b",
+  "native_checkpoint": "f17884fc",
+  "baseline_module_sha256": "fcab6063aa76bace6b644369e6ae306ea8e3d1e897316e9ab146c822cf374ac5",
+  "current_module_sha256": "8cfc9417e256d10fe0e8a36c384f5ba2eca913846a65b8b5b476ccbcaa2ddac2",
+  "only_module_changes": "two approved ancillary ABI adapters, retained patch",
+  "historical_records": [
+    {
+      "path": "docs/research/measurements/managed-network/README.md",
+      "sha256": "c4daf55eabfa605b1dfce42ca3cab90e0dfca7e1613e970bc2630c32f5c58ede",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-control-fixed-summary.json",
+      "sha256": "e9b7e4db345b26dd72f9da110007f34ce65cf63aa367d44c9b817177e475cbbd",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-control-fixed-v4-tcp-zero-deadline.stderr",
+      "sha256": "cd96da746a39b4f0b62d9ca7f63d099b46cf52102a63c6ad8504e93df732bdda",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-control-fixed-v4-tcp-zero-deadline.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-control-fixed-v4-udp-too-large.stderr",
+      "sha256": "b3d8e96db257d80383f9358e04166278c50416b768450474e0140260d4c03d90",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-control-fixed-v4-udp-too-large.stdout",
+      "sha256": "b52d3c1134bd5f2b52b99d04116afe5f33830db0e5146c6c9f7d3b775c8fe98a",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-restored-summary.json",
+      "sha256": "97bb1978dba6463e0d966fea338d778c103bed0c173b45239244216427bda637",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-restored-v4-tcp-zero-deadline.stderr",
+      "sha256": "cd96da746a39b4f0b62d9ca7f63d099b46cf52102a63c6ad8504e93df732bdda",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-restored-v4-tcp-zero-deadline.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-restored-v4-udp-too-large.stderr",
+      "sha256": "b3d8e96db257d80383f9358e04166278c50416b768450474e0140260d4c03d90",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-restored-v4-udp-too-large.stdout",
+      "sha256": "40bd746fb8c0715ea83027ea09da478c7d1b54327a7b530bd2e4dd8d33541131",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-wake-summary.json",
+      "sha256": "7481f26630736e59b4a23dbc0b3cdc5b82102fba18cf2f41feec30e09399d9e5",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-wake-v4-udp-too-large.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-wake-v4-udp-too-large.stdout",
+      "sha256": "75338c086380a81e7de11ba10b3260a34e4c47fe5f30659727b2a186f3d32c2a",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-zero-summary.json",
+      "sha256": "0e5ab9e5aed3dd871133c058b2c0c8d8edac84c1aeaf53617ba1932fbf3393c5",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-zero-v4-tcp-zero-deadline.stderr",
+      "sha256": "cd96da746a39b4f0b62d9ca7f63d099b46cf52102a63c6ad8504e93df732bdda",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/mutation-zero-v4-tcp-zero-deadline.stdout",
+      "sha256": "aaafd80589a85be96d442a850a2e2aeccd0c335c2a860aed4056afa6d1b224de",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/coordinator-mutations/repeat-fedora.sh",
+      "sha256": "dd1574060870103ab471724a5a8219eb273487dff870dead72e0ffd0de49c2e6",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/experimental-tproxy.config",
+      "sha256": "287744427aecd821d7bb08c15d23585252fcb75e2b68d7f60c1027d774899ff7",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/light-check.sh",
+      "sha256": "62fa5efa43fd5909f993ff1cb61f4b2b33f231ad191d16a7f4d1ca8f0bd9d210",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/native-cases.py",
+      "sha256": "845891777bda96c71c971009f839463858695127db11ea6f524369d084502036",
+      "composition": "exact f17884fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-network/validation.md",
+      "sha256": "cc310ed6a375383d07b63713770f7bd1ce4fea50ae785317ccaf3899bf0f4226",
+      "composition": "exact f17884fc"
+    }
+  ]
+}
