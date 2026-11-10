@@ -1,0 +1,23 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r220\",\n  \"why\": \"linux/x86_64 \u00b7 28 of 32 cores idle \u00b7 49 GB free \u00b7 room for 4 CPUs, 1 GiB of memory, 2 GiB of disk\",\n  \"synced\": {\n    \"to\": \"/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-main-c4ac3e415a\",\n    \"files_sent\": 23,\n    \"removed\": 60,\n    \"bytes\": 1010377,\n    \"ms\": 273\n  }\n}"
+    }
+  ],
+  "structuredContent": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "",
+    "running": true,
+    "id": "r220",
+    "why": "linux/x86_64 \u00b7 28 of 32 cores idle \u00b7 49 GB free \u00b7 room for 4 CPUs, 1 GiB of memory, 2 GiB of disk",
+    "synced": {
+      "to": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proc-main-c4ac3e415a",
+      "files_sent": 23,
+      "removed": 60,
+      "bytes": 1010377,
+      "ms": 273
+    }
+  },
+  "isError": false
+}
