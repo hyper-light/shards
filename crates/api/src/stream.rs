@@ -68,18 +68,6 @@ impl Socket {
 /// bound there, as a blocking one waits for room for as long as its send timeout, for ever
 /// as std leaves it (unix(7)). On Windows its connect is under way until afunix.sys ends it,
 /// waited out within `wait` (`shards_afunix::UnixStream::connect_within`).
-#[cfg(test)]
-pub(crate) fn connect(path: &Path, wait: Option<Duration>) -> io::Result<Socket> {
-    let deadline = wait
-        .map(|wait| {
-            Instant::now()
-                .checked_add(wait)
-                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
-        })
-        .transpose()?;
-    connect_until(path, deadline)
-}
-
 pub(crate) fn connect_until(path: &Path, deadline: Option<Instant>) -> io::Result<Socket> {
     #[cfg(unix)]
     let inner = {
@@ -598,7 +586,7 @@ mod tests {
             let dir = shards_testdir::TempDir::new("sp").unwrap();
             let at = dir.path().join("s");
             let listener = std::os::unix::net::UnixListener::bind(&at).unwrap();
-            let mut connected = connect(&at, None).unwrap();
+            let mut connected = connect_until(&at, None).unwrap();
             drop(listener.accept().unwrap());
             for (what, s) in [("a pair", &mut paired), ("a connection", &mut connected)] {
                 let e = s.write(b"x").unwrap_err();
