@@ -778,7 +778,8 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
             assert_eq!(arrival["original"], identity["local"]);
             assert_eq!(arrival["metadata"], "Known");
             assert_eq!(
-                arrival["flags"].as_i64().unwrap() & 0x28 // Linux guest MSG_TRUNC (0x20) | MSG_CTRUNC (0x08), not host ABI.,
+                // Linux guest MSG_TRUNC (0x20) | MSG_CTRUNC (0x08), not host ABI.
+                arrival["flags"].as_i64().unwrap() & 0x28,
                 0
             );
             assert_eq!(arrival["copied_hex"], if index == 0 { binary } else { "" });
