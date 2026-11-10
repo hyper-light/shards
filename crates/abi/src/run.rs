@@ -170,6 +170,8 @@ pub mod kind {
     pub const MANAGED_CREDIT: u8 = 44;
     /// Guest to host, on the independent signal connection: one tenant's trusted Abort.
     pub const MANAGED_ABORT: u8 = 45;
+    /// Guest to host, on the signal connection: the managed control scope ended normally.
+    pub const MANAGED_CONTROL_END: u8 = 47;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its

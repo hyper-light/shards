@@ -9,6 +9,31 @@ pub const VERSION: u8 = 1;
 pub const CAPACITY_KEY: &[u8] = b"managed-capacity=";
 pub const TOKEN_KEY: &[u8] = b"managed-token=";
 pub const MEMBERS_KEY: &[u8] = b"managed-members=";
+pub const ACTIVE_KEY: &[u8] = b"managed-active=";
+
+pub fn active(setup: &[Vec<u8>]) -> Result<Option<&[[u8; size_of::<u32>()]]>, Error> {
+    let mut entries = setup.iter().filter_map(|e| e.strip_prefix(ACTIVE_KEY));
+    let Some(bytes) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(Error::Member);
+    }
+    let declared = members(setup)?.ok_or(Error::Member)?;
+    let (ids, tail) = bytes.as_chunks::<{ size_of::<u32>() }>();
+    if ids.is_empty() || !tail.is_empty() {
+        return Err(Error::Member);
+    }
+    let mut previous = None;
+    for id in ids {
+        let id = u32::from_be_bytes(*id);
+        if id >= declared || previous.is_some_and(|p| p >= id) {
+            return Err(Error::Member);
+        }
+        previous = Some(id);
+    }
+    Ok(Some(ids))
+}
 pub const CREDIT_LEN: usize = size_of::<u32>() + size_of::<u8>() + size_of::<u64>();
 pub const ABORT_LEN: usize = size_of::<u32>() + size_of::<i32>();
 
@@ -392,6 +417,14 @@ mod tests {
         }
         assert!(members(&[b"managed-members=0".to_vec()]).is_err());
         assert!(token(&[b"managed-token=short".to_vec()]).is_err());
+        let active = [ACTIVE_KEY, &0u32.to_be_bytes(), &2u32.to_be_bytes()].concat();
+        let setup = [b"managed-members=3".to_vec(), active];
+        assert_eq!(
+            super::active(&setup).unwrap().unwrap(),
+            &[0u32.to_be_bytes(), 2u32.to_be_bytes()]
+        );
+        let invalid = [ACTIVE_KEY, &2u32.to_be_bytes(), &2u32.to_be_bytes()].concat();
+        assert!(super::active(&[b"managed-members=3".to_vec(), invalid]).is_err());
     }
 
     #[test]
