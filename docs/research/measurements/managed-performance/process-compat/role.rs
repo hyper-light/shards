@@ -266,8 +266,13 @@ struct Observer {
     deadline: Instant,
 }
 impl Observer {
+    fn complete(&mut self, outcome: Outcome) {
+        if self.outcome.is_none() {
+            self.outcome = Some(outcome);
+        }
+    }
     fn fail(&mut self, why: impl ToString) {
-        self.outcome = Some(Outcome::Failed(why.to_string()));
+        self.complete(Outcome::Failed(why.to_string()));
     }
     fn flush(&mut self, io: &mut Io<'_>) {
         let (Some(conn), Some(stream)) = (self.conn, self.stream) else {
@@ -315,7 +320,7 @@ impl Observer {
         Ok(())
     }
     fn disconnected(&mut self, why: &str, code: Option<u64>) {
-        self.outcome = Some(if self.negative && self.records == 0 && code.is_none() {
+        self.complete(if self.negative && self.records == 0 && code.is_none() {
             Outcome::Rejected
         } else if self.stall && self.records == 1 {
             Outcome::Cancelled
@@ -359,7 +364,7 @@ impl Handler for Observer {
                 return;
             }
             if end {
-                self.outcome = Some(if !self.stall && !self.negative && self.records == RECORDS {
+                self.complete(if !self.stall && !self.negative && self.records == RECORDS {
                     Outcome::Complete
                 } else {
                     Outcome::Failed("unexpected FIN".into())
@@ -389,7 +394,7 @@ impl Handler for Observer {
         self.outcome.is_some()
     }
     fn due(&self) -> Option<Instant> {
-        Some(self.deadline)
+        self.outcome.is_none().then_some(self.deadline)
     }
     fn timeout(&mut self, _: &mut Io<'_>, _: Instant) {
         self.fail("fixture deadline, not a pin refusal");

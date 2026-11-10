@@ -20,6 +20,30 @@ def parent():
                 status=Path('/proc/self/status').read_text())
 
 
+def process_snapshot(pid):
+    root=Path('/proc')/str(pid)
+    data={}
+    for name in ['status','stat','statm','smaps_rollup','cgroup']:
+        try: data[name]=(root/name).read_text()
+        except OSError as error: data[name]={'unknown':str(error)}
+    try:
+        entries=list((root/'fd').iterdir())
+        data['fds']=len(entries)
+        data['tasks']=len(list((root/'task').iterdir()))
+        inodes=set()
+        for entry in entries:
+            try: link=os.readlink(entry)
+            except OSError: continue
+            if link.startswith('socket:['): inodes.add(link[8:-1])
+        data['owned_udp_queues']=[]
+        for name in ['udp','udp6']:
+            for line in (root/'net'/name).read_text().splitlines()[1:]:
+                parts=line.split()
+                if len(parts)>9 and parts[9] in inodes: data['owned_udp_queues'].append(line)
+    except OSError as error: data['handles_or_queues_unknown']=str(error)
+    return data
+
+
 def run_case(server_version, client_version, channels, mode):
     case = OUT/f'{server_version}-server-{client_version}-client-c{channels}-{mode}'
     case.mkdir(mode=0o700)
@@ -76,11 +100,13 @@ def run_case(server_version, client_version, channels, mode):
                         if role=='server' and 'managed_ready' in text:
                             assert 'client' not in children
                             start('client',client_version)
-                        if role=='server' and text.startswith('managed_finished\t'):
-                            finished.add(int(text.split('\t')[1]))
-                        if role=='client' and text.startswith('managed_record\t0'):
+                        if role=='server' and 'managed_finished\t' in text:
+                            finished.add(int(text.split('managed_finished\t',1)[1]))
+                        if role=='client' and 'managed_record\t0' in text:
                             first_record=True
                         if mode=='stall' and first_record and finished==set(range(1,channels)) and not owner_ended:
+                            if RESOURCES:
+                                (case/'stalled-boundary.json').write_text(json.dumps(dict(parent=parent(),children={name:process_snapshot(child.pid) for name,child in children.items()})))
                             children['server'].stdin.close()
                             owner_ended=True
             assert 'client' in children
