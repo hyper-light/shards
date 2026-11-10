@@ -2,6 +2,65 @@
 use super::*;
 use shards_devcgroup::Insn;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Hook {
+    Connect4,
+    Sendmsg4,
+    Recvmsg4,
+    Getpeername4,
+}
+impl Hook {
+    fn attach_type(self) -> u32 {
+        // Linux v6.18 bpf_attach_type UAPI, not selected capacities.
+        match self {
+            Self::Connect4 => 10,
+            Self::Sendmsg4 => 14,
+            Self::Recvmsg4 => 19,
+            Self::Getpeername4 => 29,
+        }
+    }
+    pub(super) fn endpoints(
+        self,
+        original: SocketAddrV4,
+        responder: SocketAddrV4,
+    ) -> (SocketAddrV4, SocketAddrV4) {
+        match self {
+            Self::Connect4 | Self::Sendmsg4 => (original, responder),
+            Self::Recvmsg4 | Self::Getpeername4 => (responder, original),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HookStage {
+    Emit,
+    LoadProgram,
+    AttachLink,
+    DetachLink,
+}
+#[derive(Debug)]
+pub(super) struct HookFailure {
+    pub(super) hook: Hook,
+    pub(super) stage: HookStage,
+    pub(super) cause: io::Error,
+}
+impl HookFailure {
+    pub(super) fn write_record(&self, out: &mut impl Write) -> io::Result<()> {
+        write!(
+            out,
+            "managed-sock-addr {{\"type\":\"HookError\",\"hook\":\"{:?}\",\"stage\":\"{:?}\",\"kind\":\"{:?}\",\"errno\":",
+            self.hook,
+            self.stage,
+            self.cause.kind()
+        )?;
+        match self.cause.raw_os_error() {
+            Some(errno) => write!(out, "{errno}")?,
+            None => write!(out, "null")?,
+        }
+        writeln!(out, "}}")?;
+        out.flush()
+    }
+}
+
 #[repr(C)]
 struct SockAddrPrefix {
     user_family: u32,
@@ -140,53 +199,72 @@ struct LinkDetach {
 }
 
 pub(super) struct Link {
+    pub(super) hook: Hook,
     link: OwnedFd,
     _program: OwnedFd,
 }
 impl Link {
-    pub(super) fn attach(bytes: &[u8], cgroup: &File, mode: Mode) -> io::Result<Self> {
-        let attach_type = match mode {
-            Mode::Connected => 10,
-            Mode::Unconnected => 14,
-        };
-        let load = ProgLoad {
-            prog_type: 18,
-            insn_cnt: u32::try_from(
-                bytes
-                    .len()
-                    .checked_div(size_of::<u64>())
-                    .ok_or_else(|| invalid("instruction width"))?,
+    pub(super) fn attach(bytes: &[u8], cgroup: &File, hook: Hook) -> Result<Self, HookFailure> {
+        let program = (|| {
+            let load = ProgLoad {
+                prog_type: 18,
+                insn_cnt: u32::try_from(
+                    bytes
+                        .len()
+                        .checked_div(size_of::<u64>())
+                        .ok_or_else(|| invalid("instruction width"))?,
+                )
+                .map_err(io::Error::other)?,
+                insns: bytes.as_ptr() as u64,
+                license: c"Apache".as_ptr() as u64,
+                expected_attach_type: hook.attach_type(),
+                ..ProgLoad::default()
+            };
+            call(5, &load)
+        })()
+        .map_err(|cause| HookFailure {
+            hook,
+            stage: HookStage::LoadProgram,
+            cause,
+        })?;
+        let link = (|| {
+            call(
+                28,
+                &LinkCreate {
+                    prog_fd: u32::try_from(program.as_raw_fd()).map_err(io::Error::other)?,
+                    target_fd: u32::try_from(cgroup.as_raw_fd()).map_err(io::Error::other)?,
+                    attach_type: hook.attach_type(),
+                    flags: 0,
+                },
             )
-            .map_err(io::Error::other)?,
-            insns: bytes.as_ptr() as u64,
-            license: c"Apache".as_ptr() as u64,
-            expected_attach_type: attach_type,
-            ..ProgLoad::default()
-        };
-        let program = call(5, &load)?;
-        let link = call(
-            28,
-            &LinkCreate {
-                prog_fd: u32::try_from(program.as_raw_fd()).map_err(io::Error::other)?,
-                target_fd: u32::try_from(cgroup.as_raw_fd()).map_err(io::Error::other)?,
-                attach_type,
-                flags: 0,
-            },
-        )?;
+        })()
+        .map_err(|cause| HookFailure {
+            hook,
+            stage: HookStage::AttachLink,
+            cause,
+        })?;
         Ok(Self {
+            hook,
             link,
             _program: program,
         })
     }
-    pub(super) fn detach(self) -> io::Result<()> {
-        let attr = LinkDetach {
-            link_fd: u32::try_from(self.link.as_raw_fd()).map_err(io::Error::other)?,
-        };
-        // SAFETY: initialized v6.18 BPF_LINK_DETACH prefix; held unpinned link.
-        if unsafe { libc::syscall(libc::SYS_bpf, 34, &raw const attr, size_of_val(&attr)) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+    pub(super) fn detach(self) -> Result<(), HookFailure> {
+        (|| {
+            let attr = LinkDetach {
+                link_fd: u32::try_from(self.link.as_raw_fd()).map_err(io::Error::other)?,
+            };
+            // SAFETY: initialized v6.18 LINK_DETACH prefix; own unpinned link.
+            if unsafe { libc::syscall(libc::SYS_bpf, 34, &raw const attr, size_of_val(&attr)) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        })()
+        .map_err(|cause| HookFailure {
+            hook: self.hook,
+            stage: HookStage::DetachLink,
+            cause,
+        })
     }
 }
 fn call<T>(command: u32, attr: &T) -> io::Result<OwnedFd> {
@@ -203,6 +281,44 @@ fn call<T>(command: u32, attr: &T) -> io::Result<OwnedFd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reverse_program_and_hook_errors_preserve_exact_endpoint_and_cause() {
+        let original = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0x1234);
+        let responder = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0xabcd);
+        for hook in [Hook::Recvmsg4, Hook::Getpeername4] {
+            let (from, to) = hook.endpoints(original, responder);
+            assert_eq!((from, to), (responder, original));
+            let bytes = program(from, to).unwrap();
+            let words = bytes.as_chunks::<8>().0;
+            assert_eq!(
+                i32::from_le_bytes(words[9][4..8].try_into().unwrap()),
+                i32::from(responder.port().to_be())
+            );
+            assert_eq!(
+                i32::from_le_bytes(words[11][4..8].try_into().unwrap()),
+                i32::from(original.port().to_be())
+            );
+        }
+        assert_eq!(
+            [Hook::Connect4, Hook::Sendmsg4, Hook::Recvmsg4, Hook::Getpeername4].map(Hook::attach_type),
+            [10, 14, 19, 29]
+        );
+        for (cause, errno) in [
+            (io::Error::from_raw_os_error(libc::EINVAL), "22"),
+            (io::ErrorKind::Other.into(), "null"),
+        ] {
+            let failure = HookFailure {
+                hook: Hook::Recvmsg4,
+                stage: HookStage::DetachLink,
+                cause,
+            };
+            let mut out = Vec::new();
+            failure.write_record(&mut out).unwrap();
+            let line = String::from_utf8(out).unwrap();
+            assert!(line.starts_with("managed-sock-addr {\"type\":\"HookError\",\"hook\":\"Recvmsg4\",\"stage\":\"DetachLink\",\"kind\":"));
+            assert!(line.ends_with(&format!(",\"errno\":{errno}}}\n")));
+        }
+    }
     #[test]
     fn exact_selectors_and_network_order_writes() {
         let from = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 0x1234);

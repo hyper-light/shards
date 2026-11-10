@@ -720,15 +720,61 @@ fn socket_address_record_parser_keeps_actual_tuple_and_failed_verdict() {
     assert_eq!(records[2]["success"], false);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SockAddrPresentation {
+    DestinationOnly,
+    FixedOriginalPeer,
+}
+impl SockAddrPresentation {
+    fn parse(word: &str) -> Result<Self, &'static str> {
+        match word {
+            "destination-only" => Ok(Self::DestinationOnly),
+            "fixed-original-peer" => Ok(Self::FixedOriginalPeer),
+            _ => Err("explicit socket-address presentation profile required"),
+        }
+    }
+    fn argument(self) -> &'static str {
+        match self {
+            Self::DestinationOnly => "destination-only",
+            Self::FixedOriginalPeer => "fixed-original-peer",
+        }
+    }
+    fn hooks(self, mode: &str) -> &'static [&'static str] {
+        match (self, mode) {
+            (Self::DestinationOnly, "connected") => &["Connect4"],
+            (Self::DestinationOnly, "unconnected") => &["Sendmsg4"],
+            (Self::FixedOriginalPeer, "connected") => &["Connect4", "Recvmsg4", "Getpeername4"],
+            (Self::FixedOriginalPeer, "unconnected") => &["Sendmsg4", "Recvmsg4"],
+            _ => panic!("UDP mode must be explicit"),
+        }
+    }
+}
+
+#[test]
+fn socket_address_presentation_profile_has_no_default() {
+    for word in ["", "fixed", "none", "unknown"] {
+        assert!(SockAddrPresentation::parse(word).is_err());
+    }
+    let only = SockAddrPresentation::parse("destination-only").unwrap();
+    let fixed = SockAddrPresentation::parse("fixed-original-peer").unwrap();
+    assert_eq!(only.hooks("connected"), ["Connect4"]);
+    assert_eq!(only.hooks("unconnected"), ["Sendmsg4"]);
+    assert_eq!(fixed.hooks("connected"), ["Connect4", "Recvmsg4", "Getpeername4"]);
+    assert_eq!(fixed.hooks("unconnected"), ["Sendmsg4", "Recvmsg4"]);
+    assert_eq!(fixed.argument(), "fixed-original-peer");
+}
+
 #[test]
 #[ignore = "coordinator alone loads hooks and runs actual guest compatibility comparison"]
 fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
     let input = Inputs::supplied();
     let mode = required("SHARDS_SOCK_ADDR_MODE");
     assert!(matches!(mode.as_str(), "connected" | "unconnected"));
-    let name = format!("sock-addr-udp4-{mode}");
+    let presentation = SockAddrPresentation::parse(&required("SHARDS_SOCK_ADDR_PRESENTATION")).unwrap();
+    let profile = presentation.argument();
+    let name = format!("sock-addr-udp4-{mode}-{profile}");
     let millis = input.case_ms.to_string();
-    let run = input.boot(&name, &["sock-addr-udp4", &mode, &millis]);
+    let run = input.boot(&name, &["sock-addr-udp4", &mode, &millis, profile]);
     let records = sock_addr_records(&run.stdout);
     // Raw boot/identity/status are durable before any compatibility assertion.
     let one = |kind: &str| {
@@ -738,6 +784,41 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
     };
     let target = one("Target");
     assert_ne!(target["backend"], target["responder"]);
+    assert_eq!(target["profile"], format!("{presentation:?}"));
+    let hooks = presentation.hooks(&mode);
+    for hook in hooks {
+        let programs: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "Program" && r["hook"] == *hook)
+            .collect();
+        assert_eq!(programs.len(), 1, "one program for each selected hook: {run}");
+        let reverse = matches!(*hook, "Recvmsg4" | "Getpeername4");
+        assert_eq!(
+            programs[0]["from"],
+            target[if reverse { "responder" } else { "backend" }]
+        );
+        assert_eq!(
+            programs[0]["to"],
+            target[if reverse { "backend" } else { "responder" }]
+        );
+        for (kind, fact) in [("LinkAttached", None), ("LinkDetached", Some("detached"))] {
+            let selected: Vec<_> = records
+                .iter()
+                .filter(|r| r["type"] == kind && r["hook"] == *hook)
+                .collect();
+            assert_eq!(selected.len(), 1, "actual {kind}/{hook}: {run}");
+            if let Some(fact) = fact {
+                assert_eq!(selected[0][fact], true, "actual detach: {run}");
+            }
+        }
+    }
+    for kind in ["Program", "LinkAttached", "LinkDetached"] {
+        assert_eq!(
+            records.iter().filter(|r| r["type"] == kind).count(),
+            hooks.len(),
+            "no unnamed extra hook: {run}"
+        );
+    }
     let identities: Vec<_> = records.iter().filter(|r| r["type"] == "ClientIdentity").collect();
     assert_eq!(identities.len(), 2, "both fresh exec clients must report: {run}");
     assert_ne!(identities[0]["pid"], identities[1]["pid"]);
@@ -792,6 +873,9 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
         .iter()
         .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
         .expect("joined/detached/removed facts");
+    assert_eq!(cleanup["hook_setup"], "Ready");
+    assert_eq!(cleanup["links_required"], hooks.len());
+    assert_eq!(cleanup["links_acquired"], hooks.len());
     for fact in [
         "backend_joined",
         "relay_joined",
@@ -829,7 +913,7 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
     assert!(
         !records
             .iter()
-            .any(|r| r["type"] == "Error" || r["type"] == "UdpError")
+            .any(|r| r["type"] == "Error" || r["type"] == "UdpError" || r["type"] == "HookError")
     );
     assert_eq!(
         run.status,
