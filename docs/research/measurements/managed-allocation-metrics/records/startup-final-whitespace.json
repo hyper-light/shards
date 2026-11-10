@@ -1,0 +1,48 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-allocation-metrics/HANDOFF.md",
+    "docs/research/measurements/managed-allocation-metrics/STARTUP-IMPLEMENTATION.md",
+    "docs/research/measurements/managed-allocation-metrics/STARTUP-PROPOSAL.md",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/Cargo.lock",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/MANIFEST.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/TRANSFER.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/binary.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/build.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/build.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/build.log",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/cargo.txt",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/clippy.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/clippy.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/clippy.log",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/kiln-invocation.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/kiln-result.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/outcomes.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/root-owed.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/rustc.txt",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/scope.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/serde-json-identity.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/shape-tests.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/shape-tests.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/shape-tests.log",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/source-reference.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/tools.json",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-final-source-checks.json"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/shape-tests.log:8: new blank line at EOF.\n",
+  "stderr": "",
+  "classified_original_raw_logs": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/startup-4bc28256e/shape-tests.log",
+      "sha256": "63b29f8d5bf89b26756e79f9f14aa5ef6c0cf9ff669e725218de89ca4a473515",
+      "reason": "original libtest blank EOF retained byte-identically; remote member hashes verified"
+    }
+  ],
+  "other_paths_check_exit": 0,
+  "source_or_whitespace_rule_relaxation": "NONE"
+}

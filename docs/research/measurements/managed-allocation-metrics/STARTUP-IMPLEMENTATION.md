@@ -25,7 +25,7 @@ are not subtracted. An early panic outside the existing unwind boundary emits no
 startup record, not zero, NotReached data or cleanup success. No Drop logger or
 new catch changes that behavior.
 
-## Private light scope — pending execution
+## Private light result
 
 The private light harness compiles byte-extracted actual startup structs and
 the existing `allocation_snapshot_record` function, actual unmodified
@@ -43,6 +43,21 @@ dependency checksum, tools, commands, exits and test-binary hash. The three unit
 cases cover initial reached/not-reached states, reached boundary/semantics labels,
 and Unknown values without counter mutation or invalid native operations.
 The existing counter tests are compiled but filtered out of this shape run.
+
+Source `4bc28256ee1285715e5573e9f4ba6b02caf436aa` passed build0, three shape
+tests0 (five counter tests filtered out), and Clippy0 on Fedora GNU through
+Kiln `8fadc1ec213332e16cb0d915a3fb913f`. [All20 original files](records/startup-4bc28256e)
+were transferred and verified byte-for-byte, including the source spans,
+commands, Cargo.lock and serde_json checksum. Actual rustc1.98.1 commit48a229ce,
+LLVM22.1.8 and cargo1.98.1 commit797e8a9b were recorded; the MSRV is not used as
+toolchain evidence. No actual artifact closure/full caller was typechecked.
+
+The private test executable remains at
+`/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/target/debug/deps/managed_startup_shape-287adfa93c4609bc`,
+SHA-256 `7f51e090134b3e4251c0663ae3cd2c51cad83cf40246edd58b287f3731a93fa7`.
+It was hashed before execution and rechecked after Clippy/at transfer. All own
+jobs have completed; private source, Cargo cache, final binary and evidence are
+preserved. No root cache/target/source was written and no local build ran.
 
 ## R01–R16 accounting and remaining root work
 

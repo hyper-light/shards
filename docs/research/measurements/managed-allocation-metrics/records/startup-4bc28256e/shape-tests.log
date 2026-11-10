@@ -1,0 +1,8 @@
+
+running 3 tests
+test startup_shape_tests::startup_shapes::startup_initial_fields_distinguish_observed_from_not_reached ... ok
+test startup_shape_tests::startup_shapes::startup_reached_fields_keep_non_atomic_and_artifact_boundaries ... ok
+test startup_shape_tests::startup_shapes::startup_unknown_counts_remain_unknown_in_reached_fields ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+

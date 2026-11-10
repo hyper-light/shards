@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/target/debug/deps/managed_startup_shape-287adfa93c4609bc",
+    "startup_shapes::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/home/adalundhe/managed-allocation-metrics-source-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "timeout_seconds": 120
+}

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/home/adalundhe/.cargo/bin/cargo",
+    "+1.98.1",
+    "clippy",
+    "--all-targets",
+    "-j",
+    "1",
+    "--",
+    "-D",
+    "warnings",
+    "-D",
+    "clippy::undocumented_unsafe_blocks"
+  ],
+  "cwd": "/home/adalundhe/managed-allocation-metrics-source-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "timeout_seconds": 120
+}

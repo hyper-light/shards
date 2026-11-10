@@ -1,0 +1,56 @@
+{
+  "policy_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "tested_source": "4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "fixture_sha256": "874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+        "--",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "docs/research/measurements/managed-allocation-metrics/startup_shape_tests.rs",
+        "docs/research/measurements/managed-allocation-metrics/run-startup-light.py",
+        "crates/shards/tests/common/managed_alloc.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "docs/research/measurements/managed-allocation-metrics/paired.py",
+        "docs/research/measurements/managed-allocation-metrics/test_paired.py",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "raw_files_verified": 20,
+  "test_binary_current_hash_verified": true,
+  "binary": {
+    "path": "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/target/debug/deps/managed_startup_shape-287adfa93c4609bc",
+    "bytes": 1405576,
+    "sha256": "7f51e090134b3e4251c0663ae3cd2c51cad83cf40246edd58b287f3731a93fa7"
+  },
+  "outcomes": {
+    "build": 0,
+    "shape-tests": 0,
+    "clippy": 0
+  },
+  "scope": "three isolated actual-snapshot-type/shape units; counter5 compiled but filtered; no actual artifact closure/resolvers/fullcaller/nativeAPI/VM/profile/paired/campaign",
+  "root_owed": "actual matching allhelpers/fullcaller/closure, real startupN1/earlypanic no-record/identity/FD/deadline/cleanup/terminal, native/profile/bench/paired/guard/matrix/main",
+  "local_target_or_cache_paths": [],
+  "active_own_remote_jobs": [],
+  "no_child_or_goal_dispatch": true
+}

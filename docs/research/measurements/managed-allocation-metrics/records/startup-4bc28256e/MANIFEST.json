@@ -1,0 +1,97 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 2652,
+    "sha256": "85d6e05308760315b413324cdf916572616a7d5c4bafdf135a76cad2a2c9fca2"
+  },
+  {
+    "path": "binary.json",
+    "bytes": 272,
+    "sha256": "00de4d7e7006b0987ae48588688decf3f2e4bb4a00dec7e534b8ccc4b23b22c9"
+  },
+  {
+    "path": "build.command.json",
+    "bytes": 300,
+    "sha256": "f69553fd8574eae502e40cd80d631fb43d254fbf0154eee67098f07e2222f658"
+  },
+  {
+    "path": "build.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "build.log",
+    "bytes": 11266,
+    "sha256": "7f430796481a5ed942e46ad852a34d6e7b10102afc3489f6cff53c8eb8295ccc"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "clippy.command.json",
+    "bytes": 353,
+    "sha256": "d8e1da43ebcf5075b6502c9b64aae549822704bc683249e2613aa67955bfbdee"
+  },
+  {
+    "path": "clippy.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "clippy.log",
+    "bytes": 348,
+    "sha256": "8a8f3a8b4a19207e4e57d9302530105ad3c37d7b0b95460d941ad8ffa29d3176"
+  },
+  {
+    "path": "outcomes.json",
+    "bytes": 52,
+    "sha256": "e2ca7964c3e83d8e87d35d490d36f67ab842c8a5a45a4533a3b79f6931d35e24"
+  },
+  {
+    "path": "root-owed.json",
+    "bytes": 215,
+    "sha256": "172bae1fa393d95683905eb91689f2e32fc41b6e94fd98344c95baea74c70c6b"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "scope.json",
+    "bytes": 1559,
+    "sha256": "08d230343aef9ff2fe3f0864a902656c8ef292713780d1a6a1b8844deabfa6c5"
+  },
+  {
+    "path": "serde-json-identity.json",
+    "bytes": 325,
+    "sha256": "81eb1616632532464bc95cd8d4273cbff1a815033518b4a3a8537c33452db3c5"
+  },
+  {
+    "path": "shape-tests.command.json",
+    "bytes": 386,
+    "sha256": "66f23e0d66c3df20ead40247b985ebbee6678b94f3cc7f27d5446b44977c96ae"
+  },
+  {
+    "path": "shape-tests.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "shape-tests.log",
+    "bytes": 440,
+    "sha256": "63b29f8d5bf89b26756e79f9f14aa5ef6c0cf9ff669e725218de89ca4a473515"
+  },
+  {
+    "path": "source-reference.json",
+    "bytes": 1643,
+    "sha256": "0c7ac9cb8f82d046df7318b22f8d5c3a2404f0ba9266ce4fe2cf87360de4bcd0"
+  },
+  {
+    "path": "tools.json",
+    "bytes": 478,
+    "sha256": "153afc444f0853721df35dd911e7df22ae8bd776359621c1e422648e792363b6"
+  }
+]

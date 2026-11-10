@@ -1,12 +1,17 @@
-# Startup allocator phase proposal — not applied
+# Reviewed startup allocator phase proposal
 
 Implementer `01a1c5be192972d8b05dc7c207cc6fca`; coordinator
 `01a148884a4770fdaf0111f3f792a248`. Policy files remain at `f5cec365`, rules
 SHA-256 `d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242`.
-Base is own `96b6bb43bf0610497f426cfcbc4ae1654172090c`; the actual fixture remains
-unchanged at SHA-256 `31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7`.
-This is a concrete review proposal, pending root selection/approval. The
-[patch](startup-hooks.proposed.patch) is an evidence artifact, not applied source.
+Proposal base is own `96b6bb43bf0610497f426cfcbc4ae1654172090c`, with fixture
+SHA-256 `31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7`.
+Root subsequently authorized this EXACT proposal and preserved
+[patch](startup-hooks.proposed.patch). It is applied at
+`4bc28256ee1285715e5573e9f4ba6b02caf436aa`, fixture SHA-256
+`874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e`.
+[Implementation/light evidence](STARTUP-IMPLEMENTATION.md) distinguishes the
+three shape-unit passes from all unrun root caller/real-VM/profile gates.
+The remaining sections retain the reviewed design and historical source checks.
 
 Root's [allocation033c record](../managed-coordinator-allocation/README.md) on
 main `7c26e5292161fc891a7c6c6525305464a3a044be` reports aggregate setup allocations

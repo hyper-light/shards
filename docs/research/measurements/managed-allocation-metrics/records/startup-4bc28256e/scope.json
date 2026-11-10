@@ -1,0 +1,21 @@
+{
+  "revision": "4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "admission": "1CPU/1GiB/2GiB; sync:false; serial private light only",
+  "compiled": "byte-extracted StartupAllocations/artifact structs + existing allocation_snapshot_record + real managed_alloc/serde_json types",
+  "not_compiled_or_run": "actual artifact closure/resolvers, full fixture/caller, native queries, VM, profiles, paired executor, campaigns",
+  "allocator": "private unregistered MANAGED_ALLOC instance; no allocation measurements/reset/global registration",
+  "source": "/home/adalundhe/managed-allocation-metrics-source-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "target": "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "records": "/home/adalundhe/managed-allocation-metrics-light-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "environment_overrides": {
+    "CARGO_HOME": "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/cargo-home",
+    "CARGO_TARGET_DIR": "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/target",
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTC_WRAPPER": "",
+    "RUSTC_WORKSPACE_WRAPPER": "",
+    "RUSTFLAGS": "-C codegen-units=1 -C debuginfo=0",
+    "RUSTC": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+    "TMPDIR": "/home/adalundhe/managed-allocation-metrics-target-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa/tmp"
+  }
+}

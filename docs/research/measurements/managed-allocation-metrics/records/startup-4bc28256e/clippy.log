@@ -1,0 +1,7 @@
+    Checking zmij v1.0.23
+    Checking serde_core v1.0.229
+    Checking memchr v2.8.3
+    Checking itoa v1.0.19
+    Checking serde_json v1.0.151
+    Checking managed-startup-shape v0.0.0 (/home/adalundhe/managed-allocation-metrics-source-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa)
+    Finished `dev` profile [unoptimized] target(s) in 2.22s

@@ -1,0 +1,52 @@
+{
+  "revision": "4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "fixture": {
+    "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+    "sha256": "874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e"
+  },
+  "extracted_spans": [
+    {
+      "start_byte": 9271,
+      "end_byte": 11918,
+      "sha256": "be0c2a7cd433d518c4265adc5bc6624294f06c2d7b15b54860a367648f2b2bf7"
+    },
+    {
+      "start_byte": 13995,
+      "end_byte": 15567,
+      "sha256": "79a52ee521b35c7144de16b6d51ad640d32927f37facc27af53bff691e5ee2dc"
+    }
+  ],
+  "files": [
+    {
+      "path": "src/lib.rs",
+      "bytes": 203,
+      "sha256": "ab2ec6cecb5a95c34017b69185c000628a8ad2785436a2dfc1a43c2af865a37b"
+    },
+    {
+      "path": "src/snapshots.rs",
+      "bytes": 4219,
+      "sha256": "085e15dfd05f8ff0c4e3dc24209a74f0c0520627a248c829a39d5d8a8e8c6c48"
+    },
+    {
+      "path": "src/managed_alloc.rs",
+      "bytes": 15657,
+      "sha256": "7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc"
+    },
+    {
+      "path": "src/startup_shape_tests.rs",
+      "bytes": 4166,
+      "sha256": "d5997a2f5a5a9aca14f3904f8514c66e1f0f8e5597e2a5bb51be3d2a2a06f288"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 272,
+      "sha256": "260eeebc71b1c47a4aa51870edab37bee758b71dfdbc8e6201178d1102fb9a6b"
+    },
+    {
+      "path": "run-startup-light.py",
+      "bytes": 6513,
+      "sha256": "1521c142e979881c95287f9fe30be51290bd4b073f08af0d6df3e32ac07f00dc"
+    }
+  ],
+  "scope": "snapshot structs+serializer TYPE/SHAPE only; no actual artifact closure, resolver/hash, full caller/global registration/native query/VM/profile"
+}

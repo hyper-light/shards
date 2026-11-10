@@ -97,7 +97,8 @@ Lighttype/shape tests ALLOWED <=1CPU1GiB2GiB NEWremoteprivate paths: unit-extrac
 actualstartup structs +existingserializer with actualserde_json1.0.151 and
 unmodifiedmanaged_alloc; unregisteredprivate static, NO actualcaller/closure/
 resolver/nativeprobe/globalallocator registration or measurement. Three shape
-checks source startup_shape_tests.rs; compilation/units NOTRUN yet. Root still
+checks source startup_shape_tests.rs; build/3shapeunits/Clippy now0 at4bc (see
+latest startup evidence below); full artifact closure/caller UNRUN. Root still
 owes matching fullcaller/helpers, allrealN1/profile/fault/bench/paired/guard/
 seven-target/main gates. Paired14source/proof UNTOUCHED/unreviewed;22linepure
 setup-report proposal remainsUNIMPLEMENTED/unapproved. No child/goals/auto plan
@@ -193,3 +194,19 @@ fixture/startuphooks/optimization. SETUP-REPORT-PROPOSAL.md and22lineUNAPPLIED
 setup-report.proposed.patch concrete against4103ca3dd, patchSHA016e992f...;
 implementation NOTauthorized yet. Finite3syntheticchecks +existing14regressions
 proposed only, no test/executor/profile run. Actualpairedsource remainsdcac1f33.
+
+LATEST STARTUP LIGHT RESULT: source4bc28256ee1285715e5573e9f4ba6b02caf436aa
+EXACT approvedfixture874e8b38; isolatedGNU build0,3shapeunitspass0fail (5counter
+testscompiled/filtered), Clippy0 viaKilnFedora8f1CPU1GiB2GiB sync:false NEW
+managed-allocation-metrics-{source,target,light}-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa.
+PrivateCargoHome/target/tmp; no ROOTcachewrite or globalregistration. Actual
+Rust1.98.1/48a229ce/LLVM22.1.8,Cargo1.98.1/797e8a9b,serde_json1.0.151 checksum
+c841...; exactcommands/Cargo.lock/source-extract spans20raw verified in
+records/startup-4bc28256e. Binary7f51e090134b3e4251c0663ae3cd2c51cad83cf40246edd58b287f3731a93fa7,
+pathinSTARTUP-IMPLEMENTATION.md/rawbinary.json. No actualartifactclosure/resolvers/
+fullcaller/nativeAPI/VM/profile/paired/guard/campaign executed or claimed.
+ROOT owes matchingallhelpers+actualcaller, realstartupN1/earlypanic/no-record/
+identity/FD/deadline/cleanup/terminal, profiles/faults/paired/guards/targets/main.
+All own jobs COMPLETE; preserve ownsource/evidence/Cargocache/finalbinary, no
+LOCALtarget/cache/build. Paired14/source/proof and22linepureproposal untouched;
+22lineproposal NOTimplemented/authorized. Nochildren/autoplans/goalselfdone.

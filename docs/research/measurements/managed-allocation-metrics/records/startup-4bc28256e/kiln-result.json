@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n    \"output\": \"{\\\"records\\\": \\\"/home/adalundhe/managed-allocation-metrics-light-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa\\\", \\\"outcomes\\\": {\\\"build\\\": 0, \\\"shape-tests\\\": 0, \\\"clippy\\\": 0}}\\n\",\n    \"running\": false,\n    \"why\": \"linux/x86_64 \u00b7 15 of 32 cores idle \u00b7 46 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk\",\n    \"exit_code\": 0\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"records\": \"/home/adalundhe/managed-allocation-metrics-light-startup-4bc28256ee1285715e5573e9f4ba6b02caf436aa\", \"outcomes\": {\"build\": 0, \"shape-tests\": 0, \"clippy\": 0}}\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 15 of 32 cores idle \u00b7 46 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}
