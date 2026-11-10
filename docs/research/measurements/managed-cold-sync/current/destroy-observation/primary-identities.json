@@ -1,0 +1,48 @@
+{
+  "compiler_revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+  "sources": [
+    {
+      "id": "rust-reference-submodule",
+      "url": "https://api.github.com/repos/rust-lang/rust/contents/src/doc/reference?ref=48a229ceaefd4985c50990b14116b6d856af0985",
+      "resolved_url": "https://api.github.com/repos/rust-lang/rust/contents/src/doc/reference?ref=48a229ceaefd4985c50990b14116b6d856af0985",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:56:48.010356+00:00",
+      "bytes": 881,
+      "sha256": "705447b057a58db01fea13232b0961d9469345a9eec600cf38faa42957a5a52c"
+    },
+    {
+      "id": "rust-reference-destructors",
+      "url": "https://raw.githubusercontent.com/rust-lang/reference/86635e30bf861a038dc197d7e16fd09e7e514e7a/src/destructors.md",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/reference/86635e30bf861a038dc197d7e16fd09e7e514e7a/src/destructors.md",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:56:48.135693+00:00",
+      "bytes": 27377,
+      "sha256": "dc924a9f95b445d080d06c82a0ec3610989beb2b4c72ec1298d8b8fbe6899ef3"
+    },
+    {
+      "id": "rust-thread-module",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/mod.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:56:48.267797+00:00",
+      "bytes": 10451,
+      "sha256": "0449be955ee28838a82b3c5d941c56eea1b9b8d1decff388ffac74ed40d8b064"
+    },
+    {
+      "id": "rust-join-handle",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/join_handle.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/join_handle.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:56:58.603784+00:00",
+      "bytes": 6362,
+      "sha256": "6ab7bc0aee8c46aa944315091da9ac8f9c87161391695ce29fab4cc88c96fe61"
+    }
+  ],
+  "prior_fetch_check_failures": [
+    "Exact pub fn join(self) declaration check failed before writing metadata.",
+    "Regex public join declaration check also failed in thread/mod.rs; no accepted identity from either incomplete orchestration. Completed retrieval identities recorded here; declaration location is not guessed."
+  ],
+  "unversioned_reference_context": "Official web reference destructors and JoinHandle docs read; current std docs render 1.99.1, not substituted for pinned compiler source.",
+  "runtime_claim": false,
+  "thread_module_resolution": "Pinned thread/mod.rs line168 declares mod join_handle; line200 reexports JoinHandle. Actual declaration is in join_handle.rs."
+}

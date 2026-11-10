@@ -1,0 +1,195 @@
+--- d1e9fd94cddebb82265c50b9561a8692a40b4621:docs/research/measurements/managed-cold-sync/current/concurrent_case.rs
++++ docs/research/measurements/managed-cold-sync/current/destroy-observation/case.rs
+@@ -1 +1 @@
+-//! Ordinary owned-API concurrency only. No allocator/fault hook or hostile actor.
++//! One ordinary owned-API final-owner teardown observation; execution requires ROOT review.
+@@ -2,0 +3 @@
++use crate::sync::destroy_observation::{Event, Object, Watch};
+@@ -5,12 +6 @@
+-use std::sync::mpsc::{Receiver, TryRecvError, channel};
+-
+-#[derive(Clone, Copy, Debug)]
+-enum Order {
+-    AnswerThenStop,
+-    StopHeldHandshakes,
+-}
+-
+-enum MuxerRelease {
+-    Answer,
+-    Close,
+-}
++use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
+@@ -104 +94,3 @@
+-fn run(order: Order) {
++#[test]
++#[ignore = "requires ROOT-reviewed private stand-in, original deadline and outer exit supervisor"]
++fn ordinary_final_owner_releases_native_storage() {
+@@ -110,14 +102,40 @@
+-    let guest = Arc::new(
+-        start(&GuestSpec {
+-            kernel: directory.join("unused-kernel"),
+-            init: Init::Executable(directory.join("unused-init")),
+-            cmdline: String::new(),
+-            vcpus: 1,
+-            memory_mib: crate::min_memory_mib(std::env::consts::ARCH),
+-            disks: Vec::new(),
+-            shares: Vec::new(),
+-            ports: vec![1024, 1025],
+-            binary: Some(directory.join("standin")),
+-        })
+-        .unwrap(),
+-    );
++    let mut owned = start(&GuestSpec {
++        kernel: directory.join("unused-kernel"),
++        init: Init::Executable(directory.join("unused-init")),
++        cmdline: String::new(),
++        vcpus: 1,
++        memory_mib: crate::min_memory_mib(std::env::consts::ARCH),
++        disks: Vec::new(),
++        shares: Vec::new(),
++        ports: vec![1024, 1025],
++        binary: Some(directory.join("standin")),
++    })
++    .unwrap();
++    let (observed_tx, observed_rx) = channel();
++    owned
++        .shared
++        .state
++        .observe_destroy(Watch::new(Object::State, observed_tx.clone()))
++        .unwrap();
++    owned
++        .shared
++        .changed
++        .observe_destroy(Watch::new(Object::Changed, observed_tx.clone()))
++        .unwrap();
++    owned
++        .shared
++        .tail
++        .observe_destroy(Watch::new(Object::Tail, observed_tx.clone()))
++        .unwrap();
++    owned
++        .shared
++        .drained
++        .observe_destroy(Watch::new(Object::Drained, observed_tx.clone()))
++        .unwrap();
++    owned.shared.observed.attach(observed_tx.clone()).unwrap();
++    drop(observed_tx);
++    let workers = owned
++        .test_workers
++        .take()
++        .expect("actual owned-child worker handles");
++    let guest = Arc::new(owned);
+@@ -171,4 +189,3 @@
+-            if matches!(receive(&release_rx, deadline), MuxerRelease::Answer) {
+-                for (port, stream) in &mut connections {
+-                    answer(stream, *port, deadline);
+-                }
++            receive(&release_rx, deadline);
++            for (port, stream) in &mut connections {
++                answer(stream, *port, deadline);
+@@ -222,10 +239,8 @@
+-    if matches!(order, Order::AnswerThenStop) {
+-        release_tx.send(MuxerRelease::Answer).unwrap();
+-        for _ in 0..2 {
+-            let (port, result) = receive(&connect_rx, deadline);
+-            let _ = writeln!(
+-                std::io::stdout(),
+-                "CONCURRENT_CONNECTED port={port} result={result:?}"
+-            );
+-            result.unwrap();
+-        }
++    release_tx.send(()).unwrap();
++    for _ in 0..2 {
++        let (port, result) = receive(&connect_rx, deadline);
++        let _ = writeln!(
++            std::io::stdout(),
++            "CONCURRENT_CONNECTED port={port} result={result:?}"
++        );
++        result.unwrap();
+@@ -251,11 +265,0 @@
+-    }
+-    if matches!(order, Order::StopHeldHandshakes) {
+-        release_tx.send(MuxerRelease::Close).unwrap();
+-        for _ in 0..2 {
+-            let (port, result) = receive(&connect_rx, deadline);
+-            let _ = writeln!(
+-                std::io::stdout(),
+-                "CONCURRENT_PENDING_CONNECT_RETURNED port={port} result={result:?}"
+-            );
+-            assert!(matches!(result, Err(Refusal::Ended(End::Stopped))));
+-        }
+@@ -288,0 +293,5 @@
++    let (drainer, watcher) = workers;
++    drainer.join().unwrap();
++    left(deadline);
++    watcher.join().unwrap();
++    left(deadline);
+@@ -291 +300 @@
+-        "CONCURRENT_JOINED order={order:?} connectors=2 waiters=2 stopper=1 muxer=1"
++        "TEARDOWN_JOINED connectors=2 waiters=2 stopper=1 muxer=1 api_drain=1 api_watch=1"
+@@ -293,11 +302,54 @@
+-}
+-
+-#[test]
+-fn owning_zero_max_and_waiters_join_after_stop() {
+-    run(Order::AnswerThenStop);
+-}
+-
+-#[test]
+-fn stop_with_both_owning_handshakes_pending_joins_every_caller() {
+-    run(Order::StopHeldHandshakes);
+-}
++    assert!(matches!(observed_rx.try_recv(), Err(TryRecvError::Empty)));
++    let owned =
++        Arc::try_unwrap(guest).unwrap_or_else(|_| panic!("a public Guest owner remains after caller joins"));
++    drop(owned);
++    left(deadline);
++
++    // Exact existing field order, not an inferred quiescence check. In particular,
++    // PointeeDropReturned is emitted after Box Drop; native return zero is separate.
++    let expected = [
++        Event::SharedDropEntered,
++        Event::DestroyEntered(Object::State),
++        Event::DestroyReturned {
++            object: Object::State,
++            code: 0,
++        },
++        Event::PointeeDropReturned(Object::State),
++        Event::DestroyEntered(Object::Changed),
++        Event::DestroyReturned {
++            object: Object::Changed,
++            code: 0,
++        },
++        Event::PointeeDropReturned(Object::Changed),
++        Event::DestroyEntered(Object::Tail),
++        Event::DestroyReturned {
++            object: Object::Tail,
++            code: 0,
++        },
++        Event::PointeeDropReturned(Object::Tail),
++        Event::DestroyEntered(Object::Drained),
++        Event::DestroyReturned {
++            object: Object::Drained,
++            code: 0,
++        },
++        Event::PointeeDropReturned(Object::Drained),
++        Event::OriginalSharedFieldsDropped,
++    ];
++    let mut observed = Vec::new();
++    loop {
++        match observed_rx.recv_timeout(left(deadline)) {
++            Ok(event) => {
++                let _ = writeln!(std::io::stdout(), "TEARDOWN_EVENT {event:?}");
++                observed.push(event);
++                assert!(observed.len() <= expected.len(), "unexpected extra event");
++            }
++            Err(RecvTimeoutError::Disconnected) => break,
++            Err(RecvTimeoutError::Timeout) => panic!("original teardown deadline expired"),
++        }
++    }
++    assert_eq!(observed, expected);
++    let _ = writeln!(
++        std::io::stdout(),
++        "TEARDOWN_POINTEES_DROPPED_ORIGINAL_FIELDS_DROPPED_OBSERVERS_CLOSED"
++    );
++}

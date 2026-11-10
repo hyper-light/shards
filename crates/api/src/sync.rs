@@ -58,6 +58,10 @@ impl std::error::Error for Failure {}
 
 pub(crate) use implementation::{Condvar, Guard, Mutex};
 
+#[cfg(all(test, target_vendor = "apple"))]
+#[path = "../../../docs/research/measurements/managed-cold-sync/current/destroy-observation/observer.rs"]
+pub(crate) mod destroy_observation;
+
 #[cfg(target_vendor = "apple")]
 mod implementation {
     use super::{Failure, Operation, WaitStatus};
@@ -82,6 +86,8 @@ mod implementation {
         // State. These are synchronization errors, not guest lifecycle mirrors.
         lock_failure: AtomicI32,
         unlock_failure: AtomicI32,
+        #[cfg(test)]
+        observed: std::sync::OnceLock<super::destroy_observation::Watch>,
     }
 
     impl<T> std::fmt::Debug for Mutex<T> {
@@ -176,6 +182,8 @@ mod implementation {
                     inner: ManuallyDrop::new(Box::from_raw(memory.as_ptr())),
                     lock_failure: AtomicI32::new(0),
                     unlock_failure: AtomicI32::new(0),
+                    #[cfg(test)]
+                    observed: std::sync::OnceLock::new(),
                 })
             }
         }
@@ -224,16 +232,36 @@ mod implementation {
                 Err(Failure::native(Operation::MutexUnlock, code))
             }
         }
+
+        #[cfg(test)]
+        pub(crate) fn observe_destroy(
+            &self,
+            watch: super::destroy_observation::Watch,
+        ) -> Result<(), super::destroy_observation::Watch> {
+            self.observed.set(watch)
+        }
     }
 
     impl<T> Drop for Mutex<T> {
         fn drop(&mut self) {
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.entering();
+            }
             // SAFETY: no unforgotten guard outlives self. A forgotten guard may leave
             // it locked; in that case preserve the allocation, as std also does.
             let code = unsafe { libc::pthread_mutex_destroy(self.inner.raw.get()) };
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.returned(code);
+            }
             if code == 0 {
                 // SAFETY: native object is quiescent and successfully destroyed.
                 unsafe { ManuallyDrop::drop(&mut self.inner) };
+            }
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.storage(code == 0);
             }
         }
     }
@@ -284,6 +312,8 @@ mod implementation {
 
     pub(crate) struct Condvar {
         raw: ManuallyDrop<Box<UnsafeCell<libc::pthread_cond_t>>>,
+        #[cfg(test)]
+        observed: std::sync::OnceLock<super::destroy_observation::Watch>,
     }
 
     // SAFETY: initialized stable condition variable supports concurrent wait/notify.
@@ -320,7 +350,17 @@ mod implementation {
             Ok(Self {
                 // SAFETY: initialized same-allocation native object, no relocation.
                 raw: ManuallyDrop::new(unsafe { Box::from_raw(memory.as_ptr()) }),
+                #[cfg(test)]
+                observed: std::sync::OnceLock::new(),
             })
+        }
+
+        #[cfg(test)]
+        pub(crate) fn observe_destroy(
+            &self,
+            watch: super::destroy_observation::Watch,
+        ) -> Result<(), super::destroy_observation::Watch> {
+            self.observed.set(watch)
         }
 
         pub(crate) fn notify_all(&self) -> Result<(), Failure> {
@@ -377,12 +417,24 @@ mod implementation {
 
     impl Drop for Condvar {
         fn drop(&mut self) {
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.entering();
+            }
             // SAFETY: native object is initialized. Preserve allocation if native
             // destruction refuses; no leak-free claim follows from this destructor.
             let code = unsafe { libc::pthread_cond_destroy(self.raw.get()) };
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.returned(code);
+            }
             if code == 0 {
                 // SAFETY: successful native destruction proves no active waiters.
                 unsafe { ManuallyDrop::drop(&mut self.raw) };
+            }
+            #[cfg(test)]
+            if let Some(watch) = self.observed.get() {
+                watch.storage(code == 0);
             }
         }
     }

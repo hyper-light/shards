@@ -1,0 +1,67 @@
+{
+  "base": "d1e9fd94cddebb82265c50b9561a8692a40b4621",
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "source": {
+    "crates/api/src/client.rs": {
+      "bytes": 84991,
+      "sha256": "c9c810b7fd3659c597d82c7c438e2ca87828c628682c0deacd77190226f67c7c"
+    },
+    "crates/api/src/sync.rs": {
+      "bytes": 20583,
+      "sha256": "38a76e7ac3826ee7f46a7f768831b83617ed4a9c17f62879ce6d3a1cda5a98f8"
+    },
+    "docs/research/measurements/managed-cold-sync/current/destroy-observation/observer.rs": {
+      "bytes": 2129,
+      "sha256": "8fd7178a10a76035c3d87b82b99bbece3169a7733060abb92309bb0c94de9a3c"
+    },
+    "docs/research/measurements/managed-cold-sync/current/destroy-observation/case.rs": {
+      "bytes": 13167,
+      "sha256": "67d99609eccdfdb80f5bc8e4651bc3ec840f431798580bc5725b6cf66833cb5c"
+    },
+    "unchanged_original_case": {
+      "path": "docs/research/measurements/managed-cold-sync/current/concurrent_case.rs",
+      "bytes": 11013,
+      "sha256": "431e2ea29a2e6d257f0720063ba1a1c009ca9f6793b6453ee637462c0c620a80"
+    },
+    "unchanged_lib": {
+      "path": "crates/api/src/lib.rs",
+      "bytes": 28800,
+      "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01"
+    },
+    "baseline_api": {
+      "crates/api/src/client.rs": {
+        "bytes": 83513,
+        "sha256": "3941532a6ab8c450ba532001b19dca657a6327391c04c3666ee69b3635ad9a32"
+      },
+      "crates/api/src/sync.rs": {
+        "bytes": 18757,
+        "sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c"
+      }
+    }
+  },
+  "diffs": {
+    "hooks.diff": {
+      "bytes": 5175,
+      "sha256": "d0dd8c6a4b4b9175ef052705ea994729bee56faf593cc936e9ef1d10c25de0a4"
+    },
+    "caller.diff": {
+      "bytes": 6986,
+      "sha256": "3509292ee2c753c31396c7447395d4647cc86a15781953b3607c1214558609b8"
+    }
+  },
+  "native_drop_branches": {
+    "mutex": {
+      "same_after_removing_only_six_cfg_test_observer_blocks": true,
+      "bytes": 487,
+      "sha256": "6616e7aea275845b83f64904a5b8242b362f57aaeb609865aa0e918671a8a8bb"
+    },
+    "condvar": {
+      "same_after_removing_only_six_cfg_test_observer_blocks": true,
+      "bytes": 478,
+      "sha256": "d9194fdacdd0ddf336b3cdf18c46bf3195165fa7012f9f869645406eb3423c65"
+    }
+  },
+  "non_test_glue": "Unit result alias plus explicit JoinHandle drops at original discard points; new source bytes differ. Native cleanup branches unchanged; compile/semantic review remains pending.",
+  "compiled_or_executed": false,
+  "diff_format": "Zero-context derived review diffs; actual signed files are authoritative. No raw native evidence generated or transformed."
+}

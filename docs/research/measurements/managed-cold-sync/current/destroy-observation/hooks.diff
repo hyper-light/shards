@@ -1,0 +1,131 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index 874c01d0a..7548b0957 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -133,0 +134,2 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
++        #[cfg(all(test, target_vendor = "apple"))]
++        test_workers: None,
+@@ -191,0 +194,2 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
++    #[cfg(all(test, target_vendor = "apple"))]
++    let workers = started.expect("both worker spawns succeeded above");
+@@ -202,0 +207,2 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
++        #[cfg(all(test, target_vendor = "apple"))]
++        test_workers: Some(workers),
+@@ -358,0 +365,10 @@ struct Shared {
++    // Test-only last-field witness; its messages contain no Shared owner.
++    #[cfg(all(test, target_vendor = "apple"))]
++    observed: sync::destroy_observation::SharedWitness,
++}
++
++#[cfg(all(test, target_vendor = "apple"))]
++impl Drop for Shared {
++    fn drop(&mut self) {
++        self.observed.entering();
++    }
+@@ -440,0 +457,2 @@ impl Shared {
++            #[cfg(all(test, target_vendor = "apple"))]
++            observed: sync::destroy_observation::SharedWitness::default(),
+@@ -467,0 +486,5 @@ fn finish<T, R>(guard: Guard<'_, T>, result: Result<R, Refusal>) -> Result<R, Re
++#[cfg(all(test, target_vendor = "apple"))]
++type StartedThreads = (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>);
++#[cfg(not(all(test, target_vendor = "apple")))]
++type StartedThreads = ();
++
+@@ -475 +498 @@ fn start_threads(
+-) -> io::Result<()> {
++) -> io::Result<StartedThreads> {
+@@ -479 +502 @@ fn start_threads(
+-    std::thread::Builder::new()
++    let draining = std::thread::Builder::new()
+@@ -486,0 +510,2 @@ fn start_threads(
++    #[cfg(not(all(test, target_vendor = "apple")))]
++    drop(draining);
+@@ -488 +513 @@ fn start_threads(
+-    std::thread::Builder::new()
++    let watching = std::thread::Builder::new()
+@@ -491 +516,7 @@ fn start_threads(
+-    Ok(())
++    #[cfg(all(test, target_vendor = "apple"))]
++    return Ok((draining, watching));
++    #[cfg(not(all(test, target_vendor = "apple")))]
++    {
++        drop(watching);
++        Ok(())
++    }
+@@ -672,0 +704,2 @@ struct ShardsGuest {
++    #[cfg(all(test, target_vendor = "apple"))]
++    test_workers: Option<StartedThreads>,
+@@ -1347,0 +1381,4 @@ impl Drop for ShardsGuest {
++#[cfg(all(test, target_vendor = "apple"))]
++#[path = "../../../docs/research/measurements/managed-cold-sync/current/destroy-observation/case.rs"]
++mod destroy_observation;
++
+diff --git a/crates/api/src/sync.rs b/crates/api/src/sync.rs
+index 2095db9e9..d742848af 100644
+--- a/crates/api/src/sync.rs
++++ b/crates/api/src/sync.rs
+@@ -60,0 +61,4 @@ pub(crate) use implementation::{Condvar, Guard, Mutex};
++#[cfg(all(test, target_vendor = "apple"))]
++#[path = "../../../docs/research/measurements/managed-cold-sync/current/destroy-observation/observer.rs"]
++pub(crate) mod destroy_observation;
++
+@@ -84,0 +89,2 @@ mod implementation {
++        #[cfg(test)]
++        observed: std::sync::OnceLock<super::destroy_observation::Watch>,
+@@ -178,0 +185,2 @@ mod implementation {
++                    #[cfg(test)]
++                    observed: std::sync::OnceLock::new(),
+@@ -226,0 +235,8 @@ mod implementation {
++
++        #[cfg(test)]
++        pub(crate) fn observe_destroy(
++            &self,
++            watch: super::destroy_observation::Watch,
++        ) -> Result<(), super::destroy_observation::Watch> {
++            self.observed.set(watch)
++        }
+@@ -230,0 +247,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.entering();
++            }
+@@ -233,0 +254,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.returned(code);
++            }
+@@ -237,0 +262,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.storage(code == 0);
++            }
+@@ -286,0 +315,2 @@ mod implementation {
++        #[cfg(test)]
++        observed: std::sync::OnceLock<super::destroy_observation::Watch>,
+@@ -322,0 +353,2 @@ mod implementation {
++                #[cfg(test)]
++                observed: std::sync::OnceLock::new(),
+@@ -325,0 +358,8 @@ mod implementation {
++        #[cfg(test)]
++        pub(crate) fn observe_destroy(
++            &self,
++            watch: super::destroy_observation::Watch,
++        ) -> Result<(), super::destroy_observation::Watch> {
++            self.observed.set(watch)
++        }
++
+@@ -379,0 +420,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.entering();
++            }
+@@ -382,0 +427,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.returned(code);
++            }
+@@ -386,0 +435,4 @@ mod implementation {
++            #[cfg(test)]
++            if let Some(watch) = self.observed.get() {
++                watch.storage(code == 0);
++            }

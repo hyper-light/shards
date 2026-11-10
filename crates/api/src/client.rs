@@ -131,6 +131,8 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             identity: identity.clone(),
             process,
         }),
+        #[cfg(all(test, target_vendor = "apple"))]
+        test_workers: None,
         shared,
         _dir: PrivateDir::adopt(&identity.vsock),
     })
@@ -189,6 +191,8 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         let _ = child.wait();
         return Err(Refusal::Boot(format!("a thread to watch shards: {e}")));
     }
+    #[cfg(all(test, target_vendor = "apple"))]
+    let workers = started.expect("both worker spawns succeeded above");
     Ok(ShardsGuest {
         ports: spec.ports.clone(),
         vsock,
@@ -200,6 +204,8 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
         child: Some(child),
         #[cfg(unix)]
         taken: None,
+        #[cfg(all(test, target_vendor = "apple"))]
+        test_workers: Some(workers),
         shared,
         _dir: Some(dir),
     })
@@ -356,6 +362,16 @@ struct Shared {
     drained: Condvar,
     /// What this process writes into shards' output once shards has ended ([`end_mark`]).
     end_mark: Vec<u8>,
+    // Test-only last-field witness; its messages contain no Shared owner.
+    #[cfg(all(test, target_vendor = "apple"))]
+    observed: sync::destroy_observation::SharedWitness,
+}
+
+#[cfg(all(test, target_vendor = "apple"))]
+impl Drop for Shared {
+    fn drop(&mut self) {
+        self.observed.entering();
+    }
 }
 
 #[derive(Debug)]
@@ -438,6 +454,8 @@ impl Shared {
             .map_err(|(_, failure)| synchronization(failure))?,
             drained: Condvar::new().map_err(synchronization)?,
             end_mark: end_mark(),
+            #[cfg(all(test, target_vendor = "apple"))]
+            observed: sync::destroy_observation::SharedWitness::default(),
         };
         ControlArc::try_new(shared).map_err(|_| Refusal::Allocation {
             what: "guest shared state",
@@ -465,6 +483,11 @@ fn finish<T, R>(guard: Guard<'_, T>, result: Result<R, Refusal>) -> Result<R, Re
     result
 }
 
+#[cfg(all(test, target_vendor = "apple"))]
+type StartedThreads = (std::thread::JoinHandle<()>, std::thread::JoinHandle<()>);
+#[cfg(not(all(test, target_vendor = "apple")))]
+type StartedThreads = ();
+
 /// Starts the thread that reads shards' output into the tail, and the one that waits for it
 /// to exit.
 fn start_threads(
@@ -472,11 +495,11 @@ fn start_threads(
     child: &Arc<Mutex<Child>>,
     output: io::PipeReader,
     writer: io::PipeWriter,
-) -> io::Result<()> {
+) -> io::Result<StartedThreads> {
     let exit = Exit::of(child)?;
     let drainer = shared.clone();
     let draining_child = child.clone();
-    std::thread::Builder::new()
+    let draining = std::thread::Builder::new()
         .name("shards-api-drain".into())
         .spawn(move || {
             if let Err(failure) = drain(&drainer, output) {
@@ -484,11 +507,19 @@ fn start_threads(
                 let _ = lock(&draining_child).kill();
             }
         })?;
+    #[cfg(not(all(test, target_vendor = "apple")))]
+    drop(draining);
     let shared = shared.clone();
-    std::thread::Builder::new()
+    let watching = std::thread::Builder::new()
         .name("shards-api-wait".into())
         .spawn(move || exit.watch(&shared, writer))?;
-    Ok(())
+    #[cfg(all(test, target_vendor = "apple"))]
+    return Ok((draining, watching));
+    #[cfg(not(all(test, target_vendor = "apple")))]
+    {
+        drop(watching);
+        Ok(())
+    }
 }
 
 /// Reads `output` to the end mark, keeping its last bytes before it, as many as its tail
@@ -670,6 +701,8 @@ impl Exit {
 
 /// A guest shards booted, or one taken back by [`Guests::attach`].
 struct ShardsGuest {
+    #[cfg(all(test, target_vendor = "apple"))]
+    test_workers: Option<StartedThreads>,
     ports: Vec<u32>,
     vsock: PathBuf,
     #[cfg(unix)]
@@ -1344,6 +1377,10 @@ impl Drop for ShardsGuest {
         }
     }
 }
+
+#[cfg(all(test, target_vendor = "apple"))]
+#[path = "../../../docs/research/measurements/managed-cold-sync/current/destroy-observation/case.rs"]
+mod destroy_observation;
 
 #[cfg(test)]
 mod tests {
