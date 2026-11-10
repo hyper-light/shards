@@ -1,0 +1,2 @@
+Previous HEAD position was f06247968 docs(managed): retain actual endpoint mismatch and cleanup syscall trace
+HEAD is now at 338b6b71e test(managed): use fixed-size hex chunks in socket comparison

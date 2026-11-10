@@ -1,0 +1,110 @@
+{
+  "root-managed-seven-target-f062-v1/checkout.log": {
+    "bytes": 202,
+    "sha256": "4a953c08f9ab25c2b008db7322be8305a68bf8963153e78745aeca0583b199ed"
+  },
+  "root-managed-seven-target-f062-v1/command.txt": {
+    "bytes": 60,
+    "sha256": "4832f7b72006b28940c952b8d8d42a28a2e051c2f88a171687b1bd995e6ac24b"
+  },
+  "root-managed-seven-target-f062-v1/disk.txt": {
+    "bytes": 190,
+    "sha256": "54c12e44a1f7b4a82781ea5bdbadb2ab1889d505833f1606d810be7d57b6f6cd"
+  },
+  "root-managed-seven-target-f062-v1/fetch.log": {
+    "bytes": 175,
+    "sha256": "5b29cded6a2074e8e42b85dacb5fc00084d6f8d575077d9b5946e83e5ed1ee0f"
+  },
+  "root-managed-seven-target-f062-v1/lint.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-seven-target-f062-v1/lint.log": {
+    "bytes": 2330,
+    "sha256": "d27de9962328cc1610e6ac1045abd1aad89e44c3f32729092b919ec8d86cb642"
+  },
+  "root-managed-seven-target-f062-v1/preserved-untracked/.DS_Store": {
+    "bytes": 8196,
+    "sha256": "75f48fd8795bf47cb85152a6e97f6af8d61486122bb6edc62389e20531554cd4"
+  },
+  "root-managed-seven-target-f062-v1/preserved-untracked/crates/.DS_Store": {
+    "bytes": 14340,
+    "sha256": "8adb70569d07a57b9c3914f3240235a72887f4176ca5c8b77db799e91eb60961"
+  },
+  "root-managed-seven-target-f062-v1/preserved-untracked/docs/.DS_Store": {
+    "bytes": 8196,
+    "sha256": "a2d9dbeab8aa3d71a66e9036ea4b1b1533fa5d63b4c0fc1b5c96112a807433c5"
+  },
+  "root-managed-seven-target-f062-v1/preserved-untracked/docs/research/.DS_Store": {
+    "bytes": 6148,
+    "sha256": "022b1c69ec2bbddcb627c1794c72f44337e56e69258e3ca75c24e6623f4f6dd4"
+  },
+  "root-managed-seven-target-f062-v1/source.txt": {
+    "bytes": 41,
+    "sha256": "53adbd56a8db28d2601d6d4cc97bcecad7b1219ee8511b68d58871f718a5cba6"
+  },
+  "root-managed-seven-target-f062-v1/status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-seven-target-f062-v1/untracked-metadata.json": {
+    "bytes": 566,
+    "sha256": "889f172f535fcc0ef03fa0314be7557ea09730f092b237577f1f425554b730a4"
+  },
+  "root-managed-seven-target-338b-v3/checkout.log": {
+    "bytes": 197,
+    "sha256": "07d385fe7f6df0f02d2b406de01b1f305f2e859610cca164cee5ffeb7d43c382"
+  },
+  "root-managed-seven-target-338b-v3/command.txt": {
+    "bytes": 60,
+    "sha256": "4832f7b72006b28940c952b8d8d42a28a2e051c2f88a171687b1bd995e6ac24b"
+  },
+  "root-managed-seven-target-338b-v3/disk.txt": {
+    "bytes": 190,
+    "sha256": "e3dd1e5bf863d95c440fc7fd8c063309ec99d6d0ca145baaa9b3bc896265ab2d"
+  },
+  "root-managed-seven-target-338b-v3/fetch.log": {
+    "bytes": 178,
+    "sha256": "60013997991beb245b3228d666ae33c6a5fc74a5a24996820233658165e9b245"
+  },
+  "root-managed-seven-target-338b-v3/final-status.txt": {
+    "bytes": 78,
+    "sha256": "486afe27d39cddb2c5ecfc7ef31ce5db3648f5b0fec0a8361cdde82a2507c27f"
+  },
+  "root-managed-seven-target-338b-v3/final-tracked.diff": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-seven-target-338b-v3/gate-source.sha256": {
+    "bytes": 177,
+    "sha256": "fc4dbbae2bac81b8b02646a28cf07b35a9c7881309cec0431c1c3250f6bdb368"
+  },
+  "root-managed-seven-target-338b-v3/lint.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-seven-target-338b-v3/lint.log": {
+    "bytes": 27622,
+    "sha256": "82de4dfbacc07a2e013688690b4d86866960e5f5122236404f173cc38ead8d6b"
+  },
+  "root-managed-seven-target-338b-v3/preflight-metadata.json": {
+    "bytes": 926,
+    "sha256": "ac1fa6b6a4ec4f83d57885351f744007d1498cf511a81eb613b18cace8d9bf84"
+  },
+  "root-managed-seven-target-338b-v3/rustc-after.txt": {
+    "bytes": 192,
+    "sha256": "e2211d4c0760a2a3b03eab88e42f8848952b7aa2ed649277a8fdbf3ce1838fd4"
+  },
+  "root-managed-seven-target-338b-v3/source.txt": {
+    "bytes": 41,
+    "sha256": "0cc02fd1fa484f20c5d3c8a444e7421aff70ebd0eea6cc1645ff18c933408d72"
+  },
+  "root-managed-seven-target-338b-v3/stages.json": {
+    "bytes": 246,
+    "sha256": "38487026580db44740dfabd8df1ae29ac430e5e0bad5f14e1f1ea2a8c49be87e"
+  },
+  "root-managed-seven-target-338b-v3/status.txt": {
+    "bytes": 78,
+    "sha256": "486afe27d39cddb2c5ecfc7ef31ce5db3648f5b0fec0a8361cdde82a2507c27f"
+  }
+}

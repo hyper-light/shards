@@ -1,0 +1,12 @@
+{
+  "bytes": 8880,
+  "sha256": "e38cc545742f4bd6c57a1970d9403a862849ab856f05562d3e534f21a6d7e156",
+  "files": 27,
+  "source": "338b6b71e51568f42f39b966e2c42bc0a663e00a",
+  "root_runs": [
+    "r498",
+    "r504",
+    "r513"
+  ],
+  "local_archive": "/Users/adalundhe/g121-seven-target-338b-records-v1.tgz"
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "path": ".DS_Store",
+    "bytes": 8196,
+    "sha256": "f2f0cffe59274b7f3037281f13b071462a321e9881ae7b4c3c2932ddd8c641a3",
+    "classification": "untracked macOS metadata; preserved in place; not a build source"
+  },
+  {
+    "path": "crates/.DS_Store",
+    "bytes": 14340,
+    "sha256": "6159bf31308c1e6a2e992316e5118b2d54bef7f734bd37887aaaf70b56bda709",
+    "classification": "untracked macOS metadata; preserved in place; not a build source"
+  },
+  {
+    "path": "docs/.DS_Store",
+    "bytes": 8196,
+    "sha256": "7d17aa2caf5009816e587b641711c3fd77f211b1e5f5007f4558d47943c5ff41",
+    "classification": "untracked macOS metadata; preserved in place; not a build source"
+  },
+  {
+    "path": "docs/research/.DS_Store",
+    "bytes": 6148,
+    "sha256": "098726fad9e0f870ace66a69a1e1ad544dcc7b0ced2fc550facb5b2610ae8aa5",
+    "classification": "untracked macOS metadata; preserved in place; not a build source"
+  }
+]

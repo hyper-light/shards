@@ -1,0 +1,9 @@
+{
+  "run": "r501",
+  "result": "remote hand-off integrity refused",
+  "received_sha256": "7bb3b26c692d3efd02e90b0045fa76017d986bb6518a24b2ade0e04898a299b2",
+  "expected_sha256": "1bdc57375de353370c7dfd745910ace97573f66a4e623aea074e5267d3447655",
+  "later_observation": "no command record directory; remote root clone remained f062",
+  "cause": "not established",
+  "safe_followup": "immutable local detached source; same purpose-tool and integrity checks; no trust weakening"
+}

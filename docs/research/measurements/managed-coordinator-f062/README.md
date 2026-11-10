@@ -80,6 +80,26 @@ adopted or killed. Stronger held-handle coverage remains separate work.
 
 ## Durable records and policy
 
+Root r513 runs the full `scripts/lint` entrypoint on exact source
+`338b6b71e51568f42f39b966e2c42bc0a663e00a`: format, all seven supported targets
+and the script's GPU checks pass. This includes the original finite
+destination-only comparison, cleanup fix, cost fixture and host hex-chunk lint
+correction. It does **not** cover the later presentation-profile source or future
+exit-handle work. Original r498's actual constant-chunk lint failure, r504's
+metadata-only preflight failure and r513's complete passing log are retained
+under `matrix-338b` with 27 verified raw files. Archive8880 bytes, SHA256
+`e38cc545742f4bd6c57a1970d9403a862849ab856f05562d3e534f21a6d7e156`.
+
+The private Mac clone repeatedly receives untracked `.DS_Store` metadata. The
+passing invocation verifies tracked source is clean, hashes and classifies only
+those exact untracked metadata files, and preserves them in place. No source
+file is ignored and no global Git setting changes. The prior moved metadata is
+also preserved. A separate remote hand-off integrity refusal (r501) is retained
+with exact hashes and no command record; its cause is not established. Retrying
+from an immutable detached source retains the same transport integrity checks.
+The normal AWS-LC compiler-feature probe/fallback warnings remain unmodified in
+the successful log; no crypto or compiler verification is disabled.
+
 All 172 regular raw records are listed in `MANIFEST.json`. `TRANSFER.json`
 records verified private archive69013 bytes, SHA256
 `5c671839b3de7f797c0a4b15353bf29e1efb25596256854915c6673f07221c8f`.
