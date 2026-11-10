@@ -545,6 +545,8 @@ pub mod kind {
     /// A VM → its daemon, as the rounds `PRECOPY` asked for go (D176 part 7), as text: `sent
     /// B`, the bytes its stream has carried, or `round N PAGES BYTES US`, a round's end.
     pub const PRECOPYING: u8 = 85;
+    /// VM to daemon: trusted tenant abort on the independent control path (managed::Abort).
+    pub const MANAGED_ABORT: u8 = 86;
 
     /// Whether a network process's control message of `kind` hands it sockets: published
     /// ports' (`PUBLISH`, `NET_PUBLISHED`) and a peer's link (`NET_PEER`). Beside the
@@ -2153,6 +2155,8 @@ pub mod run_fds {
     pub const GROUP: usize = 1;
     /// Its share process's connection (D38), on Unix.
     pub const SHARES: usize = 1;
+    /// Its private admitted managed-output connection, last in the request.
+    pub const CAPTURE: usize = 1;
 }
 
 /// The most descriptors a message may carry: a run's ([`run_fds`]), whose every one may
@@ -2164,7 +2168,8 @@ pub const MAX_FDS: usize = run_fds::CLIENT
     + run_fds::LAYERS
     + run_fds::SWAP
     + run_fds::GROUP
-    + run_fds::SHARES;
+    + run_fds::SHARES
+    + run_fds::CAPTURE;
 
 pub mod slots;
 #[cfg(unix)]
@@ -2386,7 +2391,8 @@ mod tests {
             + run_fds::LAYERS
             + run_fds::SWAP
             + run_fds::GROUP
-            + run_fds::SHARES;
+            + run_fds::SHARES
+            + run_fds::CAPTURE;
         assert_eq!(MAX_FDS, every);
         let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
         let (_r, w) = std::io::pipe().unwrap();

@@ -1,16 +1,161 @@
 //! Canonical managed output, authenticated by its owning run connection.
 
+use alloc::vec::Vec;
 use core::fmt;
 
 /// Four tag bytes, a member's u32 index and its channel's u64 byte offset.
 pub const HEADER: usize = 4 + size_of::<u32>() + size_of::<u64>();
 pub const VERSION: u8 = 1;
+pub const CAPACITY_KEY: &[u8] = b"managed-capacity=";
+pub const TOKEN_KEY: &[u8] = b"managed-token=";
+pub const MEMBERS_KEY: &[u8] = b"managed-members=";
+pub const CREDIT_LEN: usize = size_of::<u32>() + size_of::<u8>() + size_of::<u64>();
+pub const ABORT_LEN: usize = size_of::<u32>() + size_of::<i32>();
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Abort {
+    pub member: u32,
+    pub errno: i32,
+}
+
+impl Abort {
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let (member, rest) = bytes
+            .split_first_chunk::<{ size_of::<u32>() }>()
+            .ok_or(Error::Header)?;
+        let errno = i32::from_be_bytes(rest.try_into().map_err(|_| Error::Payload)?);
+        if errno <= 0 {
+            return Err(Error::Payload);
+        }
+        Ok(Self {
+            member: u32::from_be_bytes(*member),
+            errno,
+        })
+    }
+    pub fn encode(self) -> Result<[u8; ABORT_LEN], Error> {
+        let mut bytes = [0; ABORT_LEN];
+        let (member, rest) = bytes
+            .split_first_chunk_mut::<{ size_of::<u32>() }>()
+            .ok_or(Error::Header)?;
+        *member = self.member.to_be_bytes();
+        rest.copy_from_slice(&self.errno.to_be_bytes());
+        Self::decode(&bytes)?;
+        Ok(bytes)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Credit {
+    pub member: u32,
+    pub channel: Channel,
+    pub capacity: u64,
+}
+
+impl Credit {
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let (member, rest) = bytes
+            .split_first_chunk::<{ size_of::<u32>() }>()
+            .ok_or(Error::Header)?;
+        let (channel, rest) = rest.split_first().ok_or(Error::Payload)?;
+        let channel = Channel::try_from(*channel)?;
+        let capacity = u64::from_be_bytes(rest.try_into().map_err(|_| Error::Payload)?);
+        if capacity < (HEADER + size_of::<i32>()) as u64 || capacity > u64::from(super::MAX_PAYLOAD) {
+            return Err(Error::Capacity);
+        }
+        Ok(Self {
+            member: u32::from_be_bytes(*member),
+            channel,
+            capacity,
+        })
+    }
+
+    pub fn encode(self) -> Result<[u8; CREDIT_LEN], Error> {
+        let mut bytes = [0; CREDIT_LEN];
+        let (member, rest) = bytes
+            .split_first_chunk_mut::<{ size_of::<u32>() }>()
+            .ok_or(Error::Header)?;
+        *member = self.member.to_be_bytes();
+        let (channel, rest) = rest.split_first_mut().ok_or(Error::Payload)?;
+        *channel = self.channel as u8;
+        rest.copy_from_slice(&self.capacity.to_be_bytes());
+        Self::decode(&bytes)?;
+        Ok(bytes)
+    }
+}
+
+/// Reads the numeric route before allocating a record; full Record::decode is still required.
+pub fn route_prefix(bytes: &[u8]) -> Result<(u32, Channel), Error> {
+    let (tags, rest) = bytes.split_first_chunk::<4>().ok_or(Error::Header)?;
+    let [_, _, channel, _] = *tags;
+    let (member, _) = rest
+        .split_first_chunk::<{ size_of::<u32>() }>()
+        .ok_or(Error::Header)?;
+    Ok((u32::from_be_bytes(*member), Channel::try_from(channel)?))
+}
+
+pub fn members(setup: &[Vec<u8>]) -> Result<Option<u32>, Error> {
+    let mut entries = setup.iter().filter_map(|e| e.strip_prefix(MEMBERS_KEY));
+    let Some(value) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(Error::Member);
+    }
+    let value = core::str::from_utf8(value)
+        .map_err(|_| Error::Member)?
+        .parse::<u32>()
+        .map_err(|_| Error::Member)?;
+    if value == 0 {
+        return Err(Error::Member);
+    }
+    Ok(Some(value))
+}
+
+pub fn capacity(setup: &[Vec<u8>]) -> Result<Option<usize>, Error> {
+    let mut entries = setup.iter().filter_map(|e| e.strip_prefix(CAPACITY_KEY));
+    let Some(value) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(Error::Capacity);
+    }
+    let value = core::str::from_utf8(value)
+        .map_err(|_| Error::Capacity)?
+        .parse::<usize>()
+        .map_err(|_| Error::Capacity)?;
+    if value < HEADER + size_of::<i32>() || value > super::MAX_PAYLOAD as usize {
+        return Err(Error::Capacity);
+    }
+    Ok(Some(value))
+}
+
+pub fn token(setup: &[Vec<u8>]) -> Result<Option<[u8; super::TOKEN]>, Error> {
+    let mut entries = setup.iter().filter_map(|e| e.strip_prefix(TOKEN_KEY));
+    let Some(value) = entries.next() else {
+        return Ok(None);
+    };
+    if entries.next().is_some() {
+        return Err(Error::Payload);
+    }
+    Ok(Some(value.try_into().map_err(|_| Error::Payload)?))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum Channel {
     Stdout = super::kind::STDOUT,
     Stderr = super::kind::STDERR,
+}
+
+impl TryFrom<u8> for Channel {
+    type Error = Error;
+    fn try_from(value: u8) -> Result<Self, Error> {
+        match value {
+            super::kind::STDOUT => Ok(Self::Stdout),
+            super::kind::STDERR => Ok(Self::Stderr),
+            _ => Err(Error::Channel),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +185,7 @@ pub enum Error {
     Offset,
     State,
     Capacity,
+    Member,
 }
 
 impl fmt::Display for Error {
@@ -54,6 +200,7 @@ impl fmt::Display for Error {
             Self::Offset => "invalid managed output offset",
             Self::State => "invalid managed output transition",
             Self::Capacity => "managed output exceeds admitted capacity",
+            Self::Member => "managed output member was not admitted",
         })
     }
 }
@@ -119,20 +266,30 @@ impl Record<'_> {
         let len = self.encoded_len()?;
         let into = into.get_mut(..len).ok_or(Error::Capacity)?;
         let (header, payload) = into.split_first_chunk_mut::<HEADER>().ok_or(Error::Header)?;
-        let event = match self.event {
+        match self.event {
             Event::Open(label) => {
                 payload.copy_from_slice(label.as_bytes());
-                0
             }
             Event::Data(bytes) => {
                 payload.copy_from_slice(bytes);
-                1
             }
-            Event::End => 2,
+            Event::End => {}
             Event::Aborted(errno) => {
                 payload.copy_from_slice(&errno.to_be_bytes());
-                3
             }
+        }
+        *header = self.header()?;
+        Ok(len)
+    }
+
+    pub fn header(self) -> Result<[u8; HEADER], Error> {
+        self.encoded_len()?;
+        let mut header = [0; HEADER];
+        let event = match self.event {
+            Event::Open(_) => 0,
+            Event::Data(_) => 1,
+            Event::End => 2,
+            Event::Aborted(_) => 3,
         };
         let (tags, rest) = header.split_first_chunk_mut::<4>().ok_or(Error::Header)?;
         *tags = [VERSION, event, self.channel as u8, 0];
@@ -141,7 +298,7 @@ impl Record<'_> {
             .ok_or(Error::Header)?;
         *member = self.member.to_be_bytes();
         offset.copy_from_slice(&self.offset.to_be_bytes());
-        Ok(len)
+        Ok(header)
     }
 }
 
@@ -192,6 +349,50 @@ impl StreamState {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credits_and_aborts_have_checked_scoped_routes() {
+        for channel in [Channel::Stdout, Channel::Stderr] {
+            let credit = Credit {
+                member: u32::MAX,
+                channel,
+                capacity: (HEADER + size_of::<i32>()) as u64,
+            };
+            let bytes = credit.encode().unwrap();
+            assert_eq!(bytes.len(), 13);
+            assert_eq!(Credit::decode(&bytes).unwrap(), credit);
+            assert!(Credit::decode(&bytes[..bytes.len() - 1]).is_err());
+            let mut bad = bytes;
+            bad[4] = 0;
+            assert_eq!(Credit::decode(&bad), Err(Error::Channel));
+            assert!(
+                Credit {
+                    capacity: 0,
+                    ..credit
+                }
+                .encode()
+                .is_err()
+            );
+        }
+        let abort = Abort { member: 9, errno: 5 };
+        assert_eq!(Abort::decode(&abort.encode().unwrap()).unwrap(), abort);
+        assert!(Abort { errno: 0, ..abort }.encode().is_err());
+    }
+
+    #[test]
+    fn admission_is_unique_finite_and_checked() {
+        let mut setup = alloc::vec![b"managed-capacity=20".to_vec(), b"managed-members=2".to_vec()];
+        assert_eq!(capacity(&setup), Ok(Some(20)));
+        assert_eq!(members(&setup), Ok(Some(2)));
+        setup.push(b"managed-capacity=20".to_vec());
+        assert_eq!(capacity(&setup), Err(Error::Capacity));
+        for value in [b"0".as_slice(), b"999999999999999999999999999999999999999", b"x"] {
+            let entry = [CAPACITY_KEY, value].concat();
+            assert!(capacity(&[entry]).is_err());
+        }
+        assert!(members(&[b"managed-members=0".to_vec()]).is_err());
+        assert!(token(&[b"managed-token=short".to_vec()]).is_err());
+    }
 
     #[test]
     fn canonical_records_round_trip_binary_channels_and_terminals() {
