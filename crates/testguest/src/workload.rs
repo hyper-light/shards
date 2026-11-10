@@ -5999,7 +5999,7 @@ fn managed_capture_inherited_child(
         managed_capture_control_write(&mut peer, &challenge, until)?;
         drop(peer);
         stage = ManagedInheritedStage::Suffix;
-        managed_capture_bytes(&format!("{member}-inherited-after-release"))
+        managed_capture_bytes(&format!("{member}-inherited-afTer-release"))
     })();
     if result.is_ok() { 0 } else { stage as i32 }
 }
