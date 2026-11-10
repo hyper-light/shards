@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/home/adalundhe/managed-network-admit-first-proof-v1/target/debug/deps/sock_addr_pure-13f551734a777ac0",
+    "bytes": 10477968,
+    "sha256": "77eadf8daf7c20c8b85589fda3508ec1da38a9cb9065c732977b278295ecd84b"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-admit-first-proof-v1/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-3467ea191d858c99",
+    "bytes": 10588416,
+    "sha256": "29d18958277b1edbe05dac35634f3a49a0dfca73e5c5efa24ab8157bc0c263a6"
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "source": "c141f67d01777b93ab0b41f8628a68c9f911a370",
+  "base": "c2eb4760e8363af0c36adeb01dd08c3d2b9c3b08",
+  "path": "crates/testguest/src/managed_network/intercept/sock_addr.rs",
+  "sha256": "a7a830c0ad33934ffc5e0d1aba3c7c9d94a3e8685004c01018837ea17be7696d",
+  "final_copied_source_matches": true
+}
