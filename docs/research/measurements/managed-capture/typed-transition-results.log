@@ -1,0 +1,13 @@
+Output excerpts retained from the completed scoped tool calls; this is not a full trace.
+
+Native Linux, runner 8fadc1ec213332e16cb0d915a3fb913f:
+cargo test -p shards-init managed::tests -j 4 -- --test-threads=1
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
+
+cargo test -p shards-init run::cut_tests -j 4 -- --test-threads=1
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 97 filtered out; finished in 0.00s
+
+Local Mac cross-lint, nice -n 19 lockf /tmp/g121-mac.lock:
+cargo clippy -p shards-init -p shards-vm-process --target x86_64-unknown-linux-gnu --all-targets -j 4 -- -D warnings
+    Checking shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vm-process)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.09s

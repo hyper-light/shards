@@ -1,0 +1,40 @@
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/abi)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/ipc)
+   Compiling shards-net v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/net)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vmm)
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.34s
+     Running unittests src/main.rs (target/debug/deps/shards_vm-9f74ba2411604028)
+
+running 28 tests
+test grant_ask::tests::an_unsandboxed_process_says_so ... ok
+test spec::tests::a_spec_its_resolvers_push_past_a_frame_is_refused ... ok
+test spec::tests::a_terminal_brings_term ... ok
+test spec::tests::a_terminal_of_the_clients_types_is_chosen_where_none_is_given ... ok
+test spec::tests::an_execs_environment_is_laid_over_its_containers ... ok
+test spec::tests::default_hostnames_are_twelve_hex_digits ... ok
+test spec::tests::environments_compose ... ok
+test vm_run::said::a_guests_last_words_move_no_terminal ... ok
+test vm_run::tests::a_served_share_takes_its_socket_once ... ok
+test vm_run::tests::memory_max_is_what_the_guest_may_have_in_all ... ok
+test vm_run::tests::paths_are_taken_in_any_bytes ... ok
+test vm_run::tests::test_functions_are_placed_as_asked ... ok
+test vm_run::tests::valued_flags_need_their_values ... ok
+test warm::tests::a_request_with_the_wrong_descriptors_is_refused ... ok
+test warm::tests::what_the_vms_threads_send_the_daemon_arrives_whole ... ok
+test workload::capture::tests::duplex_credit_services_quiet_sibling_stderr_while_stdout_is_idle ... ok
+test workload::capture::tests::explicit_control_end_preserves_layer_connection_but_unannounced_eof_ends_it ... ok
+test workload::capture::tests::trusted_abort_preserves_tenant_errno_and_coalesces_duplicate ... ok
+test workload::tests::a_log_rotates_and_keeps_its_newest_segments ... ok
+test workload::tests::a_logger_keeps_records_whole_or_counts_them_lost ... ok
+test workload::tests::a_non_blocking_log_drops_only_what_comes_while_its_queue_is_full ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::an_exec_the_guest_cannot_connect_fails_with_why ... ok
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... ok
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::tests::records_are_written_whole_through_short_writes ... ok
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
