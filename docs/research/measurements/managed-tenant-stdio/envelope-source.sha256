@@ -1,0 +1,3 @@
+4f152458f22384c0aeb2d0ac9c03821c2283579833a361813c9800321677df27  crates/shards/tests/managed_output/tenant_inherited.rs
+b548fbee772ae87a822e0603fa0588d326f0829039057235c3460944b06a2315  crates/testguest/src/workload.rs
+9ba5de0418aa1beccead9df9e3754ced351bf904f541db3d766f3df5fafa6155  docs/research/measurements/managed-tenant-stdio/envelope-tests.rs

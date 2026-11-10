@@ -1,5 +1,10 @@
 # Inherited writer case A: source and compile-only checkpoint
 
+Historical daaed7e01 source/hash record. The subsequent
+[envelope checkpoint](ENVELOPE-CHECKPOINT.md) adds effect-free host/guest byte
+calculation checks and the later ROOT r696 normal/stdio receipt. A's actual
+owned-child and cleanup gates remain ROOT-owed.
+
 IMPLEMENTER `01a1c5d28cea74a5b0241200190d6c54`, coordinator
 `01a148884a4770fdaf0111f3f792a248`. Canonical full policy/plan/handoff re-read at
 `1d0588b28f839fd0fec049e4bcb00e261e28c3aa`; rules SHA256

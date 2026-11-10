@@ -6,6 +6,17 @@ struct InheritedInputs {
     tasks: u32,
 }
 
+fn inherited_report_bytes(challenge_bytes: usize) -> Option<usize> {
+    let capture = ["agent", "agent-inherited-ready", "agent-inherited-after-release"]
+        .into_iter()
+        .flat_map(|member| [payload(member, Channel::Stdout), payload(member, Channel::Stderr)])
+        .try_fold(0usize, |n, bytes| n.checked_add(bytes.len()))?;
+    challenge_bytes
+        .checked_add(size_of::<u8>() + size_of::<u32>())?
+        .checked_mul(2)?
+        .checked_add(capture)
+}
+
 impl InheritedInputs {
     fn read() -> Self {
         let common = Supplied::read();
@@ -14,18 +25,7 @@ impl InheritedInputs {
             .parse::<u32>()
             .unwrap();
         assert!(tasks > 0, "positive u32 matches actual AGENT --processes grammar");
-        let capture = ["agent", "agent-inherited-ready", "agent-inherited-after-release"]
-            .into_iter()
-            .flat_map(|member| [payload(member, Channel::Stdout), payload(member, Channel::Stderr)])
-            .try_fold(0usize, |n, bytes| n.checked_add(bytes.len()))
-            .unwrap();
-        let wire = common
-            .challenge
-            .len()
-            .checked_add(size_of::<u8>() + size_of::<u32>())
-            .and_then(|n| n.checked_mul(2))
-            .and_then(|n| n.checked_add(capture))
-            .unwrap();
+        let wire = inherited_report_bytes(common.challenge.len()).unwrap();
         assert!(
             u64::try_from(wire).unwrap() <= common.report_bytes,
             "parent/child capture plus control request+reply envelope"
