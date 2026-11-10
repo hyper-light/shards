@@ -1,0 +1,17 @@
+{
+  "command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "python3",
+    "-c",
+    "import subprocess,json\ncommands={\"policy\":[\"python3\",\"scripts/check-development-policy\"],\"diff\":[\"git\",\"diff\",\"--check\"],\"alternate_script_syntax\":[\"bash\",\"-n\",\"docs/research/measurements/managed-tenant-depth/event-diagnostic-alternate-lint.command\"],\"original_script_syntax\":[\"bash\",\"-n\",\"docs/research/measurements/managed-tenant-depth/event-diagnostic-lint.command\"]}\nresult={}\nfor name,cmd in commands.items():\n p=subprocess.run(cmd,capture_output=True,text=True); result[name]={\"command\":cmd,\"exit\":p.returncode,\"stdout\":p.stdout,\"stderr\":p.stderr}\nprint(json.dumps(result,indent=2))\nraise SystemExit(any(v[\"exit\"]!=0 for v in result.values()))"
+  ],
+  "exit": 75,
+  "stdout": "",
+  "stderr": "lockf: /tmp/g121-mac.lock: already locked\n",
+  "local_free_bytes": 177571971072,
+  "local_cargo_or_build": false,
+  "vm_executions": 0
+}
