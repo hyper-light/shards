@@ -1,5 +1,9 @@
 # Managed broker effects: canonical output caller
 
+Actual bounded KVM case r78 passed0; [results and limits](RESULTS.md) retain the
+native records, artifact hashes, interrupted preparation and historical raw-patch
+whitespace failure. This is one source-specific case, not completion of P7.
+
 Implementer and assigned adversarial tester: `/root/terminal_order_fixture`.
 Policy: canonical `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`, full
 `AGENTS.md`, R01–R16, evidence, CLAUDE, plan and current handoff read;

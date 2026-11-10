@@ -69,7 +69,8 @@ def main():
             output = (error.output or output) + b"\nouter reap deadline: process/pipe cleanup unknown\n"
     (records / "native.log").write_bytes(output)
     passed = (not timed_out and child.returncode == 0
-              and b"1 passed; 0 failed; 0 ignored" in output)
+              and any(line.startswith(b"test result: ok. 1 passed; 0 failed; 0 ignored;")
+                      for line in output.splitlines()))
     result = {"exit_code": child.returncode, "outer_timeout": timed_out, "signals": signals,
               "elapsed_seconds": time.monotonic() - started, "passed": passed,
               "cleanup_limit": "process-group bound only; private daemon/VM return requires native cleanup receipt; timeout leaves unknowns"}
