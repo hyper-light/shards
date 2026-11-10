@@ -1,0 +1,36 @@
+1794343164239868622	command	909	exec	/bin/testguest sleep
+1794343164240627060	agent helper	912	fork	1
+1794343164241409000	agent helper	912	exec	shards-server "agent helper" /proc/self/fd/6 200001 3 4 "" [] 7
+1794343164243152401	agent helper	918	fork	912
+1794343164243376164	agent helper	918	exec	shards-server sandbox
+1794343164243814519	agent helper	921	fork	1
+1794343164243922152	agent helper	924	fork	921
+1794343164243999940	agent helper	921	exec	shards-init managed-reaper
+1794343164297188385	agent helper	924	exec	/agents/helper/member managed-capture agent inherit-stdio 46719 240000 15000 16 269 2
+1794343164297712704	harness driver	1698	fork	1
+1794343164298068378	agent helper	1699	fork	924
+1794343164298278337	agent helper	1699	exec	/agents/helper/member managed-capture agent inherited-child 46719 240000 16 269 1 240578537394 15000
+1794343164298601080	harness driver	1698	exec	shards-server "harness driver" /proc/self/fd/6 200002 3 4 "" [] 7
+1794343164298745545	agent helper	1704	fork	1699
+1794343164298949638	agent helper	1704	exec	/agents/helper/member managed-capture agent inherited-child 46719 240000 16 269 0 240578537394 15000
+1794343164299909637	harness driver	1705	fork	1698
+1794343164303929778	harness driver	1705	exec	shards-server sandbox
+1794343164333054981	harness driver	1713	fork	1
+1794343164333238841	harness driver	1715	fork	1713
+1794343164333409954	harness driver	1713	exec	shards-init managed-reaper
+1794343164373465117	harness driver	1715	exec	/harness/driver/bin/member managed-capture harness step 45027 240000
+1794343164399632303	command	2230	fork	1
+1794343164400137046	command	2230	exec	/bin/testguest streams main-progress main-error
+1794343164400419182	command	2230	exit	code 0
+1794343164410325089	command	2233	fork	1
+1794343164410916171	command	2233	exec	/bin/testguest streams main-progress main-error
+1794343164411196307	command	2233	exit	code 0
+1794343164415686214	agent helper	1704	exit	code 0
+1794343164415821582	agent helper	1699	exit	code 0
+1794343164416096449	agent helper	924	exit	code 0
+1794343164416302970	agent helper	921	exit	code 0
+1794343164416402362	agent helper	918	exit	signal 9
+1794343164416503068	agent helper	912	exit	signal 9
+1794343164421016406	command	2238	fork	1
+1794343164421697435	command	2238	exec	/bin/testguest streams main-progress main-error
+1794343164422069372	command	2238	exit	code 0

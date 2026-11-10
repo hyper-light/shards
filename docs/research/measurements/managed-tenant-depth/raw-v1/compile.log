@@ -1,0 +1,162 @@
+   Compiling libc v0.2.189
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/vendor/aws-lc-rs)
+   Compiling quote v1.0.47
+   Compiling serde_core v1.0.229
+   Compiling typenum v1.20.1
+   Compiling zmij v1.0.23
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+   Compiling syn v3.0.6
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.5
+   Compiling serde_json v1.0.151
+   Compiling num-traits v0.2.19
+   Compiling serde v1.0.229
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/abi)
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling hybrid-array v0.4.15
+   Compiling cmake v0.1.58
+   Compiling zeroize v1.9.0
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/vendor/aws-lc-sys)
+   Compiling memchr v2.8.3
+   Compiling serde_derive v1.0.229
+   Compiling cpufeatures v0.3.1
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling const-oid v0.10.2
+   Compiling digest v0.11.3
+   Compiling zlib-rs v0.6.8
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling sha2 v0.11.0
+   Compiling regex-automata v0.4.18
+   Compiling rustls-pki-types v1.15.1
+   Compiling getrandom v0.4.3
+   Compiling portable-atomic v1.15.0
+   Compiling itoa v1.0.18
+   Compiling libm v0.2.16
+   Compiling num-integer v0.1.47
+   Compiling regex v1.13.1
+   Compiling rustls v0.23.46
+   Compiling once_cell v1.21.4
+   Compiling base64 v0.23.1
+   Compiling num-bigint v0.4.8
+   Compiling flate2 v1.1.10
+   Compiling untrusted v0.9.0
+   Compiling twox-hash v2.1.4
+   Compiling thiserror v2.0.21
+   Compiling ruzstd v0.9.1
+   Compiling thiserror-impl v2.0.21
+   Compiling subtle v2.6.1
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/erofs)
+   Compiling rand_core v0.10.1
+   Compiling foldhash v0.2.0
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling shards-template v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/template)
+   Compiling alloc-stdlib v0.2.4
+   Compiling shards-image v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/image)
+   Compiling httparse v1.10.1
+   Compiling log v0.4.34
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/cmdline)
+   Compiling brotli-decompressor v5.0.3
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/ipc)
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling keccak v0.2.2
+   Compiling time-core v0.1.9
+   Compiling deranged v0.5.8
+   Compiling powerfmt v0.2.0
+   Compiling tinyvec v1.13.3
+   Compiling num-conv v0.2.2
+   Compiling time v0.3.55
+   Compiling sha3 v0.11.0
+   Compiling digest v0.10.7
+   Compiling brotli v8.0.4
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/agentfile)
+   Compiling chacha20 v0.10.2
+   Compiling tracing-core v0.1.36
+   Compiling openssl-probe v0.2.1
+   Compiling cpufeatures v0.2.17
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/vmm)
+   Compiling siphasher v1.0.4
+   Compiling pin-project-lite v0.2.17
+   Compiling tracing v0.1.44
+   Compiling fastbloom v0.17.0
+   Compiling sha1 v0.10.7
+   Compiling rustls-native-certs v0.8.4
+   Compiling rand v0.10.3
+   Compiling hashbrown v0.17.1
+   Compiling rand_pcg v0.10.2
+   Compiling shards-netring v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/syscall-filter)
+   Compiling bytes v1.12.1
+   Compiling lru-slab v0.1.3
+   Compiling percent-encoding v2.3.2
+   Compiling libbz2-rs-sys v0.2.5
+   Compiling slab v0.4.12
+   Compiling rustc-hash v2.1.3
+   Compiling bzip2 v0.6.1
+   Compiling form_urlencoded v1.2.2
+   Compiling hashlink v0.12.2
+   Compiling sha1-checked v0.10.0
+   Compiling shards v0.7.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/shards)
+   Compiling yasna v0.6.0
+   Compiling unicode-normalization v0.1.25
+   Compiling pem v4.0.0
+   Compiling lzma-rust2 v0.21.0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-gitsign v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/gitsign)
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-tuf v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/tuf)
+   Compiling encoding_rs v0.8.35
+   Compiling arraydeque v0.5.1
+   Compiling iri-string v0.7.14
+   Compiling shards-dns v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/dns)
+   Compiling shards-registry v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/registry)
+   Compiling shards-net v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/net)
+   Compiling yaml-rust2 v0.13.0
+   Compiling shards-sigstore v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/sigstore)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/remote)
+   Compiling rcgen v0.14.10
+   Compiling shards-build v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/build)
+   Compiling shards-git v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/git)
+   Compiling shards-rego v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/seccomp)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/archive)
+   Compiling shards-flate v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/flate)
+   Compiling shards-user v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/user)
+   Compiling shards-zstd v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/zstd)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/devcgroup)
+   Compiling shards-ext4 v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/ext4)
+   Compiling shards-gateway v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/gateway)
+   Compiling shards-bus v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/bus)
+   Compiling triomphe v0.1.17
+   Compiling shards-tui v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/tui)
+   Compiling shards-api v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/api)
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/testguest)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/crates/testdir)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 5m 59s

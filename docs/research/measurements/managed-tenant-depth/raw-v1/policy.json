@@ -1,0 +1,7 @@
+{
+  "canonical_main": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+  "candidate_base": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer/assigned adversarial",
+  "new_fixture_compile_or_VM_pass": false
+}

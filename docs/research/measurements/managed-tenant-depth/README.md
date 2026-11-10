@@ -1,5 +1,10 @@
 # Controlled inherited-writer descendant depth
 
+Actual first exact-source gates: [RESULTS.md](RESULTS.md), cba6d1c32. Matching
+full build, host/native strict Clippy and real strict normal+D2 pass; independent
+per-edge wait/population/kernel return remains Unknown. Initial source-only pending
+statements below describe the preserved pre-build checkpoint.
+
 POLICY_READ: assigned adversarial/implementer 01a1c5d28cea74a5b0241200190d6c54;
 coordinator 01a148884a4770fdaf0111f3f792a248. Canonical base
 b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe, rules SHA256
@@ -85,7 +90,10 @@ https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html . No per-depth
 group is needed. Rust Child documentation requires explicit waiting; Drop does
 not reap: https://doc.rust-lang.org/std/process/struct.Child.html#method.wait .
 Linux CLOCK_MONOTONIC is a nonsettable system-wide clock:
-https://man7.org/linux/man-pages/man2/clock_gettime.2.html . Inspected2026-11-10.
+https://man7.org/linux/man-pages/man2/clock_gettime.2.html . Inspected2026-11-10. Rust std1.99.1 documents UNIX Instant::now using the same
+CLOCK_MONOTONIC: https://doc.rust-lang.org/std/time/struct.Instant.html .
+This supports the conservative guest-local conversion; other host clock behavior
+is not inferred or used to serialize a deadline.
 Passing a fresh relative work duration at each exec was rejected because depth
 would renew the allowance. Serializing private Rust Instant layout or host time
 was rejected because neither is the guest clock contract. A new manager/status

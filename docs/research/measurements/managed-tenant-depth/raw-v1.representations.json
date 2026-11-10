@@ -1,0 +1,41 @@
+{
+  "reason": "Preserve original trailing whitespace/blank EOF bytes without a Git whitespace waiver; unchanged full original archive and remote originals remain authoritative.",
+  "files": [
+    {
+      "original": "collect.command",
+      "representation": "collect.command.gz",
+      "decoded_bytes": 1989,
+      "decoded_sha256": "dde7e24914608d5d1f88df0c3bb709bf6d28d5f4a68437adc5aa89506078b07e"
+    },
+    {
+      "original": "commit.txt",
+      "representation": "commit.txt.gz",
+      "decoded_bytes": 597,
+      "decoded_sha256": "b4e80bde07c95cac1947db68326a4668dc1875814dc5d174ee6e4c92b93e9814"
+    },
+    {
+      "original": "live-v1/depth/test.log",
+      "representation": "live-v1/depth/test.log.gz",
+      "decoded_bytes": 597,
+      "decoded_sha256": "31d3ca79283ea6bd540553ddba760f6c014612364e9ee820aec9acf3d3d37431"
+    },
+    {
+      "original": "live-v1/normal/test.log",
+      "representation": "live-v1/normal/test.log.gz",
+      "decoded_bytes": 566,
+      "decoded_sha256": "0a79ac4fa93239a5b0abec44d79fcb95eded0a8a8b8c402ac0e5a07ef4178b7c"
+    },
+    {
+      "original": "live.command",
+      "representation": "live.command.gz",
+      "decoded_bytes": 2896,
+      "decoded_sha256": "dfd26b85c4a32491919bb099e6508003dbde6adca42461ddadcb85e9e0729515"
+    },
+    {
+      "original": "prepare-inputs.command",
+      "representation": "prepare-inputs.command.gz",
+      "decoded_bytes": 5188,
+      "decoded_sha256": "3fb0a902ca843b6ec548fb7599476a90618fe947668286b1320ee05b727062cd"
+    }
+  ]
+}

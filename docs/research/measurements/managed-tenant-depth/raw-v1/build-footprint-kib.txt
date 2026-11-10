@@ -1,0 +1,5 @@
+416736	/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source
+2069148	/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target
+368	/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/records
+46716	/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/cache
+333984	/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/frozen

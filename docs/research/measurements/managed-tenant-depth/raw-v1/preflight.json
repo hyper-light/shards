@@ -1,0 +1,20 @@
+{
+  "uname": {
+    "system": "Linux",
+    "node": "fedora-2",
+    "release": "6.19.10-300.fc44.x86_64",
+    "version": "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "machine": "x86_64",
+    "processor": ""
+  },
+  "uid": 1000,
+  "free_bytes": 1849081704448,
+  "kvm_api": 12,
+  "ask": {
+    "cpu": 2,
+    "memory_gib": 4,
+    "disk_gib": 24
+  },
+  "cargo_jobs": 4,
+  "purpose": "approved depth source build only; actors pending artifact/input readback"
+}
