@@ -1,0 +1,15 @@
+Warning: you are leaving 9 commits behind, not connected to
+any of your branches:
+
+  338b6b71 test(managed): use fixed-size hex chunks in socket comparison
+  f0624796 docs(managed): retain actual endpoint mismatch and cleanup syscall trace
+  de55ffab test(managed): prepare private filesystem state for held mount cleanup
+  1df2ddc2 test(managed): compose finite socket-address mechanism comparison
+ ... and 5 more.
+
+If you want to keep them by creating a new branch, this may be a good time
+to do so with:
+
+ git branch <new-branch-name> 338b6b71
+
+HEAD is now at 08316c12 docs: repair scoped references exposed by strict Rustdoc

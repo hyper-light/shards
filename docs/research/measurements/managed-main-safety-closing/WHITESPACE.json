@@ -1,0 +1,31 @@
+{
+  "original_command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "original_exit": 2,
+  "original_output": "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/lint.log:178: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/lint.log:424: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \n",
+  "raw_record_preserved": "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/lint.log",
+  "followup_checked_paths": [
+    "docs/research/measurements/managed-main-safety-closing/MANIFEST.json",
+    "docs/research/measurements/managed-main-safety-closing/README.md",
+    "docs/research/measurements/managed-main-safety-closing/TRANSFER.json",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/checkout.log",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/command.txt",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/disk.txt",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/fetch.log",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/final-status.txt",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/final-tracked.diff",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/gate-source.sha256",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/lint.exit",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/preflight-metadata.json",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/rustc.txt",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/source.txt",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/stages.json",
+    "docs/research/measurements/managed-main-safety-closing/root-main-safety-seven-0831-v1/status.txt"
+  ],
+  "followup_exit": 0,
+  "scope": "all staged source/records except that exact unmodified raw log; no global setting changed"
+}
