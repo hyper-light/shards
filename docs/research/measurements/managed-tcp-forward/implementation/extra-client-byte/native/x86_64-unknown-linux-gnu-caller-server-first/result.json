@@ -1,0 +1,35 @@
+{
+  "binary": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/target/x86_64-unknown-linux-gnu/debug/deps/relay_shared_check-f58d226704e7ee28",
+  "binary_before_sha256": "eff2812feeacb5c1bd8f068cc6c985c22118b5f5a4b38d1074c285e9e09b7adb",
+  "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+  "fd_before": 4,
+  "kernel_return": "Unknown",
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 4097230,
+  "pidfd_events": [
+    [
+      3,
+      1
+    ]
+  ],
+  "status": 0,
+  "fd_after": 4,
+  "binary_after_sha256": "eff2812feeacb5c1bd8f068cc6c985c22118b5f5a4b38d1074c285e9e09b7adb",
+  "checks": {
+    "one_actual_test": true,
+    "child_success": true,
+    "backend_bytes": true,
+    "client_bytes": true,
+    "both_endpoint_halves": true,
+    "both_flow_halves": true,
+    "owned_child_reaped": true,
+    "parent_fd_return": true,
+    "binary_unchanged": true,
+    "local_extra_acceptance": true,
+    "joined_with_original_time_remaining": true,
+    "all_owned_descriptor_returns": true
+  },
+  "passed": true
+}

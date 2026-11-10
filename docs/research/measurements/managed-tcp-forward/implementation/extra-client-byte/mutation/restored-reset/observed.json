@@ -1,0 +1,137 @@
+[
+  {
+    "type": "Endpoint",
+    "role": "ResetBackend",
+    "ordinal": 0,
+    "local": "127.0.0.1:44385",
+    "peer": "127.0.0.1:49698",
+    "read": 13,
+    "written": 8,
+    "read_end": "Closed",
+    "write_end": "Open",
+    "ok": true,
+    "read_hex": "5245515545535400ff0d0a0102",
+    "extra_hex": null,
+    "error_kind": "None",
+    "errno": null
+  },
+  {
+    "type": "Endpoint",
+    "role": "ResetClient",
+    "ordinal": 0,
+    "local": "127.0.0.1:49698",
+    "peer": "127.0.0.1:44385",
+    "read": 8,
+    "written": 13,
+    "read_end": "Open",
+    "write_end": "Closed",
+    "ok": false,
+    "read_hex": "53455256455200ff",
+    "extra_hex": null,
+    "error_kind": "Some(ConnectionReset)",
+    "errno": 104
+  },
+  {
+    "type": "NativeReset",
+    "ordinal": 0,
+    "client_error_kind": "Some(ConnectionReset)",
+    "backend_joined": true,
+    "relay_joined": false,
+    "native_fault_retained": true
+  },
+  {
+    "type": "NativeResetCleanup",
+    "ordinal": 0,
+    "fd_before": 4,
+    "fd_after": 4,
+    "kernel_return": "Unknown"
+  },
+  {
+    "type": "Endpoint",
+    "role": "ResetBackend",
+    "ordinal": 1,
+    "local": "127.0.0.1:47707",
+    "peer": "127.0.0.1:56573",
+    "read": 13,
+    "written": 8,
+    "read_end": "Closed",
+    "write_end": "Open",
+    "ok": true,
+    "read_hex": "5245515545535400ff0d0a0102",
+    "extra_hex": null,
+    "error_kind": "None",
+    "errno": null
+  },
+  {
+    "type": "NativeFlow",
+    "storage": "caller",
+    "connect": "Connected",
+    "end": null,
+    "fault": {
+      "kind": "Native",
+      "leg": "Backend",
+      "operation": "Read",
+      "error_kind": "ConnectionReset",
+      "errno": 104
+    },
+    "abort": {
+      "kind": "Requested",
+      "leg": "Client"
+    },
+    "client": "127.0.0.1:56570",
+    "upstream": "127.0.0.1:56573",
+    "to_backend": {
+      "half": "WriteClosed",
+      "source_end": "Eof",
+      "read": 13,
+      "written": 13,
+      "pending": 0,
+      "extra_consumed": 0,
+      "partial_writes": 0,
+      "would_block": 5,
+      "write_would_block": 0
+    },
+    "to_client": {
+      "half": "Reading",
+      "source_end": null,
+      "read": 8,
+      "written": 8,
+      "pending": 0,
+      "extra_consumed": 0,
+      "partial_writes": 0,
+      "would_block": 11,
+      "write_would_block": 0
+    }
+  },
+  {
+    "type": "Endpoint",
+    "role": "ResetClient",
+    "ordinal": 1,
+    "local": "127.0.0.1:56570",
+    "peer": "127.0.0.1:58715",
+    "read": 8,
+    "written": 13,
+    "read_end": "Open",
+    "write_end": "Closed",
+    "ok": false,
+    "read_hex": "53455256455200ff",
+    "extra_hex": null,
+    "error_kind": "Some(ConnectionReset)",
+    "errno": 104
+  },
+  {
+    "type": "NativeReset",
+    "ordinal": 1,
+    "client_error_kind": "Some(ConnectionReset)",
+    "backend_joined": true,
+    "relay_joined": true,
+    "native_fault_retained": true
+  },
+  {
+    "type": "NativeResetCleanup",
+    "ordinal": 1,
+    "fd_before": 4,
+    "fd_after": 4,
+    "kernel_return": "Unknown"
+  }
+]

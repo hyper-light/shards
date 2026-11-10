@@ -17,6 +17,7 @@ FILTERS = {
     "receipt-cancel": "managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt",
     "reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer",
     "client-reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer",
+    "extra-client-byte": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
 }
 PREFIX = "managed-tcp-forward "
 
@@ -158,6 +159,15 @@ def main():
         outcome["checks"]["both_endpoint_halves"] = len(reset) == 2 and all(row["backend_error_kind"] == "Some(ConnectionReset)" for row in reset)
         outcome["checks"]["both_flow_halves"] = len(flows) == 1 and flows[0]["fault"]["kind"] == "Native" and flows[0]["fault"]["leg"] == "Client" and flows[0]["fault"]["error_kind"] == "ConnectionReset" and flows[0]["abort"] == {"kind": "Requested", "leg": "Backend"}
         outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 2 and all(row["fd_before"] == row["fd_after"] for row in cleanup)
+    if args.case == "extra-client-byte":
+        request = payload(env_inputs["SHARDS_TCP_REQUEST_HEX"])
+        extra = payload(env_inputs["SHARDS_TCP_EXTRA_HEX"])
+        cleanup = [row for row in rows if row.get("type") == "NativeBoundaryCleanup"]
+        outcome["checks"]["both_endpoint_halves"] = len(backend) == len(client) == 1 and all(row["ok"] and row["read_end"] == row["write_end"] == "Closed" and row["extra_hex"] is None for row in backend + client)
+        outcome["checks"]["both_flow_halves"] = len(flows) == 1 and flows[0]["fault"] == {"kind": "ExtraData", "leg": "Client", "offset": len(request)} and flows[0]["to_backend"]["read"] == flows[0]["to_backend"]["written"] == len(request) and flows[0]["to_backend"]["pending"] == 0 and flows[0]["to_backend"]["extra_consumed"] == 1 and flows[0]["abort"] == {"kind": "NotRequired"}
+        outcome["checks"]["local_extra_acceptance"] = len(extra) == 1 and len(client) == 1 and client[0]["written"] == len(request) + len(extra)
+        outcome["checks"]["joined_with_original_time_remaining"] = len(joined) == 1 and joined[0]["relay_joined"] and joined[0]["backend_joined"] and joined[0]["original_remaining_ns"] > 0
+        outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 1 and cleanup[0]["fd_before"] == cleanup[0]["fd_after"]
     if env_inputs.get("SHARDS_NATIVE_WRITE_PRESSURE") == "required":
         outcome["checks"]["actual_short_send"] = len(flows) == 1 and flows[0]["to_backend"]["partial_writes"] > 0
         outcome["checks"]["actual_send_would_block"] = len(flows) == 1 and flows[0]["to_backend"]["write_would_block"] > 0

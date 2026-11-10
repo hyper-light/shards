@@ -1,0 +1,145 @@
+{
+  "root": "/home/adalundhe/relay-tcp-extra-client-mutation-v1",
+  "before_shared_sha256": "ab2ac5712e25dcd7210bdde287f126eda3c8b96ed2101c93c2055629d6fe5951",
+  "mutation": "replace only client Direction caller byte limit by existing PeerEnd in shared pump; owned loopback fixture only",
+  "mutant_shared_sha256": "7ff32c4c96f80e7bcd080dcf8616826c2e50341c797be0cd8361151bf9855498",
+  "mutant": {
+    "name": "mutant-server-first",
+    "launcher_status": 1,
+    "result": {
+      "binary": "/home/adalundhe/relay-tcp-extra-client-mutation-v1/artifacts/mutant-musl",
+      "binary_before_sha256": "56260a6cdcc311cd54c02abfc04ce0045087659d4b0d3944033c8937e8f07929",
+      "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+      "fd_before": 4,
+      "kernel_return": "Unknown",
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "timeout": false,
+      "pid": 439849,
+      "pidfd_events": [
+        [
+          3,
+          1
+        ]
+      ],
+      "status": 101,
+      "fd_after": 4,
+      "binary_after_sha256": "56260a6cdcc311cd54c02abfc04ce0045087659d4b0d3944033c8937e8f07929",
+      "checks": {
+        "one_actual_test": false,
+        "child_success": false,
+        "backend_bytes": false,
+        "client_bytes": true,
+        "both_endpoint_halves": false,
+        "both_flow_halves": false,
+        "owned_child_reaped": true,
+        "parent_fd_return": true,
+        "binary_unchanged": true,
+        "local_extra_acceptance": true,
+        "joined_with_original_time_remaining": true,
+        "all_owned_descriptor_returns": true
+      },
+      "passed": false
+    },
+    "observed": [
+      {
+        "type": "Endpoint",
+        "role": "BoundaryReceipt",
+        "ordinal": 0,
+        "local": "127.0.0.1:46119",
+        "peer": "127.0.0.1:38047",
+        "read": 13,
+        "written": 8,
+        "read_end": "Open",
+        "write_end": "Open",
+        "ok": true,
+        "read_hex": "5245515545535400ff0d0a0102",
+        "extra_hex": null,
+        "error_kind": "None",
+        "errno": null
+      },
+      {
+        "type": "Endpoint",
+        "role": "NativeBackend",
+        "ordinal": 0,
+        "local": "127.0.0.1:46119",
+        "peer": "127.0.0.1:38047",
+        "read": 13,
+        "written": 8,
+        "read_end": "Open",
+        "write_end": "Closed",
+        "ok": false,
+        "read_hex": "5245515545535400ff0d0a0102",
+        "extra_hex": "58",
+        "error_kind": "Some(InvalidInput)",
+        "errno": null
+      },
+      {
+        "type": "NativeFlow",
+        "storage": "caller",
+        "connect": "Connected",
+        "end": "BothHalvesClosed",
+        "fault": null,
+        "abort": {
+          "kind": "NotRequired"
+        },
+        "client": "127.0.0.1:42732",
+        "upstream": "127.0.0.1:38047",
+        "to_backend": {
+          "half": "WriteClosed",
+          "source_end": "Eof",
+          "read": 14,
+          "written": 14,
+          "pending": 0,
+          "extra_consumed": 0,
+          "partial_writes": 0,
+          "would_block": 7,
+          "write_would_block": 0
+        },
+        "to_client": {
+          "half": "WriteClosed",
+          "source_end": "Eof",
+          "read": 8,
+          "written": 8,
+          "pending": 0,
+          "extra_consumed": 0,
+          "partial_writes": 0,
+          "would_block": 14,
+          "write_would_block": 0
+        }
+      },
+      {
+        "type": "Endpoint",
+        "role": "NativeClient",
+        "ordinal": 0,
+        "local": "127.0.0.1:42732",
+        "peer": "127.0.0.1:46413",
+        "read": 8,
+        "written": 14,
+        "read_end": "Closed",
+        "write_end": "Closed",
+        "ok": true,
+        "read_hex": "53455256455200ff",
+        "extra_hex": null,
+        "error_kind": "None",
+        "errno": null
+      },
+      {
+        "type": "NativeJoined",
+        "relay_joined": true,
+        "backend_joined": true,
+        "original_remaining_ns": 29998274065
+      },
+      {
+        "type": "NativeBoundaryCleanup",
+        "fd_before": 4,
+        "fd_after": 4,
+        "kernel_return": "Unknown"
+      }
+    ]
+  },
+  "meaningful_red": true,
+  "restored_shared_sha256": "ab2ac5712e25dcd7210bdde287f126eda3c8b96ed2101c93c2055629d6fe5951",
+  "all_source_differences": [],
+  "named_file_diff_status": 0
+}

@@ -1,0 +1,65 @@
+[
+  {
+    "original": "mutation/mutant-server-first/stdout",
+    "stored": "mutation/mutant-server-first/stdout.raw.gz",
+    "bytes": 1994,
+    "sha256": "f09840861ca3d2c7c6c5b6fde01eaae7b12dd8c1eb96cbf81e47bab1fb1696f4",
+    "stored_sha256": "5fe4679b0f798e18a03b0b00c98bc32a4decdb6e8d7a8a3862a6d3befce143b2"
+  },
+  {
+    "original": "mutation/restored-backend-fin-first/stdout",
+    "stored": "mutation/restored-backend-fin-first/stdout.raw.gz",
+    "bytes": 1529,
+    "sha256": "b5e1e4b36d3f9b1f61e6449b558474e058ffbd4da767cb344064683becf1525f",
+    "stored_sha256": "c72b3123c691b2aee970ac514fa91cf021deb918316913efc0ef987cff2099a8"
+  },
+  {
+    "original": "mutation/restored-client-reset/stdout",
+    "stored": "mutation/restored-client-reset/stdout.raw.gz",
+    "bytes": 3208,
+    "sha256": "00ea53ba296affc75848c0a04d339a3fa6d83a233d208c80194f7c2b4bd62ab7",
+    "stored_sha256": "8195154565dc2aae5d4edcf8b24ae8eed1d6dcb8d5e6622e46c005d8d9412bad"
+  },
+  {
+    "original": "mutation/restored-extra-client-byte/stdout",
+    "stored": "mutation/restored-extra-client-byte/stdout.raw.gz",
+    "bytes": 1865,
+    "sha256": "8d14cddd1517bd8ab1c0918e8629ca5b77d71843ec6f54b09d8a7ccfad4c31ca",
+    "stored_sha256": "62019a5ad4cdbfb49c8456b020964b9b924834e6d648b5b429f37602df43201d"
+  },
+  {
+    "original": "mutation/restored-receipt-cancel/stdout",
+    "stored": "mutation/restored-receipt-cancel/stdout.raw.gz",
+    "bytes": 1548,
+    "sha256": "8d658dc62b4e451b1bcbeb9ed8ca6f12fccd9803849fd3544f6fe6f1bac1f49b",
+    "stored_sha256": "8b351bb2549b00060d58a97bf3c07cd35587c0b1699382708cff3e5cede6c4d5"
+  },
+  {
+    "original": "mutation/restored-reset/stdout",
+    "stored": "mutation/restored-reset/stdout.raw.gz",
+    "bytes": 2567,
+    "sha256": "d161f0a720a6d19ef1680bdef2f251c949d374f9fcbc1403801a3ffd67623a69",
+    "stored_sha256": "6b48d5ae97b1b8093fb0d6ec736b3580a195d470fd4b6a945d0faf59caa9e0d5"
+  },
+  {
+    "original": "mutation/restored-server-first/stdout",
+    "stored": "mutation/restored-server-first/stdout.raw.gz",
+    "bytes": 1526,
+    "sha256": "39bbc496c6c7f04c59d3e10d173684b521a6fc2577eab75007950afd76ed7523",
+    "stored_sha256": "2c366bb016eb07c330bd47ab1577011341c0f5b9241c5aed362759e4c2d19c3d"
+  },
+  {
+    "original": "native/x86_64-unknown-linux-gnu-caller-server-first/stdout",
+    "stored": "native/x86_64-unknown-linux-gnu-caller-server-first/stdout.raw.gz",
+    "bytes": 1865,
+    "sha256": "e08f9cf6a3ee6f33dedfeb9cb0ea2c6b67e4e0eb9a22c87623e3ff1f8f50de93",
+    "stored_sha256": "1c30ab6153aea421986c074a6606795a628c01d1b03dff53f8b08dbc96ed40bd"
+  },
+  {
+    "original": "native/x86_64-unknown-linux-musl-caller-server-first/stdout",
+    "stored": "native/x86_64-unknown-linux-musl-caller-server-first/stdout.raw.gz",
+    "bytes": 1865,
+    "sha256": "f7e05d6e539e3ad93808535550a5697666b44a50de4f528c14da24c8ec668f3e",
+    "stored_sha256": "76902b3468ea40e6469368642af6573c69a90d94606fcdae969250348766f4c9"
+  }
+]

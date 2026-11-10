@@ -1,0 +1,76 @@
+[
+  {
+    "type": "Endpoint",
+    "role": "NativeBackend",
+    "ordinal": 0,
+    "local": "127.0.0.1:49131",
+    "peer": "127.0.0.1:46653",
+    "read": 13,
+    "written": 8,
+    "read_end": "Closed",
+    "write_end": "Open",
+    "ok": true,
+    "read_hex": "5245515545535400ff0d0a0102",
+    "extra_hex": null,
+    "error_kind": "None",
+    "errno": null
+  },
+  {
+    "type": "NativeJoined",
+    "relay_joined": true,
+    "backend_joined": true,
+    "original_remaining_ns": 29998253419
+  },
+  {
+    "type": "NativeFlow",
+    "storage": "caller",
+    "connect": "Connected",
+    "end": null,
+    "fault": {
+      "kind": "Cancelled"
+    },
+    "abort": {
+      "kind": "NotRequired"
+    },
+    "client": "127.0.0.1:51964",
+    "upstream": "127.0.0.1:46653",
+    "to_backend": {
+      "half": "WriteClosed",
+      "source_end": "Eof",
+      "read": 13,
+      "written": 13,
+      "pending": 0,
+      "extra_consumed": 0,
+      "partial_writes": 0,
+      "would_block": 4,
+      "write_would_block": 0
+    },
+    "to_client": {
+      "half": "Reading",
+      "source_end": null,
+      "read": 8,
+      "written": 8,
+      "pending": 0,
+      "extra_consumed": 0,
+      "partial_writes": 0,
+      "would_block": 10,
+      "write_would_block": 0
+    }
+  },
+  {
+    "type": "Endpoint",
+    "role": "NativeClient",
+    "ordinal": 0,
+    "local": "127.0.0.1:51964",
+    "peer": "127.0.0.1:34539",
+    "read": 8,
+    "written": 13,
+    "read_end": "Closed",
+    "write_end": "Closed",
+    "ok": true,
+    "read_hex": "53455256455200ff",
+    "extra_hex": null,
+    "error_kind": "None",
+    "errno": null
+  }
+]

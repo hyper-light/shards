@@ -1,0 +1,102 @@
+{
+  "root": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11",
+  "checks": [
+    {
+      "name": "policy",
+      "status": 0,
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/policy.log",
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "name": "x86_64-unknown-linux-musl",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--lib",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j",
+        "1"
+      ],
+      "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/x86_64-unknown-linux-musl.log",
+      "sha256": "1f0f14b9f3524dc2d141fa4282414d3e68ea8b0368c0040ce2a74a883fb92f20"
+    },
+    {
+      "name": "x86_64-unknown-linux-musl-test-build",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "--lib",
+        "--no-run",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j",
+        "1",
+        "--message-format=json"
+      ],
+      "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/x86_64-unknown-linux-musl-test-build.log",
+      "sha256": "29f1eb3f6563e4f2ed81955a7589f0b1f45540f9a232c32486bf84779fd0da01"
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--lib",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j",
+        "1"
+      ],
+      "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/x86_64-unknown-linux-gnu.log",
+      "sha256": "89afd6aff499321c00c1016dbe3bf93d73ebbdc54d25d6171e8526b1196dc62d"
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-test-build",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "--lib",
+        "--no-run",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j",
+        "1",
+        "--message-format=json"
+      ],
+      "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v11/x86_64-unknown-linux-gnu-test-build.log",
+      "sha256": "443d2a17655553ca6ddeed99ee4700853e7c7ec3a3a8539063d6e4d2a43527fa"
+    }
+  ],
+  "native": [
+    {
+      "name": "x86_64-unknown-linux-musl-caller-server-first",
+      "status": 0
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-caller-server-first",
+      "status": 0
+    }
+  ],
+  "native_execution": true
+}

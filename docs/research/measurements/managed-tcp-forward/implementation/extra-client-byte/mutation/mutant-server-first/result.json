@@ -1,0 +1,35 @@
+{
+  "binary": "/home/adalundhe/relay-tcp-extra-client-mutation-v1/artifacts/mutant-musl",
+  "binary_before_sha256": "56260a6cdcc311cd54c02abfc04ce0045087659d4b0d3944033c8937e8f07929",
+  "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+  "fd_before": 4,
+  "kernel_return": "Unknown",
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 439849,
+  "pidfd_events": [
+    [
+      3,
+      1
+    ]
+  ],
+  "status": 101,
+  "fd_after": 4,
+  "binary_after_sha256": "56260a6cdcc311cd54c02abfc04ce0045087659d4b0d3944033c8937e8f07929",
+  "checks": {
+    "one_actual_test": false,
+    "child_success": false,
+    "backend_bytes": false,
+    "client_bytes": true,
+    "both_endpoint_halves": false,
+    "both_flow_halves": false,
+    "owned_child_reaped": true,
+    "parent_fd_return": true,
+    "binary_unchanged": true,
+    "local_extra_acceptance": true,
+    "joined_with_original_time_remaining": true,
+    "all_owned_descriptor_returns": true
+  },
+  "passed": false
+}

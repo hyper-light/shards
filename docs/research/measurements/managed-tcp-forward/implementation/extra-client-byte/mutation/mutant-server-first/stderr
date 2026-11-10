@@ -1,0 +1,4 @@
+
+thread 'managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded' (439859) panicked at ../source/crates/testguest/src/managed_network/intercept/tcp_forward.rs:1667:24:
+called `Result::unwrap()` on an `Err` value: Custom { kind: InvalidInput, error: "unexpected extra TCP endpoint byte" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
