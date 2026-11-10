@@ -5,7 +5,7 @@ record=${1:?evidence directory}
 mkdir -p "$record"
 record=$(cd "$record" && pwd)
 git rev-parse HEAD > "$record/source.txt"
-sha256sum crates/registry/src/http.rs block.c 2>/dev/null > "$record/source.sha256" || sha256sum crates/registry/src/http.rs docs/research/measurements/registry-cancel/block.c > "$record/source.sha256"
+sha256sum crates/registry/src/http.rs docs/research/measurements/registry-cancel/block.c > "$record/source.sha256"
 uname -a > "$record/environment.txt"
 rustc --version >> "$record/environment.txt"
 cc -shared -fPIC -Wall -Wextra -Werror -o "$record/block.so" docs/research/measurements/registry-cancel/block.c -ldl

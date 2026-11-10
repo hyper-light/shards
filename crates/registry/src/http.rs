@@ -2540,7 +2540,7 @@ mod tests {
     fn simultaneous_worker_waits_receive_their_own_answers_and_cancel_together() {
         let cancel = Cancel::new();
         std::thread::scope(|scope| {
-            let (one, first) = mpsc::channel();
+            let (one, first) = mpsc::channel::<usize>();
             let (two, second) = mpsc::channel();
             let cancellation = &cancel;
             let a =
