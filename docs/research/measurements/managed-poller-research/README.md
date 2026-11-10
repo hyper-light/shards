@@ -97,9 +97,14 @@ literal, and sends checkpoints without ending work at each checkpoint. No idle
 waiter or manufactured campaign is authorized.
 
 On renewal, the complete canonical five policy/plan files and current handoff
-were re-read. Policies remain byte-identical 24f/d634; the newly read handoff
-SHA-256 is `a0f3574338cbe8aaf0cef97f3f001cd2c0d048dddd24d3000ff21c284113605e`.
-Receipt key: `managed-poller-research-continual-policy-read-a0f35743-v1`.
+were re-read. Policies remain byte-identical 24f/d634. Receipt key:
+`managed-poller-research-continual-policy-read-a0f35743-v1`. The manifest's
+historical readback records handoff SHA-256
+`8c630628ff953ae79ec825579eb924279ce26d41e8c06e7c5233a11a9d96cb48`;
+the previous README text instead named `a0f35743…`. Those historical identities
+conflict, and the original handoff bytes are not retained here to resolve them.
+The receipt key is not hash evidence. Neither historical record is silently
+rewritten as a verified readback; [STEP2.md](STEP2.md) records the fresh read.
 The continuation makes native/token storage preparation, logical syscall length
 versus allocated capacity, reserve argument semantics, and decisive test cases
 concrete. It still selects no architecture/number and changes no runtime source.
@@ -175,3 +180,12 @@ unit/integration test, syscall fixture, fault injection, mutation, VM, lint matr
 benchmark, profile or audit ran in this batch. All runtime and comparative plans
 in the note are coordinator-owed and unrun; historic evidence is identified at
 its actual historic revision and does not validate this documentation as code.
+
+The current Step 2 return and full-policy readback are in [STEP2.md](STEP2.md).
+Its [fresh checks](checks-step2.json) retain actual commands/outcomes and the
+[source check](checks-step2-sources.json), reproducible with
+`python3 docs/research/measurements/managed-poller-research/verify-sources.py`.
+That checker only verifies document/source identity, links and pinned URLs;
+it executes no researched runtime path and proves no semantic or performance
+claim. The prior three check records remain historical, with their original
+hashes. All candidate cases remain unrun and coordinator-owned.

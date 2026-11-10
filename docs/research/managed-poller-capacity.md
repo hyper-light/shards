@@ -19,7 +19,7 @@ records exact URLs, resolved commits, retrieval times and raw-byte SHA-256 hashe
 ## 1. Poller: what the current source actually does
 
 The scoped source is
-[`Poller` in unix.rs](../../crates/vmm/src/platform/unix.rs), lines 1873–2106 at
+[`Poller` in unix.rs](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/vmm/src/platform/unix.rs#L1873), lines 1873–2106 at
 the base. `wait(&self, ready: &mut Vec<u64>, timeout)` clears an existing
 caller-owned token vector, makes a zeroed stack array of 64 native events,
 requests at most that many kernel results and extends the token vector. Thus
@@ -49,12 +49,12 @@ similarly named pollers. Source hashes are in the manifest.
 
 | Caller at base | Actual output storage and relevant demand |
 | --- | --- |
-| [`daemon/follow.rs`](../../crates/shards/src/daemon/follow.rs), `Followers::new`, `follow_all`, `follow_vm` | `ready` lives outside the wait loop. A wake socket, followed run sockets and process exits share the poller. Registration can happen outside the wait thread. The existing run/process maps have lifecycle purposes; their lengths are not automatically an exact kernel-membership count. |
-| [`daemon/commands.rs`](../../crates/shards/src/daemon/commands.rs), bulk ending loop near lines 1970–2110 | Registers the actual `going` collection; reuses one token Vec; removes completed watches. Work and deadline checks occur between waits. |
-| [`netproc.rs`](../../crates/shards/src/netproc.rs), `reap` | Watches one process and reuses one token Vec until readiness/deadline. Its pre-existing fallback is outside this capacity investigation. |
-| [`managed_cleanup.rs`](../../crates/shards/tests/managed_cleanup.rs), `Client::wait_change` | Makes a fresh token Vec per invocation; watches stdout and, while applicable, child exit. This test helper differs from the production followers loop. |
-| [`managed-output-cost/fixture.rs`](measurements/managed-output-cost/fixture.rs), `ExitProof::finish` | Reuses one Vec while waiting for two owned host-role exits; consumes each observed watch. This finite two-role fixture cannot establish behavior above a batch. |
-| [`platform/mod.rs`](../../crates/vmm/src/platform/mod.rs), existing Poller tests | Source includes 150 ready socket pairs drained across waits, level readiness, explicit removal and child-exit cases. They are **unrun here** and do not test persistent-hot-source fairness or allocator refusal. |
+| [`daemon/follow.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/daemon/follow.rs#L222), `Followers::new`, `follow_all`, `follow_vm` | `ready` lives outside the wait loop. A wake socket, followed run sockets and process exits share the poller. Registration can happen outside the wait thread. The existing run/process maps have lifecycle purposes; their lengths are not automatically an exact kernel-membership count. |
+| [`daemon/commands.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/daemon/commands.rs#L1970), bulk ending loop near lines 1970–2110 | Registers the actual `going` collection; reuses one token Vec; removes completed watches. Work and deadline checks occur between waits. |
+| [`netproc.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/netproc.rs#L345), `reap` | Watches one process and reuses one token Vec until readiness/deadline. Its pre-existing fallback is outside this capacity investigation. |
+| [`managed_cleanup.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/tests/managed_cleanup.rs#L186), `Client::wait_change` | Makes a fresh token Vec per invocation; watches stdout and, while applicable, child exit. This test helper differs from the production followers loop. |
+| [`managed-output-cost/fixture.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/docs/research/measurements/managed-output-cost/fixture.rs#L709), `ExitProof::finish` | Reuses one Vec while waiting for two owned host-role exits; consumes each observed watch. This finite two-role fixture cannot establish behavior above a batch. |
+| [`platform/mod.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/vmm/src/platform/mod.rs#L471), existing Poller tests | Source includes 150 ready socket pairs drained across waits, level readiness, explicit removal and child-exit cases. They are **unrun here** and do not test persistent-hot-source fairness or allocator refusal. |
 
 ## 2. OS limits, event semantics and portability
 
@@ -227,9 +227,9 @@ implementation can be scoped later after coordinator approval.
 ## 6. Memory::relieve inotify buffer
 
 The second item is `Memory::{watch,relieve}` and `Ooms::of` in
-[`domains.rs`](../../crates/init/src/domains.rs), lines 886–1043 at base, plus only
+[`domains.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/init/src/domains.rs#L886), lines 886–1043 at base, plus only
 its setup and poll/dispatch callers in
-[`run.rs`](../../crates/init/src/run.rs), near lines 248, 4679 and 5124.
+[`run.rs`](https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/init/src/run.rs#L248), near lines 248, 4679 and 5124.
 `watch` creates one nonblocking/CLOEXEC inotify instance and registers
 `{CGROUPS}/memory.events` itself for `IN_MODIFY`. It does not register a directory,
 one watch per domain, or ONESHOT. The successful watch descriptor is not retained
@@ -528,3 +528,16 @@ symptom/goal at a named caller, authoritative resource inputs, the selected
 delivery/cancel/failure contract, meaningful counterfactuals and paired costs.
 This refinement supplies concrete comparisons for that decision; it supplies no
 performance claim, architectural selection, new cache or production literal.
+
+## 9. Step 2 checkpoint return
+
+The [current return record](measurements/managed-poller-research/STEP2.md) separates
+source observations, derived obligations, historical coordinator results, fresh
+documentation checks and entirely unrun runtime work. It returns signed Poller
+`df37d254f366e8a7c9d75c876d816927860ee620`, inotify
+`c0db0f6ccd6780d9c703e1ae936674f1795e288f` and contract continuation
+`6eb84cf671278e140f8018768896f408324e0b28` for coordinator review. The pinned local
+citations above are checked against the base blobs in the retained manifest;
+the current branch has identical bytes for all those sources. This closes the
+research return only. No candidate, replacement number, runtime fix, measured
+improvement or managed-runtime completion follows from these document checks.

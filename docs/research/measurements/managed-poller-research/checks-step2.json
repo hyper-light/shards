@@ -1,0 +1,170 @@
+{
+  "kind": "Step 2 light documentation/source identity return; no runtime/performance work",
+  "utc": "2026-11-10T14:31:04.982048+00:00",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "documentation_parent": "6eb84cf671278e140f8018768896f408324e0b28",
+  "role": "implementer",
+  "step_agent": "01a1c5d8a67177769d8ab07fbe391e33",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "environment": {
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.9.6"
+  },
+  "policy_readback": {
+    "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+    "handoff_snapshot_sha256": "c561caf085fe38b685c0826ffda0776dcb709b8ceee4c0dd78da842efc1461ae",
+    "full_read_before_edits": true
+  },
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "docs/research/measurements/managed-poller-research/verify-sources.py"
+      ],
+      "exit_code": 0,
+      "stdout_artifact": "docs/research/measurements/managed-poller-research/checks-step2-sources.json",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "ls-remote",
+        "origin",
+        "refs/heads/main",
+        "refs/heads/p/managed-poller-research"
+      ],
+      "exit_code": 0,
+      "stdout": "096c9c7be1752a5eaf99eda2c7eb4723c2a8f6db\trefs/heads/main\n6eb84cf671278e140f8018768896f408324e0b28\trefs/heads/p/managed-poller-research\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/Users/adalundhe/.kiln-run/bin/gits",
+        "verify-commit",
+        "df37d254f366e8a7c9d75c876d816927860ee620"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "kiln-git-sign: kiln checks commits' signatures itself, against its root (docs/ci.md W27-R03); git can't check them here\n"
+    },
+    {
+      "command": [
+        "/Users/adalundhe/.kiln-run/bin/gits",
+        "verify-commit",
+        "c0db0f6ccd6780d9c703e1ae936674f1795e288f"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "kiln-git-sign: kiln checks commits' signatures itself, against its root (docs/ci.md W27-R03); git can't check them here\n"
+    },
+    {
+      "command": [
+        "/Users/adalundhe/.kiln-run/bin/gits",
+        "verify-commit",
+        "6eb84cf671278e140f8018768896f408324e0b28"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "kiln-git-sign: kiln checks commits' signatures itself, against its root (docs/ci.md W27-R03); git can't check them here\n"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/README.md",
+        "docs/research/measurements/managed-poller-research/STEP2.md",
+        "docs/research/measurements/managed-poller-research/verify-sources.py",
+        "docs/research/measurements/managed-poller-research/checks-step2-sources.json",
+        "docs/research/measurements/managed-poller-research/checks-step2.json"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "commits": [
+    {
+      "commit": "df37d254f366e8a7c9d75c876d816927860ee620",
+      "gpgsig_header_present": true,
+      "required_trailer_present": true
+    },
+    {
+      "commit": "c0db0f6ccd6780d9c703e1ae936674f1795e288f",
+      "gpgsig_header_present": true,
+      "required_trailer_present": true
+    },
+    {
+      "commit": "6eb84cf671278e140f8018768896f408324e0b28",
+      "gpgsig_header_present": true,
+      "required_trailer_present": true
+    }
+  ],
+  "identity_checks_passed": true,
+  "mechanical_policy_passed": true,
+  "files": [
+    {
+      "path": "docs/research/managed-poller-capacity.md",
+      "bytes": 45489,
+      "sha256": "699cb0970f7f9bfc50edf959eff8afcfb66e9a2b281f9d38b4772bbfc9783e49"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/README.md",
+      "bytes": 13429,
+      "sha256": "590de77191f510d769959006a84b337045b4a1b8e147a66ed29e3d90b227fc6e"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "bytes": 8020,
+      "sha256": "4cb8d8c4d279bf20116fff57ca79b2f3c97188633cad57dab741562880d33b7e"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/verify-sources.py",
+      "bytes": 6874,
+      "sha256": "aec58dd8cc677ab0665af6d07b6f421e2889c96d0d16308e883b43f1316b99e4"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/checks-step2-sources.json",
+      "bytes": 32133,
+      "sha256": "4bfe115b2f49a99a92e538e7bb92db84f32c5beaf63d396b076502cd4d240424"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/source-identity.json",
+      "bytes": 34921,
+      "sha256": "4877d5a26928ebe3f1774866e4a81934b71d9f1a98e604c081f5946e8edffef8"
+    }
+  ],
+  "named_path_whitespace": "Passed for the named staged return files; after recording this outcome, the finalized record is staged and checked again before signing.",
+  "signature_verification": "All existing signature headers/trailers present. Local gits verify-commit returned 1 because this signer delegates verification to Kiln against its root; no local cryptographic pass claimed.",
+  "coverage_review": "Manual document/source review maps every Step 2 deliverable and proposed proof case in STEP2.md. Hash/URL/link checks alone do not prove semantics.",
+  "unrun": [
+    "all proposed candidate proof cases",
+    "runtime reproduction",
+    "compile/unit/integration/E2E",
+    "syscall/cgroup/VM fixtures",
+    "allocation/refusal/fault injection",
+    "guard-removal/restoration mutations",
+    "seven-target lint and real host/VM gates",
+    "all audits/profiling/benchmarking/chaos/sweeps"
+  ],
+  "limits": [
+    "No production changes, replacement numbers, service policy or architecture selected.",
+    "The parent maintenance and full managed-runtime goals remain incomplete.",
+    "Coordinator review and all runtime/performance acceptance remain owed.",
+    "Historical handoff hash discrepancy is disclosed, not retrospectively verified."
+  ],
+  "source_check_latest_utc": "2026-11-10T14:31:52.724408+00:00"
+}

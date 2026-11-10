@@ -1,0 +1,806 @@
+{
+  "kind": "Light documentation/source identity checks only; no runtime/performance work",
+  "checked_utc": "2026-11-10T14:31:52.724408+00:00",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "head": "6eb84cf671278e140f8018768896f408324e0b28",
+  "manifest_sha256": "4877d5a26928ebe3f1774866e4a81934b71d9f1a98e604c081f5946e8edffef8",
+  "checker_sha256": "aec58dd8cc677ab0665af6d07b6f421e2889c96d0d16308e883b43f1316b99e4",
+  "local_git_blobs": [
+    {
+      "path": "AGENTS.md",
+      "git_blob": "cfc3019c09da85d8e48b752f80667d89685d9d0b",
+      "bytes": 1757,
+      "sha256": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "docs/development-rules.md",
+      "git_blob": "813288bad9c1f8ecd269a89d35ba35e37dc393a1",
+      "bytes": 10874,
+      "sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "git_blob": "a25586c29d1564bc97b90c291fcee74153e25282",
+      "bytes": 3207,
+      "sha256": "a84c60f20e3a06a294bd5b091c1f43cfd5cc4b33ef1bd22a50cd94cea07bb97b",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "CLAUDE.md",
+      "git_blob": "83720166eb8802f9e2dc916e94a996561f72c4aa",
+      "bytes": 16962,
+      "sha256": "54c3ad93162608248419fe54c42d14bd00ed3cf6aebaf99b78a1c4d83acd28a1",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "docs/design/managed-runtime-plan.md",
+      "git_blob": "3b3bcc2ca73ce313e12c85dde91c514df17292d2",
+      "bytes": 47017,
+      "sha256": "02fcd0ea47748160787abd78301df1ac62ec54335d09568df295e2da98853a2c",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "scripts/check-development-policy",
+      "git_blob": "4df3e1b3f4e731109250f94a0917e72acd5f0f3b",
+      "bytes": 3326,
+      "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "git_blob": "c35d79ead0da29547b9cb730b4abf3c98861b6e9",
+      "bytes": 137180,
+      "sha256": "4b801f582cf76ddac4bec248bd3dba9ddb91a9b3b130c6b55bab98a95f89978f",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "crates/vmm/src/platform/mod.rs",
+      "git_blob": "f5cf5cfcbd6a0d2025f952272b731138b78699d2",
+      "bytes": 34302,
+      "sha256": "d79f60f4cd68133e68775ba5ee5d026ed4c4db1ef0005a1343ddbb0ff063ee47",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "crates/shards/src/daemon/follow.rs",
+      "git_blob": "3b2edb6f8419326bd97f0e54c20b2e6b4831c1f0",
+      "bytes": 24276,
+      "sha256": "51dcf3eb6c39f7eae169cf52ba4c07400b953adeff4db72d013216ab5ecc803c",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "git_blob": "a1a50163ce9d811ba3d2263ed573f920ba152215",
+      "bytes": 161936,
+      "sha256": "8eb26275f014225a0f53d377563ff57f838a90f726d7057203caf3761e3aab70",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    },
+    {
+      "path": "crates/shards/src/netproc.rs",
+      "git_blob": "f0ac9b7a78b39a31c908397d86102e2d99a43a5b",
+      "bytes": 31671,
+      "sha256": "1c5eee533a3283ef79a7da48eb3c0fe7ae2fba45746838490ce3a17fa91a879a",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    },
+    {
+      "path": "crates/shards/tests/managed_cleanup.rs",
+      "git_blob": "2f4a8a1c3521a8fe248e123cea4aab22181b7eed",
+      "bytes": 23418,
+      "sha256": "60c22e7e52a1035b77c22edf202e686504a67972674f6671e682c0d3093d7d1b",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    },
+    {
+      "path": "docs/research/measurements/managed-output-cost/HOST-EXIT.md",
+      "git_blob": "4596d7cc050d7f4acdb124400db2dabf1d6f3821",
+      "bytes": 10253,
+      "sha256": "f107dcb8bedcca6a6639b8c8bfaffdb0817a015b622f89a43d93fa9e8be3f2e2",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+      "git_blob": "4e7ab20b5f6d242b8378dc23c0d8d5efff1d0a8e",
+      "bytes": 34043,
+      "sha256": "a0ed1cd19511ff27be24d8bff1acd70d0b5070c682a1fe462e09681439a655c3",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-output-exit/README.md",
+      "git_blob": "5ab5970ef29be8b6ae7f8f40457f763d2ae0c442",
+      "bytes": 6961,
+      "sha256": "e4d17f1ee5e0e9223a34597f6952a187f8b312ca60633a1a25b2515907e7c506",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": true,
+      "checkout": "materialized"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "git_blob": "cf79e05e1fcbb3ea98f0352dd93cd3990c81bddb",
+      "bytes": 114588,
+      "sha256": "4d961f3ad04b3fcb93680900bbfc28955fef308c8cadd846790abc217e5efa70",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "git_blob": "3adc4bbe5e4b7e03f941cdee5eb2065b59224458",
+      "bytes": 264811,
+      "sha256": "7ba4a1b4014b213c160cc7303a75faf5af75414ff7783664fcbbec7103fe9555",
+      "matches_manifest": true,
+      "head_matches_base": true,
+      "working_file_matches_base": null,
+      "checkout": "sparse; checked Git blob"
+    }
+  ],
+  "external_citations": [
+    {
+      "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/kern/kern_event.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/apple-oss-distributions/xnu/blob/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/sys/event.h",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/init/src/domains.rs#L886",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/init/src/run.rs#L248",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/daemon/commands.rs#L1970",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/daemon/follow.rs#L222",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/src/netproc.rs#L345",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/shards/tests/managed_cleanup.rs#L186",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/vmm/src/platform/mod.rs#L471",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/crates/vmm/src/platform/unix.rs#L1873",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/hyper-light/shards/blob/24f48ee5ebf198485117aa93bf47685ad7d7d53f/docs/research/measurements/managed-output-cost/fixture.rs#L709",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/libevent/libevent/blob/5df3037d10556bfcb675bc73e516978b75fc7bc7/epoll.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/libevent/libevent/blob/5df3037d10556bfcb675bc73e516978b75fc7bc7/kqueue.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/rust-lang/rust/blob/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/rust-lang/rust/blob/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/tokio-rs/mio/blob/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/event/events.rs",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/tokio-rs/mio/blob/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/tokio-rs/mio/blob/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/kqueue.rs",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/eventpoll.h",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/epoll_wait.2.html",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+      "matches_manifest": true
+    },
+    {
+      "url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "matches_manifest": true
+    }
+  ],
+  "relative_links": [
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-poller-research/",
+      "available": true
+    },
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-poller-research/README.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-poller-research/source-identity.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-output-cost/HOST-EXIT.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-coordinator-output-exit/README.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/managed-poller-capacity.md",
+      "target": "measurements/managed-poller-research/STEP2.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "../../managed-poller-capacity.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "source-identity.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "STEP2.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "kiln-plan.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "kiln-research.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "checks-poller.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "checks-inotify.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "checks-contracts.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "STEP2.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "checks-step2.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/README.md",
+      "target": "checks-step2-sources.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "README.md#checkpoints-and-current-handoff",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "checks-step2.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "../../managed-poller-capacity.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "../managed-coordinator-output-exit/README.md",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "checks-step2.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "checks-step2-sources.json",
+      "available": true
+    },
+    {
+      "document": "docs/research/measurements/managed-poller-research/STEP2.md",
+      "target": "README.md#r01r16-account-for-both-research-batches",
+      "available": true
+    }
+  ],
+  "limits": [
+    "Byte identity is not semantic citation review or runtime validation.",
+    "Mutable manuals are compared with the retained historical snapshot hash.",
+    "No upstream source/archive is extracted or retained on disk.",
+    "All candidate cases, reproductions, mutations and costs remain unrun here."
+  ],
+  "pinned_source_identities": [
+    {
+      "id": "linux:fs/eventpoll.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/uapi/linux/eventpoll.h",
+      "matches_manifest": true
+    },
+    {
+      "id": "xnu:bsd/kern/kern_event.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "xnu:bsd/sys/event.h",
+      "matches_manifest": true
+    },
+    {
+      "id": "libevent:epoll.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "libevent:kqueue.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/sys/unix/selector/epoll.rs",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/sys/unix/selector/kqueue.rs",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/event/events.rs",
+      "matches_manifest": true
+    },
+    {
+      "id": "rust:library/alloc/src/vec/mod.rs",
+      "matches_manifest": true
+    },
+    {
+      "id": "rust:library/alloc/src/raw_vec/mod.rs",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/uapi/linux/inotify.h",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_user.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_fsnotify.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/fsnotify.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/notification.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/kernfs/file.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:Documentation/admin-guide/cgroup-v2.rst",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:mm/memcontrol.c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/linux/memcontrol.h",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:kernel/cgroup/cgroup.c",
+      "matches_manifest": true
+    }
+  ],
+  "upstream_bytes": [
+    {
+      "id": "linux:fs/eventpoll.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c",
+      "bytes": 70850,
+      "sha256": "7ee6ef3a3f6a9ecf63a1731caafb29b4977796198962e13acee4dc88c1e7386c",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/uapi/linux/eventpoll.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/eventpoll.h",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/eventpoll.h",
+      "bytes": 3063,
+      "sha256": "5550fcd320468d703a56172a35ab6f46dd6b1ca858bf5832df74af693ebd78fd",
+      "matches_manifest": true
+    },
+    {
+      "id": "xnu:bsd/kern/kern_event.c",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/kern/kern_event.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/kern/kern_event.c",
+      "bytes": 265703,
+      "sha256": "31883075b6945969546451f2b979087d9e42dadf4aac19b3410b26551f36cd29",
+      "matches_manifest": true
+    },
+    {
+      "id": "xnu:bsd/sys/event.h",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/sys/event.h",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/sys/event.h",
+      "bytes": 18152,
+      "sha256": "a172b971272e10ced09ea58b2d74aea333901b8a7ed27864a261df79adc4714c",
+      "matches_manifest": true
+    },
+    {
+      "id": "libevent:epoll.c",
+      "url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/epoll.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/epoll.c",
+      "bytes": 14881,
+      "sha256": "5c100a8e563f8158c3200025b9ed09e239215428b96b83c310f05ea0b380b4d3",
+      "matches_manifest": true
+    },
+    {
+      "id": "libevent:kqueue.c",
+      "url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/kqueue.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/kqueue.c",
+      "bytes": 15128,
+      "sha256": "437959d1e702ebb86c634986882f844b62bea963375d7d59095feedb1d6b6a49",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/sys/unix/selector/epoll.rs",
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+      "bytes": 6883,
+      "sha256": "689ade2c72f85caa204edada855790b7a617f78bc759487304be24c6ec4efb2d",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/sys/unix/selector/kqueue.rs",
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/kqueue.rs",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/kqueue.rs",
+      "bytes": 29311,
+      "sha256": "b5b1825f45925e6913a1b5130766b99623fd70d479b56e6e1ac9979002db4295",
+      "matches_manifest": true
+    },
+    {
+      "id": "mio:src/event/events.rs",
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/event/events.rs",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/event/events.rs",
+      "bytes": 5792,
+      "sha256": "5cad85e0d0c9e619b6017f868c681ed0dc023e7aae8c0c5c0c7337b2fa96a8a6",
+      "matches_manifest": true
+    },
+    {
+      "id": "rust:library/alloc/src/vec/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+      "bytes": 158242,
+      "sha256": "d4684df2b3c53ed24632b5450cb272e9eeb19987cb305cacf506358f4f489ca2",
+      "matches_manifest": true
+    },
+    {
+      "id": "rust:library/alloc/src/raw_vec/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+      "bytes": 29400,
+      "sha256": "5c51411a79a9c48ce17940080603d7129a7426dec86ae43d1d8924f7bfa8198a",
+      "matches_manifest": true
+    },
+    {
+      "id": "man7-epoll-wait",
+      "url": "https://man7.org/linux/man-pages/man2/epoll_wait.2.html",
+      "status": 200,
+      "resolved_url": "https://man7.org/linux/man-pages/man2/epoll_wait.2.html",
+      "bytes": 16916,
+      "sha256": "9a9df66b116c6234fd2b587c23ac4bcb43c1b0be8ab200fdfc281b565b0997a2",
+      "matches_manifest": true
+    },
+    {
+      "id": "man7-epoll",
+      "url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+      "status": 200,
+      "resolved_url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+      "bytes": 29690,
+      "sha256": "bbc1eb5e9e5fe34342d6836ee6283f510cceedbf4ba55fc9b8d0557d52f9f14e",
+      "matches_manifest": true
+    },
+    {
+      "id": "apple-kqueue-archive",
+      "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html",
+      "status": 200,
+      "resolved_url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html",
+      "bytes": 29556,
+      "sha256": "89581e15d32ad4f9303241a39d5d8e63fd0fd88e4ea446a0d630c958d65c73ef",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/uapi/linux/inotify.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "bytes": 3304,
+      "sha256": "48c09a53335353490f94cd465c96f092d0b3a9736b42aae8691e41b9c6390370",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_user.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "bytes": 22108,
+      "sha256": "9a98d8a927c6b2ffa2d403cc52bb1cf45a65f30048143be3dc1178d8e6c1cf3e",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "bytes": 5998,
+      "sha256": "ac62662f1843eb4d899d8adb419fe3393d1f4f0ab29d2123aa1abcaaf1203096",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "bytes": 23595,
+      "sha256": "a29dc638b23cee7f5334746f9d36ff65529f90539534ca632b00d10c264cf8e1",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/notify/notification.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "bytes": 5797,
+      "sha256": "3a756d5c49b822aa8d88c198866d6ab74aac7252c7f2f632cddbecf9d646f981",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:fs/kernfs/file.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "bytes": 28107,
+      "sha256": "32d8998ea0ffac621b535748f6a327c6e1f126e0f75f4a54b98319b475599cb7",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:Documentation/admin-guide/cgroup-v2.rst",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "bytes": 128488,
+      "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:mm/memcontrol.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "bytes": 147656,
+      "sha256": "537b9bdde4a0adade97279051fbce43590a18390293dd1119af15ea08267cbba",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:include/linux/memcontrol.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "bytes": 48700,
+      "sha256": "e82eed5049eec3c0cf080095814d0582baf95408366350e2057dd04f2467585f",
+      "matches_manifest": true
+    },
+    {
+      "id": "linux:kernel/cgroup/cgroup.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "status": 200,
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "bytes": 199222,
+      "sha256": "de44cafc76c19f8da3289ae23e4f12ed0ba43cbe7ceb6c5822e34ac570371616",
+      "matches_manifest": true
+    },
+    {
+      "id": "man7-inotify",
+      "url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "status": 200,
+      "resolved_url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "bytes": 44066,
+      "sha256": "79f5ab18e2fc423631cf4949ef82ca1384844353ea11a4dba42e1a77e8fdd8fd",
+      "matches_manifest": true
+    },
+    {
+      "id": "man7-inotify-rm-watch",
+      "url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "status": 200,
+      "resolved_url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "bytes": 8967,
+      "sha256": "33c801472a97eec100dde587e3265fcd74fa15e3297fbd5d67563d30e01f7b91",
+      "matches_manifest": true
+    },
+    {
+      "id": "libev",
+      "url": "https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz",
+      "status": 200,
+      "resolved_url": "https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz",
+      "bytes": 569527,
+      "sha256": "507eb7b8d1015fbec5b935f34ebed15bf346bed04a11ab82b8eee848c4205aea",
+      "matches_manifest": true,
+      "members": [
+        {
+          "path": "libev-4.33/ev_epoll.c",
+          "bytes": 10365,
+          "sha256": "3f2460e781366fd56d17b65aa4f165cbc43166d825655e3accab417ebdcade8d",
+          "matches_manifest": true
+        },
+        {
+          "path": "libev-4.33/ev_kqueue.c",
+          "bytes": 7088,
+          "sha256": "8f970d10f10d31c99cdd21d9f1470692b08364d22e926ae141c16d830ac6b758",
+          "matches_manifest": true
+        },
+        {
+          "path": "libev-4.33/ev.c",
+          "bytes": 151725,
+          "sha256": "a8b0092b8a552c72e255b0d96b59edbad622a3355ad2cef7355572e968eed0d6",
+          "matches_manifest": true
+        }
+      ]
+    }
+  ],
+  "passed": true
+}
