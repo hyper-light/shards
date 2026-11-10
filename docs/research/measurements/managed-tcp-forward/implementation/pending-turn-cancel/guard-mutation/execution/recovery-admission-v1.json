@@ -1,0 +1,193 @@
+{
+  "status": "RECOVERY_READ_REFUSED_OUTCOMES_UNKNOWN",
+  "policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "policy_readback_seq": 8084,
+  "role": "assigned adversarial relay tester",
+  "source_checkpoint": "8c56358b537227040d3c2ea03135b3c3a044d5f2",
+  "existing_native_dispatch": {
+    "id": "r2",
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "last_observed_running": true,
+    "source": "retained prior tool transcript; pre-cut transient tool-store entry unavailable"
+  },
+  "registry_lookup": {
+    "error": "no run r2 (it ended and was collected, or never was)"
+  },
+  "runner_inventory": {
+    "me": "e30189ea29182644fe5a4b2e06c7dac2",
+    "want": "os == linux, arch == x86_64",
+    "runners": [
+      {
+        "runner": {
+          "name": "8fadc1ec213332e16cb0d915a3fb913f",
+          "hostname": "fedora-2",
+          "label": "kiln-a094a12d.attlocal.net",
+          "was": [
+            "kiln-a094a12d.attlocal.net"
+          ],
+          "os": "linux",
+          "arch": "x86_64",
+          "labels": [
+            "baremetal",
+            "linux",
+            "x86_64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "d0c169120ba887ed3b77f31b67c5b37419ce91be19fd760317c9b136daa2cd23",
+          "reach_version": 2,
+          "cpus": 32,
+          "cpu_pct": 1.9855934381484983,
+          "load1": 0.4900000095367432,
+          "mem_total": 67128664064,
+          "mem_used": 8562053120,
+          "slots": 8,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex",
+            "devin"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 87.24530792236328,
+        "why": "linux/x86_64 · 31 of 32 cores idle · 55 GB free"
+      },
+      {
+        "runner": {
+          "name": "451397fcc585f7f7cb9aaf00e42064bb",
+          "hostname": "adacachy",
+          "label": "adacachy",
+          "was": [
+            "adacachy"
+          ],
+          "os": "linux",
+          "arch": "x86_64",
+          "labels": [
+            "baremetal",
+            "bench",
+            "local"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "c6759033caba9f52ec8a4dc4a08135d9178d480786833e0c5bde6e8651c6a974",
+          "reach_version": 2,
+          "cpus": 32,
+          "cpu_pct": 9.983877182006836,
+          "load1": 67.87999725341797,
+          "mem_total": 131986903040,
+          "mem_used": 42246512640,
+          "slots": 8,
+          "busy": 4,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex",
+            "devin"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": -10027.83984375,
+        "why": "linux/x86_64 · 0 of 32 cores idle · 84 GB free · 4 CI jobs · overloaded (load 68)"
+      }
+    ],
+    "passed": [
+      [
+        "2768d0d5d2974f1e21d348edadff9d1b",
+        "macos is not linux"
+      ],
+      [
+        "75694786916abd6207b67832b9b1e85e",
+        "macos is not linux"
+      ],
+      [
+        "b24c5c951260dcdfd0972f2aeaf3cf51",
+        "macos is not linux"
+      ],
+      [
+        "cec37f60f22c5a60d27f08f4d2e5daa8",
+        "macos is not linux"
+      ],
+      [
+        "d1323898b255a3ed435eb83fa0f7b0cf",
+        "macos is not linux"
+      ],
+      [
+        "e30189ea29182644fe5a4b2e06c7dac2",
+        "macos is not linux"
+      ],
+      [
+        "f3f618f29b31df31a1f52482b39578c2",
+        "macos is not linux"
+      ],
+      [
+        "f766f09294f2e17e3b8a631ffd4e6a4b",
+        "windows is not linux"
+      ],
+      [
+        "fedora.attlocal.net",
+        "stale: it never said its machine id, so kiln can't tell which machine it is; forget it under Runners if no machine runs it"
+      ]
+    ],
+    "labels": {
+      "2768d0d5d2974f1e21d348edadff9d1b": "adas-mac-studio-3.local",
+      "451397fcc585f7f7cb9aaf00e42064bb": "adacachy",
+      "75694786916abd6207b67832b9b1e85e": "adalundhe-macbook-pro",
+      "8fadc1ec213332e16cb0d915a3fb913f": "kiln-a094a12d.attlocal.net",
+      "b24c5c951260dcdfd0972f2aeaf3cf51": "adas-mac-studio-2.local",
+      "cec37f60f22c5a60d27f08f4d2e5daa8": "adas-mac-studio.local",
+      "d1323898b255a3ed435eb83fa0f7b0cf": "adas-mac-studio.local-2",
+      "e30189ea29182644fe5a4b2e06c7dac2": "adas-macbook-pro-2.local",
+      "f3f618f29b31df31a1f52482b39578c2": "adas-macbook-pro.local",
+      "f766f09294f2e17e3b8a631ffd4e6a4b": "jupiter"
+    }
+  },
+  "retrieval_request": {
+    "on": "451397fcc585f7f7cb9aaf00e42064bb",
+    "needs": "linux/amd64 cpus=1 mem=256m disk=1g",
+    "timeout_s": 60,
+    "sync": false,
+    "purpose": "Read only existing r2 result/source/artifact identities, no cases/cargo/rebuild"
+  },
+  "retrieval_receipt": {
+    "runner": "",
+    "output": "",
+    "running": false,
+    "error": "no runner suits 451397fcc585f7f7cb9aaf00e42064bb, 1 CPU, 256 MiB of memory, 1 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 451397fcc585f7f7cb9aaf00e42064bb; adacachy: 0 of 32 cores idle, under 1 CPU; adalundhe-macbook-pro: not 451397fcc585f7f7cb9aaf00e42064bb; kiln-a094a12d.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local-2: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro.local: not 451397fcc585f7f7cb9aaf00e42064bb; jupiter: not 451397fcc585f7f7cb9aaf00e42064bb; fedora.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb"
+  },
+  "owned_remote_root": "/home/adalundhe/relay-turn-pending-cancel-guard-0342-v1",
+  "current_native_cases_executed": "Unknown",
+  "current_native_outcomes": "Unknown",
+  "exact_remote_restoration": "Unknown",
+  "remote_cleanup": "Unknown",
+  "local_source_hashes": {
+    "crates/init/src/relay.rs": "94bf80f0e463ca6dde91ba4551a067aa7b4cd550751889ad46420bc938f1e576",
+    "crates/init/src/relay/turn_native.rs": "8b3ab148bbf22686abbead9d849032dcecdcc54e5169caefb37d07a1a4dcfc6c",
+    "native_case.py": "e8c06dd2aa035ce829b1b30964781a628ef3cfe315750a9d993150fa5d7b1bf0"
+  },
+  "metadata_assembly_failure": {
+    "type": "TypeError",
+    "detail": "pre-cut transient dispatch receipt store entry unavailable; original source and caller unaffected; prior dispatch transcript identified explicitly",
+    "native_test_outcome": false
+  },
+  "new_native_cases_started_during_recovery": 0,
+  "new_campaign_launched": false,
+  "source_rebased": false,
+  "root_paths_touched": false,
+  "overall_lane_closed": false,
+  "root_status_receipt": {
+    "sent": true,
+    "message": "from-agent-01a1c5d2ee0e7248982c95a59f1fd905-817769441e648495a8b86e12b2474b80",
+    "accepted": {
+      "session": "01a148884a4770fdaf0111f3f792a248",
+      "message": "from-agent-01a1c5d2ee0e7248982c95a59f1fd905-817769441e648495a8b86e12b2474b80",
+      "epoch": 0,
+      "at": 1794354625103,
+      "seq": 8098
+    }
+  }
+}

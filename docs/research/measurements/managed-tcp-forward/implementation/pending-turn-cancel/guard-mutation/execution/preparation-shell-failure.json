@@ -1,0 +1,9 @@
+{
+  "phase": "prepare caller v2 locally",
+  "status": 1,
+  "stderr": "zsh:48: unmatched '\\n",
+  "cause": "outer heredoc delimiter appeared inside the proposed embedded caller string",
+  "remote_command_executed": false,
+  "native_case_started": false,
+  "source_changed": false
+}
