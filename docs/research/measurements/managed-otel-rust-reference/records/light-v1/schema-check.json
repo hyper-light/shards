@@ -1,0 +1,33 @@
+{
+  "modes": {
+    "native-stream": {
+      "explicit_unknown_start_fields": 0,
+      "metrics": 13,
+      "payload_bytes": 4833,
+      "payload_sha256": "f2bb779233bac0ac014f2c3850dbc0ca8d45bf3d069e42586b9e0e9f71c186f0",
+      "points": 18,
+      "receipt_sha256": "8ae7c71c4de36b534b6af01661bdfe7058cbc494fb712333dee6189db6ec7b3d",
+      "resources": 3
+    },
+    "official-compact-buffer": {
+      "explicit_unknown_start_fields": 18,
+      "metrics": 13,
+      "payload_bytes": 6500,
+      "payload_sha256": "07aec3cf4330eb20d482a962cfdb82372216272f519b2e5705e529b299296142",
+      "points": 18,
+      "receipt_sha256": "8ae7c71c4de36b534b6af01661bdfe7058cbc494fb712333dee6189db6ec7b3d",
+      "resources": 3
+    },
+    "official-pretty-buffer": {
+      "explicit_unknown_start_fields": 18,
+      "metrics": 13,
+      "payload_bytes": 16108,
+      "payload_sha256": "8e2966181e247aec6234d7fe6403d43cab170d51014ed9228c493a61b2f1feea",
+      "points": 18,
+      "receipt_sha256": "8ae7c71c4de36b534b6af01661bdfe7058cbc494fb712333dee6189db6ec7b3d",
+      "resources": 3
+    }
+  },
+  "scope": "fixed shared Snapshot fixture; encoding only",
+  "semantic_receipts_equal": true
+}

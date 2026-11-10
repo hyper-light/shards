@@ -1,0 +1,279 @@
+{
+  "comparison_proto_release": "v1.11.1",
+  "comparison_proto_revision": "b3f75588eb23c5fca62264edd05d382de49beb1a",
+  "embedded_gitlink": {
+    "mode": "160000",
+    "path": "opentelemetry-proto/src/proto/opentelemetry-proto",
+    "sha": "ca839c51f706f5d53bfb46f06c3e90c3af3a52c6",
+    "type": "commit"
+  },
+  "embedded_proto_revision": "ca839c51f706f5d53bfb46f06c3e90c3af3a52c6",
+  "limits": "Used field names/tags/types/cardinalities and cumulative enum only; not whole-schema or SDK-pipeline equivalence.",
+  "rust_release": "0.33.1",
+  "rust_revision": "372ebbc74d4dba71bb9820732f57f7316b4e7a1e",
+  "sources": [
+    {
+      "bytes": 3388,
+      "sha256": "2bb3c6adee5f7609c8a32c5e4b1ec57057320015e298e9cf136699a42abc24d7",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/ca839c51f706f5d53bfb46f06c3e90c3af3a52c6/opentelemetry/proto/collector/metrics/v1/metrics_service.proto"
+    },
+    {
+      "bytes": 31889,
+      "sha256": "d0a53dda45ad100edbf25675f5b339ce8bf689bdc51816f8cf19b0d51464e1a4",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/ca839c51f706f5d53bfb46f06c3e90c3af3a52c6/opentelemetry/proto/metrics/v1/metrics.proto"
+    },
+    {
+      "bytes": 6549,
+      "sha256": "833db934b8b08be193940aa412f26a9ed8c564dfa8ea3517dc583f5064142731",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/ca839c51f706f5d53bfb46f06c3e90c3af3a52c6/opentelemetry/proto/common/v1/common.proto"
+    },
+    {
+      "bytes": 1716,
+      "sha256": "e0a7cdc0ffcfeffaa2606e8611839735ebffaa2d6acdf33e9356f2c48ae692d3",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/ca839c51f706f5d53bfb46f06c3e90c3af3a52c6/opentelemetry/proto/resource/v1/resource.proto"
+    },
+    {
+      "bytes": 3388,
+      "sha256": "2bb3c6adee5f7609c8a32c5e4b1ec57057320015e298e9cf136699a42abc24d7",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/b3f75588eb23c5fca62264edd05d382de49beb1a/opentelemetry/proto/collector/metrics/v1/metrics_service.proto"
+    },
+    {
+      "bytes": 31935,
+      "sha256": "9663b2670f980041e73a71a7c09fdf4fe0bc64056be762f2fcbd2642c4d112a3",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/b3f75588eb23c5fca62264edd05d382de49beb1a/opentelemetry/proto/metrics/v1/metrics.proto"
+    },
+    {
+      "bytes": 6619,
+      "sha256": "0429795169e29089cc53490b541a0ae89fa7c80492ac58ed2b3c4171cce4ecee",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/b3f75588eb23c5fca62264edd05d382de49beb1a/opentelemetry/proto/common/v1/common.proto"
+    },
+    {
+      "bytes": 1741,
+      "sha256": "34fe1c26b8959f09d97656348ae03b105d15a5f07ada0f8f1614ef5dff7d1569",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/b3f75588eb23c5fca62264edd05d382de49beb1a/opentelemetry/proto/resource/v1/resource.proto"
+    },
+    {
+      "bytes": 2320,
+      "sha256": "d7c899112797e87eabe28c2adb87141772e72fc5fdc89d26575c04f3bad9778c",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/Cargo.toml"
+    },
+    {
+      "bytes": 16531,
+      "sha256": "6007e922880d27182902a617962c715bada0e5cb87e11e690e4a7967bee923a8",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/src/proto.rs"
+    },
+    {
+      "bytes": 13569,
+      "sha256": "def6d5ae85a2ac3c343e0c8fe66865004fa05b9b8d5c40505b015b2244d93eae",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/tests/grpc_build.rs"
+    },
+    {
+      "bytes": 21347,
+      "sha256": "a7b5c59a0cb169c529d3c793718e4eb34eb79bf4a4ce362226748c08c0a893ce",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-sdk/src/metrics/data/mod.rs"
+    },
+    {
+      "bytes": 80680,
+      "sha256": "c69f1de1f286b6da340923916b24c92b01c58cdbf44d128cce2cf46e1b806fcd",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-otlp/src/exporter/http/mod.rs"
+    },
+    {
+      "bytes": 15969,
+      "sha256": "b7b1ce87cbd40f8fc64ec4da1fe5d79658a83b5639200035dda665aa92aeec6a",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/src/proto/tonic/opentelemetry.proto.collector.metrics.v1.rs"
+    },
+    {
+      "bytes": 50522,
+      "sha256": "ff2b822d75c39f0402b47ee1ff3aa25412102fa134a3fc29ecb84a855fd38d09",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/src/proto/tonic/opentelemetry.proto.metrics.v1.rs"
+    },
+    {
+      "bytes": 9752,
+      "sha256": "b0f800cbe10bc7a4254a2f34eba6caaf9125d6ca54b41d798abd1b39bc9ae5dc",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/src/proto/tonic/opentelemetry.proto.common.v1.rs"
+    },
+    {
+      "bytes": 1278,
+      "sha256": "9ecb813fd561a21cfc4966596d5e241c3b850b39fa00819882f2b3728beaf002",
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/opentelemetry-proto/src/proto/tonic/opentelemetry.proto.resource.v1.rs"
+    }
+  ],
+  "used_fields": {
+    "AnyValue.int_value": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "int64"
+    },
+    "AnyValue.string_value": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "string"
+    },
+    "ExportMetricsServiceRequest.resource_metrics": {
+      "cardinality": "repeated",
+      "tag": 1,
+      "type": "opentelemetry.proto.metrics.v1.ResourceMetrics"
+    },
+    "Gauge.data_points": {
+      "cardinality": "repeated",
+      "tag": 1,
+      "type": "NumberDataPoint"
+    },
+    "InstrumentationScope.attributes": {
+      "cardinality": "repeated",
+      "tag": 3,
+      "type": "KeyValue"
+    },
+    "InstrumentationScope.dropped_attributes_count": {
+      "cardinality": "singular",
+      "tag": 4,
+      "type": "uint32"
+    },
+    "InstrumentationScope.name": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "string"
+    },
+    "InstrumentationScope.version": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "string"
+    },
+    "KeyValue.key": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "string"
+    },
+    "KeyValue.value": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "AnyValue"
+    },
+    "Metric.description": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "string"
+    },
+    "Metric.gauge": {
+      "cardinality": "singular",
+      "tag": 5,
+      "type": "Gauge"
+    },
+    "Metric.metadata": {
+      "cardinality": "repeated",
+      "tag": 12,
+      "type": "opentelemetry.proto.common.v1.KeyValue"
+    },
+    "Metric.name": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "string"
+    },
+    "Metric.sum": {
+      "cardinality": "singular",
+      "tag": 7,
+      "type": "Sum"
+    },
+    "Metric.unit": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "string"
+    },
+    "NumberDataPoint.as_double": {
+      "cardinality": "singular",
+      "tag": 4,
+      "type": "double"
+    },
+    "NumberDataPoint.as_int": {
+      "cardinality": "singular",
+      "tag": 6,
+      "type": "sfixed64"
+    },
+    "NumberDataPoint.attributes": {
+      "cardinality": "repeated",
+      "tag": 7,
+      "type": "opentelemetry.proto.common.v1.KeyValue"
+    },
+    "NumberDataPoint.exemplars": {
+      "cardinality": "repeated",
+      "tag": 5,
+      "type": "Exemplar"
+    },
+    "NumberDataPoint.flags": {
+      "cardinality": "singular",
+      "tag": 8,
+      "type": "uint32"
+    },
+    "NumberDataPoint.start_time_unix_nano": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "fixed64"
+    },
+    "NumberDataPoint.time_unix_nano": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "fixed64"
+    },
+    "Resource.attributes": {
+      "cardinality": "repeated",
+      "tag": 1,
+      "type": "opentelemetry.proto.common.v1.KeyValue"
+    },
+    "Resource.dropped_attributes_count": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "uint32"
+    },
+    "Resource.entity_refs": {
+      "cardinality": "repeated",
+      "tag": 3,
+      "type": "opentelemetry.proto.common.v1.EntityRef"
+    },
+    "ResourceMetrics.resource": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "opentelemetry.proto.resource.v1.Resource"
+    },
+    "ResourceMetrics.schema_url": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "string"
+    },
+    "ResourceMetrics.scope_metrics": {
+      "cardinality": "repeated",
+      "tag": 2,
+      "type": "ScopeMetrics"
+    },
+    "ScopeMetrics.metrics": {
+      "cardinality": "repeated",
+      "tag": 2,
+      "type": "Metric"
+    },
+    "ScopeMetrics.schema_url": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "string"
+    },
+    "ScopeMetrics.scope": {
+      "cardinality": "singular",
+      "tag": 1,
+      "type": "opentelemetry.proto.common.v1.InstrumentationScope"
+    },
+    "Sum.aggregation_temporality": {
+      "cardinality": "singular",
+      "tag": 2,
+      "type": "AggregationTemporality"
+    },
+    "Sum.data_points": {
+      "cardinality": "repeated",
+      "tag": 1,
+      "type": "NumberDataPoint"
+    },
+    "Sum.is_monotonic": {
+      "cardinality": "singular",
+      "tag": 3,
+      "type": "bool"
+    }
+  },
+  "used_fields_equal": true
+}
