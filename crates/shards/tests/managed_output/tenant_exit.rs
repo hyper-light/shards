@@ -67,6 +67,10 @@ impl Capture {
                 .wire
                 .checked_add(u64::try_from(chunk.len()).unwrap())
                 .unwrap();
+            eprintln!(
+                "tenant-exit canonical member={} channel={} wire={offset} controlled_hex={chunk:02x?}",
+                observer.scope.member, observer.scope.channel as u8
+            );
             let record = Record::decode(&chunk).unwrap();
             assert_eq!(record.member, observer.scope.member, "stable declared member");
             assert_eq!(
@@ -98,9 +102,14 @@ impl Capture {
                 .send(Command::Handler(Ask::Ack(self.wire)))
                 .unwrap();
             if terminal && self.state.terminal() {
+                let terminal = observer.next(until);
+                eprintln!(
+                    "tenant-exit after consumed canonical End member={} channel={} wire={} actual={terminal:?}",
+                    observer.scope.member, observer.scope.channel as u8, self.wire
+                );
                 assert!(
-                    matches!(observer.next(until), Event::End),
-                    "transport EOF after consumed End"
+                    matches!(terminal, Event::End),
+                    "transport EOF after consumed End; actual={terminal:?}"
                 );
                 return;
             }
