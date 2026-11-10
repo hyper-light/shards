@@ -127,7 +127,7 @@ No production architecture or allocation workaround is selected from this result
 
 ## Integrity and policy accounting
 
-Six immutable archive transfers have exact byte/SHA identities in `transfer.json`.
+Eight immutable archive transfers have exact byte/SHA identities in `transfer.json`.
 Regular safe paths only were extracted; executable/object/PDB artifacts remain
 with their owners and their identities are recorded. The first Linux archive
 accidentally retained an ELF probe because its archive filter matched escaped
@@ -152,3 +152,35 @@ mandatory full routes and actual forwarding relay, broker/adapters, credential
 modes and generation-safe restore. The experimental output topology remains2N
 listeners/threads; performance and final topology are unselected. Functional pass
 codes do not remove these gaps or authorize a completeness claim.
+
+## Closing combined real-VM regressions
+
+Root r437 runs actual Fedora KVM suites on46749a35d: lifecycle3passed/2ignored,
+managed output3passed/1ignored, and the selected ignored limits suite3passed.
+No `SKIP:` line occurs. The limits count includes two actual VM cases and the
+existing port-probe helper, not three resource campaigns. The output count
+includes two real owner-stream cases and one pure metadata case.
+
+The live reaping log records all20 declared orphan-crash rounds: each adopted
+child is reaped and the actor's descriptor count stays5→5. A fresh mixed sibling
+challenge and main workload continue after the rounds. The output campaign
+retains binary channels, stalled stdout with independent stderr, observer loss,
+neighbor progress and authentication/scope refusal. Its stalled channel ends
+accepted86/consumed58, accurately retaining unacknowledged bytes; other consumed
+channels complete. Unknown retained tails stay labelled unknown.
+
+The limits cases observe the actual kernel fork refusal `EAGAIN` while two owned
+children remain held; separate fresh neighbor and main challenges answer.
+Recovery observes held0/reaped3/replacementPID6/FD6. Held cancellation never sends
+Release and never manufactures a recovered publication. The last guest facts
+remain `Refused/held`; host/kernel resource return is explicitly unobserved, not
+deduced from whole-run stop. Raw commands, inputs, kernel identity and logs are
+in `combined/root-managed-combined-real-4674-v1`.
+
+Root r441 runs12 native socket pair cases on the same source: IPv4/IPv6 × TCP,
+unconnected UDP and connected UDP × binary/empty payload. All12 actual guest
+observations pass, including TCP half-close behavior, with no skips. Raw records
+are in `native-sockets/root-managed-native-sockets-4674-v1`. These are native
+compatibility regressions after the receive-wrapper change; their identity
+records explicitly say interception is unverified. They do not add12 mediation
+proofs or settle the unrun UDP loopback/self interception cases.

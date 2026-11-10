@@ -1,0 +1,12 @@
+{
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-capture-target",
+  "MANAGED_LIMIT_PATIENCE_MS": "120000",
+  "CARGO_BUILD_JOBS": "4",
+  "MANAGED_LIMIT_RESERVED": "4",
+  "MANAGED_LIMIT_TASKS": "6",
+  "MANAGED_LIMIT_ROUNDS": "1",
+  "DOCKER_CONFIG": "/home/adalundhe/root-managed-empty-docker-config",
+  "MANAGED_LIMIT_CHILDREN": "2",
+  "SHARDS_REQUIRE_VMS": "1"
+}

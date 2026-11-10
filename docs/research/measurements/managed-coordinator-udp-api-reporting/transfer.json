@@ -40,5 +40,19 @@
     "bytes": 2897,
     "sha": "ce8fe204960970869baaeac9f707247c73cb06d2bc6c708f2b70ce6f80bb86e1",
     "prefix": "matrix"
+  },
+  {
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "remote": "root-managed-combined-real-4674-raw.tgz",
+    "bytes": 5282,
+    "sha": "2c3fc03210ed940bc049f680e9a694739c22cb0cc031af3f48a15fddb4a6c65e",
+    "prefix": "combined"
+  },
+  {
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "remote": "root-managed-native-sockets-4674-raw.tgz",
+    "bytes": 6716,
+    "sha": "2c5f92dc6268c2373fda41bd8aa4c849e5cdbd2fdfe8a7ac59bbfb19c62edb87",
+    "prefix": "native-sockets"
   }
 ]

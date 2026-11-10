@@ -1,0 +1,23 @@
+[
+  {
+    "name": "lifecycle",
+    "exit": 0,
+    "summaries": [
+      "test result: ok. 3 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 4.05s"
+    ]
+  },
+  {
+    "name": "output",
+    "exit": 0,
+    "summaries": [
+      "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 22.09s"
+    ]
+  },
+  {
+    "name": "limits",
+    "exit": 0,
+    "summaries": [
+      "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 2.42s"
+    ]
+  }
+]

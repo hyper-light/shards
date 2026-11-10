@@ -1,0 +1,11 @@
+[    0.009351] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "pair", "udp-connected", "127.0.0.1:0", "", "", "30000", "native"]
+managed-network Listening transport=udp local=127.0.0.1:47599 mode=Native
+managed-network Sent transport=UdpConnected local=127.0.0.1:42886 destination=127.0.0.1:47599 bytes=0
+managed-network Received local=127.0.0.1:47599 peer=127.0.0.1:42886 original=Some(127.0.0.1:47599) bytes=0 hex=
+managed-network Sent transport=udp bytes=0
+managed-network Matched transport=udp
+managed-network Received local=127.0.0.1:42886 peer=127.0.0.1:47599 original=Some(127.0.0.1:42886) bytes=0 hex=
+managed-network Matched transport=UdpConnected
+SHARDS-TEST PASS
+[    0.066130] reboot: Power down
