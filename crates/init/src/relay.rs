@@ -714,3 +714,7 @@ pub(crate) fn pump(
         )?;
     }
 }
+
+#[cfg(test)]
+#[path = "relay/turn_native.rs"]
+mod native_turn_tests;
