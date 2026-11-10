@@ -1,0 +1,10 @@
+{
+  "label": "mac-a84",
+  "archive_sha256": "b1819cea62a72c1d72c14437e66a03659ae7b247d9689fabea384b5391efbf09",
+  "bytes": 5033,
+  "members": 15,
+  "payloads_verified": 14,
+  "all_unique_safe_regular_exact_length_hash": true,
+  "role": "coordinator",
+  "management_layer_complete": false
+}

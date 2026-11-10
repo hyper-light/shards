@@ -1,0 +1,155 @@
+{
+  "provenance": "Coordinator's actual tool outputs in this conversation; not a substitute for the pending after-a84 raw archive.",
+  "source": "a84e1a81fc9ac8fe7e8ef938defe3352dc72cac3",
+  "linux": {
+    "id": "r921",
+    "reported_final_exit": 0,
+    "ordinary": "25 passed;0 failed;10 ignored",
+    "ordinary_elapsed_seconds": 45.79795510000076,
+    "official_decode_and_collector": [
+      "first",
+      "second",
+      "finite",
+      "unbounded",
+      "provider",
+      "joiner"
+    ],
+    "mutation_build_exit": 0,
+    "mutation_case_exit": 101,
+    "mutation_elapsed_seconds": 12.891166936000445,
+    "restored_build_exit": 0,
+    "restored_build_elapsed_seconds": 154.91458207100004,
+    "restored_case_exit": 0,
+    "restored_case_elapsed_seconds": 12.247072169000603,
+    "controller_fds_before": 4,
+    "controller_fds_after": 4,
+    "fixture_fds_before": 7,
+    "fixture_fds_after": 7,
+    "whole_population_kernel_return": "Unknown"
+  },
+  "initialGateCalls": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"fetch-bundle {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 0.0604682489993138, \\\"pidfd_exit_ready\\\": true, \\\"direct_child_reaped\\\": true, \\\"controller_fds_before\\\": 4, \\\"controller_fds_after\\\": 4, \\\"whole_population_kernel_return\\\": \\\"Unknown\\\"}\\ncheckout {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 0.030982733998826006, \\\"pidfd_exit_ready\\\": true, \\\"direct_child_reaped\\\": true, \\\"controller_fds_before\\\": 4, \\\"controller_fds_after\\\": 4, \\\"whole_population_kernel_return\\\": \\\"Unknown\\\"}\\npolicy {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 0.023280826999325654, \\\"pidfd_exit_ready\\\": true, \\\"direct_child_reaped\\\": true, \\\"controller_fds_before\\\": 4, \\\"controller_fds_after\\\": 4, \\\"whole_population_kernel_return\\\": \\\"Unknown\\\"}\\nmetrics-unit {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 0.11368908199983707, \\\"pidfd_exit_ready\\\": true, \\\"direct_child_reaped\\\": true, \\\"controller_fds_before\\\": 4, \\\"controller_fds_after\\\": 4, \\\"whole_population_kernel_return\\\": \\\"Unknown\\\"}\\n\",\n  \"running\": true,\n  \"id\": \"r921\",\n  \"why\": \"linux/x86_64 · 12 of 32 cores idle · 42 GB free · room for 4 CPUs, 8 GiB of memory, 16 GiB of disk · 2 CI jobs\"\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+          "output": "fetch-bundle {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 0.0604682489993138, \"pidfd_exit_ready\": true, \"direct_child_reaped\": true, \"controller_fds_before\": 4, \"controller_fds_after\": 4, \"whole_population_kernel_return\": \"Unknown\"}\ncheckout {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 0.030982733998826006, \"pidfd_exit_ready\": true, \"direct_child_reaped\": true, \"controller_fds_before\": 4, \"controller_fds_after\": 4, \"whole_population_kernel_return\": \"Unknown\"}\npolicy {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 0.023280826999325654, \"pidfd_exit_ready\": true, \"direct_child_reaped\": true, \"controller_fds_before\": 4, \"controller_fds_after\": 4, \"whole_population_kernel_return\": \"Unknown\"}\nmetrics-unit {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 0.11368908199983707, \"pidfd_exit_ready\": true, \"direct_child_reaped\": true, \"controller_fds_before\": 4, \"controller_fds_after\": 4, \"whole_population_kernel_return\": \"Unknown\"}\n",
+          "running": true,
+          "id": "r921",
+          "why": "linux/x86_64 · 12 of 32 cores idle · 42 GB free · room for 4 CPUs, 8 GiB of memory, 16 GiB of disk · 2 CI jobs"
+        },
+        "isError": false
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"b24c5c951260dcdfd0972f2aeaf3cf51\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r922\",\n  \"why\": \"macos/aarch64 · 11 of 14 cores idle · 32 GB free · room for 4 CPUs, 8 GiB of memory, 16 GiB of disk\"\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+          "output": "",
+          "running": true,
+          "id": "r922",
+          "why": "macos/aarch64 · 11 of 14 cores idle · 32 GB free · room for 4 CPUs, 8 GiB of memory, 16 GiB of disk"
+        },
+        "isError": false
+      }
+    }
+  ],
+  "archiveCalls": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"{\\\"label\\\": \\\"before-429\\\", \\\"archive\\\": \\\"/home/adalundhe/root-evidence-pack-before-429-v1/raw.tar.gz\\\", \\\"bytes\\\": 28933, \\\"sha256\\\": \\\"5c17dc4079a5116e26367e6bd59651e4a1226396dbe8981fe1ee3e3578661baf\\\", \\\"payloads\\\": 66, \\\"members\\\": 67}\\n\",\n  \"running\": false,\n  \"why\": \"linux/x86_64 · 20 of 32 cores idle · 17 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk · 2 CI jobs\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+          "output": "{\"label\": \"before-429\", \"archive\": \"/home/adalundhe/root-evidence-pack-before-429-v1/raw.tar.gz\", \"bytes\": 28933, \"sha256\": \"5c17dc4079a5116e26367e6bd59651e4a1226396dbe8981fe1ee3e3578661baf\", \"payloads\": 66, \"members\": 67}\n",
+          "running": false,
+          "why": "linux/x86_64 · 20 of 32 cores idle · 17 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk · 2 CI jobs",
+          "exit_code": 0
+        },
+        "isError": false
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"b24c5c951260dcdfd0972f2aeaf3cf51\",\n  \"output\": \"{\\\"label\\\": \\\"mac-a84\\\", \\\"archive\\\": \\\"/Users/adalundhe/root-evidence-pack-mac-a84-v1/raw.tar.gz\\\", \\\"bytes\\\": 5033, \\\"sha256\\\": \\\"b1819cea62a72c1d72c14437e66a03659ae7b247d9689fabea384b5391efbf09\\\", \\\"payloads\\\": 14, \\\"members\\\": 15}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 11 of 14 cores idle · 32 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+          "output": "{\"label\": \"mac-a84\", \"archive\": \"/Users/adalundhe/root-evidence-pack-mac-a84-v1/raw.tar.gz\", \"bytes\": 5033, \"sha256\": \"b1819cea62a72c1d72c14437e66a03659ae7b247d9689fabea384b5391efbf09\", \"payloads\": 14, \"members\": 15}\n",
+          "running": false,
+          "why": "macos/aarch64 · 11 of 14 cores idle · 32 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      }
+    }
+  ],
+  "afterArchiveStarted": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r929\",\n  \"why\": \"linux/x86_64 · 16 of 32 cores idle · 5 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk · 2 CI jobs\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r929",
+      "why": "linux/x86_64 · 16 of 32 cores idle · 5 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk · 2 CI jobs"
+    },
+    "isError": false
+  },
+  "offlineStatusRead": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"\",\n  \"output\": \"\",\n  \"running\": false,\n  \"error\": \"no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 256 MiB of memory, 1 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: offline; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "",
+      "output": "",
+      "running": false,
+      "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 256 MiB of memory, 1 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: offline; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f"
+    },
+    "isError": true
+  },
+  "laterRunMetadataLookup": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"error\": \"no run r921 (it ended and was collected, or never was)\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "error": "no run r921 (it ended and was collected, or never was)"
+    },
+    "isError": true
+  },
+  "mechanical_attempt": "First ROOT.md patch used lowercase main but actual source Main; unapplied context mismatch. Corrected exact checked source replacement, no product effect.",
+  "management_layer_complete": false
+}

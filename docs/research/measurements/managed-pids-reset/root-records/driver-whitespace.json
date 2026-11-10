@@ -1,0 +1,23 @@
+{
+  "initial_diff_check_exit": 2,
+  "initial_diagnostics": [
+    "mac-429.py:32 new blank line at EOF",
+    "root-mac-a84.py:32 new blank line at EOF"
+  ],
+  "records": [
+    {
+      "path": "docs/research/measurements/managed-otel-limits-root/mac-429.py",
+      "executed_original": "docs/research/measurements/managed-pids-reset/root-records/mac-429.executed.py.gz",
+      "executed_sha256": "ccdcb1c3180fa25c66bb99c8c1130055d0e8bb4593abfc85c73ce38d6d9b36ee",
+      "normalized_replay_sha256": "624c8b2f8b1109e4ee4d60ac836bd9a91d2f11c326f32e6fde60e6a5de02f515",
+      "change": "one empty EOF line removed; identical Python AST; actual executed bytes retained losslessly"
+    },
+    {
+      "path": "docs/research/measurements/managed-pids-reset/root-mac-a84.py",
+      "executed_original": "docs/research/measurements/managed-pids-reset/root-records/root-mac-a84.executed.py.gz",
+      "executed_sha256": "ed1e9a3bd783a5ad0d2dca266d98c0ac281d1c98df79396321aab6b060d79629",
+      "normalized_replay_sha256": "ced19ebae1febf00c2f7ebcbda5ef9b8c68d1311f33086c69dca8328174008cc",
+      "change": "one empty EOF line removed; identical Python AST; actual executed bytes retained losslessly"
+    }
+  ]
+}

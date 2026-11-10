@@ -1,6 +1,9 @@
 # Coordinator integration of local cgroup limit observations
 
-Integration preparation only; no new whole-caller or performance result.
+Historical preparation and source-selection record. The current whole-caller,
+actual PID reset, mutation/restoration and seven-target results are in
+[the coordinator closing record](../managed-pids-reset/ROOT.md). No performance
+result is claimed for this changed representation.
 
 POLICY_READ coordinator, base0342b85d9c808e3ced041a6c3ef0e9bf70438272;
 rules SHA256 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3.

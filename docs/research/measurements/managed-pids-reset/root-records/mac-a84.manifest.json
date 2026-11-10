@@ -1,0 +1,83 @@
+{
+  "label": "mac-a84",
+  "source_directory": "/Users/adalundhe/root-managed-seven-pids-a84-v1",
+  "excluded_retained_directories": [
+    "frozen",
+    "guests",
+    "runtime-cache",
+    "tmp"
+  ],
+  "files": [
+    {
+      "path": "cargo.txt",
+      "bytes": 36,
+      "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6"
+    },
+    {
+      "path": "checkout.log",
+      "bytes": 199,
+      "sha256": "8b048970fafff6d8ac8339928bd422d359df2645ebc47e9b5322c14dc0a36653"
+    },
+    {
+      "path": "command.json",
+      "bytes": 54,
+      "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+    },
+    {
+      "path": "fetch.log",
+      "bytes": 121,
+      "sha256": "81a4a686f6eccc33afc2cb00d7634177188619a3ed2699823bae43bd9e9d40c1"
+    },
+    {
+      "path": "free.post.json",
+      "bytes": 28,
+      "sha256": "cb3f59a0a9f957b49064396ef944ffbdbbe5010bab1d1063542a50d995c3bea7"
+    },
+    {
+      "path": "lint.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "lint.log",
+      "bytes": 27186,
+      "sha256": "a1e5d8638eaf4829ae3346d30a40609a74b282a8fd24cb7e60162f1d30454c37"
+    },
+    {
+      "path": "native.command.json",
+      "bytes": 144,
+      "sha256": "adf57b7c25fd31fd1de6cb7e1a252cf5e52dff3c4362f118b42adf64905bd0d5"
+    },
+    {
+      "path": "native.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native.log",
+      "bytes": 3187,
+      "sha256": "95cbd7f4193d85d7884d2d96f3ce0c0eff91f80265f7c0e059d244d61f18d6c0"
+    },
+    {
+      "path": "policy.txt",
+      "bytes": 89,
+      "sha256": "ba2c0eab0d98204f9a9bfe5d51bcda5809908a1ff9d853058ca4e1cb95de7eac"
+    },
+    {
+      "path": "rustc.txt",
+      "bytes": 192,
+      "sha256": "e003fd3d385fcd0de16bc6b049124efb20207831dd810fd4ab39ff079bbb12a5"
+    },
+    {
+      "path": "source.txt",
+      "bytes": 41,
+      "sha256": "0505b487cb3f3e40c8af5778a50662c08e1237cd0a76daea34f5fc6dd60beb78"
+    },
+    {
+      "path": "untracked-preserved.json",
+      "bytes": 809,
+      "sha256": "693dd880b987c0e8d5fa75be32374c74de4b9b28d259bd1ad0abeb674c9d8b3f"
+    }
+  ],
+  "management_layer_complete": false
+}

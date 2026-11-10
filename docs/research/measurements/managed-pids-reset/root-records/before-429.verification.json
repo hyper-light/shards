@@ -1,0 +1,10 @@
+{
+  "label": "before-429",
+  "archive_sha256": "5c17dc4079a5116e26367e6bd59651e4a1226396dbe8981fe1ee3e3578661baf",
+  "bytes": 28933,
+  "members": 67,
+  "payloads_verified": 66,
+  "all_unique_safe_regular_exact_length_hash": true,
+  "role": "coordinator",
+  "management_layer_complete": false
+}
