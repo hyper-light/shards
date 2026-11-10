@@ -1,0 +1,8 @@
+{
+  "host": "macOS-26.4.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "scope": "2CPU/2GiB/4GiB <=600s, one compiler, no native CLI/VM",
+  "mac_lock": "/tmp/g121-mac.lock held by invoking lockf",
+  "free_bytes": 155371950080,
+  "deadline_seconds": 600
+}

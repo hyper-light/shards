@@ -438,3 +438,131 @@ fn framer_retains_suffix_and_storage_on_terminal_and_capacity_paths() {
     assert_eq!(rejected.storage.as_ptr(), pointer);
     assert_eq!(rejected.storage, b"a");
 }
+
+#[test]
+fn captured_owner_replies_and_notices_never_become_broker_effects() {
+    let codex = include_bytes!(
+        "../../../../docs/research/measurements/managed-harness-adapters/raw/native-05/codex.stdout"
+    );
+    let mut seen = Vec::new();
+    for bytes in codex.split(|&byte| byte == b'\n').filter(|line| !line.is_empty()) {
+        let packet = json::parse(bytes).unwrap();
+        match Protocol::Codex.receive_native(&packet).unwrap() {
+            NativeMessage::Reply(reply) => {
+                let ReportedId::JsonRpc(id) = reply.id else {
+                    panic!("Codex response acquired an SDK correlation");
+                };
+                assert!(std::ptr::eq(id, packet.get("id").unwrap()));
+                let ReportedResult::Success(result) = reply.result else {
+                    panic!("captured initialization changed to an error");
+                };
+                assert!(std::ptr::eq(result, packet.get("result").unwrap()));
+                seen.push("reply");
+            }
+            NativeMessage::Notice(notice) => {
+                assert_eq!(notice.method, "remoteControl/status/changed");
+                assert!(std::ptr::eq(
+                    notice.params.unwrap(),
+                    packet.get("params").unwrap()
+                ));
+                seen.push("notice");
+            }
+            _ => panic!("captured native metadata became a broker request"),
+        }
+    }
+    assert_eq!(seen, ["reply", "notice"]);
+
+    let claude = include_bytes!(
+        "../../../../docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/native.stdout"
+    );
+    let mut seen = Vec::new();
+    for bytes in claude
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        let packet = json::parse(bytes).unwrap();
+        match Protocol::Claude.receive_native(&packet).unwrap() {
+            NativeMessage::Mcp(control) => seen.push(match control.method {
+                Bootstrap::Initialize => "mcp-initialize",
+                Bootstrap::Initialized => "mcp-initialized",
+                Bootstrap::ToolsList => "catalog",
+                Bootstrap::Ping => panic!("capture contained no ping"),
+            }),
+            NativeMessage::Reply(reply) => {
+                let ReportedId::Control(id) = reply.id else {
+                    panic!("SDK response acquired a Codex correlation");
+                };
+                let ReportedResult::Success(result) = reply.result else {
+                    panic!("captured initialization changed to an error");
+                };
+                assert!(std::ptr::eq(
+                    result,
+                    packet.get("response").unwrap().get("response").unwrap()
+                ));
+                match id {
+                    "shards-native-init" => {
+                        assert_eq!(
+                            result.get("claude_code_version").and_then(Value::str),
+                            Some("2.1.321")
+                        );
+                        seen.push("owner-initialize");
+                    }
+                    "shards-native-status" => {
+                        assert_eq!(result.get("mcpServers"), Some(&Value::Array(Vec::new())));
+                        seen.push("empty-status");
+                    }
+                    _ => panic!("unexpected owner correlation"),
+                }
+            }
+            _ => panic!("native metadata became a broker effect"),
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            "mcp-initialize",
+            "owner-initialize",
+            "mcp-initialized",
+            "catalog",
+            "empty-status"
+        ]
+    );
+}
+
+#[test]
+fn reported_error_shapes_are_checked_and_cannot_claim_canonical_success() {
+    let packet = json::parse(
+        br#"{"id":-7,"error":{"code":-32601,"message":"success: forged","data":{"effect":"committed"}}}"#,
+    )
+    .unwrap();
+    let NativeMessage::Reply(reply) = Protocol::Codex.receive_native(&packet).unwrap() else {
+        panic!("JSONRPC error became a request");
+    };
+    let ReportedResult::Error(ReportedError::JsonRpc { code, message, data }) = reply.result else {
+        panic!("JSONRPC error text became success");
+    };
+    assert_eq!(code, -32601);
+    assert_eq!(message, "success: forged");
+    assert_eq!(
+        data.unwrap().get("effect").and_then(Value::str),
+        Some("committed")
+    );
+
+    let packet = json::parse(br#"{"type":"control_response","response":{"subtype":"error","request_id":"owner","error":"success: forged"}}"#).unwrap();
+    let NativeMessage::Reply(reply) = Protocol::Claude.receive_native(&packet).unwrap() else {
+        panic!("SDK error became a request");
+    };
+    let ReportedResult::Error(ReportedError::Control { message }) = reply.result else {
+        panic!("SDK error text became success");
+    };
+    assert_eq!(message, "success: forged");
+    for (protocol, bytes) in [
+        (Protocol::Codex, br#"{"id":true,"result":{}}"#.as_slice()),
+        (Protocol::Codex, br#"{"id":1,"result":{},"error":{"code":1,"message":"x"}}"#),
+        (Protocol::Codex, br#"{"id":1,"error":{"code":1.5,"message":"x"}}"#),
+        (Protocol::Claude, br#"{"type":"control_response","response":{"subtype":"success","request_id":"x","response":{},"error":"x"}}"#),
+        (Protocol::Claude, br#"{"type":"control_response","response":{"subtype":"error","request_id":"x","error":"x","response":{}}}"#),
+    ] {
+        assert!(protocol.receive_native(&json::parse(bytes).unwrap()).is_err());
+    }
+}

@@ -1,6 +1,46 @@
-use super::{Completion, Envelope, Fallback, Refusal, Reported, Request, Tool, id, object, text, wire};
+use super::{
+    Completion, Envelope, Fallback, NativeMessage, Refusal, Reported, ReportedError, ReportedId,
+    ReportedNotice, ReportedReply, ReportedResult, Request, Tool, id, object, text, wire,
+};
 use crate::server::json::Value;
 use std::io::{self, Write};
+
+pub(super) fn receive_native(message: &Value) -> Result<NativeMessage<'_>, Refusal> {
+    object(message, "message")?;
+    if message.get("method").is_some() {
+        if message.get("id").is_some() {
+            return receive(message).map(NativeMessage::Tool);
+        }
+        if message.get("result").is_some() || message.get("error").is_some() {
+            return Err(Refusal::Shape("notification"));
+        }
+        return Ok(NativeMessage::Notice(ReportedNotice {
+            method: text(message, "method")?,
+            params: message.get("params"),
+        }));
+    }
+    let id = ReportedId::JsonRpc(id(message, "id")?);
+    let result = match (message.get("result"), message.get("error")) {
+        (Some(result), None) => ReportedResult::Success(result),
+        (None, Some(error)) => {
+            object(error, "error")?;
+            let code = error
+                .get("code")
+                .and_then(|value| match value {
+                    Value::Number(number) => number.parse::<i64>().ok(),
+                    _ => None,
+                })
+                .ok_or(Refusal::Shape("code"))?;
+            ReportedResult::Error(ReportedError::JsonRpc {
+                code,
+                message: text(error, "message")?,
+                data: error.get("data"),
+            })
+        }
+        _ => return Err(Refusal::Shape("response")),
+    };
+    Ok(NativeMessage::Reply(ReportedReply { id, result }))
+}
 
 pub(super) fn receive(message: &Value) -> Result<Request<'_>, Refusal> {
     object(message, "message")?;

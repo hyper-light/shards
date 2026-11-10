@@ -240,3 +240,53 @@ repeatable component/source receipts, no live effect defect/mutation claim.
 R11: native Mac ARM64 only; other targets/full caller unrun. R15/R16: no children,
 heavy tests, main merge, native rerun or cleanup; no owned job remains active.
 The original R01–R16 accounting in README still applies to all other open gates.
+
+## Owner-request responses remain reported data
+
+NEW borrowed `NativeMessage::Reply` and `Notice` cover actual protocol traffic
+which cannot be treated as a tool request. Codex JSONRPC responses retain their
+signed64/string correlation and exactly one result/error; typed error retains
+code/message/optional data. Notifications have no id/result/error, and their
+method/parameters are uninterpreted reported data, never dispatched as a method.
+Unknown requested methods still return typed Refusal. Installed exported
+JSONRPCResponse/Notification/Error schemas are retained byte for byte in
+`schemas/codex-0.167.0`, with exact hashes in
+`raw/owner-reply-schema-identities.json` and the original470-schema inventory.
+
+Claude `control_response` retains its string request_id and the pinned SDK's
+success(object-or-null)/error(string) discriminant. The payload and strings stay
+borrowed; no Debug/Display exposes them and no pending-call map is introduced.
+These variants are deliberately distinct from canonical Completion. A forged
+reported success/effect field cannot become authorization or broker evidence.
+The actual held owner still must match its own outstanding request/current scope;
+a protocol id is correlation, not an execution, member, Epoch or grant.
+
+The real captured order is MCP initialize -> owner initialize response -> MCP
+initialized -> catalog -> later empty mcp_status. Initialization must therefore
+allow native MCP bootstrap while the owner initialize is pending. The exact
+reported Claude version key is `claude_code_version`; current capture reports
+2.1.321. Codex's capture contains its initialize response followed by a
+remoteControl/status/changed notice. No additional native process, provider or
+user turn was started to establish these facts.
+
+`raw/light-owner-replies-01` records14tests0failed/0ignored (one unrelated JSON
+test filtered), scoped production/test strict0, format/policy0 and current source/
+Cargo.lock hashes. It replays every actual captured packet with original order,
+checks borrowed response/notice identity, retains the EMPTY status result, and
+checks malformed/exclusive error shapes plus forged success text. This is NEW
+codec work, not a live defect fix or production caller/registration proof.
+
+Canonical `rpc::tools/list` currently returns all eight ordinary tools. ROOT was
+sent the precise need for its native helper to use the same canonical THREE
+peer descriptors without advertising unsupported run/receive/query routes; no
+duplicate registry, negotiation rules or broad public pass-through was added.
+The parent's exact adapter.rs leaf consumption has been authorized as source
+ownership under its approved management-schema scope; this lane has made no
+shared ABI/Run/Spec/CLI edit or claim of additional ROOT approval delivery.
+All remaining R01–R16/endpoint/fallback/ROOT gates above remain open. No owned job.
+
+`raw/CONTINUATION-MANIFEST-01.json` seals80additional tracked raw payloads,
+54369bytes, at the current checked-source manifest. The original114payload/
+231887byte MANIFEST was rechecked unchanged, not overwritten. Compiled binaries,
+generated full schemas, disposable state and downloaded source stay excluded by
+the existing explicit ignore rules; their declared pin/source identities remain.

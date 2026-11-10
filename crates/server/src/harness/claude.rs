@@ -1,6 +1,6 @@
 use super::{
-    Bootstrap, Completion, Envelope, Fallback, McpControl, McpReply, NativeMessage, Refusal, Request, Tool,
-    id, object, text, wire,
+    Bootstrap, Completion, Envelope, Fallback, McpControl, McpReply, NativeMessage, Refusal, ReportedError,
+    ReportedId, ReportedReply, ReportedResult, Request, Tool, id, object, text, wire,
 };
 use crate::server::json::Value;
 use std::io::{self, Write};
@@ -11,6 +11,10 @@ pub(super) fn receive(message: &Value) -> Result<Request<'_>, Refusal> {
 }
 
 pub(super) fn receive_native(message: &Value) -> Result<NativeMessage<'_>, Refusal> {
+    object(message, "message")?;
+    if text(message, "type")? == "control_response" {
+        return owner_reply(message).map(NativeMessage::Reply);
+    }
     let (control_id, rpc) = packet(message)?;
     let method = match text(rpc, "method")? {
         "tools/call" => return tool(control_id, rpc).map(NativeMessage::Tool),
@@ -51,6 +55,29 @@ pub(super) fn receive_native(message: &Value) -> Result<NativeMessage<'_>, Refus
         control_id,
         message: rpc,
     }))
+}
+
+fn owner_reply(message: &Value) -> Result<ReportedReply<'_>, Refusal> {
+    let response = object(
+        message.get("response").ok_or(Refusal::Shape("response"))?,
+        "response",
+    )?;
+    let id = ReportedId::Control(text(response, "request_id")?);
+    let result = match text(response, "subtype")? {
+        "success" if response.get("error").is_none() => {
+            let value = response.get("response").ok_or(Refusal::Shape("response"))?;
+            if !matches!(value, Value::Object(_) | Value::Null) {
+                return Err(Refusal::Shape("response"));
+            }
+            ReportedResult::Success(value)
+        }
+        "error" if response.get("response").is_none() => ReportedResult::Error(ReportedError::Control {
+            message: text(response, "error")?,
+        }),
+        "success" | "error" => return Err(Refusal::Shape("response")),
+        _ => return Err(Refusal::Method),
+    };
+    Ok(ReportedReply { id, result })
 }
 
 fn packet(message: &Value) -> Result<(&str, &Value), Refusal> {

@@ -38,7 +38,7 @@ impl Protocol {
 
     pub fn receive_native(self, message: &Value) -> Result<NativeMessage<'_>, Refusal> {
         match self {
-            Self::Codex => self.receive(message).map(NativeMessage::Tool),
+            Self::Codex => codex::receive_native(message),
             Self::Claude => claude::receive_native(message),
         }
     }
@@ -49,6 +49,44 @@ impl Protocol {
 pub(crate) enum NativeMessage<'a> {
     Tool(Request<'a>),
     Mcp(McpControl<'a>),
+    Reply(ReportedReply<'a>),
+    Notice(ReportedNotice<'a>),
+}
+
+/// Native owner-request correlations are data. The held owner matches them to
+/// its own outbound request; this module has no pending-call or authority map.
+pub(crate) enum ReportedId<'a> {
+    JsonRpc(&'a Value),
+    Control(&'a str),
+}
+
+pub(crate) struct ReportedReply<'a> {
+    pub id: ReportedId<'a>,
+    pub result: ReportedResult<'a>,
+}
+
+/// Reported success never becomes a broker Completion or authorizes an effect.
+pub(crate) enum ReportedResult<'a> {
+    Success(&'a Value),
+    Error(ReportedError<'a>),
+}
+
+pub(crate) enum ReportedError<'a> {
+    JsonRpc {
+        code: i64,
+        message: &'a str,
+        data: Option<&'a Value>,
+    },
+    Control {
+        message: &'a str,
+    },
+}
+
+/// Unsolicited protocol data is retained by the raw owner, never dispatched as
+/// a method. Its name/parameters receive no semantic or authority interpretation.
+pub(crate) struct ReportedNotice<'a> {
+    pub method: &'a str,
+    pub params: Option<&'a Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

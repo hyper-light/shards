@@ -1,5 +1,15 @@
 # Harness adapter lane checkpoint
 
+Current owned codec source additionally distinguishes borrowed reported owner
+Reply/Notice from Tool/Mcp. Actual captured Claude order includes native MCP
+initialize BEFORE owner initialize response; version key claude_code_version.
+Codex init response+notification are reported data, not effects. Current
+light-owner-replies-01:14tests0failed/0ignored/1unrelatedfiltered, scoped strict
+production/test0+fmt/policy0; exact source/lock/raw retained, no CLI/provider rerun.
+Parent may consume signed19b8 candidate as its agreed adapter.rs leaf under its
+own approved management scope (source permission seq7650), public CLI still held.
+No actual shared owner/dispatcher registration yet; audit signed helper awaited.
+
 Latest owned continuation: one-owner JSONL framing uses supplied admitted storage
 and concrete Receiving/Ready(Newline|Eof)/Closed/Failed states, no allocation/read/
 poll/newqueue. `light-codecs.py light-framing-01` has12native scoped tests0failed/

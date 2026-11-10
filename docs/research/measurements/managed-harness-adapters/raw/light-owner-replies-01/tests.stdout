@@ -1,0 +1,19 @@
+
+running 14 tests
+test harness::tests::actual_native_claude_bootstrap_packets_reach_canonical_mcp_envelopes ... ok
+test harness::tests::both_native_catalog_formats_preserve_the_canonical_peer_schemas ... ok
+test harness::tests::captured_owner_replies_and_notices_never_become_broker_effects ... ok
+test harness::tests::failed_output_returns_the_io_failure_without_a_success_record ... ok
+test harness::tests::framer_retains_suffix_and_storage_on_terminal_and_capacity_paths ... ok
+test harness::tests::hooks_approvals_and_output_notifications_never_become_effects ... ok
+test harness::tests::malformed_requests_do_not_guess_missing_identifiers_or_arguments ... ok
+test harness::tests::native_calls_borrow_arguments_without_turning_labels_into_identity ... ok
+test harness::tests::native_ingress_keeps_peer_effects_and_bootstrap_distinct ... ok
+test harness::tests::native_status_comes_from_the_broker_even_when_text_claims_success ... ok
+test harness::tests::one_owner_framer_preserves_actual_native_packets_across_chunk_boundaries ... ok
+test harness::tests::reported_error_shapes_are_checked_and_cannot_claim_canonical_success ... ok
+test harness::tests::result_capacity_is_prepared_before_effect_and_cannot_grow_while_filling ... ok
+test harness::tests::untested_versions_namespaces_and_fallbacks_are_typed_refusals ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.01s
+

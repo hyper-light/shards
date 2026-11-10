@@ -1,0 +1,24 @@
+{
+  "binary_sha256": "030316ecfbb41f4e7946e584b0063ef333b7a36cd312ba349f2f6869e39b62cc",
+  "source": "installed codex0.167.0 app-server generate-json-schema --experimental",
+  "files": [
+    {
+      "installed_generated": "raw/native-02/codex-schema/JSONRPCResponse.json",
+      "retained": "schemas/codex-0.167.0/JSONRPCResponse.json",
+      "bytes": 520,
+      "sha256": "4796738c04c74288213a08fb8d820c7b4df19e0977cdcd35b65ffcb43cfc93ab"
+    },
+    {
+      "installed_generated": "raw/native-02/codex-schema/JSONRPCNotification.json",
+      "retained": "schemas/codex-0.167.0/JSONRPCNotification.json",
+      "bytes": 303,
+      "sha256": "c2b43f26880db331393fe09f34bdd76dfeb4dc30d8418d1c26e18db166d6c8c8"
+    },
+    {
+      "installed_generated": "raw/native-02/codex-schema/JSONRPCError.json",
+      "retained": "schemas/codex-0.167.0/JSONRPCError.json",
+      "bytes": 893,
+      "sha256": "d7ea353d4875ae204625da5a00a1ecb5afc69101d5778b9acc253a49f8932992"
+    }
+  ]
+}
