@@ -1,0 +1,48 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-allocation-metrics/HANDOFF.md",
+    "docs/research/measurements/managed-allocation-metrics/PAIRED-NATIVE-BOUND.md",
+    "docs/research/measurements/managed-allocation-metrics/QUEUE-CHECKPOINT.md",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/MANIFEST.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/TRANSFER.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/kiln-invocation.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/kiln-result.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/python.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/source.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/unit.command",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/unit.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/unit.log",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/MANIFEST.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/TRANSFER.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/kiln-invocation.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/kiln-result.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/python.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/source.json",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/unit.command",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/unit.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/unit.log",
+    "docs/research/measurements/managed-allocation-metrics/records/paired-types-local-checks.json"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/unit.log:10: trailing whitespace.\n+test_native_width_and_identity_require_exact_json_integer_types (test_paired.PurePairedTests.test_native_width_and_identity_require_exact_json_integer_types) ... \n",
+  "stderr": "",
+  "classified_original_raw_logs": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480/unit.log",
+      "sha256": "411f3ffb8bcb742c50c316a2aa24622883c18aab515cafa5f6bbbc5715178a1d",
+      "reason": "original unittest trailing output whitespace retained byte-identically and verified against remote transfer manifest"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd/unit.log",
+      "sha256": "02b4a2f50efd575153a1bf0456af574e907c418484419ef55ecf470d69f565d7",
+      "reason": "original unittest trailing output whitespace retained byte-identically and verified against remote transfer manifest"
+    }
+  ],
+  "other_paths_check_exit": 0,
+  "source_or_whitespace_rule_relaxation": "NONE"
+}

@@ -1,0 +1,13 @@
+{
+  "revision": "0c502c4800ab41dbe72be6c669c8e64f6888bb19",
+  "files": [
+    {
+      "name": "paired.py",
+      "sha256": "1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173"
+    },
+    {
+      "name": "test_paired.py",
+      "sha256": "b75e8f60c6f732f2adb06f870642f009f7d4e6fa32a9505204f29caab6ba0162"
+    }
+  ]
+}

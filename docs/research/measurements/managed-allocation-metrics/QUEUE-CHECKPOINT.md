@@ -30,6 +30,11 @@ All commits use signed named paths and required Claude Opus5.5 attribution.
 * `662d564efc1001b1647fe530e2ae4ac630da308b`: minimal derived unsigned-width
   predicate; same13 tests pass. [Red/green proof](PAIRED-NATIVE-BOUND.md) preserves
   exact source/Python/invocations and raw records; actual executor still unrun.
+* `0c502c4800ab41dbe72be6c669c8e64f6888bb19`: targeted JSON integer-type
+  method reproduces4failed substitutions; other13methods pass.
+* `4542d00bd379e1b5dd38a4507551d8bd2d651ae7`: existing integer predicate on
+  native width and matched identity components; same14 methods pass. Exact
+  red/green appended to the same proof; no actual native or executor claim.
 
 Every remote run uses new private source/target/log directories with a full
 source-revision suffix, `sync:false`, Kiln admission1CPU/1GiB/2GiB. No root

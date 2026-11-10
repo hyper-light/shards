@@ -1,0 +1,35 @@
+{
+  "source": "4542d00bd379e1b5dd38a4507551d8bd2d651ae7",
+  "files": [
+    {
+      "path": "MANIFEST.json",
+      "bytes": 673,
+      "sha256": "b0a46106ea1af47d30f4b19c624c6672c032e5ff245406d7667b5c15f71f888f"
+    },
+    {
+      "path": "python.json",
+      "bytes": 216,
+      "sha256": "510a810f82d62f9f11b715fd90d4da8cdee09436221c75a250faa01c6dd6b5e3"
+    },
+    {
+      "path": "source.json",
+      "bytes": 329,
+      "sha256": "a1fa4571090d1d8e3f84c3d85fcc7565f0c9941edb8993f82e5898f805be18ed"
+    },
+    {
+      "path": "unit.command",
+      "bytes": 173,
+      "sha256": "0ea91f9b59236928c54ef21ab95c7f6d831d2d3cdd9004c523d23169771976c9"
+    },
+    {
+      "path": "unit.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "unit.log",
+      "bytes": 2463,
+      "sha256": "02b4a2f50efd575153a1bf0456af574e907c418484419ef55ecf470d69f565d7"
+    }
+  ]
+}

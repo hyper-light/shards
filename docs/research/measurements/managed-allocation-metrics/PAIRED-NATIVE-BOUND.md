@@ -70,3 +70,38 @@ paths, no children/main merge/local build/cache, root targets and paused Windows
 ARM preserved. All remote jobs complete; their evidence and targets remain.
 The startup147-line proposal remains unapplied and pending root selection;
 the sustained lane/parent goal remains active.
+
+## JSON field-type correction
+
+Signed `0c502c4800ab41dbe72be6c669c8e64f6888bb19` adds one targeted method
+with four JSON-roundtripped substitutions: width `64.0`, PID `300.0`, start `301.0`,
+and Boolean start `true` comparing equal to expected integer `1`. Each surrounding
+synthetic case still passes the normal identity/cleanup validator. All four
+native records incorrectly became `Conditional` through numeric equality.
+This is a parser input-contract reproduction, not an OS observation or an
+actual identity/cleanup mutation campaign.
+
+[Exact red](records/paired-0c502c480):14 methods,13 pass and one failed method
+with four failed subcases; exit1. Signed
+`4542d00bd379e1b5dd38a4507551d8bd2d651ae7` reuses the existing `integer`
+predicate on the native width and both matching identity components. The same
+[14-method suite passes](records/paired-4542d00bd) with exit0. Native data stays
+conditional; invalid types use the existing `Unknown` path. Native source labels,
+schema, OS adapters, normal-case validator and execution/cleanup control stay intact.
+
+Current paired SHA-256 is
+`dcac1f33d3b19877832bf091661d838f4c59bb91ece58fdcb46b0b5bdb671b4c`;
+both runs use test SHA-256
+`b75e8f60c6f732f2adb06f870642f009f7d4e6fa32a9505204f29caab6ba0162`.
+The source before this correction is the preceding1e139e61 parser. Both new
+runs use the same recorded Python3.14.3 executable/hash and the same serial
+1CPU/1GiB/2GiB, `sync:false`, new-private-directory protocol above. Each retains
+six byte-verified originals plus source/invocation/result records. No fixture,
+native query, source preflight, VM, profile or actual runner executor ran.
+
+Root's separate full review remains pending; these checkpoints are not
+auto-adopted. Root now composes ONLY native fixture4ff and owns its actual
+normal-helper/caller compile and strictN1 functional pilot. No result for that
+new composition is claimed here. Fixture source4ff remains frozen at31df9e2b;
+the startup proposal stays unapplied unless root authorizes it. All actual
+native/paired/interleaved/mutation/cleanup gates remain with root.

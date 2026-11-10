@@ -1,0 +1,87 @@
+{
+  "source_head": "4542d00bd379e1b5dd38a4507551d8bd2d651ae7",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "214b2bb33ae8779b3410e26ef397e088dd65c9f0",
+        "--",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "crates/shards/tests/common/managed_alloc.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "frozen_native_fixture_sha256": "31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7",
+  "startup_proposal": "UNIMPLEMENTED; no fixture edit without root authorization",
+  "runs": [
+    {
+      "records": "docs/research/measurements/managed-allocation-metrics/records/paired-0c502c480",
+      "source": {
+        "revision": "0c502c4800ab41dbe72be6c669c8e64f6888bb19",
+        "files": [
+          {
+            "name": "paired.py",
+            "sha256": "1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173"
+          },
+          {
+            "name": "test_paired.py",
+            "sha256": "b75e8f60c6f732f2adb06f870642f009f7d4e6fa32a9505204f29caab6ba0162"
+          }
+        ]
+      },
+      "raw_files_verified": 6,
+      "unit_exit": "1",
+      "python": {
+        "version": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+        "executable": "/usr/bin/python3.14",
+        "sha256": "40850fe1e2df0c14378c12bfaa02b5cda35619e09a8ee50ca3cf2bdb36fc019f"
+      }
+    },
+    {
+      "records": "docs/research/measurements/managed-allocation-metrics/records/paired-4542d00bd",
+      "source": {
+        "revision": "4542d00bd379e1b5dd38a4507551d8bd2d651ae7",
+        "files": [
+          {
+            "name": "paired.py",
+            "sha256": "dcac1f33d3b19877832bf091661d838f4c59bb91ece58fdcb46b0b5bdb671b4c"
+          },
+          {
+            "name": "test_paired.py",
+            "sha256": "b75e8f60c6f732f2adb06f870642f009f7d4e6fa32a9505204f29caab6ba0162"
+          }
+        ]
+      },
+      "raw_files_verified": 6,
+      "unit_exit": "0",
+      "python": {
+        "version": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+        "executable": "/usr/bin/python3.14",
+        "sha256": "40850fe1e2df0c14378c12bfaa02b5cda35619e09a8ee50ca3cf2bdb36fc019f"
+      }
+    }
+  ],
+  "local_validation": "small source/evidence checks only; no compiler/build/unit/profile/large copy/cache or target deletion",
+  "local_target_or_cache_paths": [],
+  "active_own_remote_jobs": [],
+  "no_child_or_goal_plan_dispatch": true
+}

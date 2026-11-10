@@ -46,12 +46,15 @@ new actual native caller compilation/execution ROOTowed. Native probes use
 existing held identity checker before/after process_usage, retain both query
 and identity errors, no newOSadapter; cleanup self probe precedes original total
 FD sample, released daemon/VM Unknown. Raw in records/faults-f78c3c891.
-Paired runner current source662d564efc1001b1647fe530e2ae4ac630da308b pure13/13.
-New dd75ffc837605613dd20cf95e46233f4b5af3ab4 pure input test reproduced exactly1
-failure (2^64 accepted under a native64 label); minimal unsigned producer-bound
-guard fixes it. PAIRED-NATIVE-BOUND.md retains red+green/exact identities; current
-paired SHA1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173,
-testSHA0e4af89edd37d2757e100f506f1207672c114ee748492e875d87abb247b4df44.
+Paired runner current source4542d00bd379e1b5dd38a4507551d8bd2d651ae7 pure14/14.
+0c502c4800ab41dbe72be6c669c8e64f6888bb19 reproduced4JSON type-substitution
+failures in1method (other13pass); same14methods green after existinginteger
+predicate on nativewidth/matchedidentitycomponents. CurrentpairedSHAdcac1f33d3b19877832bf091661d838f4c59bb91ece58fdcb46b0b5bdb671b4c,
+testSHAb75e8f60c6f732f2adb06f870642f009f7d4e6fa32a9505204f29caab6ba0162.
+PAIRED-NATIVE-BOUND.md retains exact red/green and unrunROOTactual/fullreview.
+Previous662d564efc1001b1647fe530e2ae4ac630da308b pure13/13 preserved.
+Earlierdd75ffc837605613dd20cf95e46233f4b5af3ab4 exactout-of-u64 red12/1 and
+662d minimalguard green13/13/source1e139e61/test0e4af89e retained.
 Original a718/release-receipt5333/current-at-that-time47c11/11 preserved. Actual paired.main/
 executor, source preflight, VM/profile/campaign NEVER run. See PAIRING.md and
 QUEUE-CHECKPOINT.md; all physical/paired/mutation/cleanup gates ROOTowned.
@@ -122,9 +125,26 @@ command/result/path receipt in records/macos-preflight-2768-9e346b164, sent ROOT
 for exclusiveR16 reclamation. No cleanup performed. Root full caller/native/
 paired/mutation/cleanup gates unchanged; source approval for startup still pending.
 
-Latest ROOT localfloor receipt30,818,938,880B (~28.7GiB), BELOW30GiB. HOLD all
+Earlier ROOT localfloor receipt30,818,938,880B (~28.7GiB), BELOW30GiB. HOLD all
 LOCAL builds/cargo/compilation/large copies. Continue only source/small docs and
 admitted remote private light scopes; no agent target/cache deletion. No LOCAL
 targets/caches active and all own remote light jobs complete. Preserve all source,
 evidence/final binaries. Main4bfaceb38 receipt, policy unchanged. No children/
 auto goal dispatch or actor reset/stop. Root alone reclaims inactive intermediates.
+
+CURRENT ROOT localfloor RESTORED45,851,971,584B (~42.7GiB), after root-only
+locked/noopenfile inactive-intermediate reclaim. Light local tooling hold lifted
+subject30GiB+existinglock; STILL noheavyLOCALbuild/newcopies/worktree or agent
+target/cache deletion. No LOCALtargets/cache and all own remotejobs complete.
+ROOT main4bfaceb38 contains exactr668red; no guessed production fix here.
+
+ROOT READ complete4ff fixture/NATIVE-HOOKS and announced composing ONLY4ff
+nativehooks on rootcombined main1d base for matching normalhelpers/caller
+compile and one strictN1 FUNCTIONALpilot, no pairing/profile claim; no result
+receipt yet. Nativefixture4ff FROZEN SHA31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7;
+native model unchangedf78 SHA394626... . Do NOT edit nativefixture/startuphooks
+without ROOTauthorization. Startup147line proposal remainsUNIMPLEMENTED.
+Root's NEW privateLinux target/clone EXCLUSIVE; never touch. Pairedparser/
+runner/delta checkpoints gathered for separate fullROOTreview, NOTautoadopted.
+Continue PURE checks/recordreadiness under same1CPU1GiB2GiB newprivate scopes;
+no children, goal/plan auto dispatch, actorstop/reset, fakekeepalive or selfdone.
