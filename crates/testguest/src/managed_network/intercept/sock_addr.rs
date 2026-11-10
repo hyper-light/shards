@@ -443,7 +443,13 @@ fn in_mount<T: Send>(namespace: Option<&File>, f: impl FnOnce() -> io::Result<T>
                 // SAFETY: dedicated new thread; never changes the caller's namespace.
                 let rc = unsafe {
                     match namespace {
-                        Some(ns) => libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS),
+                        Some(ns) => {
+                            // setns(2), Linux v6.18 mntns_install require unshared fs_struct.
+                            if libc::unshare(libc::CLONE_FS) != 0 {
+                                return Err(io::Error::last_os_error());
+                            }
+                            libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS)
+                        }
                         None => libc::unshare(libc::CLONE_NEWNS),
                     }
                 };
