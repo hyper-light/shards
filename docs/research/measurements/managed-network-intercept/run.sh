@@ -10,7 +10,7 @@ set -euo pipefail
 : "${SHARDS_NETWORK_CASE_MS:?single original socket/setup deadline}"
 : "${SHARDS_NETWORK_MEMORY_MIB:?coordinator VM memory allocation}"
 : "${SHARDS_NETWORK_CPUS:?coordinator VM CPU allocation}"
-: "${SHARDS_INTERCEPT_ORIGIN:?local, forward, local-loopback or local-self}"
+: "${SHARDS_INTERCEPT_ORIGIN:?local, forward, local-loopback, local-self or forward-relay-absent}"
 : "${SHARDS_INTERCEPT_MARK:?decimal nonzero32-bit fixture mark}"
 : "${SHARDS_INTERCEPT_TABLE:?decimal32-bit fixture table, excluding reserved IDs}"
 : "${SHARDS_INTERCEPT_RULE_PRIORITY:?decimal priority before main and after local}"
@@ -43,7 +43,8 @@ if [ "$status" -eq 0 ]; then
 import json,os,pathlib
 p=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])/('intercept-tcp4-'+os.environ['SHARDS_INTERCEPT_ORIGIN']+'.stdout')
 records=[json.loads(line.removeprefix('managed-intercept ')) for line in p.read_text().splitlines() if line.startswith('managed-intercept ')]
-assert sum(r.get('type')=='Intercepted' for r in records)==1, 'actual guest interception observation required'
+expected='RelayAbsentChecked' if os.environ['SHARDS_INTERCEPT_ORIGIN']=='forward-relay-absent' else 'Intercepted'
+assert sum(r.get('type')==expected for r in records)==1, 'actual guest experiment observation required'
 PY
     status=$?
 fi

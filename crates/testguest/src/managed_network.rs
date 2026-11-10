@@ -141,7 +141,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], intercept-tcp4 {local|forward|local-loopback|local-self} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], intercept-tcp4 {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
