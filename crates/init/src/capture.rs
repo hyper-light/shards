@@ -647,6 +647,50 @@ mod tests {
     }
 
     #[test]
+    fn allocation_refusal_keeps_its_resource_cause() {
+        const CHILD: &str = "SHARDS_CAPTURE_ALLOCATION_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let capacity = usize::try_from(run::MAX_PAYLOAD).unwrap();
+            let (mut capture, _peer) = fixture(1, capacity);
+            let core = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: only this test child's crash artifact is disabled.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raw const core) }, 0);
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit writes this owned structure; only this test child is affected.
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_AS, &raw mut limit) }, 0);
+            limit.rlim_cur = 0;
+            // SAFETY: setrlimit changes only this test child's soft address-space limit.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_AS, &raw const limit) }, 0);
+            let refused = capture.space(capacity - managed::HEADER, capacity, (0, Channel::Stderr));
+            let code = match refused {
+                Err(error) if error.raw_os_error() == Some(libc::ENOMEM) => 0,
+                Err(_) => 2,
+                Ok(()) => 3,
+            };
+            // SAFETY: the isolated child returns its result without allocating test diagnostics.
+            unsafe { libc::_exit(code) }
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "capture::tests::allocation_refusal_keeps_its_resource_cause",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("MALLOC_ARENA_MAX", "1")
+            .env("MALLOC_MMAP_THRESHOLD_", "0")
+            .status()
+            .unwrap();
+        assert!(status.success(), "allocation refusal result: {status}");
+    }
+
+    #[test]
     fn native_pipes_preserve_binary_channels_offsets_and_actual_eof() {
         let payload = b"\0\xff\x80\n\x1b[2Jno-newline";
         let label = "harness drive";

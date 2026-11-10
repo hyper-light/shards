@@ -1,0 +1,22 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.10s
+     Running unittests src/main.rs (target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 1 test
+
+running 1 test
+memory allocation of 16 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'capture::tests::allocation_refusal_keeps_its_resource_cause' (3291578) panicked at crates/init/src/capture.rs:684:9:
+allocation refusal result: signal: 6 (SIGABRT) (core dumped)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test capture::tests::allocation_refusal_keeps_its_resource_cause ... FAILED
+
+failures:
+
+failures:
+    capture::tests::allocation_refusal_keeps_its_resource_cause
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 98 filtered out; finished in 0.19s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
