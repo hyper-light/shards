@@ -1,0 +1,18 @@
+{
+  "result": {
+    "admitted": false,
+    "error": "no runner suits 451397fcc585f7f7cb9aaf00e42064bb, 2 CPUs, 4 GiB of memory, 24 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 451397fcc585f7f7cb9aaf00e42064bb; adacachy: 0 of 32 cores idle, under 2 CPUs; adalundhe-macbook-pro: not 451397fcc585f7f7cb9aaf00e42064bb; kiln-a094a12d.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local-2: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro.local: not 451397fcc585f7f7cb9aaf00e42064bb; jupiter: not 451397fcc585f7f7cb9aaf00e42064bb; fedora.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb",
+    "result": {
+      "runner": "",
+      "output": "",
+      "running": false,
+      "error": "no runner suits 451397fcc585f7f7cb9aaf00e42064bb, 2 CPUs, 4 GiB of memory, 24 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 451397fcc585f7f7cb9aaf00e42064bb; adacachy: 0 of 32 cores idle, under 2 CPUs; adalundhe-macbook-pro: not 451397fcc585f7f7cb9aaf00e42064bb; kiln-a094a12d.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-mac-studio.local-2: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro-2.local: not 451397fcc585f7f7cb9aaf00e42064bb; adas-macbook-pro.local: not 451397fcc585f7f7cb9aaf00e42064bb; jupiter: not 451397fcc585f7f7cb9aaf00e42064bb; fedora.attlocal.net: not 451397fcc585f7f7cb9aaf00e42064bb"
+    }
+  },
+  "calls": [
+    {
+      "name": "machines.start",
+      "ok": false
+    }
+  ]
+}

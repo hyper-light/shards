@@ -38,7 +38,9 @@
     "pinned-build.command.txt": "13b2e15fd0e47d8ee5d33aaee3aa26a9c3df6ad4d89086548e3ecb27b8d43250",
     "pinned-checks.command.txt": "f35b200e4bf3445f77c97291690da40f0baaa79397a80735d5c8594768dd7d15",
     "pinned-native.command.txt": "4df09bcfd6dffbc657ec371b8286467150424984e1a16f54f507b71afe6b29af",
-    "collect.command.txt": "47c7eea3b7eef26ca5a097b1c63003b1e7e529a7146f2888aecb93bacf87baa9"
+    "collect.command.txt": "47c7eea3b7eef26ca5a097b1c63003b1e7e529a7146f2888aecb93bacf87baa9",
+    "original-deadline-checks.command.txt": "d520cc465c849c62f82abf2705925b09726c3bd42c21a39ecc43b1b16812d150",
+    "original-deadline-native.command.txt": "e554d158e87a3774f6c02dbbcdd7e5e7ab058bce16eaea6da85cde015a91d0eb"
   },
   "root_gates_owed": "Fullcaller GNU compilation r172 passed0. Pure/strict Clippy/native remain unrun due headroom; ROOT final evidence review/combined integration/matrix/audits/profiles remain owed. No VM/mutation/profile is authorized here.",
   "build_job_id": "r172",
@@ -84,5 +86,14 @@
     "disk_free_bytes": 424985124864
   },
   "active_remote_jobs": [],
-  "reserved_remote_scope": "Keep entire /home/adalundhe/managed-after-open-fin-4a-v1 source/target/Cargo/Zig/runtime/compiler/artifacts/records for pending same-source checks/native case; no deletion"
+  "reserved_remote_scope": "Keep entire /home/adalundhe/managed-after-open-fin-4a-v1 source/target/Cargo/Zig/runtime/compiler/artifacts/records for pending same-source checks/native case; no deletion",
+  "current_policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "fedora_alternative": "NOT AUTHORIZED: home filesystem read-only. No Fedora command/scope/write/rebuild/reuse executed. Historical proposal retained only.",
+  "campaign_original_until_epoch_s": 1794353589.118,
+  "campaign_state": "HeldForNormalAdmission before original deadline; no pure/Clippy/native command has executed",
+  "campaign_stop_condition": "If original deadline expires before pure/Clippy complete: record actual CoverageMiss and stop this campaign; no time extension or executed-case retry",
+  "only_remaining_launch_texts": [
+    "original-deadline-checks.command.txt",
+    "original-deadline-native.command.txt"
+  ]
 }
