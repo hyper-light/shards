@@ -1,0 +1,35 @@
+{
+  "policy_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "superseded_unbuilt_base": "3f7c4838b892cbf47e757ea802f5e1c9a3ff1426",
+  "role": "implementer/assigned adversarial",
+  "owned": {
+    "crates/shards/tests/common/managed_capture.rs": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "437b69e863c0e4ea372fc5dbed8b0320a063ff3f0d8e6160a40915afa6ef1f4e",
+    "crates/shards/tests/managed_output/current_controls.rs": "5a032328faddd28e1b1448555516af3958669018252e1c7b921d05967058c57b",
+    "crates/shards/tests/managed_output/current_controls/contract.rs": "daf9a45b516ecf1fe5fc2a049d1c82aeafffd189d1274735228c702b8968d06b",
+    "crates/shards/tests/managed_output/current_controls/control_inputs.rs": "7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+    "crates/shards/tests/managed_output/current_controls/native_terminal.rs": "43aca55378c042f0313251b63e99d65183a5a572358e6e204cc81fac9a6f1147",
+    "crates/shards/tests/managed_output/current_controls/write_receipts.rs": "c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa"
+  },
+  "patch_hashes": {
+    "shared-client.patch": "3939d78f2bf3e175a2c504e859a08a5d8cb2a1d10bf81c3ad868d5f121eee123",
+    "registration.patch": "83132563b3eadea370e89912f641141638ff310af278e25a24d826d4d003f6bc",
+    "frozen-raw-control.patch": "0178601648d07a27eff18f944eb03ac775c121190bc059cb88fb86bbda8923ee",
+    "frozen-register.patch": "41e04e2d0b1099aae02d698bb1f8cb7c635c99e90bda76549412014a4e090489"
+  },
+  "frozen_source": "2475533fafb30cfba12552b3e2b887f7664f317a",
+  "child_bytes_identical_to_frozen": {
+    "contract.rs": true,
+    "control_inputs.rs": true,
+    "native_terminal.rs": true,
+    "write_receipts.rs": true
+  },
+  "shared_Client_initializers": 1,
+  "all_shared_Client_initializers_set_test_receipts_None": true,
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private_root": "/home/adalundhe/managed-current-controls-28e-v1",
+  "local_build_targets": [],
+  "actual_build_tests_pending": true
+}
