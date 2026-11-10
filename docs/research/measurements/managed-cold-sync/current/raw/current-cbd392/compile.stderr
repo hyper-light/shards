@@ -1,0 +1,26 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded block-buffer v0.12.1
+  Downloaded cfg-if v1.0.5
+  Downloaded const-oid v0.10.2
+  Downloaded cpufeatures v0.3.1
+  Downloaded digest v0.11.3
+  Downloaded crypto-common v0.2.2
+  Downloaded hybrid-array v0.4.15
+  Downloaded sha2 v0.11.0
+  Downloaded typenum v1.20.1
+  Downloaded libc v0.2.189
+   Compiling libc v0.2.189
+   Compiling typenum v1.20.1
+   Compiling hybrid-array v0.4.15
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling const-oid v0.10.2
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/crates/abi)
+   Compiling digest v0.11.3
+   Compiling cpufeatures v0.3.1
+   Compiling cfg-if v1.0.5
+   Compiling sha2 v0.11.0
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/crates/testdir)
+   Compiling shards-api v0.1.0 (/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 11.56s

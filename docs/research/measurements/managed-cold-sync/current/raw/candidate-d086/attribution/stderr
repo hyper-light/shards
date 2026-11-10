@@ -1,0 +1,15 @@
+COLD_REFUSED_BYTES 64
+0   shards_api-c44d8f98ee8babf4         0x000000010415d2a0 _RNvNtNtCs7gMyZP2FZaS_10shards_api6client17cold_sync_current7refused + 1676
+1   shards_api-c44d8f98ee8babf4         0x00000001041f6098 _RINvMNtNtNtCs82bWklYMk3w_3std3sys4sync8once_boxINtB3_7OnceBoxNtNtNtNtNtB7_3pal4unix4sync5mutex5MutexE10initializeNCNvMNtNtB5_5mutex7pthreadNtB1S_5Mutex3get0ECs7gMyZP2FZaS_10shards_api + 72
+2   shards_api-c44d8f98ee8babf4         0x000000010416362c _RNvXs6_NtCs7gMyZP2FZaS_10shards_api6clientNtB5_11ShardsGuestNtB7_5Guest7connect + 720
+3   shards_api-c44d8f98ee8babf4         0x000000010416c44c _RNvYNCNvNtNtCs7gMyZP2FZaS_10shards_api6client17cold_sync_current42owned_connection_cold_sync_refusal_current0INtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceBa_ + 1484
+4   shards_api-c44d8f98ee8babf4         0x000000010417c130 _RINvCs6pj9lYx6hxu_4test28___rust_begin_short_backtraceINtNtCs8Mbv00yxnRz_4core6result6ResultuNtNtCshxvaOLs88l5_5alloc6string6StringEFEBQ_EB2_ + 24
+5   shards_api-c44d8f98ee8babf4         0x0000000104187464 _RNCNvCs6pj9lYx6hxu_4test8run_test0B3_ + 952
+6   shards_api-c44d8f98ee8babf4         0x0000000104182344 _RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceNCNvCs6pj9lYx6hxu_4test8run_tests_0uEB1b_ + 132
+7   shards_api-c44d8f98ee8babf4         0x000000010418992c _RNSNvYNCINvNtNtCs82bWklYMk3w_3std6thread9lifecycle15spawn_uncheckedNCNvCs6pj9lYx6hxu_4test8run_tests_0uEs_0INtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_once6vtableB17_ + 64
+8   shards_api-c44d8f98ee8babf4         0x00000001041dc5bc _RNvNvMs0_NtNtNtCs82bWklYMk3w_3std3sys6thread4unixNtB7_6Thread3new12thread_start + 392
+9   libsystem_pthread.dylib             0x0000000185e47c58 _pthread_start + 136
+10  libsystem_pthread.dylib             0x0000000185e42c1c thread_start + 8
+memory allocation of 64 bytes failed
+memory allocation of 64 bytes failed
+skipping backtrace printing to avoid potential recursion

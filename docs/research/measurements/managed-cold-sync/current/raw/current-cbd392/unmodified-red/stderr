@@ -1,0 +1,4 @@
+COLD_REFUSED_BYTES 64
+memory allocation of 64 bytes failed
+memory allocation of 64 bytes failed
+skipping backtrace printing to avoid potential recursion

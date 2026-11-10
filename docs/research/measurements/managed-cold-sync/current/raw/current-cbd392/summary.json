@@ -1,0 +1,288 @@
+{
+  "label": "current-cbd392",
+  "revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "source": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392",
+  "file_identities": {
+    "crates/abi/Cargo.toml": {
+      "sha256": "41b324548af8df170cb3507a4a0a0ce4e75fb9e6551985074924aa8bf27b8555",
+      "bytes": 243,
+      "private_test_edits": false
+    },
+    "crates/abi/build.rs": {
+      "sha256": "5daeaceeb36e04c1962ed90ffb3d7216cc12aebbaf8e6158eaffa5d7edb6b168",
+      "bytes": 2937,
+      "private_test_edits": false
+    },
+    "crates/abi/src/bounds.rs": {
+      "sha256": "e8297213757dae9f93bd562fa6f25c215a63d8476c8ec9ca94db2ecffd90108f",
+      "bytes": 9001,
+      "private_test_edits": false
+    },
+    "crates/abi/src/build.rs": {
+      "sha256": "a90290611ae47693edbfe5bef0484253f95f2df4eb8b86ecc9aefc25862df7bf",
+      "bytes": 28606,
+      "private_test_edits": false
+    },
+    "crates/abi/src/changes.rs": {
+      "sha256": "e3036a8559371fe2c39e25e93bb13622847669ac48488b5987d3e0f453609baa",
+      "bytes": 20243,
+      "private_test_edits": false
+    },
+    "crates/abi/src/emulate.rs": {
+      "sha256": "9bc88f80176e0c96fb6571161f36fb49e37a8493df88d2cca931276c0f87677d",
+      "bytes": 5461,
+      "private_test_edits": false
+    },
+    "crates/abi/src/lib.rs": {
+      "sha256": "d72676c26cf34b2b3d9623826ec31281523cb98048f2b1e32a50df9b5c1d0bfb",
+      "bytes": 7809,
+      "private_test_edits": false
+    },
+    "crates/abi/src/run.rs": {
+      "sha256": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8",
+      "bytes": 53408,
+      "private_test_edits": false
+    },
+    "crates/abi/src/run/managed.rs": {
+      "sha256": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+      "bytes": 18271,
+      "private_test_edits": false
+    },
+    "crates/abi/src/run/quiesce.rs": {
+      "sha256": "dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092",
+      "bytes": 5846,
+      "private_test_edits": false
+    },
+    "crates/abi/tests/allocations.rs": {
+      "sha256": "91755703903a54630558cd79349c9d67629fd5218a524119f53628a76051a3cd",
+      "bytes": 3803,
+      "private_test_edits": false
+    },
+    "crates/afunix/Cargo.toml": {
+      "sha256": "37ee905425f3624f3a2e066462f623c372b0629c531ab71a24d80fa4d373c6d8",
+      "bytes": 455,
+      "private_test_edits": false
+    },
+    "crates/afunix/src/lib.rs": {
+      "sha256": "e05c7b14982e856a862ac7226d879714894422d041348bd69651b35ff8523afa",
+      "bytes": 34694,
+      "private_test_edits": false
+    },
+    "crates/api/Cargo.toml": {
+      "sha256": "a626ca3ace04d96acb1396011dc9c24f99f31293e6ac41c612250329cedd057c",
+      "bytes": 641,
+      "private_test_edits": false
+    },
+    "crates/api/src/client.rs": {
+      "sha256": "5cb3cd55f6b0b647257aad4dd95e8a9bdf56f0dce3ca530dc0243d06e7e2cdaa",
+      "bytes": 68692,
+      "private_test_edits": true
+    },
+    "crates/api/src/conformance.rs": {
+      "sha256": "aaa3c49a4c142614aed1562fae57fd8d762f95b128736648f298c53c12758d5b",
+      "bytes": 17423,
+      "private_test_edits": false
+    },
+    "crates/api/src/lib.rs": {
+      "sha256": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+      "bytes": 25201,
+      "private_test_edits": false
+    },
+    "crates/api/src/said.rs": {
+      "sha256": "8d6c4eb51f72372ea5e16c5787d7ea78958b0a05eeae18a62cd1b0ab87bca096",
+      "bytes": 6151,
+      "private_test_edits": false
+    },
+    "crates/api/src/sim.rs": {
+      "sha256": "910824d9a9fee4476bc9236958c38f90899fc67c4d9e19dff248efe4c711ba7f",
+      "bytes": 18297,
+      "private_test_edits": false
+    },
+    "crates/api/src/stream.rs": {
+      "sha256": "81c863047f8ba42b740981b4f51fe3ed0b329c8b08a02896a40973271666dd99",
+      "bytes": 26687,
+      "private_test_edits": false
+    },
+    "crates/api/src/taken.rs": {
+      "sha256": "b591e7832e1f4a29fbadf1100d83d04c73017b4ba7064bcebc14b6d3528e73ad",
+      "bytes": 13545,
+      "private_test_edits": false
+    },
+    "crates/api/src/while_runs.rs": {
+      "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+      "bytes": 4847,
+      "private_test_edits": false
+    },
+    "crates/api/tests/real.rs": {
+      "sha256": "c16f5c774667ce003b868f0f8250805427c2fa2d1cbbde06fe44d5053d6cc061",
+      "bytes": 5145,
+      "private_test_edits": false
+    },
+    "crates/api/tests/sim.rs": {
+      "sha256": "5a3107bd204bd5a4cb75f9c9814b5e6473f8e0576d3893c017b45ef9785fb8b2",
+      "bytes": 26180,
+      "private_test_edits": false
+    },
+    "crates/testdir/Cargo.toml": {
+      "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1",
+      "bytes": 536,
+      "private_test_edits": false
+    },
+    "crates/testdir/src/bin/shards-testhelper.rs": {
+      "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123",
+      "bytes": 5719,
+      "private_test_edits": false
+    },
+    "crates/testdir/src/lib.rs": {
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc",
+      "bytes": 17917,
+      "private_test_edits": false
+    },
+    "Cargo.toml": {
+      "sha256": "1155521515798e85deddd8729bb4be46a1b8644f2d38f7496a07ecc74d76322b",
+      "bytes": 2208,
+      "private_test_edits": true
+    },
+    "Cargo.lock": {
+      "sha256": "d6b37462c82ec325e5ed297a163d4cdc63fa99bb0de8ad03ec1702089d9e5619",
+      "bytes": 3158,
+      "private_test_edits": true
+    },
+    "rust-toolchain.toml": {
+      "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+      "bytes": 700,
+      "private_test_edits": false
+    },
+    "clippy.toml": {
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+      "bytes": 526,
+      "private_test_edits": false
+    },
+    "docs/research/measurements/managed-cold-sync/current/native_case.rs": {
+      "sha256": "d02641358b77b9349223517fb2bbfc5aa6e9ffd199c7db350af548a8b089fe0c",
+      "bytes": 5630,
+      "private_test_edits": false
+    }
+  },
+  "environment": {
+    "CARGO_HOME": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/cargo-home",
+    "CARGO_TARGET_DIR": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target",
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_PROFILE_TEST_RELEASE_CODEGEN_UNITS": "1",
+    "RUSTFLAGS": "-Cllvm-args=-threads=1 --check-cfg=cfg(has_allocation_refusal)"
+  },
+  "compile": {
+    "argv": [
+      "cargo",
+      "+1.98.1",
+      "test",
+      "--locked",
+      "-j1",
+      "--profile",
+      "test-release",
+      "-p",
+      "shards-api",
+      "--lib",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392",
+    "exit": 0,
+    "stdout": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/compile.stdout",
+    "stderr": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/compile.stderr"
+  },
+  "binary": {
+    "path": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target/test-release/deps/shards_api-eb9b7710ed083f27",
+    "sha256": "0e878a3f1149f92a4188a156ee68b009dbbdb05368d8f5681e6cb75e3f6102aa"
+  },
+  "selection": {
+    "argv": [
+      "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target/test-release/deps/shards_api-eb9b7710ed083f27",
+      "client::cold_sync_current::owned_connection_cold_sync_refusal_current",
+      "--list",
+      "--exact"
+    ],
+    "cwd": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392",
+    "exit": 0,
+    "stdout": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/selection.stdout",
+    "stderr": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/selection.stderr"
+  },
+  "cases": [
+    {
+      "trace": false,
+      "deadline_monotonic": 27.146837875,
+      "seconds": 15,
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target/test-release/deps/shards_api-eb9b7710ed083f27",
+        "client::cold_sync_current::owned_connection_cold_sync_refusal_current",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "standin_exit_observed": true,
+      "test_exit_observed": true,
+      "timed_out": false,
+      "cleanup": [
+        {
+          "kill_owned_group": "sent"
+        },
+        {
+          "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-96373f9ac35cd7ba-0/v"
+        },
+        {
+          "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-96373f9ac35cd7ba-0/cold-sync-owned"
+        },
+        {
+          "owned_rmdir": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-96373f9ac35cd7ba-0"
+        }
+      ],
+      "child_reaping_after_abort": "unknown; outer is not its parent",
+      "test_pid": 14928,
+      "test_pgid": 14928,
+      "standin_pid": 14929,
+      "vsock": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-96373f9ac35cd7ba-0/v",
+      "observer_registered_before_release": true,
+      "exit": -6,
+      "stdout_sha256": "43eaf2a6c0372c696bb2c3a02ce32fafb0e5389379a20463689071102c63cd6c",
+      "stderr_sha256": "9271f355a8ad290137db9006365f460e4f1176c02aa40c325f3290f2be8f360e"
+    },
+    {
+      "trace": true,
+      "deadline_monotonic": 27.166653375,
+      "seconds": 15,
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target/test-release/deps/shards_api-eb9b7710ed083f27",
+        "client::cold_sync_current::owned_connection_cold_sync_refusal_current",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "standin_exit_observed": true,
+      "test_exit_observed": true,
+      "timed_out": false,
+      "cleanup": [
+        {
+          "kill_owned_group": "sent"
+        },
+        {
+          "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/v"
+        },
+        {
+          "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/cold-sync-owned"
+        },
+        {
+          "owned_rmdir": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0"
+        }
+      ],
+      "child_reaping_after_abort": "unknown; outer is not its parent",
+      "test_pid": 14930,
+      "test_pgid": 14930,
+      "standin_pid": 14931,
+      "vsock": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/v",
+      "observer_registered_before_release": true,
+      "exit": -6,
+      "stdout_sha256": "5f4d9908d8741bfc4893fdeb96046f793140e4b6cfbd40e86267ab052bcbb888",
+      "stderr_sha256": "39b2700322bef27a45aac6eecde25b93c4a89ad226a70ab446fc3bd63078f963"
+    }
+  ]
+}
