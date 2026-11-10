@@ -17,7 +17,7 @@ fn input(name: &str) -> u32 {
 
 fn agentfile(base: &str, budget: Budget, actor_port: u16, healthy_port: u16) -> String {
     format!(
-        "FROM {base}\nAGENT --processes={} limited FROM ./limited\nHARNESS healthy FROM ./healthy\nVOLUME --chown=limited /limits FOR limited\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={actor_port},{healthy_port} control\nEXPOSE --agents=limited {actor_port} AS ingress FOR control\nEXPOSE --harnesses=healthy {healthy_port} AS ingress FOR control\nCONNECT limited WITH limited ON control\nCONNECT healthy WITH healthy ON control\n",
+        "FROM {base}\nAGENT --processes={} limited FROM ./limited\nHARNESS healthy FROM ./healthy\nVOLUME --chown=limited /limits FOR limited\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={actor_port} --ingress={healthy_port} control\nEXPOSE --agents=limited {actor_port} AS ingress FOR control\nEXPOSE --harnesses=healthy {healthy_port} AS ingress FOR control\nCONNECT limited WITH limited ON control\nCONNECT healthy WITH healthy ON control\n",
         budget.tasks
     )
 }
