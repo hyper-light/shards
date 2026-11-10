@@ -1,0 +1,16 @@
+old-server-new-client-c2-normal passed
+old-server-new-client-c2-stall passed
+old-server-new-client-c2-wrong_server passed
+old-server-new-client-c2-wrong_client passed
+old-server-new-client-c4-normal passed
+old-server-new-client-c4-stall passed
+old-server-new-client-c4-wrong_server passed
+old-server-new-client-c4-wrong_client passed
+new-server-old-client-c2-normal passed
+new-server-old-client-c2-stall passed
+new-server-old-client-c2-wrong_server passed
+new-server-old-client-c2-wrong_client passed
+new-server-old-client-c4-normal passed
+new-server-old-client-c4-stall passed
+new-server-old-client-c4-wrong_server passed
+new-server-old-client-c4-wrong_client passed

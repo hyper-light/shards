@@ -1,0 +1,16 @@
+
+running 1 test
+test managed_process_role ... managed_record	3
+managed_observer_done	3	Complete	records=16
+managed_record	0
+managed_record	2
+managed_record	1
+managed_observer_done	1	Complete	records=16
+managed_observer_done	2	Complete	records=16
+managed_lost	0	code=Some(0)	closed by peer: the daemon stopped (code 0)
+managed_observer_done	0	Cancelled	records=1
+managed_process_return	client	before=(4, 2)	after=(4, 2)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -493,7 +493,7 @@ dependencies = [
 [[package]]
 name = "hyper-quic"
 version = "0.1.0"
-source = "git+https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac276d2d53296de24c2a43837baf66ed1cbd"
+source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -512,7 +512,7 @@ dependencies = [
 [[package]]
 name = "hyper-tls"
 version = "0.1.0"
-source = "git+https://github.com/hyper-light/hyper-raft?rev=f116ac276d2d53296de24c2a43837baf66ed1cbd#f116ac276d2d53296de24c2a43837baf66ed1cbd"
+source = "git+https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fcef7a363327c5439b191724a38065062cd"
 dependencies = [
  "aws-lc-rs",
  "brotli",

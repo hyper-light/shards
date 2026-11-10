@@ -1,0 +1,2297 @@
+{
+  "interop_cases": 16,
+  "resource_cases": 24,
+  "role_processes": 80,
+  "records": [
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "normal",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "stall",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "wrong_client",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c2-wrong_client",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "wrong_server",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c2-wrong_server",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "normal",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "stall",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "wrong_client",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c4-wrong_client",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "wrong_server",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "new-server-old-client-c4-wrong_server",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "normal",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "stall",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "wrong_client",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c2-wrong_client",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "wrong_server",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c2-wrong_server",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "normal",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "stall",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "wrong_client",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c4-wrong_client",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "wrong_server",
+      "resources": false,
+      "suite": "coordinator-interop-5d23-v1",
+      "case": "old-server-new-client-c4-wrong_server",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "new-server-old-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "new-server-old-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "new-server-old-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "new-server-old-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "old-server-new-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "old-server-new-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "old-server-new-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-1",
+      "case": "old-server-new-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "new-server-old-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "new-server-old-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "new-server-old-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "new-server-old-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "old-server-new-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "old-server-new-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "old-server-new-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-2",
+      "case": "old-server-new-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "new-server-old-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "new-server-old-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "new-server-old-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "new",
+      "client": "old",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "new-server-old-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "old-server-new-client-c2-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 2,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "old-server-new-client-c2-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "normal",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "old-server-new-client-c4-normal",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    },
+    {
+      "pass_result": true,
+      "server": "old",
+      "client": "new",
+      "channels": 4,
+      "mode": "stall",
+      "resources": true,
+      "suite": "coordinator-resources-5d23-v1-3",
+      "case": "old-server-new-client-c4-stall",
+      "roles": {
+        "server": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        },
+        "client": {
+          "fds_tasks_before": [
+            4,
+            2
+          ],
+          "fds_tasks_after": [
+            4,
+            2
+          ],
+          "exit": 0
+        }
+      },
+      "parent_return": [
+        9,
+        1
+      ]
+    }
+  ],
+  "stalled_boundary": [
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "client",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3944,
+      "p90": 3944,
+      "p99": 3944,
+      "max": 3944,
+      "samples": [
+        3944,
+        3924,
+        3944
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "client",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 744,
+      "p90": 756,
+      "p99": 756,
+      "max": 756,
+      "samples": [
+        736,
+        744,
+        756
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "client",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 4770,
+      "p90": 4787,
+      "p99": 4787,
+      "max": 4787,
+      "samples": [
+        4770,
+        4750,
+        4787
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "client",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 6948,
+      "p90": 7104,
+      "p99": 7104,
+      "max": 7104,
+      "samples": [
+        7104,
+        6912,
+        6948
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "parent",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1068,
+      "p90": 1068,
+      "p99": 1068,
+      "max": 1068,
+      "samples": [
+        1068,
+        1068,
+        1068
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "parent",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7276,
+      "p90": 7312,
+      "p99": 7312,
+      "max": 7312,
+      "samples": [
+        7248,
+        7276,
+        7312
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "parent",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 9609,
+      "p90": 9647,
+      "p99": 9647,
+      "max": 9647,
+      "samples": [
+        9580,
+        9609,
+        9647
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "parent",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 14640,
+      "p90": 14668,
+      "p99": 14668,
+      "max": 14668,
+      "samples": [
+        14640,
+        14668,
+        14632
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "server",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 228,
+      "p90": 3932,
+      "p99": 3932,
+      "max": 3932,
+      "samples": [
+        3932,
+        228,
+        204
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "server",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 856,
+      "p90": 856,
+      "p99": 856,
+      "max": 856,
+      "samples": [
+        856,
+        852,
+        856
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "server",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 2967,
+      "p90": 4882,
+      "p99": 4882,
+      "max": 4882,
+      "samples": [
+        4882,
+        2911,
+        2967
+      ]
+    },
+    {
+      "case": "new-server-old-client-c2-stall",
+      "role": "server",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7136,
+      "p90": 7220,
+      "p99": 7220,
+      "max": 7220,
+      "samples": [
+        7220,
+        7068,
+        7136
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "client",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 184,
+      "p90": 3864,
+      "p99": 3864,
+      "max": 3864,
+      "samples": [
+        124,
+        184,
+        3864
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "client",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1056,
+      "p90": 1060,
+      "p99": 1060,
+      "max": 1060,
+      "samples": [
+        1060,
+        1056,
+        1056
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "client",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3189,
+      "p90": 4998,
+      "p99": 4998,
+      "max": 4998,
+      "samples": [
+        3180,
+        3189,
+        4998
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "client",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7336,
+      "p90": 7376,
+      "p99": 7376,
+      "max": 7376,
+      "samples": [
+        7376,
+        7336,
+        7228
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "parent",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1068,
+      "p90": 1076,
+      "p99": 1076,
+      "max": 1076,
+      "samples": [
+        1068,
+        1068,
+        1076
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "parent",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7536,
+      "p90": 7552,
+      "p99": 7552,
+      "max": 7552,
+      "samples": [
+        7508,
+        7536,
+        7552
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "parent",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 9869,
+      "p90": 9895,
+      "p99": 9895,
+      "max": 9895,
+      "samples": [
+        9837,
+        9869,
+        9895
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "parent",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 14900,
+      "p90": 14928,
+      "p99": 14928,
+      "max": 14928,
+      "samples": [
+        14900,
+        14928,
+        14872
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "server",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3936,
+      "p90": 3940,
+      "p99": 3940,
+      "max": 3940,
+      "samples": [
+        3860,
+        3940,
+        3936
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "server",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1344,
+      "p90": 1348,
+      "p99": 1348,
+      "max": 1348,
+      "samples": [
+        1348,
+        1336,
+        1344
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "server",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 5361,
+      "p90": 5377,
+      "p99": 5377,
+      "max": 5377,
+      "samples": [
+        5297,
+        5361,
+        5377
+      ]
+    },
+    {
+      "case": "new-server-old-client-c4-stall",
+      "role": "server",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7708,
+      "p90": 7712,
+      "p99": 7712,
+      "max": 7712,
+      "samples": [
+        7708,
+        7528,
+        7712
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "client",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 4076,
+      "p90": 4144,
+      "p99": 4144,
+      "max": 4144,
+      "samples": [
+        4076,
+        3924,
+        4144
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "client",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 744,
+      "p90": 744,
+      "p99": 744,
+      "max": 744,
+      "samples": [
+        740,
+        744,
+        744
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "client",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 4911,
+      "p90": 4970,
+      "p99": 4970,
+      "max": 4970,
+      "samples": [
+        4911,
+        4754,
+        4970
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "client",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7132,
+      "p90": 7204,
+      "p99": 7204,
+      "max": 7204,
+      "samples": [
+        7132,
+        7104,
+        7204
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "parent",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1068,
+      "p90": 1076,
+      "p99": 1076,
+      "max": 1076,
+      "samples": [
+        1068,
+        1068,
+        1076
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "parent",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 6808,
+      "p90": 6808,
+      "p99": 6808,
+      "max": 6808,
+      "samples": [
+        6808,
+        6800,
+        6808
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "parent",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 9140,
+      "p90": 9151,
+      "p99": 9151,
+      "max": 9151,
+      "samples": [
+        9140,
+        9133,
+        9151
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "parent",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 14192,
+      "p90": 14200,
+      "p99": 14200,
+      "max": 14200,
+      "samples": [
+        14200,
+        14192,
+        14128
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "server",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3720,
+      "p90": 3880,
+      "p99": 3880,
+      "max": 3880,
+      "samples": [
+        3720,
+        36,
+        3880
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "server",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 848,
+      "p90": 856,
+      "p99": 856,
+      "max": 856,
+      "samples": [
+        848,
+        856,
+        848
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "server",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 4651,
+      "p90": 4821,
+      "p99": 4821,
+      "max": 4821,
+      "samples": [
+        4651,
+        2836,
+        4821
+      ]
+    },
+    {
+      "case": "old-server-new-client-c2-stall",
+      "role": "server",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7004,
+      "p90": 7152,
+      "p99": 7152,
+      "max": 7152,
+      "samples": [
+        7004,
+        6912,
+        7152
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "client",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 388,
+      "p90": 3928,
+      "p99": 3928,
+      "max": 3928,
+      "samples": [
+        64,
+        3928,
+        388
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "client",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1052,
+      "p90": 1080,
+      "p99": 1080,
+      "max": 1080,
+      "samples": [
+        1052,
+        1052,
+        1080
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "client",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3360,
+      "p90": 5069,
+      "p99": 5069,
+      "max": 5069,
+      "samples": [
+        3165,
+        5069,
+        3360
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "client",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7488,
+      "p90": 7528,
+      "p99": 7528,
+      "max": 7528,
+      "samples": [
+        7488,
+        7416,
+        7528
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "parent",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1068,
+      "p90": 1068,
+      "p99": 1068,
+      "max": 1068,
+      "samples": [
+        1068,
+        1068,
+        1068
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "parent",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7020,
+      "p90": 7028,
+      "p99": 7028,
+      "max": 7028,
+      "samples": [
+        7016,
+        7028,
+        7020
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "parent",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 9348,
+      "p90": 9361,
+      "p99": 9361,
+      "max": 9361,
+      "samples": [
+        9343,
+        9361,
+        9348
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "parent",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 14408,
+      "p90": 14420,
+      "p99": 14420,
+      "max": 14420,
+      "samples": [
+        14408,
+        14420,
+        14340
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "server",
+      "metric": "Private_Clean",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 84,
+      "p90": 384,
+      "p99": 384,
+      "max": 384,
+      "samples": [
+        384,
+        84,
+        64
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "server",
+      "metric": "Private_Dirty",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 1332,
+      "p90": 1344,
+      "p99": 1344,
+      "max": 1344,
+      "samples": [
+        1344,
+        1332,
+        1324
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "server",
+      "metric": "Pss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 3372,
+      "p90": 3559,
+      "p99": 3559,
+      "max": 3559,
+      "samples": [
+        3559,
+        3313,
+        3372
+      ]
+    },
+    {
+      "case": "old-server-new-client-c4-stall",
+      "role": "server",
+      "metric": "Rss",
+      "unit": "KiB",
+      "n": 3,
+      "p50": 7532,
+      "p90": 7632,
+      "p99": 7632,
+      "max": 7632,
+      "samples": [
+        7532,
+        7296,
+        7632
+      ]
+    }
+  ]
+}

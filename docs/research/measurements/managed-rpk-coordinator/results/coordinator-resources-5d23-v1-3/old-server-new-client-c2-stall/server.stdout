@@ -1,0 +1,425 @@
+
+running 1 test
+test managed_process_role ... process_resource	initial	status	Name:	old-role
+process_resource	initial	status	Umask:	0022
+process_resource	initial	status	State:	S (sleeping)
+process_resource	initial	status	Tgid:	2122450
+process_resource	initial	status	Ngid:	0
+process_resource	initial	status	Pid:	2122450
+process_resource	initial	status	PPid:	2122427
+process_resource	initial	status	TracerPid:	0
+process_resource	initial	status	Uid:	1000	1000	1000	1000
+process_resource	initial	status	Gid:	1000	1000	1000	1000
+process_resource	initial	status	FDSize:	64
+process_resource	initial	status	Groups:	10 965 1000 
+process_resource	initial	status	NStgid:	2122450
+process_resource	initial	status	NSpid:	2122450
+process_resource	initial	status	NSpgid:	2121859
+process_resource	initial	status	NSsid:	1945
+process_resource	initial	status	Kthread:	0
+process_resource	initial	status	VmPeak:	  143140 kB
+process_resource	initial	status	VmSize:	   77616 kB
+process_resource	initial	status	VmLck:	       0 kB
+process_resource	initial	status	VmPin:	       0 kB
+process_resource	initial	status	VmHWM:	    4352 kB
+process_resource	initial	status	VmRSS:	    4352 kB
+process_resource	initial	status	RssAnon:	     288 kB
+process_resource	initial	status	RssFile:	    4064 kB
+process_resource	initial	status	RssShmem:	       0 kB
+process_resource	initial	status	VmData:	    2424 kB
+process_resource	initial	status	VmStk:	     132 kB
+process_resource	initial	status	VmExe:	    4300 kB
+process_resource	initial	status	VmLib:	    2376 kB
+process_resource	initial	status	VmPTE:	      68 kB
+process_resource	initial	status	VmSwap:	       0 kB
+process_resource	initial	status	HugetlbPages:	       0 kB
+process_resource	initial	status	CoreDumping:	0
+process_resource	initial	status	THP_enabled:	1
+process_resource	initial	status	untag_mask:	0xffffffffffffffff
+process_resource	initial	status	Threads:	2
+process_resource	initial	status	SigQ:	4/255424
+process_resource	initial	status	SigPnd:	0000000000000000
+process_resource	initial	status	ShdPnd:	0000000000000000
+process_resource	initial	status	SigBlk:	0000000000000000
+process_resource	initial	status	SigIgn:	0000000000001000
+process_resource	initial	status	SigCgt:	0000000100000440
+process_resource	initial	status	CapInh:	0000000800000000
+process_resource	initial	status	CapPrm:	0000000000000000
+process_resource	initial	status	CapEff:	0000000000000000
+process_resource	initial	status	CapBnd:	000001ffffffffff
+process_resource	initial	status	CapAmb:	0000000000000000
+process_resource	initial	status	NoNewPrivs:	0
+process_resource	initial	status	Seccomp:	0
+process_resource	initial	status	Seccomp_filters:	0
+process_resource	initial	status	Speculation_Store_Bypass:	thread vulnerable
+process_resource	initial	status	SpeculationIndirectBranch:	conditional enabled
+process_resource	initial	status	Cpus_allowed:	ffffffff
+process_resource	initial	status	Cpus_allowed_list:	0-31
+process_resource	initial	status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+process_resource	initial	status	Mems_allowed_list:	0
+process_resource	initial	status	voluntary_ctxt_switches:	1
+process_resource	initial	status	nonvoluntary_ctxt_switches:	0
+process_resource	initial	status	x86_Thread_features:	
+process_resource	initial	status	x86_Thread_features_locked:	
+process_resource	initial	stat	2122450 (old-role) S 2122427 2121859 1945 0 -1 4194304 152 0 0 0 0 0 0 0 20 0 2 0 9202960 79478784 1080 18446744073709551615 94909421191168 94909425594368 140733442639328 0 0 0 0 4096 1088 0 0 0 17 19 0 0 0 0 0 94909425730216 94909425732952 94910187974656 140733442646180 140733442646311 140733442646311 140733442650041 0
+process_resource	initial	statm	19404 1089 1016 1075 0 639 0
+process_resource	initial	smaps_rollup	5651d23b9000-7fff0edb7000 ---p 00000000 00:00 0                          [rollup]
+process_resource	initial	smaps_rollup	Rss:                4356 kB
+process_resource	initial	smaps_rollup	Pss:                2089 kB
+process_resource	initial	smaps_rollup	Pss_Dirty:           292 kB
+process_resource	initial	smaps_rollup	Pss_Anon:            292 kB
+process_resource	initial	smaps_rollup	Pss_File:           1797 kB
+process_resource	initial	smaps_rollup	Pss_Shmem:             0 kB
+process_resource	initial	smaps_rollup	Shared_Clean:       2360 kB
+process_resource	initial	smaps_rollup	Shared_Dirty:          0 kB
+process_resource	initial	smaps_rollup	Private_Clean:      1704 kB
+process_resource	initial	smaps_rollup	Private_Dirty:       292 kB
+process_resource	initial	smaps_rollup	Referenced:         4356 kB
+process_resource	initial	smaps_rollup	Anonymous:           292 kB
+process_resource	initial	smaps_rollup	KSM:                   0 kB
+process_resource	initial	smaps_rollup	LazyFree:              0 kB
+process_resource	initial	smaps_rollup	AnonHugePages:         0 kB
+process_resource	initial	smaps_rollup	ShmemPmdMapped:        0 kB
+process_resource	initial	smaps_rollup	FilePmdMapped:         0 kB
+process_resource	initial	smaps_rollup	Shared_Hugetlb:        0 kB
+process_resource	initial	smaps_rollup	Private_Hugetlb:       0 kB
+process_resource	initial	smaps_rollup	Swap:                  0 kB
+process_resource	initial	smaps_rollup	SwapPss:               0 kB
+process_resource	initial	smaps_rollup	Locked:                0 kB
+process_resource	initial	cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c46f8d2b70f2bb55afb130472560
+process_resource	initial	net/sockstat	sockets: used 995
+process_resource	initial	net/sockstat	TCP: inuse 33 orphan 0 tw 1436 alloc 898 mem 2590
+process_resource	initial	net/sockstat	UDP: inuse 31 mem 0
+process_resource	initial	net/sockstat	UDPLITE: inuse 0
+process_resource	initial	net/sockstat	RAW: inuse 0
+process_resource	initial	net/sockstat	FRAG: inuse 0 memory 0
+process_cgroup	initial	memory.current	unknown=NotFound
+process_cgroup	initial	memory.stat	unknown=NotFound
+process_cgroup	initial	cpu.stat	usage_usec 576821
+process_cgroup	initial	cpu.stat	user_usec 331360
+process_cgroup	initial	cpu.stat	system_usec 245461
+process_cgroup	initial	cpu.stat	nice_usec 0
+process_cgroup	initial	cpu.stat	core_sched.force_idle_usec 0
+process_handles	initial	(4, 2)
+process_socket_allowance	0	851968
+process_socket_allowance	1	851968
+process_resource	servers_bound	status	Name:	old-role
+process_resource	servers_bound	status	Umask:	0022
+process_resource	servers_bound	status	State:	S (sleeping)
+process_resource	servers_bound	status	Tgid:	2122450
+process_resource	servers_bound	status	Ngid:	0
+process_resource	servers_bound	status	Pid:	2122450
+process_resource	servers_bound	status	PPid:	2122427
+process_resource	servers_bound	status	TracerPid:	0
+process_resource	servers_bound	status	Uid:	1000	1000	1000	1000
+process_resource	servers_bound	status	Gid:	1000	1000	1000	1000
+process_resource	servers_bound	status	FDSize:	64
+process_resource	servers_bound	status	Groups:	10 965 1000 
+process_resource	servers_bound	status	NStgid:	2122450
+process_resource	servers_bound	status	NSpid:	2122450
+process_resource	servers_bound	status	NSpgid:	2121859
+process_resource	servers_bound	status	NSsid:	1945
+process_resource	servers_bound	status	Kthread:	0
+process_resource	servers_bound	status	VmPeak:	  348028 kB
+process_resource	servers_bound	status	VmSize:	  348028 kB
+process_resource	servers_bound	status	VmLck:	       0 kB
+process_resource	servers_bound	status	VmPin:	       0 kB
+process_resource	servers_bound	status	VmHWM:	    5788 kB
+process_resource	servers_bound	status	VmRSS:	    5788 kB
+process_resource	servers_bound	status	RssAnon:	     572 kB
+process_resource	servers_bound	status	RssFile:	    5216 kB
+process_resource	servers_bound	status	RssShmem:	       0 kB
+process_resource	servers_bound	status	VmData:	   11204 kB
+process_resource	servers_bound	status	VmStk:	     132 kB
+process_resource	servers_bound	status	VmExe:	    4300 kB
+process_resource	servers_bound	status	VmLib:	    2376 kB
+process_resource	servers_bound	status	VmPTE:	     100 kB
+process_resource	servers_bound	status	VmSwap:	       0 kB
+process_resource	servers_bound	status	HugetlbPages:	       0 kB
+process_resource	servers_bound	status	CoreDumping:	0
+process_resource	servers_bound	status	THP_enabled:	1
+process_resource	servers_bound	status	untag_mask:	0xffffffffffffffff
+process_resource	servers_bound	status	Threads:	6
+process_resource	servers_bound	status	SigQ:	4/255424
+process_resource	servers_bound	status	SigPnd:	0000000000000000
+process_resource	servers_bound	status	ShdPnd:	0000000000000000
+process_resource	servers_bound	status	SigBlk:	0000000000000000
+process_resource	servers_bound	status	SigIgn:	0000000000001000
+process_resource	servers_bound	status	SigCgt:	0000000100000440
+process_resource	servers_bound	status	CapInh:	0000000800000000
+process_resource	servers_bound	status	CapPrm:	0000000000000000
+process_resource	servers_bound	status	CapEff:	0000000000000000
+process_resource	servers_bound	status	CapBnd:	000001ffffffffff
+process_resource	servers_bound	status	CapAmb:	0000000000000000
+process_resource	servers_bound	status	NoNewPrivs:	0
+process_resource	servers_bound	status	Seccomp:	0
+process_resource	servers_bound	status	Seccomp_filters:	0
+process_resource	servers_bound	status	Speculation_Store_Bypass:	thread vulnerable
+process_resource	servers_bound	status	SpeculationIndirectBranch:	conditional enabled
+process_resource	servers_bound	status	Cpus_allowed:	ffffffff
+process_resource	servers_bound	status	Cpus_allowed_list:	0-31
+process_resource	servers_bound	status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+process_resource	servers_bound	status	Mems_allowed_list:	0
+process_resource	servers_bound	status	voluntary_ctxt_switches:	1
+process_resource	servers_bound	status	nonvoluntary_ctxt_switches:	0
+process_resource	servers_bound	status	x86_Thread_features:	
+process_resource	servers_bound	status	x86_Thread_features_locked:	
+process_resource	servers_bound	stat	2122450 (old-role) S 2122427 2121859 1945 0 -1 4194304 245 0 0 0 0 0 0 0 20 0 6 0 9202960 356380672 1336 18446744073709551615 94909421191168 94909425594368 140733442639328 0 0 0 0 4096 1088 0 0 0 17 19 0 0 0 0 0 94909425730216 94909425732952 94910187974656 140733442646180 140733442646311 140733442646311 140733442650041 0
+process_resource	servers_bound	statm	87007 1447 1304 1075 0 2834 0
+process_resource	servers_bound	smaps_rollup	5651d23b9000-7fff0edb7000 ---p 00000000 00:00 0                          [rollup]
+process_resource	servers_bound	smaps_rollup	Rss:                5788 kB
+process_resource	servers_bound	smaps_rollup	Pss:                3521 kB
+process_resource	servers_bound	smaps_rollup	Pss_Dirty:           572 kB
+process_resource	servers_bound	smaps_rollup	Pss_Anon:            572 kB
+process_resource	servers_bound	smaps_rollup	Pss_File:           2949 kB
+process_resource	servers_bound	smaps_rollup	Pss_Shmem:             0 kB
+process_resource	servers_bound	smaps_rollup	Shared_Clean:       2360 kB
+process_resource	servers_bound	smaps_rollup	Shared_Dirty:          0 kB
+process_resource	servers_bound	smaps_rollup	Private_Clean:      2856 kB
+process_resource	servers_bound	smaps_rollup	Private_Dirty:       572 kB
+process_resource	servers_bound	smaps_rollup	Referenced:         5788 kB
+process_resource	servers_bound	smaps_rollup	Anonymous:           572 kB
+process_resource	servers_bound	smaps_rollup	KSM:                   0 kB
+process_resource	servers_bound	smaps_rollup	LazyFree:              0 kB
+process_resource	servers_bound	smaps_rollup	AnonHugePages:         0 kB
+process_resource	servers_bound	smaps_rollup	ShmemPmdMapped:        0 kB
+process_resource	servers_bound	smaps_rollup	FilePmdMapped:         0 kB
+process_resource	servers_bound	smaps_rollup	Shared_Hugetlb:        0 kB
+process_resource	servers_bound	smaps_rollup	Private_Hugetlb:       0 kB
+process_resource	servers_bound	smaps_rollup	Swap:                  0 kB
+process_resource	servers_bound	smaps_rollup	SwapPss:               0 kB
+process_resource	servers_bound	smaps_rollup	Locked:                0 kB
+process_resource	servers_bound	cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c46f8d2b70f2bb55afb130472560
+process_resource	servers_bound	net/sockstat	sockets: used 999
+process_resource	servers_bound	net/sockstat	TCP: inuse 33 orphan 0 tw 1436 alloc 898 mem 2590
+process_resource	servers_bound	net/sockstat	UDP: inuse 35 mem 0
+process_resource	servers_bound	net/sockstat	UDPLITE: inuse 0
+process_resource	servers_bound	net/sockstat	RAW: inuse 0
+process_resource	servers_bound	net/sockstat	FRAG: inuse 0 memory 0
+process_udp_queue	servers_bound	 1500: 0100007F:8255 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311177 2 0000000063b64e6f 0     
+process_udp_queue	servers_bound	 6899: 0100007F:976C 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311176 2 000000003e2d4b6d 0     
+process_udp_queue	servers_bound	13388: 0100007F:B0C5 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311175 2 0000000008840258 0     
+process_udp_queue	servers_bound	14106: 0100007F:B393 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311174 2 0000000013cbd535 0     
+process_cgroup	servers_bound	memory.current	unknown=NotFound
+process_cgroup	servers_bound	memory.stat	unknown=NotFound
+process_cgroup	servers_bound	cpu.stat	usage_usec 578898
+process_cgroup	servers_bound	cpu.stat	user_usec 332414
+process_cgroup	servers_bound	cpu.stat	system_usec 246484
+process_cgroup	servers_bound	cpu.stat	nice_usec 0
+process_cgroup	servers_bound	cpu.stat	core_sched.force_idle_usec 0
+process_handles	servers_bound	(10, 6)
+managed_ready
+process_resource	subscribed	status	Name:	old-role
+process_resource	subscribed	status	Umask:	0022
+process_resource	subscribed	status	State:	S (sleeping)
+process_resource	subscribed	status	Tgid:	2122450
+process_resource	subscribed	status	Ngid:	0
+process_resource	subscribed	status	Pid:	2122450
+process_resource	subscribed	status	PPid:	2122427
+process_resource	subscribed	status	TracerPid:	0
+process_resource	subscribed	status	Uid:	1000	1000	1000	1000
+process_resource	subscribed	status	Gid:	1000	1000	1000	1000
+process_resource	subscribed	status	FDSize:	64
+process_resource	subscribed	status	Groups:	10 965 1000 
+process_resource	subscribed	status	NStgid:	2122450
+process_resource	subscribed	status	NSpid:	2122450
+process_resource	subscribed	status	NSpgid:	2121859
+process_resource	subscribed	status	NSsid:	1945
+process_resource	subscribed	status	Kthread:	0
+process_resource	subscribed	status	VmPeak:	  481152 kB
+process_resource	subscribed	status	VmSize:	  415628 kB
+process_resource	subscribed	status	VmLck:	       0 kB
+process_resource	subscribed	status	VmPin:	       0 kB
+process_resource	subscribed	status	VmHWM:	    7068 kB
+process_resource	subscribed	status	VmRSS:	    7068 kB
+process_resource	subscribed	status	RssAnon:	     828 kB
+process_resource	subscribed	status	RssFile:	    6240 kB
+process_resource	subscribed	status	RssShmem:	       0 kB
+process_resource	subscribed	status	VmData:	   13436 kB
+process_resource	subscribed	status	VmStk:	     132 kB
+process_resource	subscribed	status	VmExe:	    4300 kB
+process_resource	subscribed	status	VmLib:	    2376 kB
+process_resource	subscribed	status	VmPTE:	     108 kB
+process_resource	subscribed	status	VmSwap:	       0 kB
+process_resource	subscribed	status	HugetlbPages:	       0 kB
+process_resource	subscribed	status	CoreDumping:	0
+process_resource	subscribed	status	THP_enabled:	1
+process_resource	subscribed	status	untag_mask:	0xffffffffffffffff
+process_resource	subscribed	status	Threads:	7
+process_resource	subscribed	status	SigQ:	4/255424
+process_resource	subscribed	status	SigPnd:	0000000000000000
+process_resource	subscribed	status	ShdPnd:	0000000000000000
+process_resource	subscribed	status	SigBlk:	0000000000000000
+process_resource	subscribed	status	SigIgn:	0000000000001000
+process_resource	subscribed	status	SigCgt:	0000000100000440
+process_resource	subscribed	status	CapInh:	0000000800000000
+process_resource	subscribed	status	CapPrm:	0000000000000000
+process_resource	subscribed	status	CapEff:	0000000000000000
+process_resource	subscribed	status	CapBnd:	000001ffffffffff
+process_resource	subscribed	status	CapAmb:	0000000000000000
+process_resource	subscribed	status	NoNewPrivs:	0
+process_resource	subscribed	status	Seccomp:	0
+process_resource	subscribed	status	Seccomp_filters:	0
+process_resource	subscribed	status	Speculation_Store_Bypass:	thread vulnerable
+process_resource	subscribed	status	SpeculationIndirectBranch:	conditional enabled
+process_resource	subscribed	status	Cpus_allowed:	ffffffff
+process_resource	subscribed	status	Cpus_allowed_list:	0-31
+process_resource	subscribed	status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+process_resource	subscribed	status	Mems_allowed_list:	0
+process_resource	subscribed	status	voluntary_ctxt_switches:	1
+process_resource	subscribed	status	nonvoluntary_ctxt_switches:	0
+process_resource	subscribed	status	x86_Thread_features:	
+process_resource	subscribed	status	x86_Thread_features_locked:	
+process_resource	subscribed	stat	2122450 (old-role) S 2122427 2121859 1945 0 -1 4194304 325 0 0 0 0 0 0 0 20 0 7 0 9202960 425603072 1592 18446744073709551615 94909421191168 94909425594368 140733442639328 0 0 0 0 4096 1088 0 0 0 17 19 0 0 0 0 0 94909425730216 94909425732952 94910187974656 140733442646180 140733442646311 140733442646311 140733442650041 0
+process_resource	subscribed	statm	103907 1767 1560 1075 0 3392 0
+process_resource	subscribed	smaps_rollup	5651d23b9000-7fff0edb7000 ---p 00000000 00:00 0                          [rollup]
+process_resource	subscribed	smaps_rollup	Rss:                7068 kB
+process_resource	subscribed	smaps_rollup	Pss:                4798 kB
+process_resource	subscribed	smaps_rollup	Pss_Dirty:           828 kB
+process_resource	subscribed	smaps_rollup	Pss_Anon:            828 kB
+process_resource	subscribed	smaps_rollup	Pss_File:           3970 kB
+process_resource	subscribed	smaps_rollup	Pss_Shmem:             0 kB
+process_resource	subscribed	smaps_rollup	Shared_Clean:       2360 kB
+process_resource	subscribed	smaps_rollup	Shared_Dirty:          0 kB
+process_resource	subscribed	smaps_rollup	Private_Clean:      3880 kB
+process_resource	subscribed	smaps_rollup	Private_Dirty:       828 kB
+process_resource	subscribed	smaps_rollup	Referenced:         7068 kB
+process_resource	subscribed	smaps_rollup	Anonymous:           828 kB
+process_resource	subscribed	smaps_rollup	KSM:                   0 kB
+process_resource	subscribed	smaps_rollup	LazyFree:              0 kB
+process_resource	subscribed	smaps_rollup	AnonHugePages:         0 kB
+process_resource	subscribed	smaps_rollup	ShmemPmdMapped:        0 kB
+process_resource	subscribed	smaps_rollup	FilePmdMapped:         0 kB
+process_resource	subscribed	smaps_rollup	Shared_Hugetlb:        0 kB
+process_resource	subscribed	smaps_rollup	Private_Hugetlb:       0 kB
+process_resource	subscribed	smaps_rollup	Swap:                  0 kB
+process_resource	subscribed	smaps_rollup	SwapPss:               0 kB
+process_resource	subscribed	smaps_rollup	Locked:                0 kB
+process_resource	subscribed	cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c46f8d2b70f2bb55afb130472560
+process_resource	subscribed	net/sockstat	sockets: used 1003
+process_resource	subscribed	net/sockstat	TCP: inuse 33 orphan 0 tw 1436 alloc 898 mem 2590
+process_resource	subscribed	net/sockstat	UDP: inuse 39 mem 0
+process_resource	subscribed	net/sockstat	UDPLITE: inuse 0
+process_resource	subscribed	net/sockstat	RAW: inuse 0
+process_resource	subscribed	net/sockstat	FRAG: inuse 0 memory 0
+process_udp_queue	subscribed	 1500: 0100007F:8255 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311177 2 0000000063b64e6f 0     
+process_udp_queue	subscribed	 6899: 0100007F:976C 00000000:0000 07 00000900:00000000 00:00000000 00000000  1000        0 110311176 2 000000003e2d4b6d 0     
+process_udp_queue	subscribed	13388: 0100007F:B0C5 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311175 2 0000000008840258 0     
+process_udp_queue	subscribed	14106: 0100007F:B393 00000000:0000 07 00000000:00000000 00:00000000 00000000  1000        0 110311174 2 0000000013cbd535 0     
+process_cgroup	subscribed	memory.current	unknown=NotFound
+process_cgroup	subscribed	memory.stat	unknown=NotFound
+process_cgroup	subscribed	cpu.stat	usage_usec 590657
+process_cgroup	subscribed	cpu.stat	user_usec 339998
+process_cgroup	subscribed	cpu.stat	system_usec 250658
+process_cgroup	subscribed	cpu.stat	nice_usec 0
+process_cgroup	subscribed	cpu.stat	core_sched.force_idle_usec 0
+process_handles	subscribed	(10, 7)
+managed_finished	1
+managed_progress	0	accepted=1024	consumed=0	completed=false
+managed_progress	1	accepted=16384	consumed=16384	completed=true
+process_resource	closed	status	Name:	old-role
+process_resource	closed	status	Umask:	0022
+process_resource	closed	status	State:	S (sleeping)
+process_resource	closed	status	Tgid:	2122450
+process_resource	closed	status	Ngid:	0
+process_resource	closed	status	Pid:	2122450
+process_resource	closed	status	PPid:	2122427
+process_resource	closed	status	TracerPid:	0
+process_resource	closed	status	Uid:	1000	1000	1000	1000
+process_resource	closed	status	Gid:	1000	1000	1000	1000
+process_resource	closed	status	FDSize:	64
+process_resource	closed	status	Groups:	10 965 1000 
+process_resource	closed	status	NStgid:	2122450
+process_resource	closed	status	NSpid:	2122450
+process_resource	closed	status	NSpgid:	2121859
+process_resource	closed	status	NSsid:	1945
+process_resource	closed	status	Kthread:	0
+process_resource	closed	status	VmPeak:	  481152 kB
+process_resource	closed	status	VmSize:	  415568 kB
+process_resource	closed	status	VmLck:	       0 kB
+process_resource	closed	status	VmPin:	       0 kB
+process_resource	closed	status	VmHWM:	    7048 kB
+process_resource	closed	status	VmRSS:	    7048 kB
+process_resource	closed	status	RssAnon:	     744 kB
+process_resource	closed	status	RssFile:	    6304 kB
+process_resource	closed	status	RssShmem:	       0 kB
+process_resource	closed	status	VmData:	   13396 kB
+process_resource	closed	status	VmStk:	     132 kB
+process_resource	closed	status	VmExe:	    4300 kB
+process_resource	closed	status	VmLib:	    2376 kB
+process_resource	closed	status	VmPTE:	     108 kB
+process_resource	closed	status	VmSwap:	       0 kB
+process_resource	closed	status	HugetlbPages:	       0 kB
+process_resource	closed	status	CoreDumping:	0
+process_resource	closed	status	THP_enabled:	1
+process_resource	closed	status	untag_mask:	0xffffffffffffffff
+process_resource	closed	status	Threads:	2
+process_resource	closed	status	SigQ:	4/255424
+process_resource	closed	status	SigPnd:	0000000000000000
+process_resource	closed	status	ShdPnd:	0000000000000000
+process_resource	closed	status	SigBlk:	0000000000000000
+process_resource	closed	status	SigIgn:	0000000000001000
+process_resource	closed	status	SigCgt:	0000000100000440
+process_resource	closed	status	CapInh:	0000000800000000
+process_resource	closed	status	CapPrm:	0000000000000000
+process_resource	closed	status	CapEff:	0000000000000000
+process_resource	closed	status	CapBnd:	000001ffffffffff
+process_resource	closed	status	CapAmb:	0000000000000000
+process_resource	closed	status	NoNewPrivs:	0
+process_resource	closed	status	Seccomp:	0
+process_resource	closed	status	Seccomp_filters:	0
+process_resource	closed	status	Speculation_Store_Bypass:	thread vulnerable
+process_resource	closed	status	SpeculationIndirectBranch:	conditional enabled
+process_resource	closed	status	Cpus_allowed:	ffffffff
+process_resource	closed	status	Cpus_allowed_list:	0-31
+process_resource	closed	status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+process_resource	closed	status	Mems_allowed_list:	0
+process_resource	closed	status	voluntary_ctxt_switches:	1
+process_resource	closed	status	nonvoluntary_ctxt_switches:	0
+process_resource	closed	status	x86_Thread_features:	
+process_resource	closed	status	x86_Thread_features_locked:	
+process_resource	closed	stat	2122450 (old-role) S 2122427 2121859 1945 0 -1 4194304 331 0 0 0 0 0 0 0 20 0 2 0 9202960 425541632 1592 18446744073709551615 94909421191168 94909425594368 140733442639328 0 0 0 0 4096 1088 0 0 0 17 19 0 0 0 0 0 94909425730216 94909425732952 94910187974656 140733442646180 140733442646311 140733442646311 140733442650041 0
+process_resource	closed	statm	103892 1762 1576 1075 0 3382 0
+process_resource	closed	smaps_rollup	5651d23b9000-7fff0edb7000 ---p 00000000 00:00 0                          [rollup]
+process_resource	closed	smaps_rollup	Rss:                7048 kB
+process_resource	closed	smaps_rollup	Pss:                4717 kB
+process_resource	closed	smaps_rollup	Pss_Dirty:           744 kB
+process_resource	closed	smaps_rollup	Pss_Anon:            744 kB
+process_resource	closed	smaps_rollup	Pss_File:           3973 kB
+process_resource	closed	smaps_rollup	Pss_Shmem:             0 kB
+process_resource	closed	smaps_rollup	Shared_Clean:       2424 kB
+process_resource	closed	smaps_rollup	Shared_Dirty:          0 kB
+process_resource	closed	smaps_rollup	Private_Clean:      3880 kB
+process_resource	closed	smaps_rollup	Private_Dirty:       744 kB
+process_resource	closed	smaps_rollup	Referenced:         7048 kB
+process_resource	closed	smaps_rollup	Anonymous:           744 kB
+process_resource	closed	smaps_rollup	KSM:                   0 kB
+process_resource	closed	smaps_rollup	LazyFree:              0 kB
+process_resource	closed	smaps_rollup	AnonHugePages:         0 kB
+process_resource	closed	smaps_rollup	ShmemPmdMapped:        0 kB
+process_resource	closed	smaps_rollup	FilePmdMapped:         0 kB
+process_resource	closed	smaps_rollup	Shared_Hugetlb:        0 kB
+process_resource	closed	smaps_rollup	Private_Hugetlb:       0 kB
+process_resource	closed	smaps_rollup	Swap:                  0 kB
+process_resource	closed	smaps_rollup	SwapPss:               0 kB
+process_resource	closed	smaps_rollup	Locked:                0 kB
+process_resource	closed	cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c46f8d2b70f2bb55afb130472560
+process_resource	closed	net/sockstat	sockets: used 995
+process_resource	closed	net/sockstat	TCP: inuse 33 orphan 0 tw 1436 alloc 898 mem 2590
+process_resource	closed	net/sockstat	UDP: inuse 31 mem 0
+process_resource	closed	net/sockstat	UDPLITE: inuse 0
+process_resource	closed	net/sockstat	RAW: inuse 0
+process_resource	closed	net/sockstat	FRAG: inuse 0 memory 0
+process_cgroup	closed	memory.current	unknown=NotFound
+process_cgroup	closed	memory.stat	unknown=NotFound
+process_cgroup	closed	cpu.stat	usage_usec 594739
+process_cgroup	closed	cpu.stat	user_usec 341636
+process_cgroup	closed	cpu.stat	system_usec 253103
+process_cgroup	closed	cpu.stat	nice_usec 0
+process_cgroup	closed	cpu.stat	core_sched.force_idle_usec 0
+process_handles	closed	(4, 2)
+managed_process_return	server	before=(4, 2)	after=(4, 2)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
