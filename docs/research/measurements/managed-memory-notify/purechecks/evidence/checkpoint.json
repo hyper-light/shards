@@ -1,0 +1,79 @@
+{
+  "schema": "managed-memory-notify-checkpoint-v1",
+  "role": "implementer",
+  "agent": "01a1c5bda0bf766683384c0705c0a9bc",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source_parent": "0bdaaa52dfbf62a98d785062d1043efb3f965886",
+  "owned_subtree": "docs/research/measurements/managed-memory-notify",
+  "fixture_sha256": "bafc3ff31ae9f5a4c484124911c890494860bc88c50fd2d751aed57c2f44aab7",
+  "files_before_receipt": [
+    {
+      "path": "README.md",
+      "bytes": 21552,
+      "sha256": "b165b4518dcc8d9279bdaf4c4b66f6969060eef993cf5ea9d37f94769379b352"
+    },
+    {
+      "path": "fixture.rs",
+      "bytes": 30049,
+      "sha256": "bafc3ff31ae9f5a4c484124911c890494860bc88c50fd2d751aed57c2f44aab7"
+    },
+    {
+      "path": "purechecks/driver.py",
+      "bytes": 4504,
+      "sha256": "86233afa0f2fdb77675bc8424f1cd69d415bea038e900607f0f23a410ab51bbc"
+    },
+    {
+      "path": "purechecks/evidence/remote-admission-03.json",
+      "bytes": 887,
+      "sha256": "996c8c53aa2b6d038724ba0493a50e464ccc936f595129f2d9828c48b91a384b"
+    },
+    {
+      "path": "purechecks/evidence/remote-attempt-01.json",
+      "bytes": 11548,
+      "sha256": "db4453bfb52c3bff292c19fc74e8e2c2805128cc793c3175903355bd1a0be22e"
+    },
+    {
+      "path": "purechecks/evidence/remote-attempt-02.json",
+      "bytes": 7283,
+      "sha256": "1ba6dbf36e2e3fe56dd23b43f2053751e8f440bbd5146c0f6ee64839fc79151a"
+    },
+    {
+      "path": "purechecks/evidence/remote-attempt-04.json",
+      "bytes": 7282,
+      "sha256": "bb66df08d21670e57dddcabb74110ef66f122a0ea8be0489ec82a3c19647b0f6"
+    },
+    {
+      "path": "purechecks/evidence/source-identity.json",
+      "bytes": 4886,
+      "sha256": "0f859d8200192a969104488fecba7e18b6f891f72edc2354243a6204734caf6a"
+    }
+  ],
+  "actual_light_proof": "final-source format0; nine synthetic tests0; two targeted guard removals101; restored nine tests0",
+  "mechanical_policy_check": {
+    "command": "python3 scripts/check-development-policy",
+    "exit_code": 0,
+    "output": "Development policy checks passed; evidence/coordinator review is still required."
+  },
+  "native_compile": "UNRUN: coordinator only, native module excluded under test cfg",
+  "native_execution": "UNRUN: coordinator only",
+  "owed": [
+    "Native compile/ABI GNU+musl amd64+arm64 as available",
+    "Actual write/readback, subheader retention, short-positive/still-ready, exactheader, ignored/EAGAIN, close",
+    "FD/watch/path ownership return and actual failure/interrupt/deadline/report/process-loss campaigns",
+    "Native meaningful guard-removal/restored gates",
+    "All cost/profiling/comparative production decisions and combined/main gates"
+  ],
+  "active_local_targets_caches_jobs": [],
+  "active_remote_jobs": [],
+  "held_helper_artifacts": "Unrelated managed-poller-research/step9-* untracked files preserved and excluded",
+  "dispatch": "No new agent/plan dispatch; root corrected future goals_set only; ongoing lane goal not completed",
+  "limitations": [
+    "No production source changed.",
+    "Regular-file framing is not cgroup/pressure/OOM proof.",
+    "Pure tests are not evidence that the excluded native module compiles or executes.",
+    "No production buffer/ring/capacity selection.",
+    "Signature creation/remote branch identity verified after commit; local independent cryptographic verification not claimed."
+  ]
+}
