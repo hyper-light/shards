@@ -41,6 +41,7 @@ enum Probe<'a> {
     Capabilities(Option<&'a str>),
     Serve(Case, SocketMode),
     Dial(Case),
+    Pair(Case),
 }
 
 #[derive(Debug)]
@@ -128,11 +129,12 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
                     Ok(Probe::Serve(case, SocketMode::Transparent))
                 }
                 ("dial", "native", _) => Ok(Probe::Dial(case)),
+                ("pair", "native", _) => Ok(Probe::Pair(case)),
                 _ => Err(invalid("unsupported role/socket mode")),
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG] or {serve|dial} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG] or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -159,6 +161,7 @@ fn unhex(text: &str) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[derive(Clone, Copy)]
 struct Deadline(Instant);
 
 impl Deadline {
@@ -221,6 +224,10 @@ fn run(probe: Probe<'_>) -> io::Result<()> {
                 Transport::Udp | Transport::UdpConnected => udp_dial(case, &deadline),
             }
         }
+        Probe::Pair(case) => {
+            let deadline = Deadline::new(case.within)?;
+            paired(case, deadline)
+        }
     }
 }
 
@@ -257,6 +264,10 @@ fn tcp_serve(case: Case, mode: SocketMode, deadline: &Deadline) -> io::Result<()
         return Err(io::Error::last_os_error());
     }
     let listener = TcpListener::from(socket);
+    tcp_serve_on(case, mode, deadline, listener)
+}
+
+fn tcp_serve_on(case: Case, mode: SocketMode, deadline: &Deadline, listener: TcpListener) -> io::Result<()> {
     event(
         State::Listening,
         format_args!("transport=tcp local={} mode={mode:?}", listener.local_addr()?),
@@ -434,6 +445,10 @@ fn udp_socket(at: SocketAddr, mode: SocketMode) -> io::Result<UdpSocket> {
 
 fn udp_serve(case: Case, mode: SocketMode, deadline: &Deadline) -> io::Result<()> {
     let socket = udp_socket(case.address, mode)?;
+    udp_serve_on(case, mode, deadline, socket)
+}
+
+fn udp_serve_on(case: Case, mode: SocketMode, deadline: &Deadline, socket: UdpSocket) -> io::Result<()> {
     event(
         State::Listening,
         format_args!("transport=udp local={} mode={mode:?}", socket.local_addr()?),
@@ -448,6 +463,52 @@ fn udp_serve(case: Case, mode: SocketMode, deadline: &Deadline) -> io::Result<()
     }
     event(State::Sent, format_args!("transport=udp bytes={n}"))?;
     event(State::Matched, format_args!("transport=udp"))
+}
+
+fn paired(mut client: Case, deadline: Deadline) -> io::Result<()> {
+    let copied = |bytes: &[u8]| -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        out.try_reserve_exact(bytes.len()).map_err(io::Error::other)?;
+        out.extend_from_slice(bytes);
+        Ok(out)
+    };
+    let server = Case {
+        transport: client.transport,
+        address: client.address,
+        sent: copied(&client.received)?,
+        received: copied(&client.sent)?,
+        within: client.within,
+    };
+    let (address, worker) = match client.transport {
+        Transport::Tcp => {
+            let socket = bound(client.address, libc::SOCK_STREAM, SocketMode::Native)?;
+            // SAFETY: listen admits the single connection in this paired fixture.
+            if unsafe { libc::listen(socket.as_raw_fd(), 1) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let listener = TcpListener::from(socket);
+            let address = listener.local_addr()?;
+            let worker = std::thread::Builder::new()
+                .spawn(move || tcp_serve_on(server, SocketMode::Native, &deadline, listener))?;
+            (address, worker)
+        }
+        Transport::Udp | Transport::UdpConnected => {
+            let socket = udp_socket(client.address, SocketMode::Native)?;
+            let address = socket.local_addr()?;
+            let worker = std::thread::Builder::new()
+                .spawn(move || udp_serve_on(server, SocketMode::Native, &deadline, socket))?;
+            (address, worker)
+        }
+    };
+    client.address = address;
+    let result = match client.transport {
+        Transport::Tcp => tcp_dial(client, &deadline),
+        Transport::Udp | Transport::UdpConnected => udp_dial(client, &deadline),
+    };
+    let served = worker
+        .join()
+        .map_err(|_| io::Error::other("paired probe worker failed"))?;
+    result.and(served)
 }
 
 fn udp_dial(case: Case, deadline: &Deadline) -> io::Result<()> {

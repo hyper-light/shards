@@ -17,12 +17,19 @@ small dispatch in `crates/testguest/src/main.rs`. The capture lane owns workload
 testguest managed-network capabilities [EXACT_BUILT_CONFIG]
 testguest managed-network serve tcp|udp BIND REPLY_HEX REQUEST_HEX DEADLINE_MS native|transparent
 testguest managed-network dial tcp|udp|udp-connected DEST REQUEST_HEX REPLY_HEX DEADLINE_MS native
+testguest managed-network pair tcp|udp|udp-connected BIND REQUEST_HEX REPLY_HEX DEADLINE_MS native
 ```
 
 Addresses are numeric IPv4 `IP:PORT` or IPv6 `[IP]:PORT`. Bind port zero asks the
 kernel for a free port; read the flushed `Listening` observation before launching
 the client. A destination names the address/port actually granted by the experiment.
 All payload bytes are explicit hex, including empty strings, NUL and invalid UTF8.
+`pair` binds its server before starting the client and runs both native endpoints
+inside the caller's existing network namespace. The OS chooses a port when zero
+is supplied. One fallibly started worker thread and the caller share one absolute
+deadline; both terminal results are checked. This lets a supplied domain exercise
+its own loopback/self path without a shell, extra network grant or inter-domain
+readiness channel. It proves endpoint behavior, not that interception occurred.
 TCP writes the specified bytes, closes its write half, and requires exactly the
 expected reply plus peer EOF. The server requires the client's write half to end
 before replying, so it can prove a half-close preserved the receive direction.
