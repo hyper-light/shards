@@ -77,7 +77,12 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     );
     let observed = fault_observed(&home);
     eprintln!("tenant fault observation: {observed}");
-    let after_fault = run_shards_env(&["exec", "vm"], &["tenant-fault", "report"], &env, TIMEOUT);
+    let after_fault = run_shards_env(
+        &["exec", "vm"],
+        &["tenant-fault", "/bin/testguest", "report"],
+        &env,
+        TIMEOUT,
+    );
     eprintln!("main namespace execution after fault: {after_fault}");
     assert_eq!(
         after_fault.status,
@@ -135,7 +140,8 @@ fn fault_observed(home: &std::path::Path) -> String {
         if let Some(log) = &mut log {
             log.read_to_string(&mut observed).unwrap();
         }
-        if let Some(line) = observed.lines().find(|line| {
+        let complete = observed.rsplit_once('\n').map_or("", |(complete, _)| complete);
+        if let Some(line) = complete.lines().find(|line| {
             line.contains("quarantined after population observation") || line.contains("shared boundary:")
         }) {
             return line.to_string();
