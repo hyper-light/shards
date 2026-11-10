@@ -474,6 +474,23 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
+        "managed-capture" => managed_capture(arg(1)),
+        "managed-capture-main" => {
+            let code = await_process("capture-ready", 2, "");
+            if code != 0 {
+                code
+            } else if io::stdout()
+                .write_all(br#"{"jsonrpc":"2.0","id":1,"result":"main"}"#)
+                .and_then(|()| io::stdout().flush())
+                .and_then(|()| io::stderr().write_all(b"main-stderr"))
+                .and_then(|()| io::stderr().flush())
+                .is_ok()
+            {
+                0
+            } else {
+                1
+            }
+        }
         // An SBOM generator, as BuildKit's protocol runs one (D81).
         "sbomscan" => sbom_scan(),
         "await" => await_process(arg(1), arg(2).parse().unwrap_or(1), arg(3)),
@@ -5410,6 +5427,29 @@ fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
             }
             _ => return None,
         }
+    }
+}
+
+fn managed_capture(member: &str) -> i32 {
+    let mut out = io::stdout().lock();
+    let mut err = io::stderr().lock();
+    let sent = out
+        .write_all(member.as_bytes())
+        .and_then(|()| out.write_all(b"\0stdout\n\xff\x1b[2Jout-tail"))
+        .and_then(|()| out.flush())
+        .and_then(|()| err.write_all(member.as_bytes()))
+        .and_then(|()| err.write_all(b"\0stderr\n\x80\xfeerr-tail"))
+        .and_then(|()| err.flush());
+    if sent.is_err() {
+        return 1;
+    }
+    // SAFETY: prctl names this thread with a NUL-terminated name shorter than TASK_COMM_LEN.
+    if unsafe { libc::prctl(libc::PR_SET_NAME, c"capture-ready".as_ptr()) } < 0 {
+        return 1;
+    }
+    loop {
+        // SAFETY: pause only waits for a signal; normal run teardown ends this fixture.
+        unsafe { libc::pause() };
     }
 }
 
