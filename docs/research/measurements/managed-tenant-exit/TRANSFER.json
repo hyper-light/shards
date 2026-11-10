@@ -1,0 +1,6 @@
+{
+  "archive_sha256": "6df29d01bf6ce1d7f7b3ee418e1c0f67ce7d0674a2d9025bfe8639b19d355be6",
+  "archive_bytes": 7131,
+  "source": "Fedora 8fadc1ec213332e16cb0d915a3fb913f private ~/managed-tenant-exit-light-24f-v1,v3,v4",
+  "scope": "text-only compile logs/exit/toolchain/generated lock/source hashes; no runtime artifact or test execution"
+}

@@ -484,7 +484,12 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
-        "managed-capture" => managed_capture(arg(1)),
+        "managed-capture" => match arg(2) {
+            "" => managed_capture(arg(1)),
+            "exit" => i32::from(managed_capture_bytes(arg(1)).is_err()),
+            "step" => managed_capture_step(arg(1), arg(3), arg(4)),
+            _ => 1,
+        },
         "managed-capture-main" => {
             let code = await_process("capture-ready", 2, "");
             if code != 0 {
@@ -5440,19 +5445,25 @@ fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
     }
 }
 
-fn managed_capture(member: &str) -> i32 {
+fn managed_capture_bytes(member: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     let mut err = io::stderr().lock();
-    let sent = out
-        .write_all(member.as_bytes())
+    out.write_all(member.as_bytes())
         .and_then(|()| out.write_all(b"\0stdout\n\xff\x1b[2Jout-tail"))
         .and_then(|()| out.flush())
         .and_then(|()| err.write_all(member.as_bytes()))
         .and_then(|()| err.write_all(b"\0stderr\n\x80\xfeerr-tail"))
-        .and_then(|()| err.flush());
-    if sent.is_err() {
+        .and_then(|()| err.flush())
+}
+
+fn managed_capture(member: &str) -> i32 {
+    if managed_capture_bytes(member).is_err() {
         return 1;
     }
+    managed_capture_hold()
+}
+
+fn managed_capture_hold() -> i32 {
     // SAFETY: prctl names this thread with a NUL-terminated name shorter than TASK_COMM_LEN.
     if unsafe { libc::prctl(libc::PR_SET_NAME, c"capture-ready".as_ptr()) } < 0 {
         return 1;
@@ -5460,6 +5471,71 @@ fn managed_capture(member: &str) -> i32 {
     loop {
         // SAFETY: pause only waits for a signal; normal run teardown ends this fixture.
         unsafe { libc::pause() };
+    }
+}
+
+fn managed_capture_ready(fd: i32, until: std::time::Instant) -> io::Result<()> {
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let timeout = libc::timespec {
+            tv_sec: left.as_secs().try_into().map_err(io::Error::other)?,
+            tv_nsec: left.subsec_nanos().into(),
+        };
+        let mut event = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: ppoll borrows one held descriptor and a local timeout. No signal mask changes.
+        let result = unsafe { libc::ppoll(&raw mut event, 1, &timeout, std::ptr::null()) };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if event.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if event.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn managed_capture_step(member: &str, port: &str, patience: &str) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    let run = || -> io::Result<()> {
+        let port = port.parse::<u16>().map_err(io::Error::other)?;
+        let patience = patience.parse::<u64>().map_err(io::Error::other)?;
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(patience))
+            .filter(|_| port != 0 && patience != 0)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+        listener.set_nonblocking(true)?;
+        managed_capture_bytes(member)?;
+        managed_capture_ready(listener.as_raw_fd(), until)?;
+        let (mut release, _) = listener.accept()?;
+        release.set_nonblocking(true)?;
+        managed_capture_ready(release.as_raw_fd(), until)?;
+        let mut byte = [0];
+        release.read_exact(&mut byte)?;
+        if byte != [1] {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        managed_capture_bytes(&format!("{member}-after-exit"))
+    };
+    match run() {
+        Ok(()) => managed_capture_hold(),
+        Err(error) => {
+            let _ = writeln!(io::stderr(), "managed capture step: {error}");
+            1
+        }
     }
 }
 

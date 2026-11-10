@@ -479,6 +479,15 @@ impl Fixture {
     }
 
     fn start(&mut self) {
+        self.start_with_options(
+            &["managed-capture", "agent"],
+            &["managed-capture", "harness"],
+            "",
+            Instant::now() + WITHIN,
+        );
+    }
+
+    fn start_with_options(&mut self, agent: &[&str], harness: &[&str], directives: &str, until: Instant) {
         let (image, _) = common::served();
         std::fs::create_dir(self.context.join("files")).unwrap();
         std::fs::write(self.context.join("files/asset"), b"files-only").unwrap();
@@ -492,21 +501,22 @@ impl Fixture {
         .unwrap();
         std::fs::write(
             self.context.join("agent/agent.json"),
-            br#"{"entrypoint":"member","options":["managed-capture","agent"]}"#,
+            serde_json::to_vec(&serde_json::json!({"entrypoint":"member","options":agent})).unwrap(),
         )
         .unwrap();
         let binary = std::fs::read(common::test_guest()).unwrap();
-        let manifest = br#"{"entrypoint":"member","options":["managed-capture","harness"]}"#;
+        let manifest =
+            serde_json::to_vec(&serde_json::json!({"entrypoint":"member","options":harness})).unwrap();
         std::fs::write(
             self.context.join("harness.tar"),
             common::tar(&[
                 ("bin", 0o755, 0, None),
                 ("bin/member", 0o755, 0, Some(&binary)),
-                ("harness.json", 0o644, 0, Some(manifest)),
+                ("harness.json", 0o644, 0, Some(&manifest)),
             ]),
         )
         .unwrap();
-        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n")).unwrap();
+        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
         let built = self.command(
             &[
                 "build",
@@ -515,7 +525,7 @@ impl Fixture {
                 "owner-output:1",
                 self.context.to_str().unwrap(),
             ],
-            WITHIN,
+            until.saturating_duration_since(Instant::now()),
         );
         assert_eq!(built.status, Some(0), "{built}");
         let started = self.command(
@@ -528,7 +538,7 @@ impl Fixture {
                 "owner-output:1",
                 "sleep",
             ],
-            WITHIN,
+            until.saturating_duration_since(Instant::now()),
         );
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();

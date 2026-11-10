@@ -1,0 +1,5 @@
+325e82512b5dae3a71ee47aed75d69fa57b488bbf475c6c1e8d3ad45597cbc7d  crates/shards/tests/managed_output.rs
+311cd9be519de728667c8f820fc9c811842a6068ce6415d040b507ba238175c1  crates/shards/tests/managed_output/tenant_exit.rs
+25260f0731ae87a53c23ecd58e5d1f62128b122ccdcc077126c6eb38420ee224  crates/testguest/src/workload.rs
+d9bae659b3348338c99002e3e8d7063dac3c218f77471c5617eec21fdd67486a  docs/research/measurements/managed-tenant-exit/light-stubs.rs
+f8f91f4b61639dc64aad4f9298fcbeb581e1d0c72311ee5093dd5a947606273c  docs/research/measurements/managed-tenant-exit/prepare-light.py
