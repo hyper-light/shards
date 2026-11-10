@@ -1,6 +1,8 @@
 # Authenticated adversarial application controls
 
-Latest continuation: [native terminal controls at1e0](LIVE-1E0.md) passed8 actual
+Latest continuation: [complete header before FIN at581](LIVE-581.md) passed both
+actual KVM channels,7 pure checks and scoped Clippy0, preserving held credit and
+actual neighbor/main progress. The [native terminal controls at1e0](LIVE-1E0.md) passed8 actual
 Endpoint cases,7 pure checks and scoped Clippy0. Both terminal controls preserve
 the supplied canonical Aborted cause, exact credit and owned-stop behavior.
 The [post-End Subscribe at9e7](LIVE-9E7.md) passed both actual

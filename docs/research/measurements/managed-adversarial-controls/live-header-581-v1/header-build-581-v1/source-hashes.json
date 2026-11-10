@@ -1,0 +1,9 @@
+{
+  "crates/shards/tests/managed_output.rs": "7bde33c6ef47be94f91b074a6fe9c78fa09d9527b08a37444b26a1a4a873cdc1",
+  "crates/shards/tests/managed_output/tenant_exit.rs": "8e83601c9c810c9d9d566aa0463e5ba748bd4dcc972f0ff4ecfef7a7bfbdec65",
+  "crates/shards/tests/managed_output/adversarial_controls.rs": "5ec596387883fcfe8b9ba974b64a253dac6245700229a5aedf51dc2bdf0e1dbb",
+  "crates/shards/tests/managed_output/adversarial_controls/contract.rs": "daf9a45b516ecf1fe5fc2a049d1c82aeafffd189d1274735228c702b8968d06b",
+  "crates/shards/tests/managed_output/adversarial_controls/control_inputs.rs": "7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+  "crates/shards/tests/managed_output/adversarial_controls/native_terminal.rs": "43aca55378c042f0313251b63e99d65183a5a572358e6e204cc81fac9a6f1147",
+  "crates/shards/tests/managed_output/adversarial_controls/write_receipts.rs": "c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa"
+}

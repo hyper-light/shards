@@ -1,0 +1,1 @@
+["git", "fetch", "--depth=1", "origin", "p/managed-adversarial-controls-v1"]

@@ -1,0 +1,26 @@
+{
+  "cli": {
+    "path": "/home/adalundhe/managed-adversarial-controls-live-v1/source/target/e2e/shards-5cd44adca10f3964/shards",
+    "sha256": "sha256:5cd44adca10f3964cfbe7bed6cbb717aadaf0fe3002a61821146061eed9e2b91"
+  },
+  "contract_sha256": "sha256:daf9a45b516ecf1fe5fc2a049d1c82aeafffd189d1274735228c702b8968d06b",
+  "control_inputs_sha256": "sha256:7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+  "fixture": {
+    "path": "/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "sha256": "sha256:25a157453d3f863530082f94ac04fe5e98d0e33143a9ad497a9b55eab2a0323b"
+  },
+  "init": {
+    "path": "/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "sha256": "sha256:6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09"
+  },
+  "kernel": {
+    "path": "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/experimental-kernel",
+    "sha256": "sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "leaf_sha256": "sha256:5ec596387883fcfe8b9ba974b64a253dac6245700229a5aedf51dc2bdf0e1dbb",
+  "testguest": {
+    "path": "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/guest/shards-testguest",
+    "sha256": "sha256:0b7b3cca41317c9c67e9ff1c8a318772b786beafe2a9493ca02ec9fa268103ad"
+  },
+  "write_receipts_sha256": "sha256:c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa"
+}

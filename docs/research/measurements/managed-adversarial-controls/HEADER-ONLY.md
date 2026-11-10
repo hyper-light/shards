@@ -1,5 +1,9 @@
 # Complete control header with no cursor body
 
+Actual follow-up: [581 full caller and raw record](LIVE-581.md) passed both KVM
+channels,7 pure checks and scoped full Clippy0. Actual5-byte write/FIN/Closed
+receipts are retained. Pending gates below preserve source-stage chronology.
+
 Selection `control-header-only` follows the actual prior4-byte header prefix
 and12-byte consumed prefix cases. It covers the intervening concrete boundary:
 the complete known consumed header, with zero of its declared u64 cursor bytes,

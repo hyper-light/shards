@@ -1,0 +1,35 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-adversarial-controls-live-v1';revision='58177dd5a87fa8f7fd25b47d63290648d85b609c';records=base/'collection-header-581-v1';records.mkdir()
+fixture=json.loads((base/'header-build-581-v1/fixture.json').read_text());assert fixture['source']==revision and not fixture['fresh'] and hashlib.sha256((base/'artifacts/fixture-581').read_bytes()).hexdigest()==fixture['sha256']
+for name in ['header-build-581-v1/full-caller-build-exit','checks-header-581-v1/pure-exit','checks-header-581-v1/clippy-exit']:assert (base/name).read_text().strip()=='0'
+assert '7 passed; 0 failed; 3 ignored;' in (base/'checks-header-581-v1/pure-stdout').read_text()
+summary=[];runs=set();folders=[]
+for channel,number in [('stdout',1),('stderr',2)]:
+ folder=base/'cases'/f'control-header-only-{channel}-581-v1';folders.append(folder);rec=folder/'records'
+ assert (folder/'actual-case-exit').read_text().strip()=='0' and '1 passed; 0 failed; 0 ignored;' in (folder/'actual-case-stdout').read_text()
+ assert json.loads((rec/'inputs.json').read_text())['caller_declared_source']==revision and json.loads((rec/'artifacts.json').read_text())['fixture']['sha256']=='sha256:'+fixture['sha256']
+ teardown=json.loads((rec/'teardown.json').read_text());assert teardown['protocol_complete'] and teardown['run_removed'] and teardown['owner_stop_observer_join']['complete'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']==7
+ event=[json.loads(p.read_text()) for p in rec.glob('[0-9]*-refusal-*.json')];assert len(event)==1 and event[0]['kind']=='Lost' and event[0]['reason']=='Closed' and event[0]['code']==4
+ attempt=json.loads((rec/'attempt.json').read_text());assert attempt['case']=='Control(HeaderOnly)' and attempt['finish'] and attempt['control_bytes']==(rec/'invalid-control.bin').stat().st_size
+ receipts=json.loads((rec/'io-receipts.json').read_text());writes=[v for v in receipts['actual'] if v['kind']=='Write'];finishes=[v for v in receipts['actual'] if v['kind']=='Finish']
+ assert receipts['driver_joined'] and sum(v['accepted'] for v in writes)==attempt['control_bytes'] and writes[-1]['pending']==0 and len(finishes)==1 and finishes[0]['error'] is None
+ assert json.loads((rec/'refusal.json').read_text())['post_join_records']==0
+ metadata=(rec/'managed-output.stopped').read_text();run=next(line[4:] for line in metadata.splitlines() if line.startswith('run '));assert run not in runs;runs.add(run)
+ row=f'member 1 channel {number} state aborted accepted {attempt["observed_cursor_before_attempt"]} consumed {attempt["last_valid_ack"]} tail unknown';assert row in metadata.splitlines()
+ for stem in ['main-after-refusal-raw','main-after-neighbor-raw']:
+  assert (rec/f'{stem}.stdout.bin').read_bytes()==b'main-progress\n' and (rec/f'{stem}.stderr.bin').read_bytes().startswith(b'main-error\n')
+ summary.append({'channel':channel,'run':run,'exit':0,'executed_tests':1,'typed_reason':'Closed','actual_io':receipts,'target_row':row,'fd_before':7,'fd_after':7,'actual_protocol_cleanup_and_main_bytes_retained':True})
+assert len(runs)==2
+(records/'validated-cases.json').write_text(json.dumps(summary,indent=2)+'\n')
+subprocess.run(['git','branch','frozen/adversarial-581',revision],cwd=base/'source',check=True)
+(records/'preserved-ref.json').write_text(json.dumps({'frozen/adversarial-581':revision})+'\n')
+roots=[base/name for name in ['header-build-581-v1','checks-header-581-v1','wave-header-581-v1','collection-header-581-v1']]+folders
+files=sorted({p for root in roots for p in root.rglob('*') if p.is_file() and not p.is_symlink() and 'tmp' not in p.relative_to(root).parts});manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-header-581-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'regular_members':len(manifest)+1,'source':revision,'cases':2,'unique_runs':len(runs),'full_build_exit':0,'pure':'7pass/0fail/3ignored','clippy_exit':0,'actual':summary,'originals_preserved':True};(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

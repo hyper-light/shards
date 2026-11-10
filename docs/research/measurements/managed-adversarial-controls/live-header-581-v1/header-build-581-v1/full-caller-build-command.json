@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "test", "--locked", "-p", "shards", "--test", "managed_output", "--profile", "test-release", "--no-run", "-j2", "--message-format=json"]

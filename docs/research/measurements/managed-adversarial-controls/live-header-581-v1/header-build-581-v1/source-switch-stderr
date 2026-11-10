@@ -1,0 +1,2 @@
+Previous HEAD position was 1e0bd47 test: exercise terminal control after a canonical abort
+HEAD is now at 58177dd test: exercise a complete consumed header before FIN

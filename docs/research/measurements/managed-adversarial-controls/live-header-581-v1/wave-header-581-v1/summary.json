@@ -1,0 +1,32 @@
+[
+  {
+    "case": "control-header-only",
+    "channel": "stdout",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 1.44s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Control(HeaderOnly)\",\n  \"channel\": 1,\n  \"control_bytes\": 5,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Closed\",\n  \"expected_target\": \"Held { accepted: 28, consumed: 0 }\",\n  \"finish\": true,\n  \"last_valid_ack\": 0,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 28,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver 05525677e0490f330e8e8577ab58b0e34e2ae4e6711696fa0e07c478b7e5ffb8\nowner 05525677e0490f330e8e8577ab58b0e34e2ae4e6711696fa0e07c478b7e5ffb8\nrun 590cfb635892c76ba13c0a3acd4fddaba805919101a36cac33778e2557ed28d1\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:40248\nmember 1 channel 2 address 127.0.0.1:40555\nmember 2 channel 1 address 127.0.0.1:42323\nmember 2 channel 2 address 127.0.0.1:33481\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 1 channel 1 state aborted accepted 28 consumed 0 tail unknown\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 5,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    },\n    {\n      \"error\": null,\n      \"kind\": \"Finish\"\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": true,\n  \"meaning\": \"local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata\",\n  \"submitted_bytes\": 5\n}",
+      "1-refusal-1-1.json": "{\n  \"code\": 4,\n  \"kind\": \"Lost\",\n  \"reason\": \"Closed\"\n}"
+    }
+  },
+  {
+    "case": "control-header-only",
+    "channel": "stderr",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 1.58s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Control(HeaderOnly)\",\n  \"channel\": 2,\n  \"control_bytes\": 5,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Closed\",\n  \"expected_target\": \"Held { accepted: 28, consumed: 0 }\",\n  \"finish\": true,\n  \"last_valid_ack\": 0,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 28,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver fdc83f83db2282696e02df64d89dcfda49fae584a57c0d28eb48aab0253bb984\nowner fdc83f83db2282696e02df64d89dcfda49fae584a57c0d28eb48aab0253bb984\nrun 604afa76222b79787c65a7469d77a319f97db94103f9abc07e007015279e6eb0\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:57278\nmember 1 channel 2 address 127.0.0.1:53952\nmember 2 channel 1 address 127.0.0.1:41101\nmember 2 channel 2 address 127.0.0.1:44389\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 1 channel 2 state aborted accepted 28 consumed 0 tail unknown\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 5,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    },\n    {\n      \"error\": null,\n      \"kind\": \"Finish\"\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": true,\n  \"meaning\": \"local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata\",\n  \"submitted_bytes\": 5\n}",
+      "1-refusal-1-1.json": null
+    }
+  }
+]

@@ -1,0 +1,9 @@
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/cases/control-header-only-stderr-581-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/cases/control-header-only-stdout-581-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/checks-header-581-v1/pure-stdout:15: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/header-build-581-v1/actual-parent.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/header-build-581-v1/actual-parent.diff:28: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-header-581-v1/header-build-581-v1/actual-parent.diff:122: trailing whitespace.
++ 

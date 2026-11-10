@@ -1,0 +1,58 @@
+[
+  {
+    "channel": "stdout",
+    "run": "590cfb635892c76ba13c0a3acd4fddaba805919101a36cac33778e2557ed28d1",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_reason": "Closed",
+    "actual_io": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    },
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "actual_protocol_cleanup_and_main_bytes_retained": true
+  },
+  {
+    "channel": "stderr",
+    "run": "604afa76222b79787c65a7469d77a319f97db94103f9abc07e007015279e6eb0",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_reason": "Closed",
+    "actual_io": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    },
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "actual_protocol_cleanup_and_main_bytes_retained": true
+  }
+]
