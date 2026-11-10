@@ -8,6 +8,10 @@ The [research note](../../managed-poller-capacity.md) is the deliverable;
 Git blobs. This directory contains textual research/evidence only, no executed
 measurement harness or runtime result.
 
+The [original-lane operational handoff](HANDOFF.md) records policy/bootstrap,
+exact signed pieces, active/protected paths, scheduler conflict, owed root work
+and the next scope request for compaction/resume. It is not a completion claim.
+
 POLICY_READ implementer before research/edits: full canonical
 `/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/AGENTS.md`,
 `docs/development-rules.md` R01–R16, `docs/development-evidence.md`, `CLAUDE.md`,
@@ -197,6 +201,14 @@ occupancy count. It adds no harness/runtime implementation or measured result.
 The linked source record preserves parent hashes and corrects the quoted query
 rendering without rewriting the earlier observation. The next precise source
 literal/ownership has been requested from root; the original lane remains active.
+
+The [existing Poller baseline bridge](poller-baseline-bridge.md) resolves the
+previously unspecified executable to the refactor lane's exact f2a fixture and
+documents its real inputs, lower-bound record arithmetic, sample interpretation
+and root-owed runs. No harness/source file is changed or executed here; the
+record's pure checks elsewhere are not inherited as native results. Its
+[five harness/two Poller source identities](poller-baseline-source-identity.json)
+are separate from this lane's actual documentation checks.
 
 ## R01–R16 account for both research batches
 

@@ -1,0 +1,84 @@
+{
+  "kind": "existing baseline fixture caller source identity; no compile/socket/benchmark/profile run",
+  "role": "implementer",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "harness_revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+  "source_freshness_compared": "7c26e5292161fc891a7c6c6525305464a3a044be",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "managed_plan_sha256": "ebae0bb6922dba5f90d036d06310cc546352279fd368b5c307770a84ddc4a968",
+  "handoff_full_read_sha256": "42f035652d31893551dba0fe9339c75cf4a289377cf3d0ee4a9c0302a85f9cfb",
+  "harness_sources": [
+    {
+      "path": "docs/research/measurements/managed-poller-cost/README.md",
+      "revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+      "git_blob_sha1": "4b1568f1d5337a95184e7c33c708c43127f11742",
+      "bytes": 13136,
+      "sha256": "9cd3aefa8073ad387df2bb411c2eeab0299dafa1e83cd353450547f3bbdb3748"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-cost/run.py",
+      "revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+      "git_blob_sha1": "3abc2448ad56766ab54b46e115fcd11cb8c805f6",
+      "bytes": 7665,
+      "sha256": "345dbd2fda6c8e3edfd00e34a2d8fe1cfa7cf3a3df2d5d263f7d4916eecabb4b"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-cost/fixture.rs",
+      "revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+      "git_blob_sha1": "5e600c853c62599d5a1d61efa77b8514ac5c428e",
+      "bytes": 12336,
+      "sha256": "f63ac590a61b70ad656d5e9f94983237a88d9e1e7d655e6625242dadf7f2a39f"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-cost/accounting.rs",
+      "revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+      "git_blob_sha1": "6caf7945d196cddd3fd954d302f8a770b06a2a9e",
+      "bytes": 6813,
+      "sha256": "f4967f978c06cc19e7ace30b49ff593f8f162c666851e956cb79a93b1983afa7"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-cost/source-identity.json",
+      "revision": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+      "git_blob_sha1": "7c09cc03f7f3d1cf61c07b99dcab1d6445a382f0",
+      "bytes": 1325,
+      "sha256": "1d2e66c2332a204d459f11f71e39ff91c8f80eedfc533fba17e32b59d778d19e"
+    }
+  ],
+  "poller_blobs": [
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "equal_blobs": {
+        "f2a2ede508e3e860189c9611f9c6a1cd24ca4197": "c35d79ead0da29547b9cb730b4abf3c98861b6e9",
+        "24f48ee5ebf198485117aa93bf47685ad7d7d53f": "c35d79ead0da29547b9cb730b4abf3c98861b6e9",
+        "7c26e5292161fc891a7c6c6525305464a3a044be": "c35d79ead0da29547b9cb730b4abf3c98861b6e9"
+      }
+    },
+    {
+      "path": "crates/vmm/src/platform/mod.rs",
+      "equal_blobs": {
+        "f2a2ede508e3e860189c9611f9c6a1cd24ca4197": "f5cf5cfcbd6a0d2025f952272b731138b78699d2",
+        "24f48ee5ebf198485117aa93bf47685ad7d7d53f": "f5cf5cfcbd6a0d2025f952272b731138b78699d2",
+        "7c26e5292161fc891a7c6c6525305464a3a044be": "f5cf5cfcbd6a0d2025f952272b731138b78699d2"
+      }
+    }
+  ],
+  "necessary_not_sufficient_records": "R * sum ceil(c_j/C), conditional on successful distinct-token drain with native boundC; no selected cap, no code change",
+  "actual_this_lane_tests": "No harness tests, compile or native execution. Other lane pure results only read, not rerun or inherited.",
+  "root_only_commands": "Existing run.py builds and executes descriptor/latency workload, not invoked by this lane.",
+  "unrun": [
+    "whole harness compile/clippy",
+    "all native descriptor/latency/failure/cleanup/oneshot/control/production-caller cases",
+    "all allocation/copy/fault/CPU/parent/kernel/comparative profiles",
+    "seven-target/actual host hardware coverage"
+  ],
+  "pending": [
+    "next exact coordinator-scoped literal/callers/ownedpaths",
+    "root acceptance on actualmain of laterresearch checkpoints",
+    "vmm-round2 locator/FS scope acceptance",
+    "root executable/resource/runner choice and actualresults"
+  ],
+  "recorded_utc": "2026-11-10T15:05:10.852253+00:00",
+  "local_active_targets_caches_jobs": [],
+  "latest_free_bytes_user_receipt": 33713639424,
+  "protected": "all root validationclones/targets and pausedWinARM untouched"
+}

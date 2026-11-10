@@ -622,3 +622,10 @@ boundaries, descriptor-weighted versus request occupancy, finite-window
 censoring and clock-domain rules, bounded recording and decisive rejection of
 incomplete evidence. It remains a textual proposal without instrumentation,
 execution or a selected sizing method.
+
+The [existing Poller baseline bridge](measurements/managed-poller-research/poller-baseline-bridge.md)
+now pins the actual refactor-lane fixture at f2a, supplies its root-only command
+template and distinguishes record-budget lower bounds, retained capacity and
+defined sample boundaries from production/cancellation/allocation proofs.
+This lane only read that caller; it did not compile, execute, audit or profile
+the harness. No baseline result or new production batch is claimed.
