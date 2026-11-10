@@ -12,6 +12,76 @@ fn attrs(value: &Value) -> BTreeMap<&str, &Value> {
     found
 }
 
+fn limit<'a>(resource: &'a Value, name: &str, unit: &str) -> (&'a str, Option<u64>) {
+    let metrics = resource["scopeMetrics"][0]["metrics"].as_array().unwrap();
+    let states = metrics
+        .iter()
+        .find(|metric| metric["name"] == "shards.cgroup.limit.state")
+        .unwrap();
+    assert_eq!(states["unit"], "1");
+    assert!(states.get("sum").is_none());
+    let points = states["gauge"]["dataPoints"].as_array().unwrap();
+    assert_eq!(
+        points.len(),
+        2 * 3,
+        "two observed ceilings, three typed states each"
+    );
+    let mut indicators = BTreeMap::new();
+    for point in points {
+        let attributes = attrs(&point["attributes"]);
+        assert_eq!(attributes.len(), 2);
+        if attributes["shards.cgroup.metric"]["stringValue"] != name {
+            continue;
+        }
+        let state = attributes["shards.cgroup.limit.state"]["stringValue"]
+            .as_str()
+            .unwrap();
+        let value = point["asInt"].as_str().unwrap();
+        assert!(matches!(value, "0" | "1"));
+        assert!(indicators.insert(state, value).is_none());
+    }
+    assert_eq!(
+        indicators.keys().copied().collect::<Vec<_>>(),
+        ["finite", "unavailable", "unbounded"]
+    );
+    let mut active = indicators.iter().filter(|(_, value)| **value == "1");
+    let (&state, _) = active.next().unwrap();
+    assert!(active.next().is_none(), "exactly one current state per ceiling");
+    let numeric = metrics.iter().find(|metric| metric["name"] == name);
+    let numeric = numeric.map(|metric| {
+        assert_eq!(metric["unit"], unit);
+        assert!(metric.get("sum").is_none());
+        let [point] = metric["gauge"]["dataPoints"].as_array().unwrap().as_slice() else {
+            panic!("one actual local ceiling");
+        };
+        let value = point["asInt"].as_str().unwrap().parse::<i64>().unwrap();
+        u64::try_from(value).unwrap()
+    });
+    if state != "finite" {
+        assert!(numeric.is_none(), "max/error must not invent a numeric ceiling");
+    }
+    (state, numeric)
+}
+
+fn workload_limits(resource: &Value, kernel: &str) {
+    for (file, name, unit) in [
+        ("memory.max", "shards.cgroup.memory.limit", "By"),
+        ("pids.max", "shards.cgroup.task.limit", "{task}"),
+    ] {
+        let prefix = format!("slurp /sys/fs/cgroup/{file}: ");
+        let actual = kernel
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .unwrap();
+        let observed = limit(resource, name, unit);
+        if actual == "max" {
+            assert_eq!(observed, ("unbounded", None));
+        } else {
+            assert_eq!(observed, ("finite", Some(actual.parse::<u64>().unwrap())));
+        }
+    }
+}
+
 fn scopes<'a>(document: &'a Value, run: &str) -> BTreeMap<String, &'a Value> {
     let mut found = BTreeMap::new();
     for resource in document["resourceMetrics"].as_array().unwrap() {
@@ -96,6 +166,8 @@ fn scopes<'a>(document: &'a Value, run: &str) -> BTreeMap<String, &'a Value> {
                 .iter()
                 .any(|m| m["name"] == "shards.cgroup.collection.error.count")
         );
+        limit(resource, "shards.cgroup.memory.limit", "By");
+        limit(resource, "shards.cgroup.task.limit", "{task}");
     }
     assert_eq!(
         found.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -123,12 +195,31 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
             &std::fs::read(fixture.record.as_ref().unwrap()).unwrap(),
         );
         fixture.main_progress(WITHIN);
+        let kernel = |phase: &str| {
+            let read = fixture.command(
+                &[
+                    "exec",
+                    "owner-output",
+                    "/bin/testguest",
+                    "slurp",
+                    "/sys/fs/cgroup/memory.max",
+                    "/sys/fs/cgroup/pids.max",
+                ],
+                WITHIN,
+            );
+            save(&format!("{phase}-kernel-limits.stdout"), read.stdout.as_bytes());
+            save(&format!("{phase}-kernel-limits.stderr"), read.stderr.as_bytes());
+            assert_eq!(read.status, Some(0), "{read}");
+            read.stdout
+        };
+        let initial_kernel = kernel("initial");
         let first = fixture.command(&["read", "metrics", &id], WITHIN);
         save("first.json", first.stdout.as_bytes());
         save("first.stderr", first.stderr.as_bytes());
         assert_eq!(first.status, Some(0), "{first}");
         let first: Value = serde_json::from_str(&first.stdout).unwrap();
-        scopes(&first, &id);
+        let first_scopes = scopes(&first, &id);
+        workload_limits(first_scopes["workload"], &initial_kernel);
 
         let paused = fixture.command(&["pause", &id], WITHIN);
         assert_eq!(paused.status, Some(0), "{paused}");
@@ -148,7 +239,47 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
         save("second.stderr", second.stderr.as_bytes());
         assert_eq!(second.status, Some(0), "{second}");
         let second: Value = serde_json::from_str(&second.stdout).unwrap();
-        scopes(&second, &id);
+        let second_scopes = scopes(&second, &id);
+        workload_limits(second_scopes["workload"], &initial_kernel);
+        for (scope, before) in &first_scopes {
+            assert_eq!(before["resource"], second_scopes[scope]["resource"]);
+        }
+        let tasks = first_scopes["workload"]["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|metric| metric["name"] == "shards.cgroup.task.count")
+            .unwrap()["sum"]["dataPoints"][0]["asInt"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        // Fixture input: twice its observed live task population; no runtime policy.
+        let finite = tasks.checked_mul(2).unwrap();
+        for (phase, requested, expected) in [
+            ("finite", finite.to_string(), Some(finite)),
+            ("unbounded", "-1".to_owned(), None),
+        ] {
+            let update = fixture.command(&["update", "--pids-limit", &requested, &id], WITHIN);
+            save(&format!("{phase}-update.stdout"), update.stdout.as_bytes());
+            save(&format!("{phase}-update.stderr"), update.stderr.as_bytes());
+            assert_eq!(update.status, Some(0), "{update}");
+            let actual_kernel = kernel(phase);
+            let exported = fixture.command(&["read", "metrics", &id], WITHIN);
+            save(&format!("{phase}.json"), exported.stdout.as_bytes());
+            save(&format!("{phase}.stderr"), exported.stderr.as_bytes());
+            assert_eq!(exported.status, Some(0), "{exported}");
+            let document: Value = serde_json::from_str(&exported.stdout).unwrap();
+            let observed = scopes(&document, &id);
+            workload_limits(observed["workload"], &actual_kernel);
+            assert_eq!(
+                limit(observed["workload"], "shards.cgroup.task.limit", "{task}"),
+                (phase, expected)
+            );
+            for (scope, before) in &first_scopes {
+                assert_eq!(before["resource"], observed[scope]["resource"]);
+            }
+        }
         for (member, label) in [(1, "agent"), (2, "harness")] {
             for channel in [Channel::Stdout, Channel::Stderr] {
                 fixture.consume(member, label, channel);
@@ -244,6 +375,8 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
         assert_eq!(identity["shards.cgroup.scope"]["stringValue"], "workload");
         assert_eq!(identity["shards.microvm.id"]["stringValue"], provider);
         assert_eq!(identity["shards.run.id"]["stringValue"], joiner);
+        limit(workload, "shards.cgroup.memory.limit", "By");
+        limit(workload, "shards.cgroup.task.limit", "{task}");
 
         let first: Value = serde_json::from_str(&first.stdout).unwrap();
         for resource in first["resourceMetrics"].as_array().unwrap() {

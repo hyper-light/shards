@@ -45,3 +45,17 @@ managed-otel-limits-next/records/light-v1/reader-tests.stdout has an extra blank
 line at EOF. That raw output was preserved, not trimmed. The separate check
 excluding ONLY that raw stdout returned0; this is not a claim that the
 complete staged diff check passed.
+
+ROOT's next frozen caller fixture now checks all six state points and exact Gauge
+shape, compares workload limits with actual guest kernel files read through the
+existing slurp helper, and exercises owner CLI pids-limit updates from a finite
+fixture input (twice observed stable workload tasks) back to kernel max. It
+requires fresh readbacks, matching numeric/state results and unchanged Resource
+identity, while preserving separate managed output and existing joiner checks.
+The fixture input is not a runtime admission rule. Error/range boundaries retain
+the implementer's typed fixture coverage; no live kernel error transition is
+claimed. The new linux.py runs the normal carried caller and matching static
+guest, full ordinary managed-output corpus, and official Go/Collector acceptance
+for six actual exports. The driver uses existing ROOT-owned Fedora source/target
+and protected frozen output; it must only start with actual4CPU/8GiB/16GiB
+headroom. Preparation is not execution.
