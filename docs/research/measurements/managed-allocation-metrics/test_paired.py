@@ -135,6 +135,28 @@ class PurePairedTests(unittest.TestCase):
         with self.assertRaises(p.Refusal):
             p.counter({'state': 'Known', 'value': (1 << 64) - 1})
 
+    def test_native_conditional_records_preserve_role_identity_and_zero_delta(self):
+        data = synthetic_case(manifest())
+        native = {}
+        for value, role in enumerate(p.ROLES):
+            sample = data['snapshots'][role]
+            native[role] = {'state': 'ConditionalDifference', 'value': value, 'source': 'LinuxMinfltPlusMajfltViaPlatformUsage', 'native_bits': 64, 'identity': [sample['pid'], sample['expected_start']], 'caveat': 'synthetic conditional record'}
+        data['native-fault-phases'] = {'start_to_ready': native}
+        metrics = p.allocation_metrics(data)
+        for value, role in enumerate(p.ROLES):
+            actual = metrics[f'native_faults.{role}.start_to_ready']
+            self.assertEqual(actual, native[role] | {'state': 'Conditional'})
+            self.assertEqual(actual['value'], value)
+
+    def test_native_invalid_source_width_identity_and_delta_are_unknown(self):
+        valid = {'state': 'ConditionalDifference', 'value': 0, 'source': 'LinuxMinfltPlusMajfltViaPlatformUsage', 'native_bits': 64, 'identity': [300, 301]}
+        for field, bad in [('state', 'Unknown'), ('source', 'MacProcTaskInfoFaultsViaPlatformUsage'), ('native_bits', 32), ('identity', [300, 999]), ('value', True), ('value', -1), ('value', 1 << 64)]:
+            with self.subTest(field=field, bad=bad):
+                data = synthetic_case(manifest())
+                data['native-fault-phases'] = {'start_to_ready': {'vm': valid | {field: bad}}}
+                actual = p.allocation_metrics(data)['native_faults.vm.start_to_ready']
+                self.assertEqual(actual['state'], 'Unknown')
+
     def test_empirical_quantiles_and_signed_paired_differences(self):
         samples = [{'state': 'Known', 'value': n} for n in range(1, 101)]
         values = p.distribution(samples, 100)
