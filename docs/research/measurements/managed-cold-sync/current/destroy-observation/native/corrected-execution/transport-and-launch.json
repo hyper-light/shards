@@ -1,0 +1,309 @@
+{
+  "source_revision": "10f282bc642f37be54c701bd4ce389574b641e1d",
+  "packet_revision": "23fc4a79d5b46c7baca8024703f60e1b00356691",
+  "governing_policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer / scoped ordinary native tester",
+  "initial_transfer": [
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r605\"\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "",
+          "output": "",
+          "running": true,
+          "id": "r605"
+        },
+        "isError": false
+      },
+      "continuations": [
+        {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r605\"\n}"
+            }
+          ],
+          "structuredContent": {
+            "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+            "output": "",
+            "running": true,
+            "id": "r605"
+          },
+          "isError": false
+        },
+        {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"\",\n  \"running\": false,\n  \"error\": \"d1323898b255a3ed435eb83fa0f7b0cf did not answer in 15s\"\n}"
+            }
+          ],
+          "structuredContent": {
+            "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+            "output": "",
+            "running": false,
+            "error": "d1323898b255a3ed435eb83fa0f7b0cf did not answer in 15s"
+          },
+          "isError": true
+        }
+      ]
+    }
+  ],
+  "runner_recovery": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"me\": \"e30189ea29182644fe5a4b2e06c7dac2\",\n  \"want\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"runners\": [\n    {\n      \"runner\": {\n        \"name\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"hostname\": \"Adas-Mac-Studio.local\",\n        \"label\": \"adas-mac-studio.local-2\",\n        \"was\": [\n          \"adas-mac-studio.local-2\"\n        ],\n        \"os\": \"macos\",\n        \"arch\": \"aarch64\",\n        \"labels\": [\n          \"baremetal\",\n          \"macos\",\n          \"aarch64\"\n        ],\n        \"connected\": true,\n        \"reach\": true,\n        \"fingerprint\": \"c05364176c7942050dcd7ac3422442c81c228f05e9f880dc633fd24739b6b5d5\",\n        \"reach_version\": 2,\n        \"cpus\": 32,\n        \"cpu_pct\": 5.499487400054932,\n        \"load1\": 3.34375,\n        \"mem_total\": 103079215104,\n        \"mem_used\": 40089731072,\n        \"slots\": 8,\n        \"busy\": 0,\n        \"draining\": false,\n        \"harnesses\": [\n          \"claude\",\n          \"codex\"\n        ],\n        \"via\": \"\",\n        \"facts\": null\n      },\n      \"score\": 61.10784149169922,\n      \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free\"\n    }\n  ],\n  \"passed\": [\n    [\n      \"2768d0d5d2974f1e21d348edadff9d1b\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"451397fcc585f7f7cb9aaf00e42064bb\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"75694786916abd6207b67832b9b1e85e\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"8fadc1ec213332e16cb0d915a3fb913f\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"b24c5c951260dcdfd0972f2aeaf3cf51\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"cec37f60f22c5a60d27f08f4d2e5daa8\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"e30189ea29182644fe5a4b2e06c7dac2\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"f3f618f29b31df31a1f52482b39578c2\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"f766f09294f2e17e3b8a631ffd4e6a4b\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ],\n    [\n      \"fedora.attlocal.net\",\n      \"not d1323898b255a3ed435eb83fa0f7b0cf\"\n    ]\n  ],\n  \"labels\": {\n    \"2768d0d5d2974f1e21d348edadff9d1b\": \"adas-mac-studio-3.local\",\n    \"451397fcc585f7f7cb9aaf00e42064bb\": \"adacachy\",\n    \"75694786916abd6207b67832b9b1e85e\": \"adalundhe-macbook-pro\",\n    \"8fadc1ec213332e16cb0d915a3fb913f\": \"kiln-a094a12d.attlocal.net\",\n    \"b24c5c951260dcdfd0972f2aeaf3cf51\": \"adas-mac-studio-2.local\",\n    \"cec37f60f22c5a60d27f08f4d2e5daa8\": \"adas-mac-studio.local\",\n    \"d1323898b255a3ed435eb83fa0f7b0cf\": \"adas-mac-studio.local-2\",\n    \"e30189ea29182644fe5a4b2e06c7dac2\": \"adas-macbook-pro-2.local\",\n    \"f3f618f29b31df31a1f52482b39578c2\": \"adas-macbook-pro.local\",\n    \"f766f09294f2e17e3b8a631ffd4e6a4b\": \"jupiter\"\n  }\n}"
+      }
+    ],
+    "structuredContent": {
+      "me": "e30189ea29182644fe5a4b2e06c7dac2",
+      "want": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "runners": [
+        {
+          "runner": {
+            "name": "d1323898b255a3ed435eb83fa0f7b0cf",
+            "hostname": "Adas-Mac-Studio.local",
+            "label": "adas-mac-studio.local-2",
+            "was": [
+              "adas-mac-studio.local-2"
+            ],
+            "os": "macos",
+            "arch": "aarch64",
+            "labels": [
+              "baremetal",
+              "macos",
+              "aarch64"
+            ],
+            "connected": true,
+            "reach": true,
+            "fingerprint": "c05364176c7942050dcd7ac3422442c81c228f05e9f880dc633fd24739b6b5d5",
+            "reach_version": 2,
+            "cpus": 32,
+            "cpu_pct": 5.499487400054932,
+            "load1": 3.34375,
+            "mem_total": 103079215104,
+            "mem_used": 40089731072,
+            "slots": 8,
+            "busy": 0,
+            "draining": false,
+            "harnesses": [
+              "claude",
+              "codex"
+            ],
+            "via": "",
+            "facts": null
+          },
+          "score": 61.10784149169922,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free"
+        }
+      ],
+      "passed": [
+        [
+          "2768d0d5d2974f1e21d348edadff9d1b",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "451397fcc585f7f7cb9aaf00e42064bb",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "75694786916abd6207b67832b9b1e85e",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "8fadc1ec213332e16cb0d915a3fb913f",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "b24c5c951260dcdfd0972f2aeaf3cf51",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "cec37f60f22c5a60d27f08f4d2e5daa8",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "e30189ea29182644fe5a4b2e06c7dac2",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "f3f618f29b31df31a1f52482b39578c2",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "f766f09294f2e17e3b8a631ffd4e6a4b",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ],
+        [
+          "fedora.attlocal.net",
+          "not d1323898b255a3ed435eb83fa0f7b0cf"
+        ]
+      ],
+      "labels": {
+        "2768d0d5d2974f1e21d348edadff9d1b": "adas-mac-studio-3.local",
+        "451397fcc585f7f7cb9aaf00e42064bb": "adacachy",
+        "75694786916abd6207b67832b9b1e85e": "adalundhe-macbook-pro",
+        "8fadc1ec213332e16cb0d915a3fb913f": "kiln-a094a12d.attlocal.net",
+        "b24c5c951260dcdfd0972f2aeaf3cf51": "adas-mac-studio-2.local",
+        "cec37f60f22c5a60d27f08f4d2e5daa8": "adas-mac-studio.local",
+        "d1323898b255a3ed435eb83fa0f7b0cf": "adas-mac-studio.local-2",
+        "e30189ea29182644fe5a4b2e06c7dac2": "adas-macbook-pro-2.local",
+        "f3f618f29b31df31a1f52482b39578c2": "adas-macbook-pro.local",
+        "f766f09294f2e17e3b8a631ffd4e6a4b": "jupiter"
+      }
+    },
+    "isError": false
+  },
+  "exact_destination_read": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"exists\\\": false, \\\"symlink\\\": false, \\\"free_bytes\\\": 2398175207424, \\\"root_entries\\\": [], \\\"inputs\\\": {}}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "{\"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"exists\": false, \"symlink\": false, \"free_bytes\": 2398175207424, \"root_entries\": [], \"inputs\": {}}\n",
+      "running": false,
+      "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+      "exit_code": 0
+    },
+    "isError": false
+  },
+  "recovered_transfer": [
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 0, \\\"characters\\\": 64000, \\\"sha256\\\": \\\"c98437bdc634791bd94ec0686ebae723e74c8f2738da8b673c533cc855e1d733\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"native_cases_started\\\": 0}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 0, \"characters\": 64000, \"sha256\": \"c98437bdc634791bd94ec0686ebae723e74c8f2738da8b673c533cc855e1d733\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"native_cases_started\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      },
+      "continuations": []
+    },
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 1, \\\"characters\\\": 64000, \\\"sha256\\\": \\\"8b531ebbd2fcadc1afb2af5acd772971ac92328209c21671b7699798ff7ab7f3\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"native_cases_started\\\": 0}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 1, \"characters\": 64000, \"sha256\": \"8b531ebbd2fcadc1afb2af5acd772971ac92328209c21671b7699798ff7ab7f3\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"native_cases_started\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      },
+      "continuations": []
+    },
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 2, \\\"characters\\\": 64000, \\\"sha256\\\": \\\"d86065cc9e87aea500d02e27d15f17801120753e125df6045b70ea3984a1f710\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"native_cases_started\\\": 0}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 2, \"characters\": 64000, \"sha256\": \"d86065cc9e87aea500d02e27d15f17801120753e125df6045b70ea3984a1f710\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"native_cases_started\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      },
+      "continuations": []
+    },
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 3, \\\"characters\\\": 64000, \\\"sha256\\\": \\\"c83b2020f5c5a57b45e399be07591a914b007fadba1c2789b05564deb52978a2\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"native_cases_started\\\": 0}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 3, \"characters\": 64000, \"sha256\": \"c83b2020f5c5a57b45e399be07591a914b007fadba1c2789b05564deb52978a2\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"native_cases_started\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      },
+      "continuations": []
+    },
+    {
+      "initial": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 4, \\\"characters\\\": 11456, \\\"sha256\\\": \\\"cfd5f2c6f4bb30de3abaeea2991c3f094ea594f62cd55cc3ab3e1f23e7f2ef03\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"native_cases_started\\\": 0}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n  \"exit_code\": 0\n}"
+          }
+        ],
+        "structuredContent": {
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 4, \"characters\": 11456, \"sha256\": \"cfd5f2c6f4bb30de3abaeea2991c3f094ea594f62cd55cc3ab3e1f23e7f2ef03\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"native_cases_started\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        "isError": false
+      },
+      "continuations": []
+    }
+  ],
+  "launch": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r612\",\n  \"why\": \"macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "",
+      "running": true,
+      "id": "r612",
+      "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+    },
+    "isError": false
+  },
+  "first_output": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\\\", \\\"snapshot_files\\\": 46, \\\"snapshot_written_before_build\\\": true, \\\"driver_sha256\\\": \\\"c7d1eb3ae93833b23a313c6bcb04652a1d87a0dce71e154ce4cce7c7826c0760\\\", \\\"helper_sha256\\\": \\\"ef7fbf13f92bce72c7f39202556e3da7a946b08e3f857a4622dc70f4c471872e\\\"}\\n\",\n  \"running\": true,\n  \"id\": \"r612\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "{\"root\": \"/Users/adalundhe/managed-cold-sync-destroy-10f-v1-79f3b5744f224feaa5d388e53fcd8fec\", \"snapshot_files\": 46, \"snapshot_written_before_build\": true, \"driver_sha256\": \"c7d1eb3ae93833b23a313c6bcb04652a1d87a0dce71e154ce4cce7c7826c0760\", \"helper_sha256\": \"ef7fbf13f92bce72c7f39202556e3da7a946b08e3f857a4622dc70f4c471872e\"}\n",
+      "running": true,
+      "id": "r612"
+    },
+    "isError": false
+  },
+  "notes": "Initial source-transfer15s non-answer retained; read-only normal-tool recovery confirmed directory absent before exclusive creation. No Rust/native command was submitted before actual r612. Native r598 remains0 and frozen. No deadline/source/driver algorithm change."
+}

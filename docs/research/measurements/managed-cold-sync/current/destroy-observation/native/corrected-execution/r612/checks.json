@@ -1,0 +1,43 @@
+{
+  "governing_policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer / scoped ordinary native tester",
+  "source_revision": "10f282bc642f37be54c701bd4ce389574b641e1d",
+  "packet_revision": "23fc4a79d5b46c7baca8024703f60e1b00356691",
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/corrected-execution/r612/verify.py",
+        "--out",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/corrected-execution/r612/verification.json"
+      ],
+      "exit": 0,
+      "scope": "archive/source/event/native-positive/overall-FD-negative integrity, no native execution"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0
+    }
+  ],
+  "native_case_attempts": 1,
+  "native_passed": 1,
+  "overall_gate_exit": 1,
+  "no_runtime_repetition": true,
+  "no_deadline_increase": true,
+  "no_source_or_lint_relaxation": true,
+  "next_owed": "ROOT review/controller-FD attribution; no permission to repeat failed runtime",
+  "root_integration_matrix_vm_fault_cost": "UNRUN; ROOT owned"
+}
