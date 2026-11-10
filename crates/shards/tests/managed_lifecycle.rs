@@ -8,6 +8,114 @@ use std::time::Duration;
 // The existing supplied-startup fixture's build/run guard (tests/build.rs, D54).
 const TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Coordinator source-fault campaign; the committed production build has no fault switch.
+#[test]
+#[ignore = "requires the retained tenant-events-directory source patch"]
+fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("tenant-fault-home");
+    let reports = TempDir::new("tenant-fault-report");
+    let faulty = TempDir::new("tenant-fault-bad");
+    let ctx = TempDir::new("tenant-fault-context");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    for (kind, directory, mode) in [
+        ("agent", "faulty", "managed-lifecycle-exit"),
+        ("harness", "healthy", "managed-lifecycle-challenge"),
+    ] {
+        std::fs::create_dir(ctx.join(directory)).unwrap();
+        common::program_copy(common::test_guest(), &ctx.join(directory).join("probe"));
+        let path = if directory == "faulty" {
+            "/bad/result"
+        } else {
+            "/probe"
+        };
+        std::fs::write(
+            ctx.join(directory).join(format!("{kind}.json")),
+            format!(r#"{{"entrypoint":"probe","options":["{mode}","{path}"]}}"#),
+        )
+        .unwrap();
+    }
+    std::fs::write(ctx.join("Agentfile"), format!(
+        "FROM {image}\nAGENT faulty FROM ./faulty\nHARNESS healthy FROM ./healthy\nVOLUME --chown=faulty /bad FOR faulty\nVOLUME --chown=healthy /probe FOR healthy\n"
+    )).unwrap();
+    let built = run_shards_env(
+        &["build", "image"],
+        &["-t", "tenant-fault:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let report_bind = format!("{}:/probe", reports.display());
+    let faulty_bind = format!("{}:/bad", faulty.display());
+    let env_text = [
+        ("SHARDS_HOME", home.to_str().unwrap()),
+        ("SHARDS_KERNEL", kernel().to_str().unwrap()),
+        ("SHARDS_INIT", guest_init().to_str().unwrap()),
+    ];
+    let mut vm = common::Vm::spawn_env(
+        &[
+            "run",
+            "vm",
+            "--rm",
+            "--name",
+            "tenant-fault",
+            "-v",
+            &report_bind,
+            "-v",
+            &faulty_bind,
+            "tenant-fault:1",
+            "sleep",
+        ],
+        &env_text,
+    );
+    let observed = vm.wait_for_any(
+        &["quarantined after population observation", "shared boundary:"],
+        TIMEOUT,
+    );
+    eprintln!("tenant fault observation: {observed}");
+    let after_fault = run_shards_env(&["exec", "vm"], &["tenant-fault", "report"], &env, TIMEOUT);
+    eprintln!("main namespace execution after fault: {after_fault}");
+    assert_eq!(
+        after_fault.status,
+        Some(0),
+        "tenant fault ended sibling execution: {after_fault}"
+    );
+    assert!(
+        observed.contains("agent faulty: quarantined after population observation errno 21"),
+        "{observed}"
+    );
+    let challenge = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_be_bytes();
+    std::fs::write(reports.join("go.pending"), challenge).unwrap();
+    std::fs::rename(reports.join("go.pending"), reports.join("go")).unwrap();
+    vm.wait_for("tenant challenge answered", TIMEOUT);
+    assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
+    assert!(faulty.join("result").exists(), "faulty actor never ran");
+    let top = run_shards_env(&["top"], &["tenant-fault", "-o", "comm"], &env, TIMEOUT);
+    assert_eq!(top.status, Some(0), "{top}");
+    assert!(
+        top.stdout.contains("testguest") && top.stdout.contains("lifecycle-ready"),
+        "{top}"
+    );
+    eprintln!(
+        "post-quarantine challenge answered; remaining processes:\n{}",
+        top.stdout
+    );
+    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    vm.wait_exit_following(TIMEOUT);
+}
+
 #[test]
 fn a_supplied_agent_runs_below_a_protected_native_reaper() {
     supplied_agent(None, Admission::ProtectedActor);
