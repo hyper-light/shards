@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "test", "--offline", "--manifest-path", "/home/adalundhe/managed-relay-precommit-host-v1/Cargo.toml", "--lib", "buffered_relay_source_witness_rejects_client_correct_direct_bypass", "--", "--exact"]
