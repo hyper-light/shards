@@ -219,6 +219,9 @@ impl ScriptedCompletion {
     pub(super) fn backend_completed(&self) -> bool {
         matches!(self.result, Ok(Terminal::BackendComplete)) && matches!(self.stage, Stage::BackendComplete)
     }
+    pub(super) fn unexpected_extra(&self) -> bool {
+        matches!(self.result, Err(Fault::UnexpectedDatagram)) && matches!(self.stage, Stage::HoldReply)
+    }
 }
 pub(super) enum Completion {
     Scripted(ScriptedCompletion),
@@ -249,6 +252,13 @@ pub(super) enum Work {
         receiver: UdpSocket,
         sender: UdpSocket,
         destination: SocketAddr,
+        completed: OwnedFd,
+    },
+    ObserveExtra {
+        receiver: UdpSocket,
+        sender: UdpSocket,
+        destination: SocketAddr,
+        receipt: OwnedFd,
         completed: OwnedFd,
     },
     Forwarded(forward::Inputs),
@@ -356,17 +366,28 @@ impl DatagramWorker {
                     ReplyPlan::CompleteAfterBaseline,
                 );
                 if done.backend_completed() {
-                    let notified = (|| {
-                        let mut out = io::stdout().lock();
-                        writeln!(out, "managed-intercept {{\"type\":\"BackendWorkReturned\",\"terminal\":\"BackendComplete\",\"receipt\":\"ValidatedBackendDatagram\",\"reply\":\"NotIssued\",\"thread_termination\":\"UnobservedUntilJoin\"}}")?;
-                        out.flush()?;
-                        drop(out);
-                        notify(&completed, &deadline)
-                    })();
-                    if let Err(error) = notified {
-                        done.stage = Stage::NotifyWorkReturn;
-                        done.result = Err(Fault::Io(error));
-                    }
+                    notify_work_return(&mut done, &completed, &deadline);
+                }
+                Completion::Scripted(done)
+            }
+            Work::ObserveExtra {
+                receiver,
+                sender,
+                destination,
+                receipt,
+                completed,
+            } => {
+                let mut done = scripted(
+                    receiver,
+                    sender,
+                    destination,
+                    Reply::Backend,
+                    &deadline,
+                    &receiver_cancel,
+                    ReplyPlan::Baseline(receipt),
+                );
+                if done.unexpected_extra() {
+                    notify_work_return(&mut done, &completed, &deadline);
                 }
                 Completion::Scripted(done)
             }
@@ -406,6 +427,29 @@ impl Drop for DatagramWorker {
         if matches!(self.state, WorkerState::Running(_)) {
             let _ = self.finish();
         }
+    }
+}
+fn notify_work_return(done: &mut ScriptedCompletion, completed: &OwnedFd, deadline: &Deadline) {
+    let notified = (|| {
+        let (terminal, cause, receipt) = match &done.result {
+            Ok(Terminal::BackendComplete) => ("BackendComplete", "null", "ValidatedBackendDatagram"),
+            Err(Fault::UnexpectedDatagram) => {
+                ("Error", "\"UnexpectedDatagram\"", "ConsumedUnexpectedDatagram")
+            }
+            _ => return Err(invalid("unexpected controlled work-return outcome")),
+        };
+        let mut out = io::stdout().lock();
+        writeln!(
+            out,
+            "managed-intercept {{\"type\":\"BackendWorkReturned\",\"terminal\":\"{terminal}\",\"cause\":{cause},\"receipt\":\"{receipt}\",\"reply\":\"NotIssued\",\"thread_termination\":\"UnobservedUntilJoin\"}}"
+        )?;
+        out.flush()?;
+        drop(out);
+        notify(completed, deadline)
+    })();
+    if let Err(error) = notified {
+        done.stage = Stage::NotifyWorkReturn;
+        done.result = Err(Fault::Io(error));
     }
 }
 enum ReplyPlan {
@@ -832,6 +876,35 @@ mod tests {
         done.stage = Stage::NotifyWorkReturn;
         assert!(!done.backend_completed());
         assert_eq!((done.report.arrivals, done.report.matched), (3, 3));
+    }
+    #[test]
+    fn unexpected_extra_is_a_retained_consumed_fault_not_expiry_or_cancel() {
+        let mut done = ScriptedCompletion {
+            report: DatagramReport {
+                arrivals: 4,
+                matched: 3,
+                empty: 1,
+                replies_sent: 2,
+            },
+            stage: Stage::HoldReply,
+            result: Err(Fault::UnexpectedDatagram),
+        };
+        assert!(done.unexpected_extra());
+        done.result = Ok(Terminal::Cancelled);
+        assert!(!done.unexpected_extra());
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        assert!(!done.unexpected_extra());
+        done.result = Err(Fault::UnexpectedDatagram);
+        done.stage = Stage::NotifyWorkReturn;
+        assert!(!done.unexpected_extra());
+        assert_eq!(
+            (
+                done.report.arrivals,
+                done.report.matched,
+                done.report.replies_sent
+            ),
+            (4, 3, 2)
+        );
     }
     #[test]
     fn inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence() {

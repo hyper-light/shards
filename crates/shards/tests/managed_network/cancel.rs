@@ -37,6 +37,41 @@ enum CancellationCase {
     UpstreamReceive,
     BeforeUpstreamSend,
     BackendComplete,
+    UnexpectedExtra,
+}
+fn unexpected_backend_work(record: &Value, error: &Value) -> bool {
+    record["type"] == "UdpWorkerCompletion"
+        && record["role"] == "Backend"
+        && record["joined"] == true
+        && record["stage"] == "HoldReply"
+        && record["terminal"] == "Error"
+        && record["arrivals"] == 4
+        && record["matched"] == 3
+        && record["empty"] == 1
+        && record["replies_sent"] == 2
+        && error["type"] == "UdpError"
+        && error["role"] == "Backend"
+        && error["stage"] == "HoldReply"
+        && error["cause"] == "UnexpectedDatagram"
+        && error["kind"].is_null()
+        && error["errno"].is_null()
+}
+#[test]
+fn unexpected_work_record_retains_consumed_extra_and_rejects_expiry_or_cancel() {
+    let mut record = json!({"type":"UdpWorkerCompletion","role":"Backend","joined":true,"stage":"HoldReply","terminal":"Error","arrivals":4,"matched":3,"empty":1,"replies_sent":2});
+    let mut error = json!({"type":"UdpError","role":"Backend","stage":"HoldReply","cause":"UnexpectedDatagram","kind":null,"errno":null});
+    assert!(unexpected_backend_work(&record, &error));
+    record["terminal"] = json!("Cancelled");
+    assert!(!unexpected_backend_work(&record, &error));
+    record["terminal"] = json!("Error");
+    error["cause"] = json!("Io");
+    error["kind"] = json!("TimedOut");
+    assert!(!unexpected_backend_work(&record, &error));
+    assert_eq!(record["arrivals"], 4);
+    error["cause"] = json!("UnexpectedDatagram");
+    error["kind"] = Value::Null;
+    record["matched"] = json!(4);
+    assert!(!unexpected_backend_work(&record, &error));
 }
 fn backend_work_returned(record: &Value) -> bool {
     record["type"] == "UdpWorkerCompletion"
@@ -112,6 +147,11 @@ fn direct_guest_udp4_precommit_cancel_requires_no_backend_effect() {
 fn direct_guest_udp4_backend_completes_without_reply_before_relay_cancel() {
     cancellation_case(CancellationCase::BackendComplete);
 }
+#[test]
+#[ignore = "coordinator alone injects one owned extra datagram and verifies actual backend error/cleanup"]
+fn direct_guest_udp4_extra_datagram_is_consumed_before_backend_error_and_relay_cancel() {
+    cancellation_case(CancellationCase::UnexpectedExtra);
+}
 fn cancellation_case(case: CancellationCase) {
     let input = Inputs::supplied();
     let mode = required("SHARDS_SOCK_ADDR_MODE");
@@ -130,6 +170,7 @@ fn cancellation_case(case: CancellationCase) {
         CancellationCase::BackendComplete => {
             ("sock-addr-backend-end4", "CompleteBackend", 3, "BackendComplete")
         }
+        CancellationCase::UnexpectedExtra => ("sock-addr-extra4", "UnexpectedBackend", 3, "HoldReply"),
     };
     let name = format!("{command}-{mode}");
     let run = input.boot(&name, &[command, &mode, &millis, &bytes]);
@@ -234,7 +275,9 @@ fn cancellation_case(case: CancellationCase) {
         check(r, step, hex, &baseline["local"], &target["backend"]);
     }
     match case {
-        CancellationCase::UpstreamReceive | CancellationCase::BackendComplete => {
+        CancellationCase::UpstreamReceive
+        | CancellationCase::BackendComplete
+        | CancellationCase::UnexpectedExtra => {
             check(
                 backend[2],
                 "Binary",
@@ -252,12 +295,41 @@ fn cancellation_case(case: CancellationCase) {
                 BackendSource::OwnedUpstream
             );
             match case {
-                CancellationCase::UpstreamReceive => {
+                CancellationCase::UpstreamReceive | CancellationCase::UnexpectedExtra => {
                     let held = one("HeldReply");
                     assert_eq!(held["stage"], "HoldReply");
                     assert_eq!(held["step"], "Binary");
                     assert_eq!(held["receipt"], "ValidatedBackendDatagram");
                     assert_eq!(held["reply"], "NotIssued");
+                    if matches!(case, CancellationCase::UnexpectedExtra) {
+                        let extra = arrivals("BackendUnexpected");
+                        assert_eq!(extra.len(), 1);
+                        assert_eq!(extra[0]["ordinal"], 4);
+                        check(
+                            extra[0],
+                            "Binary",
+                            "5245515545535400ff",
+                            &flow["upstream"],
+                            &target["backend"],
+                        );
+                        let sent = one("FixtureExtraSend");
+                        assert_eq!(sent["origin"], "TrustedFixture");
+                        assert_eq!(sent["local"], flow["upstream"]);
+                        assert_eq!(sent["peer"], target["backend"]);
+                        assert_eq!(sent["sent"], 9);
+                        assert_eq!(sent["requested_hex"], "5245515545535400ff");
+                        assert_eq!(sent["forward_count"], "SeparateFromForwardCompletion");
+                        assert_eq!(sent["delivery"], "RequiresIndependentBackendReceipt");
+                        let returned = one("BackendWorkReturned");
+                        assert_eq!(returned["terminal"], "Error");
+                        assert_eq!(returned["cause"], "UnexpectedDatagram");
+                        assert_eq!(returned["receipt"], "ConsumedUnexpectedDatagram");
+                        assert_eq!(returned["reply"], "NotIssued");
+                        assert_eq!(returned["thread_termination"], "UnobservedUntilJoin");
+                        let boundary = one("BackendExtraBoundary");
+                        assert_eq!(boundary["state"], "ObservedUnexpectedWorkReturn");
+                        assert_eq!(boundary["thread_termination"], "UnobservedUntilJoin");
+                    }
                 }
                 CancellationCase::BackendComplete => {
                     let returned = one("BackendWorkReturned");
@@ -296,6 +368,7 @@ fn cancellation_case(case: CancellationCase) {
         CancellationCase::UpstreamReceive => ("UpstreamReceive", "ValidatedBackendDatagram"),
         CancellationCase::BeforeUpstreamSend => ("BeforeUpstreamSend", "ValidatedOwnedIngress"),
         CancellationCase::BackendComplete => ("UpstreamReceive", "CompletedBackendWork"),
+        CancellationCase::UnexpectedExtra => ("UpstreamReceive", "ConsumedUnexpectedBackendDatagram"),
     };
     assert_eq!(boundaries[0]["stage"], stage);
     assert_eq!(boundaries[0]["receipt"], receipt);
@@ -320,6 +393,17 @@ fn cancellation_case(case: CancellationCase) {
             assert!(position(one("ReceiveStageEntered")) < position(requested));
             assert!(cancelled_receive(one("ForwardCompletion")), "{run}");
         }
+        CancellationCase::UnexpectedExtra => {
+            assert!(position(backend[2]) < position(one("HeldReply")));
+            assert!(position(one("HeldReply")) < position(one("FixtureExtraSend")));
+            assert!(position(backend[2]) < position(arrivals("BackendUnexpected")[0]));
+            assert!(position(arrivals("BackendUnexpected")[0]) < position(one("BackendWorkReturned")));
+            assert!(position(one("BackendWorkReturned")) < position(one("BackendExtraBoundary")));
+            assert!(position(one("BackendExtraBoundary")) < position(requested));
+            assert!(position(one("FixtureExtraSend")) < position(requested));
+            assert!(position(one("ReceiveStageEntered")) < position(requested));
+            assert!(cancelled_receive(one("ForwardCompletion")), "{run}");
+        }
         CancellationCase::BeforeUpstreamSend => {
             assert!(position(ingress[0]) < position(one("IngressValidated")));
             assert!(position(one("IngressValidated")) < position(requested));
@@ -333,17 +417,26 @@ fn cancellation_case(case: CancellationCase) {
     assert_eq!(worker["stage"], backend_stage);
     match case {
         CancellationCase::BackendComplete => assert!(backend_work_returned(worker), "{run}"),
+        CancellationCase::UnexpectedExtra => {
+            assert!(unexpected_backend_work(worker, one("UdpError")), "{run}")
+        }
         _ => assert_eq!(worker["terminal"], "Cancelled"),
     }
-    assert_eq!(worker["arrivals"], backend_expected);
+    assert_eq!(
+        worker["arrivals"],
+        match case {
+            CancellationCase::UnexpectedExtra => 4,
+            _ => backend_expected,
+        }
+    );
     assert_eq!(worker["matched"], backend_expected);
     assert_eq!(worker["empty"], 1);
     assert_eq!(worker["replies_sent"], 2, "only baseline replies issued: {run}");
-    for absent in [
-        "ForwardUpstreamReply",
-        "SockAddrForwardedClient",
-        "BackendUnexpected",
-    ] {
+    if !matches!(case, CancellationCase::UnexpectedExtra) {
+        assert!(arrivals("BackendUnexpected").is_empty());
+        assert!(select("UdpError").is_empty());
+    }
+    for absent in ["ForwardUpstreamReply", "SockAddrForwardedClient"] {
         assert!(arrivals(absent).is_empty());
     }
     assert!(select("ForwardExchange").is_empty());
@@ -376,7 +469,7 @@ fn cancellation_case(case: CancellationCase) {
     assert_sock_addr_hooks_and_cleanup(&records, target, hooks, &run);
     assert!(!records.iter().any(|r| matches!(
         r["type"].as_str(),
-        Some("Error" | "HookError" | "ForwardError" | "UdpError" | "PayloadRefusal")
+        Some("Error" | "HookError" | "ForwardError" | "PayloadRefusal")
     )));
     assert_eq!(run.status, Some(0), "{run}");
 }

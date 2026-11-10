@@ -1,0 +1,8 @@
+{
+  "transport": "compressed in-memory text JSON/base64; no local archive/executable transfer",
+  "bytes": 14029,
+  "sha256": "c3e4ea6c082365095a8c6a65e791cccc49fed6eedb7a2b17f7551ccf7f7311d3",
+  "files": 48,
+  "member_hashes_verified": true,
+  "originals": "Fedora ~/managed-relay-extra-datagram-light-v1, preserved"
+}

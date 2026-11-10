@@ -48,6 +48,7 @@ enum ControllerKind {
     CancelUpstreamReceive { buffer_bytes: usize },
     CancelBeforeUpstreamSend { buffer_bytes: usize },
     CompleteBackend { buffer_bytes: usize },
+    UnexpectedBackend { buffer_bytes: usize },
 }
 enum Cancellation {
     Receive {
@@ -63,11 +64,18 @@ enum Cancellation {
         entered: OwnedFd,
         completed: OwnedFd,
     },
+    ExtraDatagram {
+        entered: OwnedFd,
+        receipt: OwnedFd,
+        completed: OwnedFd,
+    },
 }
 impl Cancellation {
     fn ready(&self) -> &OwnedFd {
         match self {
-            Self::Receive { entered, .. } | Self::BackendComplete { entered, .. } => entered,
+            Self::Receive { entered, .. }
+            | Self::BackendComplete { entered, .. }
+            | Self::ExtraDatagram { entered, .. } => entered,
             Self::BeforeSend { ready, .. } => ready,
         }
     }
@@ -75,6 +83,7 @@ impl Cancellation {
         match self {
             Self::Receive { receipt, .. } | Self::BeforeSend { receipt, .. } => receipt,
             Self::BackendComplete { completed, .. } => completed,
+            Self::ExtraDatagram { receipt, .. } => receipt,
         }
     }
     fn control(&self) -> io::Result<udp::forward::Control> {
@@ -83,11 +92,47 @@ impl Cancellation {
             Self::BackendComplete { entered, .. } => {
                 Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?))
             }
+            Self::ExtraDatagram { entered, .. } => {
+                Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?))
+            }
             Self::BeforeSend { ready, release, .. } => Ok(udp::forward::Control::BeforeUpstreamSend {
                 ready: ready.try_clone()?,
                 release: release.try_clone()?,
             }),
         }
+    }
+}
+
+enum FixtureInjection {
+    ForwardOnly,
+    OneDatagram(UdpSocket),
+}
+impl FixtureInjection {
+    fn send(self, deadline: &Deadline) -> io::Result<()> {
+        let socket = match self {
+            Self::OneDatagram(socket) => socket,
+            Self::ForwardOnly => return Err(invalid("fixture upstream injection not selected")),
+        };
+        let local = socket.local_addr()?;
+        let peer = socket.peer_addr()?;
+        let bytes = Exchange::Binary.request();
+        let sent = deadline.io(socket.as_raw_fd(), libc::POLLOUT, || socket.send(bytes))?;
+        let mut out = io::stdout().lock();
+        write!(
+            out,
+            "managed-intercept {{\"type\":\"FixtureExtraSend\",\"origin\":\"TrustedFixture\",\"local\":\"{local}\",\"peer\":\"{peer}\",\"sent\":{sent},\"requested_hex\":\""
+        )?;
+        udp::hex(&mut out, bytes)?;
+        writeln!(
+            out,
+            "\",\"forward_count\":\"SeparateFromForwardCompletion\",\"delivery\":\"RequiresIndependentBackendReceipt\"}}"
+        )?;
+        out.flush()?;
+        if sent != bytes.len() {
+            return Err(invalid("partial fixture extra datagram send"));
+        }
+        // This one-use owned clone drops before waiting for work return.
+        Ok(())
     }
 }
 
@@ -190,6 +235,16 @@ impl Inputs {
             }),
             ["sock-addr-backend-end4", how, millis, budget] => Ok(Role::Controller {
                 kind: ControllerKind::CompleteBackend {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
+            ["sock-addr-extra4", how, millis, budget] => Ok(Role::Controller {
+                kind: ControllerKind::UnexpectedBackend {
                     buffer_bytes: budget
                         .parse()
                         .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
@@ -795,7 +850,8 @@ fn controller(
         ControllerKind::BufferedRelay { buffer_bytes }
         | ControllerKind::CancelUpstreamReceive { buffer_bytes }
         | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes }
-        | ControllerKind::CompleteBackend { buffer_bytes } => {
+        | ControllerKind::CompleteBackend { buffer_bytes }
+        | ControllerKind::UnexpectedBackend { buffer_bytes } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -830,6 +886,7 @@ fn controller(
         ControllerKind::CancelUpstreamReceive { .. } => "CancelUpstreamReceive",
         ControllerKind::CancelBeforeUpstreamSend { .. } => "CancelBeforeUpstreamSend",
         ControllerKind::CompleteBackend { .. } => "CompleteBackend",
+        ControllerKind::UnexpectedBackend { .. } => "UnexpectedBackend",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -848,7 +905,8 @@ fn controller(
         ControllerKind::BufferedRelay { .. }
         | ControllerKind::CancelUpstreamReceive { .. }
         | ControllerKind::CancelBeforeUpstreamSend { .. }
-        | ControllerKind::CompleteBackend { .. } => ClientRole::ForwardedBackend,
+        | ControllerKind::CompleteBackend { .. }
+        | ControllerKind::UnexpectedBackend { .. } => ClientRole::ForwardedBackend,
     };
     let cancellation = match kind {
         ControllerKind::CancelUpstreamReceive { .. } => Some(Cancellation::Receive {
@@ -864,15 +922,23 @@ fn controller(
             entered: udp::notification()?,
             completed: udp::notification()?,
         }),
+        ControllerKind::UnexpectedBackend { .. } => Some(Cancellation::ExtraDatagram {
+            entered: udp::notification()?,
+            receipt: udp::notification()?,
+            completed: udp::notification()?,
+        }),
         _ => None,
     };
-    let work = match payload {
-        Payload::Scripted => Work::Scripted {
-            receiver: responder.try_clone()?,
-            sender: responder,
-            destination: rewritten.into(),
-            role: Reply::Relay,
-        },
+    let (work, injection) = match payload {
+        Payload::Scripted => (
+            Work::Scripted {
+                receiver: responder.try_clone()?,
+                sender: responder,
+                destination: rewritten.into(),
+                role: Reply::Relay,
+            },
+            FixtureInjection::ForwardOnly,
+        ),
         Payload::Buffered(slots) => {
             let upstream = socket(Stage::BindUpstream)?;
             at(Stage::BindUpstream, upstream.connect(destination))?;
@@ -881,17 +947,26 @@ fn controller(
                 upstream.local_addr()?,
                 upstream.peer_addr()?
             ))?;
-            Work::Forwarded(udp::forward::Inputs {
-                ingress: responder,
-                upstream,
-                backend: destination.into(),
-                slots,
-                control: cancellation
-                    .as_ref()
-                    .map(Cancellation::control)
-                    .transpose()?
-                    .unwrap_or(udp::forward::Control::Ordinary),
-            })
+            let injection = match kind {
+                ControllerKind::UnexpectedBackend { .. } => {
+                    FixtureInjection::OneDatagram(upstream.try_clone()?)
+                }
+                _ => FixtureInjection::ForwardOnly,
+            };
+            (
+                Work::Forwarded(udp::forward::Inputs {
+                    ingress: responder,
+                    upstream,
+                    backend: destination.into(),
+                    slots,
+                    control: cancellation
+                        .as_ref()
+                        .map(Cancellation::control)
+                        .transpose()?
+                        .unwrap_or(udp::forward::Control::Ordinary),
+                }),
+                injection,
+            )
         }
     };
     let scripts = [ClientRole::BaselineBackend, comparison_role];
@@ -910,6 +985,15 @@ fn controller(
         .checked_mul(backend_scripts)
         .ok_or_else(|| invalid("expected empty count overflow"))?;
     let backend_work = match &cancellation {
+        Some(Cancellation::ExtraDatagram {
+            receipt, completed, ..
+        }) => Work::ObserveExtra {
+            receiver: backend.try_clone()?,
+            sender: backend,
+            destination: destination.into(),
+            receipt: receipt.try_clone()?,
+            completed: completed.try_clone()?,
+        },
         Some(Cancellation::BackendComplete { completed, .. }) => Work::CompleteAfterReceipt {
             receiver: backend.try_clone()?,
             sender: backend,
@@ -982,7 +1066,9 @@ fn controller(
             let boundary = (|| {
                 if matches!(
                     cancellation,
-                    Cancellation::Receive { .. } | Cancellation::BackendComplete { .. }
+                    Cancellation::Receive { .. }
+                        | Cancellation::BackendComplete { .. }
+                        | Cancellation::ExtraDatagram { .. }
                 ) {
                     at(
                         Stage::AwaitCancellationBoundary,
@@ -998,6 +1084,16 @@ fn controller(
                     Stage::AwaitCancellationBoundary,
                     udp::notified(cancellation.ready(), &deadline),
                 )?;
+                if let Cancellation::ExtraDatagram { completed, .. } = cancellation {
+                    injection.send(&deadline)?;
+                    at(
+                        Stage::AwaitCancellationBoundary,
+                        udp::notified(completed, &deadline),
+                    )?;
+                    record(format_args!(
+                        "{{\"type\":\"BackendExtraBoundary\",\"state\":\"ObservedUnexpectedWorkReturn\",\"thread_termination\":\"UnobservedUntilJoin\"}}"
+                    ))?;
+                }
                 let left = deadline.left()?;
                 let worker = relay
                     .as_ref()
@@ -1007,6 +1103,9 @@ fn controller(
                     Cancellation::Receive { .. } => ("UpstreamReceive", "ValidatedBackendDatagram"),
                     Cancellation::BeforeSend { .. } => ("BeforeUpstreamSend", "ValidatedOwnedIngress"),
                     Cancellation::BackendComplete { .. } => ("UpstreamReceive", "CompletedBackendWork"),
+                    Cancellation::ExtraDatagram { .. } => {
+                        ("UpstreamReceive", "ConsumedUnexpectedBackendDatagram")
+                    }
                 };
                 record(format_args!(
                     "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"{stage}\",\"receipt\":\"{receipt}\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
@@ -1025,7 +1124,9 @@ fn controller(
                         Ok(())
                     }
                 }),
-                Cancellation::Receive { .. } | Cancellation::BackendComplete { .. } => Ok(()),
+                Cancellation::Receive { .. }
+                | Cancellation::BackendComplete { .. }
+                | Cancellation::ExtraDatagram { .. } => Ok(()),
             };
             // Even a failed boundary/cancel report ends and reaps this owned child
             // before the existing worker/link/cgroup cleanup path proceeds.
@@ -1125,7 +1226,9 @@ fn controller(
     let (expected_backend, expected_empty) = match &cancellation {
         Some(cancellation) => (
             match cancellation {
-                Cancellation::Receive { .. } | Cancellation::BackendComplete { .. } => Exchange::SCRIPT
+                Cancellation::Receive { .. }
+                | Cancellation::BackendComplete { .. }
+                | Cancellation::ExtraDatagram { .. } => Exchange::SCRIPT
                     .len()
                     .checked_add(1)
                     .ok_or_else(|| invalid("held backend count overflow"))?,
@@ -1138,12 +1241,19 @@ fn controller(
         ),
         None => (expected_backend, expected_empty),
     };
-    if backend.report.arrivals != expected_backend
+    let expected_arrivals = match kind {
+        ControllerKind::UnexpectedBackend { .. } => expected_backend
+            .checked_add(1)
+            .ok_or_else(|| invalid("extra backend count overflow"))?,
+        _ => expected_backend,
+    };
+    if backend.report.arrivals != expected_arrivals
         || backend.report.matched != expected_backend
         || backend.report.empty != expected_empty
         || (cancellation.is_some() && backend.report.replies_sent != Exchange::SCRIPT.len())
         || !match kind {
             ControllerKind::CompleteBackend { .. } => backend.backend_completed(),
+            ControllerKind::UnexpectedBackend { .. } => backend.unexpected_extra(),
             _ => matches!(backend.result, Ok(udp::Terminal::Cancelled)),
         }
     {
@@ -1182,7 +1292,10 @@ fn controller(
                 return Err(invalid("relay did not cancel at the upstream receive boundary"));
             }
         }
-        (ControllerKind::CompleteBackend { .. }, udp::Completion::Forwarded(relay)) => {
+        (
+            ControllerKind::CompleteBackend { .. } | ControllerKind::UnexpectedBackend { .. },
+            udp::Completion::Forwarded(relay),
+        ) => {
             if !relay.cancelled_upstream_receive() {
                 return Err(invalid(
                     "relay did not cancel after controlled backend completion",
@@ -1351,6 +1464,34 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::TimedOut
+        );
+    }
+    #[test]
+    fn extra_command_is_finite_and_a_forward_only_owner_cannot_inject() {
+        for mode in ["connected", "unconnected"] {
+            let input = Inputs::parse(&["sock-addr-extra4", mode, "1000", "18"]).unwrap();
+            assert!(matches!(
+                input.0,
+                Role::Controller {
+                    kind: ControllerKind::UnexpectedBackend { buffer_bytes: 18 },
+                    ..
+                }
+            ));
+        }
+        for words in [
+            vec!["sock-addr-extra4", "connected", "1000"],
+            vec!["sock-addr-extra4", "other", "1000", "18"],
+            vec!["sock-addr-extra4", "connected", "1000", "bad"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        let deadline = Deadline::new(Duration::from_secs(1)).unwrap();
+        assert_eq!(
+            FixtureInjection::ForwardOnly.send(&deadline).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
         );
     }
     #[test]

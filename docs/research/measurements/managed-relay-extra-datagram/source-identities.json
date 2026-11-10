@@ -1,0 +1,17 @@
+{
+  "base": "47912a11cf9faea9b7099cad8404671a67100e86",
+  "source_sha256": {
+    "crates/testguest/src/managed_network.rs": "eddb7bd8271d6ec4e846df8230465907df2b5a3e736065d8e7027c0d8eda8c4c",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "1ac4f470eacd388a0c5e0a6359e54738c2b1bf51a061ba394ada79acb14530a7",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "0864f300ef57b90b1d0dd88ee862657e41f23bd2bca31e58f003b3de762974ad",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "94742edb970bfc92a47de64fb66a139029f1b65f2ac08aa3f42bb16c8aa05cd0",
+    "crates/shards/tests/managed_network/cancel.rs": "eacdbd0797c599df453245644f8e451b03b5a0ad97cbd0f30d8456e7317f2956",
+    "docs/research/measurements/managed-relay-extra-datagram/light.py": "3f070bc45b6547215420a96c20825fe719447c5565f56fcc78d6aaeb66f45659"
+  },
+  "Deadline_identical_to_200_sha256": "30c90a9dc89398a7dcf90541e1ad6654d52b5b731bf08e1fb4472f3ca14819fe",
+  "strict_host_predicates_identical_to_200": {
+    "cancelled_receive": "90b7009441801383950bdd478aa8fefd77036b1ae4fcfe81ec5c91b26f4ad2b8",
+    "cancelled_before_send": "605e117d687c3f769185499ecd5dba46b9cb288fa0d2ee0c1dcbd5127d91ff3c"
+  },
+  "scope": "38GNU+38musl pure/scopedlints; inerthostcomposition/sevenexactpurefilters; noevent/socketVMexecution"
+}

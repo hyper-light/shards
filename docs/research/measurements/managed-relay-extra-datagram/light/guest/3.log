@@ -1,0 +1,4 @@
+   Compiling libc v0.2.189
+    Checking shards-devcgroup v0.0.0 (/home/adalundhe/managed-relay-extra-datagram-light-v1/guest/devcgroup)
+    Checking sock-addr-pure v0.0.0 (/home/adalundhe/managed-relay-extra-datagram-light-v1/guest/helper)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.93s
