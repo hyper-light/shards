@@ -5,6 +5,8 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod managed_lifecycle;
+#[cfg(target_os = "linux")]
 mod workload;
 
 fn main() {
