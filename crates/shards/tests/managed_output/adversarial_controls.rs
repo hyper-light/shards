@@ -7,6 +7,8 @@ use contract::{AckCase, ControlCase, Limits, Selection, TerminalCase};
 
 #[path = "adversarial_controls/control_inputs.rs"]
 mod control_inputs;
+#[path = "adversarial_controls/native_terminal.rs"]
+mod native_terminal;
 #[path = "adversarial_controls/write_receipts.rs"]
 mod write_receipts;
 
@@ -74,7 +76,7 @@ fn panic_text(error: &(dyn std::any::Any + Send)) -> &str {
 }
 
 struct Trace<'a> {
-    base: &'a Inputs,
+    directory: &'a std::path::Path,
     next: u64,
 }
 
@@ -88,7 +90,7 @@ impl Trace<'_> {
         );
         let value = match event {
             Event::Record(offset, bytes) => {
-                std::fs::write(self.base.records.join(format!("{stem}.bin")), bytes).unwrap();
+                std::fs::write(self.directory.join(format!("{stem}.bin")), bytes).unwrap();
                 json!({"kind":"Record","wire_start":offset,"bytes":bytes.len()})
             }
             Event::Lost(code) => {
@@ -97,7 +99,7 @@ impl Trace<'_> {
             Event::End => json!({"kind":"TransportEnd"}),
             Event::Failed(error) => json!({"kind":"Failed","error":error}),
         };
-        self.base.write(&format!("{stem}.json"), &value);
+        write_json(self.directory, &format!("{stem}.json"), &value);
     }
 
     fn next(&mut self, observer: &Observer, phase: &str, until: Instant) -> Event {
@@ -106,6 +108,10 @@ impl Trace<'_> {
         self.record(observer, phase, &event);
         event
     }
+}
+
+fn write_json(directory: &std::path::Path, name: &str, value: &Value) {
+    std::fs::write(directory.join(name), serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
 
 fn observed_record(
@@ -234,6 +240,42 @@ fn check_receipts(receipts: &[ControlReceipt], submitted: usize, finish: bool) {
     );
 }
 
+fn main_progress(fixture: &Fixture, base: &Inputs, name: &str, until: Instant) {
+    left(until);
+    let progress = base.command(
+        fixture,
+        &format!("{name}.json"),
+        &[
+            "exec",
+            "owner-output",
+            "/bin/testguest",
+            "streams",
+            "main-progress",
+            "main-error",
+        ],
+        until,
+    );
+    assert_eq!(progress.stdout, "main-progress\n", "{progress}");
+    let stderr = progress
+        .stderr
+        .strip_prefix("main-error\n")
+        .unwrap_or_else(|| panic!("independent main stderr"));
+    assert!(
+        stderr.is_empty() || stderr.starts_with("shards-timing "),
+        "unexpected main diagnostic"
+    );
+    std::fs::write(
+        base.records.join(format!("{name}.stdout.bin")),
+        progress.stdout.as_bytes(),
+    )
+    .unwrap();
+    std::fs::write(
+        base.records.join(format!("{name}.stderr.bin")),
+        progress.stderr.as_bytes(),
+    )
+    .unwrap();
+}
+
 fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
     let base = &input.base;
     let port = base.port.to_string();
@@ -257,7 +299,10 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
     .unwrap();
     let index = fixture.observe(1, input.channel, None, false, until);
     let observer = &fixture.observers[index];
-    let mut trace = Trace { base, next: 0 };
+    let mut trace = Trace {
+        directory: &base.records,
+        next: 0,
+    };
     let mut state = StreamState::New;
     let mut wire = 0;
     let mut interval = observed_record(observer, &mut state, &mut wire, &mut trace, until);
@@ -365,7 +410,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
         !remaining.iter().any(|event| matches!(event, Event::Record(..))),
         "no future target payload after invalid ACK"
     );
-    fixture.main_progress(left(until));
+    main_progress(fixture, base, "main-after-refusal-raw", until);
     base.write(
         "main-after-refusal.json",
         &json!({"state":"ExactIndependentMainStdoutStderrAfterTypedRefusalAndJoin"}),
@@ -433,7 +478,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
             .observed
             .insert((*member, *channel as u8), (capture.wire, capture.wire));
     }
-    fixture.main_progress(left(until));
+    main_progress(fixture, base, "main-after-neighbor-raw", until);
     base.write("progress.json", &json!({"state":"ExactNewNeighborFd1Fd2AfterTypedRefusalAndGatePlusIndependentMain","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"target":{"accepted_must_equal":accepted,"consumed_must_equal":last_valid_ack},"population_kernel_cost":"Unknown; no ownership inference from observer or metadata"}));
     Outcome {
         target,
