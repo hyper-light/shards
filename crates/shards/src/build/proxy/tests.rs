@@ -215,6 +215,111 @@ fn exchange(socket: &Path, raw: &[u8], until: Option<&[u8]>) -> Vec<u8> {
     }
 }
 
+/// Exercise the production accept loop with one occupied worker and another real
+/// connection in the listener backlog. Policy questions establish admission without
+/// adding instrumentation to the server.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "native wait-cost measurement: docs/research/measurements/proxy-capacity/run.sh"]
+fn proxy_capacity_wait_costs() {
+    fn usage(tid: libc::pid_t) -> (u64, u64, u64, u64) {
+        let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
+        let switches = status
+            .lines()
+            .find_map(|line| line.strip_prefix("voluntary_ctxt_switches:")?.trim().parse().ok())
+            .unwrap();
+        let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap();
+        let fields: Vec<_> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
+        let ticks = fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap();
+        (switches, ticks, fields[7].parse().unwrap(), fields[9].parse().unwrap())
+    }
+    let n = std::env::var("SHARDS_PROXY_SAMPLES")
+        .map(|n| n.parse::<usize>().unwrap())
+        .unwrap_or(20);
+    let sample = Duration::from_millis(
+        std::env::var("SHARDS_PROXY_SAMPLE_MS")
+            .map(|n| n.parse::<u64>().unwrap())
+            .unwrap_or(100),
+    );
+    let require_idle = std::env::var_os("SHARDS_PROXY_REQUIRE_IDLE").is_some();
+    for iteration in 0..n {
+        let dir = scratch("capacity");
+        let mut proxy = Proxy::new(
+            crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
+            &shards_image::store::Limits::none(),
+        )
+        .unwrap();
+        proxy.connections = 1;
+        let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+        let (stop, stopped) = UnixStream::pair().unwrap();
+        let (identity, identified) = mpsc::channel();
+        let (ended, end) = mpsc::channel();
+        let mut wakeups = 0;
+        std::thread::scope(|scope| {
+            let (session, stopped) = (&session, &stopped);
+            std::thread::Builder::new()
+                .name("proxy-capacity".into())
+                .spawn_scoped(scope, move || {
+                    // SAFETY: gettid has no arguments or preconditions.
+                    identity.send(unsafe { libc::gettid() }).unwrap();
+                    session.serve(scope, stopped);
+                    ended.send(()).unwrap();
+                })
+                .unwrap();
+            let tid = identified.recv().unwrap();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let request = b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n";
+                let mut first = UnixStream::connect(proxy.socket()).unwrap();
+                first.write_all(request).unwrap();
+                let first_question = questions.asks.recv_timeout(Duration::from_secs(5)).unwrap();
+                let mut queued = UnixStream::connect(proxy.socket()).unwrap();
+                queued.write_all(request).unwrap();
+                std::thread::sleep(Duration::from_millis(10));
+                let before = usage(tid);
+                let began = Instant::now();
+                std::thread::sleep(sample);
+                let after = usage(tid);
+                let elapsed = began.elapsed();
+                wakeups = after.0 - before.0;
+                assert!(matches!(questions.asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                assert_eq!(session.live.lock().unwrap().1.len(), proxy.connections);
+                let released = Instant::now();
+                first_question.answer(false);
+                drop(first);
+                let second_question = questions.asks.recv_timeout(Duration::from_secs(5)).unwrap();
+                let refill = released.elapsed();
+                let mut next = UnixStream::connect(proxy.socket()).unwrap();
+                next.write_all(request).unwrap();
+                let stopped_at = Instant::now();
+                drop(stop);
+                end.recv_timeout(Duration::from_secs(5)).unwrap();
+                let stop_time = stopped_at.elapsed();
+                assert!(matches!(questions.asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                second_question.answer(false);
+                drop(queued);
+                drop(next);
+                println!("PROXY_CAPACITY_SAMPLE {}", serde_json::json!({
+                    "iteration": iteration,
+                    "sample_ns": elapsed.as_nanos(),
+                    "voluntary_switches": wakeups,
+                    "cpu_ticks": after.1 - before.1,
+                    "minor_faults": after.2 - before.2,
+                    "major_faults": after.3 - before.3,
+                    "refill_ns": refill.as_nanos(),
+                    "stop_ns": stop_time.as_nanos(),
+                }));
+            }));
+            session.end();
+            drop(questions);
+            result.unwrap_or_else(|p| std::panic::resume_unwind(p));
+        });
+        assert!(session.live.lock().unwrap().1.is_empty());
+        if require_idle {
+            assert_eq!(wakeups, 0, "a full proxy repeatedly woke without completion or stop");
+        }
+    }
+}
+
 /// Its `Date` field's value said as `DATE`.
 fn dated(s: &[u8]) -> String {
     let s = String::from_utf8_lossy(s).into_owned();
