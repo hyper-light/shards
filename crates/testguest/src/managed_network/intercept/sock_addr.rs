@@ -1,4 +1,4 @@
-//! One finite, coordinator-run cgroup socket-address comparison. Not a relay.
+//! Finite coordinator-run socket-address comparisons, never product routing.
 use super::*;
 use std::fs::{self, OpenOptions};
 use std::net::SocketAddrV4;
@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use udp::{DatagramWorker, Exchange, Mode};
+use udp::{DatagramWorker, Exchange, Mode, Work};
 
 mod bpf;
 
@@ -41,12 +41,47 @@ enum HookSetup {
     Ready,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ControllerKind {
+    ScriptedResponder,
+    BufferedRelay { buffer_bytes: usize },
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClientRole {
+    BaselineBackend,
+    ScriptedResponder,
+    ForwardedBackend,
+}
+impl ClientRole {
+    fn reply(self) -> Reply {
+        match self {
+            Self::BaselineBackend | Self::ForwardedBackend => Reply::Backend,
+            Self::ScriptedResponder => Reply::Relay,
+        }
+    }
+    fn argument(self) -> &'static str {
+        match self {
+            Self::BaselineBackend => "Backend",
+            Self::ScriptedResponder => "Relay",
+            Self::ForwardedBackend => "ForwardedBackend",
+        }
+    }
+    fn arrival_role(self) -> &'static str {
+        match self {
+            Self::BaselineBackend => "SockAddrBaselineClient",
+            Self::ScriptedResponder => "SockAddrHookClient",
+            Self::ForwardedBackend => "SockAddrForwardedClient",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(in super::super) struct Inputs(Role);
 
 #[derive(Debug)]
 enum Role {
     Controller {
+        kind: ControllerKind,
         presentation: Presentation,
         mode: Mode,
         within: Duration,
@@ -55,7 +90,7 @@ enum Role {
         mode: Mode,
         within: Duration,
         destination: SocketAddrV4,
-        expected: Reply,
+        role: ClientRole,
     },
 }
 impl Inputs {
@@ -73,6 +108,17 @@ impl Inputs {
         };
         let role: io::Result<Role> = match words {
             ["sock-addr-udp4", how, millis, profile] => Ok(Role::Controller {
+                kind: ControllerKind::ScriptedResponder,
+                presentation: Presentation::parse(profile)?,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
+            ["sock-addr-relay4", how, millis, profile, budget] => Ok(Role::Controller {
+                kind: ControllerKind::BufferedRelay {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
                 presentation: Presentation::parse(profile)?,
                 mode: mode(how)?,
                 within: within(millis)?,
@@ -89,15 +135,16 @@ impl Inputs {
                     mode: mode(how)?,
                     within: within(millis)?,
                     destination,
-                    expected: match *role {
-                        "Backend" => Reply::Backend,
-                        "Relay" => Reply::Relay,
-                        _ => return Err(invalid("expected Backend or Relay")),
+                    role: match *role {
+                        "Backend" => ClientRole::BaselineBackend,
+                        "Relay" => ClientRole::ScriptedResponder,
+                        "ForwardedBackend" => ClientRole::ForwardedBackend,
+                        _ => return Err(invalid("expected Backend, Relay or ForwardedBackend")),
                     },
                 })
             }
             _ => Err(invalid(
-                "use sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}",
+                "use sock-addr-udp4 MODE DEADLINE_MS PROFILE or sock-addr-relay4 MODE DEADLINE_MS PROFILE BUFFER_BYTES",
             )),
         };
         role.map(Self)
@@ -112,6 +159,8 @@ enum Stage {
     BindResponder,
     Baseline,
     ReserveHooks,
+    ReservePayload,
+    BindUpstream,
     ExecClient,
     WaitChild,
     ReapChild,
@@ -154,20 +203,21 @@ fn record(args: std::fmt::Arguments<'_>) -> io::Result<()> {
 pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     match input.0 {
         Role::Controller {
+            kind,
             presentation,
             mode,
             within,
-        } => controller(presentation, mode, within),
+        } => controller(kind, presentation, mode, within),
         Role::Client {
             mode,
             within,
             destination,
-            expected,
+            role,
         } => {
             if std::process::id() == 1 {
                 return Err(invalid("client must be a fresh exec child"));
             }
-            client(mode, destination.into(), expected, &Deadline::new(within)?)
+            client(mode, destination.into(), role, &Deadline::new(within)?)
         }
     }
 }
@@ -205,7 +255,8 @@ fn arrival_exact(
             .as_ref()
             .is_ok_and(|metadata| metadata.peer == original_peer && metadata.original == Some(local))
 }
-fn client(mode: Mode, destination: SocketAddr, expected: Reply, deadline: &Deadline) -> io::Result<()> {
+fn client(mode: Mode, destination: SocketAddr, role: ClientRole, deadline: &Deadline) -> io::Result<()> {
+    let expected = role.reply();
     let mut stage = Stage::BindClient;
     let mut completed = 0usize;
     let mut compatibility = Compatibility::Exact;
@@ -222,7 +273,7 @@ fn client(mode: Mode, destination: SocketAddr, expected: Reply, deadline: &Deadl
         let mut out = io::stdout().lock();
         write!(
             out,
-            "managed-sock-addr {{\"type\":\"ClientIdentity\",\"pid\":{},\"namespace\":{},\"requested\":\"{destination}\",\"local\":\"{local}\",\"mode\":\"{mode:?}\",\"peer\":",
+            "managed-sock-addr {{\"type\":\"ClientIdentity\",\"pid\":{},\"namespace\":{},\"requested\":\"{destination}\",\"local\":\"{local}\",\"mode\":\"{mode:?}\",\"role\":\"{role:?}\",\"peer\":",
             std::process::id(),
             File::open("/proc/self/ns/net")?.metadata()?.ino()
         )?;
@@ -253,17 +304,7 @@ fn client(mode: Mode, destination: SocketAddr, expected: Reply, deadline: &Deadl
                 deadline,
             )?;
             stage = Stage::Record;
-            udp::arrival_record(
-                if expected == Reply::Backend {
-                    "SockAddrBaselineClient"
-                } else {
-                    "SockAddrHookClient"
-                },
-                step,
-                index + 1,
-                local,
-                &arrival,
-            )?;
+            udp::arrival_record(role.arrival_role(), step, index + 1, local, arrival.view())?;
             compatibility.observe(arrival_exact(
                 &arrival,
                 step.response(expected),
@@ -286,7 +327,7 @@ fn client(mode: Mode, destination: SocketAddr, expected: Reply, deadline: &Deadl
         error(stage, e);
     }
     record(format_args!(
-        "{{\"type\":\"ClientCompletion\",\"expected\":\"{expected:?}\",\"stage\":\"{stage:?}\",\"exchanges\":{completed},\"compatibility\":\"{compatibility:?}\",\"script\":\"{}\",\"success\":{}}}",
+        "{{\"type\":\"ClientCompletion\",\"role\":\"{role:?}\",\"expected\":\"{expected:?}\",\"stage\":\"{stage:?}\",\"exchanges\":{completed},\"compatibility\":\"{compatibility:?}\",\"script\":\"{}\",\"success\":{}}}",
         if completed == Exchange::SCRIPT.len() {
             "Complete"
         } else {
@@ -354,12 +395,12 @@ fn exec_client(
     cgroup: &Cgroup,
     mode: Mode,
     destination: SocketAddrV4,
-    expected: Reply,
+    role: ClientRole,
     deadline: &Deadline,
 ) -> io::Result<bool> {
-    let path = PathBuf::from(match expected {
-        Reply::Backend => "/tmp/sock-addr-baseline.report",
-        Reply::Relay => "/tmp/sock-addr-hook.report",
+    let path = PathBuf::from(match role {
+        ClientRole::BaselineBackend => "/tmp/sock-addr-baseline.report",
+        ClientRole::ScriptedResponder | ClientRole::ForwardedBackend => "/tmp/sock-addr-hook.report",
     });
     let output = OpenOptions::new()
         .read(true)
@@ -382,10 +423,7 @@ fn exec_client(
             how,
             &millis,
             &destination.to_string(),
-            match expected {
-                Reply::Backend => "Backend",
-                Reply::Relay => "Relay",
-            },
+            role.argument(),
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::from(output.try_clone()?))
@@ -409,12 +447,13 @@ fn exec_client(
             Ok(())
         });
     }
+    let role = role.argument();
     let mut owned = OwnedClient {
         child: at(Stage::ExecClient, command.spawn())?,
         state: ChildState::Running,
     };
     record(format_args!(
-        "{{\"type\":\"Child\",\"pid\":{},\"role\":\"{expected:?}\",\"state\":\"ExecReturned\"}}",
+        "{{\"type\":\"Child\",\"pid\":{},\"role\":\"{role}\",\"state\":\"ExecReturned\"}}",
         owned.child.id()
     ))?;
     // SAFETY: child is owned and unreaped, so its PID cannot be reused here.
@@ -462,7 +501,7 @@ fn exec_client(
     io::copy(&mut reader, &mut io::stdout().lock())?;
     io::stdout().flush()?;
     record(format_args!(
-        "{{\"type\":\"ChildReaped\",\"role\":\"{expected:?}\",\"reaped\":true,\"success\":{},\"code\":{}}}",
+        "{{\"type\":\"ChildReaped\",\"role\":\"{role}\",\"reaped\":true,\"success\":{},\"code\":{}}}",
         status.success(),
         status.code().map_or_else(|| "null".to_owned(), |c| c.to_string())
     ))?;
@@ -615,7 +654,12 @@ fn hook_error(failure: bpf::HookFailure) -> io::Error {
     failure.cause
 }
 
-fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::Result<()> {
+fn controller(
+    kind: ControllerKind,
+    presentation: Presentation,
+    mode: Mode,
+    within: Duration,
+) -> io::Result<()> {
     if std::process::id() != 1 {
         return Err(invalid("controller requires direct guest PID1"));
     }
@@ -640,8 +684,12 @@ fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::R
         SocketAddr::V4(at) => at,
         _ => return Err(invalid("IPv4 responder required")),
     };
+    let operation = match kind {
+        ControllerKind::ScriptedResponder => "ScriptedResponder",
+        ControllerKind::BufferedRelay { .. } => "BufferedRelay",
+    };
     record(format_args!(
-        "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\"}}",
+        "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
         namespace.inode()?,
         cgroup.handle.metadata()?.ino()
     ))?;
@@ -652,18 +700,74 @@ fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::R
         links.try_reserve_exact(plan.len()).map_err(io::Error::other),
     )?;
     let mut hook_setup = HookSetup::NotStarted;
+    let comparison_role = match kind {
+        ControllerKind::ScriptedResponder => ClientRole::ScriptedResponder,
+        ControllerKind::BufferedRelay { .. } => ClientRole::ForwardedBackend,
+    };
+    let work = match kind {
+        ControllerKind::ScriptedResponder => Work::Scripted {
+            receiver: responder.try_clone()?,
+            sender: responder,
+            destination: rewritten.into(),
+            role: Reply::Relay,
+        },
+        ControllerKind::BufferedRelay { buffer_bytes } => {
+            let slots = at(
+                Stage::ReservePayload,
+                udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
+            )?;
+            slots.record()?;
+            let upstream = socket(Stage::BindUpstream)?;
+            at(Stage::BindUpstream, upstream.connect(destination))?;
+            record(format_args!(
+                "{{\"type\":\"ForwardTarget\",\"ingress\":\"{rewritten}\",\"upstream\":\"{}\",\"backend\":\"{destination}\",\"upstream_peer\":\"{}\",\"source_preservation\":\"MustObserveBackend\"}}",
+                upstream.local_addr()?,
+                upstream.peer_addr()?
+            ))?;
+            Work::Forwarded(udp::forward::Inputs {
+                ingress: responder,
+                upstream,
+                backend: destination.into(),
+                slots,
+            })
+        }
+    };
+    let scripts = [ClientRole::BaselineBackend, comparison_role];
+    let backend_scripts = scripts
+        .into_iter()
+        .filter(|role| role.reply() == Reply::Backend)
+        .count();
+    let expected_backend = Exchange::SCRIPT
+        .len()
+        .checked_mul(backend_scripts)
+        .ok_or_else(|| invalid("expected backend count overflow"))?;
+    let expected_empty = Exchange::SCRIPT
+        .into_iter()
+        .filter(|step| matches!(step, Exchange::Empty))
+        .count()
+        .checked_mul(backend_scripts)
+        .ok_or_else(|| invalid("expected empty count overflow"))?;
     let mut backend = DatagramWorker::start(
-        backend.try_clone()?,
-        backend,
-        destination.into(),
-        Reply::Backend,
+        Work::Scripted {
+            receiver: backend.try_clone()?,
+            sender: backend,
+            destination: destination.into(),
+            role: Reply::Backend,
+        },
         &deadline,
     )?;
     let mut relay = None;
     let result = (|| {
         if !at(
             Stage::Baseline,
-            exec_client(&namespace, &cgroup, mode, destination, Reply::Backend, &deadline),
+            exec_client(
+                &namespace,
+                &cgroup,
+                mode,
+                destination,
+                ClientRole::BaselineBackend,
+                &deadline,
+            ),
         )? {
             return Err(invalid("baseline native script failed"));
         }
@@ -695,16 +799,10 @@ fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::R
             ))?;
         }
         hook_setup = HookSetup::Ready;
-        relay = Some(DatagramWorker::start(
-            responder.try_clone()?,
-            responder,
-            rewritten.into(),
-            Reply::Relay,
-            &deadline,
-        )?);
+        relay = Some(DatagramWorker::start(work, &deadline)?);
         if !at(
             Stage::ExecClient,
-            exec_client(&namespace, &cgroup, mode, destination, Reply::Relay, &deadline),
+            exec_client(&namespace, &cgroup, mode, destination, comparison_role, &deadline),
         )? {
             return Err(invalid("hooked native compatibility failed"));
         }
@@ -762,21 +860,43 @@ fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::R
     result?;
     pending?;
     reports?;
-    let backend = backend?;
-    if backend.report.arrivals != Exchange::SCRIPT.len()
-        || backend.report.matched != Exchange::SCRIPT.len()
-        || backend.report.empty != 1
+    let backend = backend?.scripted()?;
+    if backend.report.arrivals != expected_backend
+        || backend.report.matched != expected_backend
+        || backend.report.empty != expected_empty
         || !matches!(backend.result, Ok(udp::Terminal::Cancelled))
     {
         return Err(invalid("backend script/terminal differs"));
     }
-    let relay = relay.ok_or_else(|| invalid("responder not started"))??;
-    if relay.report.arrivals != Exchange::SCRIPT.len()
-        || relay.report.matched != Exchange::SCRIPT.len()
-        || relay.report.empty != 1
-        || !matches!(relay.result, Ok(udp::Terminal::ScriptComplete))
-    {
-        return Err(invalid("responder script/terminal differs"));
+    let relay = relay.ok_or_else(|| invalid("comparison worker not started"))??;
+    match (kind, relay) {
+        (ControllerKind::ScriptedResponder, udp::Completion::Scripted(relay)) => {
+            if relay.report.arrivals != Exchange::SCRIPT.len()
+                || relay.report.matched != Exchange::SCRIPT.len()
+                || relay.report.empty != 1
+                || !matches!(relay.result, Ok(udp::Terminal::ScriptComplete))
+            {
+                return Err(invalid("responder script/terminal differs"));
+            }
+        }
+        (ControllerKind::BufferedRelay { .. }, udp::Completion::Forwarded(relay)) => {
+            let expected = Exchange::SCRIPT.len();
+            let empty = Exchange::SCRIPT
+                .into_iter()
+                .filter(|step| matches!(step, Exchange::Empty))
+                .count();
+            if relay.report.ingress != expected
+                || relay.report.upstream_sent != expected
+                || relay.report.upstream_received != expected
+                || relay.report.client_sent != expected
+                || relay.report.empty_ingress != empty
+                || relay.report.empty_reply != empty
+                || !matches!(relay.result, Ok(udp::Terminal::ScriptComplete))
+            {
+                return Err(invalid("forwarded legs/terminal differ"));
+            }
+        }
+        _ => return Err(invalid("comparison completion type differs")),
     }
     if let Some(error) = detach_report_failure {
         return Err(error);
@@ -800,6 +920,60 @@ mod tests {
                 Inputs::parse(&words).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput
             );
+        }
+    }
+    #[test]
+    fn buffered_comparison_requires_explicit_envelope_and_preserves_client_roles() {
+        for mode in ["connected", "unconnected"] {
+            for profile in ["destination-only", "fixed-original-peer"] {
+                let parsed = Inputs::parse(&["sock-addr-relay4", mode, "1000", profile, "18"]).unwrap();
+                assert!(matches!(
+                    parsed.0,
+                    Role::Controller {
+                        kind: ControllerKind::BufferedRelay { buffer_bytes: 18 },
+                        ..
+                    }
+                ));
+            }
+        }
+        for words in [
+            vec!["sock-addr-relay4", "connected", "1000", "fixed-original-peer"],
+            vec![
+                "sock-addr-relay4",
+                "connected",
+                "1000",
+                "fixed-original-peer",
+                "-1",
+            ],
+            vec![
+                "sock-addr-relay4",
+                "connected",
+                "1000",
+                "fixed-original-peer",
+                "bytes",
+            ],
+            vec!["sock-addr-relay4", "connected", "1000", "unknown", "18"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(
+            Inputs::parse(&["sock-addr-relay4", "connected", "0", "fixed-original-peer", "18",])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+        for (word, role) in [
+            ("Backend", ClientRole::BaselineBackend),
+            ("Relay", ClientRole::ScriptedResponder),
+            ("ForwardedBackend", ClientRole::ForwardedBackend),
+        ] {
+            let parsed =
+                Inputs::parse(&["sock-addr-client4", "connected", "1000", "127.0.0.1:41", word]).unwrap();
+            assert!(matches!(parsed.0, Role::Client {role: actual, ..} if actual == role));
+            assert_eq!(role.argument(), word);
         }
     }
     #[test]

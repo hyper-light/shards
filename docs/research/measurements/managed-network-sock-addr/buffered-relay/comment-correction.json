@@ -1,0 +1,11 @@
+{
+  "checked_source": "7ee6c4bcf90796c6a1540ed748a5ef89940825e1",
+  "evidence_checkpoint": "da7d5b4fee6634ac51844229bb4008d8f415952f",
+  "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+  "only_delta": {
+    "before": "//! Finite UDP compatibility experiment. No forwarding relay, cache, or product policy.",
+    "after": "//! Finite UDP compatibility and one-flow forwarding comparisons; no product policy."
+  },
+  "after_sha256": "8105d8cb3e983c1b9f14b344331dd60bfc7cd04f7faf0e11c8d918e06d82dfb5",
+  "runtime_or_test_change": false
+}

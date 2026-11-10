@@ -1,0 +1,20 @@
+[
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "start": "fn udp_receive(",
+    "before_end": "fn udp_arrival(",
+    "sha256": "2b77b2bc2de91174bdce11644614c0a006a4571a7d75c11d56846cfdb6f62e28"
+  },
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "start": "fn udp_metadata(",
+    "before_end": "fn capabilities(",
+    "sha256": "e661e191a0c7426a65900498ab120f7e9e23f60146a9cadbcf029f44b7d528a2"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/sock_addr.rs",
+    "start": "fn peer_exact(",
+    "before_end": "fn client(",
+    "sha256": "2f2e2596fe542aea022cc20b9438565bae51dd08d449c02305a6e19b35d2a409"
+  }
+]

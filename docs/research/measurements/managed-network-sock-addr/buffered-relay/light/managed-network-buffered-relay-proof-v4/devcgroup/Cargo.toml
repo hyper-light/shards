@@ -1,0 +1,6 @@
+[package]
+name="shards-devcgroup"
+version="0.0.0"
+edition="2024"
+[lib]
+path="/home/adalundhe/managed-network-buffered-relay-proof-v4/source/crates/devcgroup/src/lib.rs"
