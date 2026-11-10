@@ -1,0 +1,37 @@
+{
+  "scope": "native endpoint behavior only; no VM/interception/performance claim",
+  "revision": "9d003774-minus-error-wake",
+  "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "euid": 1000,
+  "within_ms": 120000,
+  "selected": [
+    "v4-udp-too-large"
+  ],
+  "binary_sha256": "4ea13b3975e860cd48cadb3f5b75363dc6a4ee13a93390c66241fbab233e8e9d",
+  "results": [
+    {
+      "case": "v4-udp-too-large",
+      "status": "parent-budget-expired",
+      "passed": false,
+      "elapsed_ns": 120001204370,
+      "stdout": "v4-udp-too-large.stdout",
+      "stderr": "v4-udp-too-large.stderr",
+      "stdout_sha256": "75338c086380a81e7de11ba10b3260a34e4c47fe5f30659727b2a186f3d32c2a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "command_arg_lengths": [
+        65,
+        15,
+        4,
+        3,
+        11,
+        131016,
+        0,
+        6,
+        6
+      ],
+      "command_sha256": "327b82322ff6c9d8d7dc5f7421d26d39fbf7496c97e567a236141328c66c1f88"
+    }
+  ],
+  "full_manifest_sha256": "8329d8bd574922769df5989bd3a5805557a362cfb9fe016ec4f500755b692121",
+  "full_manifest_remote_path": "/home/adalundhe/managed-network-native-check/mutation-wake/results.json"
+}

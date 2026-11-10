@@ -72,3 +72,25 @@ a product timeout. The27cases cover both IP families, TCP/connected/unconnected
 UDP, empty/binary/protocol-sized payloads, zero deadlines, oversized datagrams
 and malformed hex. The runner's outer deadline catches failed cleanup; it must
 not be converted into a passing expected refusal.
+
+At48e16c053, the coordinator's r58 green completed27/27, with5/5 unit tests and
+strict clippy exit0. At9d003774, r73 independently removed each guard on the same
+native module, then restored it. Control2/2 passed; zero-guard removal failed1/1
+because stdout contained an actual Listening event; error-wake removal failed1/1
+because the oversized-UDP case consumed the full parent budget; restored2/2 passed.
+The orchestration itself returned0 after asserting those exact mutation failures.
+It did not turn an arbitrary failing process into a passing refusal.
+
+The earlier r70 orchestration selected the Cargo package name instead of the
+explicit probe binary and failed before running a case. It is not a test result.
+r73 uses target/release/probe as declared in the retained standalone Cargo.toml.
+coordinator-mutations/repeat-fedora.sh preserves its exact invocation and source
+changes; repeat in a fresh standalone directory with the documented name or use
+new output names, since evidence directories deliberately cannot be overwritten.
+The script restores canonical source on every exit. Summary manifests and small
+stdout/stderr are retained beside it; full remote manifest hashes and paths are
+recorded. Full commands with protocol-sized payloads remain on Fedora.
+
+These are native probe correctness and cancellation-guard observations. Actual
+VM interception, route attribution, TLS provider compatibility, resource cleanup
+counts, fairness, comparative cost and the supported seven-target gate remain owed.
