@@ -10,7 +10,7 @@ uname -a > "$record/environment.txt"
 rustc --version >> "$record/environment.txt"
 touch crates/testguest/src/{main.rs,workload.rs,cleanup.rs} crates/shards/tests/managed_cleanup.rs
 set +e
-cargo test --locked -j4 -p shards --test managed_cleanup main_cleanup_reaps_owned_children_and_preserves_independent_joiner -- --exact --ignored --nocapture --test-threads=1 > "$record/run.log" 2>&1
+cargo test --locked -j4 --profile test-release -p shards --test managed_cleanup main_cleanup_reaps_owned_children_and_preserves_independent_joiner -- --exact --ignored --nocapture --test-threads=1 > "$record/run.log" 2>&1
 code=$?
 set -e
 printf '%s\n' "$code" > "$record/run.exit"
