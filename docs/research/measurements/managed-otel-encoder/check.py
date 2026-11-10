@@ -30,6 +30,7 @@ for resource in resources:
             assert aggregation["aggregationTemporality"] == 2
             assert isinstance(aggregation["isMonotonic"], bool)
         assert aggregation["dataPoints"]
+        identities = set()
         for point in aggregation["dataPoints"]:
             assert point["timeUnixNano"] == "1794335411506000001"
             assert "startTimeUnixNano" not in point
@@ -40,6 +41,9 @@ for resource in resources:
                 assert -(2**63) <= int(point["asInt"]) < 2**63
             attrs = point.get("attributes", [])
             assert len(attrs) == len({a["key"] for a in attrs})
+            identity = json.dumps(attrs, sort_keys=True)
+            assert identity not in identities
+            identities.add(identity)
     by_name = {m["name"]: m for m in metrics}
     limits = ("shards.cgroup.memory.limit", "shards.cgroup.task.limit")
     states = by_name["shards.cgroup.limit.state"]
@@ -72,21 +76,36 @@ for resource in resources:
         assert failures[0]["asInt"] == "0"
         assert by_name["shards.cgroup.cpu.time"]["sum"]["dataPoints"][0]["asDouble"] == 1.000001
         assert by_name["shards.cgroup.memory.usage"]["sum"]["dataPoints"][0]["asInt"] == "0"
+        expected_events = {"memory": dict(zip(("low", "high", "max", "oom", "oom_kill", "oom_group_kill"), map(str, range(6)))), "task": {"max": "6"}}
     elif own == "workload":
-        assert failures[0]["asInt"] == "6"
+        assert failures[0]["asInt"] == "13"
         assert "shards.cgroup.cpu.time" not in by_name
         assert "shards.cgroup.memory.usage" not in by_name
         assert "shards.cgroup.task.count" not in by_name
         io = by_name["shards.cgroup.disk.io"]["sum"]["dataPoints"]
         assert len(io) == 1 and io[0]["asInt"] == "34"
         errors = by_name["shards.cgroup.collection.error"]["gauge"]["dataPoints"]
-        assert len(errors) == 6
+        assert len(errors) == 13
         assert all(p["asInt"] == "1" for p in errors)
+        expected_events = {}
     elif own == "member":
         assert attributes["shards.member.id"] == {"intValue": str(2**32 - 1)}
-        assert failures[0]["asInt"] == "2"
+        assert failures[0]["asInt"] == "8"
         assert "shards.cgroup.memory.usage" not in by_name
         assert by_name["shards.cgroup.task.count"]["sum"]["dataPoints"][0]["asInt"] == str(2**63 - 1)
+        expected_events = {"memory": {"low": str(2**63 - 1)}}
     else:
         raise AssertionError(own)
+    for family in ("memory", "task"):
+        metric = by_name.get(f"shards.cgroup.{family}.events")
+        if family not in expected_events:
+            assert metric is None
+            continue
+        assert metric["unit"] == "{event}" and set(metric) == {"name", "unit", "sum"}
+        assert metric["sum"]["aggregationTemporality"] == 2 and metric["sum"]["isMonotonic"] is True
+        observed = {}
+        for p in metric["sum"]["dataPoints"]:
+            assert len(p["attributes"]) == 1 and p["attributes"][0]["key"] == "shards.cgroup.event"
+            observed[p["attributes"][0]["value"]["stringValue"]] = p["asInt"]
+        assert observed == expected_events[family]
 print(json.dumps({"resources": len(resources), "json_and_selected_contract": "passed", "collector_conformance": "not_run"}))

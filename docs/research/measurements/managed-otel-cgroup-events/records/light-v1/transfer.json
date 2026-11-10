@@ -1,0 +1,29 @@
+{
+  "input": {
+    "command": "python3 - <<'PY'\nimport base64,hashlib,json,pathlib\np=pathlib.Path('/home/adalundhe/managed-otel-cgroup-events-ed9-light-v1/raw.tar.gz')\nb=p.read_bytes();print(json.dumps({'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()}))\nPY",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+    "sync": false,
+    "timeout_s": 60,
+    "reuse": false
+  },
+  "result": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": {
+        "bytes": 26544,
+        "sha256": "8880bad6fb7d439d2974ce6354ceface94cb6762175e037f42484fff3980e11f",
+        "base64_archived_as": "raw.tar.gz"
+      },
+      "running": false,
+      "why": "linux/x86_64 · 11 of 32 cores idle · 17 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk · 2 CI jobs",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  }
+}

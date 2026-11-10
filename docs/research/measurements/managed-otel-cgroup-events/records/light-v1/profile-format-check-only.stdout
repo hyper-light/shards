@@ -1,0 +1,18 @@
+Diff in /home/adalundhe/managed-otel-cgroup-events-ed9-light-v1/source/docs/research/measurements/managed-otel/profile/src/main.rs:124:
+         task_limit: Ok(native_codec::Limit::Finite(i64::MAX as u64)),
+         read_bytes: Ok(0),
+         write_bytes: Ok(i64::MAX as u64),
+-        events: [Ok(i64::MAX as u64), Ok(i64::MAX as u64 + 1), Ok(u64::MAX),
+-            Err(Failure::Missing), Err(Failure::Invalid), Err(Failure::Overflow), Err(Failure::Io(2))],
++        events: [
++            Ok(i64::MAX as u64),
++            Ok(i64::MAX as u64 + 1),
++            Ok(u64::MAX),
++            Err(Failure::Missing),
++            Err(Failure::Invalid),
++            Err(Failure::Overflow),
++            Err(Failure::Io(2)),
++        ],
+         ..healthy
+     };
+     let samples = [healthy, failed, boundary];

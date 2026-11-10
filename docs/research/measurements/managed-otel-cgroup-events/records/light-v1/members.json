@@ -1,0 +1,150 @@
+{
+  "cargo-version.command.json": {
+    "bytes": 297,
+    "sha256": "fd65fbf959fc7708d1aa026231b9459cca243bf36d71fda3bf05790938185e34"
+  },
+  "cargo-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "cargo-version.stdout": {
+    "bytes": 36,
+    "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+  },
+  "clippy-version.command.json": {
+    "bytes": 320,
+    "sha256": "105ac53c5f25ab4d8fb612636872892e766b3fc0e29c62ae0db3d4423e3a793f"
+  },
+  "clippy-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "clippy-version.stdout": {
+    "bytes": 38,
+    "sha256": "5b2434a8299036c6e83749c249f2837c1689942551958368a628f5e06be5c21c"
+  },
+  "format-check.command.json": {
+    "bytes": 588,
+    "sha256": "d1b88bd4ee0c5dd6297a9713721f28b543a3ef0dc0a2c68ab319332331eba232"
+  },
+  "format-check.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "format-check.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "format.command.json": {
+    "bytes": 561,
+    "sha256": "18304565f42d694f823878a956011a1f1574ca86c46cbce88369cc9b4659c74e"
+  },
+  "format.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "format.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "formatted/crates/init/src/metrics.rs": {
+    "bytes": 10281,
+    "sha256": "422da223896561043bf99f7b13029c402bfb6d94bf656de7b6e7cdd07d303b9f"
+  },
+  "formatted/crates/init/src/metrics/events.rs": {
+    "bytes": 2721,
+    "sha256": "5940520b11c658b05c476d7f4de140721205ad4eb0c13a81971744244cd9862b"
+  },
+  "formatted/crates/init/src/metrics/otlp.rs": {
+    "bytes": 29171,
+    "sha256": "284c8cd934eb17173b5a5fa86447f53ea498157154102c5368a103e705e67705"
+  },
+  "formatted/crates/init/src/metrics/tests.rs": {
+    "bytes": 21901,
+    "sha256": "e9c495df9d721dd46b653f2383bced6b8e20ee7e6f5fc8bb90288c856df5d383"
+  },
+  "formatted/docs/research/measurements/managed-otel-encoder/fixture.rs": {
+    "bytes": 1765,
+    "sha256": "bee836f794b8e09661210ff21383cecda5379a6e7529072864a876baa62cf103"
+  },
+  "formatted/docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+    "bytes": 3117,
+    "sha256": "51ceff7cb852c94e0c3dfaa326e8bf67267cf5aba33533266c3e31661fbcc956"
+  },
+  "formatted/docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+    "bytes": 14346,
+    "sha256": "371c3b433ffad6c789888a34e34a48139ef220729264a2a5e00fdef95a9b94a8"
+  },
+  "formatted/docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+    "bytes": 1709,
+    "sha256": "3db77bd5b7a1b92ac150648a2c0cd0103d20ca70e76da6ad8414a9108d8eda3c"
+  },
+  "formatted/docs/research/measurements/managed-otel/profile/src/main.rs": {
+    "bytes": 6280,
+    "sha256": "00e3a738fa8d6e35cefcad5fa281b5a708fc9886beff741246a5e30a3597c128"
+  },
+  "installed-targets.command.json": {
+    "bytes": 335,
+    "sha256": "f11bfb379b5262ed9853cf001db2babe232a05d8b68a3207588c5e8d7e008d32"
+  },
+  "installed-targets.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "installed-targets.stdout": {
+    "bytes": 127,
+    "sha256": "1368770f7064c90c2e05865bf2cec05e4c9e57c5c9818ce06b99b144899dc544"
+  },
+  "profile-format-check-only.command.json": {
+    "bytes": 424,
+    "sha256": "43b479457bec56a2f38dc98d7cabc1600a01157ae1f47e53ff7d56e091c7923a"
+  },
+  "profile-format-check-only.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "profile-format-check-only.stdout": {
+    "bytes": 809,
+    "sha256": "b10929c58fae734bbaec0f936da4ddaa5c265cccd6911de7ca5bdb8cdf1c2d14"
+  },
+  "result.json": {
+    "bytes": 11754,
+    "sha256": "b29e3fb0b848234004d432466a0702ae92eb4255898b981fec5fe45b3e50ef0f"
+  },
+  "rustc-version.command.json": {
+    "bytes": 298,
+    "sha256": "4497d98f55f901da364f710cd4ab4c19a8438b1a7f53d405fd4d56d83bba4e5c"
+  },
+  "rustc-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "rustc-version.stdout": {
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  "rustfmt-version.command.json": {
+    "bytes": 310,
+    "sha256": "6cd87ea707b85ed9d2358d1c8f0c088dccd1bc60bbfdb25a83beb2ad3eae1595"
+  },
+  "rustfmt-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "rustfmt-version.stdout": {
+    "bytes": 45,
+    "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+  },
+  "toolchains.command.json": {
+    "bytes": 272,
+    "sha256": "a4a478246ba7e6b3478f59162b8b2ffad4cd2398cc1e0bda8d5c9b0dd6e1f7d5"
+  },
+  "toolchains.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "toolchains.stdout": {
+    "bytes": 287,
+    "sha256": "5876c73b8cbdd6905fad224ef537394372f3a9f9dd568a3d34b9a2771222a36b"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "original_payloads": 37,
+  "embedded_manifests": 1,
+  "inventory_rows": 38,
+  "all_unique_safe_regular_members_verified": true,
+  "archive_bytes": 26544,
+  "archive_sha256": "8880bad6fb7d439d2974ce6354ceface94cb6762175e037f42484fff3980e11f",
+  "failure": {
+    "message": "profile-format-check-only returned 1",
+    "type": "RuntimeError"
+  },
+  "formatter_returned_owned_source_applied": [
+    "crates/init/src/metrics.rs",
+    "crates/init/src/metrics/events.rs",
+    "crates/init/src/metrics/otlp.rs",
+    "crates/init/src/metrics/tests.rs",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs",
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs",
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs"
+  ],
+  "profile_source_applied": false,
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "compilation_test_native_profile_executions": 0
+}

@@ -1,0 +1,10 @@
+{
+  "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 2 CPUs, 2 GiB of memory, 4 GiB of disk, os == linux, arch == x86_64: adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: offline; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\n    at __kiln_settle (eval_script:20:40)\n    at <eval> (eval_script:1:1)\n",
+  "code": "program",
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": false
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "profile-format-check-only",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--check",
+    "docs/research/measurements/managed-otel/profile/src/main.rs"
+  ],
+  "cwd": "/home/adalundhe/managed-otel-cgroup-events-ed9-light-v1/source",
+  "exit_code": 1,
+  "stdout": "/home/adalundhe/managed-otel-cgroup-events-ed9-light-v1/out/profile-format-check-only.stdout"
+}

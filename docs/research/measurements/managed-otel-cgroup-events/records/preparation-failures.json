@@ -1,0 +1,60 @@
+{
+  "scope": "local preparation, before any Rust compile/test; all failures retained without test-pass claims",
+  "failures": [
+    {
+      "operation": "read product lock with Python tomllib",
+      "outcome": 1,
+      "stderr": "ModuleNotFoundError: No module named 'tomllib'",
+      "correction": "same exact Git Cargo.lock read using anchored package blocks and re; no install or source change"
+    },
+    {
+      "operation": "first code_search schema attempt using kiln instead of registry",
+      "outcome": "tool program error",
+      "error": "kiln is not defined",
+      "calls": [],
+      "correction": "read tool documentation and queried registry; no machine operation ran"
+    },
+    {
+      "operation": "inspect sparse manifests/testdir/rustfmt/profile helper source with direct filesystem commands",
+      "outcome": "some paths absent from sparse materialization",
+      "correction": "read exact HEAD/origin/main Git blobs; no full checkout/worktree or production code change"
+    },
+    {
+      "operation": "first package assembly",
+      "outcome": 1,
+      "stderr": "fatal: path 'docs/research/measurements/managed-otel/profile/Cargo.lock' does not exist in 'HEAD'",
+      "correction": "package.py reads exact current origin/main profile Cargo.lock (a2fdba6d...), preserving worktree locks and old sources; no remote directory/compile/test existed"
+    },
+    {
+      "operation": "one focused source rg brace expansion included managed-otel-profile/src/main.rs",
+      "outcome": 2,
+      "cause": "incorrect path; real path managed-otel/profile/src/main.rs",
+      "correction": "read exact owned path; no source fix inferred"
+    },
+    {
+      "operation": "first resumed POLICY_READ agents_send",
+      "outcome": "transport error",
+      "error": "not connected to the kiln server",
+      "correction": "same idempotency key retried successfully, seq7281; raw-followup seq7277 and ROOT GO ackseq7297 delivered"
+    },
+    {
+      "operation": "initial new HANDOFF apply_patch",
+      "outcome": "tool validation failure, no edit",
+      "error": "invalid patch: multiple operations target same HANDOFF.md",
+      "correction": "one Update operation applied; no source/raw deleted"
+    },
+    {
+      "operation": "first local source association check",
+      "outcome": 1,
+      "error": "AssertionError: docs/design/managed-runtime-plan.md",
+      "cause": "checker compared canonical origin/main policy Git bytes against older materialized branch policy",
+      "correction": "verify each manifest source according to its declared worktree/HEAD/origin-main provenance; all32 then match; no policy or production source change"
+    },
+    {
+      "operation": "first named-path gits add",
+      "outcome": 1,
+      "cause": "assigned paths outside sparse-checkout definition",
+      "correction": "same named paths staged with gits add --sparse; no reset/stash/clean/sparsity-config change"
+    }
+  ]
+}

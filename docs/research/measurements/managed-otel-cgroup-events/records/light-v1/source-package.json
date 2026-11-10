@@ -1,0 +1,186 @@
+{
+  "archive": {
+    "bytes": 91074,
+    "path": "docs/research/measurements/managed-otel-cgroup-events/records/light-v1/source.tar.gz",
+    "sha256": "b5b083950d3b7e21b3ee79f7c6aeb2e0a26885755a16920b0f7ff60283ca3a3b"
+  },
+  "embedded_manifests": 1,
+  "manifest": {
+    "base_commit": "ed9ac9e071fa31a9d052adc417b68ebb79160831",
+    "envelope": {
+      "cargo_jobs": 2,
+      "cpus": 2,
+      "disk_bytes": 4294967296,
+      "memory_bytes": 2147483648,
+      "timeout_s": 600
+    },
+    "native_invocations": 0,
+    "new_private_root": "/home/adalundhe/managed-otel-cgroup-events-ed9-light-v1",
+    "policy_main": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+    "profile_invocations": 0,
+    "scope": "GNU/musl pure Reader+codec and official-reference equivalence; profile CHECK only",
+    "source_files": {
+      "AGENTS.md": {
+        "bytes": 1793,
+        "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+        "source": "origin/main0342 Git blob"
+      },
+      "CLAUDE.md": {
+        "bytes": 17012,
+        "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+        "source": "origin/main0342 Git blob"
+      },
+      "Cargo.lock": {
+        "bytes": 45993,
+        "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "source": "origin/main0342 Git blob"
+      },
+      "clippy.toml": {
+        "bytes": 526,
+        "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+        "source": "origin/main0342 Git blob"
+      },
+      "crates/init/src/metrics.rs": {
+        "bytes": 10281,
+        "sha256": "2b4d1af2f192f29cf1a0f1cfbff61c25a33549d7de571173566af169904a9fe9",
+        "source": "assigned worktree source"
+      },
+      "crates/init/src/metrics/events.rs": {
+        "bytes": 2743,
+        "sha256": "e665a0a885e3599885d9e956b81bfe2dc354aa25ee7ebd1af9dbbc8def68b93f",
+        "source": "assigned worktree source"
+      },
+      "crates/init/src/metrics/otlp.rs": {
+        "bytes": 28519,
+        "sha256": "320f4356dcb06d4fee836e9030738accd76dfb494ed10cb7e878a4d90c14f309",
+        "source": "assigned worktree source"
+      },
+      "crates/init/src/metrics/tests.rs": {
+        "bytes": 21022,
+        "sha256": "3e236f6dbc0c7dd25ead84d87c0f25d810be1817efff33621e8e99119532598d",
+        "source": "assigned worktree source"
+      },
+      "crates/testdir/src/lib.rs": {
+        "bytes": 17917,
+        "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc",
+        "source": "origin/main0342 Git blob"
+      },
+      "docs/design/managed-runtime-plan.md": {
+        "bytes": 52630,
+        "sha256": "e02bab3d44f32fa2a3ff729f58d1799bf528a448bc91e9dfb491aef3f030a0bf",
+        "source": "origin/main0342 Git blob"
+      },
+      "docs/development-evidence.md": {
+        "bytes": 3325,
+        "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+        "source": "origin/main0342 Git blob"
+      },
+      "docs/development-rules.md": {
+        "bytes": 11604,
+        "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "source": "origin/main0342 Git blob"
+      },
+      "docs/research/measurements/managed-otel-cgroup-events/Cargo.lock": {
+        "bytes": 496,
+        "sha256": "084f3f2dbde3b9d74c42a54d8b3f43146dedac038f29fbb57c3fe83accd299d4",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-cgroup-events/Cargo.toml": {
+        "bytes": 534,
+        "sha256": "928cf7225d4a735a8097525b5bfe1f832ef1f2851397aff7580ba7fd28a56847",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-cgroup-events/lib.rs": {
+        "bytes": 99,
+        "sha256": "fca721cd16f3fbde09565e401d884c2f0c368364edc74c478f3397e211f99397",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-cgroup-events/run-light.py": {
+        "bytes": 11543,
+        "sha256": "f00b165b1f005d6d32e57b67f0531588d46f9df4577cff9235487ba0ddfb6894",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-cgroup-events/testdir/Cargo.toml": {
+        "bytes": 176,
+        "sha256": "c43b0e4b5172e68bfeaa62b29f67748cece23003eb64a61253114eee9b125c98",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-encoder/Cargo.lock": {
+        "bytes": 177,
+        "sha256": "8d7470b740fcb2a79d478fa4b1c7d80b374d4f1cf17ed3a02815d11ee20db711",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel-encoder/Cargo.toml": {
+        "bytes": 430,
+        "sha256": "478de5fd8a5473b5ed38846d0ae3a8434709aa87cca81211ec7b1b8049999ab5",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel-encoder/check.py": {
+        "bytes": 5904,
+        "sha256": "83859d3a4cc4adc7b46dc570d4811e20c398f5a90cf7af9475a896d6c561720a",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-encoder/fixture.rs": {
+        "bytes": 1682,
+        "sha256": "604e7b5eba4058ce89eb10c7ac9013c73111ac72c20a702ad83608d17d3a5c14",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/Cargo.lock": {
+        "bytes": 13936,
+        "sha256": "071f738b5e7aa3692743b907665aa6deff80404773d1d6eacd001b47e60b19a1",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/Cargo.toml": {
+        "bytes": 596,
+        "sha256": "4bfc763c75bab28097d53e2590f728eae5b6cdc75fe29fb0de4456efc03235d2",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/check.py": {
+        "bytes": 6055,
+        "sha256": "bb0fbe82629b489cc8f2c428b6f8fa8cf4c3627de936e9cf5981f3367c08930f",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+        "bytes": 3117,
+        "sha256": "51ceff7cb852c94e0c3dfaa326e8bf67267cf5aba33533266c3e31661fbcc956",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+        "bytes": 13906,
+        "sha256": "2c6b734c46d0511d0be46c84a684b20d3a779db5c2227eb043212351bf03c324",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+        "bytes": 1709,
+        "sha256": "3db77bd5b7a1b92ac150648a2c0cd0103d20ca70e76da6ad8414a9108d8eda3c",
+        "source": "assigned worktree source"
+      },
+      "docs/research/measurements/managed-otel/profile/Cargo.lock": {
+        "bytes": 13938,
+        "sha256": "a2fdba6d5b9af71207b2debf43270c35b520b31fe789b143779652532f985d84",
+        "source": "origin/main Git blob"
+      },
+      "docs/research/measurements/managed-otel/profile/Cargo.toml": {
+        "bytes": 432,
+        "sha256": "92c09b8ef9c6356bd6662c4cf3af9097b6062688a19f7d812581ba3a242115a7",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel/profile/src/allocations.rs": {
+        "bytes": 3818,
+        "sha256": "06d8a553c1dece8b0e9c06746970af18a281a9d010033fceb41d4db854db7adf",
+        "source": "HEAD Git blob"
+      },
+      "docs/research/measurements/managed-otel/profile/src/main.rs": {
+        "bytes": 6280,
+        "sha256": "00e3a738fa8d6e35cefcad5fa281b5a708fc9886beff741246a5e30a3597c128",
+        "source": "assigned worktree source"
+      },
+      "rustfmt.toml": {
+        "bytes": 16,
+        "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa",
+        "source": "origin/main0342 Git blob"
+      }
+    }
+  },
+  "original_source_payloads": 32
+}
