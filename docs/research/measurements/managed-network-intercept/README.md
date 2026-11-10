@@ -1,6 +1,9 @@
 # P4 isolated IPv4 TCP interception fixture
 
 **Initial experiment record; no product mechanism adoption.**
+The fixture-only missing-listener mode and current policy/light-check checkpoint
+are recorded in [RELAY-ABSENT.md](RELAY-ABSENT.md); its actual guest outcome is
+still owed to the coordinator. The records below describe earlier source.
 The current two same-namespace target additions and their distinct unrun gates are
 recorded in [LOCAL-TARGETS.md](LOCAL-TARGETS.md). Prior root peer-case results do
 not establish those new cases.

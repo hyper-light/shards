@@ -1,0 +1,16 @@
+$ rustfmt --edition 2024 --check crates/testguest/src/managed_network.rs crates/testguest/src/managed_network/intercept.rs crates/shards/tests/managed_network.rs
+
+exit=0
+$ bash -n docs/research/measurements/managed-network-intercept/run.sh docs/research/measurements/managed-network-intercept/run-light.sh
+
+exit=0
+$ scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+
+exit=0
+$ git diff --check
+
+exit=0
+source manifest hashes match final checked source
+No local compiler/Cargo/VM invocation.
+Mac available KiB immediately before these light static checks: 33474128
