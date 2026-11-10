@@ -1,0 +1,99 @@
+{
+  "schema": "managed-memory-notify-source-identity-v1",
+  "role": "implementer",
+  "agent": "01a1c5bda0bf766683384c0705c0a9bc",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "linux": [
+    {
+      "path": "include/uapi/linux/inotify.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "sha256": "48c09a53335353490f94cd465c96f092d0b3a9736b42aae8691e41b9c6390370",
+      "bytes": 3304,
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:22:11.809931+00:00",
+      "matches_prior_identity": true
+    },
+    {
+      "path": "fs/notify/inotify/inotify_user.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "sha256": "9a98d8a927c6b2ffa2d403cc52bb1cf45a65f30048143be3dc1178d8e6c1cf3e",
+      "bytes": 22108,
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:22:11.982865+00:00",
+      "matches_prior_identity": true
+    },
+    {
+      "path": "fs/notify/inotify/inotify_fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "sha256": "ac62662f1843eb4d899d8adb419fe3393d1f4f0ab29d2123aa1abcaaf1203096",
+      "bytes": 5998,
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:22:12.166469+00:00",
+      "matches_prior_identity": true
+    },
+    {
+      "path": "fs/notify/notification.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "sha256": "3a756d5c49b822aa8d88c198866d6ab74aac7252c7f2f632cddbecf9d646f981",
+      "bytes": 5797,
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:22:12.335328+00:00",
+      "matches_prior_identity": true
+    },
+    {
+      "path": "fs/notify/fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "sha256": "a29dc638b23cee7f5334746f9d36ff65529f90539534ca632b00d10c264cf8e1",
+      "bytes": 23595,
+      "status": 200,
+      "retrieved_utc": "2026-11-10T15:22:12.497177+00:00",
+      "matches_prior_identity": true
+    }
+  ],
+  "local_read_only": [
+    {
+      "path": "crates/init/src/domains.rs",
+      "revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+      "git_blob": "cf79e05e1fcbb3ea98f0352dd93cd3990c81bddb",
+      "sha256": "4d961f3ad04b3fcb93680900bbfc28955fef308c8cadd846790abc217e5efa70",
+      "bytes": 114588
+    },
+    {
+      "path": "Cargo.lock",
+      "revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+      "git_blob": "5da9bf3774e0336ac8d6d3cd5dc87f988cb524dc",
+      "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1",
+      "bytes": 45787
+    },
+    {
+      "path": "rustfmt.toml",
+      "revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+      "git_blob": "284d219685e70d8ef3bd03f9303738c2fda54a98",
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa",
+      "bytes": 16,
+      "purpose": "Standalone format-check uses the canonical width, not a formatting default."
+    }
+  ],
+  "prior_identity_record": "../../../managed-poller-research/source-identity.json",
+  "runtime_dependency": {
+    "libc": "0.2.189",
+    "crate_checksum": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+  },
+  "limitations": [
+    "Primary source retrieval is research, not observed kernel runtime behavior.",
+    "No native fixture compilation or execution by implementer.",
+    "No production file edited; no replacement for 4096 or 64 selected."
+  ]
+}

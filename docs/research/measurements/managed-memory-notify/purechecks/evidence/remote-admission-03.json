@@ -1,0 +1,6 @@
+{
+  "runner": "",
+  "output": "",
+  "running": false,
+  "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f"
+}
