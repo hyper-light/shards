@@ -1,6 +1,6 @@
 # Poller event capacity and memory-event read storage
 
-This is primary-source research for two coordinator-selected literals, not a
+This is primary-source research for coordinator-selected capacity literals, not a
 repository audit, reproduced defect, implementation decision or performance
 result. **No replacement number or architecture is selected.** Production source
 is unchanged. Runtime reproduction, profiling and final selection belong to the
@@ -541,3 +541,28 @@ citations above are checked against the base blobs in the retained manifest;
 the current branch has identical bytes for all those sources. This closes the
 research return only. No candidate, replacement number, runtime fix, measured
 improvement or managed-runtime completion follows from these document checks.
+
+## 10. TLS handshake capacity: the next approved item
+
+The [TLS return](measurements/managed-poller-research/tls-handshake.md) traces
+daemon `HANDSHAKE_BYTES = (1 << 24) - 1 + 4` through the actual locked
+hyper-raft `233b7fcef7a363327c5439b191724a38065062cd` transport. The named
+Shards source/dependency blobs also match current main
+`3ea2164dd98878426936c880f0e8d542ef67d98f`.
+
+RFC 8446's envelope bounds one encoded Handshake message. It does not establish
+whole-flight, connection or aggregate admission memory. The pinned QUIC check
+bounds receive offset reach; packet backing/metadata, an undecryptable packet
+queue, ordered TLS storage and outgoing/retransmission state remain separate.
+The TLS parser's 65535-byte body cap and Quinn's historical default are different
+mechanisms, not replacement recommendations. Exact primary links and the
+reachable-state/accounting obligations accompany each claim in the return.
+
+The return compares four conditional alternatives and gives root a bounded,
+entirely **unrun** matrix for cold admission, ordered/reordered/partial messages,
+boundary/refusal, simultaneous endpoints, cancellation, retention and decisive
+guard/cost checks. It includes individual R01–R16 gaps and a
+[separate source-identity record](measurements/managed-poller-research/tls-handshake-source-identity.json).
+No size, architecture, crypto change, reproduced defect or production fix is
+selected. Work continues with UDP datagram storage/QUIC credits, then the four
+coordinator-named VMM ring decisions.

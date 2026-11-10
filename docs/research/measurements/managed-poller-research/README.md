@@ -29,8 +29,11 @@ explicit no-child instruction overrides its background-agent suggestion.
 
 ## Scope and dispatch
 
-Only two root-selected literals: unix `Poller::wait` batch 64/token collection,
-then guest `Memory::relieve` inotify read buffer 4096. Read focused functions and
+Initial two root-selected literals: unix `Poller::wait` batch 64/token collection,
+then guest `Memory::relieve` inotify read buffer 4096. Root subsequently approved
+daemon HANDSHAKE_BYTES, remote DATAGRAM_BYTES/QUIC credits, then four specific
+VMM decisions: blk/fs/GPU control 256 and IOMMU requests 64. These remain
+research/proposal work without a production choice. Read focused functions and
 semantic callers only, sparse omissions through `git show` exact main. No broad
 audit, speculative fix, architectural selection or new numerical recommendation.
 
@@ -133,16 +136,30 @@ explicit plan gate. Three primary RFC identities are recorded separately as
 planning sources in the manifest. No guessed device inventory, TLS/crypto code
 change or new repository source scope follows from those protocol documents.
 
-Root now reports local free space **31259148 KiB, below the required 30 GiB**.
+Root previously reported local free space **31259148 KiB, below 30 GiB** and
+then explicitly restored it to **33,299,759,104 bytes, above 30 GiB**.
 This lane has no active local build targets/caches/jobs and created no target,
 mirror, further worktree or retained archive. All local build/compile and new
-full tree/mirror/large archive actions are held until root supplies a headroom
-receipt. Source, research and planning continue. The hold/no-cache receipt was
+full tree/mirror/large archive actions stayed held during that interval. The
+restored receipt still prohibits local heavy builds/new full worktrees; no local
+build is approved for this research. Source, research and planning continue.
+The hold/no-cache receipt was
 sent with `managed-poller-research-headroom-hold-local-none-v1`; all work/evidence
 and root-exclusive sources/caches remain preserved.
 Signed checkpoints use `/Users/adalundhe/.kiln-run/bin/gits`, named paths and the
 required Claude Opus 5.5 trailer. Only this lane's branch is pushed; no self-main
 merge. Commit IDs are sent in coordinator messages and visible in Git history.
+
+The [TLS checkpoint](tls-handshake.md) and its
+[identity record](tls-handshake-source-identity.json) now supplement the initial
+two items, with individual R01–R16 gaps, exact dependency pin, distinct stores,
+alternatives and root-only unrun cases. Six Shards blobs and the five policy/plan
+files match current main3ea. No runtime/measurement/architecture claim follows.
+Automatic side-by-side goal continuation started extra Step2/3/7/9 sessions;
+this conflicted with the lane's explicit no-child scope and was reported to root
+for serial scheduler correction. Existing work is preserved with named-file and
+index handoffs; no explicit spawn, local build or runtime action was performed by
+the original lane. The parent maintenance goal remains incomplete.
 
 ## R01–R16 account for both research batches
 

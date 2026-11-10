@@ -1,0 +1,190 @@
+{
+  "kind": "TLS documentation/source identity checks only, no runtime validation",
+  "checked_utc": "2026-11-10T14:38:54.669389+00:00",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "source_freshness_main": "3ea2164dd98878426936c880f0e8d542ef67d98f",
+  "commands": [
+    {
+      "command": "python3 scripts/check-development-policy",
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required."
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/README.md",
+        "docs/research/measurements/managed-poller-research/tls-handshake.md",
+        "docs/research/measurements/managed-poller-research/tls-handshake-source-identity.json",
+        "docs/research/measurements/managed-poller-research/tls-handshake-kiln-research.md",
+        "docs/research/measurements/managed-poller-research/tls-handshake-checks.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "manual_checks": {
+    "local_relative_links": [
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-output-cost/HOST-EXIT.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-coordinator-output-exit/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "../../managed-poller-capacity.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-plan.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-research.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-poller.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-inotify.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-contracts.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2-sources.json",
+        "exists": true
+      },
+      {
+        "from": "tls-handshake.md",
+        "target": "tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "tls-handshake.md",
+        "target": "../../managed-poller-capacity.md",
+        "exists": true
+      },
+      {
+        "from": "tls-handshake.md",
+        "target": "tls-handshake-kiln-research.md",
+        "exists": true
+      }
+    ],
+    "no_trailing_whitespace_named_docs": true,
+    "individual_R01_R16_account_present": true,
+    "external_byte_identities": 15,
+    "local_git_blobs": 6,
+    "policy_matches": 5,
+    "exact_six_named_staged_paths": [
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/tls-handshake-checks.json",
+      "docs/research/measurements/managed-poller-research/tls-handshake-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/tls-handshake-source-identity.json",
+      "docs/research/measurements/managed-poller-research/tls-handshake.md"
+    ],
+    "no_other_staged_path": true
+  },
+  "artifact_sha256": {
+    "docs/research/managed-poller-capacity.md": "16a4d6995aaf4f10c69e5de38b4581f27a5738ebed5df3fae47e9c372e8c62f9",
+    "docs/research/measurements/managed-poller-research/README.md": "3ac5721fb112931dc8902b2ea51ea3236e11a01f00893b2ffa735cba2624f472",
+    "docs/research/measurements/managed-poller-research/tls-handshake.md": "780051d3134ffb8efc2f1f976a60ac9a9fcb9c9a55574dbb678fe1ac772c7e32",
+    "docs/research/measurements/managed-poller-research/tls-handshake-source-identity.json": "1088cc7dcf0fe7265d9acec10d15209d9ac2f0713e212858599dd3a29adb0ba6",
+    "docs/research/measurements/managed-poller-research/tls-handshake-kiln-research.md": "0441a11c34aa7bcf24136a963b6624a2906545f55ff3b302020cfcb236c25be9"
+  },
+  "unrun": [
+    "compile/unit/integration/seven-target checks",
+    "VM/socket/namespace/BPF/campaign execution",
+    "fault/allocation/fragmentation/refusal/cancellation reproduction",
+    "audit/profile/benchmark/comparative performance",
+    "aggregate hard parent/kernel budget proof"
+  ],
+  "git_index": "Original lane exclusive after explicit Step2/Step3 release; Step9 files preserved untracked/excluded. Same six paths checked; checks JSON restaged and final whitespace rechecked before commit.",
+  "kiln_grades": {
+    "f11": "B/80, one RFC citation timed out; independent raw RFC hash verified",
+    "f12": "B/72, all three pinned code quotes found"
+  },
+  "documentation_parent": "8fe9299ccbf5ec42f4a05d6c99baddd255eb083c",
+  "signature_scope": "Session gits signing required. Commit header/trailer and remote branch identity checked after commit; no claim of separate local cryptographic verification."
+}
