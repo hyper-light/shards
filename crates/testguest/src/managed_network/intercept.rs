@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::thread::JoinHandle;
 
+pub(super) mod udp;
 mod wire;
 use wire::Netlink;
 
@@ -592,37 +593,11 @@ fn client(
     }
 }
 
-pub(super) fn run(input: Inputs) -> io::Result<()> {
-    // Direct testguest PID1 only; even there Namespace::new unshares before any
-    // administrative operation. No host/current namespace is ever configured here.
-    if std::process::id() != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "interception experiment requires direct guest PID1",
-        ));
-    }
-    let deadline = Deadline::new(input.within)?;
-    let [router_backend, backend_address, router_client, client_address] = match input.family {
-        Family::Ipv4 => [
-            ROUTER_BACKEND.into(),
-            BACKEND.into(),
-            ROUTER_CLIENT.into(),
-            CLIENT.into(),
-        ],
-        Family::Ipv6 => [
-            ROUTER_BACKEND6.into(),
-            BACKEND6.into(),
-            ROUTER_CLIENT6.into(),
-            CLIENT6.into(),
-        ],
-    };
-    let (loopback, unspecified): (IpAddr, IpAddr) = match input.family {
-        Family::Ipv4 => (Ipv4Addr::LOCALHOST.into(), Ipv4Addr::UNSPECIFIED.into()),
-        Family::Ipv6 => (Ipv6Addr::LOCALHOST.into(), Ipv6Addr::UNSPECIFIED.into()),
-    };
-    let router = Namespace::new(&deadline)?;
-    let backend = Namespace::new(&deadline)?;
-    let client_ns = Namespace::new(&deadline)?;
+fn prepare(input: &Inputs, deadline: &Deadline) -> io::Result<[Namespace; 3]> {
+    let [router_backend, backend_address, router_client, client_address] = addresses(input.family);
+    let router = Namespace::new(deadline)?;
+    let backend = Namespace::new(deadline)?;
+    let client_ns = Namespace::new(deadline)?;
     {
         let mut out = io::stdout().lock();
         writeln!(
@@ -653,23 +628,59 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
             b"to-backend\0",
             b"backend0\0",
             backend.handle.as_raw_fd(),
-            &deadline,
+            deadline,
         )?;
         router.route.veth(
             b"to-client\0",
             b"client0\0",
             client_ns.handle.as_raw_fd(),
-            &deadline,
+            deadline,
         )?;
         for (name, ip) in [(c"to-backend", router_backend), (c"to-client", router_client)] {
             let index = interface(name)?;
-            router.route.link_up(index, &deadline)?;
-            router.route.address(index, ip, &deadline)?;
+            router.route.link_up(index, deadline)?;
+            router.route.address(index, ip, deadline)?;
         }
         Ok(())
     })?;
-    endpoint(&backend, c"backend0", backend_address, router_backend, &deadline)?;
-    endpoint(&client_ns, c"client0", client_address, router_client, &deadline)?;
+    endpoint(&backend, c"backend0", backend_address, router_backend, deadline)?;
+    endpoint(&client_ns, c"client0", client_address, router_client, deadline)?;
+    Ok([router, backend, client_ns])
+}
+
+fn addresses(family: Family) -> [IpAddr; 4] {
+    match family {
+        Family::Ipv4 => [
+            ROUTER_BACKEND.into(),
+            BACKEND.into(),
+            ROUTER_CLIENT.into(),
+            CLIENT.into(),
+        ],
+        Family::Ipv6 => [
+            ROUTER_BACKEND6.into(),
+            BACKEND6.into(),
+            ROUTER_CLIENT6.into(),
+            CLIENT6.into(),
+        ],
+    }
+}
+
+pub(super) fn run(input: Inputs) -> io::Result<()> {
+    // Direct testguest PID1 only; even there Namespace::new unshares before any
+    // administrative operation. No host/current namespace is ever configured here.
+    if std::process::id() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "interception experiment requires direct guest PID1",
+        ));
+    }
+    let deadline = Deadline::new(input.within)?;
+    let [router_backend, backend_address, _, _] = addresses(input.family);
+    let (loopback, unspecified): (IpAddr, IpAddr) = match input.family {
+        Family::Ipv4 => (Ipv4Addr::LOCALHOST.into(), Ipv4Addr::UNSPECIFIED.into()),
+        Family::Ipv6 => (Ipv6Addr::LOCALHOST.into(), Ipv6Addr::UNSPECIFIED.into()),
+    };
+    let [router, backend, client_ns] = prepare(&input, &deadline)?;
     let (backend_namespace, backend_ip) = match input.origin {
         Origin::Local | Origin::Forward => (&backend, backend_address),
         Origin::LocalLoopback => (&router, loopback),
@@ -718,7 +729,13 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         router
             .route
             .policy(interface(c"lo")?, &input, destination, &deadline)?;
-        Netlink::open(libc::NETLINK_NETFILTER)?.interception(&input, destination, relay_port, &deadline)
+        Netlink::open(libc::NETLINK_NETFILTER)?.interception(
+            &input,
+            destination,
+            relay_port,
+            wire::Protocol::Tcp,
+            &deadline,
+        )
     })?;
     let mut out = io::stdout().lock();
     writeln!(out, "managed-intercept {{\"type\":\"{:?}\"}}", Phase::Installed)?;

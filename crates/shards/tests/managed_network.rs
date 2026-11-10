@@ -202,6 +202,177 @@ fn experimental_tcp6_interception_has_distinct_backend_and_relay_observations() 
     experimental_tcp_interception(InterceptionFamily::Ipv6);
 }
 
+#[test]
+#[ignore = "coordinator runs isolated peer UDP4 experiment; no production adoption"]
+fn experimental_udp4_interception_has_datagram_and_original_tuple_observations() {
+    experimental_udp_interception(InterceptionFamily::Ipv4);
+}
+
+#[test]
+#[ignore = "coordinator runs isolated peer UDP6 experiment; no production adoption"]
+fn experimental_udp6_interception_has_datagram_and_original_tuple_observations() {
+    experimental_udp_interception(InterceptionFamily::Ipv6);
+}
+
+fn experimental_udp_interception(family: InterceptionFamily) {
+    let protocol = match family {
+        InterceptionFamily::Ipv4 => "intercept-udp4",
+        InterceptionFamily::Ipv6 => "intercept-udp6",
+    };
+    let inputs = Inputs::supplied();
+    assert!(!common::cannot_run_vms(), "real hypervisor required");
+    let origin = required("SHARDS_INTERCEPT_ORIGIN");
+    assert!(matches!(origin.as_str(), "local" | "forward"));
+    let mode = required("SHARDS_INTERCEPT_UDP_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let mark = required("SHARDS_INTERCEPT_MARK");
+    let table = required("SHARDS_INTERCEPT_TABLE");
+    let priority = required("SHARDS_INTERCEPT_RULE_PRIORITY");
+    let millis = inputs.case_ms.to_string();
+    let run = inputs.boot(
+        &format!("{protocol}-{origin}-{mode}"),
+        &[protocol, &origin, &mode, &millis, &mark, &table, &priority],
+    );
+    let records = intercept_records(&run.stdout);
+    assert_udp_records(&records, family, &origin, &mode);
+    assert_eq!(run.status, Some(0), "actual UDP guest failed: {run}");
+    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+}
+
+fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily, origin: &str, mode: &str) {
+    let one = |kind| {
+        let matching: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
+        assert_eq!(matching.len(), 1, "{kind}: {records:?}");
+        matching[0]
+    };
+    let namespaces = one("Namespaces");
+    let router = namespaces["router_inode"].as_u64().unwrap();
+    let backend = namespaces["backend_inode"].as_u64().unwrap();
+    let client = namespaces["client_inode"].as_u64().unwrap();
+    assert!(router != backend && router != client && backend != client);
+    let target = one("UdpTarget");
+    assert_eq!(
+        target["family"],
+        match family {
+            InterceptionFamily::Ipv4 => "Ipv4",
+            InterceptionFamily::Ipv6 => "Ipv6",
+        }
+    );
+    assert_eq!(
+        target["origin"],
+        if origin == "local" { "Local" } else { "Forward" }
+    );
+    assert_eq!(
+        target["mode"],
+        if mode == "connected" {
+            "Connected"
+        } else {
+            "Unconnected"
+        }
+    );
+    assert_eq!(target["backend_inode"], backend);
+    assert_eq!(target["relay_inode"], router);
+    assert_eq!(
+        target["client_inode"],
+        if origin == "local" { router } else { client }
+    );
+    let destination: std::net::SocketAddr = target["destination"].as_str().unwrap().parse().unwrap();
+    let expected_ip: std::net::IpAddr = match family {
+        InterceptionFamily::Ipv4 => "192.0.2.2",
+        InterceptionFamily::Ipv6 => "2001:db8:1::2",
+    }
+    .parse()
+    .unwrap();
+    assert_eq!(destination.ip(), expected_ip);
+    assert_ne!(destination.port(), 0);
+    assert_eq!(target["reply_local"], destination.to_string());
+    let relay_port = target["relay_port"].as_u64().unwrap();
+    assert!((1..=u16::MAX as u64).contains(&relay_port));
+    assert_ne!(relay_port, u64::from(destination.port()));
+    let arrivals = |role| {
+        records
+            .iter()
+            .filter(|r| r["type"] == "UdpArrival" && r["role"] == role)
+            .collect::<Vec<_>>()
+    };
+    let baseline = arrivals("BaselineClient");
+    let intercepted = arrivals("InterceptedClient");
+    let backend_packets = arrivals("Backend");
+    let relay_packets = arrivals("Relay");
+    for packets in [&baseline, &intercepted, &backend_packets, &relay_packets] {
+        assert_eq!(packets.len(), 2, "{records:?}");
+        for (index, packet) in packets.iter().enumerate() {
+            assert_eq!(packet["ordinal"], index + 1);
+            assert_eq!(packet["step"], if index == 0 { "Binary" } else { "Empty" });
+            assert_eq!(packet["metadata"], "Known");
+            assert_eq!(packet["flags"], 0);
+            let bytes = packet["copied_hex"].as_str().unwrap();
+            assert!(bytes.len().is_multiple_of(2) && bytes.bytes().all(|b| b.is_ascii_hexdigit()));
+            assert_eq!(packet["reported"], bytes.len() / 2);
+            if index == 1 {
+                assert!(bytes.is_empty());
+            }
+        }
+        assert_eq!(packets[0]["peer"], packets[1]["peer"]);
+        assert_eq!(packets[0]["local"], packets[1]["local"]);
+        assert_eq!(packets[0]["original"], packets[1]["original"]);
+    }
+    assert_eq!(backend_packets[0]["copied_hex"], "5245515545535400ff");
+    assert_eq!(relay_packets[0]["copied_hex"], "5245515545535400ff");
+    assert_eq!(baseline[0]["copied_hex"], "4241434b454e4400ff");
+    assert_eq!(intercepted[0]["copied_hex"], "52454c41590080");
+    assert_ne!(baseline[0]["local"], intercepted[0]["local"]);
+    for (packets, server) in [(&baseline, &backend_packets), (&intercepted, &relay_packets)] {
+        let local: std::net::SocketAddr = packets[0]["local"].as_str().unwrap().parse().unwrap();
+        let expected_source: std::net::IpAddr = match (family, origin) {
+            (InterceptionFamily::Ipv4, "local") => "192.0.2.1",
+            (InterceptionFamily::Ipv4, _) => "198.51.100.2",
+            (InterceptionFamily::Ipv6, "local") => "2001:db8:1::1",
+            (InterceptionFamily::Ipv6, _) => "2001:db8:2::2",
+        }
+        .parse()
+        .unwrap();
+        assert_eq!(local.ip(), expected_source);
+        assert_ne!(local.port(), 0);
+        assert_eq!(packets[0]["peer"], destination.to_string());
+        assert_eq!(packets[0]["original"], local.to_string());
+        assert_eq!(server[0]["peer"], local.to_string());
+        assert_eq!(server[0]["original"], destination.to_string());
+    }
+    assert_eq!(backend_packets[0]["local"], destination.to_string());
+    let relay_local: std::net::SocketAddr = relay_packets[0]["local"].as_str().unwrap().parse().unwrap();
+    assert!(relay_local.ip().is_unspecified());
+    assert_eq!(u64::from(relay_local.port()), relay_port);
+    for role in ["Backend", "Relay"] {
+        let completed = records
+            .iter()
+            .find(|r| r["type"] == "UdpWorkerCompletion" && r["role"] == role)
+            .unwrap();
+        assert_eq!(completed["joined"], true);
+        assert_eq!(completed["arrivals"], 2);
+        assert_eq!(completed["matched"], 2);
+        assert_eq!(completed["empty"], 1);
+        assert_eq!(
+            completed["terminal"],
+            if role == "Backend" {
+                "Cancelled"
+            } else {
+                "ScriptComplete"
+            }
+        );
+    }
+    for role in ["BaselineClient", "InterceptedClient"] {
+        let outcome = records
+            .iter()
+            .find(|r| r["type"] == "UdpClientOutcome" && r["role"] == role)
+            .unwrap();
+        assert_eq!(outcome["outcome"], "ScriptComplete");
+    }
+    assert!(!records.iter().any(|r| r["type"] == "UdpError"));
+    assert_eq!(one("UdpIntercepted")["joined"], true);
+    assert_eq!(one("UdpIntercepted")["after_window"], "Unverified");
+}
+
 fn experimental_tcp_interception(family: InterceptionFamily) {
     let protocol = match family {
         InterceptionFamily::Ipv4 => "intercept-tcp4",
