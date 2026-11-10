@@ -4,7 +4,7 @@
 // Only Unix has the daemon, so far.
 #![cfg_attr(not(unix), allow(dead_code))]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use shards_cmdline::mounts::clean;
 
