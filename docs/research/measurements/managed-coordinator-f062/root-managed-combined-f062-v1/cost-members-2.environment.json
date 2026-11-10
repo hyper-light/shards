@@ -1,0 +1,5 @@
+{
+  "SHARDS_OUTPUT_COST_MEMBERS": "2",
+  "SHARDS_OUTPUT_COST_RECORDS": "/home/adalundhe/root-managed-combined-f062-v1/cost-members-2",
+  "SHARDS_OUTPUT_COST_DEADLINE_MS": "300000"
+}

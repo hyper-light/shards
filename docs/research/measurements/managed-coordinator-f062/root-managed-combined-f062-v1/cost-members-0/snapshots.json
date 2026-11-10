@@ -1,0 +1,1007 @@
+{
+  "checkpoint": {
+    "endpoints": 0,
+    "proof": "detached run + main exact progress; managed-output record absent",
+    "run": "c145a18144293a93ac8685ebe3c1361f8f9d14a59982b730ab92c0a4c7224dfd",
+    "state": "NoManagedMembers"
+  },
+  "daemon": {
+    "after_identity": [
+      1613449,
+      10948760
+    ],
+    "atomic": false,
+    "before_identity": [
+      1613449,
+      10948760
+    ],
+    "cgroup_kernel_attribution": "Unverified: proc membership only; no isolated per-member socket charge proof",
+    "expected_start": 10948760,
+    "identity_state": "MatchedBeforeAndAfter",
+    "observations": {
+      "cgroup": {
+        "bytes": 164,
+        "file": "daemon.cgroup",
+        "state": "Observed"
+      },
+      "fds": {
+        "complete_socket_count": "Unverified: non-atomic enumeration; failures are explicit",
+        "known_socket_inode_count": 9,
+        "known_socket_inodes": [
+          128001491,
+          128001495,
+          128006249,
+          128009240,
+          128009242,
+          128009243,
+          128009244,
+          128009246,
+          128009247
+        ],
+        "link_coverage": "CompleteAtEnumeration",
+        "observations": {
+          "entries": [
+            {
+              "fd": "0",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "1",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "2",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "3",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "4",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "5",
+              "kind": "Socket",
+              "socket_inode": 128009240
+            },
+            {
+              "fd": "6",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "7",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "8",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "9",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "10",
+              "kind": "Socket",
+              "socket_inode": 128009242
+            },
+            {
+              "fd": "11",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "12",
+              "kind": "Socket",
+              "socket_inode": 128009243
+            },
+            {
+              "fd": "13",
+              "kind": "Socket",
+              "socket_inode": 128009244
+            },
+            {
+              "fd": "14",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "15",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "16",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "17",
+              "kind": "Socket",
+              "socket_inode": 128009246
+            },
+            {
+              "fd": "18",
+              "kind": "Socket",
+              "socket_inode": 128009247
+            },
+            {
+              "fd": "19",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "20",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "21",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "22",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "23",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "25",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "27",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "28",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "29",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "30",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "31",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "32",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "33",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "34",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "35",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "36",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "37",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "38",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "39",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "40",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "41",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "42",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "43",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "44",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "45",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "46",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "47",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "48",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "49",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "50",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "51",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "52",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "53",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "54",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "55",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "56",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "58",
+              "kind": "Socket",
+              "socket_inode": 128006249
+            },
+            {
+              "fd": "59",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "60",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "62",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "63",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "64",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "69",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "73",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "74",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "75",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "76",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "78",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "79",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "80",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "81",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "82",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "83",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "85",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "86",
+              "kind": "Socket",
+              "socket_inode": 128001491
+            },
+            {
+              "fd": "90",
+              "kind": "Socket",
+              "socket_inode": 128001495
+            }
+          ],
+          "entry_count": 75,
+          "state": "ObservedEntriesNonAtomic"
+        }
+      },
+      "smaps_rollup": {
+        "bytes": 698,
+        "file": "daemon.smaps_rollup",
+        "state": "Observed"
+      },
+      "stat_after": {
+        "bytes": 325,
+        "file": "daemon.stat-after",
+        "state": "Observed"
+      },
+      "stat_before": {
+        "bytes": 325,
+        "file": "daemon.stat-before",
+        "state": "Observed"
+      },
+      "status": {
+        "bytes": 1534,
+        "file": "daemon.status",
+        "state": "Observed"
+      },
+      "udp": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "daemon.udp-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      },
+      "udp6": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "daemon.udp6-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      }
+    },
+    "pid": 1613449
+  },
+  "measurement_cost": "one-shot proc reads/serialization and observer drivers are fixture costs; samples are not atomic",
+  "observer_parent": {
+    "after_identity": [
+      1613393,
+      10948698
+    ],
+    "atomic": false,
+    "before_identity": [
+      1613393,
+      10948698
+    ],
+    "cgroup_kernel_attribution": "Unverified: proc membership only; no isolated per-member socket charge proof",
+    "expected_start": 10948698,
+    "identity_state": "MatchedBeforeAndAfter",
+    "observations": {
+      "cgroup": {
+        "bytes": 164,
+        "file": "observer.cgroup",
+        "state": "Observed"
+      },
+      "fds": {
+        "complete_socket_count": "Unverified: non-atomic enumeration; failures are explicit",
+        "known_socket_inode_count": 1,
+        "known_socket_inodes": [
+          128001486
+        ],
+        "link_coverage": "CompleteAtEnumeration",
+        "observations": {
+          "entries": [
+            {
+              "fd": "0",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "1",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "2",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "3",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "4",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "5",
+              "kind": "Socket",
+              "socket_inode": 128001486
+            },
+            {
+              "fd": "6",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "7",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            }
+          ],
+          "entry_count": 8,
+          "state": "ObservedEntriesNonAtomic"
+        }
+      },
+      "smaps_rollup": {
+        "bytes": 698,
+        "file": "observer.smaps_rollup",
+        "state": "Observed"
+      },
+      "stat_after": {
+        "bytes": 340,
+        "file": "observer.stat-after",
+        "state": "Observed"
+      },
+      "stat_before": {
+        "bytes": 340,
+        "file": "observer.stat-before",
+        "state": "Observed"
+      },
+      "status": {
+        "bytes": 1540,
+        "file": "observer.status",
+        "state": "Observed"
+      },
+      "udp": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "observer.udp-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      },
+      "udp6": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "observer.udp6-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      }
+    },
+    "pid": 1613393
+  },
+  "vm": {
+    "after_identity": [
+      1613471,
+      10948764
+    ],
+    "atomic": false,
+    "before_identity": [
+      1613471,
+      10948764
+    ],
+    "cgroup_kernel_attribution": "Unverified: proc membership only; no isolated per-member socket charge proof",
+    "expected_start": 10948764,
+    "identity_state": "MatchedBeforeAndAfter",
+    "observations": {
+      "cgroup": {
+        "bytes": 164,
+        "file": "vm.cgroup",
+        "state": "Observed"
+      },
+      "fds": {
+        "complete_socket_count": "Unverified: non-atomic enumeration; failures are explicit",
+        "known_socket_inode_count": 8,
+        "known_socket_inodes": [
+          128001493,
+          128001497,
+          128001498,
+          128001499,
+          128001500,
+          128005231,
+          128005232,
+          128006250
+        ],
+        "link_coverage": "CompleteAtEnumeration",
+        "observations": {
+          "entries": [
+            {
+              "fd": "0",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "1",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "2",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "3",
+              "kind": "Socket",
+              "socket_inode": 128006250
+            },
+            {
+              "fd": "4",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "5",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "6",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "7",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "8",
+              "kind": "Socket",
+              "socket_inode": 128001493
+            },
+            {
+              "fd": "9",
+              "kind": "Socket",
+              "socket_inode": 128005231
+            },
+            {
+              "fd": "10",
+              "kind": "Socket",
+              "socket_inode": 128005232
+            },
+            {
+              "fd": "11",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "12",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "13",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "14",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "15",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "16",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "17",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "18",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "19",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "20",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "21",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "22",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "23",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "24",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "25",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "26",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "27",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "28",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "29",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "30",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "31",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "32",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "33",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "34",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "35",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "36",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "37",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "38",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "39",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "40",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "41",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "42",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "43",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "44",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "45",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "46",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "47",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "48",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "49",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "50",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "51",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "52",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "53",
+              "kind": "Anonymous",
+              "socket_inode": null
+            },
+            {
+              "fd": "54",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "55",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "56",
+              "kind": "Pipe",
+              "socket_inode": null
+            },
+            {
+              "fd": "57",
+              "kind": "Socket",
+              "socket_inode": 128001497
+            },
+            {
+              "fd": "58",
+              "kind": "Socket",
+              "socket_inode": 128001498
+            },
+            {
+              "fd": "59",
+              "kind": "Socket",
+              "socket_inode": 128001499
+            },
+            {
+              "fd": "60",
+              "kind": "Socket",
+              "socket_inode": 128001500
+            },
+            {
+              "fd": "61",
+              "kind": "Socket",
+              "socket_inode": 128006250
+            },
+            {
+              "fd": "62",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "63",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "64",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            },
+            {
+              "fd": "65",
+              "kind": "Socket",
+              "socket_inode": 128001498
+            },
+            {
+              "fd": "67",
+              "kind": "Socket",
+              "socket_inode": 128006250
+            },
+            {
+              "fd": "68",
+              "kind": "OtherTargetOmitted",
+              "socket_inode": null
+            }
+          ],
+          "entry_count": 68,
+          "state": "ObservedEntriesNonAtomic"
+        }
+      },
+      "smaps_rollup": {
+        "bytes": 698,
+        "file": "vm.smaps_rollup",
+        "state": "Observed"
+      },
+      "stat_after": {
+        "bytes": 348,
+        "file": "vm.stat-after",
+        "state": "Observed"
+      },
+      "stat_before": {
+        "bytes": 348,
+        "file": "vm.stat-before",
+        "state": "Observed"
+      },
+      "status": {
+        "bytes": 1542,
+        "file": "vm.status",
+        "state": "Observed"
+      },
+      "udp": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "vm.udp-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      },
+      "udp6": {
+        "fd_link_coverage": "CompleteAtEnumeration",
+        "matched_row_count": 0,
+        "retained": {
+          "bytes": 0,
+          "file": "vm.udp6-owned",
+          "state": "Observed"
+        },
+        "scope": "only rows matching known sampled owned FD socket inodes; non-atomic, not a complete live socket count"
+      }
+    },
+    "pid": 1613471
+  }
+}

@@ -1,0 +1,7 @@
+actual full callers compiled
+connected cleanup observed complete; strict endpoint compatibility remains red; actual exit 101
+unconnected cleanup observed complete; strict endpoint compatibility remains red; actual exit 101
+output regression actual exit 0
+explicit member count 0 actual exit 0
+explicit member count 1 actual exit 0
+explicit member count 2 actual exit 0

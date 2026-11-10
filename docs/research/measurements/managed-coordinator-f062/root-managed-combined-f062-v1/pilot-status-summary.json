@@ -1,0 +1,183 @@
+{
+  "source": "f0624796855b068b3f61c4a96dc11cfcf774de18",
+  "samples_per_count": 1,
+  "comparison": "pilot only; unpaired/non-atomic/different readiness at N0; no ratios/distributions/isolated kernel-charge proof",
+  "samples": [
+    {
+      "members": 0,
+      "ready": {
+        "endpoints": 0,
+        "proof": "detached run + main exact progress; managed-output record absent",
+        "run": "c145a18144293a93ac8685ebe3c1361f8f9d14a59982b730ab92c0a4c7224dfd",
+        "state": "NoManagedMembers"
+      },
+      "roles": {
+        "daemon": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "46016 kB",
+            "VmRSS": "29852 kB",
+            "RssAnon": "6296 kB",
+            "RssFile": "23556 kB",
+            "RssShmem": "0 kB",
+            "Threads": "16"
+          },
+          "fd_entries_nonatomic": 75,
+          "matched_owned_udp_rows": 0
+        },
+        "vm": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "267084 kB",
+            "VmRSS": "267084 kB",
+            "RssAnon": "263236 kB",
+            "RssFile": "2248 kB",
+            "RssShmem": "1600 kB",
+            "Threads": "48"
+          },
+          "fd_entries_nonatomic": 68,
+          "matched_owned_udp_rows": 0
+        },
+        "observer": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "267312 kB",
+            "VmRSS": "24780 kB",
+            "RssAnon": "19796 kB",
+            "RssFile": "4984 kB",
+            "RssShmem": "0 kB",
+            "Threads": "3"
+          },
+          "fd_entries_nonatomic": 8,
+          "matched_owned_udp_rows": 0
+        }
+      },
+      "teardown": {
+        "cleanup_phase_deadline_ms": 300000,
+        "host_process_exit_and_kernel_resource_return": "Unverified; stop result and observer FD equality are narrower facts",
+        "owner_stop_and_observer_join": {
+          "Ok": null
+        },
+        "protocol_completed": true
+      }
+    },
+    {
+      "members": 1,
+      "ready": {
+        "endpoints": 2,
+        "proof": "each scoped channel exact bytes received; all except member1 stdout ACK sent; main exact progress",
+        "run": "6bc88a38ca0e89062e19b64bc1ccc69937ddeb25efe23d47d16d99eaa5b5f0a7",
+        "state": "OwnerChannelsReady",
+        "unique_addresses": 2
+      },
+      "roles": {
+        "daemon": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "45728 kB",
+            "VmRSS": "33916 kB",
+            "RssAnon": "6816 kB",
+            "RssFile": "27100 kB",
+            "RssShmem": "0 kB",
+            "Threads": "20"
+          },
+          "fd_entries_nonatomic": 85,
+          "matched_owned_udp_rows": 4
+        },
+        "vm": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "271252 kB",
+            "VmRSS": "271252 kB",
+            "RssAnon": "264128 kB",
+            "RssFile": "2248 kB",
+            "RssShmem": "4876 kB",
+            "Threads": "51"
+          },
+          "fd_entries_nonatomic": 74,
+          "matched_owned_udp_rows": 0
+        },
+        "observer": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "267528 kB",
+            "VmRSS": "27308 kB",
+            "RssAnon": "20160 kB",
+            "RssFile": "7148 kB",
+            "RssShmem": "0 kB",
+            "Threads": "5"
+          },
+          "fd_entries_nonatomic": 12,
+          "matched_owned_udp_rows": 4
+        }
+      },
+      "teardown": {
+        "cleanup_phase_deadline_ms": 300000,
+        "host_process_exit_and_kernel_resource_return": "Unverified; stop result and observer FD equality are narrower facts",
+        "owner_stop_and_observer_join": {
+          "Ok": null
+        },
+        "protocol_completed": true
+      }
+    },
+    {
+      "members": 2,
+      "ready": {
+        "endpoints": 4,
+        "proof": "each scoped channel exact bytes received; all except member1 stdout ACK sent; main exact progress",
+        "run": "ac55c24761dc176981fea71ef621fff7c371ea0d5e18f28ec6d1eae102a0f26e",
+        "state": "OwnerChannelsReady",
+        "unique_addresses": 4
+      },
+      "roles": {
+        "daemon": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "46100 kB",
+            "VmRSS": "34388 kB",
+            "RssAnon": "7244 kB",
+            "RssFile": "27144 kB",
+            "RssShmem": "0 kB",
+            "Threads": "22"
+          },
+          "fd_entries_nonatomic": 91,
+          "matched_owned_udp_rows": 8
+        },
+        "vm": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "273936 kB",
+            "VmRSS": "273936 kB",
+            "RssAnon": "265580 kB",
+            "RssFile": "2256 kB",
+            "RssShmem": "6100 kB",
+            "Threads": "51"
+          },
+          "fd_entries_nonatomic": 74,
+          "matched_owned_udp_rows": 0
+        },
+        "observer": {
+          "identity_state": "MatchedBeforeAndAfter",
+          "status": {
+            "VmHWM": "267504 kB",
+            "VmRSS": "27688 kB",
+            "RssAnon": "20528 kB",
+            "RssFile": "7160 kB",
+            "RssShmem": "0 kB",
+            "Threads": "7"
+          },
+          "fd_entries_nonatomic": 16,
+          "matched_owned_udp_rows": 8
+        }
+      },
+      "teardown": {
+        "cleanup_phase_deadline_ms": 300000,
+        "host_process_exit_and_kernel_resource_return": "Unverified; stop result and observer FD equality are narrower facts",
+        "owner_stop_and_observer_join": {
+          "Ok": null
+        },
+        "protocol_completed": true
+      }
+    }
+  ]
+}

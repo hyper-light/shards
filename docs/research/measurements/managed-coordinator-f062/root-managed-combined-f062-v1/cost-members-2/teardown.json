@@ -1,0 +1,8 @@
+{
+  "cleanup_phase_deadline_ms": 300000,
+  "host_process_exit_and_kernel_resource_return": "Unverified; stop result and observer FD equality are narrower facts",
+  "owner_stop_and_observer_join": {
+    "Ok": null
+  },
+  "protocol_completed": true
+}

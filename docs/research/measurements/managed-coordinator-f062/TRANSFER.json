@@ -1,0 +1,11 @@
+{
+  "archive": "/Users/adalundhe/g121-managed-f062-gates-v1.tgz",
+  "bytes": 69013,
+  "sha256": "5c671839b3de7f797c0a4b15353bf29e1efb25596256854915c6673f07221c8f",
+  "files": 172,
+  "root_runs": [
+    "r497",
+    "r500"
+  ],
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f"
+}

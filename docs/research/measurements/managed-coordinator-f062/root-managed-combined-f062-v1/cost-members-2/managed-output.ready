@@ -1,0 +1,10 @@
+shards managed output 1
+server e1b55fa341455e8316a28228173a919bda5926f6c7f8b83336134d33846784a7
+owner e1b55fa341455e8316a28228173a919bda5926f6c7f8b83336134d33846784a7
+run ac55c24761dc176981fea71ef621fff7c371ea0d5e18f28ec6d1eae102a0f26e
+generation 1
+capacity 31
+member 1 channel 1 address 127.0.0.1:56286
+member 1 channel 2 address 127.0.0.1:49564
+member 2 channel 1 address 127.0.0.1:57657
+member 2 channel 2 address 127.0.0.1:53759

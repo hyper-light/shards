@@ -1,0 +1,2 @@
+Previous HEAD position was 22286c3cf test: prepare scratch parent before exclusive cgroup mount path
+HEAD is now at f06247968 docs(managed): retain actual endpoint mismatch and cleanup syscall trace

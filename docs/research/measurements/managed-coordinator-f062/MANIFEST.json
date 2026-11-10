@@ -1,0 +1,690 @@
+{
+  "root-managed-combined-f062-v1/checkout.log": {
+    "bytes": 199,
+    "sha256": "10e2cbd4359bfe41ab3389d098bd7f90c9d5083c6c7d02c01a7cb17c4dbc0527"
+  },
+  "root-managed-combined-f062-v1/compile.command.json": {
+    "bytes": 176,
+    "sha256": "4dbe7ba6a71ccfea50eb9be11af50f7c0695b8b264aceef4aa3600b94ca08b7d"
+  },
+  "root-managed-combined-f062-v1/compile.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/compile.jsonl": {
+    "bytes": 257729,
+    "sha256": "c1ee14909df2c3d36aa59d6d152eaaa188c85bdf17d8a835f4e77fcc54a5b88b"
+  },
+  "root-managed-combined-f062-v1/compile.log": {
+    "bytes": 1853,
+    "sha256": "67ad3c7bccbde8544fa2bff7807f716743888b7db7ab4002e5d61e37f17142a2"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/Agentfile": {
+    "bytes": 61,
+    "sha256": "660f2a45866d91af4e9650629dd930dafc6790e7e4c1229800bcb65bb9d91eea"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/build.json": {
+    "bytes": 1358,
+    "sha256": "6b030160387766b83086c7389e5362c2cad8f7e7a8d4f47f46c4b986b965289e"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/control.json": {
+    "bytes": 219,
+    "sha256": "5294f1e8c35c41bf348774c62bf54cd845c7a8833c6621709a0bf582312f4716"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "3809714319a3fcbed05057df8a51ac0dcd1e2b0110d9f18fc64edf3304f25278"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.stat-after": {
+    "bytes": 325,
+    "sha256": "b197c606aadead882119049bd22051e0cb27d0cee48ad57ad65078bb85fe2a5b"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.stat-before": {
+    "bytes": 325,
+    "sha256": "b197c606aadead882119049bd22051e0cb27d0cee48ad57ad65078bb85fe2a5b"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.status": {
+    "bytes": 1534,
+    "sha256": "721963cf746951b1daac6bae93b54be6900b14e0139d31b54f1be7a97eb7375a"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.udp-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/daemon.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/inputs.json": {
+    "bytes": 1256,
+    "sha256": "334885c430c9310a7805a983cb30465a4fec829d907251f8eefdbf63a50b8a53"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/inspect.json": {
+    "bytes": 58,
+    "sha256": "9a11d6e3dba9153ee4c354ee059a76c567a363ec6dfea91f9fda4d0c5b252275"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "3c46f3fba895a8014c0aee7d321cfb56def9ec42bab74aa54aed1eead39e160d"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.stat-after": {
+    "bytes": 340,
+    "sha256": "921b7df698718374d55e226555860656fb5eabec173d22232e0fa59c30f02450"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.stat-before": {
+    "bytes": 340,
+    "sha256": "921b7df698718374d55e226555860656fb5eabec173d22232e0fa59c30f02450"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.status": {
+    "bytes": 1540,
+    "sha256": "15832ab1365b148f7cc21ebb44e6bed830105704ebc208e3d956ce997ba5d633"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.udp-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/observer.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/ready.json": {
+    "bytes": 207,
+    "sha256": "ea6639834348e7054252bd19651eb2312fc928b294839c630258fe3bf5962601"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/snapshots.json": {
+    "bytes": 26333,
+    "sha256": "a8ae4321fe23b93ea7811fe32ba79156a49bf6e374001fb887d578f172d2ac59"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/start.json": {
+    "bytes": 115,
+    "sha256": "95f888219a73a066de993b317eb9f1914b836beaaea03d349c14eb6c1cb58898"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/teardown.json": {
+    "bytes": 248,
+    "sha256": "e2bf8263265f3e5b49e29b52313cb2869a596b4783dd540bea1fb6ca9c840c84"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/terminal.json": {
+    "bytes": 58,
+    "sha256": "01a4e59ab091573e89a7abf64eafd83bced001b11913fb106bd4e07b01c1f048"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "d4061d8441231347aa193e674869fd125a5b8a8ff4206a46b282e753efa550dc"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.stat-after": {
+    "bytes": 348,
+    "sha256": "19ae3838dda0883cb178fbb9ccc0c2bbf8d7e9a611e6c2e0b9d018802ab9761f"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.stat-before": {
+    "bytes": 348,
+    "sha256": "19ae3838dda0883cb178fbb9ccc0c2bbf8d7e9a611e6c2e0b9d018802ab9761f"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.status": {
+    "bytes": 1542,
+    "sha256": "75b51086f2744c152e17a25705f2abfa42ea67781791b3ec5d70eaae8be593d8"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.udp-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0/vm.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-0.command.json": {
+    "bytes": 209,
+    "sha256": "9dcc3c9a80b8b0bdac7e2c77bb516649d8db8e9cdc4bda3fa96fc602c0167a8f"
+  },
+  "root-managed-combined-f062-v1/cost-members-0.environment.json": {
+    "bytes": 182,
+    "sha256": "2ed82dafa553e6767a192c117268fbc40ebccd747f7da646c553ca3805c8c242"
+  },
+  "root-managed-combined-f062-v1/cost-members-0.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/cost-members-0.log": {
+    "bytes": 2477,
+    "sha256": "a41fea6557587af866958f551be9734632d8600abcfe677cfa0047f5c5cd6bb0"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/Agentfile": {
+    "bytes": 90,
+    "sha256": "35375f66b9bb03f7b73e2ca1fe06d748aa34093cd9c3bec963b828f3c3703ca0"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/build.json": {
+    "bytes": 1714,
+    "sha256": "f141892505b4afc6b4906b7e87a6964e58fc470feb97a136457794445eb1e451"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/control.json": {
+    "bytes": 216,
+    "sha256": "00ed4c386ff90f7530b3dba8ee8c7ad96a52db968e166c70ca318444121aa5c0"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "bfe89f662a72b9491cb0990522a3bf1f5d6cfb87e8e12fb700a89239fc74983b"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.stat-after": {
+    "bytes": 325,
+    "sha256": "77b99c5cf9ecfc3448759e751dd2f4f597ea239105f7ccd2c56e951354f22320"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.stat-before": {
+    "bytes": 325,
+    "sha256": "77b99c5cf9ecfc3448759e751dd2f4f597ea239105f7ccd2c56e951354f22320"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.status": {
+    "bytes": 1534,
+    "sha256": "f44be28afc89a0f09142f8fe7c97aaf05665cb2d7db2861b76dfcf4a53bddb24"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.udp-owned": {
+    "bytes": 512,
+    "sha256": "82ef02fa4c7e953b70d88674f5c854f1b212620f27aa3068020e864e780dce6b"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/daemon.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/inputs.json": {
+    "bytes": 1256,
+    "sha256": "717761309a7d8ebc6e986abcaae6ea3d58800b166be02e6786855c2b1edcfbd1"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/inspect.json": {
+    "bytes": 58,
+    "sha256": "3c76a86be93217aec3af4ab66e294e15540dbc335b27e007752e6f51f9260eb8"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/managed-output.ready": {
+    "bytes": 347,
+    "sha256": "49276b667305064812f715e121239b3300198abd657ee37b7101b5b70d9ce5f3"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "592cd3a7214f3b5f21cfdff7a93aa42a30bcea61ce7492a76ec72266378bf867"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.stat-after": {
+    "bytes": 341,
+    "sha256": "077e0da7325ff87db3dccb27ad22774db9bc56f213aaf4b1184d086e0daa3cfa"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.stat-before": {
+    "bytes": 341,
+    "sha256": "6da9858ddf04a68a4d5fba1ae4366140c6d7288648c4357a1776ebed25ade269"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.status": {
+    "bytes": 1540,
+    "sha256": "98b53999bb62a28095953400743d8409ed0cb0ad2c7365cfd262ec68427af4bc"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.udp-owned": {
+    "bytes": 512,
+    "sha256": "da5968f0b760135522b73a0db376bd4cc926af8ae30f14e9635cb3a31d86821d"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/observer.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/ready.json": {
+    "bytes": 267,
+    "sha256": "d194ac5bd712b6742b08a1fc970bce769ddbd1c39ced995e604e44f702496197"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/snapshots.json": {
+    "bytes": 29200,
+    "sha256": "687b0d16786dfd9a30239a963aafe7965d224323ce67eb324e08a58344c327b9"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/start.json": {
+    "bytes": 115,
+    "sha256": "1f53bfb2214a0c385c1ab19c1bcecd34dcdb8e580969eacc96cadceb251e2758"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/teardown.json": {
+    "bytes": 248,
+    "sha256": "e2bf8263265f3e5b49e29b52313cb2869a596b4783dd540bea1fb6ca9c840c84"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/terminal.json": {
+    "bytes": 298,
+    "sha256": "2df9df9344de3395918265205d5d12009b50f55e8f18837950f0d1158fcc07d6"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "559c9fb8ca0cda9671458c4a3ff605b67d0ab67c79197f76ad5c78b3ba525f44"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.stat-after": {
+    "bytes": 348,
+    "sha256": "65dc456f279e5763871955b43f9d2a45ccc686bd0919a06fecb16cd320b655b0"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.stat-before": {
+    "bytes": 348,
+    "sha256": "65dc456f279e5763871955b43f9d2a45ccc686bd0919a06fecb16cd320b655b0"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.status": {
+    "bytes": 1542,
+    "sha256": "d72d5a4a5e0556a30a8f1a662cf2fa578fb04c1781cb6d239969182bab85db48"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.udp-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-1/vm.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-1.command.json": {
+    "bytes": 209,
+    "sha256": "9dcc3c9a80b8b0bdac7e2c77bb516649d8db8e9cdc4bda3fa96fc602c0167a8f"
+  },
+  "root-managed-combined-f062-v1/cost-members-1.environment.json": {
+    "bytes": 182,
+    "sha256": "8d740357836274002ef58358955d9bba0d67032a24e7a769421586063d5052dc"
+  },
+  "root-managed-combined-f062-v1/cost-members-1.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/cost-members-1.log": {
+    "bytes": 2752,
+    "sha256": "ae991c36de5dda313e9e839c1601920112e188863342fa07b2af46dae1a9e027"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/Agentfile": {
+    "bytes": 121,
+    "sha256": "782d72fa58c15edc07345f86d1a9dc89fc034882cdef8dffb74ee1df8c14a884"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/build.json": {
+    "bytes": 2077,
+    "sha256": "8aed6c8e45887ff8ed6d195cd3f7336d0ff15417d0cdc627ed11719ebae89ce8"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/control.json": {
+    "bytes": 216,
+    "sha256": "62173436e5f86f31e670ad46d7e71a6f4bd4e1b46e7225f9599db61c6d7a609d"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "718ef266330ab2c85cbbd9af88dfdc81d06f75f142e39df98cea2d2108aaf299"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.stat-after": {
+    "bytes": 325,
+    "sha256": "cf2ea6b60cb03e6952ea14f9c1702d383b63833023eac68cf1947a4a2fcd913c"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.stat-before": {
+    "bytes": 325,
+    "sha256": "cf2ea6b60cb03e6952ea14f9c1702d383b63833023eac68cf1947a4a2fcd913c"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.status": {
+    "bytes": 1534,
+    "sha256": "6b9a99669f67f2ffddebcecc47f23313a1dbef3ac7d11a70fa0d23cc9928c630"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.udp-owned": {
+    "bytes": 1024,
+    "sha256": "0885eb0cec5943ee6fc1655eafe6fd73ff025aa7aa77c0adc728567e950c49fe"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/daemon.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/inputs.json": {
+    "bytes": 1256,
+    "sha256": "67e3f0949aeb0b2b12ad3bfd7e0c3d6fa1df5b37882d85b9dc18754180e3362a"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/inspect.json": {
+    "bytes": 58,
+    "sha256": "103fed18834b68535467946fef24428093176af8703b9f2a1f1cfb1d44f814c0"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/managed-output.ready": {
+    "bytes": 433,
+    "sha256": "0b5981d8e72d969d7720a27c2999c23535ed4212e818f3f95cabfecf8a5d860c"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "edc6fa9cb97641010cd8ad51206e9910c5e33af043047fc75eec2c5a0f64f8b2"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.stat-after": {
+    "bytes": 341,
+    "sha256": "30e2d1ce35e80b56d419a1113d4667f39bcc5884e17c4d5076bbf11452c7eb33"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.stat-before": {
+    "bytes": 341,
+    "sha256": "30e2d1ce35e80b56d419a1113d4667f39bcc5884e17c4d5076bbf11452c7eb33"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.status": {
+    "bytes": 1540,
+    "sha256": "5b606cd0ea73e224d612a896fd84842c23b7b7fda095f0c92d72794522de4ac1"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.udp-owned": {
+    "bytes": 1024,
+    "sha256": "587daaed4f612437b2f016434f659bd3dd6d46cf779986591f521db814f6a9b3"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/observer.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/ready.json": {
+    "bytes": 267,
+    "sha256": "e710909754011a417994c294ae03bbb126967062faf5f85dc6e4701f7731b64f"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/snapshots.json": {
+    "bytes": 30641,
+    "sha256": "25800c532e35e94a06a2fddec2ecbd92d684ca9b3f8ece251a09b66c748c460f"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/start.json": {
+    "bytes": 115,
+    "sha256": "0d969b933044042f636170c2b2698ab4619fa66dddbe23c97ab244e31c10f651"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/teardown.json": {
+    "bytes": 248,
+    "sha256": "e2bf8263265f3e5b49e29b52313cb2869a596b4783dd540bea1fb6ca9c840c84"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/terminal.json": {
+    "bytes": 537,
+    "sha256": "e638e5a136ab3686cc8f176fb0945f1240be1680cffc905217f16ce189ead167"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.cgroup": {
+    "bytes": 164,
+    "sha256": "d75ffbe07a2d0d4a6a4ada82129fec9ca49f7ef32e7137cca244014dc0f6751a"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.smaps_rollup": {
+    "bytes": 698,
+    "sha256": "ec469595a15f563ce46bdb19a22aead02f840d00fd18eb6f201364b23229fac2"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.stat-after": {
+    "bytes": 348,
+    "sha256": "55e4b0f8f68d8387b2311c8cf70fb0abd049b4d17ae05496962ec2adfe6266a5"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.stat-before": {
+    "bytes": 348,
+    "sha256": "55e4b0f8f68d8387b2311c8cf70fb0abd049b4d17ae05496962ec2adfe6266a5"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.status": {
+    "bytes": 1542,
+    "sha256": "d1824e7d711666653fa69198ded0c5f66fd3ec405345ee5f060d492636b01553"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.udp-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-2/vm.udp6-owned": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/cost-members-2.command.json": {
+    "bytes": 209,
+    "sha256": "9dcc3c9a80b8b0bdac7e2c77bb516649d8db8e9cdc4bda3fa96fc602c0167a8f"
+  },
+  "root-managed-combined-f062-v1/cost-members-2.environment.json": {
+    "bytes": 182,
+    "sha256": "e06f8a1d6ca71644baebcffdaf929dc12e3ad9c8cc81b1bebd572f392edaceac"
+  },
+  "root-managed-combined-f062-v1/cost-members-2.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/cost-members-2.log": {
+    "bytes": 3025,
+    "sha256": "5b37a1109929801a3b7ce1ec98f7977e2fd4dee4a791969d939ca4021179ca4b"
+  },
+  "root-managed-combined-f062-v1/cost-results.json": {
+    "bytes": 378,
+    "sha256": "fc50b89b1573e275850cd7cc9cf69a948a0691642fb54102a8a247f0b0b870bd"
+  },
+  "root-managed-combined-f062-v1/driver.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/driver.log": {
+    "bytes": 369,
+    "sha256": "1d7b012d529320cae7266c9eb47f369b10c269f0311c6f07916356b13cc4ef8f"
+  },
+  "root-managed-combined-f062-v1/driver.py": {
+    "bytes": 4300,
+    "sha256": "26959d23f3138959ef9b0c39897dc0323975baa8a8ef6b9393c3737979da26eb"
+  },
+  "root-managed-combined-f062-v1/fetch.log": {
+    "bytes": 174,
+    "sha256": "f97c49bb9fd806cc0b272162467158ee695c85c2e19595688fc5cd4d8bdc7a7c"
+  },
+  "root-managed-combined-f062-v1/network-connected/command.json": {
+    "bytes": 220,
+    "sha256": "ad8ac2a6e2e558bb46d3e4532804a27387d6d454befababc881b37e8222a6c64"
+  },
+  "root-managed-combined-f062-v1/network-connected/environment.json": {
+    "bytes": 720,
+    "sha256": "d7685f62247de228f84214809983fa7d1d920d251320c5dabc0b334ebaf2fbdc"
+  },
+  "root-managed-combined-f062-v1/network-connected/observed.json": {
+    "bytes": 5024,
+    "sha256": "e5667f39f30907bf770036d08737330de571fc42b8cc07a84918e17997d6dc2b"
+  },
+  "root-managed-combined-f062-v1/network-connected/sock-addr-udp4-connected.cmdline": {
+    "bytes": 106,
+    "sha256": "5d947177948131bb4b9926e99af621ec6a299ea2324f2429feebc0a878e304f7"
+  },
+  "root-managed-combined-f062-v1/network-connected/sock-addr-udp4-connected.identity.json": {
+    "bytes": 2053,
+    "sha256": "a8333291d61dff10998af1fe79ad5977e000ab69157a0ba10bafeac6b8b78af2"
+  },
+  "root-managed-combined-f062-v1/network-connected/sock-addr-udp4-connected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-combined-f062-v1/network-connected/sock-addr-udp4-connected.stderr": {
+    "bytes": 227,
+    "sha256": "5e7fe63dad2361cbaf54e249f2108ebb9e9a47cf85ee9f0f8705055d38171004"
+  },
+  "root-managed-combined-f062-v1/network-connected/sock-addr-udp4-connected.stdout": {
+    "bytes": 4736,
+    "sha256": "f30f1c6f02a54f15d7b70046b7f999c40e6b656502140c3dd3eddf6d6c7c21f4"
+  },
+  "root-managed-combined-f062-v1/network-connected/test.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-combined-f062-v1/network-connected/test.log": {
+    "bytes": 9560,
+    "sha256": "3bc9e10fb90bc1f152f4b3c0e3f54fc21bd42b2d8c9722580d0a5a9f6819b982"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/command.json": {
+    "bytes": 220,
+    "sha256": "ad8ac2a6e2e558bb46d3e4532804a27387d6d454befababc881b37e8222a6c64"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/environment.json": {
+    "bytes": 724,
+    "sha256": "afb2cc4d64601dcfdab15aa6fbe4c800bb55683b432c05485a1b3e29f88cf6e3"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/observed.json": {
+    "bytes": 5024,
+    "sha256": "67a1ea3f0bcce248389e26de89b37c4bb70e772e243bdeff78ce51befa4cbca4"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/sock-addr-udp4-unconnected.cmdline": {
+    "bytes": 108,
+    "sha256": "d7b0c9fb8cb8ae164c57a9a4a8830bdfabd15a5d2c6fa42936dbe5d323f37c61"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/sock-addr-udp4-unconnected.identity.json": {
+    "bytes": 2055,
+    "sha256": "a7cb57b815c1041ef30bee5934b5f35512785fbefc452b2be6350b95d601a379"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/sock-addr-udp4-unconnected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/sock-addr-udp4-unconnected.stderr": {
+    "bytes": 225,
+    "sha256": "fe61fb20cd8dc524e03284fad97f215e66830cf7e48d2f1f61e8f78ee5bc8eb9"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/sock-addr-udp4-unconnected.stdout": {
+    "bytes": 4738,
+    "sha256": "123842df124acf325ed7c4e3a3d2abc3b67079f5bebd5e2e8f1242959cb830ce"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/test.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-combined-f062-v1/network-unconnected/test.log": {
+    "bytes": 9463,
+    "sha256": "46f1209dd6af6e4991de3fbb3833217bb65c8047c90213669280d9667e422b15"
+  },
+  "root-managed-combined-f062-v1/output-regression.command.json": {
+    "bytes": 128,
+    "sha256": "5954761f9f1e7ba9be46dd6a1f2ea0fdae9d856fa9037bc510a109ebfcbd6e16"
+  },
+  "root-managed-combined-f062-v1/output-regression.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-combined-f062-v1/output-regression.log": {
+    "bytes": 4610,
+    "sha256": "4ac2b47a09f3d3e505e34ee284d138b7a32393c322e6d146490ad342a90af3da"
+  },
+  "root-managed-combined-f062-v1/pilot-status-summary.json": {
+    "bytes": 5751,
+    "sha256": "cb67f5b7a7d4a62d0d22a5c58565d2f867cacc4bac1af691110b4200628d182e"
+  },
+  "root-managed-combined-f062-v1/source.txt": {
+    "bytes": 41,
+    "sha256": "53adbd56a8db28d2601d6d4cc97bcecad7b1219ee8511b68d58871f718a5cba6"
+  },
+  "root-managed-combined-f062-v1/status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-combined-f062-v1/test-artifacts.json": {
+    "bytes": 429,
+    "sha256": "9679d3fe2b67e2244387fd136e043ab23ddf830a6112c590b1660cc52db79aac"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/command.json": {
+    "bytes": 220,
+    "sha256": "ad8ac2a6e2e558bb46d3e4532804a27387d6d454befababc881b37e8222a6c64"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/driver.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/driver.log": {
+    "bytes": 177,
+    "sha256": "a7750ba0c9ae8af7a8dd71d4f6e69ad126259eeeea939e360ec9ed3faf6582a6"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/driver.py": {
+    "bytes": 3480,
+    "sha256": "859c496ebea512a926d114193074c3f220b3fc8d653239ac422ae85ea4386a04"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/mutation.patch": {
+    "bytes": 665,
+    "sha256": "b7eff7f0ed3f6b315089f8a42a10d07737cd0d43293bb7d4f99b6671c232d6ca"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/original.rs": {
+    "bytes": 25556,
+    "sha256": "52b4c270623abac18894c98cfd1bca880fd091804dac56488706f12c9ec4a5f5"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/environment.json": {
+    "bytes": 730,
+    "sha256": "f9097dad6bf36d6cc9a5c9d4d5f48e12391e2c9cb91db221076d7095551e9a4d"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/observed.json": {
+    "bytes": 5231,
+    "sha256": "3da0b7fc78d81cdfa81234c86f035b55aa5a9622d47df64a19b43c08ca856360"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.cmdline": {
+    "bytes": 106,
+    "sha256": "5d947177948131bb4b9926e99af621ec6a299ea2324f2429feebc0a878e304f7"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.identity.json": {
+    "bytes": 2053,
+    "sha256": "85de5f58afad2f5cba6ce2e7758656bc4545a164ad059d89b7c0c9b712134878"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.stderr": {
+    "bytes": 225,
+    "sha256": "87f7d1d735764edf8abdb3977e669f32a74eabcff6db19176eafa97a58423786"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/sock-addr-udp4-connected.stdout": {
+    "bytes": 4921,
+    "sha256": "06c8f676d92044567e9b5633b7fb7ebe5022400f7a9815a7c641769d8c241e6a"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/test.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/removed-fs-unshare/test.log": {
+    "bytes": 9743,
+    "sha256": "00251b13a15202219c5a8a2c660ce67fa38d6d548a0774b9431f6d296fae9c01"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/environment.json": {
+    "bytes": 720,
+    "sha256": "df3a8646206352fb23e8bb9765ec298b9ebff93a91521850251e49aefef7a492"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/observed.json": {
+    "bytes": 5024,
+    "sha256": "0be71f7a06eb50d90ac12ff4501ef30d596673c2a3355aedf6209b0eb07e1ac4"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.cmdline": {
+    "bytes": 106,
+    "sha256": "5d947177948131bb4b9926e99af621ec6a299ea2324f2429feebc0a878e304f7"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.identity.json": {
+    "bytes": 2053,
+    "sha256": "0f83835a2f9c59091dc293c64e5113eec1d7758da5737abc02f228643064bfe1"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.stderr": {
+    "bytes": 225,
+    "sha256": "37b2d3f49e668d0d234b83668ff7f9b1db867818045a9fa816287b13375ce597"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/sock-addr-udp4-connected.stdout": {
+    "bytes": 4736,
+    "sha256": "d66f12c4240bf3e030737c79dff0f443503999a4d48f1afd498b692898a99216"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/test.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored/test.log": {
+    "bytes": 9558,
+    "sha256": "4209f2927c7122f00cb51ccab0a6d6720c75ccb7755dd9c0665bc1be8f63b701"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored.diff": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/restored.sha256": {
+    "bytes": 65,
+    "sha256": "c7373d94c9d09a60ca3e969b0817b3f69094a9537d27d4dcac73c0ff1629d960"
+  },
+  "root-managed-mount-fs-mutation-f062-v1/source.json": {
+    "bytes": 230,
+    "sha256": "b979a38ae92d6c3f1518e984045013b0eec0672d012c4656241dda58665af2cf"
+  },
+  "root-managed-f062-later-process-observation-v1.json": {
+    "bytes": 1438,
+    "sha256": "033c26e049e8db82b90a21725e5cccf7f535d9f7a877ed5119e7283715b0bac2"
+  }
+}

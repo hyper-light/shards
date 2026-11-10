@@ -1,0 +1,12 @@
+--- crates/testguest/src/managed_network/intercept/sock_addr.rs
++++ crates/testguest/src/managed_network/intercept/sock_addr.rs
+@@ -445,9 +445,6 @@
+                     match namespace {
+                         Some(ns) => {
+                             // setns(2), Linux v6.18 mntns_install require unshared fs_struct.
+-                            if libc::unshare(libc::CLONE_FS) != 0 {
+-                                return Err(io::Error::last_os_error());
+-                            }
+                             libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS)
+                         }
+                         None => libc::unshare(libc::CLONE_NEWNS),

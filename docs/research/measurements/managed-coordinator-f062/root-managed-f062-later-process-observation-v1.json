@@ -1,0 +1,59 @@
+{
+  "observations": [
+    {
+      "members": 0,
+      "role": "daemon",
+      "pid": 1613449,
+      "expected_start": 10948760,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816822825996
+    },
+    {
+      "members": 0,
+      "role": "vm",
+      "pid": 1613471,
+      "expected_start": 10948764,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816822835499
+    },
+    {
+      "members": 1,
+      "role": "daemon",
+      "pid": 1615557,
+      "expected_start": 10949926,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816822960451
+    },
+    {
+      "members": 1,
+      "role": "vm",
+      "pid": 1615583,
+      "expected_start": 10949931,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816822965285
+    },
+    {
+      "members": 2,
+      "role": "daemon",
+      "pid": 1616836,
+      "expected_start": 10951073,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816823064414
+    },
+    {
+      "members": 2,
+      "role": "vm",
+      "pid": 1616864,
+      "expected_start": 10951078,
+      "state": "AbsentAtLaterObservation",
+      "errno": 2,
+      "observed_unix_ns": 1794314816823069106
+    }
+  ],
+  "limit": "later pathname observations; no held pidfd exit timing or population/kernel return proof"
+}

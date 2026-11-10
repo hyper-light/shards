@@ -1,0 +1,7 @@
+{
+  "endpoints": 2,
+  "proof": "each scoped channel exact bytes received; all except member1 stdout ACK sent; main exact progress",
+  "run": "6bc88a38ca0e89062e19b64bc1ccc69937ddeb25efe23d47d16d99eaa5b5f0a7",
+  "state": "OwnerChannelsReady",
+  "unique_addresses": 2
+}

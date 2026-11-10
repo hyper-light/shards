@@ -1,0 +1,23 @@
+5578915b6000-7ffcead8e000 ---p 00000000 00:00 0                          [rollup]
+Rss:               27308 kB
+Pss:               24893 kB
+Pss_Dirty:         20160 kB
+Pss_Anon:          20160 kB
+Pss_File:           4733 kB
+Pss_Shmem:             0 kB
+Shared_Clean:       2488 kB
+Shared_Dirty:          0 kB
+Private_Clean:      4660 kB
+Private_Dirty:     20160 kB
+Referenced:        27308 kB
+Anonymous:         20160 kB
+KSM:                   0 kB
+LazyFree:              0 kB
+AnonHugePages:         0 kB
+ShmemPmdMapped:        0 kB
+FilePmdMapped:         0 kB
+Shared_Hugetlb:        0 kB
+Private_Hugetlb:       0 kB
+Swap:                  0 kB
+SwapPss:               0 kB
+Locked:                0 kB
