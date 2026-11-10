@@ -192,6 +192,19 @@ impl Netlink {
         self.exchange(&[Message::route(32, CREATE_EXCL, policy_rule(input)?)], deadline)
     }
 
+    pub(super) fn interception_udp(
+        &self,
+        input: &Inputs,
+        destination: SocketAddr,
+        port: u16,
+        deadline: &Deadline,
+    ) -> io::Result<()> {
+        self.exchange(
+            &interception_protocol(input, destination, port, Protocol::Udp)?,
+            deadline,
+        )
+    }
+
     pub(super) fn interception(
         &self,
         input: &Inputs,
@@ -204,6 +217,29 @@ impl Netlink {
 }
 
 fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) -> io::Result<Vec<Message>> {
+    interception_protocol(input, destination, port, Protocol::Tcp)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Protocol {
+    Tcp,
+    Udp,
+}
+impl Protocol {
+    fn number(self) -> u8 {
+        match self {
+            Self::Tcp => libc::IPPROTO_TCP as u8,
+            Self::Udp => libc::IPPROTO_UDP as u8,
+        }
+    }
+}
+
+fn interception_protocol(
+    input: &Inputs,
+    destination: SocketAddr,
+    port: u16,
+    protocol: Protocol,
+) -> io::Result<Vec<Message>> {
     if Family::of(destination.ip()) != input.family {
         return Err(invalid("interception family differs from actual destination"));
     }
@@ -221,7 +257,7 @@ fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) -> 
         body: bytes(&[0, 0, 0, 10])?,
     };
     let pre = chain(family, b"pre\0", b"filter\0", 0)?;
-    let mut expressions = selector(destination)?;
+    let mut expressions = selector_protocol(destination, protocol)?;
     load(&mut expressions, &port.to_be_bytes())?;
     let mut tproxy = Vec::new();
     be(&mut tproxy, 1, u32::from(address_family(destination.ip())))?; // NFTA_TPROXY_FAMILY
@@ -231,7 +267,7 @@ fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) -> 
     let intercept = rule(family, b"pre\0", expressions)?;
     // nft_do_chain advances to the NEXT rule after NFT_BREAK (v6.18,
     // nf_tables_core.c:255–290). A drop appended to the TPROXY rule is skipped.
-    let mut expressions = selector(destination)?;
+    let mut expressions = selector_protocol(destination, protocol)?;
     verdict(&mut expressions, Verdict::Drop)?;
     let initial = [
         begin,
@@ -241,7 +277,7 @@ fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) -> 
         rule(family, b"pre\0", expressions)?,
     ];
     let output = if input.origin != Origin::Forward {
-        let mut expressions = selector(destination)?;
+        let mut expressions = selector_protocol(destination, protocol)?;
         mark_accept(&mut expressions, input.mark)?;
         Some([
             chain(family, b"out\0", b"route\0", 3)?,
@@ -431,13 +467,18 @@ fn payload_compare(out: &mut Vec<u8>, base: u32, offset: u32, value: &[u8]) -> i
     compare(out, value)
 }
 
+#[cfg(test)]
 fn selector(at: SocketAddr) -> io::Result<Vec<u8>> {
+    selector_protocol(at, Protocol::Tcp)
+}
+
+fn selector_protocol(at: SocketAddr, protocol: Protocol) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut meta = Vec::new();
     be(&mut meta, 1, 1)?;
     be(&mut meta, 2, 16)?;
     expression(&mut out, b"meta\0", &meta)?; // NFT_META_L4PROTO
-    compare(&mut out, &[libc::IPPROTO_TCP as u8])?;
+    compare(&mut out, &[protocol.number()])?;
     // IPv4/IPv6 fixed-header destination offsets from Linux UAPI iphdr/ipv6hdr.
     match at {
         SocketAddr::V4(at) => payload_compare(&mut out, 1, 16, &at.ip().octets())?,
@@ -543,6 +584,34 @@ fn acknowledge(mut input: &[u8], pending: &mut Vec<u32>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn udp_selector_and_separate_drop_match_actual_family_destination_and_port() {
+        for (family, at) in [
+            (Family::Ipv4, SocketAddr::from((BACKEND, 43210))),
+            (Family::Ipv6, SocketAddr::from((BACKEND6, 43210))),
+        ] {
+            for origin in ["local", "forward"] {
+                let input = Inputs::parse(family, origin, "1000", "1", "1000", "100").unwrap();
+                let messages = interception_protocol(&input, at, 43211, Protocol::Udp).unwrap();
+                let rules: Vec<_> = messages.iter().filter(|m| m.kind == (10 << 8) | 6).collect();
+                let selected = selector_protocol(at, Protocol::Udp).unwrap();
+                let comparisons: Vec<_> = attributes(&selected)
+                    .into_iter()
+                    .filter(|(_, expr)| attribute(expr, 1) == b"cmp\0")
+                    .map(|(_, expr)| attribute(attribute(attribute(expr, 2), 3), 1))
+                    .collect();
+                assert_eq!(comparisons[0], [libc::IPPROTO_UDP as u8]);
+                assert_eq!(comparisons[2], 43210u16.to_be_bytes());
+                for rule in &rules {
+                    assert_eq!(&rule_expressions(rule)[..selected.len()], selected);
+                }
+                let dropped = attributes(&rule_expressions(rules[1])[selected.len()..]);
+                assert_eq!(dropped.len(), 1);
+                assert_eq!(immediate_code(dropped[0].1), 0);
+            }
+        }
+    }
+
     #[test]
     fn acks_reject_wrong_identity_duplicate_truncation_and_errno() {
         let make = |seq: u32, code: i32| {

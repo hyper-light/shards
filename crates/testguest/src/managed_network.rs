@@ -43,6 +43,7 @@ enum Transport {
 enum Probe<'a> {
     Capabilities(Option<&'a str>),
     Intercept(intercept::Inputs),
+    InterceptUdp(intercept::udp::Inputs),
     Serve(Case, SocketMode),
     Dial(Case),
     Pair(Case),
@@ -124,6 +125,24 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
                 family, origin, millis, mark, table, priority,
             )?))
         }
+        [
+            protocol @ ("intercept-udp4" | "intercept-udp6"),
+            origin,
+            mode,
+            millis,
+            mark,
+            table,
+            priority,
+        ] => {
+            let family = if *protocol == "intercept-udp4" {
+                intercept::Family::Ipv4
+            } else {
+                intercept::Family::Ipv6
+            };
+            Ok(Probe::InterceptUdp(intercept::udp::Inputs::parse(
+                family, origin, mode, millis, mark, table, priority,
+            )?))
+        }
         [role, transport, address, sent, received, millis, mode] => {
             let transport = match *transport {
                 "tcp" => Transport::Tcp,
@@ -155,7 +174,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -250,6 +269,7 @@ fn run(probe: Probe<'_>) -> io::Result<()> {
     match probe {
         Probe::Capabilities(path) => capabilities(path),
         Probe::Intercept(input) => intercept::run(input),
+        Probe::InterceptUdp(input) => intercept::udp::run(input),
         Probe::Serve(case, mode) => {
             let deadline = Deadline::new(case.within)?;
             match case.transport {
@@ -613,12 +633,78 @@ fn udp_dial(case: Case, deadline: &Deadline) -> io::Result<()> {
     event(State::Matched, format_args!("transport={:?}", case.transport))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UdpMetadata {
+    peer: SocketAddr,
+    original: Option<SocketAddr>,
+}
+
+#[derive(Debug)]
+enum UdpMetadataError {
+    Peer(io::Error),
+    UnexpectedRecord,
+    HeaderOverflow,
+    CapacityOverflow,
+    ShortOriginal,
+    Original(io::Error),
+}
+impl UdpMetadataError {
+    fn tag(&self) -> &'static str {
+        match self {
+            Self::Peer(_) => "PeerAddress",
+            Self::UnexpectedRecord => "UnexpectedRecord",
+            Self::HeaderOverflow => "HeaderOverflow",
+            Self::CapacityOverflow => "CapacityOverflow",
+            Self::ShortOriginal => "ShortOriginal",
+            Self::Original(_) => "OriginalAddress",
+        }
+    }
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Peer(e) | Self::Original(e) => e,
+            Self::UnexpectedRecord => invalid("unexpected UDP ancillary record"),
+            Self::HeaderOverflow => invalid("ancillary header length overflows"),
+            Self::CapacityOverflow => invalid("ancillary capacity overflows"),
+            Self::ShortOriginal => invalid("short UDP original destination record"),
+        }
+    }
+}
+
+struct UdpArrival {
+    reported: usize,
+    flags: i32,
+    copied: Vec<u8>,
+    metadata: Result<UdpMetadata, UdpMetadataError>,
+}
+impl UdpArrival {
+    fn payload_matches(&self, expected: &[u8]) -> bool {
+        self.reported == expected.len()
+            && self.flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) == 0
+            && self.copied == expected
+    }
+}
+
 fn udp_receive(
     socket: &UdpSocket,
     expected: &[u8],
     deadline: &Deadline,
 ) -> io::Result<(Vec<u8>, SocketAddr, Option<SocketAddr>)> {
-    let mut got = buffer(expected.len())?;
+    let arrival = udp_arrival(socket, expected.len(), deadline)?;
+    // Preserve the native probe's strict validation order and error contract.
+    if arrival.reported != expected.len() || arrival.flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
+        return Err(invalid(
+            "UDP datagram or ancillary data was truncated/has a different length",
+        ));
+    }
+    if arrival.copied != expected {
+        return Err(invalid("UDP datagram differs"));
+    }
+    let metadata = arrival.metadata.map_err(UdpMetadataError::into_io)?;
+    Ok((arrival.copied, metadata.peer, metadata.original))
+}
+
+fn udp_arrival(socket: &UdpSocket, capacity: usize, deadline: &Deadline) -> io::Result<UdpArrival> {
+    let mut got = buffer(capacity)?;
     // Linux CMSG_SPACE aligns both header and data to sizeof(size_t).
     const WORDS: usize = size_of::<libc::cmsghdr>().div_ceil(size_of::<usize>())
         + size_of::<libc::sockaddr_in6>().div_ceil(size_of::<usize>());
@@ -654,17 +740,25 @@ fn udp_receive(
             Ok(n as usize)
         }
     })?;
-    if n != expected.len() || message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
-        return Err(invalid(
-            "UDP datagram or ancillary data was truncated/has a different length",
-        ));
-    }
-    if got != expected {
-        return Err(invalid("UDP datagram differs"));
-    }
-    let peer = address(&peer, message.msg_namelen as usize)?;
+    got.truncate(n.min(got.len()));
+    // An Ok recvmsg consumed one datagram, even if payload/control validation fails.
+    // Keep that fact separate from decoding and strict native-probe validation.
+    let metadata = udp_metadata(&peer, &message);
+    Ok(UdpArrival {
+        reported: n,
+        flags: message.msg_flags,
+        copied: got,
+        metadata,
+    })
+}
+
+fn udp_metadata(
+    peer: &libc::sockaddr_storage,
+    message: &libc::msghdr,
+) -> Result<UdpMetadata, UdpMetadataError> {
+    let peer = address(peer, message.msg_namelen as usize).map_err(UdpMetadataError::Peer)?;
     // SAFETY: CMSG_FIRSTHDR returns a header inside the control buffer, or null.
-    let header = unsafe { libc::CMSG_FIRSTHDR(&raw const message) };
+    let header = unsafe { libc::CMSG_FIRSTHDR(message) };
     let original = if header.is_null() {
         None
     } else {
@@ -673,7 +767,7 @@ fn udp_receive(
         let family = match (h.cmsg_level, h.cmsg_type) {
             (libc::SOL_IP, libc::IP_ORIGDSTADDR) => libc::AF_INET,
             (libc::SOL_IPV6, libc::IPV6_ORIGDSTADDR) => libc::AF_INET6,
-            _ => return Err(invalid("unexpected UDP ancillary record")),
+            _ => return Err(UdpMetadataError::UnexpectedRecord),
         };
         let bytes = if family == libc::AF_INET {
             size_of::<libc::sockaddr_in>()
@@ -683,12 +777,12 @@ fn udp_receive(
         // Compare in the buffer's address-sized type on both libc ABIs.
         #[allow(clippy::useless_conversion)]
         let (header_len, capacity) = (
-            usize::try_from(h.cmsg_len).map_err(|_| invalid("ancillary header length overflows"))?,
-            usize::try_from(message.msg_controllen).map_err(|_| invalid("ancillary capacity overflows"))?,
+            usize::try_from(h.cmsg_len).map_err(|_| UdpMetadataError::HeaderOverflow)?,
+            usize::try_from(message.msg_controllen).map_err(|_| UdpMetadataError::CapacityOverflow)?,
         );
         // SAFETY: CMSG_LEN computes the ABI header plus requested data length.
         if header_len < unsafe { libc::CMSG_LEN(bytes as _) } as usize || header_len > capacity {
-            return Err(invalid("short UDP original destination record"));
+            return Err(UdpMetadataError::ShortOriginal);
         }
         // SAFETY: header/data lengths above were checked; destination is initialized
         // storage of the largest sockaddr, filled with exactly the family's bytes.
@@ -697,9 +791,9 @@ fn udp_receive(
         unsafe {
             std::ptr::copy_nonoverlapping(libc::CMSG_DATA(header), (&raw mut destination).cast(), bytes)
         };
-        Some(address(&destination, bytes)?)
+        Some(address(&destination, bytes).map_err(UdpMetadataError::Original)?)
     };
-    Ok((got, peer, original))
+    Ok(UdpMetadata { peer, original })
 }
 
 fn address(storage: &libc::sockaddr_storage, len: usize) -> io::Result<SocketAddr> {
@@ -792,6 +886,33 @@ fn config_status<'a>(text: &'a str, name: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn udp_interception_parser_is_explicit_and_peer_only() {
+        let args = |words: &[&str]| words.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        for protocol in ["intercept-udp4", "intercept-udp6"] {
+            for origin in ["local", "forward"] {
+                for mode in ["connected", "unconnected"] {
+                    assert!(matches!(
+                        parse(&args(&[protocol, origin, mode, "1000", "1", "1000", "100"])).unwrap(),
+                        Probe::InterceptUdp(_)
+                    ));
+                }
+            }
+        }
+        assert!(
+            parse(&args(&[
+                "intercept-udp4",
+                "local-self",
+                "connected",
+                "1000",
+                "1",
+                "1000",
+                "100"
+            ]))
+            .is_err()
+        );
+    }
 
     #[test]
     fn hex_is_exact_and_rejects_malformed_inputs() {

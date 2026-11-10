@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# COORDINATOR ONLY: boots one real guest for the supplied finite IPv4/IPv6 TCP origin case.
+# COORDINATOR ONLY: boots one real guest for the supplied finite IPv4/IPv6 TCP or peer UDP origin case.
 set -euo pipefail
 : "${CARGO_TARGET_DIR:?coordinator private target}"
 : "${SHARDS_KERNEL:?absolute experimental kernel, never production-pin fallback}"
@@ -19,6 +19,15 @@ export SHARDS_INTERCEPT_PROTOCOL="${SHARDS_INTERCEPT_PROTOCOL:-intercept-tcp4}"
 case "$SHARDS_INTERCEPT_PROTOCOL" in
     intercept-tcp4) filter=experimental_tcp4_interception_has_distinct_backend_and_relay_observations ;;
     intercept-tcp6) filter=experimental_tcp6_interception_has_distinct_backend_and_relay_observations ;;
+    intercept-udp4|intercept-udp6)
+        : "${SHARDS_INTERCEPT_UDP_MODE:?connected or unconnected}"
+        case "$SHARDS_INTERCEPT_UDP_MODE" in connected|unconnected) ;; *) exit 2 ;; esac
+        case "$SHARDS_INTERCEPT_ORIGIN" in local|forward) ;; *) exit 2 ;; esac
+        case "$SHARDS_INTERCEPT_PROTOCOL" in
+            intercept-udp4) filter=experimental_udp4_interception_has_datagram_and_original_tuple_observations ;;
+            intercept-udp6) filter=experimental_udp6_interception_has_datagram_and_original_tuple_observations ;;
+        esac
+        ;;
     *) exit 2 ;;
 esac
 export CARGO_BUILD_JOBS=4
@@ -28,7 +37,7 @@ import hashlib,json,os,pathlib,shutil
 r=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])
 assert r.is_absolute()
 r.mkdir(parents=True,exist_ok=False)
-paths=['crates/testguest/src/main.rs','crates/testguest/src/linux.rs','crates/testguest/src/managed_network.rs','crates/testguest/src/managed_network/intercept.rs','crates/testguest/src/managed_network/intercept/wire.rs','crates/shards/tests/managed_network.rs']
+paths=['crates/testguest/src/main.rs','crates/testguest/src/linux.rs','crates/testguest/src/managed_network.rs','crates/testguest/src/managed_network/intercept.rs','crates/testguest/src/managed_network/intercept/wire.rs','crates/testguest/src/managed_network/intercept/udp.rs','crates/shards/tests/managed_network.rs']
 (r/'source-sha256.json').write_text(json.dumps([dict(path=p,sha256=hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()) for p in paths],indent=2)+'\n')
 config=pathlib.Path(os.environ['SHARDS_NETWORK_EFFECTIVE_CONFIG'])
 kernel=pathlib.Path(os.environ['SHARDS_KERNEL'])
@@ -40,7 +49,7 @@ PY
 git status --porcelain > "$SHARDS_NETWORK_RECORDS/source-status.txt"
 git rev-parse HEAD > "$SHARDS_NETWORK_RECORDS/source.txt"
 # Force actual guest rebuild after kiln synchronization even if source mtimes are old.
-touch crates/testguest/src/{main.rs,linux.rs,managed_network.rs} crates/testguest/src/managed_network/{intercept.rs,intercept/wire.rs} crates/shards/tests/managed_network.rs
+touch crates/testguest/src/{main.rs,linux.rs,managed_network.rs} crates/testguest/src/managed_network/{intercept.rs,intercept/wire.rs,intercept/udp.rs} crates/shards/tests/managed_network.rs
 set +e
 cargo test --locked -j4 --profile test-release -p shards --test managed_network "$filter" -- --ignored --exact --nocapture --test-threads=1 > "$SHARDS_NETWORK_RECORDS/campaign.log" 2>&1
 status=$?
@@ -48,9 +57,12 @@ if [ "$status" -eq 0 ]; then
     # A zero-test cargo success creates no actual guest observation file.
     python3 - <<'PY'
 import json,os,pathlib
-p=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])/(os.environ['SHARDS_INTERCEPT_PROTOCOL']+'-'+os.environ['SHARDS_INTERCEPT_ORIGIN']+'.stdout')
+protocol=os.environ['SHARDS_INTERCEPT_PROTOCOL']
+name=protocol+'-'+os.environ['SHARDS_INTERCEPT_ORIGIN']
+if protocol in ('intercept-udp4','intercept-udp6'): name+='-'+os.environ['SHARDS_INTERCEPT_UDP_MODE']
+p=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])/(name+'.stdout')
 records=[json.loads(line.removeprefix('managed-intercept ')) for line in p.read_text().splitlines() if line.startswith('managed-intercept ')]
-expected='RelayAbsentChecked' if os.environ['SHARDS_INTERCEPT_ORIGIN']=='forward-relay-absent' else 'Intercepted'
+expected='UdpIntercepted' if protocol in ('intercept-udp4','intercept-udp6') else 'RelayAbsentChecked' if os.environ['SHARDS_INTERCEPT_ORIGIN']=='forward-relay-absent' else 'Intercepted'
 assert sum(r.get('type')==expected for r in records)==1, 'actual guest experiment observation required'
 PY
     status=$?
