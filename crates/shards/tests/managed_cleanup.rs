@@ -585,10 +585,8 @@ mod native {
             use windows_sys::Win32::System::Threading::WaitForSingleObject;
             // SAFETY: a duplicate of this exact child's held process handle. One
             // completion observation, never a reused PID or readiness probe loop.
-            assert_eq!(
-                unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) },
-                WAIT_OBJECT_0
-            );
+            let ended = unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) };
+            assert_eq!(ended, WAIT_OBJECT_0);
         }
 
         #[cfg(unix)]
