@@ -1,6 +1,8 @@
 # P4 isolated IPv4 TCP interception fixture
 
 **Initial experiment record; no product mechanism adoption.**
+The distinct bounded deadline verdict is recorded in [ABSENCE-WINDOW.md](ABSENCE-WINDOW.md);
+new-source guest, guard-removal and restoration evidence remain coordinator-owned.
 The selected-flow fallback DROP experiment is recorded in [ABSENT-DROP.md](ABSENT-DROP.md);
 its actual guarded guest outcome and any acceptance change remain coordinator-owned.
 The fixture-only missing-listener mode and current policy/light-check checkpoint
