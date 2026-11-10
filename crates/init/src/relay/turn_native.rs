@@ -24,7 +24,9 @@ fn payload(name: &str) -> Vec<u8> {
     let word = supplied(name);
     assert_eq!(word.len() % 2, 0);
     word.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
@@ -42,7 +44,9 @@ fn bytes_record(role: &str, bytes: &[u8]) {
 }
 
 fn queue(stream: &UnixStream, option: i32, input: i32) -> io::Result<()> {
-    assert!(input > 0);
+    if input <= 0 {
+        return Err(invalid("positive caller queue input required"));
+    }
     // SAFETY: exact initialized option borrowed by this owned socket.
     count(unsafe {
         libc::setsockopt(
@@ -68,8 +72,9 @@ fn queue(stream: &UnixStream, option: i32, input: i32) -> io::Result<()> {
     println!(
         "managed-tcp-forward {{\"type\":\"NativeTurnQueue\",\"option\":{option},\"supplied\":{input},\"actual\":{actual},\"size\":{size}}}"
     );
-    assert_eq!(size as usize, size_of_val(&actual));
-    assert!(actual > 0);
+    if size as usize != size_of_val(&actual) || actual <= 0 {
+        return Err(invalid("native queue readback is not a positive option integer"));
+    }
     Ok(())
 }
 
@@ -127,7 +132,9 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
     let request = payload("SHARDS_TCP_REQUEST_HEX");
     let seed = payload("SHARDS_TURN_PREFILL_SEED_HEX");
     let envelope: usize = supplied("SHARDS_TURN_PREFILL_BYTES").parse().unwrap();
-    assert!(!request.is_empty() && !seed.is_empty() && envelope > 0);
+    if request.is_empty() || seed.is_empty() || envelope == 0 {
+        return Err(Failure::Check("nonempty finite caller source and prefill required"));
+    }
     let prefill: Vec<u8> = seed.iter().copied().cycle().take(envelope).collect();
     let up = supplied("SHARDS_TCP_UP_BYTES").parse().unwrap();
     let down = supplied("SHARDS_TCP_DOWN_BYTES").parse().unwrap();
@@ -330,8 +337,8 @@ fn native_direction_turn_retains_suffix_under_native_pressure() {
     let descriptors = || {
         std::fs::read_dir("/proc/self/fd")
             .unwrap()
-            .map(|item| item.unwrap())
-            .count()
+            .try_fold(0usize, |count, item| item.map(|_| count + 1))
+            .unwrap()
     };
     let before = descriptors();
     let result = exercise(&original);
