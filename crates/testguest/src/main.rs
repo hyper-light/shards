@@ -3,6 +3,8 @@
 //! powers the VM off. Run as any other process, it is a workload for images (workload.rs).
 
 #[cfg(target_os = "linux")]
+mod cleanup;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod managed_lifecycle;
