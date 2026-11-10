@@ -8,15 +8,21 @@
   "owned_path": "docs/research/measurements/managed-poller-cost",
   "files": {
     "Cargo.toml": "70ed429881d165f9f10d78b0362e62a0bb74087adf13452ce113e45d14a3ad22",
-    "README.md": "9cd3aefa8073ad387df2bb411c2eeab0299dafa1e83cd353450547f3bbdb3748",
+    "README.md": "f61fdeedb2eb5a5b803fe228a2a1f872168ff0f154edd326c47ed438877d1aaa",
     "accounting.rs": "f4967f978c06cc19e7ace30b49ff593f8f162c666851e956cb79a93b1983afa7",
     "fixture.rs": "f63ac590a61b70ad656d5e9f94983237a88d9e1e7d655e6625242dadf7f2a39f",
     "light-check.py": "0dbf04ca371b665674188cc625001587f03282c4e74091cbcf4ba050941d7fe6",
     "light-result.json": "2b7aa58504b0ac807734c7ff741099dda7ca1c854296d1b5b05772cab9ac006e",
     "light-supplemental.json": "a81f6f4216537c04adaa0f3fc56ae858a8bf4ba5e670707f2f2d946d86636498",
-    "run.py": "345dbd2fda6c8e3edfd00e34a2d8fe1cfa7cf3a3df2d5d263f7d4916eecabb4b"
+    "run.py": "098a94718b9089211e69fba1455d5e5ecd53b069ea0296231023a8b1b523a3cd",
+    "summary-check.py": "68c265126ca39363b7d54a46e3b01d4a6ce222a80ea764e8c6891e3c801586d8",
+    "summary-policy-result.json": "b61c81ec5caa635857aa29e1182adc98bf73bc27dbff8588af2e8bdc48ff3ec6",
+    "summary-result.json": "d3b7a4f9c42c2cd52a09555e23cb63a0e3887041972329500c1cc4eb878d5cbb"
   },
   "actual_pure_source": "accounting.rs",
   "native_harness_compile_and_execution": "UNRUN; ROOT-owned",
-  "unmerged_ABI_checkpoint": "82425ae5d20cb80d4385ba571936cfa537caa25e; host and guest must rebuild together"
+  "unmerged_ABI_checkpoint": "82425ae5d20cb80d4385ba571936cfa537caa25e; host and guest must rebuild together",
+  "continuation_base": "f2a2ede508e3e860189c9611f9c6a1cd24ca4197",
+  "continuation_canonical_main": "096c9c7be1752a5eaf99eda2c7eb4723c2a8f6db",
+  "summary_check_scope": "pure synthetic per-case accounting only; no native workload"
 }

@@ -28,6 +28,29 @@ def distribution(values):
             "p99": rank(99), "max": ordered[-1]}
 
 
+def summarize(cases, status, requested_case_count, parse_error=None):
+    complete = (status == 0 and parse_error is None and len(cases) == requested_case_count
+                and all(case["complete"] for case in cases))
+    summaries = []
+    for case in cases:
+        waits = case["waits"] if complete else []
+        observed = [sample for wait in waits for sample in wait["observations"]]
+        summaries.append({
+            "case": case["case"], "ready_count": case["ready_count"],
+            "rounds_requested": case["rounds_requested"],
+            "rounds_completed": case["rounds_completed"], "case_complete": case["complete"],
+            "wait_ns": distribution([wait["wait_ns"] for wait in waits]),
+            "write_completed_to_wait_return_ns": distribution(
+                [sample["write_completed_to_wait_return_ns"] for sample in observed]),
+            "wait_return_to_drained_ns": distribution(
+                [sample["wait_return_to_drained_ns"] for sample in observed]),
+        })
+    return {"case_records": len(cases), "complete": complete, "parse_error": parse_error,
+            "recorded_waits": sum(len(case["waits"]) for case in cases),
+            "case_summaries": summaries,
+            "percentiles": "nearest rank per case index; suppressed for an incomplete invocation; raw JSONL retained; recording/dispatch work is not subtracted"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo", type=Path)
@@ -126,16 +149,7 @@ def main():
         cases = [json.loads(line) for line in (work / "baseline.stdout").read_text().splitlines()]
     except (ValueError, UnicodeError) as error:
         parse_error = str(error)
-    complete = status == 0 and parse_error is None and len(cases) == len(args.ready_counts.split(',')) and all(c["complete"] for c in cases)
-    waits = [sample for case in cases for sample in case["waits"]] if complete else []
-    observed = [sample for wait in waits for sample in wait["observations"]]
-    summary = {"case_records": len(cases), "complete": complete,
-               "parse_error": parse_error, "wait_ns": distribution([w["wait_ns"] for w in waits]),
-               "write_completed_to_wait_return_ns": distribution(
-                   [o["write_completed_to_wait_return_ns"] for o in observed]),
-               "wait_return_to_drained_ns": distribution(
-                   [o["wait_return_to_drained_ns"] for o in observed]),
-               "percentiles": "nearest rank; suppressed for an incomplete invocation; raw JSONL retained; recording/dispatch work is not subtracted"}
+    summary = summarize(cases, status, len(args.ready_counts.split(',')), parse_error)
     (work / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     return 0 if summary["complete"] else 1
 

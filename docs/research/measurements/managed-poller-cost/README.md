@@ -122,8 +122,11 @@ actual named checkout's VMM through a path dependency and uses a new target with
 one Cargo build job. It records source/lock/harness/binary hashes, the raw native
 batch source token, actual OS/architecture, `rustc -vV`, Cargo version, dirty/untracked
 path report, exact commands/status and stdout/stderr hashes. It retains resolved
-Cargo.lock, raw JSONL and nearest-rank n/p50/p90/p99/max summaries. These are
-baseline distributions only; there is no competitor or ratio. `--offline`
+Cargo.lock, raw JSONL and nearest-rank n/p50/p90/p99/max summaries **per case
+index**. Different ready counts and repeated counts remain separate; caller
+order can affect retained capacity, which stays in the raw records. Rounds within
+one case are summarized together; raw round/capacity fields remain available
+for cold/warm analysis. These are baseline distributions only; there is no competitor or ratio. `--offline`
 refuses missing dependencies rather than changing the input silently.
 
 ROOT should review/compile the whole harness before execution and choose counts
@@ -182,6 +185,36 @@ those actual nonzero results are retained, not called passing exit codes. A new
 tiny private source directory with its own empty Git metadata and intent-to-add
 entries then ran ordinary `git diff --check`, exit 0. No checkout was cloned and
 no native fixture executed. Both checks used 1 CPU/1 GiB/2 GiB Kiln admission.
+
+## Per-case accounting continuation
+
+The first wrapper pooled different case counts into one distribution. Before any
+native run, this continuation makes case-index grouping explicit; it is a
+measurement-method refinement, not a reproduced performance/production defect.
+Continuation policy readback: main096c9c7be1752a5eaf99eda2c7eb4723c2a8f6db,
+policyfiles/hash unchanged. Minimal proposal key
+`implementation-poller-per-case-proposal-e380-progress-v1` preceded code. Owned
+paths remain this directory; fixture.rs/native/production source is unchanged.
+The whole invocation must still be complete before any successful latency
+distribution is emitted; failure/timeout/missing cases/parse errors suppress them.
+Raw records and exact recorded wait count remain available even when incomplete.
+
+[summary-check.py](summary-check.py) imports only the wrapper's pure functions;
+it never invokes main, a descriptor workload or a profiler. Actual admitted
+Fedora check in NEW `/home/adalundhe/managed-poller-summary-light-f2a2-v1`,
+1 CPU/1 GiB/2 GiB, ran two test methods with synthetic values only: distinct
+case-index distributions (including repeated counts) preserve raw inputs, and
+five incomplete-result variants emit no successful percentiles. Both passed,
+exit0. Python AST syntax passed. Exact run.py SHA256:
+`098a94718b9089211e69fba1455d5e5ecd53b069ea0296231023a8b1b523a3cd`;
+summary-check.py SHA256:
+`68c265126ca39363b7d54a46e3b01d4a6ce222a80ea764e8c6891e3c801586d8`.
+[summary-result.json](summary-result.json) retains the original command/output
+and hashes. A new admitted private policy-source check also exited0, with the
+same canonical rules hash; [summary-policy-result.json](summary-policy-result.json)
+retains its exact command/output. The earlier native harness compilation/descriptor/latency/profile
+gaps remain wholly unrun/ROOT-owned. No CPU/fault/allocation counters, production
+capacity choice, new manager/cache/thread or platform adapter was added.
 
 ## R01–R16 and remaining gates
 
