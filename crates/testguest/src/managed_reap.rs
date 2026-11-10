@@ -49,7 +49,7 @@ fn exercise(report: &mut std::fs::File, path: &str, rounds: &str, milliseconds: 
     };
     let before = descriptors()?;
     for round in 0..rounds {
-        let pid = orphan(deadline)?;
+        let pid = orphan(report, deadline)?;
         let after = descriptors()?;
         writeln!(
             report,
@@ -106,7 +106,7 @@ fn wait_raw(fd: i32, events: i16, deadline: Instant) -> io::Result<()> {
     }
 }
 
-fn orphan(deadline: Instant) -> io::Result<u32> {
+fn orphan(report: &mut std::fs::File, deadline: Instant) -> io::Result<u32> {
     let socket = format!("/tmp/reap-{}.sock", std::process::id());
     let listener = UnixListener::bind(&socket)?;
     let mut parent = Command::new(std::env::current_exe()?)
@@ -132,7 +132,18 @@ fn orphan(deadline: Instant) -> io::Result<u32> {
         return Err(io::Error::from(io::ErrorKind::InvalidData));
     }
     // Linux6.18 pidfd_poll distinguishes zombie POLLIN from reaped POLLHUP.
-    wait_raw(child_fd.as_raw_fd(), libc::POLLHUP, deadline)?;
+    if let Err(error) = wait_raw(child_fd.as_raw_fd(), libc::POLLHUP, deadline) {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                let state = stat
+                    .rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().next());
+                writeln!(report, "unreaped pid {pid} state {}", state.unwrap_or("unknown"))?;
+            }
+            Err(read) => writeln!(report, "unreaped pid {pid} stat errno {:?}", read.raw_os_error())?,
+        }
+        return Err(error);
+    }
     drop(listener);
     std::fs::remove_file(socket)?;
     Ok(pid)
