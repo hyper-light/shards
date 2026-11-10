@@ -542,6 +542,13 @@ impl Fixture {
         );
     }
 
+    fn consume(&mut self, member: u32, label: &str, channel: Channel) {
+        let observer = self.observe(member, channel, None, false);
+        let expected = payload(label, channel);
+        self.observers[observer].exact(&expected);
+        self.observers[observer].ack_and_finish(expected.len());
+    }
+
     fn shutdown(&mut self) -> Result<(), String> {
         let stopped = self.command(&["stop", "daemon"]);
         let mut errors = Vec::new();
@@ -626,16 +633,7 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
     let Some(fixture) = with_fixture(|fixture| {
         let held = fixture.observe(1, Channel::Stdout, None, false);
         fixture.observers[held].exact(&payload("agent", Channel::Stdout));
-        for (member, label, channel) in [
-            (1, "agent", Channel::Stderr),
-            (2, "harness", Channel::Stdout),
-            (2, "harness", Channel::Stderr),
-        ] {
-            let observer = fixture.observe(member, channel, None, false);
-            let expected = payload(label, channel);
-            fixture.observers[observer].exact(&expected);
-            fixture.observers[observer].ack_and_finish(expected.len());
-        }
+        fixture.consume(1, "agent", Channel::Stderr);
         fixture.main_progress();
         fixture.observers[held]
             .sender
@@ -643,6 +641,9 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
             .unwrap();
         fixture.observers[held].join().unwrap();
         fixture.main_progress();
+        // The sibling receives its first output credit only after observer loss.
+        fixture.consume(2, "harness", Channel::Stdout);
+        fixture.consume(2, "harness", Channel::Stderr);
     }) else {
         return;
     };
@@ -674,10 +675,7 @@ fn private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_sc
         let other = fixture.metadata.as_ref().unwrap().scope(1, Channel::Stdout);
         let observer = fixture.observe(2, Channel::Stdout, Some(other), false);
         fixture.observers[observer].refused(Some(Reason::Scope));
-        let neighbor = fixture.observe(2, Channel::Stderr, None, false);
-        let expected = payload("harness", Channel::Stderr);
-        fixture.observers[neighbor].exact(&expected);
-        fixture.observers[neighbor].ack_and_finish(expected.len());
+        fixture.consume(2, "harness", Channel::Stderr);
         fixture.main_progress();
     }) else {
         return;
