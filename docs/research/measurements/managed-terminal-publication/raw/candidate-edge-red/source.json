@@ -1,0 +1,20 @@
+{
+  "source": {
+    "crates/shards/src/daemon/managed.rs": "9ad29d57792e861863a00215977724c68b0fb1b170f4bf631fd1ae7fdf893338",
+    "crates/shards/src/daemon.rs": "2252aee45163c9dc2ce5a4dddb92051b5341bf8ea895dd34489f5e906345ecad",
+    "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+    "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+    "crates/abi/src/run.rs": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8"
+  },
+  "fragments": {
+    "channel": "24716c2262a38fd961c5adde89460bf2016b2552bf2077fced128754a94a4e44",
+    "scope": "4191a8087d1b3017a4724228d4a08904bc4c600ad20e636d06e7a5447258f05e",
+    "state": "b39d70d151599303be2b5190346e087c554dddb7ddc91283a0825af6dd892a8c",
+    "life": "ca3d8278d77238070b9565d04279fba028baa13822f007f97f78bc61a6704cbc",
+    "credit": "fb53b85b70774416b32f6e4ff31e16530ab4edf95dbacea1e54acf4007bc1763",
+    "tests": "0ff82fc2f60a4c2084015f7ea98509772dab5e73f8fe68de8a6b9a7432600563",
+    "lock": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5"
+  },
+  "fixture_sha256": "c76a64e1df1edac35c3de9235a6ddb2069d94e41444a31ab9d8760faa88959a9",
+  "scope": "exact Life/credit and metadata-writer fragments; no Output/Owner/daemon/driver build or execution"
+}

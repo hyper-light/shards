@@ -1,0 +1,28 @@
+[
+  {
+    "argv": [
+      "rustc",
+      "--edition=2024",
+      "--test",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green/terminal-pure.rs",
+      "-C",
+      "debuginfo=0",
+      "-o",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green/terminal-pure"
+    ],
+    "exit_code": 0,
+    "log": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green/0.log",
+    "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green/terminal-pure",
+      "terminal_tests::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit_code": 0,
+    "log": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green/1.log",
+    "log_sha256": "07fa732e1bebb442780a71870485fa0d75005dc3596e62db040e3ada48d4a45c"
+  }
+]

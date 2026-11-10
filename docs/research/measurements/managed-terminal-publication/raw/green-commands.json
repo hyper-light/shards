@@ -1,0 +1,129 @@
+[
+  {
+    "argv": [
+      "python3",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/docs/research/measurements/managed-terminal-publication/pure.py",
+      "--source",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+      "--output",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-green",
+      "--timeout-seconds",
+      "30"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "pure-green.log",
+    "sha256": "63fe8596d70cba89801ae12375cda2b42053d081326e9b51bca466e06938a42e"
+  },
+  {
+    "argv": [
+      "rustc",
+      "--version",
+      "--verbose"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "rustc-version.log",
+    "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+  },
+  {
+    "argv": [
+      "cargo",
+      "--version",
+      "--verbose"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "cargo-version.log",
+    "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+  },
+  {
+    "argv": [
+      "uname",
+      "-a"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "uname.log",
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  },
+  {
+    "argv": [
+      "cargo",
+      "test",
+      "--offline",
+      "-p",
+      "shards-remote",
+      "--lib",
+      "managed::tests::terminal_",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "--test-threads=1"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "remote-terminal-pure.log",
+    "sha256": "18e53f8a7e202c74036650a016256989f7b9a1e87d335309ab88908734d52001"
+  },
+  {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "-p",
+      "shards-remote",
+      "--lib",
+      "--tests",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "remote-clippy.log",
+    "sha256": "5cce49194c94dc79a6c2f5e227cc4d46083cc0280cee67f15547c23ae1e903a0"
+  },
+  {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "policy.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "diff-check.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "du",
+      "-sk",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "storage.log",
+    "sha256": "705eb7f960f9d2948874f5a02e56ace4b6ddcadd4782ee4ab9f4a1239f40cd7d"
+  }
+]

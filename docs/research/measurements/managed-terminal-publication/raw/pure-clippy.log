@@ -1,0 +1,16 @@
+warning: patch `rquickjs-sys v0.14.0 (/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/vendor/rquickjs-sys)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+    Checking managed-terminal-light v0.0.0 (/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/terminal-light)
+error: unused import: `OpenOptions`
+   --> /home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final/terminal-pure.rs:584:21
+    |
+584 | use std::fs::{File, OpenOptions};
+    |                     ^^^^^^^^^^^
+    |
+    = note: `-D unused-imports` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: could not compile `managed-terminal-light` (lib) due to 1 previous error

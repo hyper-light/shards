@@ -1,0 +1,23 @@
+{"argv": ["rustc", "--edition=2024", "--test", "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/terminal-pure.rs", "-C", "debuginfo=0", "-o", "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/terminal-pure"], "exit_code": 0, "log": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/0.log", "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}
+
+{"argv": ["/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/terminal-pure", "", "--nocapture", "--test-threads=1"], "exit_code": 0, "log": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/1.log", "log_sha256": "edb5f7324792a2d4206ba9670f5dce9ee32bcb3c407291a4056b3912981df3f2"}
+
+running 14 tests
+test output_calls::endpoint_return_in_serving_or_failed_drain_revokes_stops_and_publishes ... ok
+test output_calls::finish_releases_life_and_credit_before_inline_callback ... ok
+test output_calls::finished_end_stop_requests_retirement_and_writes_only_one_complete_row ... ok
+test output_calls::metadata_write_failure_reports_scope_and_preserves_stop_progress ... ok
+test terminal_tests::drain_wait_rechecks_the_predicate_across_the_atomic_condvar_release ... ok
+test terminal_tests::draining_completion_is_actionable_without_capacity_and_only_once ... ok
+test terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity ... ok
+test terminal_tests::fully_consumed_canonical_abort_keeps_errno_and_unknown_tail ... ok
+test terminal_tests::known_normal_completion_survives_stop_before_the_worker_publishes ... ok
+test terminal_tests::metadata_failure_is_returned_without_changing_the_logical_winner ... ok
+test terminal_tests::pending_or_aborted_equal_cursors_cannot_publish_normal_completion ... ok
+test terminal_tests::readiness_is_derived_and_a_spurious_wake_does_not_issue_credit ... ok
+test terminal_tests::revocation_and_close_wake_a_drain_without_reopening_it ... ok
+test terminal_tests::stop_before_ack_is_sticky_and_retains_the_known_canonical_failure ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+

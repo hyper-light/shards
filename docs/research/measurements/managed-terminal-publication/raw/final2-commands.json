@@ -1,0 +1,91 @@
+[
+  {
+    "argv": [
+      "python3",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/docs/research/measurements/managed-terminal-publication/pure.py",
+      "--source",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+      "--output",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2",
+      "--timeout-seconds",
+      "30"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "pure-final2.log",
+    "sha256": "3fee8e518c1318938a9938fee7732481e7df2bdb451a6d77a1beb927338c8f8b"
+  },
+  {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "-p",
+      "managed-terminal-light",
+      "--all-targets",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "pure-final2-clippy.log",
+    "sha256": "d5619580893cb142f346dab910388ea18c97b3131957031dac74c7004fb9a7ae"
+  },
+  {
+    "argv": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "crates/remote/src/managed.rs",
+      "crates/shards/src/daemon/managed.rs"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "final2-format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "final2-policy.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "final2-diff-check.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "du",
+      "-sk",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "final2-storage.log",
+    "sha256": "b61cfea1e3849f45fbf94699c129f9747803b8ed9cb2204b6852b9fbd17df149"
+  }
+]

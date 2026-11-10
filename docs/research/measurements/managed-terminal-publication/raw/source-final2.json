@@ -1,0 +1,6 @@
+{
+  "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+  "crates/shards/src/daemon/managed.rs": "2b3e4d2c80be615a58b062b6a077c11511e2679c738c798a27f0e014a880f655",
+  "docs/research/measurements/managed-terminal-publication/pure.py": "c6e2e45aa5e2d4565d964c79b805bd3ecb1756a38d95d43eb6efc48f030e5577",
+  "docs/research/measurements/managed-terminal-publication/output-calls.rs": "f0756a25d021f33798d62a3c8bd4b71374e3cdc594ca73c61220a789e2a1190a"
+}
