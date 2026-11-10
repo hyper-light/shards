@@ -1,9 +1,9 @@
 # Required development evidence
 
 Use this checklist with [R01–R16](development-rules.md) for each implementation
-batch. Link existing records rather than duplicate them. The coordinator owns the
-heavy/live/performance review; a subagent returns only its scoped implementation
-and light-test evidence. Keep unknown or unrun results explicit.
+batch. Link existing records rather than duplicate them. The coordinator owns
+evidence review and final combined gates; agents return their scoped implementation,
+audit, live-test or measurement evidence under R15. Keep unrun results explicit.
 
 - **Identity:** task/gap IDs, Git revision, policy SHA-256, coordinator/implementer,
   owned paths, environment/toolchain/kernel/architecture and supported target scope.
