@@ -1,0 +1,37 @@
+[
+  {
+    "proof": "v1",
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-boundaries-light-v1/guest/target/debug/deps/sock_addr_pure-83b60b160829b6a5",
+    "bytes": 10597000,
+    "sha256": "0a8886a748818003106255c98011e88ac9e0e20bf0dbe74ec2386e2a6a5e907b"
+  },
+  {
+    "proof": "v1",
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-boundaries-light-v1/guest/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-9fd8bdc3d4bf2699",
+    "bytes": 10708096,
+    "sha256": "19cb00790f53759e3e07288a7a16eb86eb5023dbe1e0070a7dccd59323f74be0"
+  },
+  {
+    "proof": "v2",
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-boundaries-light-v2/guest/target/debug/deps/sock_addr_pure-e85f9194792ff644",
+    "bytes": 10596984,
+    "sha256": "58975a50020fc867e309531b1f4845b1cd3557782f97572673a4c21272f0f374"
+  },
+  {
+    "proof": "v2",
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-boundaries-light-v2/guest/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-e77de393e1210927",
+    "bytes": 10708096,
+    "sha256": "483c13aa9d2f54869ec32c37ec8cfc1a205447de7bf1d57671f229a16b03b576"
+  },
+  {
+    "proof": "v2",
+    "case": "host",
+    "path": "/home/adalundhe/managed-relay-boundaries-light-v2/host/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11780472,
+    "sha256": "a043c9d20175e91ca18d643077c964901f2a0215c423cd83e8178941f8ff4c89"
+  }
+]

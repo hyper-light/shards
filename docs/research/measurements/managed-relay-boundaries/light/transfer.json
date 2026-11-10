@@ -1,0 +1,8 @@
+{
+  "transport": "compressed in-memory JSON/base64, text files only; no local archive created",
+  "compressed_bytes": 17368,
+  "compressed_sha256": "d0e8f1c7a126a599a8727f61ed1bf2480f3ce17015be803962165edd8dfb44b0",
+  "files": 68,
+  "all_member_hashes_verified": true,
+  "originals": "Fedora ~/managed-relay-boundaries-light-{v1,v2}, preserved"
+}

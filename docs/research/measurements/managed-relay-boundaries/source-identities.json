@@ -1,0 +1,13 @@
+{
+  "base": "756352582",
+  "source_sha256": {
+    "crates/testguest/src/managed_network.rs": "541349f0bc5d0fdf92ec38dd165841f5bebecb451287cd237e74aa9f7056ce0c",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "2ea6d7cf9c08137a1682a977afc11f392748286e3ca8b08bcb4f351d46ff6c72",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "b5e772fb4079a75f737d8ee2825aad74e6c7f9a1a63d6da03bab5652f051b817",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "2a6e14a22c8e04ae43e1eb7df161121218ea8aaa8a2f97932669017ac397c8d8",
+    "crates/shards/tests/managed_network/cancel.rs": "378fbb89f5dec3a9f8c4419bc69d1a0e1ff956af1fc31074eaa4c5f6ab43e2a0",
+    "docs/research/measurements/managed-relay-boundaries/light.py": "8b69779be43ef5466ccd2128bf5d43063982ddd1031b3fcf991133d16978af33"
+  },
+  "final_proof": "~/managed-relay-boundaries-light-v2",
+  "scope": "targeted source-linked pure/light only"
+}

@@ -1,0 +1,9 @@
+[package]
+name="sock-addr-host-pure"
+version="0.0.0"
+edition="2024"
+[workspace]
+[lib]
+path="fixture.rs"
+[dependencies]
+serde_json="=1.0.151"

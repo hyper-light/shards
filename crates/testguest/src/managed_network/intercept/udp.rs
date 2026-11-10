@@ -212,6 +212,17 @@ pub(super) struct ScriptedCompletion {
     stage: Stage,
     pub(super) result: Result<Terminal, Fault>,
 }
+impl ScriptedCompletion {
+    pub(super) fn ended_after_baseline(&self) -> bool {
+        self.report.arrivals == Exchange::SCRIPT.len()
+            && self.report.matched == Exchange::SCRIPT.len()
+            && self.report.empty == 1
+            && self.report.replies_sent == Exchange::SCRIPT.len()
+            && matches!(self.stage, Stage::ReceiveDatagram)
+            && (matches!(self.result, Ok(Terminal::Cancelled))
+                || matches!(&self.result, Err(Fault::Io(error)) if error.kind() == io::ErrorKind::TimedOut))
+    }
+}
 pub(super) enum Completion {
     Scripted(ScriptedCompletion),
     Forwarded(forward::Completion),
@@ -251,7 +262,56 @@ pub(super) fn notification() -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 pub(super) fn notify(fd: &OwnedFd, deadline: &Deadline) -> io::Result<()> {
-    let word = 1u64;
+    notify_word(fd, 1, deadline)
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) enum BoundaryNotice {
+    Once,
+    Duplicate,
+    Missing,
+}
+impl BoundaryNotice {
+    fn word(self) -> Option<u64> {
+        match self {
+            Self::Once => Some(1),
+            // One aggregate write makes the duplicate independent of scheduling.
+            Self::Duplicate => Some(2),
+            Self::Missing => None,
+        }
+    }
+    pub(super) fn rejection(self) -> Option<io::ErrorKind> {
+        match self {
+            Self::Once => None,
+            Self::Duplicate => Some(io::ErrorKind::InvalidInput),
+            Self::Missing => Some(io::ErrorKind::TimedOut),
+        }
+    }
+}
+pub(super) fn notify_boundary(fd: &OwnedFd, notice: BoundaryNotice, deadline: &Deadline) -> io::Result<()> {
+    if let Some(word) = notice.word() {
+        notify_word(fd, word, deadline)?;
+    }
+    match notice {
+        BoundaryNotice::Once => Ok(()),
+        BoundaryNotice::Duplicate | BoundaryNotice::Missing => {
+            let mut out = io::stdout().lock();
+            writeln!(
+                out,
+                "managed-intercept {{\"type\":\"BoundaryNoticeIssued\",\"notice\":\"{notice:?}\",\"word\":{},\"write\":\"{}\"}}",
+                notice
+                    .word()
+                    .map_or_else(|| "null".to_owned(), |word| word.to_string()),
+                if notice.word().is_some() {
+                    "Completed"
+                } else {
+                    "Omitted"
+                }
+            )?;
+            out.flush()
+        }
+    }
+}
+fn notify_word(fd: &OwnedFd, word: u64, deadline: &Deadline) -> io::Result<()> {
     deadline.io(fd.as_raw_fd(), libc::POLLOUT, || {
         // SAFETY: eventfd reads exactly the initialized uint64 word.
         let n = unsafe { libc::write(fd.as_raw_fd(), (&raw const word).cast(), size_of_val(&word)) };
@@ -756,6 +816,33 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn notification_words_and_baseline_terminal_outcomes_stay_distinct() {
+        assert_eq!(BoundaryNotice::Once.word(), Some(1));
+        assert_eq!(BoundaryNotice::Duplicate.word(), Some(2));
+        assert_eq!(BoundaryNotice::Missing.word(), None);
+        let mut done = ScriptedCompletion {
+            report: DatagramReport {
+                arrivals: 2,
+                matched: 2,
+                empty: 1,
+                replies_sent: 2,
+            },
+            stage: Stage::ReceiveDatagram,
+            result: Ok(Terminal::Cancelled),
+        };
+        assert!(done.ended_after_baseline());
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        assert!(done.ended_after_baseline());
+        done.result = Err(Fault::Io(io::ErrorKind::ConnectionAborted.into()));
+        assert!(!done.ended_after_baseline());
+        done.result = Ok(Terminal::ScriptComplete);
+        assert!(!done.ended_after_baseline());
+        done.result = Ok(Terminal::Cancelled);
+        done.report.arrivals = 3;
+        assert!(!done.ended_after_baseline());
+        assert_eq!(done.report.arrivals, 3);
+    }
     #[test]
     fn inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence() {
         for family in [Family::Ipv4, Family::Ipv6] {

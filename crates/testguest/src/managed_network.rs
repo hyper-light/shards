@@ -107,9 +107,15 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     words.try_reserve_exact(args.len()).map_err(io::Error::other)?;
     words.extend(args.iter().map(String::as_str));
     match words.as_slice() {
-        ["sock-addr-udp4" | "sock-addr-client4" | "sock-addr-relay4" | "sock-addr-cancel4" | "sock-addr-precommit4", ..] => {
-            Ok(Probe::SockAddr(intercept::sock_addr::Inputs::parse(&words)?))
-        }
+        [
+            "sock-addr-udp4"
+            | "sock-addr-client4"
+            | "sock-addr-relay4"
+            | "sock-addr-cancel4"
+            | "sock-addr-precommit4"
+            | "sock-addr-boundary4",
+            ..,
+        ] => Ok(Probe::SockAddr(intercept::sock_addr::Inputs::parse(&words)?)),
         ["capabilities"] => Ok(Probe::Capabilities(None)),
         ["capabilities", path] => Ok(Probe::Capabilities(Some(path))),
         [
