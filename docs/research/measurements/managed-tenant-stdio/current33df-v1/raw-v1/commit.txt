@@ -1,0 +1,11 @@
+commit 4d80f06048fbd11477032ae9b1bb95b02ae3171c
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 10:42:48 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 10:42:48 2026 -0800
+
+    test: bound fresh normal and stdio checks on landed core
+    
+    Prepare an evidence-only exact-source KVM campaign using private Linux build and frozen artifact paths. Preserve prior campaign sources and strict lifecycle assertions.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

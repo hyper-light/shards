@@ -1,0 +1,23 @@
+{
+  "SHARDS_TENANT_STDIO_CHALLENGE_HEX": "33ef0bec086b4f3db2702631fa6d967e",
+  "SHARDS_TENANT_STDIO_SOURCE_REVISION": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "SHARDS_TENANT_EXIT_DEADLINE_MS": "300000",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/target",
+  "SHARDS_TENANT_STDIO_RECORDS": "/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/records/stdio-v1/records",
+  "SHARDS_TENANT_STDIO_DEADLINE_MS": "300000",
+  "SHARDS_TENANT_STDIO_CLEANUP_MS": "300000",
+  "TMPDIR": "/tmp/mt-01a1-current33df-v1",
+  "CARGO_BUILD_JOBS": "4",
+  "XDG_CACHE_HOME": "/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/cache",
+  "SHARDS_TENANT_STDIO_PORT": "51109",
+  "SHARDS_TENANT_EXIT_PORT": "51109",
+  "SHARDS_TENANT_EXIT_RECORDS": "/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/records/normal-v1/records",
+  "SHARDS_TENANT_STDIO_REPORT_BYTES": "91",
+  "DOCKER_CONFIG": "/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/records/empty-docker",
+  "SHARDS_TENANT_STDIO_WORK_MS": "300000",
+  "SHARDS_TENANT_EXIT_SOURCE_REVISION": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "SHARDS_TENANT_STDIO_ACTOR_PORT": "38485",
+  "SHARDS_REQUIRE_VMS": "1"
+}

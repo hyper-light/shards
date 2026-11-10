@@ -51,9 +51,48 @@ actual reconnect acceptance remains a coordinator obligation.
 
 ## Results and limits
 
-Prepared only at this candidate. Actual source SHA, build/artifact hashes,
-commands, results, cleanup and failures will be added after admitted execution.
-No current pass, full management closure or performance claim is made here.
+Exact signed tested source: `4d80f06048fbd11477032ae9b1bb95b02ae3171c`.
+The source-code diff against main33df is empty. GNU host rustc1.98.1/LLVM22.1.8,
+Fedora44/kernel6.19.10, KVM API12, uid1000; carried init/server and testguest use
+the musl target. This closing evidence changes no source/test bytes.
+
+| Actual stage | Result |
+| --- | --- |
+| r5 initial private preparation | 127 before compilation: `rg` is absent on Fedora. Clone, policy/kernel identity and toolchain records retained; no actor/VM started. |
+| r7 same-source resumed build | Full host/normal carried init/server/VM/net compile0, static testguest0, seven-artifact index/freeze0. `resume-build.command` replaces only the orchestration target-list check with Python; no source edit/rebase. |
+| r12 normal exit | Exactly1 test passed,0failed/ignored,20filtered. Both actor canonical End/ACK/transport EOF, later exact sibling fd1/fd2 and main progress; strict final metadata and cleanup passed. |
+| r12 actor stdio EOF | Exactly1 test passed,0failed/ignored,20filtered. Both channel EOFs precede the fresh16-byte challenge; actual21-byte request==reply plus peer EOF, visible non-zombie actor row, subsequent sibling/main bytes; strict metadata/cleanup passed. |
+
+Both final metadata files retain actor `ended/complete` at accepted==consumed
+102/99, and continuing sibling `aborted/unknown` at177/171 after owner stop.
+Both cases completed protocol, stopped PID0 inspection, removal, owner stop and
+observer joins; both host FD observations are11→11. No timeout occurred. These
+are owned observations, not independent full-population wait/reaping, parent/
+kernel resource accounting, leak freedom or a general lifetime proof.
+
+The exact [raw record](raw-v1/TRANSFER.json) verifies a23,797-byte archive,
+SHA256 `319a69498057a145af103909c288043bd8346f3e24a9f496870ea290f681f3c5`,
+two <=12,000-byte chunks and92 safe regular archive members. All91 original file
+sizes/hashes were verified locally; logs retain exact bytes under reversible gzip,
+with original/stored mappings in [STORAGE.json](raw-v1/STORAGE.json). Full Cargo
+JSONL (278,255bytes, SHA12eb327c...) remains in the remote owned records. Source,
+targets, cache and all seven frozen binaries remain intact. No raw whitespace was
+normalized or waived. Source411,588KiB, target2,104,872KiB, frozen369,756KiB and
+cache19,620KiB are build-footprint observations, not resource admission proofs.
+Full artifact hashes are in [artifacts.json](raw-v1/artifacts.json).
+
+The next finite case uses this same frozen source/binary and existing fixture:
+minimum positive challenge count1 and derived report61 bytes. Its command is
+prepared, not counted as run at this checkpoint. A's exact existing composition
+is retained as the lossless `inherited-current-proposed.patch.gz`, original
+SHA256 `7babf8cba357f001b41106ac26ebefd16845ea75a141e085ed8b36e966e2b777`.
+Apply-check0 covers the current33df source shape; it is unapplied and has no
+current full compile/live pass. Its sole extra ROOT-owned broker caller adds one
+`None` so both optional inputs remain absent; that caller authorization is owed.
+No production defect/fix or current mutation guard claim is inferred.
+
+Coordinator review/integration, supported other VM hosts/seven-target gates,
+actual reconnect and full accounting/ownership/resource gates remain owed.
 
 R01/R04/R06/R07/R13: source unchanged, existing explicit fixture transitions and
 strict assertions retained; script checks are test assertions. R02/R03/R05/R12:

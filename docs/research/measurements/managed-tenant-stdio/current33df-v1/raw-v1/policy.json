@@ -1,0 +1,6 @@
+{
+  "main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "assigned adversarial",
+  "owned": "unchanged normal+stdio fixture regression; evidence only"
+}

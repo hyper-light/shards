@@ -1,0 +1,16 @@
+{
+  "source": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "archive_bytes": 23797,
+  "archive_sha256": "319a69498057a145af103909c288043bd8346f3e24a9f496870ea290f681f3c5",
+  "chunks": 2,
+  "chunk_bytes_max": 12000,
+  "all_safe_regular_members": 92,
+  "all_original_size_sha256_verified": 91,
+  "remote_only": [
+    {
+      "original": "compile.jsonl",
+      "bytes": 278255,
+      "sha256": "12eb327cf15a6333278c5705fb3ef5159b8f96f7dc3eebc8dfacf4f222ddad8a"
+    }
+  ]
+}

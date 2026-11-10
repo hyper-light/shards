@@ -1,0 +1,15 @@
+{
+  "source": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "test_exit": 0,
+  "teardown": {
+    "host_exit_reaping_kernel_return": "Unverified; coordinator held-watches/independent cleanup campaign owed",
+    "observer_fd_baseline": 11,
+    "owner_stop_and_observer_join": {
+      "completed": true,
+      "error": null
+    },
+    "private_run_cleanup_completed": true,
+    "protocol_completed": true
+  },
+  "full_population_kernel_return": "Unknown; no independent full-population/kernel witness exported"
+}

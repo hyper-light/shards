@@ -1,0 +1,9 @@
+{
+  "prior_run": "r5",
+  "prior_exit": 127,
+  "prior_failure": "rg unavailable on runner before compile",
+  "source_unchanged": true,
+  "compile_previously_started": false,
+  "installed_musl_target": true,
+  "free_bytes": 1923032920064
+}

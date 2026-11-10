@@ -1,0 +1,12 @@
+{
+  "base": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "preserved_positive_source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "sha256": "7babf8cba357f001b41106ac26ebefd16845ea75a141e085ed8b36e966e2b777",
+  "bytes": 35096,
+  "applied": false,
+  "root_review_only_caller": "broker_effects.rs: one added None keeps both optional task/publication absent",
+  "source_paths_modified": false,
+  "live_current_inherited_pass": false,
+  "stored": "inherited-current-proposed.patch.gz",
+  "stored_sha256": "561b450a89f2ac85c90f185afc28070d109b511baeec448efacbe0eb21b2d2fe"
+}

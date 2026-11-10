@@ -1,0 +1,9 @@
+FROM 127.0.0.1:43331/test/image:v1
+AGENT assets FROM ./files
+AGENT helper FROM ./agent
+HARNESS driver FROM ./harness.tar
+NETWORK --ingress=38485 --ingress=51109 control
+EXPOSE --agents=helper 38485 AS ingress FOR control
+EXPOSE --harnesses=driver 51109 AS ingress FOR control
+CONNECT helper WITH helper ON control
+CONNECT driver WITH driver ON control

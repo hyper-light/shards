@@ -1,0 +1,5 @@
+678924	/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/source
+2104872	/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/target
+57548	/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/cache
+636	/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/records
+369756	/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/frozen

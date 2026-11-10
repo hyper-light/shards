@@ -1,0 +1,70 @@
+{
+  "source": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "base": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "policy": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "scope": "~/managed-tenant-current-33df-01a1c5d2-v1",
+  "full_ask": {
+    "cpu": 4,
+    "memory_gib": 8,
+    "disk_gib": 40
+  },
+  "first_run": {
+    "id": "r5",
+    "admitted": true,
+    "exit_code": 127,
+    "cause": "rg command unavailable on runner before compilation",
+    "compilation_started": false,
+    "vm_started": false
+  },
+  "resume_admission": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r7\",\n  \"why\": \"linux/x86_64 \u00b7 26 of 32 cores idle \u00b7 55 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r7",
+      "why": "linux/x86_64 \u00b7 26 of 32 cores idle \u00b7 55 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk"
+    },
+    "isError": false
+  },
+  "resume_result": {
+    "id": "r7",
+    "exit_code": 0,
+    "host_and_carried_build_exit": 0,
+    "static_guest_exit": 0,
+    "artifact_index_and_frozen_seven_hashes": true
+  },
+  "live_admission": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r12\",\n  \"why\": \"linux/x86_64 \u00b7 11 of 32 cores idle \u00b7 38 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r12",
+      "why": "linux/x86_64 \u00b7 11 of 32 cores idle \u00b7 38 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk"
+    },
+    "isError": false
+  },
+  "live_result": {
+    "id": "r12",
+    "exit_code": 0,
+    "normal_exact_tests_passed": 1,
+    "stdio_exact_tests_passed": 1,
+    "fd_before_after_each": [
+      11,
+      11
+    ],
+    "full_population_kernel_return": "Unknown"
+  }
+}

@@ -1,0 +1,1 @@
+/home/adalundhe/managed-tenant-current-33df-01a1c5d2-v1/target/test-release/deps/managed_output-87d4844abdafeb5c tenant_exit::stdio::actor_stdio_eof_preserves_actor_control_and_neighbor_lifetime --exact --ignored --nocapture --test-threads=1
