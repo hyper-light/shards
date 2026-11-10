@@ -1,0 +1,53 @@
+{
+  "host": {
+    "system": "Darwin",
+    "node": "Adas-MacBook-Pro-2.local",
+    "release": "25.4.0",
+    "version": "Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050",
+    "machine": "arm64"
+  },
+  "free_bytes": 196974833664,
+  "checks": [
+    {
+      "command": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/testguest/src/workload.rs",
+        "crates/shards/tests/managed_output/current_tenant_stdio.rs"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    }
+  ],
+  "unchanged_paths": [
+    "crates/shards/tests/managed_output.rs",
+    "crates/shards/tests/common/managed_capture.rs",
+    "crates/shards/tests/managed_output/tenant_exit.rs",
+    "crates/shards/src/kernel.rs"
+  ],
+  "compile_live_clippy": "Unrun at source checkpoint"
+}

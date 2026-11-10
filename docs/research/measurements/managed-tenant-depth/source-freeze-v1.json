@@ -1,0 +1,25 @@
+{
+  "base": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+  "branch": "p/managed-tenant-depth-b57-v1",
+  "role": "assigned adversarial/implementer",
+  "candidate_revision": "signed source checkpoint containing this freeze; remote records/source.txt retains exact SHA",
+  "files": {
+    "crates/testguest/src/workload.rs": "a03ef0dde5769629bcc7da47c9548d24bcc1b17840985ebc96e6e63e3ad139c9",
+    "crates/shards/tests/managed_output/current_tenant_stdio.rs": "6a5f73bb04674e4e5bb5c68d130533d3fd628d5e6957c2fff9d8d1b816a1c195",
+    "crates/shards/tests/managed_output.rs": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36",
+    "crates/shards/tests/common/managed_capture.rs": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938",
+    "crates/shards/src/kernel.rs": "5641ead3beb74b2d44b7a20c5548d349e6613583529db8ce4ced5ce82f000247",
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+  },
+  "initial_inputs": {
+    "depth": 2,
+    "tasks": 6,
+    "challenge_bytes": 16,
+    "report_bytes": 269,
+    "work_ms": 240000,
+    "cleanup_ms": 15000,
+    "hard_outer_seconds": 255
+  },
+  "actor_executed": false
+}

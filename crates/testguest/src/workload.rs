@@ -489,8 +489,17 @@ pub fn main() -> ! {
             "exit" => i32::from(managed_capture_bytes(arg(1)).is_err()),
             "step" => managed_capture_step(arg(1), arg(3), arg(4)),
             "close-stdio" => managed_capture_close_stdio(arg(1), arg(3), arg(4), arg(5), arg(6)),
-            "inherit-stdio" => managed_capture_inherit_stdio(arg(1), arg(3), arg(4), arg(5), arg(6), arg(7)),
-            "inherited-child" => managed_capture_inherited_child(arg(1), arg(3), arg(4), arg(5), arg(6)),
+            "inherit-stdio" => {
+                managed_capture_inherit_stdio(arg(1), arg(3), arg(4), arg(5), arg(6), arg(7), arg(8))
+            }
+            "inherited-child" => managed_capture_inherited_child(
+                arg(1),
+                arg(3),
+                arg(4),
+                arg(5),
+                arg(6),
+                args.get(7..).unwrap_or_default(),
+            ),
             _ => 1,
         },
         "managed-capture-main" => {
@@ -5761,6 +5770,129 @@ enum ManagedInheritedParent {
     Reaped(std::process::ExitStatus),
 }
 
+enum ManagedInheritedPath {
+    OneChild,
+    Descendants {
+        remaining: u32,
+        expires_ns: u64,
+        cleanup_ms: u64,
+    },
+}
+
+struct ManagedInheritedRun {
+    path: ManagedInheritedPath,
+    until: std::time::Instant,
+    cleanup_until: std::time::Instant,
+}
+
+fn managed_capture_inherited_clock() -> io::Result<u64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: clock_gettime initializes our timespec; this fixture never changes a clock/namespace.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut time) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let seconds = u64::try_from(time.tv_sec).map_err(io::Error::other)?;
+    let nanos = u64::try_from(time.tv_nsec).map_err(io::Error::other)?;
+    // SI units, not a measured timeout: one second contains 10^9 nanoseconds.
+    if nanos >= 1_000_000_000 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    seconds
+        .checked_mul(1_000_000_000)
+        .and_then(|n| n.checked_add(nanos))
+        .ok_or_else(|| io::ErrorKind::InvalidData.into())
+}
+
+impl ManagedInheritedRun {
+    fn first(depth: &str, work_ms: u64, cleanup_ms: u64) -> io::Result<Self> {
+        if depth.is_empty() {
+            let until = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(work_ms))
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            return Ok(Self {
+                path: ManagedInheritedPath::OneChild,
+                until,
+                cleanup_until: until
+                    .checked_add(std::time::Duration::from_millis(cleanup_ms))
+                    .ok_or(io::ErrorKind::InvalidInput)?,
+            });
+        }
+        let depth = depth.parse::<u32>().map_err(io::Error::other)?;
+        if depth < 2 || depth.checked_add(4).is_none() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let duration = work_ms
+            .checked_mul(1_000_000)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let expires_ns = managed_capture_inherited_clock()?
+            .checked_add(duration)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        Self::descendants(depth, expires_ns, cleanup_ms)
+    }
+
+    fn descendants(remaining: u32, expires_ns: u64, cleanup_ms: u64) -> io::Result<Self> {
+        // Sample Instant first: converting the SAME guest clock expiry cannot extend it by the
+        // time spent sampling CLOCK_MONOTONIC. No host Instant or fresh relative work budget crosses exec.
+        let before = std::time::Instant::now();
+        let now = managed_capture_inherited_clock()?;
+        let rest = expires_ns
+            .checked_sub(now)
+            .filter(|n| *n > 0)
+            .ok_or(io::ErrorKind::TimedOut)?;
+        if cleanup_ms == 0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let until = before
+            .checked_add(std::time::Duration::from_nanos(rest))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let cleanup_until = until
+            .checked_add(std::time::Duration::from_millis(cleanup_ms))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        Ok(Self {
+            path: ManagedInheritedPath::Descendants {
+                remaining,
+                expires_ns,
+                cleanup_ms,
+            },
+            until,
+            cleanup_until,
+        })
+    }
+
+    fn child(extra: &[String], work_ms: u64) -> io::Result<Self> {
+        match extra {
+            [] => {
+                let until = std::time::Instant::now()
+                    .checked_add(std::time::Duration::from_millis(work_ms))
+                    .ok_or(io::ErrorKind::InvalidInput)?;
+                Ok(Self {
+                    path: ManagedInheritedPath::OneChild,
+                    until,
+                    cleanup_until: until,
+                })
+            }
+            [remaining, expires, cleanup] => Self::descendants(
+                remaining.parse().map_err(io::Error::other)?,
+                expires.parse().map_err(io::Error::other)?,
+                cleanup.parse().map_err(io::Error::other)?,
+            ),
+            _ => Err(io::ErrorKind::InvalidInput.into()),
+        }
+    }
+}
+
+fn managed_capture_inherited_arg(value: u64) -> io::Result<String> {
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    let digits = usize::try_from(u64::MAX.ilog10() + 1).map_err(io::Error::other)?;
+    text.try_reserve_exact(digits).map_err(io::Error::other)?;
+    write!(&mut text, "{value}").map_err(io::Error::other)?;
+    Ok(text)
+}
+
 fn managed_capture_inherit_stdio(
     member: &str,
     port: &str,
@@ -5768,48 +5900,76 @@ fn managed_capture_inherit_stdio(
     cleanup_ms: &str,
     challenge_bytes: &str,
     report_bytes: &str,
+    depth: &str,
 ) -> i32 {
-    use std::os::fd::AsRawFd as _;
-    use std::process::{Command, Stdio};
     let inputs = (|| -> io::Result<_> {
         let port = port.parse::<u16>().map_err(io::Error::other)?;
         let work = work_ms.parse::<u64>().map_err(io::Error::other)?;
         let cleanup = cleanup_ms.parse::<u64>().map_err(io::Error::other)?;
         let count = challenge_bytes.parse::<u32>().map_err(io::Error::other)?;
         let report = report_bytes.parse::<u64>().map_err(io::Error::other)?;
-        let until = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(work))
-            .filter(|_| port > 0 && work > 0 && cleanup > 0 && count > 0)
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        let cleanup_until = until
-            .checked_add(std::time::Duration::from_millis(cleanup))
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        if managed_capture_inherited_required(member, count)? > report {
+        if port == 0
+            || work == 0
+            || cleanup == 0
+            || count == 0
+            || managed_capture_inherited_required(member, count)? > report
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        Ok((until, cleanup_until))
+        ManagedInheritedRun::first(depth, work, cleanup)
     })();
-    let (until, cleanup_until) = match inputs {
+    let run = match inputs {
         Ok(inputs) => inputs,
         Err(_) => return ManagedInheritedStage::Inputs as i32,
     };
     if managed_capture_bytes(member).is_err() {
         return ManagedInheritedStage::Prefix as i32;
     }
+    managed_capture_inherited_parent(member, port, work_ms, challenge_bytes, report_bytes, run)
+}
+
+fn managed_capture_inherited_parent(
+    member: &str,
+    port: &str,
+    work_ms: &str,
+    challenge_bytes: &str,
+    report_bytes: &str,
+    run: ManagedInheritedRun,
+) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    use std::process::{Command, Stdio};
+    let ManagedInheritedRun {
+        path,
+        until,
+        cleanup_until,
+    } = run;
     let spawn = (|| -> io::Result<_> {
         if std::time::Instant::now() >= until {
             return Err(io::ErrorKind::TimedOut.into());
         }
-        Command::new(std::env::current_exe()?)
-            .args([
-                "managed-capture",
-                member,
-                "inherited-child",
-                port,
-                work_ms,
-                challenge_bytes,
-                report_bytes,
-            ])
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args([
+            "managed-capture",
+            member,
+            "inherited-child",
+            port,
+            work_ms,
+            challenge_bytes,
+            report_bytes,
+        ]);
+        if let ManagedInheritedPath::Descendants {
+            remaining,
+            expires_ns,
+            cleanup_ms,
+        } = path
+        {
+            let next = remaining.checked_sub(1).ok_or(io::ErrorKind::InvalidInput)?;
+            command
+                .arg(managed_capture_inherited_arg(u64::from(next))?)
+                .arg(managed_capture_inherited_arg(expires_ns)?)
+                .arg(managed_capture_inherited_arg(cleanup_ms)?);
+        }
+        command
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -5942,25 +6102,24 @@ fn managed_capture_inherited_child(
     work_ms: &str,
     challenge_bytes: &str,
     report_bytes: &str,
+    extra: &[String],
 ) -> i32 {
     use std::os::fd::AsRawFd as _;
     let mut stage = ManagedInheritedStage::Inputs;
-    let result = (|| -> io::Result<()> {
-        let port = port.parse::<u16>().map_err(io::Error::other)?;
+    let result = (|| -> io::Result<i32> {
+        let listener_port = port.parse::<u16>().map_err(io::Error::other)?;
         let work = work_ms.parse::<u64>().map_err(io::Error::other)?;
         let count = challenge_bytes.parse::<u32>().map_err(io::Error::other)?;
         let report = report_bytes.parse::<u64>().map_err(io::Error::other)?;
-        let until = std::time::Instant::now()
-            .checked_add(std::time::Duration::from_millis(work))
-            .filter(|_| port > 0 && work > 0 && count > 0)
-            .ok_or(io::ErrorKind::InvalidInput)?;
-        if managed_capture_inherited_required(member, count)? > report {
+        if listener_port == 0
+            || work == 0
+            || count == 0
+            || managed_capture_inherited_required(member, count)? > report
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let mut challenge = Vec::new();
-        let len = usize::try_from(count).map_err(io::Error::other)?;
-        challenge.try_reserve_exact(len).map_err(io::Error::other)?;
-        challenge.resize(len, 0);
+        let run = ManagedInheritedRun::child(extra, work)?;
+        let until = run.until;
         stage = ManagedInheritedStage::Handoff;
         let mut release = [0];
         managed_capture_ready(libc::STDIN_FILENO, until)?;
@@ -5975,8 +6134,22 @@ fn managed_capture_inherited_child(
         if release != [1] {
             return Err(io::ErrorKind::InvalidData.into());
         }
+        if let ManagedInheritedPath::Descendants { remaining: 1.., .. } = run.path {
+            return Ok(managed_capture_inherited_parent(
+                member,
+                port,
+                work_ms,
+                challenge_bytes,
+                report_bytes,
+                run,
+            ));
+        }
+        let mut challenge = Vec::new();
+        let len = usize::try_from(count).map_err(io::Error::other)?;
+        challenge.try_reserve_exact(len).map_err(io::Error::other)?;
+        challenge.resize(len, 0);
         stage = ManagedInheritedStage::Listening;
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, listener_port))?;
         listener.set_nonblocking(true)?;
         stage = ManagedInheritedStage::Ready;
         managed_capture_bytes(&format!("{member}-inherited-ready"))?;
@@ -5999,9 +6172,13 @@ fn managed_capture_inherited_child(
         managed_capture_control_write(&mut peer, &challenge, until)?;
         drop(peer);
         stage = ManagedInheritedStage::Suffix;
-        managed_capture_bytes(&format!("{member}-inherited-after-release"))
+        managed_capture_bytes(&format!("{member}-inherited-after-release"))?;
+        Ok(0)
     })();
-    if result.is_ok() { 0 } else { stage as i32 }
+    match result {
+        Ok(code) => code,
+        Err(_) => stage as i32,
+    }
 }
 
 fn managed_capture_step(member: &str, port: &str, patience: &str) -> i32 {

@@ -1,4 +1,4 @@
-//! One owned child retains inherited capture writers after its parent closes its own.
+//! Owned descendants retain inherited capture writers after each parent closes its own.
 use super::*;
 
 #[test]
@@ -38,6 +38,7 @@ fn normal_exit_preserves_current_neighbor_and_main() {
 struct InheritedInputs {
     common: Supplied,
     tasks: u32,
+    depth: Option<u32>,
 }
 
 fn inherited_report_bytes(challenge_bytes: usize) -> Option<usize> {
@@ -52,19 +53,25 @@ fn inherited_report_bytes(challenge_bytes: usize) -> Option<usize> {
 }
 
 impl InheritedInputs {
-    fn read() -> Self {
+    fn read(depth: Option<u32>) -> Self {
         let common = Supplied::read();
         let tasks = std::env::var("SHARDS_TENANT_STDIO_TASKS")
             .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_TASKS"))
             .parse::<u32>()
             .unwrap();
         assert!(tasks > 0, "positive u32 matches actual AGENT --processes grammar");
+        if let Some(depth) = depth {
+            assert!(depth >= 2, "explicit finite descendant depth below the actor");
+            // Existing fixture processes: server + sandbox + reaper + actor, then D descendants.
+            let required = depth.checked_add(4).unwrap();
+            assert!(tasks >= required, "caller task ask covers the controlled chain");
+        }
         let wire = inherited_report_bytes(common.challenge.len()).unwrap();
         assert!(
             u64::try_from(wire).unwrap() <= common.report_bytes,
             "parent/child capture plus control request+reply envelope"
         );
-        Self { common, tasks }
+        Self { common, tasks, depth }
     }
 }
 
@@ -167,20 +174,25 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
     let cleanup = shared.cleanup_ms.to_string();
     let count = shared.challenge.len().to_string();
     let report = shared.report_bytes.to_string();
+    let depth = input.depth.map(|depth| depth.to_string());
     let directives = format!(
         "NETWORK --ingress={actor} --ingress={sibling} control\nEXPOSE --agents=helper {actor} AS ingress FOR control\nEXPOSE --harnesses=driver {sibling} AS ingress FOR control\nCONNECT helper WITH helper ON control\nCONNECT driver WITH driver ON control\n"
     );
+    let mut agent_args = vec![
+        "managed-capture",
+        "agent",
+        "inherit-stdio",
+        &actor,
+        &work,
+        &cleanup,
+        &count,
+        &report,
+    ];
+    if let Some(depth) = &depth {
+        agent_args.push(depth);
+    }
     fixture.start_with_options(
-        &[
-            "managed-capture",
-            "agent",
-            "inherit-stdio",
-            &actor,
-            &work,
-            &cleanup,
-            &count,
-            &report,
-        ],
+        &agent_args,
         &["managed-capture", "harness", "step", &sibling, &work],
         &directives,
         Some(input.tasks),
@@ -234,6 +246,14 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
         );
     }
     shared.base.write("inherited-ready.json", &json!({"state":"ChildListenerReadyAndInheritedBytesAfterParentBothWritersClosed","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"provenance":"controlled member/channel data; not arbitrary exact descendant attribution"}));
+    if input.depth.is_some() {
+        shared.base.command(
+            fixture,
+            "processes-at-descendant-ready.json",
+            &["top", "owner-output", "-o", "pid,ppid,uid,stat,comm"],
+            until,
+        );
+    }
     fixture.main_progress(remaining(until).unwrap());
     release_neighbor(fixture, &shared.base, until);
     shared.base.write("release-causality.json", &json!({"gate_peer_eof":true,"actor_last_consumed_states":channels.iter().filter(|(m,_,_,_)|*m==1).map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"evidence":"shared release caption is not an actor End witness; exact child reply and later suffix/End remain required"}));
@@ -302,7 +322,20 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
 #[test]
 #[ignore = "assigned bounded real VM; explicit tasks/two ports/challenge/work+cleanup/report envelope/evidence"]
 fn inherited_child_writers_survive_parent_stdio_closure() {
-    let input = InheritedInputs::read();
+    run_inherited_case(InheritedInputs::read(None));
+}
+
+#[test]
+#[ignore = "assigned bounded real VM; explicit finite depth/tasks/ports/challenge/work+cleanup/report/evidence"]
+fn inherited_descendant_depth_preserves_neighbor_and_main() {
+    let depth = std::env::var("SHARDS_TENANT_STDIO_DEPTH")
+        .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_DEPTH"))
+        .parse::<u32>()
+        .unwrap();
+    run_inherited_case(InheritedInputs::read(Some(depth)));
+}
+
+fn run_inherited_case(input: InheritedInputs) {
     let shared = &input.common;
     assert!(!common::cannot_run_vms(), "requires a supported real VM host");
     let until = Instant::now().checked_add(shared.base.patience).unwrap();
@@ -311,7 +344,7 @@ fn inherited_child_writers_survive_parent_stdio_closure() {
         .unwrap();
     let artifact = |path: &std::path::Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
     shared.base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init())}));
-    shared.base.write("inputs.json", &json!({"actor_port":shared.actor,"sibling_port":shared.base.port,"agent_tasks":input.tasks,"work_ms":shared.work_ms,"host_work_ms":shared.base.patience.as_millis(),"cleanup_ms":shared.cleanup_ms,"report_bytes":shared.report_bytes,"challenge":shared.challenge,"source":option_env!("SHARDS_TENANT_STDIO_SOURCE_REVISION"),"lifetime_owner":"retained Fixture owner; one private owned Child; observer/EOF is not owner"}));
+    shared.base.write("inputs.json", &json!({"actor_port":shared.actor,"sibling_port":shared.base.port,"agent_tasks":input.tasks,"descendant_depth":input.depth,"private_handoff_bytes":input.depth.unwrap_or(1),"work_ms":shared.work_ms,"host_work_ms":shared.base.patience.as_millis(),"cleanup_ms":shared.cleanup_ms,"report_bytes":shared.report_bytes,"challenge":shared.challenge,"source":option_env!("SHARDS_TENANT_STDIO_SOURCE_REVISION"),"lifetime_owner":"retained Fixture owner; each direct parent retains one private Child; observer/EOF is not owner","deadline_provenance":"depth mode: first actor creates one guest CLOCK_MONOTONIC expiry; unchanged across exec; cleanup derives from that expiry plus original duration; host deadline is independent"}));
     let mut fixture = Fixture::new();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut fixture, &input, until)));
     if let Some(path) = &fixture.record {
