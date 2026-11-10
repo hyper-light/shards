@@ -1,0 +1,14 @@
+{
+  "job": "r189",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "envelope": "windows/amd64,cpus=4,mem=8g,disk=20g",
+  "phase": "launcher command resolution",
+  "exit_code": 1,
+  "observed": "Get-Command Application returned both Git executable matches; the String parameter joined them into one non-executable path",
+  "attempted_path": "C:\\Program Files\\Git\\ucrt64\\bin\\git.exe C:\\Program Files\\Git\\cmd\\git.exe",
+  "clone_started": false,
+  "compiler_started": false,
+  "native_tests_started": false,
+  "classification": "setup failure, not product Windows red",
+  "correction": "select the first PATH application match before invoking"
+}

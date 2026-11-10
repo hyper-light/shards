@@ -11,7 +11,7 @@ Copy-Item $PSCommandPath (Join-Path $Evidence 'driver.ps1')
 
 function Invoke-Recorded {
     param([string]$Name, [string]$Program, [string[]]$ToolArgs, [string]$Directory = $PrivateSource)
-    $Executable = (Get-Command $Program -CommandType Application -ErrorAction Stop).Source
+    $Executable = (Get-Command $Program -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
     $PreviousLocation = Get-Location
     $PreviousPreference = $ErrorActionPreference
     Set-Location $Directory
