@@ -489,6 +489,8 @@ pub fn main() -> ! {
             "exit" => i32::from(managed_capture_bytes(arg(1)).is_err()),
             "step" => managed_capture_step(arg(1), arg(3), arg(4)),
             "close-stdio" => managed_capture_close_stdio(arg(1), arg(3), arg(4), arg(5), arg(6)),
+            "inherit-stdio" => managed_capture_inherit_stdio(arg(1), arg(3), arg(4), arg(5), arg(6), arg(7)),
+            "inherited-child" => managed_capture_inherited_child(arg(1), arg(3), arg(4), arg(5), arg(6)),
             _ => 1,
         },
         "managed-capture-main" => {
@@ -5641,6 +5643,365 @@ fn managed_capture_close_stdio(
         // The exit status presents the last explicit phase; the IO cause remains Unknown remotely.
         Err(_) => phase as i32,
     }
+}
+
+fn managed_capture_inherited_required(member: &str, count: u32) -> io::Result<u64> {
+    let pair = |suffix: &str| -> io::Result<u64> {
+        member
+            .len()
+            .checked_add(suffix.len())
+            .and_then(|n| n.checked_mul(2))
+            .and_then(|n| n.checked_add(b"\0stdout\n\xff\x1b[2Jout-tail".len()))
+            .and_then(|n| n.checked_add(b"\0stderr\n\x80\xfeerr-tail".len()))
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
+    };
+    pair("")?
+        .checked_add(pair("-inherited-ready")?)
+        .and_then(|n| n.checked_add(pair("-inherited-after-release").ok()?))
+        .and_then(|n| {
+            u64::from(count)
+                .checked_add(u64::try_from(size_of::<u8>() + size_of::<u32>()).ok()?)
+                .and_then(|frame| frame.checked_mul(2))
+                .and_then(|frames| n.checked_add(frames))
+        })
+        .ok_or_else(|| io::ErrorKind::InvalidInput.into())
+}
+
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum ManagedInheritedStage {
+    Inputs = 1,
+    Prefix,
+    Spawn,
+    Pidfd,
+    CloseStdout,
+    CloseStderr,
+    Release,
+    ExitReady,
+    Wait,
+    Status,
+    Handoff,
+    Listening,
+    Ready,
+    Challenge,
+    Reply,
+    Suffix,
+}
+
+fn managed_capture_inherited_pidfd(pid: u32) -> io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd as _;
+    // SAFETY: only this thread owns/waits on its still-unreaped Child; flags0 creates a CLOEXEC fd.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = i32::try_from(fd).map_err(io::Error::other)?;
+    // SAFETY: successful pidfd_open returned a new exclusively owned descriptor.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+fn managed_capture_inherited_closed(fd: i32) -> io::Result<()> {
+    // SAFETY: inspect only this process's own just-closed stdio slot; no fd is acquired or changed.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } != -1 {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EBADF) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
+
+fn managed_capture_inherited_cleanup(
+    stage: ManagedInheritedStage,
+    cause: io::Error,
+    mut child: std::process::Child,
+    mut fd: Option<std::os::fd::OwnedFd>,
+    until: std::time::Instant,
+) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    drop(child.stdin.take());
+    // Only this owned, unreaped Child is targeted. A kill refusal is not proof of exit.
+    let killed = child.kill();
+    let reaped = (|| -> io::Result<std::process::ExitStatus> {
+        if fd.is_none() {
+            fd = Some(managed_capture_inherited_pidfd(child.id())?);
+        }
+        let held = fd.as_ref().ok_or(io::ErrorKind::InvalidData)?;
+        managed_capture_ready(held.as_raw_fd(), until)?;
+        child.wait()
+    })();
+    match reaped {
+        Ok(status) => {
+            // No stdio diagnostics: these fd numbers may be reused after the parent's closure.
+            let _known_failure = (cause, killed, status);
+            stage as i32
+        }
+        Err(cleanup_error) => {
+            // Unknown cleanup retains ownership until the already-existing outer owner stops us.
+            // No next child, new cleanup deadline, reaping claim or detached orphan is introduced.
+            let _retained_unknown = (child, fd, stage, cause, killed, cleanup_error);
+            loop {
+                // SAFETY: wait for outer owner stop; no state probing or signal handler is installed.
+                unsafe { libc::pause() };
+            }
+        }
+    }
+}
+
+enum ManagedInheritedParent {
+    Spawned(std::process::Child),
+    HeldPidfd(std::process::Child, std::os::fd::OwnedFd),
+    StdoutClosed(std::process::Child, std::os::fd::OwnedFd),
+    StdioClosed(std::process::Child, std::os::fd::OwnedFd),
+    Released(std::process::Child, std::os::fd::OwnedFd),
+    ExitReady(std::process::Child, std::os::fd::OwnedFd),
+    Reaped(std::process::ExitStatus),
+}
+
+fn managed_capture_inherit_stdio(
+    member: &str,
+    port: &str,
+    work_ms: &str,
+    cleanup_ms: &str,
+    challenge_bytes: &str,
+    report_bytes: &str,
+) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    use std::process::{Command, Stdio};
+    let inputs = (|| -> io::Result<_> {
+        let port = port.parse::<u16>().map_err(io::Error::other)?;
+        let work = work_ms.parse::<u64>().map_err(io::Error::other)?;
+        let cleanup = cleanup_ms.parse::<u64>().map_err(io::Error::other)?;
+        let count = challenge_bytes.parse::<u32>().map_err(io::Error::other)?;
+        let report = report_bytes.parse::<u64>().map_err(io::Error::other)?;
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(work))
+            .filter(|_| port > 0 && work > 0 && cleanup > 0 && count > 0)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let cleanup_until = until
+            .checked_add(std::time::Duration::from_millis(cleanup))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        if managed_capture_inherited_required(member, count)? > report {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        Ok((until, cleanup_until))
+    })();
+    let (until, cleanup_until) = match inputs {
+        Ok(inputs) => inputs,
+        Err(_) => return ManagedInheritedStage::Inputs as i32,
+    };
+    if managed_capture_bytes(member).is_err() {
+        return ManagedInheritedStage::Prefix as i32;
+    }
+    let spawn = (|| -> io::Result<_> {
+        if std::time::Instant::now() >= until {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        Command::new(std::env::current_exe()?)
+            .args([
+                "managed-capture",
+                member,
+                "inherited-child",
+                port,
+                work_ms,
+                challenge_bytes,
+                report_bytes,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+    })();
+    let child = match spawn {
+        Ok(child) => child,
+        Err(_) => return ManagedInheritedStage::Spawn as i32,
+    };
+    let mut state = ManagedInheritedParent::Spawned(child);
+    loop {
+        state = match state {
+            ManagedInheritedParent::Spawned(child) => match managed_capture_inherited_pidfd(child.id()) {
+                Ok(fd) => ManagedInheritedParent::HeldPidfd(child, fd),
+                Err(error) => {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::Pidfd,
+                        error,
+                        child,
+                        None,
+                        cleanup_until,
+                    );
+                }
+            },
+            ManagedInheritedParent::HeldPidfd(child, fd) => {
+                // SAFETY: close only this parent's own stdout; child inherited its writer at spawn.
+                if unsafe { libc::close(libc::STDOUT_FILENO) } != 0 {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::CloseStdout,
+                        io::Error::last_os_error(),
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+                if let Err(error) = managed_capture_inherited_closed(libc::STDOUT_FILENO) {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::CloseStdout,
+                        error,
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+                ManagedInheritedParent::StdoutClosed(child, fd)
+            }
+            ManagedInheritedParent::StdoutClosed(child, fd) => {
+                // SAFETY: close only this parent's own stderr. No parent stdio is used afterward.
+                if unsafe { libc::close(libc::STDERR_FILENO) } != 0 {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::CloseStderr,
+                        io::Error::last_os_error(),
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+                if let Err(error) = managed_capture_inherited_closed(libc::STDERR_FILENO) {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::CloseStderr,
+                        error,
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+                ManagedInheritedParent::StdioClosed(child, fd)
+            }
+            ManagedInheritedParent::StdioClosed(mut child, fd) => {
+                let release = (|| -> io::Result<()> {
+                    if std::time::Instant::now() >= until {
+                        return Err(io::ErrorKind::TimedOut.into());
+                    }
+                    let mut writer = child.stdin.take().ok_or(io::ErrorKind::BrokenPipe)?;
+                    // This single byte is the only write into an empty private pipe; drop closes it.
+                    writer.write_all(&[1])
+                })();
+                match release {
+                    Ok(()) => ManagedInheritedParent::Released(child, fd),
+                    Err(error) => {
+                        return managed_capture_inherited_cleanup(
+                            ManagedInheritedStage::Release,
+                            error,
+                            child,
+                            Some(fd),
+                            cleanup_until,
+                        );
+                    }
+                }
+            }
+            ManagedInheritedParent::Released(child, fd) => match managed_capture_ready(fd.as_raw_fd(), until)
+            {
+                Ok(()) => ManagedInheritedParent::ExitReady(child, fd),
+                Err(error) => {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::ExitReady,
+                        error,
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+            },
+            ManagedInheritedParent::ExitReady(mut child, fd) => match child.wait() {
+                Ok(status) => ManagedInheritedParent::Reaped(status),
+                Err(error) => {
+                    return managed_capture_inherited_cleanup(
+                        ManagedInheritedStage::Wait,
+                        error,
+                        child,
+                        Some(fd),
+                        cleanup_until,
+                    );
+                }
+            },
+            ManagedInheritedParent::Reaped(status) => {
+                return if status.success() {
+                    0
+                } else {
+                    ManagedInheritedStage::Status as i32
+                };
+            }
+        };
+    }
+}
+
+fn managed_capture_inherited_child(
+    member: &str,
+    port: &str,
+    work_ms: &str,
+    challenge_bytes: &str,
+    report_bytes: &str,
+) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    let mut stage = ManagedInheritedStage::Inputs;
+    let result = (|| -> io::Result<()> {
+        let port = port.parse::<u16>().map_err(io::Error::other)?;
+        let work = work_ms.parse::<u64>().map_err(io::Error::other)?;
+        let count = challenge_bytes.parse::<u32>().map_err(io::Error::other)?;
+        let report = report_bytes.parse::<u64>().map_err(io::Error::other)?;
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(work))
+            .filter(|_| port > 0 && work > 0 && count > 0)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        if managed_capture_inherited_required(member, count)? > report {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let mut challenge = Vec::new();
+        let len = usize::try_from(count).map_err(io::Error::other)?;
+        challenge.try_reserve_exact(len).map_err(io::Error::other)?;
+        challenge.resize(len, 0);
+        stage = ManagedInheritedStage::Handoff;
+        let mut release = [0];
+        managed_capture_ready(libc::STDIN_FILENO, until)?;
+        let received = io::stdin().read_exact(&mut release);
+        // SAFETY: close this child's private read-only handoff before opening its listener.
+        let closed = unsafe { libc::close(libc::STDIN_FILENO) };
+        received?;
+        if closed != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        managed_capture_inherited_closed(libc::STDIN_FILENO)?;
+        if release != [1] {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        stage = ManagedInheritedStage::Listening;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+        listener.set_nonblocking(true)?;
+        stage = ManagedInheritedStage::Ready;
+        managed_capture_bytes(&format!("{member}-inherited-ready"))?;
+        managed_capture_ready(listener.as_raw_fd(), until)?;
+        let (mut peer, _) = listener.accept()?;
+        drop(listener);
+        peer.set_nonblocking(true)?;
+        stage = ManagedInheritedStage::Challenge;
+        let mut tag = [0];
+        let mut size = [0; size_of::<u32>()];
+        managed_capture_control_read(&mut peer, &mut tag, until)?;
+        managed_capture_control_read(&mut peer, &mut size, until)?;
+        if tag != [1] || u32::from_be_bytes(size) != count {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        managed_capture_control_read(&mut peer, &mut challenge, until)?;
+        stage = ManagedInheritedStage::Reply;
+        managed_capture_control_write(&mut peer, &tag, until)?;
+        managed_capture_control_write(&mut peer, &size, until)?;
+        managed_capture_control_write(&mut peer, &challenge, until)?;
+        drop(peer);
+        stage = ManagedInheritedStage::Suffix;
+        managed_capture_bytes(&format!("{member}-inherited-after-release"))
+    })();
+    if result.is_ok() { 0 } else { stage as i32 }
 }
 
 fn managed_capture_step(member: &str, port: &str, patience: &str) -> i32 {

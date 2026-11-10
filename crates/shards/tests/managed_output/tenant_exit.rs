@@ -185,6 +185,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         &["managed-capture", "agent", "exit"],
         &["managed-capture", "harness", "step", &port, &deadline],
         &directives,
+        None,
         Some(&[inputs.port]),
         until,
     );
