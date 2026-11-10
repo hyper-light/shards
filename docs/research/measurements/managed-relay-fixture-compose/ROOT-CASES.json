@@ -1,0 +1,394 @@
+{
+  "scope": "ROOT execution only; finite source-derived queue, no actual result or new admission authority",
+  "fixture_source": "f16f5ab94a6c9fe7036bd74a4fed396498245ad1",
+  "required_root_preparation": [
+    "review/compose source at current shared host parent and wire existing cancel module",
+    "build normal source-matching host/testguest/carried VM/net/init helpers; freeze exact source and binary hashes",
+    "use existing experimental kernel/config and admitted caller inputs; retain source/environment/toolchain/artifact identities",
+    "one case at a time with a fresh record directory; do not reuse outputs or replace assertions"
+  ],
+  "required_caller_env": {
+    "SHARDS_KERNEL": "absolute source-matching experimental kernel path",
+    "SHARDS_NETWORK_EFFECTIVE_CONFIG": "absolute associated effective config path",
+    "SHARDS_NETWORK_CONFIG_PROVENANCE": "nonempty exact kernel/config association description",
+    "SHARDS_NETWORK_BOOT_MS": "positive original caller boot deadline",
+    "SHARDS_NETWORK_CASE_MS": "positive original caller work deadline",
+    "SHARDS_NETWORK_MEMORY_MIB": "positive original caller memory envelope",
+    "SHARDS_NETWORK_CPUS": "positive original caller vCPU envelope",
+    "SHARDS_NETWORK_RECORDS": "fresh absolute directory, unique per case",
+    "SHARDS_SOCK_ADDR_BUFFER_BYTES": "positive original caller payload envelope; does not bound parent/kernel/console"
+  },
+  "libtest_arguments": [
+    "FILTER",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "required_common_witness": [
+    "raw stdout/stderr/status and exact identity/cmdline retained before assertions",
+    "both actual client identities and reaps; same owned namespace/cgroup; mode-correct peer presentation",
+    "all required acquired links explicitly detached, both workers actually joined, owned cgroup removed",
+    "actual independent backend bytes/peer/original/ordinal retained; send return alone is not delivery",
+    "Error, TimedOut, Cancelled and work return versus thread exit retain their typed meanings"
+  ],
+  "new_cases": [
+    {
+      "id": "notice-connected-duplicate-ready",
+      "filter": "cancel::direct_guest_udp4_notification_failure_retains_ingress_until_original_expiry",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_BOUNDARY_NOTICE": "duplicate-ready"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-boundary4",
+      "required_witness": {
+        "Backend_receipts": 2,
+        "Backend_matched": 2,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BoundaryObservation_kind": "InvalidInput",
+        "BoundaryOutcome_worker": "ExpiredBeforeSend",
+        "release": "WithheldUntilOriginalDeadline",
+        "ForwardCompletion": {
+          "terminal": "Error",
+          "stage": "BeforeUpstreamSend",
+          "upstream_progress": "NotAttempted",
+          "ingress_received": 1,
+          "upstream_sent": 0,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "ForwardError_kind": "TimedOut",
+        "positive_remaining_after_join": "not required: deliberate original expiry",
+        "backend_terminal": "Cancelled OR Error/TimedOut at ReceiveDatagram, separate actual records",
+        "CancelBoundary": "must be absent",
+        "independent_backend_on_unexpected_send": "retain actual third receipt before ending observer; strict test still fails"
+      }
+    },
+    {
+      "id": "notice-connected-missing-ready",
+      "filter": "cancel::direct_guest_udp4_notification_failure_retains_ingress_until_original_expiry",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_BOUNDARY_NOTICE": "missing-ready"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-boundary4",
+      "required_witness": {
+        "Backend_receipts": 2,
+        "Backend_matched": 2,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BoundaryObservation_kind": "TimedOut",
+        "BoundaryOutcome_worker": "ExpiredBeforeSend",
+        "release": "WithheldUntilOriginalDeadline",
+        "ForwardCompletion": {
+          "terminal": "Error",
+          "stage": "BeforeUpstreamSend",
+          "upstream_progress": "NotAttempted",
+          "ingress_received": 1,
+          "upstream_sent": 0,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "ForwardError_kind": "TimedOut",
+        "positive_remaining_after_join": "not required: deliberate original expiry",
+        "backend_terminal": "Cancelled OR Error/TimedOut at ReceiveDatagram, separate actual records",
+        "CancelBoundary": "must be absent",
+        "independent_backend_on_unexpected_send": "retain actual third receipt before ending observer; strict test still fails"
+      }
+    },
+    {
+      "id": "backend-end-connected",
+      "filter": "cancel::direct_guest_udp4_backend_completes_without_reply_before_relay_cancel",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-backend-end4",
+      "required_witness": {
+        "Backend_receipts": 3,
+        "Backend_matched": 3,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BackendWorkReturned": "BackendComplete before cancellation request; thread exit only established at join",
+        "UdpWorkerCompletion": {
+          "terminal": "BackendComplete",
+          "stage": "BackendComplete",
+          "joined": true
+        },
+        "ForwardCompletion": {
+          "terminal": "Cancelled",
+          "stage": "UpstreamReceive",
+          "upstream_progress": "KernelAccepted",
+          "ingress_received": 1,
+          "upstream_sent": 1,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "positive_remaining_after_join": true,
+        "no_UDP_EOF_claim": true
+      }
+    },
+    {
+      "id": "extra-connected",
+      "filter": "cancel::direct_guest_udp4_extra_datagram_is_consumed_before_backend_error_and_relay_cancel",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-extra4",
+      "required_witness": {
+        "Backend_receipts": 3,
+        "BackendUnexpected_receipts": 1,
+        "BackendUnexpected_ordinal": 4,
+        "BackendUnexpected_copied_hex": "5245515545535400ff",
+        "backend_consumed": 4,
+        "backend_matched": 3,
+        "backend_empty": 1,
+        "backend_replies_sent": 2,
+        "FixtureExtraSend": "actual send result/owned upstream tuple; count separate from relay upstream_sent",
+        "BackendWorkReturned": "Error/UnexpectedDatagram after actual fourth receipt and before cancel; not thread exit",
+        "UdpWorkerCompletion": {
+          "terminal": "Error",
+          "stage": "HoldReply",
+          "joined": true
+        },
+        "UdpError_cause": "UnexpectedDatagram",
+        "ForwardCompletion": {
+          "terminal": "Cancelled",
+          "stage": "UpstreamReceive",
+          "upstream_progress": "KernelAccepted",
+          "ingress_received": 1,
+          "upstream_sent": 1,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "positive_remaining_after_join": true,
+        "sender_receipt_log_order": "not constrained; each causal worker/control order still required"
+      }
+    },
+    {
+      "id": "notice-unconnected-duplicate-ready",
+      "filter": "cancel::direct_guest_udp4_notification_failure_retains_ingress_until_original_expiry",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_BOUNDARY_NOTICE": "duplicate-ready"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-boundary4",
+      "required_witness": {
+        "Backend_receipts": 2,
+        "Backend_matched": 2,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BoundaryObservation_kind": "InvalidInput",
+        "BoundaryOutcome_worker": "ExpiredBeforeSend",
+        "release": "WithheldUntilOriginalDeadline",
+        "ForwardCompletion": {
+          "terminal": "Error",
+          "stage": "BeforeUpstreamSend",
+          "upstream_progress": "NotAttempted",
+          "ingress_received": 1,
+          "upstream_sent": 0,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "ForwardError_kind": "TimedOut",
+        "positive_remaining_after_join": "not required: deliberate original expiry",
+        "backend_terminal": "Cancelled OR Error/TimedOut at ReceiveDatagram, separate actual records",
+        "CancelBoundary": "must be absent",
+        "independent_backend_on_unexpected_send": "retain actual third receipt before ending observer; strict test still fails"
+      }
+    },
+    {
+      "id": "notice-unconnected-missing-ready",
+      "filter": "cancel::direct_guest_udp4_notification_failure_retains_ingress_until_original_expiry",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_BOUNDARY_NOTICE": "missing-ready"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-boundary4",
+      "required_witness": {
+        "Backend_receipts": 2,
+        "Backend_matched": 2,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BoundaryObservation_kind": "TimedOut",
+        "BoundaryOutcome_worker": "ExpiredBeforeSend",
+        "release": "WithheldUntilOriginalDeadline",
+        "ForwardCompletion": {
+          "terminal": "Error",
+          "stage": "BeforeUpstreamSend",
+          "upstream_progress": "NotAttempted",
+          "ingress_received": 1,
+          "upstream_sent": 0,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "ForwardError_kind": "TimedOut",
+        "positive_remaining_after_join": "not required: deliberate original expiry",
+        "backend_terminal": "Cancelled OR Error/TimedOut at ReceiveDatagram, separate actual records",
+        "CancelBoundary": "must be absent",
+        "independent_backend_on_unexpected_send": "retain actual third receipt before ending observer; strict test still fails"
+      }
+    },
+    {
+      "id": "backend-end-unconnected",
+      "filter": "cancel::direct_guest_udp4_backend_completes_without_reply_before_relay_cancel",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-backend-end4",
+      "required_witness": {
+        "Backend_receipts": 3,
+        "Backend_matched": 3,
+        "Backend_empty": 1,
+        "Backend_replies_sent": 2,
+        "BackendWorkReturned": "BackendComplete before cancellation request; thread exit only established at join",
+        "UdpWorkerCompletion": {
+          "terminal": "BackendComplete",
+          "stage": "BackendComplete",
+          "joined": true
+        },
+        "ForwardCompletion": {
+          "terminal": "Cancelled",
+          "stage": "UpstreamReceive",
+          "upstream_progress": "KernelAccepted",
+          "ingress_received": 1,
+          "upstream_sent": 1,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "positive_remaining_after_join": true,
+        "no_UDP_EOF_claim": true
+      }
+    },
+    {
+      "id": "extra-unconnected",
+      "filter": "cancel::direct_guest_udp4_extra_datagram_is_consumed_before_backend_error_and_relay_cancel",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected"
+      },
+      "expected_test_exit": 0,
+      "guest_command": "sock-addr-extra4",
+      "required_witness": {
+        "Backend_receipts": 3,
+        "BackendUnexpected_receipts": 1,
+        "BackendUnexpected_ordinal": 4,
+        "BackendUnexpected_copied_hex": "5245515545535400ff",
+        "backend_consumed": 4,
+        "backend_matched": 3,
+        "backend_empty": 1,
+        "backend_replies_sent": 2,
+        "FixtureExtraSend": "actual send result/owned upstream tuple; count separate from relay upstream_sent",
+        "BackendWorkReturned": "Error/UnexpectedDatagram after actual fourth receipt and before cancel; not thread exit",
+        "UdpWorkerCompletion": {
+          "terminal": "Error",
+          "stage": "HoldReply",
+          "joined": true
+        },
+        "UdpError_cause": "UnexpectedDatagram",
+        "ForwardCompletion": {
+          "terminal": "Cancelled",
+          "stage": "UpstreamReceive",
+          "upstream_progress": "KernelAccepted",
+          "ingress_received": 1,
+          "upstream_sent": 1,
+          "upstream_received": 0,
+          "client_sent": 0
+        },
+        "positive_remaining_after_join": true,
+        "sender_receipt_log_order": "not constrained; each causal worker/control order still required"
+      }
+    }
+  ],
+  "original_controls": [
+    {
+      "id": "precommit-connected",
+      "filter": "cancel::direct_guest_udp4_precommit_cancel_requires_no_backend_effect",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "receive-connected",
+      "filter": "cancel::direct_guest_udp4_cancels_after_backend_receipt_before_work_deadline",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "scripted-connected",
+      "filter": "direct_guest_socket_address_udp4_requires_original_native_tuple",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_SOCK_ADDR_PRESENTATION": "fixed-original-peer"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "forward-connected",
+      "filter": "direct_guest_two_leg_udp4_records_buffers_and_backend_source_change",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_SOCK_ADDR_PRESENTATION": "fixed-original-peer"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "precommit-unconnected",
+      "filter": "cancel::direct_guest_udp4_precommit_cancel_requires_no_backend_effect",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "receive-unconnected",
+      "filter": "cancel::direct_guest_udp4_cancels_after_backend_receipt_before_work_deadline",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "scripted-unconnected",
+      "filter": "direct_guest_socket_address_udp4_requires_original_native_tuple",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_SOCK_ADDR_PRESENTATION": "fixed-original-peer"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    },
+    {
+      "id": "forward-unconnected",
+      "filter": "direct_guest_two_leg_udp4_records_buffers_and_backend_source_change",
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_SOCK_ADDR_PRESENTATION": "fixed-original-peer"
+      },
+      "expected_test_exit": 0,
+      "assertions": "all original strict host assertions; no override/threshold/accepted red"
+    }
+  ],
+  "mutation_scope": "ROOT chooses meaningful guard removals after actual baseline; no automatic mutation listed or performed here; preserve actual forbidden effect, exact finally restoration/hash/empty diff and fresh original controls",
+  "remaining_limits": [
+    "source manifests and finite case list are not actual socket/VM/cleanup proof",
+    "ROOT owns combined seven-target/supported hardware, failure campaigns and cost measurements",
+    "checked-ready/concurrent-cancel syscall race unresolved; no rollback/atomic commit/linearizability claim",
+    "Windows ARM VM paused; no host permission/grant/security/trust/crypto change"
+  ]
+}

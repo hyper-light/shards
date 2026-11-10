@@ -1,0 +1,19 @@
+{
+  "proof": "/home/adalundhe/managed-relay-cases-policy-v1",
+  "policy_exit": 0,
+  "policy_log": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "document_sha256": {
+    "docs/research/measurements/managed-relay-fixture-compose/ROOT-CASES.json": "7f0f465c2978be753922783f2ddae2bb60fbfa1f2422b1b8932d813f2ee131f8",
+    "docs/research/measurements/managed-relay-fixture-compose/ROOT-CASES.md": "f6263da7a00ff7f87e3749558bf65dd2d8a1d10a2fa1ad12d28b3182a0cad511"
+  },
+  "new_case_count": 8,
+  "original_control_count": 8,
+  "all_exact_filters_resolved": true,
+  "scope": "documentation policy and finite source-filter readback only; no compile/descriptor/socket/VM/profile/mutation",
+  "admission": "Kiln1CPU1GiB2GiB; syncfalse; no ROOT source/target/cache access",
+  "command": [
+    "python3",
+    "scripts/check-development-policy"
+  ]
+}
