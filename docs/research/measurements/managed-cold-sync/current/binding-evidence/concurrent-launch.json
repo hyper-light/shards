@@ -1,0 +1,11 @@
+{
+  "packed_sha256": "c27b4e6cf5e295d33545c5fbe39950fa987044bfd7bdc6414738c0dce2e487f5",
+  "concurrent_run_sha256": "4327a6ce7adf3ca490388f514112e43ed9dc8415660f972a7ca19aa44b01a5b6",
+  "binding_run_sha256": "3720f962c635b3e187f72623c4d0c50d3eeacb4180d195bf69ec60c1336fdd1f",
+  "parts": {
+    "input": 16,
+    "concurrent_run": 1,
+    "binding_run": 2
+  },
+  "private": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut"
+}

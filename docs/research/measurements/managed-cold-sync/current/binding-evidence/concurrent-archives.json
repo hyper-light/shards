@@ -1,0 +1,78 @@
+[
+  {
+    "label": "concurrent-v1",
+    "path": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/concurrent-v1-evidence.tgz",
+    "encoded_path": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/concurrent-v1-evidence.tgz.b64",
+    "sha256": "c57c9c2d3a679f7f7db061e0a375a84403f510bb2692ed0c4a8feb3c9e6c3794",
+    "bytes": 19330,
+    "encoded_bytes": 25776,
+    "members": 26,
+    "identity": {
+      "binary_sha256": "d8c85677b70770cdb4948b27ede812f47ea55fd65069135a851943f435560f94",
+      "frozen_binary": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/frozen/concurrent-v1",
+      "no_allocator_hook": true,
+      "source": {
+        "crates/api/src/sync.rs": "76a7dcda67e4e04693530c2a6d52c23af4249db5d2520bc3963960782ca18903",
+        "crates/api/src/client.rs": "cd1b204c9875427c2ec94fe2e456bb78e2c3c99b11b944ae323d74bd51756511",
+        "crates/api/src/lib.rs": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+        "docs/research/measurements/managed-cold-sync/current/concurrent_case.rs": "33fbb41011caf2b216997dfd7b51939af6fb2a78b6dd35bc573551ce8b730c91"
+      },
+      "actual_native_exits": [
+        0,
+        0
+      ],
+      "joined": [
+        true,
+        true
+      ],
+      "reaped": [
+        true,
+        true
+      ],
+      "dirs_absent": [
+        true,
+        true
+      ],
+      "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "uname": "Darwin Adas-Mac-Studio.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031 arm64\n"
+    }
+  },
+  {
+    "label": "concurrent-v2",
+    "path": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/v2/concurrent-v2-evidence.tgz",
+    "encoded_path": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/v2/concurrent-v2-evidence.tgz.b64",
+    "sha256": "28b85299a3284b857c97c8309872120b6bdb0d84503bc6a3126829c01874cbd7",
+    "bytes": 18800,
+    "encoded_bytes": 25068,
+    "members": 26,
+    "identity": {
+      "binary_sha256": "b7eb4e931421c35277c93021b996e7839f19937840dadcbcf22f5df55a639650",
+      "frozen_binary": "/Users/adalundhe/managed-cold-sync-concurrent-v1-15_wfvut/frozen/concurrent-v2",
+      "no_allocator_hook": true,
+      "source": {
+        "crates/api/src/sync.rs": "76a7dcda67e4e04693530c2a6d52c23af4249db5d2520bc3963960782ca18903",
+        "crates/api/src/client.rs": "cd1b204c9875427c2ec94fe2e456bb78e2c3c99b11b944ae323d74bd51756511",
+        "crates/api/src/lib.rs": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+        "docs/research/measurements/managed-cold-sync/current/concurrent_case.rs": "431e2ea29a2e6d257f0720063ba1a1c009ca9f6793b6453ee637462c0c620a80"
+      },
+      "actual_native_exits": [
+        0,
+        0
+      ],
+      "joined": [
+        true,
+        true
+      ],
+      "reaped": [
+        true,
+        true
+      ],
+      "dirs_absent": [
+        true,
+        true
+      ],
+      "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "uname": "Darwin Adas-Mac-Studio.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:26:07 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6031 arm64\n"
+    }
+  }
+]

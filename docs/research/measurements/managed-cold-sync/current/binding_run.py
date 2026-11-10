@@ -36,7 +36,7 @@ def command(argv, cwd, env, prefix, timeout):
             "stdout": str(prefix.with_suffix(".stdout")), "stderr": str(prefix.with_suffix(".stderr"))}
 
 
-def case(binary, directory, seconds, trace, env):
+def case(binary, directory, seconds, trace, env, selector=SELECTOR):
     directory.mkdir()
     token = os.urandom(24).hex()
     # This process never changes session/group; the fresh test session owns it.
@@ -48,7 +48,7 @@ def case(binary, directory, seconds, trace, env):
     if trace:
         case_env["SHARDS_COLD_TRACE"] = "1"
     row = {"trace": trace, "deadline_monotonic": deadline, "seconds": seconds,
-           "argv": [str(binary), SELECTOR, "--exact", "--test-threads=1", "--nocapture"],
+           "argv": [str(binary), selector, "--exact", "--test-threads=1", "--nocapture"],
            "standin_exit_observed": False, "test_exit_observed": False, "timed_out": False,
            "cleanup": [], "child_reaping_after_abort": "unknown; outer is not its parent"}
     output = bytearray()

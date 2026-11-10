@@ -1,0 +1,17 @@
+{
+  "policy_revision": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "handoff_sha256": "02c673d70e112d7f5cbf5474230d883befcbd785469740c29ccc0990fa45ba6f",
+  "roles": [
+    "implementer",
+    "assigned-adversarial"
+  ],
+  "production_frozen_at": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+  "fixture_source_revision": "727471d9fe40aaae23dd77c4928ea2aa9b12eb05 plus named current/concurrent fixture",
+  "actual_runs": [
+    "r124",
+    "r125"
+  ],
+  "no_allocator_hook": true,
+  "no_api_theory_reproduced": true
+}
