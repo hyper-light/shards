@@ -115,6 +115,7 @@ struct Client {
     exit: Option<ExitWatch>,
     status: Option<ExitStatus>,
     state: ClientState,
+    ready_by: Instant,
 }
 
 impl Client {
@@ -141,6 +142,7 @@ impl Client {
             exit: None,
             status: None,
             state: ClientState::Starting,
+            ready_by: deadline,
         };
         #[cfg(unix)]
         let output = client.child.stdout.take().ok_or(ClientError::MissingStdout)?;
@@ -159,8 +161,6 @@ impl Client {
         }
         #[cfg(windows)]
         output.set_nonblocking(true)?;
-        #[cfg(unix)]
-        let _ = deadline;
         client.poller.add(&output, Wake::Output as u64)?;
         client.output = Some(BufReader::new(output));
         let watched = client.poller.add_exit(client.child.id(), Wake::Exit as u64);
@@ -205,11 +205,11 @@ impl Client {
         Ok(())
     }
 
-    fn await_ready(&mut self, patience: Duration) -> Result<(), ClientError> {
+    fn await_ready(&mut self) -> Result<(), ClientError> {
         if self.state != ClientState::Starting {
             return Err(ClientError::InvalidPhase);
         }
-        let deadline = Self::deadline(patience)?;
+        let deadline = self.ready_by;
         let expected = b"ready\n";
         let mut ready = Vec::new();
         while ready.len() < expected.len() {
@@ -367,7 +367,7 @@ fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
     )
     .unwrap();
     client
-        .await_ready(patience)
+        .await_ready()
         .unwrap_or_else(|error| panic!("{args:?}: {error}"));
     client
 }
@@ -613,7 +613,7 @@ mod native {
     fn rejected(mode: &str, deadline: bool) {
         let mut client = child(mode);
         let returned = Returned::of(&client);
-        let result = client.await_ready(patience());
+        let result = client.await_ready();
         let expected = if deadline {
             matches!(result, Err(ClientError::Deadline(Phase::Readiness)))
         } else {
@@ -647,7 +647,7 @@ mod native {
     fn normal_release_preserves_output_and_reaps() {
         let mut client = child("normal");
         let returned = Returned::of(&client);
-        client.await_ready(patience()).unwrap();
+        client.await_ready().unwrap();
         client.child.stdin.as_mut().unwrap().write_all(b"r").unwrap();
         let completed = client.finish(patience()).unwrap();
         assert!(completed.status.success());
@@ -661,7 +661,7 @@ mod native {
     fn dropping_ready_client_reaps_without_releasing_the_child() {
         let mut client = child("normal");
         let returned = Returned::of(&client);
-        client.await_ready(patience()).unwrap();
+        client.await_ready().unwrap();
         drop(client);
         returned.check();
     }
