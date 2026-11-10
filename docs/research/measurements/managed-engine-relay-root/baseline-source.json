@@ -1,0 +1,45 @@
+{
+  "role": "coordinator",
+  "policy_revision": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "selected_source": "1be384ecb3e3852a6b97daaf1ead61d441f21d20",
+  "old_engine_sha256": "e2e4e6e6ae014ddb82aba96362801bd14bf4a69a2955ac44941bd481f6563eea",
+  "old_engine_unchanged": true,
+  "shared_relay_is_only_compiled_by_testguest_in_baseline": true,
+  "selected_files": [
+    {
+      "path": "crates/init/src/relay.rs",
+      "sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+      "bytes": 22823,
+      "copied_exactly_from": "1be384ecb3e3852a6b97daaf1ead61d441f21d20"
+    },
+    {
+      "path": "crates/shards/tests/managed_network/tcp_forward.rs",
+      "sha256": "eb88d86c8283fb872add56e3dbd9e58b82574cad5e06571b113d7f1a9dcd6347",
+      "bytes": 9320,
+      "copied_exactly_from": "1be384ecb3e3852a6b97daaf1ead61d441f21d20"
+    },
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3",
+      "bytes": 39798,
+      "copied_exactly_from": "1be384ecb3e3852a6b97daaf1ead61d441f21d20"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773",
+      "bytes": 36683,
+      "copied_exactly_from": "1be384ecb3e3852a6b97daaf1ead61d441f21d20"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa",
+      "bytes": 83468,
+      "copied_exactly_from": "1be384ecb3e3852a6b97daaf1ead61d441f21d20"
+    }
+  ],
+  "registration": "one existing managed_network test module; no copied host program or second observer",
+  "purpose": "normal carried real KVM VSOCK client-first and host-first baseline, before only engine adoption; test0 alone does not establish late-write equivalence",
+  "root_bounds": "4CPU8GiB16GiB build admission, j4; realVM1CPU256MiB; case30s boot120s parent240s; no guessed RLIMIT_AS",
+  "open": "no new passing VM/compiler/profile/whole management claim at this source checkpoint"
+}

@@ -6,7 +6,9 @@ use std::io::{self, Read, Write};
 use std::mem::{size_of, size_of_val};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 mod intercept;
 
@@ -43,6 +45,8 @@ enum Transport {
 enum Probe<'a> {
     Capabilities(Option<&'a str>),
     Intercept(intercept::Inputs),
+    ForwardTcp(intercept::tcp_forward::Inputs),
+    EngineHalfClose(intercept::tcp_forward::EngineInputs),
     InterceptUdp(intercept::udp::Inputs),
     SockAddr(intercept::sock_addr::Inputs),
     Serve(Case, SocketMode),
@@ -107,6 +111,12 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     words.try_reserve_exact(args.len()).map_err(io::Error::other)?;
     words.extend(args.iter().map(String::as_str));
     match words.as_slice() {
+        ["engine-halfclose", ..] => Ok(Probe::EngineHalfClose(
+            intercept::tcp_forward::EngineInputs::parse(&words)?,
+        )),
+        ["intercept-tcp-forward4", ..] => {
+            Ok(Probe::ForwardTcp(intercept::tcp_forward::Inputs::parse(&words)?))
+        }
         [
             "sock-addr-udp4"
             | "sock-addr-client4"
@@ -210,114 +220,14 @@ fn unhex(text: &str) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[derive(Clone, Copy)]
-struct Deadline {
-    at: Instant,
-    cancel: Option<RawFd>,
-}
-
-impl Deadline {
-    fn new(within: Duration) -> io::Result<Self> {
-        if within.is_zero() {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "probe deadline ended"));
-        }
-        Instant::now()
-            .checked_add(within)
-            .map(|at| Self { at, cancel: None })
-            .ok_or_else(|| invalid("deadline overflow"))
-    }
-
-    fn left(&self) -> io::Result<Duration> {
-        let left = self.at.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            Err(io::Error::new(io::ErrorKind::TimedOut, "probe deadline ended"))
-        } else {
-            Ok(left)
-        }
-    }
-
-    fn io<T>(&self, fd: RawFd, events: i16, mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-        loop {
-            self.left()?;
-            if let Some(cancel) = self.cancel {
-                if cancel < 0 {
-                    return Err(io::ErrorKind::InvalidInput.into());
-                }
-                let mut ready = libc::pollfd {
-                    fd: cancel,
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: one initialized pollfd, checked without consuming its
-                // event. Admission covers pending cancel, not a later check/I/O race.
-                if unsafe { libc::poll(&raw mut ready, 1, 0) } < 0 {
-                    let error = io::Error::last_os_error();
-                    if error.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(error);
-                }
-                self.left()?;
-                Self::cancellation_event(ready.revents)?;
-            }
-            match operation() {
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                answer => return answer,
-            }
-            let left = self.left()?;
-            let millis = left.as_nanos().div_ceil(Duration::from_millis(1).as_nanos());
-            let timeout = i32::try_from(millis).unwrap_or(i32::MAX);
-            let mut poll = [
-                libc::pollfd {
-                    fd,
-                    events,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: self.cancel.unwrap_or(-1),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-            ];
-            // SAFETY: poll reads/fills this array; negative descriptors are ignored.
-            let result = unsafe { libc::poll(poll.as_mut_ptr(), poll.len() as _, timeout) };
-            if result < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            // Original expiry wins if time and cancellation are both observed.
-            self.left()?;
-            Self::cancellation_event(poll.last().map_or(0, |p| p.revents))?;
-        }
-    }
-
-    fn cancellation_event(revents: i16) -> io::Result<()> {
-        if revents == 0 {
-            return Ok(());
-        }
-        let kind = if revents & libc::POLLNVAL != 0 {
-            io::ErrorKind::InvalidInput
-        } else if revents & libc::POLLERR != 0 {
-            io::ErrorKind::Other
-        } else if revents & libc::POLLHUP != 0 {
-            io::ErrorKind::BrokenPipe
-        } else if revents & !libc::POLLIN == 0 {
-            io::ErrorKind::ConnectionAborted
-        } else {
-            io::ErrorKind::Other
-        };
-        Err(kind.into())
-    }
-}
+use intercept::shared::Deadline;
 
 fn run(probe: Probe<'_>) -> io::Result<()> {
     match probe {
         Probe::Capabilities(path) => capabilities(path),
         Probe::Intercept(input) => intercept::run(input),
+        Probe::ForwardTcp(input) => intercept::tcp_forward::run(input),
+        Probe::EngineHalfClose(input) => intercept::tcp_forward::engine_half_close(input),
         Probe::InterceptUdp(input) => intercept::udp::run(input),
         Probe::SockAddr(input) => intercept::sock_addr::run(input),
         Probe::Serve(case, mode) => {

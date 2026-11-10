@@ -10,6 +10,9 @@ mod common;
 #[path = "managed_network/cancel.rs"]
 mod cancel;
 
+#[path = "managed_network/tcp_forward.rs"]
+mod tcp_forward;
+
 use serde_json::json;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
