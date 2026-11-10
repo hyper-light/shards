@@ -1,0 +1,14 @@
+{
+  "base": "7d01dcaf1ed7b46fe12eea6fcd33b2e50658f520",
+  "branch": "p/managed-relay-precommit",
+  "role": "implementer",
+  "policy_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source": {
+    "crates/testguest/src/managed_network.rs": "bb25e125632176ada81ab14d249d8a7feca54b110d1d7aedfccc64175c58ff1d",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "9d47e42ad6b767508ec60a47ba1283ac1b3fdbe6b4742ef3e8b884a92b18eb4a",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61",
+    "crates/shards/tests/managed_network/cancel.rs": "bf5dbdfb05dd5e886db334a60c37d64b26aba3e35c4fede4258a0728a7081d76"
+  },
+  "unchanged_udp_rs_sha256": "ec12509c7f360c46411b6f10edb04154071cc6de357b86ec53acf249592f4133"
+}

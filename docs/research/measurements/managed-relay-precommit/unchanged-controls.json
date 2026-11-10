@@ -1,0 +1,34 @@
+[
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "start": "    fn io<T>",
+    "end_exclusive": "\n}\n\nfn run",
+    "bytes": 1525,
+    "sha256": "222fb83d2de2afb4200c6a2d1cde7546e61606854e3d5dbac426046464875b04",
+    "unchanged_from": "7d01dcaf1ed7b46fe12eea6fcd33b2e50658f520"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "start": "    fn wake(&self)",
+    "end_exclusive": "\nimpl Drop for DatagramWorker",
+    "bytes": 728,
+    "sha256": "ea355d1c8b1eac0a56b1a2f41547d52e1247809764f811b6a689b52c385499bf",
+    "unchanged_from": "7d01dcaf1ed7b46fe12eea6fcd33b2e50658f520"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "start": "fn cancellation_observed",
+    "end_exclusive": "\nstruct ClientCompletion",
+    "bytes": 304,
+    "sha256": "30e405132384e49676826e254598469bd90180eba94383a672c653a3d48f7cd6",
+    "unchanged_from": "7d01dcaf1ed7b46fe12eea6fcd33b2e50658f520"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/udp/forward.rs",
+    "start": "            let sent = deadline",
+    "end_exclusive": "            if sent != length",
+    "bytes": 266,
+    "sha256": "379b3cb79e82e21731aeaa4b729fbd88dfd1654bc2d69654208ad4d565cb06e0",
+    "unchanged_from": "7d01dcaf1ed7b46fe12eea6fcd33b2e50658f520"
+  }
+]

@@ -1,0 +1,16 @@
+     Locking 11 packages to latest Rust 1.98.1 compatible versions
+      Adding serde_json v1.0.151 (available: v1.0.154)
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling sock-addr-host-pure v0.0.0 (/home/adalundhe/managed-relay-precommit-host-v1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.05s
+     Running unittests fixture.rs (/home/adalundhe/managed-relay-precommit-host-v1/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41)
+
+running 1 test
+test cancel::precommit_record_rejects_an_actual_upstream_send ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+

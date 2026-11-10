@@ -1,0 +1,8 @@
+{
+  "bytes": 7481,
+  "sha256": "3863209e84a449831a49ea50dbc3a0bbe6aa80f046834573832efcbace164c2a",
+  "entries": 36,
+  "verified_member_hashes": 35,
+  "original_archive": "/home/adalundhe/managed-relay-precommit-light-v1.tgz",
+  "scope": "regular text only; source snapshots and executable binaries remain remote"
+}

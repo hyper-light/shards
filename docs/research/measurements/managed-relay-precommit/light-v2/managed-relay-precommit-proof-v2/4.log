@@ -1,0 +1,4 @@
+    Checking libc v0.2.189
+    Checking shards-devcgroup v0.0.0 (/home/adalundhe/managed-relay-precommit-proof-v2/devcgroup)
+    Checking sock-addr-pure v0.0.0 (/home/adalundhe/managed-relay-precommit-proof-v2/helper)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.81s
