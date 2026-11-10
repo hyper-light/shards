@@ -1,0 +1,95 @@
+{
+  "source_head": "662d564efc1001b1647fe530e2ae4ac630da308b",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "local_validation": "Python AST/source/evidence checks only; no unit/fixture/build/compile/profile execution",
+  "python": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+  "sources": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/paired.py",
+      "sha256": "1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/test_paired.py",
+      "sha256": "0e4af89edd37d2757e100f506f1207672c114ee748492e875d87abb247b4df44"
+    }
+  ],
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "96b6bb43bf0610497f426cfcbc4ae1654172090c",
+        "--",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "crates/shards/tests/common/managed_alloc.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "runs": [
+    {
+      "records": "docs/research/measurements/managed-allocation-metrics/records/paired-dd75ffc83",
+      "source": {
+        "revision": "dd75ffc837605613dd20cf95e46233f4b5af3ab4",
+        "files": [
+          {
+            "name": "paired.py",
+            "sha256": "32473517d77a9df4a5ed4d192baf6c01a2aa5bf30ca7474a3d356a37cd1dc016"
+          },
+          {
+            "name": "test_paired.py",
+            "sha256": "0e4af89edd37d2757e100f506f1207672c114ee748492e875d87abb247b4df44"
+          }
+        ]
+      },
+      "raw_files_verified": 6,
+      "unit_exit": "1",
+      "python": {
+        "version": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+        "executable": "/usr/bin/python3.14",
+        "sha256": "40850fe1e2df0c14378c12bfaa02b5cda35619e09a8ee50ca3cf2bdb36fc019f"
+      }
+    },
+    {
+      "records": "docs/research/measurements/managed-allocation-metrics/records/paired-662d564ef",
+      "source": {
+        "revision": "662d564efc1001b1647fe530e2ae4ac630da308b",
+        "files": [
+          {
+            "name": "paired.py",
+            "sha256": "1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173"
+          },
+          {
+            "name": "test_paired.py",
+            "sha256": "0e4af89edd37d2757e100f506f1207672c114ee748492e875d87abb247b4df44"
+          }
+        ]
+      },
+      "raw_files_verified": 6,
+      "unit_exit": "0",
+      "python": {
+        "version": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+        "executable": "/usr/bin/python3.14",
+        "sha256": "40850fe1e2df0c14378c12bfaa02b5cda35619e09a8ee50ca3cf2bdb36fc019f"
+      }
+    }
+  ],
+  "local_target_or_cache_paths": [],
+  "children": "none; no plan/goal expansion or dispatch tools invoked"
+}

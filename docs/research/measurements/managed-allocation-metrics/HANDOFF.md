@@ -46,8 +46,13 @@ new actual native caller compilation/execution ROOTowed. Native probes use
 existing held identity checker before/after process_usage, retain both query
 and identity errors, no newOSadapter; cleanup self probe precedes original total
 FD sample, released daemon/VM Unknown. Raw in records/faults-f78c3c891.
-Paired runner current source47c6b9cb3cbb4147138bc12ab5c3ee23adb3b9e2 pure11/11;
-original a718 and release-receipt5333 results preserved. Actual paired.main/
+Paired runner current source662d564efc1001b1647fe530e2ae4ac630da308b pure13/13.
+New dd75ffc837605613dd20cf95e46233f4b5af3ab4 pure input test reproduced exactly1
+failure (2^64 accepted under a native64 label); minimal unsigned producer-bound
+guard fixes it. PAIRED-NATIVE-BOUND.md retains red+green/exact identities; current
+paired SHA1e139e610572f834398baae4138f1a1154ccaa64b9994fab410702010a22a173,
+testSHA0e4af89edd37d2757e100f506f1207672c114ee748492e875d87abb247b4df44.
+Original a718/release-receipt5333/current-at-that-time47c11/11 preserved. Actual paired.main/
 executor, source preflight, VM/profile/campaign NEVER run. See PAIRING.md and
 QUEUE-CHECKPOINT.md; all physical/paired/mutation/cleanup gates ROOTowned.
 fixture-hooks.proposed.patch is the preserved APPROVED/APPLIED proposal. No
@@ -70,6 +75,13 @@ Keep signed checkpoints and continue the next approved item without final-idle.
 Persistent lane goal/plan01a1c5cfb1457788825ed52ecb517527 remains active until
 coordinator closure; never mark it done for one checkpoint. Re-read current
 policy/handoff on compaction/resume. Root owns all real execution.
+
+Central dispatch correction: no child sessions exist for this lane and none
+were created. Do NOT call plans_run modeagents, plans_ready thenagents,
+parallel/independent goal steps, goals_plan expansions or any new child.
+ROOTalone assigns actors. Keep existing active goal/index; no goal set/reset/
+stop or personalgoals.settings call. Report automatic-delegation proposals
+BEFORE triggering them. Existing work/plan/evidence stays preserved.
 
 Next: finish current raw/source proof packaging and root review follow-up, then
 the next root-selected approved scope; retain exact source/command/binary/log identities;

@@ -25,6 +25,11 @@ All commits use signed named paths and required Claude Opus5.5 attribution.
   the actual cost fixture, using the existing platform query and held identity
   checks. Query/identity errors both survive; cleanup probe precedes original
   final FD sample. **Actual changed caller compilation/execution is unrun here.**
+* `dd75ffc837605613dd20cf95e46233f4b5af3ab4`: two more pure native-record tests;
+  exact out-of-unsigned64 input red12pass/1fail, no native query.
+* `662d564efc1001b1647fe530e2ae4ac630da308b`: minimal derived unsigned-width
+  predicate; same13 tests pass. [Red/green proof](PAIRED-NATIVE-BOUND.md) preserves
+  exact source/Python/invocations and raw records; actual executor still unrun.
 
 Every remote run uses new private source/target/log directories with a full
 source-revision suffix, `sync:false`, Kiln admission1CPU/1GiB/2GiB. No root
