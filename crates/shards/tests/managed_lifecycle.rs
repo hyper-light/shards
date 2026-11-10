@@ -191,7 +191,9 @@ fn fault_observed(home: &std::path::Path) -> String {
         }
         let complete = observed.rsplit_once('\n').map_or("", |(complete, _)| complete);
         if let Some(line) = complete.lines().find(|line| {
-            line.contains("quarantined after population observation") || line.contains("shared boundary:")
+            line.contains("quarantined after population observation")
+                || line.contains("shared boundary:")
+                || line.contains("reboot: Power down")
         }) {
             return line.to_string();
         }
