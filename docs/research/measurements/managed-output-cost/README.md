@@ -130,7 +130,34 @@ artifacts or nested guest builds outside this scoped light step. No placeholder
 init/server file is used and no placeholder compile began. This light run does
 not build a runnable product or constitute a real-VM/matrix gate. Source,
 toolchain, exact commands, logs and original exit codes are retained under
-`~/managed-output-cost-light/<phase>`. No native result is claimed before it runs; the full caller compile is explicitly unrun.
+`~/managed-output-cost-light/<phase>`. The full caller compile is explicitly unrun.
+
+### Actual light result
+
+Exact SOURCE `0fb2f849bf07f1a9e74bfde5af4c434d71ad30a2`, Fedora GNU amd64 r238:
+`rustc --test -D warnings` succeeded and all **3 synthetic parser tests passed**,
+0 failed/ignored. One admitted 4CPU/1GiB/2GiB request; no retries, placeholders,
+integration caller build, VM, proc/resource sampling or profiling execution.
+Actual pinned compiler Rust1.98.1 (`48a229ceaefd4985c50990b14116b6d856af0985`),
+host Linux6.19.10-300.fc44 amd64. Pure parser executable SHA256
+`04e3723eeef9a09401951406e7451add67ed3994ac34de2ad873ed02b20d11f1`, retained
+at `~/managed-output-cost-target/parser-tests-v1`. This is **not** the real-VM
+integration executable.
+
+[Raw commands/exits/logs](records/native-v1), [job](records/native-v1-job.json),
+[transfer](records/native-v1-transfer.json), [verification](records/native-v1-verification.json)
+and [manifest](records/native-v1-manifest.json) retain exact provenance. Original
+1559-byte archive SHA256
+`e6f56693c7246e71845ce321b0bf0ff1c813ae07ebab317813298afb5ceef961`;
+14 raw files and 5 source hashes verified against that source's Git blobs. Native
+checkout status was clean. Only the approved test file and this measurement
+directory differ from c7e87dc; production source/dependencies are unchanged.
+Local formatter, shell syntax and policy proofs are recorded separately in
+[local-checks.json](records/local-checks.json).
+Staged whitespace checking reports one new blank EOF line in the original
+libtest `parser.log`; it is retained byte-for-byte, not rewritten to manufacture
+a clean raw-log check. Rust source formatting, shell syntax and policy checks0;
+no source changed after the passing parser run.
 
 Coordinator owed: source review, real N0/N1/N2 and explicitly admitted finite
 higher counts, deadline/error/cleanup paths, all prior tests after shared-helper

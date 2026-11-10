@@ -1,0 +1,5 @@
+23fd8e1c96e31c2dd201255c3762fb2a2727adee21cd98f5b3d9b576695aa016  crates/shards/tests/managed_output.rs
+bfab28a51a1e4cbbff3564458983f3c0a7a6c546378a487bd5b746ef4501fe27  docs/research/measurements/managed-output-cost/fixture.rs
+c24b9b2233c9dd0f03a1fa336cdc9a12ea4b48a21267e34ca40f7665f97cf3f9  docs/research/measurements/managed-output-cost/parse.rs
+b03fe35bcefcbbdfb0a9379ad0952d6501abf424c68b00eeec73e4b5b848ba6d  docs/research/measurements/managed-output-cost/run-light.sh
+4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1  Cargo.lock
