@@ -18,13 +18,14 @@ import time
 parser = argparse.ArgumentParser()
 parser.add_argument("--patience-ms", type=int, required=True)
 parser.add_argument("--evidence", type=pathlib.Path, required=True)
+parser.add_argument("--revision", default="fa1b5d35654ac395e4ce24b8fee8ac59f4f0555e")
 args = parser.parse_args()
 if sys.platform != "linux" or args.patience_ms <= 0:
     raise SystemExit("requires Linux pidfds and positive caller patience")
 args.evidence.mkdir(parents=True, exist_ok=False)
 root = pathlib.Path(__file__).resolve().parents[4]
 host = root / "crates/shards/tests/managed_cleanup.rs"
-text = host.read_text()
+text = subprocess.check_output(["git", "show", args.revision + ":crates/shards/tests/managed_cleanup.rs"], cwd=root, text=True)
 actual = text[text.index("struct Client {"):text.index("struct Daemon<'a>")]
 (args.evidence / "actual-client.rs").write_text(actual)
 prefix = r'''
@@ -97,6 +98,9 @@ for mode in ["silent", "early", "partial", "normal"]:
     deadline = time.monotonic() + patience
     timed_out = False
     rescued = False
+    readiness_panic = False
+    client_ready = False
+    released = False
     try:
         while probe.returncode is None:
             events = selector.select(max(0, deadline - time.monotonic()))
@@ -124,15 +128,20 @@ for mode in ["silent", "early", "partial", "normal"]:
                         helper_pid = int(line.split()[1])
                         helper_fd = os.pidfd_open(helper_pid)
                     elif line == "READINESS_PANIC":
-                        state = pathlib.Path(f"/proc/{helper_pid}/status").read_text().split("State:", 1)[1].splitlines()[0].strip()
-                        lines.append(["observer", "owned_child_state=" + state])
-                        probe.stdin.write(f"{helper_pid}\n".encode())
-                        probe.stdin.flush()
-                        rescued = True
+                        readiness_panic = True
                     elif line == "CLIENT_READY":
-                        signal.pidfd_send_signal(helper_fd, signal.SIGUSR1)
-                        probe.stdin.write(b"finish\n")
-                        probe.stdin.flush()
+                        client_ready = True
+            if readiness_panic and helper_pid is not None and not rescued:
+                state = pathlib.Path(f"/proc/{helper_pid}/status").read_text().split("State:", 1)[1].splitlines()[0].strip()
+                lines.append(["observer", "owned_child_state=" + state])
+                probe.stdin.write(f"{helper_pid}\n".encode())
+                probe.stdin.flush()
+                rescued = True
+            if client_ready and helper_fd is not None and not released:
+                signal.pidfd_send_signal(helper_fd, signal.SIGUSR1)
+                probe.stdin.write(b"finish\n")
+                probe.stdin.flush()
+                released = True
         sample = {"mode": mode, "caller_patience_ms": args.patience_ms, "deadline_hit": timed_out,
                   "unjoined_child_rescued": rescued, "probe_exit": probe.returncode, "lines": lines}
         samples.append(sample)
@@ -153,7 +162,7 @@ for mode in ["silent", "early", "partial", "normal"]:
         selector.close()
         for stream in [probe.stdin, probe.stdout, probe.stderr]:
             stream.close()
-summary = {"host_source_sha256": hashlib.sha256(host.read_bytes()).hexdigest(),
+summary = {"source_revision": args.revision, "host_source_sha256": hashlib.sha256(text.encode()).hexdigest(),
            "actual_client_sha256": hashlib.sha256(actual.encode()).hexdigest(), "samples": samples}
 (args.evidence / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 raise SystemExit(1 if any(s["deadline_hit"] or s["unjoined_child_rescued"] for s in samples) else 0)
