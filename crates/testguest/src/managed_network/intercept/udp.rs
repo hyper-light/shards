@@ -515,10 +515,11 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
             router
                 .route
                 .policy(interface(c"lo")?, &input.network, destination, &deadline)?;
-            Netlink::open(libc::NETLINK_NETFILTER)?.interception_udp(
+            Netlink::open(libc::NETLINK_NETFILTER)?.interception(
                 &input.network,
                 destination,
                 relay_port,
+                wire::Protocol::Udp,
                 &deadline,
             )
         })?;

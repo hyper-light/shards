@@ -729,7 +729,13 @@ pub(super) fn run(input: Inputs) -> io::Result<()> {
         router
             .route
             .policy(interface(c"lo")?, &input, destination, &deadline)?;
-        Netlink::open(libc::NETLINK_NETFILTER)?.interception(&input, destination, relay_port, &deadline)
+        Netlink::open(libc::NETLINK_NETFILTER)?.interception(
+            &input,
+            destination,
+            relay_port,
+            wire::Protocol::Tcp,
+            &deadline,
+        )
     })?;
     let mut out = io::stdout().lock();
     writeln!(out, "managed-intercept {{\"type\":\"{:?}\"}}", Phase::Installed)?;
