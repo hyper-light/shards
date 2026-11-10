@@ -1,0 +1,4 @@
+{"variant":"candidate","mode":"count","sample":0,"ns":32084,"length":325,"capacity":512,"allocs":1,"reallocs":6,"deallocs":1,"requested_bytes":1016,"user_us":0,"system_us":51,"minor_faults":4,"major_faults":0}
+{"variant":"candidate","mode":"count","sample":1,"ns":17119,"length":325,"capacity":512,"allocs":1,"reallocs":6,"deallocs":1,"requested_bytes":1016,"user_us":0,"system_us":18,"minor_faults":0,"major_faults":0}
+{"variant":"candidate","mode":"count","sample":2,"ns":14917,"length":325,"capacity":512,"allocs":1,"reallocs":6,"deallocs":1,"requested_bytes":1016,"user_us":0,"system_us":16,"minor_faults":0,"major_faults":0}
+{"variant":"candidate","mode":"count","sample":3,"ns":13549,"length":325,"capacity":512,"allocs":1,"reallocs":6,"deallocs":1,"requested_bytes":1016,"user_us":0,"system_us":15,"minor_faults":0,"major_faults":0}

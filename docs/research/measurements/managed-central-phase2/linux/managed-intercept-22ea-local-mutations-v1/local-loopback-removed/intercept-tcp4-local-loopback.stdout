@@ -1,0 +1,23 @@
+[    0.008385] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp4", "local-loopback", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalLoopback","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalLoopback","destination":"127.0.0.1:53627","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:53627 peer=127.0.0.1:49696 original=Some(127.0.0.1:53627) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"127.0.0.1:53627","peer":"127.0.0.1:49696"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:49696 peer=127.0.0.1:53627 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"127.0.0.1:49696","peer":"127.0.0.1:53627","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"127.0.0.1:53627","relay_port":38535}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=127.0.0.1:53627 peer=127.0.0.1:49704 original=Some(127.0.0.1:53627) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"127.0.0.1:53627","peer":"127.0.0.1:49704"}
+managed-network Sent transport=tcp bytes=9
+managed-intercept {"type":"Joined","backend_accepted":2,"relay_accepted":0,"joined":true}
+managed-network failed kind=InvalidInput errno=None: TCP payload differs
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.064396] reboot: Power down

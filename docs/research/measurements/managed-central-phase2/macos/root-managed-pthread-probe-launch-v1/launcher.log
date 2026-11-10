@@ -1,0 +1,4 @@
+build: exit=0
+allocation-refused: exit=0
+native-under-rust-refusal: exit=0
+clippy: exit=0

@@ -1,0 +1,81 @@
+[
+  {
+    "type": "Namespaces",
+    "origin": "Forward",
+    "router_inode": 4026532020,
+    "backend_inode": 4026532093,
+    "client_inode": 4026532166,
+    "mark": 1,
+    "table": 100,
+    "priority": 100
+  },
+  {
+    "type": "Target",
+    "origin": "Forward",
+    "relay_mode": "Absent",
+    "destination": "192.0.2.2:53675",
+    "client_inode": 4026532166,
+    "backend_inode": 4026532093,
+    "relay_inode": 4026532020
+  },
+  {
+    "type": "ServerObservation",
+    "role": "Backend",
+    "local": "192.0.2.2:53675",
+    "peer": "198.51.100.2:38648"
+  },
+  {
+    "type": "ClientObservation",
+    "reply": "Backend",
+    "local": "198.51.100.2:38648",
+    "peer": "192.0.2.2:53675",
+    "hex": "4241434b454e4400ff"
+  },
+  {
+    "type": "Baseline",
+    "destination": "192.0.2.2:53675",
+    "relay_port": 34305
+  },
+  {
+    "type": "Installed"
+  },
+  {
+    "type": "RelayListenerClosed",
+    "relay_port": 34305,
+    "relay_worker": "NotStarted"
+  },
+  {
+    "type": "ClientOutcome",
+    "stage": "ConnectCall",
+    "outcome": "Deadline",
+    "kind": "TimedOut",
+    "errno": null
+  },
+  {
+    "type": "Joined",
+    "backend_accepted": 1,
+    "backend_receipts": 1,
+    "backend_terminal": "Deadline",
+    "relay_accepted": 0,
+    "relay_receipts": 0,
+    "relay_worker": "NotStarted",
+    "joined": true
+  },
+  {
+    "type": "WorkerError",
+    "worker": "Backend",
+    "kind": "TimedOut",
+    "errno": null
+  },
+  {
+    "type": "AbsenceVerdict",
+    "verdict": "NoNewBackendEffectBeforeDeadline"
+  },
+  {
+    "type": "RelayAbsentChecked",
+    "verdict": "NoNewBackendEffectBeforeDeadline",
+    "window": "OriginalAbsoluteDeadline",
+    "after_window": "Unverified",
+    "no_second_backend_accept_or_receipt": true
+  }
+]

@@ -1,0 +1,14 @@
+diff --git a/crates/testguest/src/managed_network/intercept/wire.rs b/crates/testguest/src/managed_network/intercept/wire.rs
+index 88d90b1fd..bbc8f8936 100644
+--- a/crates/testguest/src/managed_network/intercept/wire.rs
++++ b/crates/testguest/src/managed_network/intercept/wire.rs
+@@ -227,7 +227,8 @@ impl Netlink {
+         let intercept = rule(b"pre\0", expressions)?;
+         let mut messages = Vec::new();
+         messages.try_reserve_exact(7).map_err(io::Error::other)?; // begin/table/2 chains/2 rules/end
+-        messages.extend([begin, Message::nft(0, CREATE_EXCL, table)?, pre, intercept]);
++        messages.extend([begin, Message::nft(0, CREATE_EXCL, table)?, pre]);
++        let _ = intercept;
+         if input.origin != Origin::Forward {
+             messages.push(chain(b"out\0", b"route\0", 3)?);
+             let mut expressions = selector(destination)?;

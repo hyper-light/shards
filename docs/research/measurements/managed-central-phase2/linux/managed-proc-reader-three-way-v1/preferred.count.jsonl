@@ -1,0 +1,4 @@
+{"variant":"preferred","mode":"count","sample":0,"ns":27048,"length":325,"capacity":1024,"allocs":1,"reallocs":0,"deallocs":1,"requested_bytes":1024,"user_us":0,"system_us":41,"minor_faults":3,"major_faults":0}
+{"variant":"preferred","mode":"count","sample":1,"ns":20037,"length":325,"capacity":1024,"allocs":1,"reallocs":0,"deallocs":1,"requested_bytes":1024,"user_us":0,"system_us":21,"minor_faults":1,"major_faults":0}
+{"variant":"preferred","mode":"count","sample":2,"ns":14000,"length":325,"capacity":1024,"allocs":1,"reallocs":0,"deallocs":1,"requested_bytes":1024,"user_us":0,"system_us":15,"minor_faults":0,"major_faults":0}
+{"variant":"preferred","mode":"count","sample":3,"ns":12067,"length":325,"capacity":1024,"allocs":1,"reallocs":0,"deallocs":1,"requested_bytes":1024,"user_us":0,"system_us":14,"minor_faults":0,"major_faults":0}

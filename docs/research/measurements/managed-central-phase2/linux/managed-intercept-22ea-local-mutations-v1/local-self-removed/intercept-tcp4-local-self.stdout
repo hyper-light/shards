@@ -1,0 +1,22 @@
+[    0.008354] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp4", "local-self", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalSelf","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"LocalSelf","destination":"192.0.2.1:33757","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=192.0.2.1:33757 peer=192.0.2.1:40384 original=Some(192.0.2.1:33757) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"192.0.2.1:33757","peer":"192.0.2.1:40384"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=192.0.2.1:40384 peer=192.0.2.1:33757 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"192.0.2.1:40384","peer":"192.0.2.1:33757","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"192.0.2.1:33757","relay_port":52417}
+managed-intercept {"type":"Installed"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=192.0.2.1:33757 peer=192.0.2.1:40388 original=Some(192.0.2.1:33757) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"192.0.2.1:33757","peer":"192.0.2.1:40388"}
+managed-network Sent transport=tcp bytes=9
+managed-network failed kind=NotConnected errno=Some(107): Socket not connected (os error 107)
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.064407] reboot: Power down

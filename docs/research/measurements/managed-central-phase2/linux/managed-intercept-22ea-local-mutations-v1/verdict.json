@@ -1,0 +1,47 @@
+[
+  {
+    "origin": "local-loopback",
+    "exit": 101,
+    "joined": [
+      {
+        "type": "Joined",
+        "backend_accepted": 2,
+        "relay_accepted": 0,
+        "joined": true
+      }
+    ],
+    "backend_observations": [
+      {
+        "type": "ServerObservation",
+        "role": "Backend",
+        "local": "127.0.0.1:53627",
+        "peer": "127.0.0.1:49696"
+      },
+      {
+        "type": "ServerObservation",
+        "role": "Backend",
+        "local": "127.0.0.1:53627",
+        "peer": "127.0.0.1:49704"
+      }
+    ]
+  },
+  {
+    "origin": "local-self",
+    "exit": 101,
+    "joined": [],
+    "backend_observations": [
+      {
+        "type": "ServerObservation",
+        "role": "Backend",
+        "local": "192.0.2.1:33757",
+        "peer": "192.0.2.1:40384"
+      },
+      {
+        "type": "ServerObservation",
+        "role": "Backend",
+        "local": "192.0.2.1:33757",
+        "peer": "192.0.2.1:40388"
+      }
+    ]
+  }
+]

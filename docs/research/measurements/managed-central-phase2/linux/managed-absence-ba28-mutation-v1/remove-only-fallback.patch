@@ -1,0 +1,12 @@
+diff --git a/crates/testguest/src/managed_network/intercept/wire.rs b/crates/testguest/src/managed_network/intercept/wire.rs
+index 62529c963..e2a4f3080 100644
+--- a/crates/testguest/src/managed_network/intercept/wire.rs
++++ b/crates/testguest/src/managed_network/intercept/wire.rs
+@@ -239,7 +239,6 @@ fn interception_messages(input: &Inputs, destination: SocketAddr, port: u16) ->
+         Message::nft(0, CREATE_EXCL, table)?,
+         pre,
+         intercept,
+-        rule(b"pre\0", expressions)?,
+     ];
+     let output = if input.origin != Origin::Forward {
+         let mut expressions = selector(destination)?;

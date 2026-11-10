@@ -1,0 +1,22 @@
+[    0.010555] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-tcp4", "forward-relay-absent", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"Forward","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"Target","origin":"Forward","relay_mode":"Absent","destination":"192.0.2.2:53367","client_inode":4026532166,"backend_inode":4026532093,"relay_inode":4026532020}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=192.0.2.2:53367 peer=198.51.100.2:49992 original=Some(192.0.2.2:53367) bytes=9 hex=5245515545535400ff
+managed-intercept {"type":"ServerObservation","role":"Backend","local":"192.0.2.2:53367","peer":"198.51.100.2:49992"}
+managed-network Sent transport=tcp bytes=9
+managed-network PeerClosed transport=tcp
+managed-network Received local=198.51.100.2:49992 peer=192.0.2.2:53367 original=None bytes=9 hex=4241434b454e4400ff
+managed-intercept {"type":"ClientObservation","reply":"Backend","local":"198.51.100.2:49992","peer":"192.0.2.2:53367","hex":"4241434b454e4400ff"}
+managed-intercept {"type":"Baseline","destination":"192.0.2.2:53367","relay_port":50481}
+managed-intercept {"type":"Installed"}
+managed-intercept {"type":"RelayListenerClosed","relay_port":50481,"relay_worker":"NotStarted"}
+managed-intercept {"type":"ClientOutcome","stage":"ConnectCall","outcome":"Deadline","kind":"TimedOut","errno":null}
+managed-intercept {"type":"Joined","backend_accepted":1,"backend_receipts":1,"backend_terminal":"Deadline","relay_accepted":0,"relay_receipts":0,"relay_worker":"NotStarted","joined":true}
+managed-intercept {"type":"WorkerError","worker":"Backend","kind":"TimedOut","errno":null}
+managed-intercept {"type":"AbsenceVerdict","verdict":"NoNewBackendEffectBeforeDeadline"}
+managed-intercept {"type":"RelayAbsentChecked","verdict":"NoNewBackendEffectBeforeDeadline","window":"OriginalAbsoluteDeadline","after_window":"Unverified","no_second_backend_accept_or_receipt":true}
+SHARDS-TEST PASS
+[   30.073669] reboot: Power down

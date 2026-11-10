@@ -1,0 +1,28 @@
+[
+  {
+    "case": "fallback-removed",
+    "cargo_exit": 101,
+    "joined": {
+      "type": "Joined",
+      "backend_accepted": 2,
+      "backend_receipts": 2,
+      "backend_terminal": "Stopped",
+      "relay_accepted": 0,
+      "relay_receipts": 0,
+      "relay_worker": "NotStarted",
+      "joined": true
+    },
+    "client_outcomes": [
+      {
+        "type": "ClientOutcome",
+        "stage": "ConnectedIo",
+        "outcome": "Success",
+        "reply": "Backend",
+        "local": "198.51.100.2:56660",
+        "peer": "192.0.2.2:37279",
+        "kind": null,
+        "errno": null
+      }
+    ]
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "linux_archive_sha256": "fafb291e90902bac5d2a04880e54fde6c99febba3f4d8f4850e795e65df24c12",
+  "macos_archive_sha256": "03859d685f8d15ba194e86435c8d428e33a90d614e5ea8d8676c676cfb67cf74",
+  "excluded": [],
+  "files": 378,
+  "reporting_absence_archive_sha256": "626f6d7d9136c34cfd0caa6909a788add06af66a2d81f1df51cb1d3669520fd0"
+}

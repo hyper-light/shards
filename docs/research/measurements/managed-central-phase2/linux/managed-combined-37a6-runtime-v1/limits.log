@@ -1,0 +1,213 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.37s
+     Running tests/managed_limits.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_limits-98f9561da5c46fbf)
+
+running 8 tests
+test a_finite_held_tenant_population_can_be_cancelled_after_neighbor_progress ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `guest` profile [optimized] target(s) in 0.08s
+ready actor observation: Report { phase: Ready, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 0, reaped: 0, replacement: 0, descriptors: 5, cause: None, errno: 0 }
+before fill trusted process snapshot:
+status Some(0) after 6.614064ms
+--- stdout
+PID                 PPID                UID                 NLWP
+933                 1                   1000                1
+937                 1                   4394304             1
+942                 937                 4394304             1
+948                 945                 200000              1
+1718                1                   4394305             1
+1723                1718                4394305             1
+1729                1725                200001              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 948, parent: 945, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+refused actor observation: Report { phase: Refused, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 2, reaped: 0, replacement: 0, descriptors: 10, cause: ForkRefused, errno: 11 }
+after actual EAGAIN trusted process snapshot:
+status Some(0) after 8.829926ms
+--- stdout
+PID                 PPID                UID                 NLWP
+933                 1                   1000                1
+937                 1                   4394304             1
+942                 937                 4394304             1
+948                 945                 200000              1
+1718                1                   4394305             1
+1723                1718                4394305             1
+1729                1725                200001              1
+2243                948                 200000              1
+2244                948                 200000              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 948, parent: 945, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 2. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+fresh HARNESS and main nonce answered after refused: 000000000000000018e6a704637518fe
+before stopping with children held trusted process snapshot:
+status Some(0) after 8.983501ms
+--- stdout
+PID                 PPID                UID                 NLWP
+933                 1                   1000                1
+937                 1                   4394304             1
+942                 937                 4394304             1
+948                 945                 200000              1
+1718                1                   4394305             1
+1723                1718                4394305             1
+1729                1725                200001              1
+2243                948                 200000              1
+2244                948                 200000              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 948, parent: 945, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 2. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+whole-run stop requested; last confirmed guest observation Report { phase: Refused, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 2, reaped: 0, replacement: 0, descriptors: 10, cause: ForkRefused, errno: 11 }. This is not a terminal reaping result.
+stop returned; daemon state not-running/PID0; private run removed. Host/kernel resource campaign remains coordinator-owned.
+no guest terminal publication after stop; last confirmed observation remains Refused/held. Host/kernel resource return is unobserved.
+private daemon teardown: status Some(0) after 4.728929ms
+--- stdout
+
+--- stderr
+
+private daemon log:
+shards daemon 3991535: the default bridge is 172.22.0.0/16
+shards daemon 3991535: serving /tmp/shards-tests/3991478/limits-home-0 through /tmp/shards-tests/3991478/limits-home-0/requests, with up to 524288 descriptors open
+shards daemon 3991535: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991535: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 222.715118ms
+shards daemon 3991535: managed output capture: managed output closed
+shards daemon 3991535: container 87103e50c866abd89e8dd4ca43519638bdbaf0341ba3a3a7fb4de2e6c812dc72: giving back what it holds cold: shards: the container's process ended before the command started
+shards daemon 3991535: container 87103e50c866abd89e8dd4ca43519638bdbaf0341ba3a3a7fb4de2e6c812dc72: gave back 4096 bytes its writable layer's guest freed, in 626 us
+shards daemon 3991535: stepping aside: a client asked it to stop
+shards daemon 3991535: exiting
+
+ok
+test a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors ... ready actor observation: Report { phase: Ready, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 0, reaped: 0, replacement: 0, descriptors: 5, cause: None, errno: 0 }
+before fill trusted process snapshot:
+status Some(0) after 10.836961ms
+--- stdout
+PID                 PPID                UID                 NLWP
+913                 1                   1000                1
+919                 1                   4394304             1
+925                 919                 4394304             1
+931                 928                 200000              1
+1716                1                   4394305             1
+1721                1716                4394305             1
+1727                1725                200001              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 931, parent: 928, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+refused actor observation: Report { phase: Refused, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 2, reaped: 0, replacement: 0, descriptors: 10, cause: ForkRefused, errno: 11 }
+after actual EAGAIN trusted process snapshot:
+status Some(0) after 8.73905ms
+--- stdout
+PID                 PPID                UID                 NLWP
+913                 1                   1000                1
+919                 1                   4394304             1
+925                 919                 4394304             1
+931                 928                 200000              1
+1716                1                   4394305             1
+1721                1716                4394305             1
+1727                1725                200001              1
+2240                931                 200000              1
+2241                931                 200000              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 931, parent: 928, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 2. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+fresh HARNESS and main nonce answered after refused: 000000000000000018e6a704a17f994a
+recovered actor observation: Report { phase: Recovered, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 0, reaped: 3, replacement: 6, descriptors: 6, cause: None, errno: 0 }
+after replacement reaped trusted process snapshot:
+status Some(0) after 6.653726ms
+--- stdout
+PID                 PPID                UID                 NLWP
+913                 1                   1000                1
+919                 1                   4394304             1
+925                 919                 4394304             1
+931                 928                 200000              1
+1716                1                   4394305             1
+1721                1716                4394305             1
+1727                1725                200001              1
+
+--- stderr
+
+declared tasks 6; source-predicted reserved 4 (not an observed total or admission authority)
+visible actor Process { pid: 931, parent: 928, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+fresh HARNESS and main nonce answered after recovered: 000000000000000018e6a704a27d0a32
+whole-run stop requested; last confirmed guest observation Report { phase: Recovered, budget: Budget { tasks: 6, reserved: 4, children: 2 }, actor: 2, parent: 1, uid: 200000, reaper_uid: 0, threads: 1, held: 0, reaped: 3, replacement: 6, descriptors: 6, cause: None, errno: 0 }. This is not a terminal reaping result.
+stop returned; daemon state not-running/PID0; private run removed. Host/kernel resource campaign remains coordinator-owned.
+private daemon teardown: status Some(0) after 4.494326ms
+--- stdout
+
+--- stderr
+
+private daemon log:
+shards daemon 3991814: the default bridge is 172.22.0.0/16
+shards daemon 3991814: serving /tmp/shards-tests/3991478/limits-home-5 through /tmp/shards-tests/3991478/limits-home-5/requests, with up to 524288 descriptors open
+shards daemon 3991814: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c4ea25f6751d8d807fb7ff1a1cf2/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 3991814: managed output capture: managed output closed
+shards daemon 3991814: container 5d3a50a87c27c5ae10b74b8bd59a6e20ab708f0b6b35acfdd6239044477ac400: gave back 4096 bytes its writable layer's guest freed, in 370 us
+shards daemon 3991814: stepping aside: a client asked it to stop
+shards daemon 3991814: exiting
+
+ok
+test common::port_probe ... ok
+test fixture_actual_r222_rows_do_not_require_an_unlisted_reaper ... visible actor Process { pid: 935, parent: 933, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+ok
+test fixture_agentfile_preserves_the_finite_task_declaration_and_grants ... checked fixture normalized declaration: {"schemaVersion":1,"agents":[{"name":"limited","source":"./limited","to":"/agents/limited","processes":6}],"harnesses":[{"name":"healthy","source":"./healthy","to":"/harness/healthy","processes":null}],"skills":[],"mcp":[],"networks":[{"name":"control","driver":"","ipamDriver":"","attachable":false,"internal":false,"external":false,"dns":false,"ipv4":null,"ipv6":null,"driverOpts":[],"labels":[],"ipamOpts":[],"subnets":[],"ipRanges":[],"gateways":[],"auxAddresses":[],"protocols":["tcp","udp"],"ports":[{"port":"7100","direction":"ingress"},{"port":"7101","direction":"ingress"}],"for":{"kind":null,"names":[]}}],"connections":[{"kind":null,"from":["limited"],"bothWays":true,"to":["limited"],"on":["control"],"ports":[]},{"kind":null,"from":["healthy"],"bothWays":true,"to":["healthy"],"on":["control"],"ports":[]}],"attachments":[],"exposures":[{"ports":["7100"],"direction":"ingress","networks":["control"],"agents":["limited"]},{"ports":["7101"],"direction":"ingress","networks":["control"],"harnesses":["healthy"]}],"volumes":[{"source":null,"paths":["/limits"],"chown":"limited","chmod":"","for":{"kind":null,"names":["limited"]}},{"source":null,"paths":["/healthy"],"chown":"healthy","chmod":"","for":{"kind":null,"names":["healthy"]}}]}
+ok
+test fixture_ambiguous_actor_roots_are_rejected - should panic ... 
+thread 'fixture_ambiguous_actor_roots_are_rejected' (3992000) panicked at crates/shards/tests/managed_limits.rs:112:9:
+expected exactly one visible actor root: [Process { pid: 916, parent: 1, uid: 1000, threads: 1 }, Process { pid: 923, parent: 1, uid: 4394304, threads: 1 }, Process { pid: 929, parent: 923, uid: 4394304, threads: 1 }, Process { pid: 935, parent: 933, uid: 200000, threads: 1 }, Process { pid: 1712, parent: 1, uid: 4394305, threads: 1 }, Process { pid: 1717, parent: 1712, uid: 4394305, threads: 1 }, Process { pid: 1725, parent: 1720, uid: 200001, threads: 1 }, Process { pid: 2000, parent: 1999, uid: 200000, threads: 1 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+ok
+test fixture_connections_rejects_the_original_comma_port_request ... existing connections rejected original comma request: NETWORK --ingress=7100,7101 on network control: no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)
+ok
+test fixture_synthetic_held_children_belong_to_one_visible_actor ... visible actor Process { pid: 11, parent: 10, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 1. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.06s
+
