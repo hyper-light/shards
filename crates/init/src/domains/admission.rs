@@ -397,10 +397,8 @@ impl Group {
             return Err(refusal);
         }
         // SAFETY: openat returned a fresh descriptor owned only here.
-        Ok(Self {
-            directory: unsafe { File::from_raw_fd(fd) },
-            removal,
-        })
+        let directory = unsafe { File::from_raw_fd(fd) };
+        Ok(Self { directory, removal })
     }
 
     fn refused(mut self, mut refusal: Refusal) -> Refusal {
