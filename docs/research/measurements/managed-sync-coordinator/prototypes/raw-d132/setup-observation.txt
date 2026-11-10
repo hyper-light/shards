@@ -1,0 +1,27 @@
+Accepted run r210, d132,4CPU8GiB20GiB; source bce20df21335db49f03cbbe9386e0b925789845b.
+Exact accepted launcher:
+lockf /tmp/g121-mac.lock bash docs/research/measurements/managed-sync-coordinator/prototypes/run-light.sh
+cwd /Users/adalundhe/Projects/shards/.claude/worktrees/managed-sync-probe, default sync=true, timeout_s600.
+
+Several machines.output reads returned output empty/runningtrue and no synced or exit field.
+An owned evidence-directory-only read r211 found that directory absent. An initial
+'may/likely lock wait' interpretation was not established and was withdrawn.
+Root separately reported no lock owner/no matching process; that was coordinator
+evidence, not an independently repeated agent-wide process audit.
+
+Scoped own-source read r212 confirmed:
+home=/Users/adalundhe
+own_source=/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-sync-probe-f1581a3189
+launcher SHA2563c08a04bef57fda2aa61c40e1cb5b4b19a81c358f96c257c2e0a25f9adb952de
+main SHA256596606824c198b7e4a79c5310a8c2b5b2d7c0cc23e7f1221663a0c0f814815b7
+HEAD bce20df21335db49f03cbbe9386e0b925789845b
+Own evidence absent at that observation. This established selected source arrival,
+not lock blocking, complete synchronization or native execution. Kiln's output API
+provided no more detailed dispatch stage. Job/source/lock were not interrupted,
+bypassed or duplicated by this agent. Mechanical local format/bash/policy checks
+were done while waiting; no local build.
+
+At2026-11-10 09:56:30UTC the final machines.output returned build0,
+allocation-refused0, native-under-rust-refusal0, clippy0, entireexit0. Actual native
+logs/artifact/compiler/SDK identities were then retrieved. The earlier empty
+output/delay remains unattributed; it is not a measured startup/latency result.
