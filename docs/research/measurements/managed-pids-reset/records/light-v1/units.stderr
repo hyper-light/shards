@@ -1,0 +1,17 @@
+   Compiling autocfg v1.5.1
+   Compiling memchr v2.8.3
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/abi)
+   Compiling libc v0.2.189
+   Compiling regex-syntax v0.8.11
+   Compiling num-integer v0.1.47
+   Compiling regex-automata v0.4.18
+   Compiling num-bigint v0.4.8
+   Compiling regex v1.13.1
+   Compiling shards-template v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/template)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/ipc)
+   Compiling shards-cmdline v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/cmdline)
+   Compiling managed-pids-reset-light v0.0.0 (/Users/adalundhe/managed-pids-reset-light-v1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.71s
+     Running unittests src/lib.rs (/Users/adalundhe/managed-pids-reset-target-v1/debug/deps/managed_pids_reset_light-e60e8ce5a5840749)

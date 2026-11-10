@@ -173,6 +173,8 @@ impl<D: Disk> Daemon<D> {
             // CPUs its vCPUs are held to (D191). A joiner's limits are its own cgroup's
             // alone; its microVM's most and hold its provider's.
             let host = crate::resources::host_cpus();
+            let settings = crate::resources::cgroup(&merged, host)
+                .map_err(|error| error.message(format_args!("cannot update {given}")))?;
             let held = crate::resources::held_cpus(&merged, host);
             let cpus_moved = held != crate::resources::held_cpus(&run.resources, host);
             if merged.memory != run.resources.memory || cpus_moved {
@@ -199,7 +201,7 @@ impl<D: Disk> Daemon<D> {
             }
             let spec = shards_abi::run::Spec {
                 builtin: shards_abi::run::builtin::CGROUP,
-                argv: crate::resources::cgroup(&merged, crate::resources::host_cpus()),
+                argv: settings,
                 ..Default::default()
             };
             let q = self
@@ -247,6 +249,26 @@ mod tests {
     /// Updates merged as dockerd's UpdateContainer merges them (probed on Docker Engine
     /// 29.3.1): a memory limit over no swap refused, with swap taken; CPU limits that
     /// conflict with what is set refused, in shards' words.
+    #[test]
+    fn selected_pids_reset_survives_update_merge_and_shared_mapping() {
+        let limited = Resources {
+            pids_limit: 2,
+            ..Resources::default()
+        };
+        let absent = Resources::default();
+        assert_eq!(merge(&limited, &absent).unwrap().pids_limit, 2);
+        let reset = Resources {
+            pids_limit: -1,
+            ..Resources::default()
+        };
+        let merged = merge(&limited, &reset).unwrap();
+        assert_eq!(merged.pids_limit, -1);
+        let settings = crate::resources::cgroup(&merged, 8).unwrap();
+        assert_eq!(settings.first().unwrap(), b"pids.max=max");
+        let unchanged = merge(&merged, &absent).unwrap();
+        assert_eq!(crate::resources::cgroup(&unchanged, 8).unwrap(), settings);
+    }
+
     #[test]
     fn updates_merge_with_the_limits_set() {
         let none = Resources::default();

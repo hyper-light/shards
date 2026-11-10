@@ -375,13 +375,78 @@ fn cpu_weight(shares: u64) -> u64 {
     w
 }
 
-/// The workload's cgroup settings, `FILE=VALUE`, in the order runc's fs2 Manager.Set
-/// writes them: pids, memory, io, cpu, cpuset; of a host of `cpus` CPUs.
-pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
-    let mut out: Vec<String> = Vec::new();
-    // getPidsLimit: none for 0 or less, which the API takes as unset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CgroupError {
+    Capacity,
+}
+
+impl std::fmt::Display for CgroupError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("workload resource settings capacity unavailable")
+    }
+}
+
+impl std::error::Error for CgroupError {}
+
+impl CgroupError {
+    /// The existing outer APIs render Strings. Diagnostic failure stays an Err
+    /// with empty emergency text rather than allocating again to explain OOM.
+    pub fn message(self, context: std::fmt::Arguments<'_>) -> String {
+        cgroup_text(format_args!("{context}: {self}")).unwrap_or_default()
+    }
+}
+
+struct CgroupText<'a>(&'a mut String);
+
+impl std::fmt::Write for CgroupText<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        let room = self
+            .0
+            .capacity()
+            .checked_sub(self.0.len())
+            .ok_or(std::fmt::Error)?;
+        if text.len() > room {
+            return Err(std::fmt::Error);
+        }
+        // The complete UTF-8 fragment fits existing capacity; this cannot grow.
+        self.0.push_str(text);
+        Ok(())
+    }
+}
+
+fn cgroup_text(arguments: std::fmt::Arguments<'_>) -> Result<String, CgroupError> {
+    struct Length(usize);
+    impl std::fmt::Write for Length {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0 = self.0.checked_add(text.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let mut length = Length(0);
+    std::fmt::write(&mut length, arguments).map_err(|_| CgroupError::Capacity)?;
+    let mut text = String::new();
+    text.try_reserve_exact(length.0)
+        .map_err(|_| CgroupError::Capacity)?;
+    std::fmt::write(&mut CgroupText(&mut text), arguments).map_err(|_| CgroupError::Capacity)?;
+    Ok(text)
+}
+
+/// The workload's complete cgroup settings, `FILE=VALUE`, in runc's fs2
+/// Manager.Set order: pids, memory, io, cpu, cpuset; of a host of `cpus` CPUs.
+pub fn cgroup(r: &Resources, cpus: usize) -> Result<Vec<Vec<u8>>, CgroupError> {
+    let mut out = Vec::new();
+    let mut setting = |arguments: std::fmt::Arguments<'_>| {
+        let text = cgroup_text(arguments)?;
+        out.try_reserve_exact(1).map_err(|_| CgroupError::Capacity)?;
+        out.push(text.into_bytes());
+        Ok::<_, CgroupError>(())
+    };
+    // getPidsLimit resets a selected negative ceiling. Zero is absent in our
+    // Resources type; preserve that distinction instead of losing the reset.
     if r.pids_limit > 0 {
-        out.push(format!("pids.max={}", r.pids_limit));
+        setting(format_args!("pids.max={}", r.pids_limit))?;
+    } else if r.pids_limit < 0 {
+        setting(format_args!("pids.max=max"))?;
     }
     // setMemory, after getMemoryResources, which passes swap only above 0.
     let swap = memory_swap(r);
@@ -390,53 +455,55 @@ pub fn cgroup(r: &Resources, cpus: usize) -> Vec<Vec<u8>> {
         if swap > 0 {
             // ConvertMemorySwapToCgroupV2Value: swap alone, beside memory.
             let only = swap.saturating_sub(memory);
-            out.push(format!("memory.swap.max={only}"));
+            setting(format_args!("memory.swap.max={only}"))?;
         }
         // `--oom-kill-disable` (D159): the limit a throttle, never the OOM killer's: past
         // it the workload is put under reclaim and slowed, as cgroup v1's OOM control held
         // a container's tasks, where cgroup v2 has no such control.
         if memory > 0 && r.oom_kill_disable {
-            out.push(format!("memory.high={memory}"));
+            setting(format_args!("memory.high={memory}"))?;
         } else if memory > 0 {
-            out.push(format!("memory.max={memory}"));
+            setting(format_args!("memory.max={memory}"))?;
         }
         if r.memory_reservation > 0 {
-            out.push(format!("memory.low={}", r.memory_reservation));
+            setting(format_args!("memory.low={}", r.memory_reservation))?;
         }
     }
     // setIo: BFQ's weight as given, where the guest has BFQ; init writes io.weight's
     // scale where it has io.cost alone.
     if r.blkio_weight != 0 {
-        out.push(format!("io.bfq.weight={}", r.blkio_weight));
+        setting(format_args!("io.bfq.weight={}", r.blkio_weight))?;
     }
     let weight = cpu_weight(u64::try_from(r.cpu_shares).unwrap_or(0));
     if weight != 0 {
-        out.push(format!("cpu.weight={weight}"));
+        setting(format_args!("cpu.weight={weight}"))?;
     }
     if let Some((quota, period)) = cpu_max(r, cpus) {
-        let quota = if quota > 0 {
-            quota.to_string()
+        if quota > 0 {
+            setting(format_args!("cpu.max={quota} {period}"))?;
         } else {
-            "max".into()
-        };
-        out.push(format!("cpu.max={quota} {period}"));
+            setting(format_args!("cpu.max=max {period}"))?;
+        }
     }
     // The CPUs it runs on: `--cpuset-cpus`'s; else the first of its microVM's as many as it
     // is given ([`run_cpus`]), its microVM having every one of the host's (D191), so that
     // it sees and runs on what it was given as a microVM of its CPUs alone did; all of them
     // named, for an update that gives it more to undo one that gave it fewer.
     if !r.cpuset_cpus.is_empty() {
-        out.push(format!("cpuset.cpus={}", r.cpuset_cpus));
+        setting(format_args!("cpuset.cpus={}", r.cpuset_cpus))?;
     } else {
-        out.push(match run_cpus(r, cpus) {
-            0 | 1 => "cpuset.cpus=0".to_string(),
-            n => format!("cpuset.cpus=0-{}", n - 1),
-        });
+        match run_cpus(r, cpus) {
+            0 | 1 => setting(format_args!("cpuset.cpus=0"))?,
+            n => setting(format_args!(
+                "cpuset.cpus=0-{}",
+                n.checked_sub(1).ok_or(CgroupError::Capacity)?
+            ))?,
+        }
     }
     if !r.cpuset_mems.is_empty() {
-        out.push(format!("cpuset.mems={}", r.cpuset_mems));
+        setting(format_args!("cpuset.mems={}", r.cpuset_mems))?;
     }
-    out.into_iter().map(String::into_bytes).collect()
+    Ok(out)
 }
 
 /// The CPUs a run's workload is given, of a host of `cpus`: `--cpu-count`'s (D155); else
@@ -841,6 +908,7 @@ mod tests {
     fn workload_limits_are_written() {
         let text = |r: &Resources| -> Vec<String> {
             cgroup(r, 8)
+                .unwrap()
                 .into_iter()
                 .map(|b| String::from_utf8(b).unwrap())
                 .collect()
@@ -876,7 +944,12 @@ mod tests {
         };
         assert_eq!(
             text(&unswapped),
-            ["memory.max=33554432", "cpu.max=25000 50000", "cpuset.cpus=0"]
+            [
+                "pids.max=max",
+                "memory.max=33554432",
+                "cpu.max=25000 50000",
+                "cpuset.cpus=0"
+            ]
         );
         assert_eq!(
             text(&Resources {
@@ -902,6 +975,81 @@ mod tests {
         assert_eq!(
             (cpu_weight(2), cpu_weight(1024), cpu_weight(262_144)),
             (1, 100, 10_000)
+        );
+    }
+
+    #[test]
+    fn pids_ceiling_distinguishes_absent_reset_and_positive_extremes() {
+        for (value, expected) in [
+            (0, None),
+            (-1, Some("pids.max=max")),
+            (i64::MIN, Some("pids.max=max")),
+            (1, Some("pids.max=1")),
+            (i64::MAX, Some("pids.max=9223372036854775807")),
+        ] {
+            let settings = cgroup(
+                &Resources {
+                    pids_limit: value,
+                    ..r()
+                },
+                8,
+            )
+            .unwrap();
+            let pids = settings.iter().find(|entry| entry.starts_with(b"pids.max="));
+            assert_eq!(pids.map(|entry| entry.as_slice()), expected.map(str::as_bytes));
+            assert_eq!(settings.last().unwrap(), b"cpuset.cpus=0-7");
+        }
+    }
+
+    #[test]
+    fn reset_preserves_all_other_setting_bytes_and_order() {
+        let resources = Resources {
+            pids_limit: -1,
+            memory: 64 << 20,
+            memory_reservation: 32 << 20,
+            memory_swap: 128 << 20,
+            oom_kill_disable: true,
+            blkio_weight: 500,
+            cpu_shares: 512,
+            cpu_period: 50_000,
+            cpu_quota: 25_000,
+            cpuset_cpus: "1-2".into(),
+            cpuset_mems: "0".into(),
+            ..r()
+        };
+        let settings = cgroup(&resources, 8).unwrap();
+        let expected: &[&[u8]] = &[
+            b"pids.max=max",
+            b"memory.swap.max=67108864",
+            b"memory.high=67108864",
+            b"memory.low=33554432",
+            b"io.bfq.weight=500",
+            b"cpu.weight=59",
+            b"cpu.max=25000 50000",
+            b"cpuset.cpus=1-2",
+            b"cpuset.mems=0",
+        ];
+        assert_eq!(settings.iter().map(Vec::as_slice).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn cgroup_formatter_keeps_utf8_and_cannot_grow_reserved_storage() {
+        use std::fmt::Write as _;
+        assert_eq!(
+            cgroup_text(format_args!("{}:{}:{}", "\u{00e9}", i64::MIN, u64::MAX)).unwrap(),
+            "\u{00e9}:-9223372036854775808:18446744073709551615"
+        );
+        let mut text = String::new();
+        text.try_reserve_exact(1).unwrap();
+        let pointer = text.as_ptr();
+        let capacity = text.capacity();
+        CgroupText(&mut text).write_str(&"x".repeat(capacity)).unwrap();
+        assert!(CgroupText(&mut text).write_str("\u{00e9}").is_err());
+        assert_eq!(text.capacity(), capacity);
+        assert_eq!(text.as_ptr(), pointer);
+        assert_eq!(
+            CgroupError::Capacity.message(format_args!("cannot update {}", "\u{00e9}")),
+            "cannot update \u{00e9}: workload resource settings capacity unavailable"
         );
     }
 

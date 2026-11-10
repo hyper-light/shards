@@ -1,0 +1,24 @@
+{
+  "args": {
+    "on": "e30189ea29182644fe5a4b2e06c7dac2",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "sync": false,
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset",
+    "command": "lockf -t 600 /tmp/g121-mac.lock env CARGO_TARGET_DIR=/Users/adalundhe/managed-pids-reset-target-v1 CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true python3 docs/research/measurements/managed-pids-reset/run-light.py --directory /Users/adalundhe/managed-pids-reset-light-v1 --records docs/research/measurements/managed-pids-reset/records/light-v1 --seconds 580",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "initial": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "",
+    "running": true,
+    "id": "r11",
+    "why": "macos/aarch64 · 11 of 18 cores idle · 63 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+  },
+  "result": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "{\n  \"source_before\": {\n    \"crates/shards/src/resources.rs\": \"77a935cb43cc7eb869eea0088aeee99e58dbb3af6ea67637530f1deab9961652\",\n    \"crates/shards/src/daemon.rs\": \"dbb966fdcc01dee81d00a95116be05e525967b38531a7a92333070b77701fcb5\",\n    \"crates/shards/src/daemon/visit.rs\": \"90c0f8d09915f69eb4985e2998f635edb8f1fd139d0720c975ffbda972183e77\",\n    \"crates/shards/src/daemon/update.rs\": \"05990b65405e52d76963ad9d9120aaf403b58d72e94c1032733bce7d00a5c4ae\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"source_after\": {\n    \"crates/shards/src/resources.rs\": \"77a935cb43cc7eb869eea0088aeee99e58dbb3af6ea67637530f1deab9961652\",\n    \"crates/shards/src/daemon.rs\": \"dbb966fdcc01dee81d00a95116be05e525967b38531a7a92333070b77701fcb5\",\n    \"crates/shards/src/daemon/visit.rs\": \"90c0f8d09915f69eb4985e2998f635edb8f1fd139d0720c975ffbda972183e77\",\n    \"crates/shards/src/daemon/update.rs\": \"05990b65405e52d76963ad9d9120aaf403b58d72e94c1032733bce7d00a5c4ae\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"checks\": [\n    {\n      \"name\": \"units\",\n      \"command\": [\n        \"cargo\",\n        \"test\",\n        \"--manifest-path\",\n        \"/Users/adalundhe/managed-pids-reset-light-v1/Cargo.toml\",\n        \"--lib\",\n        \"-j2\",\n        \"--\",\n        \"--test-threads=1\"\n      ],\n      \"status\": 0\n    },\n    {\n      \"name\": \"clippy\",\n      \"command\": [\n        \"cargo\",\n        \"clippy\",\n        \"--locked\",\n        \"--manifest-path\",\n        \"/Users/adalundhe/managed-pids-reset-light-v1/Cargo.toml\",\n        \"--lib\",\n        \"-j2\",\n        \"--\",\n        \"-D\",\n        \"warnings\"\n      ],\n      \"status\": 0\n    }\n  ]\n}\n",
+    "running": false,
+    "exit_code": 0
+  }
+}

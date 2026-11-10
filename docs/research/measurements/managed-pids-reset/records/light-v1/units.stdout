@@ -1,0 +1,17 @@
+
+running 12 tests
+test resources::tests::a_microvms_own_cpu_flags_are_checked ... ok
+test resources::tests::a_runs_cpu_allowance_is_its_limits_share ... ok
+test resources::tests::cgroup_formatter_keeps_utf8_and_cannot_grow_reserved_storage ... ok
+test resources::tests::microvms_are_held_to_their_runs_cpus ... ok
+test resources::tests::microvms_are_sized_for_their_limits ... ok
+test resources::tests::pids_ceiling_distinguishes_absent_reset_and_positive_extremes ... ok
+test resources::tests::reset_preserves_all_other_setting_bytes_and_order ... ok
+test resources::tests::resources_are_checked ... ok
+test resources::tests::the_guests_share_never_falls_as_its_vm_grows ... ok
+test resources::tests::workload_limits_are_written ... ok
+test update::tests::selected_pids_reset_survives_update_merge_and_shared_mapping ... ok
+test update::tests::updates_merge_with_the_limits_set ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

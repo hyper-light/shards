@@ -1,0 +1,55 @@
+{
+  "checks": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "67a976",
+        "wall_time_seconds": 0.000004833,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "3123e5",
+        "wall_time_seconds": 0.000006584,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "7803a0",
+        "wall_time_seconds": 0.000009709,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "d40106",
+        "wall_time_seconds": 0.000005875,
+        "exit_code": 0,
+        "original_token_count": 9,
+        "output": "rustc 1.98.1 (48a229cea 2026-09-01)\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "d588af",
+        "wall_time_seconds": 0.000006,
+        "exit_code": 0,
+        "original_token_count": 9,
+        "output": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n"
+      }
+    }
+  ],
+  "scope": "Owned Rust formatting and code/docs/JSON whitespace, policy script and exact native tool versions. Raw streams are retained separately; no complete daemon or allocator-fault claim."
+}

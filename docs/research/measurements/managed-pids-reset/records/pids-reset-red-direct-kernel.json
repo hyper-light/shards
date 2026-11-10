@@ -1,0 +1,16 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"{\\n  \\\"unbounded-update.stdout\\\": {\\n    \\\"bytes\\\": 65,\\n    \\\"sha256\\\": \\\"7705fd1146eaf2cc285b0936ec280ab580d5a282147d42917a338b9baf4925b6\\\",\\n    \\\"text\\\": \\\"f1230302a975e2ff2fdb43ca1ad98a0de410c8c29babb67b748b24b3285cfe8d\\\\n\\\"\\n  },\\n  \\\"unbounded-update.stderr\\\": {\\n    \\\"bytes\\\": 0,\\n    \\\"sha256\\\": \\\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\\\",\\n    \\\"text\\\": \\\"\\\"\\n  },\\n  \\\"unbounded-kernel-limits.stdout\\\": {\\n    \\\"bytes\\\": 70,\\n    \\\"sha256\\\": \\\"06c859c7d2f2b6ab88c82f6925f16600d484e54b1c1ce56cfa2fb72f5fbb8012\\\",\\n    \\\"text\\\": \\\"slurp /sys/fs/cgroup/memory.max: max\\\\nslurp /sys/fs/cgroup/pids.max: 2\\\\n\\\"\\n  },\\n  \\\"unbounded-kernel-limits.stderr\\\": {\\n    \\\"bytes\\\": 0,\\n    \\\"sha256\\\": \\\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\\\",\\n    \\\"text\\\": \\\"\\\"\\n  }\\n}\\n\",\n  \"running\": false,\n  \"why\": \"linux/x86_64 · 25 of 32 cores idle · 55 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk\",\n  \"exit_code\": 0\n}"
+    }
+  ],
+  "structuredContent": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\n  \"unbounded-update.stdout\": {\n    \"bytes\": 65,\n    \"sha256\": \"7705fd1146eaf2cc285b0936ec280ab580d5a282147d42917a338b9baf4925b6\",\n    \"text\": \"f1230302a975e2ff2fdb43ca1ad98a0de410c8c29babb67b748b24b3285cfe8d\\n\"\n  },\n  \"unbounded-update.stderr\": {\n    \"bytes\": 0,\n    \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\n    \"text\": \"\"\n  },\n  \"unbounded-kernel-limits.stdout\": {\n    \"bytes\": 70,\n    \"sha256\": \"06c859c7d2f2b6ab88c82f6925f16600d484e54b1c1ce56cfa2fb72f5fbb8012\",\n    \"text\": \"slurp /sys/fs/cgroup/memory.max: max\\nslurp /sys/fs/cgroup/pids.max: 2\\n\"\n  },\n  \"unbounded-kernel-limits.stderr\": {\n    \"bytes\": 0,\n    \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\n    \"text\": \"\"\n  }\n}\n",
+    "running": false,
+    "why": "linux/x86_64 · 25 of 32 cores idle · 55 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk",
+    "exit_code": 0
+  },
+  "isError": false
+}

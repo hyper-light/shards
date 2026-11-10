@@ -1,0 +1,12 @@
+{
+  "whole_staged_check": {
+    "command": "/Users/adalundhe/.kiln-run/bin/gits diff --cached --check",
+    "exit_code": 2,
+    "output": "docs/research/measurements/managed-pids-reset/records/light-v1/units.stdout:17: new blank line at EOF.\n"
+  },
+  "handling": "Preserve authentic raw stdout unchanged. Check all named owned staged paths while excluding only that exact raw file; do not claim the whole check passed.",
+  "named_owned_paths_excluding_only_raw_units_stdout": {
+    "exit_code": 0,
+    "output": ""
+  }
+}

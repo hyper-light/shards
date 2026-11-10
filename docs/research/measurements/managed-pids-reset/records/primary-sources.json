@@ -1,0 +1,39 @@
+[
+  {
+    "name": "moby-getPidsLimit",
+    "url": "https://raw.githubusercontent.com/moby/moby/v28.5.1/daemon/daemon_unix.go",
+    "bytes": 62536,
+    "sha256": "adf696737ec09d33b2fbee4c6252c8f99d15d018d6555915aef870e5f4cb251d",
+    "status": "retrieved"
+  },
+  {
+    "name": "cgroups-pids",
+    "url": "https://raw.githubusercontent.com/opencontainers/cgroups/v0.0.4/fs2/pids.go",
+    "bytes": 1653,
+    "sha256": "46dbbee6eaebf379dec479977af9a5594ca9176f6897912605ad7783955c350a",
+    "status": "retrieved"
+  },
+  {
+    "name": "cgroups-numToStr",
+    "url": "https://raw.githubusercontent.com/opencontainers/cgroups/v0.0.4/fs2/memory.go",
+    "bytes": 6453,
+    "sha256": "5307e4bf4d14d8d6a50a30f537208d80a2515d04cac1bc5e4872e80056a00699",
+    "status": "retrieved"
+  },
+  {
+    "tag": "moby/moby@v28.5.1",
+    "resolved": {
+      "sha": "f8215cc266744ef195a50a70d427c345da2acdbb",
+      "type": "commit",
+      "url": "https://api.github.com/repos/moby/moby/git/commits/f8215cc266744ef195a50a70d427c345da2acdbb"
+    }
+  },
+  {
+    "tag": "opencontainers/cgroups@v0.0.4",
+    "resolved": {
+      "sha": "a3e2ecd1f756a19cee15f85b96337a59c3b5337b",
+      "type": "commit",
+      "url": "https://api.github.com/repos/opencontainers/cgroups/git/commits/a3e2ecd1f756a19cee15f85b96337a59c3b5337b"
+    }
+  }
+]

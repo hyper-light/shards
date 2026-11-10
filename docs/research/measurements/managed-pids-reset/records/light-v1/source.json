@@ -1,0 +1,19 @@
+{
+  "base": "4299285281a0b588ed04b854842c1c14b0950260",
+  "source": {
+    "crates/shards/src/resources.rs": "77a935cb43cc7eb869eea0088aeee99e58dbb3af6ea67637530f1deab9961652",
+    "crates/shards/src/daemon.rs": "dbb966fdcc01dee81d00a95116be05e525967b38531a7a92333070b77701fcb5",
+    "crates/shards/src/daemon/visit.rs": "90c0f8d09915f69eb4985e2998f635edb8f1fd139d0720c975ffbda972183e77",
+    "crates/shards/src/daemon/update.rs": "05990b65405e52d76963ad9d9120aaf403b58d72e94c1032733bce7d00a5c4ae",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "resources_module": "actual source by path, unchanged",
+  "update_adapter": "only outer Daemon impl and its imports omitted; actual asked/merge/restart-policy/tests retained",
+  "update_adapter_sha256": "a56baf5ff7cb8dea6c183dba73c4dd766a20ad16838dc541807110bed46b44f0",
+  "not_proven": [
+    "three complete daemon callers",
+    "real cgroup/VM reset",
+    "allocation fault paths",
+    "seven target matrix"
+  ]
+}

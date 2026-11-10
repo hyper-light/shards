@@ -133,7 +133,8 @@ impl<D: crate::containers::Disk> Daemon<D> {
         let mut prepared = crate::run::prepare(&stored, &self.home, &|_| {}, &cancel)?;
         // Its files as its runs see them, init's own included (handle()), and its limits.
         self.name_guest(&stored, &mut prepared.spec)?;
-        prepared.spec.cgroup = crate::resources::cgroup(&stored.resources, crate::resources::host_cpus());
+        prepared.spec.cgroup = crate::resources::cgroup(&stored.resources, crate::resources::host_cpus())
+            .map_err(|error| error.message(format_args!("prepare stopped workload limits")))?;
         prepared.spec.builtin = shards_abi::run::builtin::HOLD;
         // A copy sees the files its runs see (D38): its shared directories served and
         // mounted where they mount them, and its root read-only where theirs is, so that

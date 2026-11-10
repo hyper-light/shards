@@ -1,0 +1,15 @@
+    Checking memchr v2.8.3
+    Checking num-traits v0.2.19
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking num-bigint v0.4.8
+    Checking regex-automata v0.4.18
+    Checking libc v0.2.189
+    Checking shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/abi)
+    Checking shards-template v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/template)
+    Checking regex v1.13.1
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/ipc)
+    Checking shards-cmdline v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-pids-reset/crates/cmdline)
+    Checking managed-pids-reset-light v0.0.0 (/Users/adalundhe/managed-pids-reset-light-v1)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.58s

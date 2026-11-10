@@ -1,0 +1,29 @@
+{
+  "provenance": "ROOT-provided tool receipts/excerpts copied byte-for-byte; complete original archive/frozen binaries remain ROOT-owned and pending archival. No ROOT runner/target read by this implementer.",
+  "direct_kernel": {
+    "unbounded-update.stdout": {
+      "bytes": 65,
+      "sha256": "7705fd1146eaf2cc285b0936ec280ab580d5a282147d42917a338b9baf4925b6",
+      "text_matches_bytes_and_hash": true
+    },
+    "unbounded-update.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_matches_bytes_and_hash": true
+    },
+    "unbounded-kernel-limits.stdout": {
+      "bytes": 70,
+      "sha256": "06c859c7d2f2b6ab88c82f6925f16600d484e54b1c1ce56cfa2fb72f5fbb8012",
+      "text_matches_bytes_and_hash": true
+    },
+    "unbounded-kernel-limits.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_matches_bytes_and_hash": true
+    }
+  },
+  "receipt_hashes": {
+    "root-429-gate-receipts.json": "b94525e76063f2301433a301c142c4e3b0c38efef3ae9be8beb1c287015f585a",
+    "pids-reset-red-direct-kernel.json": "39dcc761b9de91126be0dd934860f776708af383d5b8fef0eff562a8ac9fd172"
+  }
+}

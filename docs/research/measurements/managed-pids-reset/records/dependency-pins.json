@@ -1,0 +1,12 @@
+{
+  "method": "Verify every non-adapter Cargo.lock name/version/source/checksum tuple belongs to the exact product lock",
+  "unexpected": [],
+  "actual_packages": 17,
+  "product_packages": 213,
+  "private_lock_sha256": "8c972794784950270c1192ecb8f5450784a7dd6dff37d79d6d31042e5caddf8a",
+  "status": "pass",
+  "base": "4299285281a0b588ed04b854842c1c14b0950260",
+  "capture_branch": "0f10b76b0395faf06613c07bd2bb1be9803a139b",
+  "capture_status": "",
+  "active_own_jobs": []
+}

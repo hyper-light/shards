@@ -3240,7 +3240,14 @@ impl<D: Disk> Daemon<D> {
             return None;
         }
         // Its limits, a joiner's too, held by its own cgroup in its microVM.
-        prepared.spec.cgroup = crate::resources::cgroup(&run.resources, prepared.cpus);
+        prepared.spec.cgroup = match crate::resources::cgroup(&run.resources, prepared.cpus) {
+            Ok(settings) => settings,
+            Err(error) => {
+                refuse(&error.message(format_args!("prepare workload limits")));
+                abandon(&id);
+                return None;
+            }
+        };
         // A user network's endpoint (D46): its address, as the microVM starts, or why
         // the start fails, the microVM kept.
         let mut network_setup = Vec::new();
