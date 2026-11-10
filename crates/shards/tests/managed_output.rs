@@ -256,7 +256,7 @@ impl Observer {
     fn next(&self, until: Instant) -> Event {
         self.events
             .recv_timeout(until.saturating_duration_since(Instant::now()))
-            .expect("observer event before deadline")
+            .unwrap_or_else(|error| panic!("observer event before deadline: {error}"))
     }
 
     fn exact(&self, expected: &[u8]) {
@@ -333,7 +333,7 @@ fn fingerprint(text: &str) -> Option<Fingerprint> {
         return None;
     }
     let mut out = [0; 32];
-    for (pair, byte) in text.as_bytes().chunks_exact(2).zip(&mut out) {
+    for (pair, byte) in text.as_bytes().as_chunks::<2>().0.iter().zip(&mut out) {
         *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
     }
     Some(out)
@@ -493,8 +493,8 @@ impl Fixture {
             "unexpected detached run identity"
         );
         let record = self.home.join("containers").join(id).join("managed-output");
-        let metadata =
-            Metadata::parse(&std::fs::read_to_string(&record).unwrap()).expect("published owner metadata");
+        let metadata = Metadata::parse(&std::fs::read_to_string(&record).unwrap())
+            .unwrap_or_else(|| panic!("published owner metadata"));
         assert_eq!(metadata.run, id);
         assert_eq!(metadata.server, self.owner.fingerprint());
         assert_eq!(metadata.owner, self.owner.fingerprint());
@@ -535,7 +535,7 @@ impl Fixture {
         let stderr = progress
             .stderr
             .strip_prefix("main-error\n")
-            .expect("independent main stderr");
+            .unwrap_or_else(|| panic!("independent main stderr"));
         assert!(
             stderr.is_empty() || stderr.starts_with("shards-timing "),
             "unexpected main diagnostic"
@@ -585,7 +585,7 @@ impl Fixture {
         let terminal = record
             .lines()
             .find_map(|line| line.strip_prefix(&prefix))
-            .expect("terminal channel metadata");
+            .unwrap_or_else(|| panic!("terminal channel metadata"));
         let fields: Vec<_> = terminal.split_whitespace().collect();
         let [
             "aborted",
