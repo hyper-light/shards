@@ -1,0 +1,16 @@
+{
+  "source": "fabd3b33886eba33adbf58f18a5d0ec208029e27",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "archive_bytes": 27989,
+  "archive_sha256": "9375df887529faa023d5839246df0cee3545bb8708e9dd4e266b08e1275af453",
+  "chunks": 3,
+  "all_safe_regular_members": 105,
+  "all_original_size_sha256_verified": 104,
+  "remote_only": [
+    {
+      "original": "candidate-v3/compile.jsonl",
+      "bytes": 277122,
+      "sha256": "773930caf0474eae0cf37c8e925a3e681e0da258e0d0d28a4b325b65d8f94b69"
+    }
+  ]
+}

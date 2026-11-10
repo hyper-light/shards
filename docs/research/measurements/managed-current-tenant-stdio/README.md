@@ -1,5 +1,9 @@
 # Current candidate normal and inherited-writer integration
 
+Current tested corrected result: [CAPTION-AFTER.md](CAPTION-AFTER.md), source
+fabd3b33886eba33adbf58f18a5d0ec208029e27. Exact one-line release-caption fix,
+fresh normal+A0 and both strict Clippy0; all before/after originals preserved.
+
 POLICY_READ implementer/assigned adversarial01a1c5d28cea74a5b0241200190d6c54;
 coordinator01a148884a4770fdaf0111f3f792a248. Canonical main33df95b08ad8f95bddeaa1c48acf0c64386e0eac;
 rules SHA256df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3.

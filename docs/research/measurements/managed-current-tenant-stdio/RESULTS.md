@@ -1,5 +1,10 @@
 # Current-source normal and inherited-writer result
 
+**Corrected after gate:** [CAPTION-AFTER.md](CAPTION-AFTER.md) records exact
+fabd3b338 full source build/lints and NEW normal+A passes after the one-line
+shared caption correction. Both actual gate-caption readbacks and every existing
+terminal assertion pass. The0691 data below is preserved as current-before.
+
 **Before caption correction:** ROOT found that the known factual release-caption
 fix had not been carried into this current adapter. The raw0691 records below
 prove the contradiction: release.json says both actor channels ended while the
