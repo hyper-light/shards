@@ -1,0 +1,11 @@
+{
+  "CARGO_BUILD_JOBS": "4",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target",
+  "DOCKER_CONFIG": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/records/empty-docker",
+  "XDG_CACHE_HOME": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/cache",
+  "SHARDS_REQUIRE_VMS": "1",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TENANT_EXIT_SOURCE_REVISION": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "SHARDS_TENANT_STDIO_SOURCE_REVISION": "28e147c4dda846ca023020e03bc9b00eb2e58e94"
+}

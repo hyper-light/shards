@@ -1,0 +1,39 @@
+{
+  "actual_parent_waitstatus": "not independently exported after parent stdio closure; ROOT held lifecycle witness owed",
+  "channels": [
+    {
+      "channel": 1,
+      "member": 1,
+      "payload_hex": "6167656e74007374646f75740aff1b5b324a6f75742d7461696c6167656e742d696e686572697465642d7265616479007374646f75740aff1b5b324a6f75742d7461696c6167656e742d696e686572697465642d61667465722d72656c65617365007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 118,
+      "state": "Ended { offset: 118 }",
+      "wire_consumed": 306
+    },
+    {
+      "channel": 2,
+      "member": 1,
+      "payload_hex": "6167656e74007374646572720a80fe6572722d7461696c6167656e742d696e686572697465642d7265616479007374646572720a80fe6572722d7461696c6167656e742d696e686572697465642d61667465722d72656c65617365007374646572720a80fe6572722d7461696c",
+      "payload_offset": 109,
+      "state": "Ended { offset: 109 }",
+      "wire_consumed": 297
+    },
+    {
+      "channel": 1,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646f75740aff1b5b324a6f75742d7461696c6861726e6573732d61667465722d65786974007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 67,
+      "state": "Open { offset: 67 }",
+      "wire_consumed": 177
+    },
+    {
+      "channel": 2,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646572720a80fe6572722d7461696c6861726e6573732d61667465722d65786974007374646572720a80fe6572722d7461696c",
+      "payload_offset": 61,
+      "state": "Open { offset: 61 }",
+      "wire_consumed": 171
+    }
+  ],
+  "population_reaping": "Unverified; EOF is not whole population completion",
+  "state": "ExactInheritedChildSuffixThenCanonicalEndAckAndTransportEofOnBothChannels"
+}

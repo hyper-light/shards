@@ -8,11 +8,11 @@ exec 9>"$campaign/.campaign.lock"
 flock -n 9
 test "$(git rev-parse HEAD)" = "$candidate"
 test -z "$(git status --porcelain)"
-build="$campaign/records/candidate-v1"
+build="$campaign/records/candidate-v2"
 test "$(cat "$build/compile.exit")" = 0
 test "$(cat "$build/testguest.exit")" = 0
 binary="$(cat "$build/test-binary.txt")"
-folder="$campaign/records/live-minimum-v2"
+folder="$campaign/records/live-minimum-v3"
 mkdir "$folder" "$folder/inherited"
 export SHARDS_CURRENT_LIVE_RECORDS="$folder"
 python3 - <<'PY' > "$folder/artifact-verification.json"

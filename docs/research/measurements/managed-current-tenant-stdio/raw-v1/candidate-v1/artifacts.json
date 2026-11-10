@@ -1,0 +1,37 @@
+[
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "bytes": 61063072,
+    "sha256": "83ee63098219f89d35fe26faeee3c18b7a55560c2d60992270594371179a0e16"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/shards",
+    "bytes": 231435456,
+    "sha256": "f00d8e310e78c436a558f2aed5a7bdbd8255391bec5d0faca209677923391a91"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/source/target/guest/x86_64-unknown-linux-musl/guest/shards-testguest",
+    "bytes": 3308280,
+    "sha256": "c44182b51e682902f2afa5fff891d0f89f7d28b6165d1a7d4e6709a52ef3fd1a"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "bytes": 2385072,
+    "sha256": "7daa23fd4327110b167fe74580486ceddc2834a9c5f72a70af201458ef8f3f7c"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+    "bytes": 3292136,
+    "sha256": "1abbb05a417aea21c6a59b350e03c8985322e06aca8209650ac71acb37b67a63"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+    "bytes": 30928296,
+    "sha256": "f08bd17363600ed7cc80f2d9b1f4c43faa112b1381e58d704392fc761035ae80"
+  },
+  {
+    "path": "/home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+    "bytes": 7908704,
+    "sha256": "fed7266fa4a94b7a51a386903aa7cd9e9f39cd5cfab4aec8a2a0ffa321e7b61f"
+  }
+]

@@ -27,7 +27,7 @@ for p in sorted(records.rglob('*')):
     dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(stored)
     entry.update({'stored':dest.relative_to(out).as_posix(),'stored_bytes':len(stored),'stored_sha256':hashlib.sha256(stored).hexdigest()})
     files.append(entry)
-manifest={'source':(records/'candidate-v1/source.txt').read_text().strip(),'base':(records/'source.txt').read_text().strip(),'files':files,'remote_only':remote_only,'binary_and_source_preservation':'private source/target/cache/frozen unchanged; full CargoJSONL retained remotely','unknown':'full population/kernel/parent resource return unverified'}
+manifest={'source':(records/'candidate-v2/source.txt').read_text().strip(),'base':(records/'source.txt').read_text().strip(),'files':files,'remote_only':remote_only,'binary_and_source_preservation':'private source/target/cache/frozen unchanged; full CargoJSONL retained remotely','unknown':'full population/kernel/parent resource return unverified'}
 (out/'STORAGE.json').write_text(json.dumps(manifest,indent=2)+'\n')
 archive=Path('raw-v1.tar.gz')
 with tarfile.open(archive,'w:gz') as t:
