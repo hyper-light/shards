@@ -1,0 +1,17 @@
+{
+  "archive": "evidence-backpressure-v1.tar.gz",
+  "sha256": "9e081b23a468adea82acef7c06eb997623049361e53202acdefa9d754b820318",
+  "bytes": 51423,
+  "original_payloads": 152,
+  "manifest_members": 1,
+  "total_members": 153,
+  "all_unique_safe_regular_paths": true,
+  "all_152_original_hashes_verified": true,
+  "source": "82019ce362dea316bfe582db54f6f0591579bede",
+  "actual_native": 2,
+  "actual_vm": 1,
+  "pure": "9pass/0fail/5explicitignored",
+  "strict_clippy_at_live_source": 101,
+  "original_remote_archive": "/home/adalundhe/managed-current-backpressure-a920-v1/evidence-backpressure-v1.tar.gz",
+  "originals_preserved": true
+}

@@ -1,0 +1,567 @@
+{
+  "source": "82019ce362dea316bfe582db54f6f0591579bede",
+  "base": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "fixture": {
+    "path": "/home/adalundhe/managed-current-backpressure-a920-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "frozen": "/home/adalundhe/managed-current-backpressure-a920-v1/artifacts/managed_output",
+    "sha256": "1193e4a97a651325bdfe1eb9c503c47e2b20cb586dd38ee67f276000ad46fe84",
+    "fresh": false,
+    "source": "82019ce362dea316bfe582db54f6f0591579bede",
+    "elapsed_s": 394.56630225299887
+  },
+  "native": [
+    {
+      "case": "FullOwnedReturn",
+      "path": "records/native-full-v1/full-owned-return-stdout-5",
+      "exit": 0,
+      "run": "b797e6a7-e72e-4440-9e49-84c10f1020ca",
+      "full_owned_return": {
+        "admitted_record_bytes": 42,
+        "after": "Pending(Progress { accepted: 28, consumed: 0 })",
+        "application_ack_sent": false,
+        "before": "Pending(Progress { accepted: 28, consumed: 0 })",
+        "candidate_retried": false,
+        "capacity_before": 42,
+        "capacity_returned": 42,
+        "producer_capacity_after": 0,
+        "reason": "Full",
+        "returned_bytes": 42,
+        "returned_sha256": "sha256:edf1e699bc2bdd380a1cf2c99faec7377402eb4e9e25360730b0e102e01a3869",
+        "same_allocation": true
+      },
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "FullOwnedReturn",
+        "submitted_bytes": 13
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    },
+    {
+      "case": "BackpressureSubscribe",
+      "path": "records/native-backpressure-v1/backpressure-subscribe-stdout-5",
+      "exit": 0,
+      "run": "14aaa653-eac9-4987-9c2d-00271bc711d4",
+      "backpressure": {
+        "zero_returns": 1,
+        "resumed_positive": 1,
+        "positive_counts": [
+          55,
+          3
+        ],
+        "coverage_met": true,
+        "actual_receipts": {
+          "actual": [
+            {
+              "backlog": [
+                1,
+                0,
+                0,
+                0,
+                53,
+                219,
+                191,
+                47,
+                166,
+                108,
+                237,
+                223,
+                177,
+                121,
+                105,
+                192,
+                233,
+                1,
+                225,
+                180,
+                40,
+                41,
+                117,
+                100,
+                198,
+                214,
+                17,
+                12,
+                23,
+                238,
+                194,
+                113,
+                205,
+                89,
+                173,
+                166,
+                23,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                90
+              ],
+              "kind": "WriteAttempt",
+              "pending": 58
+            },
+            {
+              "accepted": 55,
+              "backlog": [
+                0,
+                0,
+                90
+              ],
+              "kind": "WriteResult",
+              "pending": 3
+            },
+            {
+              "accepted": 55,
+              "kind": "Write",
+              "pending": 3
+            },
+            {
+              "backlog": [
+                0,
+                0,
+                90
+              ],
+              "kind": "WriteAttempt",
+              "pending": 3
+            },
+            {
+              "accepted": 0,
+              "backlog": [
+                0,
+                0,
+                90
+              ],
+              "kind": "WriteResult",
+              "pending": 3
+            },
+            {
+              "backlog": [
+                0,
+                0,
+                90
+              ],
+              "kind": "Writable",
+              "owned_connection": true,
+              "owned_stream": true,
+              "pending": 3
+            },
+            {
+              "backlog": [
+                0,
+                0,
+                90
+              ],
+              "kind": "WriteAttempt",
+              "pending": 3
+            },
+            {
+              "accepted": 3,
+              "backlog": [],
+              "kind": "WriteResult",
+              "pending": 0
+            },
+            {
+              "accepted": 3,
+              "kind": "Write",
+              "pending": 0
+            }
+          ],
+          "driver_joined": true,
+          "finish_requested": false,
+          "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+          "submitted_bytes": 58
+        }
+      },
+      "coverage": {
+        "meaning": "actual offered backlog/write return/writable callback sequence; NoZero is a coverage miss, not a passing zero-write goal",
+        "packet_bytes": 58,
+        "result": "Ok(Summary { accepted: 58, zero_returns: 1, readiness: 1, resumed_positive: 1 })"
+      },
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "BackpressureSubscribe",
+        "submitted_bytes": 58
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    }
+  ],
+  "vm": [
+    {
+      "case": "VM post-End Subscribe stdout",
+      "exit": 0,
+      "run": "7c30c735424c775d0b34bd5ed1b10b20e0e489386aeb0e5c8504e1d6d45ec0de",
+      "backpressure": {
+        "zero_returns": 1,
+        "resumed_positive": 1,
+        "positive_counts": [
+          43,
+          15
+        ],
+        "coverage_met": true,
+        "actual_receipts": {
+          "actual": [
+            {
+              "backlog": [
+                1,
+                0,
+                0,
+                0,
+                53,
+                2,
+                212,
+                79,
+                207,
+                42,
+                107,
+                210,
+                143,
+                228,
+                153,
+                43,
+                102,
+                50,
+                83,
+                109,
+                191,
+                16,
+                59,
+                108,
+                235,
+                55,
+                77,
+                55,
+                72,
+                103,
+                202,
+                109,
+                92,
+                123,
+                53,
+                8,
+                191,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "WriteAttempt",
+              "pending": 58
+            },
+            {
+              "accepted": 43,
+              "backlog": [
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "WriteResult",
+              "pending": 15
+            },
+            {
+              "accepted": 43,
+              "kind": "Write",
+              "pending": 15
+            },
+            {
+              "backlog": [
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "WriteAttempt",
+              "pending": 15
+            },
+            {
+              "accepted": 0,
+              "backlog": [
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "WriteResult",
+              "pending": 15
+            },
+            {
+              "backlog": [
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "Writable",
+              "owned_connection": true,
+              "owned_stream": true,
+              "pending": 15
+            },
+            {
+              "backlog": [
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                102
+              ],
+              "kind": "WriteAttempt",
+              "pending": 15
+            },
+            {
+              "accepted": 15,
+              "backlog": [],
+              "kind": "WriteResult",
+              "pending": 0
+            },
+            {
+              "accepted": 15,
+              "kind": "Write",
+              "pending": 0
+            }
+          ],
+          "driver_joined": true,
+          "finish_requested": false,
+          "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+          "submitted_bytes": 58
+        }
+      },
+      "coverage": {
+        "meaning": "actual offered backlog/write return/writable callback sequence; NoZero is a coverage miss, not a passing zero-write goal",
+        "packet_bytes": 58,
+        "result": "Ok(Summary { accepted: 58, zero_returns: 1, readiness: 1, resumed_positive: 1 })"
+      },
+      "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "neighbor": [
+        {
+          "channel": 1,
+          "member": 2,
+          "payload_hex": "6861726e657373007374646f75740aff1b5b324a6f75742d7461696c6861726e6573732d61667465722d65786974007374646f75740aff1b5b324a6f75742d7461696c",
+          "payload_offset": 67,
+          "state": "Open { offset: 67 }",
+          "wire_consumed": 177
+        },
+        {
+          "channel": 2,
+          "member": 2,
+          "payload_hex": "6861726e657373007374646572720a80fe6572722d7461696c6861726e6573732d61667465722d65786974007374646572720a80fe6572722d7461696c",
+          "payload_offset": 61,
+          "state": "Open { offset: 61 }",
+          "wire_consumed": 171
+        }
+      ],
+      "main_raw_bytes_retained": true
+    }
+  ],
+  "validation_errors": [],
+  "population_parent_kernel_cost": "Unknown; no audit/profiling/benchmarking claim",
+  "records/build/full-caller-build-exit": "0",
+  "records/guest-build/exit": "0",
+  "records/checks-v1/pure-exit": "0",
+  "records/checks-v1/clippy-exit": "101"
+}

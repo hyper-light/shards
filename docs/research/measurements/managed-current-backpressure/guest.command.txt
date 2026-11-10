@@ -1,0 +1,23 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,os,json,hashlib,shutil,time
+began=time.monotonic();deadline=began+3600;base=Path.home()/'managed-current-backpressure-a920-v1';source=base/'source';records=base/'records/guest-build';records.mkdir();revision='82019ce362dea316bfe582db54f6f0591579bede'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+fixture=json.loads((base/'records/build/fixture.json').read_text());assert hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+for name,digest in json.loads((base/'records/build/source-scope.json').read_text())['owned'].items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(base/'target'),'CARGO_BUILD_JOBS':'4','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache'),'CC_x86_64_unknown_linux_musl':str(source/'scripts/zig-cc'),'AR_x86_64_unknown_linux_musl':str(source/'scripts/zig-ar'),'ZIG_TARGET':'x86_64-linux-musl'})
+(records/'environment.json').write_text(json.dumps({k:v for k,v in env.items() if k.startswith(('CARGO_','ZIG_','CC_','AR_')) or k in ['RUSTUP_TOOLCHAIN','XDG_CACHE_HOME']},indent=2)+'\n')
+args=['cargo','+1.98.1','build','--locked','-p','shards-testguest','--profile','guest','--target','x86_64-unknown-linux-musl','--target-dir',str(base/'target/guest'),'-j4']
+left=deadline-time.monotonic();command=['timeout','--signal=TERM','--kill-after=15s',f'{left-15:.3f}s',*args];(records/'command.json').write_text(json.dumps(command)+'\n')
+with (records/'stdout').open('wb') as out,(records/'stderr').open('wb') as err:r=subprocess.run(command,cwd=source,env=env,stdout=out,stderr=err,timeout=left)
+(records/'exit').write_text(str(r.returncode)+'\n');print(json.dumps({'phase':'matching-guest','exit':r.returncode,'stdout_tail':(records/'stdout').read_text(errors='replace')[-1500:],'stderr_tail':(records/'stderr').read_text(errors='replace')[-4000:]}),flush=True)
+if r.returncode:raise SystemExit(r.returncode)
+artifacts=base/'artifacts';guest=artifacts/'guest';guest.mkdir();shutil.copy2(base/'target/guest/x86_64-unknown-linux-musl/guest/shards-testguest',guest/'shards-testguest')
+old=Path.home()/'managed-adversarial-controls-live-v1/artifacts/experimental-kernel';expected='97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae';assert hashlib.sha256(old.read_bytes()).hexdigest()==expected
+shutil.copy2(old,artifacts/'experimental-kernel');assert hashlib.sha256((artifacts/'experimental-kernel').read_bytes()).hexdigest()==expected
+manifest={str(p.relative_to(base)):{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size} for p in artifacts.rglob('*') if p.is_file()}
+(records/'artifacts.json').write_text(json.dumps({'source':revision,'artifacts':manifest,'kernel_scope':'own verified experimental TPROXY kernel; not product-pin gate','elapsed_s':time.monotonic()-began},indent=2)+'\n');print(json.dumps({'artifacts':manifest}),flush=True)
+PY

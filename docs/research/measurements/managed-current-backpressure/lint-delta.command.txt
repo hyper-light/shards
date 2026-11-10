@@ -1,0 +1,33 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,os,json,hashlib,time,shutil
+began=time.monotonic();deadline=began+3600;base=Path.home()/'managed-current-backpressure-a920-v1';original=base/'source';source=base/'source-lint';target=base/'target-lint';records=base/'records/lint-rendering-v1';records.mkdir()
+revision='4ef5589087306f7cc9a10cec075a8433213dc55e'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=original,text=True).strip()=='82019ce362dea316bfe582db54f6f0591579bede'
+assert not source.exists() and not target.exists();target.mkdir();assert shutil.disk_usage(base).free>=24*1024**3
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(target),'CARGO_BUILD_JOBS':'4','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache')})
+(records/'environment.json').write_text(json.dumps({k:env[k] for k in ['CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL','RUSTUP_TOOLCHAIN','ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR','XDG_CACHE_HOME']},indent=2)+'\n')
+def run(name,args,cwd):
+ left=deadline-time.monotonic();assert left>15
+ command=['timeout','--signal=TERM','--kill-after=15s',f'{left-15:.3f}s',*args]
+ (records/(name+'-command.json')).write_text(json.dumps(command)+'\n')
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:r=subprocess.run(command,cwd=cwd,env=env,stdout=out,stderr=err,timeout=left)
+ (records/(name+'-exit')).write_text(str(r.returncode)+'\n')
+ print(json.dumps({'phase':name,'source':revision,'exit':r.returncode,'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-2500:]}),flush=True)
+ if r.returncode:raise SystemExit(r.returncode)
+run('fetch',['git','fetch','origin','refs/heads/p/managed-backpressure-owned-v1'],original)
+run('private-lint-source',['git','worktree','add','--detach',str(source),revision],original)
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+(source/'target').symlink_to(target,target_is_directory=True)
+scope=json.loads((source/'docs/research/measurements/managed-current-backpressure/lint-source-scope.json').read_text())
+for path,digest in scope['owned'].items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+(records/'source-scope.json').write_text(json.dumps(scope,indent=2)+'\n')
+run('policy',['python3','scripts/check-development-policy'],source)
+run('clippy',['cargo','+1.98.1','clippy','--locked','-p','shards','--test','managed_output','--profile','test-release','-j4','--','-D','warnings'],source)
+frozen=json.loads((base/'records/build/fixture.json').read_text());assert hashlib.sha256(Path(frozen['frozen']).read_bytes()).hexdigest()==frozen['sha256']
+for path,digest in json.loads((base/'records/build/source-scope.json').read_text())['owned'].items():assert hashlib.sha256((original/path).read_bytes()).hexdigest()==digest,path
+(records/'result.json').write_text(json.dumps({'source':revision,'clippy_exit':0,'elapsed_s':time.monotonic()-began,'original_live_source':'82019ce362dea316bfe582db54f6f0591579bede','original_source_and_fixture_unchanged':True,'actual_live_cases_on_rendering_delta':'UNRUN; ROOT combined validation owed'},indent=2)+'\n')
+PY

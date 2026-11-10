@@ -1,0 +1,101 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-current-backpressure-a920-v1';source=base/'source';records=base/'records/collection-v1';records.mkdir()
+revision='82019ce362dea316bfe582db54f6f0591579bede'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+fixture=json.loads((base/'records/build/fixture.json').read_text())
+assert fixture['source']==revision and not fixture['fresh']
+assert hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+scope=json.loads((base/'records/build/source-scope.json').read_text())
+for path,digest in scope['owned'].items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+def read(path):return json.loads(path.read_text())
+def trace(rec,packet):
+ pending=packet;offered=None;blocked=False;notified=False;zeros=0;resumptions=0;positive=[]
+ for receipt in read(rec/'io-receipts.json')['actual']:
+  kind=receipt['kind']
+  if kind=='WriteAttempt':
+   assert offered is None and receipt['backlog'] and bytes(receipt['backlog'])==pending
+   assert not blocked or notified
+   offered=pending
+  elif kind=='WriteResult':
+   assert offered is not None
+   n=receipt['accepted'];assert 0<=n<=len(offered)
+   assert bytes(receipt['backlog'])==offered[n:]
+   pending=offered[n:]
+   if n==0:zeros+=1;blocked=True;notified=False
+   else:
+    positive.append(n);resumptions+=int(blocked and notified);blocked=False;notified=False
+   offered=None
+  elif kind=='Writable':
+   assert receipt['owned_connection'] and receipt['owned_stream'] and bytes(receipt['backlog'])==pending
+   if blocked:notified=True
+  elif kind=='WriteError':raise AssertionError(receipt)
+ assert offered is None and not pending
+ return {'zero_returns':zeros,'resumed_positive':resumptions,'positive_counts':positive,'coverage_met':zeros>0 and resumptions>0,'actual_receipts':read(rec/'io-receipts.json')}
+summary={'source':revision,'base':scope['base'],'fixture':fixture,'native':[],'vm':[],'validation_errors':[],'population_parent_kernel_cost':'Unknown; no audit/profiling/benchmarking claim'}
+for name in ['records/build/full-caller-build-exit','records/guest-build/exit','records/checks-v1/pure-exit','records/checks-v1/clippy-exit']:
+ summary[name]=(base/name).read_text().strip() if (base/name).exists() else 'MISSING'
+seen=set()
+for case,root in [('FullOwnedReturn','records/native-full-v1/full-owned-return-stdout-5'),('BackpressureSubscribe','records/native-backpressure-v1/backpressure-subscribe-stdout-5')]:
+ folder=base/root;rec=folder/'records';item={'case':case,'path':root,'exit':int((folder/'exit').read_text())}
+ try:
+  assert 'running 1 test' in (folder/'stdout').read_text()
+  inputs=read(rec/'inputs.json');assert inputs['source']==revision and inputs['fixture_sha256']=='sha256:'+fixture['sha256'] and inputs['supplied_errno']==5
+  assert inputs['run'] not in seen;seen.add(inputs['run']);item['run']=inputs['run']
+  canonical=read(rec/'canonical.json');refusal=read(rec/'control-refusal.json');observer=read(rec/'observer-stop.json');owner=read(rec/'owner-stop.json');teardown=read(rec/'teardown.json')
+  assert canonical['actual_transport_end'] and canonical['canonical_state']=='Aborted { offset: 26, errno: 5 }'
+  assert refusal['reason']=='Protocol' and refusal['control']==canonical['control'] and refusal['canonical_state']==canonical['canonical_state']
+  assert canonical['control']['state'].startswith('Finished(')
+  assert observer['joined'] and observer['post_join_records']==0 and observer['owner_control']==canonical['control']
+  assert owner['finish_after_abort']=='Err(Closed)' and owner['control']['state'].startswith('Aborted(')
+  for key in ['accepted','consumed']:assert owner['control'][key]==canonical['control'][key]
+  assert teardown['cleanup_completed'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']
+  if case=='FullOwnedReturn':
+   full=read(rec/'full-owned-return.json');assert full['reason']=='Full' and full['before']==full['after'] and full['before'].startswith('Pending(')
+   assert full['same_allocation'] and full['capacity_before']==full['capacity_returned']<=full['admitted_record_bytes']
+   assert full['producer_capacity_after']==0 and not full['candidate_retried'] and not full['application_ack_sent']
+   assert (rec/'full-owned-candidate.bin').read_bytes()==(rec/'full-owned-return.bin').read_bytes()
+   assert item['exit']==0 and teardown['protocol_complete'] and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
+   item['full_owned_return']=full
+  else:
+   item['backpressure']=trace(rec,(rec/'postterminal-control.bin').read_bytes());item['coverage']=read(rec/'backpressure.json')
+   if item['backpressure']['coverage_met']:assert item['exit']==0 and teardown['protocol_complete'] and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
+   else:assert item['exit']==101 and 'NoZero' in item['coverage']['result']
+  item.update({'canonical':canonical,'refusal':refusal,'observer':observer,'owner':owner,'cleanup':teardown})
+ except Exception as error:summary['validation_errors'].append({'case':case,'error':repr(error)});item['validation_error']=repr(error)
+ summary['native'].append(item)
+folder=base/'cases/terminal-end-backpressure-stdout-backpressure-v1';rec=folder/'records';item={'case':'VM post-End Subscribe stdout','exit':int((folder/'actual-case-exit').read_text())}
+try:
+ assert 'running 1 test' in (folder/'actual-case-stdout').read_text()
+ assert read(rec/'inputs.json')['caller_declared_source']==revision and read(rec/'artifacts.json')['fixture']['sha256']=='sha256:'+fixture['sha256']
+ teardown=read(rec/'teardown.json');assert teardown['protocol_complete'] and teardown['run_removed'] and teardown['owner_stop_observer_join']['complete'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']
+ metadata=(rec/'managed-output.stopped').read_text();run=next(line[4:] for line in metadata.splitlines() if line.startswith('run '));assert run not in seen;seen.add(run);item['run']=run
+ attempt=read(rec/'attempt.json');assert attempt['case']=='Terminal(BackpressureSubscribe)' and attempt['last_valid_ack']==attempt['observed_cursor_before_attempt']
+ row=f'member 1 channel 1 state ended accepted {attempt["observed_cursor_before_attempt"]} consumed {attempt["last_valid_ack"]} tail complete';assert row in metadata.splitlines()
+ refusal=read(rec/'refusal.json');assert refusal['matched_expected_refusal'] and refusal['borrowed_driver_join']['complete'] and refusal['post_join_records']==0
+ events=[read(p) for p in rec.glob('[0-9]*-refusal-*.json')];assert len(events)==1 and events[0]['kind']=='Lost' and events[0]['reason']=='Protocol'
+ for stem in ['main-after-refusal-raw','main-after-neighbor-raw']:
+  assert (rec/f'{stem}.stdout.bin').read_bytes()==b'main-progress\n' and (rec/f'{stem}.stderr.bin').read_bytes().startswith(b'main-error\n')
+ progress=read(rec/'progress.json');neighbor=[v for v in progress['channels'] if v['member']==2];assert {v['channel'] for v in neighbor}=={1,2}
+ for v in neighbor:assert b'harness-after-exit' in bytes.fromhex(v['payload_hex'])
+ assert read(rec/'release.json')['gate_peer_eof']
+ item['backpressure']=trace(rec,(rec/'invalid-control.bin').read_bytes());item['coverage']=read(rec/'backpressure.json')
+ if item['backpressure']['coverage_met']:assert item['exit']==0 and '1 passed; 0 failed; 0 ignored;' in (folder/'actual-case-stdout').read_text()
+ else:assert item['exit']==101 and 'NoZero' in item['coverage']['result']
+ item.update({'target_row':row,'cleanup':teardown,'neighbor':neighbor,'main_raw_bytes_retained':True})
+except Exception as error:summary['validation_errors'].append({'case':item['case'],'error':repr(error)});item['validation_error']=repr(error)
+summary['vm'].append(item)
+(records/'validated-cases.json').write_text(json.dumps(summary,indent=2)+'\n')
+subprocess.run(['git','branch','frozen/backpressure-82019',revision],cwd=source,check=True)
+roots=[base/'records',base/'cases']
+files=sorted({p for root in roots for p in root.rglob('*') if p.is_file() and not p.is_symlink() and 'tmp' not in p.relative_to(root).parts})
+manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-backpressure-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'original_payloads':len(manifest),'total_members':len(manifest)+1,'source':revision,'actual_native':len(summary['native']),'actual_vm':len(summary['vm']),'validation_errors':summary['validation_errors'],'originals_preserved':True}
+(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

@@ -1,0 +1,42 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,os,json,hashlib,shutil,time,platform
+began=time.monotonic();deadline=began+3600;revision='82019ce362dea316bfe582db54f6f0591579bede'
+base=Path.home()/'managed-current-backpressure-a920-v1';assert not base.exists();base.mkdir();source=base/'source';records=base/'records/build';records.mkdir(parents=True)
+for name in ['target','cargo-home','zig-global-cache','zig-local-cache','runtime-cache','artifacts']:(base/name).mkdir()
+preflight={'runner':'8fadc1ec213332e16cb0d915a3fb913f','platform':platform.platform(),'libc':platform.libc_ver(),'machine':platform.machine(),'disk_free_bytes':shutil.disk_usage(base).free,'kvm_read_write':os.access('/dev/kvm',os.R_OK|os.W_OK),'source':revision,'base':'a920c85b5c0c9d40aafc4f4cce32432c7c0aed79','resources':'2CPU/4GiB/24GiB j4','original_build_outer_s':3600}
+(records/'preflight.json').write_text(json.dumps(preflight,indent=2)+'\n');print(json.dumps(preflight),flush=True);assert preflight['machine']=='x86_64' and preflight['disk_free_bytes']>=24*1024**3
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(base/'target'),'CARGO_BUILD_JOBS':'4','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache')})
+(records/'environment.json').write_text(json.dumps({k:env[k] for k in ['CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL','RUSTUP_TOOLCHAIN','ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR','XDG_CACHE_HOME']},indent=2)+'\n')
+def run(name,args,cwd):
+ left=deadline-time.monotonic();assert left>15
+ command=['timeout','--signal=TERM','--kill-after=15s',f'{left-15:.3f}s',*args]
+ (records/(name+'-command.json')).write_text(json.dumps(command)+'\n');print(json.dumps({'phase':name,'started':True,'original_outer_remaining_s':left}),flush=True)
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:r=subprocess.run(command,cwd=cwd,env=env,stdout=out,stderr=err,timeout=left)
+ (records/(name+'-exit')).write_text(str(r.returncode)+'\n');print(json.dumps({'phase':name,'exit':r.returncode,'stdout_tail':(records/(name+'-stdout')).read_text(errors='replace')[-1200:],'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-4000:]}),flush=True)
+ if r.returncode:raise SystemExit(r.returncode)
+run('clone',['git','clone','--depth=1','--single-branch','--branch','p/managed-backpressure-owned-v1','--filter=blob:none','git@github.com:hyper-light/shards.git',str(source)],base)
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+(source/'target').symlink_to(base/'target',target_is_directory=True)
+scope=json.loads((source/'docs/research/measurements/managed-current-backpressure/source-scope.json').read_text())
+for path,digest in scope['owned'].items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+(records/'source-scope.json').write_text(json.dumps(scope,indent=2)+'\n')
+run('policy',['python3','scripts/check-development-policy'],source)
+run('rustc',['rustc','+1.98.1','-Vv'],source);run('cargo',['cargo','+1.98.1','--version'],source);run('zig',['zig','version'],source)
+run('full-caller-build',['cargo','+1.98.1','test','--locked','-p','shards','--test','managed_output','--profile','test-release','--no-run','-j4','--message-format=json'],source)
+items=[]
+for line in (records/'full-caller-build-stdout').read_text().splitlines():
+ try:item=json.loads(line)
+ except ValueError:continue
+ if item.get('reason')=='compiler-artifact' and item.get('target',{}).get('name')=='managed_output' and item.get('executable'):items.append(item)
+assert len(items)==1
+binary=Path(items[0]['executable']);frozen=base/'artifacts/managed_output';shutil.copyfile(binary,frozen);frozen.chmod(binary.stat().st_mode)
+identity={'path':str(binary),'frozen':str(frozen),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'fresh':items[0]['fresh'],'source':revision,'elapsed_s':time.monotonic()-began};assert hashlib.sha256(frozen.read_bytes()).hexdigest()==identity['sha256']
+(records/'fixture.json').write_text(json.dumps(identity,indent=2)+'\n')
+cli=base/'target/test-release/shards';copy=base/'artifacts/shards';shutil.copyfile(cli,copy);copy.chmod(cli.stat().st_mode)
+(records/'cli.json').write_text(json.dumps({'path':str(cli),'frozen':str(copy),'sha256':hashlib.sha256(cli.read_bytes()).hexdigest(),'source':revision},indent=2)+'\n');print(json.dumps(identity),flush=True)
+PY

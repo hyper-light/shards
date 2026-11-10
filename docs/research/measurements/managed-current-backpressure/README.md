@@ -1,5 +1,9 @@
 # Owned Full return and actual write backpressure
 
+Read [RESULTS.md](RESULTS.md) for the actual three-case campaign, original
+Clippy failure and separately scoped assertion-rendering correction. The source
+checkpoint's pending statements below describe that earlier freeze.
+
 Implementation scope approved by ROOT from ffefcaa57's proposal, retained
 byte-for-byte in APPROVED-PROPOSAL.md (SHA256
 14f2d802713a22cb191623a5529837825907bf02db848559eac5c461ccb399a4).
