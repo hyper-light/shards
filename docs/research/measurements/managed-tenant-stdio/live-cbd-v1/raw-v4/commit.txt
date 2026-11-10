@@ -1,0 +1,11 @@
+commit 0ea38a52aa534bf665516c239c4bf122149f8554
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 09:28:59 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 09:28:59 2026 -0800
+
+    test: record live inherited writer pass and correct release caption
+    
+    Retain actual f4 caller build, tasks4 Spawn-stage refusal, and tasks5 full inherited-writer KVM pass with strict metadata and cleanup. Correct only the shared release record caption after actual records proved actor channels were still Open at sibling release. Preserve all protocol, causality and terminal assertions.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

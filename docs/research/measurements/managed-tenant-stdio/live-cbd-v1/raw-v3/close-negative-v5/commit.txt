@@ -1,0 +1,11 @@
+commit 10091363ce72f50e595312437ae8ffc07f7b9803
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 09:30:20 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 09:30:20 2026 -0800
+
+    test: omit owned parent stdout close for bounded negative run
+    
+    Mutation-only candidate from0ea38a52. Skip only the owned parent stdout close while preserving the F_GETFD/EBADF prerequisite, held child/pidfd, private release ordering and finite cleanup. Expected actual failure is CloseStdout before child readiness; this candidate must not be merged as a correction.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

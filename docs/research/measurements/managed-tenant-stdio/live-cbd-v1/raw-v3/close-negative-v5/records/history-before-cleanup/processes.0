@@ -1,0 +1,24 @@
+1794331923756989250	command	903	exec	/bin/testguest sleep
+1794331923758048360	agent helper	905	fork	1
+1794331923759035785	agent helper	905	exec	shards-server "agent helper" /proc/self/fd/6 200001 3 4 "" [] 7
+1794331923762385043	agent helper	910	fork	905
+1794331923762648456	agent helper	910	exec	shards-server sandbox
+1794331923763049682	agent helper	913	fork	1
+1794331923763182510	agent helper	916	fork	913
+1794331923763382771	agent helper	913	exec	shards-init managed-reaper
+1794331923906062347	agent helper	916	exec	/agents/helper/member managed-capture agent inherit-stdio 47065 300000 300000 16 269
+1794331923906658563	harness driver	1707	fork	1
+1794331923908236369	agent helper	1709	fork	916
+1794331923908523417	agent helper	1709	exec	/agents/helper/member managed-capture agent inherited-child 47065 300000 16 269
+1794331923908589291	agent helper	1709	exit	signal 9
+1794331923910970805	agent helper	916	exit	code 5
+1794331923911109249	harness driver	1707	exec	shards-server "harness driver" /proc/self/fd/6 200002 3 4 "" [] 7
+1794331923911285509	agent helper	913	exit	code 5
+1794331923915168921	harness driver	1715	fork	1707
+1794331923915470945	harness driver	1715	exec	shards-server sandbox
+1794331923916338055	harness driver	1719	fork	1
+1794331923916495090	harness driver	1721	fork	1719
+1794331923916651778	harness driver	1719	exec	shards-init managed-reaper
+1794331923956571956	harness driver	1721	exec	/harness/driver/bin/member managed-capture harness step 46037 300000
+1794331923964457571	agent helper	910	exit	signal 9
+1794331923964515422	agent helper	905	exit	signal 9

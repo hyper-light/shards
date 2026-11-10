@@ -10,6 +10,11 @@ supersede the earlier implementation-only/ROOT-live restrictions in the historic
 records linked below. ROOT retains audits, profiles, benchmarks, integration and
 main merges. No children, goal dispatch or production mechanism changes.
 
+Current scoped result: exact source0ea38a52 has fresh normal/A passes, a separately
+retained close-omission fixture-validity failure, and an actual byte-identical
+restoration plus fresh A pass. The closing restoration receipt is below. This is
+not ownership guard proof, full managed-runtime closure or final integration.
+
 The signed initial candidate is `446211e57d302729832ece92e55cfa13713b7d7a`.
 The first two full-envelope requests were refused before commands ran (zero
 admitted idle cores on Fedora and adacachy). A later full-envelope preflight on
@@ -218,7 +223,7 @@ validity witness. It is not a product ownership guard proof, permission-isolatio
 proof, full population/reaping proof or hard resource return guarantee.
 
 Exact source restoration to0ea and caller/guest binary comparison against frozen
-baseline artifacts is pending admission. Repeated full 4 CPU / 8 GiB / 40 GiB
+baseline artifacts was initially pending admission. Repeated full 4 CPU / 8 GiB / 40 GiB
 requests were refused with zero admitted idle cores, including handle r60 which
 ended as a refusal before any command ran. No smaller build ask or guard bypass
 was used. Remote source remains the preserved close mutation; its VM cleanup was
@@ -241,6 +246,45 @@ hash remains df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3.
 The assigned adversarial role and same private/full-resource scope were read back
 to ROOT. No source/evidence/final binary was deleted, and the paused ARM VM and
 protected ROOT scopes were untouched.
+
+## Exact restoration completed
+
+After the resumed-session policy readback, Fedora briefly reported offline and
+the other Linux runner had no admitted CPU headroom. No host administration,
+smaller build ask or protected-cache access was used. The first resumed handles
+ended as admission refusals; queued was never reported as running. Fedora then
+returned and resumed-session run r4 was actually admitted on runner8fadc with
+4 CPU / 8 GiB / 40 GiB in the same private scope.
+
+r4 first preserved the mutation caller and testguest in `frozen/10091363c`, then
+checked out exact `0ea38a52aa534bf665516c239c4bf122149f8554` in the private clone.
+It rebuilt matching static testguest and full caller0. Both restored artifacts
+matched their frozen positive baseline bytes: testguest against
+`frozen/446211e57/shards-testguest`, caller against
+`frozen/0ea38a52a/managed_output`. No source assertion, grant, profile or timeout
+was weakened. A fresh UUID16 challenge and new fixture home were used.
+
+The restored actual selected Case A passed0, one test/20 filtered, in1.14s.
+Inherited-ready, causal sibling fd1/fd2 and main, exact tagged challenge/echo,
+suffixes, canonical End/ACK/transport EOF, strict metadata and owned cleanup all
+passed again. Stop/remove and owner/observer joins completed, FD11→11.
+[Exact receipt](live-cbd-v1/raw-v4/result.json) records both binary comparisons
+as true. Full population, independently exported parent raw wait status and
+kernel resource return remain Unknown. No audit/profile/benchmark or final
+integration claim follows.
+
+[Caption/negative raw files](live-cbd-v1/raw-v3/TRANSFER.json) preserve117 files,
+62,823 verified bytes. [Restoration raw files](live-cbd-v1/raw-v4/TRANSFER.json)
+preserve71 files,29,274 verified bytes. Every local transfer verified length,
+SHA256 and relative paths before exclusive file creation. Full Cargo JSONL and
+all positive/mutated final binaries remain preserved in the private Linux scope.
+
+This closes the finite close-omission/restore fixture check only. R01–R16
+accounting above now includes the actual positive, admission-refusal, fixture
+negative and exact restoration witnesses. Its open matrix, complete ownership/
+population/kernel accounting, meaningful product guard mutations, ROOT audits,
+profiles/performance, integration/main review and full P0–P13/G01–G24 obligations
+remain open. The signed suffix-byte source2a9 is the next finite owned case.
 
 ## R01–R16 at this checkpoint
 

@@ -1,0 +1,12 @@
+{
+  "completeness": "Unknown: asynchronous/lost/rotated records and omitted threads remain possible; namespace PIDs are not VM PIDs",
+  "copy_error": null,
+  "read": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "TIME                            MEMBER           PID  EVENT  WHAT\n2026-11-10T17:32:03.756989250Z  command          903  exec   /bin/testguest sleep\n2026-11-10T17:32:03.758048360Z  agent helper     905  fork   from 1\n2026-11-10T17:32:03.759035785Z  agent helper     905  exec   shards-server \"agent helper\" /proc/self/fd/6 200001 3 4 \"\" [] 7\n2026-11-10T17:32:03.762385043Z  agent helper     910  fork   from 905\n2026-11-10T17:32:03.762648456Z  agent helper     910  exec   shards-server sandbox\n2026-11-10T17:32:03.763049682Z  agent helper     913  fork   from 1\n2026-11-10T17:32:03.763182510Z  agent helper     916  fork   from 913\n2026-11-10T17:32:03.763382771Z  agent helper     913  exec   shards-init managed-reaper\n2026-11-10T17:32:03.906062347Z  agent helper     916  exec   /agents/helper/member managed-capture agent inherit-stdio 47065 300000 300000 16 269\n2026-11-10T17:32:03.906658563Z  harness driver  1707  fork   from 1\n2026-11-10T17:32:03.908236369Z  agent helper    1709  fork   from 916\n2026-11-10T17:32:03.908523417Z  agent helper    1709  exec   /agents/helper/member managed-capture agent inherited-child 47065 300000 16 269\n2026-11-10T17:32:03.908589291Z  agent helper    1709  exit   signal 9 (SIGKILL)\n2026-11-10T17:32:03.910970805Z  agent helper     916  exit   code 5\n2026-11-10T17:32:03.911109249Z  harness driver  1707  exec   shards-server \"harness driver\" /proc/self/fd/6 200002 3 4 \"\" [] 7\n2026-11-10T17:32:03.911285509Z  agent helper     913  exit   code 5\n2026-11-10T17:32:03.915168921Z  harness driver  1715  fork   from 1707\n2026-11-10T17:32:03.915470945Z  harness driver  1715  exec   shards-server sandbox\n2026-11-10T17:32:03.916338055Z  harness driver  1719  fork   from 1\n2026-11-10T17:32:03.916495090Z  harness driver  1721  fork   from 1719\n2026-11-10T17:32:03.916651778Z  harness driver  1719  exec   shards-init managed-reaper\n2026-11-10T17:32:03.956571956Z  harness driver  1721  exec   /harness/driver/bin/member managed-capture harness step 46037 300000\n2026-11-10T17:32:03.964457571Z  agent helper     910  exit   signal 9 (SIGKILL)\n2026-11-10T17:32:03.964515422Z  agent helper     905  exit   signal 9 (SIGKILL)\n"
+  },
+  "segments": [
+    "processes.0"
+  ]
+}

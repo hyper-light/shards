@@ -1,0 +1,17 @@
+{
+  "source": "10091363ce72f50e595312437ae8ffc07f7b9803",
+  "test_exit": 101,
+  "actor_close_stdout_stage5_observed": true,
+  "ready_record_exists": false,
+  "teardown": {
+    "observer_fd_baseline": 11,
+    "owner_stop_observer_join": {
+      "complete": true,
+      "error": null
+    },
+    "parent_child_waitstatus_and_full_population_return": "Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop",
+    "protocol_complete": false,
+    "run_removed": true
+  },
+  "full_population_kernel_return": "Unknown"
+}
