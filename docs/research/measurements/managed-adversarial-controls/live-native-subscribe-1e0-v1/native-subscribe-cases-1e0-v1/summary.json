@@ -1,0 +1,130 @@
+[
+  {
+    "selection": "duplicate_ack",
+    "channel": "stdout",
+    "supplied_errno": 5,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 26, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 26, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 42,\n  \"returned_payload_sha256\": \"sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8\",\n  \"selected_control\": \"DuplicateAck\",\n  \"submitted_bytes\": 13\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": null,
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Aborted(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "duplicate_ack",
+    "channel": "stderr",
+    "supplied_errno": 5,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 23, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 23, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 39,\n  \"returned_payload_sha256\": \"sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f\",\n  \"selected_control\": \"DuplicateAck\",\n  \"submitted_bytes\": 13\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": null,
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Aborted(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "duplicate_ack",
+    "channel": "stdout",
+    "supplied_errno": 2147483647,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 26, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 26, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 42,\n  \"returned_payload_sha256\": \"sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8\",\n  \"selected_control\": \"DuplicateAck\",\n  \"submitted_bytes\": 13\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": null,
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Aborted(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "duplicate_ack",
+    "channel": "stderr",
+    "supplied_errno": 2147483647,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.07s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 23, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 23, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 39,\n  \"returned_payload_sha256\": \"sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f\",\n  \"selected_control\": \"DuplicateAck\",\n  \"submitted_bytes\": 13\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": null,
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Aborted(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "resubscribe",
+    "channel": "stdout",
+    "supplied_errno": 5,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_resubscribe_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 26, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 26, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 42,\n  \"returned_payload_sha256\": \"sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8\",\n  \"selected_control\": \"Resubscribe\",\n  \"submitted_bytes\": 58\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 55,\n      \"kind\": \"Write\",\n      \"pending\": 3\n    },\n    {\n      \"accepted\": 3,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": false,\n  \"meaning\": \"actual local acceptance/read receipts; not peer ACK or daemon metadata\",\n  \"submitted_bytes\": 58\n}",
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Aborted(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "resubscribe",
+    "channel": "stderr",
+    "supplied_errno": 5,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_resubscribe_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 23, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 23, errno: 5 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 39,\n  \"returned_payload_sha256\": \"sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f\",\n  \"selected_control\": \"Resubscribe\",\n  \"submitted_bytes\": 58\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 52,\n      \"kind\": \"Write\",\n      \"pending\": 6\n    },\n    {\n      \"accepted\": 6,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": false,\n  \"meaning\": \"actual local acceptance/read receipts; not peer ACK or daemon metadata\",\n  \"submitted_bytes\": 58\n}",
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Aborted(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "resubscribe",
+    "channel": "stdout",
+    "supplied_errno": 2147483647,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_resubscribe_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 26, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 26, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 42,\n  \"returned_payload_sha256\": \"sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8\",\n  \"selected_control\": \"Resubscribe\",\n  \"submitted_bytes\": 58\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Finished(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 55,\n      \"kind\": \"Write\",\n      \"pending\": 3\n    },\n    {\n      \"accepted\": 3,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": false,\n  \"meaning\": \"actual local acceptance/read receipts; not peer ACK or daemon metadata\",\n  \"submitted_bytes\": 58\n}",
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 90,\n    \"consumed\": 90,\n    \"state\": \"Aborted(Progress { accepted: 90, consumed: 90 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  },
+  {
+    "selection": "resubscribe",
+    "channel": "stderr",
+    "supplied_errno": 2147483647,
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::native_terminal::canonical_aborted_resubscribe_preserves_errno_and_terminal_credit ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.06s\n\n",
+    "stderr": "",
+    "actual": {
+      "canonical.json": "{\n  \"actual_transport_end\": true,\n  \"canonical_state\": \"Aborted { offset: 23, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  }\n}",
+      "control-refusal.json": "{\n  \"canonical_state\": \"Aborted { offset: 23, errno: 2147483647 }\",\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"reason\": \"Protocol\",\n  \"returned_payload_bytes\": 39,\n  \"returned_payload_sha256\": \"sha256:e5b4b48d8b9a00dad0af19332c5f67fef7c79189b95490caf9b9f5cc59aeb42f\",\n  \"selected_control\": \"Resubscribe\",\n  \"submitted_bytes\": 58\n}",
+      "observer-stop.json": "{\n  \"error\": null,\n  \"joined\": true,\n  \"owner_control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Finished(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"post_join_records\": 0\n}",
+      "io-receipts.json": "{\n  \"actual\": [\n    {\n      \"accepted\": 52,\n      \"kind\": \"Write\",\n      \"pending\": 6\n    },\n    {\n      \"accepted\": 6,\n      \"kind\": \"Write\",\n      \"pending\": 0\n    }\n  ],\n  \"driver_joined\": true,\n  \"finish_requested\": false,\n  \"meaning\": \"actual local acceptance/read receipts; not peer ACK or daemon metadata\",\n  \"submitted_bytes\": 58\n}",
+      "owner-stop.json": "{\n  \"control\": {\n    \"accepted\": 87,\n    \"consumed\": 87,\n    \"state\": \"Aborted(Progress { accepted: 87, consumed: 87 })\",\n    \"transport_drained\": \"Unknown; local stop/join is a separate witness\"\n  },\n  \"finish_after_abort\": \"Err(Closed)\"\n}",
+      "teardown.json": "{\n  \"cleanup_completed\": true,\n  \"cleanup_errors\": [],\n  \"cleanup_panic\": null,\n  \"observer_fds\": {\n    \"after\": 4,\n    \"before\": 4\n  },\n  \"population_kernel_return\": \"Unknown; this fixture has no guest or daemon lifecycle\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null\n}"
+    }
+  }
+]

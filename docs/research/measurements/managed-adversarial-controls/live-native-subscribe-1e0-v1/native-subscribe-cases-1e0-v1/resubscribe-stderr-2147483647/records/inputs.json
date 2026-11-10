@@ -1,0 +1,16 @@
+{
+  "channel": 2,
+  "cleanup_ms": 30000,
+  "compiled_leaf_sha256": "sha256:43aca55378c042f0313251b63e99d65183a5a572358e6e204cc81fac9a6f1147",
+  "control": "Resubscribe",
+  "fixture_sha256": "sha256:7810e1aa8964841f1fc5c01ff5f8a468347519577c0a0ae2c32264d34135d123",
+  "generation": 1,
+  "outer_enforcement": "direct caller required",
+  "outer_ms": 100000,
+  "phase_ms": 60000,
+  "run": "c30983dc-4828-4e99-a55c-8f50941d3b0e",
+  "scope": "actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error",
+  "source": "1e0bd4785e9ba458cef121abcdb2728ae1e5cb2a",
+  "supplied_errno": 2147483647,
+  "work": "three canonical records; one selected terminal control; one returned postterminal payload"
+}

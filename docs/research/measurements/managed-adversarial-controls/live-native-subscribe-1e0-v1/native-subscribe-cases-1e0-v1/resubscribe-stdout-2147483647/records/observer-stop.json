@@ -1,0 +1,11 @@
+{
+  "error": null,
+  "joined": true,
+  "owner_control": {
+    "accepted": 90,
+    "consumed": 90,
+    "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+    "transport_drained": "Unknown; local stop/join is a separate witness"
+  },
+  "post_join_records": 0
+}

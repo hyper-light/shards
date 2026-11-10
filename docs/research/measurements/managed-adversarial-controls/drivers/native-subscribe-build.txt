@@ -1,0 +1,36 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,os,json,hashlib
+base=Path.home()/'managed-adversarial-controls-live-v1';source=base/'source';records=base/'native-subscribe-build-1e0-v1';records.mkdir()
+old='9e7ef986458725d90128261ba6ca3591691777b9';new='1e0bd4785e9ba458cef121abcdb2728ae1e5cb2a'
+fixture=json.loads((base/'resubscribe-build-9e7-v1/fixture.json').read_text());frozen=base/'artifacts/fixture-9e7';assert hashlib.sha256(frozen.read_bytes()).hexdigest()==fixture['sha256']
+env=os.environ.copy();env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(base/'target'),'CARGO_BUILD_JOBS':'2','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache')})
+for key in ['SHARDS_HELPERS','SHARDS_HELPERS_DIR','SHARDS_INIT_BINARY','SHARDS_SERVER_BINARY','SHARDS_VM_BINARY','SHARDS_ABI_IDENTITY','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER']:env.pop(key,None)
+def run(name,args,bound=120):
+ (records/(name+'-command.json')).write_text(json.dumps(args)+'\n')
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:r=subprocess.run(['timeout','--signal=TERM','--kill-after=10s',str(bound)+'s',*args],cwd=source,env=env,stdout=out,stderr=err,timeout=bound+30)
+ (records/(name+'-exit')).write_text(str(r.returncode)+'\n');print(json.dumps({'phase':name,'exit':r.returncode,'stdout_tail':(records/(name+'-stdout')).read_text(errors='replace')[-1500:],'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-8000:]}),flush=True)
+ if r.returncode:raise SystemExit(r.returncode)
+run('fetch',['git','fetch','--depth=1','origin','p/managed-adversarial-controls-v1'])
+run('source-switch',['git','switch','--detach',new])
+changed=subprocess.check_output(['git','diff','--name-only',old,new],cwd=source,text=True).splitlines()
+assert all(p.startswith('docs/research/measurements/managed-adversarial-controls/') or p=='crates/shards/tests/managed_output/adversarial_controls.rs' or p.startswith('crates/shards/tests/managed_output/adversarial_controls/') for p in changed),changed
+status=subprocess.check_output(['git','status','--porcelain=v1'],cwd=source,text=True);assert set(line[3:] for line in status.splitlines())=={'crates/shards/tests/managed_output.rs','crates/shards/tests/managed_output/tenant_exit.rs'},status
+(records/'unchanged-production.json').write_text(json.dumps({'changed_paths':changed,'all_production_and_abi_unchanged':True,'old_matching_helpers_reused':'own57a8 normal source-matching artifacts unchanged through eed0; no ROOT helper/cache'},indent=2)+'\n')
+run('policy',['python3','scripts/check-development-policy'])
+paths=[source/'crates/shards/tests/managed_output.rs',source/'crates/shards/tests/managed_output/tenant_exit.rs',source/'crates/shards/tests/managed_output/adversarial_controls.rs',*sorted((source/'crates/shards/tests/managed_output/adversarial_controls').glob('*.rs'))]
+(records/'source-hashes.json').write_text(json.dumps({str(p.relative_to(source)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},indent=2)+'\n')
+(records/'actual-parent.diff').write_text(subprocess.check_output(['git','diff'],cwd=source,text=True))
+run('full-caller-build',['cargo','+1.98.1','test','--locked','-p','shards','--test','managed_output','--profile','test-release','--no-run','-j2','--message-format=json'],900)
+items=[]
+for line in (records/'full-caller-build-stdout').read_text().splitlines():
+ try:item=json.loads(line)
+ except ValueError:continue
+ if item.get('reason')=='compiler-artifact' and item.get('target',{}).get('name')=='managed_output' and item.get('executable'):items.append(item)
+assert len(items)==1,items
+binary=Path(items[0]['executable']);identity={'path':str(binary),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'fresh':items[0]['fresh'],'source':new}
+import shutil
+shutil.copyfile(binary,base/'artifacts/fixture-1e0')
+assert hashlib.sha256((base/'artifacts/fixture-1e0').read_bytes()).hexdigest()==identity['sha256']
+(records/'fixture.json').write_text(json.dumps(identity,indent=2)+'\n');print(json.dumps(identity),flush=True)
+PY

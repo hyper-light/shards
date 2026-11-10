@@ -1,0 +1,10 @@
+{
+  "actual_transport_end": true,
+  "canonical_state": "Aborted { offset: 23, errno: 5 }",
+  "control": {
+    "accepted": 87,
+    "consumed": 87,
+    "state": "Finished(Progress { accepted: 87, consumed: 87 })",
+    "transport_drained": "Unknown; local stop/join is a separate witness"
+  }
+}

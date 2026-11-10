@@ -1,0 +1,128 @@
+diff --git a/crates/shards/tests/managed_output.rs b/crates/shards/tests/managed_output.rs
+index 1dc88d6..fd33c44 100644
+--- a/crates/shards/tests/managed_output.rs
++++ b/crates/shards/tests/managed_output.rs
+@@ -54,11 +54,24 @@ impl std::fmt::Debug for Event {
+     }
+ }
+ 
++#[derive(Debug)]
++enum ControlReceipt {
++    Write { accepted: usize, pending: usize },
++    Read { bytes: usize, ended: bool },
++    Finish { error: Option<String> },
++    WriteError(String),
++}
++
+ enum Ask {
+     Connect(SocketAddr),
+     Ack(u64),
+     AckAndFinish(u64),
+     Cancel,
++    RawControl {
++        bytes: Vec<u8>,
++        finish: bool,
++        receipts: mpsc::Sender<ControlReceipt>,
++    },
+ }
+ 
+ struct Client {
+@@ -68,6 +81,7 @@ struct Client {
+     stream: Option<StreamId>,
+     events: mpsc::Sender<Event>,
+     pending: Vec<u8>,
++    control_receipts: Option<mpsc::Sender<ControlReceipt>>,
+     inbound: Vec<u8>,
+     finish: bool,
+     done: bool,
+@@ -90,15 +104,30 @@ impl Client {
+                 Ok(0) => return,
+                 Ok(n) => {
+                     self.pending.drain(..n);
++                    if let Some(receipts) = &self.control_receipts {
++                        let _ = receipts.send(ControlReceipt::Write {
++                            accepted: n,
++                            pending: self.pending.len(),
++                        });
++                    }
+                 }
+                 Err(error) => {
++                    if let Some(receipts) = &self.control_receipts {
++                        let _ = receipts.send(ControlReceipt::WriteError(error.to_string()));
++                    }
+                     self.fail(error.to_string());
+                     return;
+                 }
+             }
+         }
+         if self.finish {
+-            if let Err(error) = io.finish(conn, stream) {
++            let result = io.finish(conn, stream);
++            if let Some(receipts) = &self.control_receipts {
++                let _ = receipts.send(ControlReceipt::Finish {
++                    error: result.as_ref().err().map(ToString::to_string),
++                });
++            }
++            if let Err(error) = result {
+                 self.fail(error.to_string());
+             }
+             self.finish = false;
+@@ -132,6 +161,12 @@ impl Handler for Client {
+                     return;
+                 }
+             };
++            if let Some(receipts) = &self.control_receipts {
++                let _ = receipts.send(ControlReceipt::Read {
++                    bytes: bytes.len(),
++                    ended,
++                });
++            }
+             self.inbound.extend_from_slice(&bytes);
+             loop {
+                 let (tag, bytes) = match frame::take(&mut self.inbound) {
+@@ -187,6 +222,23 @@ impl Handler for Client {
+                 self.pending.extend_from_slice(&managed::consumed(offset));
+                 self.flush(io);
+             }
++            Ask::RawControl {
++                bytes,
++                finish,
++                receipts,
++            } => {
++                if bytes.len() > managed::CONTROL_BYTES
++                    || self.control_receipts.is_some()
++                    || !self.pending.is_empty()
++                {
++                    self.fail("raw control requires one bounded command after flushed subscription".into());
++                    return;
++                }
++                self.control_receipts = Some(receipts);
++                self.pending.extend_from_slice(&bytes);
++                self.finish |= finish;
++                self.flush(io);
++            }
+             Ask::Cancel => {
+                 if let Some(conn) = self.conn {
+                     io.close(conn, 0, "ordinary fixture observer cancel");
+@@ -241,6 +293,7 @@ impl Observer {
+             stream: None,
+             events: event,
+             pending: Vec::new(),
++            control_receipts: None,
+             inbound: Vec::new(),
+             finish: false,
+             done: false,
+diff --git a/crates/shards/tests/managed_output/tenant_exit.rs b/crates/shards/tests/managed_output/tenant_exit.rs
+index 3aef430..66b366e 100644
+--- a/crates/shards/tests/managed_output/tenant_exit.rs
++++ b/crates/shards/tests/managed_output/tenant_exit.rs
+@@ -6,6 +6,9 @@ use std::io::Read as _;
+ #[path = "tenant_stdio.rs"]
+ mod stdio;
+ 
++#[path = "adversarial_controls.rs"]
++mod adversarial_controls;
++
+ struct Inputs {
+     port: u16,
+     patience: Duration,

@@ -1,6 +1,9 @@
 # Authenticated adversarial application controls
 
-Latest continuation: [post-End Subscribe at9e7](LIVE-9E7.md) passed both actual
+Latest continuation: [native terminal controls at1e0](LIVE-1E0.md) passed8 actual
+Endpoint cases,7 pure checks and scoped Clippy0. Both terminal controls preserve
+the supplied canonical Aborted cause, exact credit and owned-stop behavior.
+The [post-End Subscribe at9e7](LIVE-9E7.md) passed both actual
 KVM channels, with real43+15-byte partial writes,7 pure checks and scoped Clippy0.
 The [frozen eed0 campaign](LIVE-EED0.md) passed24 selected KVM
 cases and4 native canonical-Aborted cases, with a fresh full caller build and

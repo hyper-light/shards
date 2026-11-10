@@ -1,0 +1,12 @@
+{
+  "cleanup_completed": true,
+  "cleanup_errors": [],
+  "cleanup_panic": null,
+  "observer_fds": {
+    "after": 4,
+    "before": 4
+  },
+  "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+  "protocol_complete": true,
+  "protocol_failure": null
+}

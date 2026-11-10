@@ -1,0 +1,44 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-adversarial-controls-live-v1';records=base/'collection-native-subscribe-1e0-v1';records.mkdir();revision='1e0bd4785e9ba458cef121abcdb2728ae1e5cb2a'
+fixture=json.loads((base/'native-subscribe-build-1e0-v1/fixture.json').read_text());assert fixture['source']==revision and not fixture['fresh']
+assert hashlib.sha256((base/'artifacts/fixture-1e0').read_bytes()).hexdigest()==fixture['sha256']
+for name in ['native-subscribe-build-1e0-v1/full-caller-build-exit','checks-native-subscribe-1e0-v1/pure-exit','checks-native-subscribe-1e0-v1/clippy-exit']:assert (base/name).read_text().strip()=='0'
+assert '7 passed; 0 failed; 3 ignored;' in (base/'checks-native-subscribe-1e0-v1/pure-stdout').read_text()
+summary=[];runs=set()
+for selection in ['duplicate_ack','resubscribe']:
+ for channel,errno in [('stdout',5),('stderr',5),('stdout',2147483647),('stderr',2147483647)]:
+  folder=base/'native-subscribe-cases-1e0-v1'/f'{selection}-{channel}-{errno}';rec=folder/'records'
+  assert (folder/'exit').read_text().strip()=='0' and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
+  inputs=json.loads((rec/'inputs.json').read_text());assert inputs['source']==revision and inputs['supplied_errno']==errno and inputs['fixture_sha256']=='sha256:'+fixture['sha256']
+  assert inputs['run'] not in runs;runs.add(inputs['run'])
+  canonical=json.loads((rec/'canonical.json').read_text());refused=json.loads((rec/'control-refusal.json').read_text());observer=json.loads((rec/'observer-stop.json').read_text());owner=json.loads((rec/'owner-stop.json').read_text());teardown=json.loads((rec/'teardown.json').read_text())
+  assert canonical['actual_transport_end'] and canonical['canonical_state']==refused['canonical_state'] and canonical['canonical_state'].endswith(f'errno: {errno} }}')
+  assert refused['reason']=='Protocol' and refused['control']==canonical['control'] and refused['control']['state'].startswith('Finished(')
+  assert observer['joined'] and observer['post_join_records']==0 and observer['owner_control']==canonical['control']
+  assert owner['finish_after_abort']=='Err(Closed)' and owner['control']['state'].startswith('Aborted(')
+  assert owner['control']['accepted']==canonical['control']['accepted'] and owner['control']['consumed']==canonical['control']['consumed']
+  assert teardown['protocol_complete'] and teardown['cleanup_completed'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']==4
+  event=[json.loads(p.read_text()) for p in rec.glob('[0-9]*-native-control-*.json')];assert len(event)==1 and event[0]['kind']=='Lost' and event[0]['code']==1 and event[0]['reason']=='Protocol'
+  assert (rec/'postterminal-control.bin').stat().st_size==refused['submitted_bytes']
+  receipts=None
+  if selection=='resubscribe':
+   receipts=json.loads((rec/'io-receipts.json').read_text());writes=[v for v in receipts['actual'] if v['kind']=='Write']
+   assert receipts['driver_joined'] and sum(v['accepted'] for v in writes)==refused['submitted_bytes'] and writes[-1]['pending']==0 and any(v['pending']>0 for v in writes)
+   assert all(v['kind']!='Finish' for v in receipts['actual'])
+  summary.append({'selection':selection,'channel':channel,'supplied_errno':errno,'run':inputs['run'],'exit':0,'executed_tests':1,'canonical':canonical,'refusal':refused,'observer':observer,'owner':owner,'teardown':teardown,'actual_io':receipts})
+assert len(summary)==len(runs)==8
+(records/'validated-cases.json').write_text(json.dumps(summary,indent=2)+'\n')
+subprocess.run(['git','branch','frozen/adversarial-1e0',revision],cwd=base/'source',check=True)
+(records/'preserved-ref.json').write_text(json.dumps({'frozen/adversarial-1e0':revision})+'\n')
+roots=[base/name for name in ['native-subscribe-build-1e0-v1','native-subscribe-cases-1e0-v1','checks-native-subscribe-1e0-v1','collection-native-subscribe-1e0-v1']]
+files=sorted({p for root in roots for p in root.rglob('*') if p.is_file() and not p.is_symlink()})
+manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-native-subscribe-1e0-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'regular_members':len(manifest)+1,'cases':8,'unique_runs':len(runs),'source':revision,'full_build_exit':0,'pure':'7pass/0fail/3ignored','clippy_exit':0,'originals_preserved':True}
+(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

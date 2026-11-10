@@ -1,0 +1,68 @@
+{
+  "source": "1e0bd4785e9ba458cef121abcdb2728ae1e5cb2a",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "policy_read_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "crates/shards/tests/managed_output/adversarial_controls/native_terminal.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/adversarial_controls.rs",
+        "crates/shards/tests/managed_output/adversarial_controls"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/measurements/managed-adversarial-controls/README.md",
+        "docs/research/measurements/managed-adversarial-controls/NATIVE-SUBSCRIBE.md",
+        "docs/research/measurements/managed-adversarial-controls/LIVE-1E0.md",
+        "docs/research/measurements/managed-adversarial-controls/transfer-native-subscribe-1e0-v1.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "unrestricted_raw_whitespace_exit": 2,
+  "original_raw_preserved": true,
+  "local_free_bytes": 223301595136,
+  "local_targets": []
+}

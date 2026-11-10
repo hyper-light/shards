@@ -1,0 +1,15 @@
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/checks-native-subscribe-1e0-v1/pure-stdout:15: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-build-1e0-v1/actual-parent.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-build-1e0-v1/actual-parent.diff:28: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-build-1e0-v1/actual-parent.diff:122: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/duplicate_ack-stderr-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/duplicate_ack-stderr-5/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/duplicate_ack-stdout-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/duplicate_ack-stdout-5/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/resubscribe-stderr-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/resubscribe-stderr-5/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/resubscribe-stdout-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-native-subscribe-1e0-v1/native-subscribe-cases-1e0-v1/resubscribe-stdout-5/stdout:6: new blank line at EOF.

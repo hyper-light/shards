@@ -1,0 +1,18 @@
+{
+  "actual": [
+    {
+      "accepted": 52,
+      "kind": "Write",
+      "pending": 6
+    },
+    {
+      "accepted": 6,
+      "kind": "Write",
+      "pending": 0
+    }
+  ],
+  "driver_joined": true,
+  "finish_requested": false,
+  "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+  "submitted_bytes": 58
+}

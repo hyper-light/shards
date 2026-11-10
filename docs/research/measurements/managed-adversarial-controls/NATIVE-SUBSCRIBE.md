@@ -1,5 +1,9 @@
 # Subscribe after a supplied canonical Aborted
 
+Actual follow-up: [1e0 raw record](LIVE-1E0.md) passed8 native cases,7 pure checks
+and scoped full-caller Clippy0. The source-stage pending gates below preserve
+their original chronology.
+
 This C continuation uses the same actual public Endpoint/Producer/Control and
 authenticated Observer as frozen eed0. It adds a second explicitly selected
 native test, `canonical_aborted_resubscribe_preserves_errno_and_terminal_credit`.
