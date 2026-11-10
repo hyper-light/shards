@@ -76,9 +76,14 @@ uses no guessed AS cap. Admission is not a hard physical/kernel cap.
 The observational host leaf records both Accepted and Failed late-write outcomes;
 test0 alone does not prove equivalence. ROOT compares the actual old/new outcome.
 
-All R01–R16 original accounts and uncertainties are linked above. Current-main
-scope compilation/light checks require review of this exact selection; earlier
-source gates do not become current-main passes. No new production mechanism,
+The [current-selection validation record](validation/README.md) now retains actual
+GNU/musl normal init check/strict lint, module projection checks and the existing
+finite native corpus at exact1be. It preserves r141's harness layout failure and
+r142's19 passes plus one pressure-witness failure, followed by one unchanged
+separately retained passing invocation. The original batch stays failed; no
+source/assertion change or inherited gate is claimed.
+
+All R01–R16 original accounts and uncertainties are linked above. No new production mechanism,
 constant, cache, polling interval, grant, profile, helper-control or allocation-
 fault campaign is added. Mandatory route coverage, producer/kernel budgets and
 management P0–P13/G25 remain open. macOS remains ARM64 only; paused WinARM,
