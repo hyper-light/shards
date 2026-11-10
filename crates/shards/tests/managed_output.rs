@@ -4,6 +4,12 @@
 
 mod common;
 
+#[path = "common/managed_alloc.rs"]
+mod managed_alloc;
+
+#[global_allocator]
+static MANAGED_ALLOC: managed_alloc::ManagedAlloc = managed_alloc::ManagedAlloc::new();
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
