@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "managed_output/tenant_exit.rs"]
+mod tenant_exit;
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::net::SocketAddr;
