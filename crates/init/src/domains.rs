@@ -551,7 +551,7 @@ pub struct Started {
 }
 
 impl Started {
-    pub fn abort_output(&mut self) {
+    pub fn abort_output(&mut self, _errno: i32) {
         self.out = None;
         self.partial.clear();
     }
