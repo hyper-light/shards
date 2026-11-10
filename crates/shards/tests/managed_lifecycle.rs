@@ -75,10 +75,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         ],
         &env_text,
     );
-    let observed = vm.wait_for_any(
-        &["quarantined after population observation", "shared boundary:"],
-        TIMEOUT,
-    );
+    let observed = fault_observed(&home);
     eprintln!("tenant fault observation: {observed}");
     let after_fault = run_shards_env(&["exec", "vm"], &["tenant-fault", "report"], &env, TIMEOUT);
     eprintln!("main namespace execution after fault: {after_fault}");
@@ -114,6 +111,42 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     vm.wait_exit_following(TIMEOUT);
+}
+
+fn fault_observed(home: &std::path::Path) -> String {
+    use std::io::Read as _;
+    let directory = shards_vmm::platform::open_dir(home).unwrap();
+    let mut changed = shards_vmm::platform::FileWatch::new(&directory).unwrap();
+    let mut log = std::fs::File::open(home.join("daemon.log")).unwrap();
+    changed.file(&log).unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let mut observed = String::new();
+    loop {
+        changed.clear();
+        log.read_to_string(&mut observed).unwrap();
+        if let Some(line) = observed.lines().find(|line| {
+            line.contains("quarantined after population observation") || line.contains("shared boundary:")
+        }) {
+            return line.to_string();
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !left.is_zero(),
+            "no tenant fault observation in daemon console log:\n{observed}"
+        );
+        #[cfg(unix)]
+        shards_ipc::await_any_within(&[changed.fd()], Some(left)).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle as _;
+            use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+            use windows_sys::Win32::System::Threading::WaitForSingleObject;
+            let millis = u32::try_from(left.as_millis().max(1)).unwrap();
+            // SAFETY: the borrowed event stays owned by this live FileWatch.
+            let status = unsafe { WaitForSingleObject(changed.fd().as_raw_handle(), millis) };
+            assert!(matches!(status, WAIT_OBJECT_0 | WAIT_TIMEOUT));
+        }
+    }
 }
 
 #[test]

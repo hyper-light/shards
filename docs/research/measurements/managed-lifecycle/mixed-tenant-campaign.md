@@ -40,6 +40,13 @@ enables warm boot/restore console only in this isolated campaign. It is not a
 production output-policy change and cannot be used as raw-output independence
 evidence. Production typed control/metadata observation is separate capture work.
 
+The second attempt55a70c84/r76 failed0/1 after120.90s, but its daemon.log
+contains the exact trusted EISDIR quarantine diagnostic. The UART writer retains
+the daemon's original output destination across client stdio handover. The fixture
+therefore now observes that actual file with the existing cross-platform FileWatch
+and an event wait, then performs the live sibling challenge. It does not add a
+periodic log reread or change production routing to accommodate the test.
+
 Native light checks, actual KVM/HVF/WHP runs, mutation outcomes and resource counts
 must be appended by the coordinator after running. This campaign does not prove
 full pressure fairness, checkpoint consistency, all syscall tamper routes,
