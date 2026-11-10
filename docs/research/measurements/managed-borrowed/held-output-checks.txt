@@ -1,0 +1,20 @@
+Source tested: 902f29a77c1dc8c919882a7b922bae6382bc1d0c
+Evidence-only followup does not change compiled Rust or launcher sources.
+
+rustfmt +1.98.1 --edition 2024 --check crates/api/src/client.rs crates/api/tests/sim.rs docs/research/measurements/managed-borrowed/held-output.rs
+exit0
+
+git diff --check
+exit0
+
+python3 - <<'PY'
+from pathlib import Path
+import runpy
+policy=Path('/Users/adalundhe/Projects/shards/.claude/worktrees/g121-main/scripts/check-development-policy')
+errors=runpy.run_path(str(policy))['check'](Path.cwd())
+for error in errors: print(error)
+assert not errors
+print('Current policy checker applied to managed-borrowed: passed; coordinator evidence review still required.')
+PY
+exit0
+Current policy checker applied to managed-borrowed: passed; coordinator evidence review still required.

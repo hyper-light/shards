@@ -1,0 +1,16 @@
+
+running 1 test
+test client::held_output::a_child_holding_shards_output_holds_no_refusal_back ... refusal_before_writer_release=false writer_held_alive=true writer_unreaped=true
+
+thread 'client::held_output::a_child_holding_shards_output_holds_no_refusal_back' (3428892) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/held-output.rs:195:19:
+called `Result::unwrap()` on an `Err` value: Timeout
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    client::held_output::a_child_holding_shards_output_holds_no_refusal_back
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.96s
+

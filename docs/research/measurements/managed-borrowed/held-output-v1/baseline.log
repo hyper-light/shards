@@ -1,0 +1,8 @@
+
+running 1 test
+test client::held_output::a_child_holding_shards_output_holds_no_refusal_back ... refusal_before_writer_release=true writer_held_alive=true writer_unreaped=true
+writer_explicitly_released=true both_children_reaped=true all_workers_joined=true
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 57 filtered out; finished in 0.00s
+

@@ -3,8 +3,12 @@
 Current production-source checkpoint: signed
 `53535ab61225905acfa98f12dabdabb75138c808`, branch `p/managed-borrowed`, isolated
 worktree `managed-borrowed`, based on combined `cbe3d027`. Experimental; no main
-merge or adoption claim. Latest exact Linux results are in [LINUX.md](LINUX.md):
+merge or adoption claim. Unchanged-source Linux results are in [LINUX.md](LINUX.md):
 GNU units48/0 but integration14/1; native musl48/0+15/0, both strict clippy0.
+The one timing-only GNU assertion is now replaced by an ordinary causal held-writer
+regression, with exact red/restored mutation and GNU49unit+14integration/clippy0
+at its named sources: [HELD-OUTPUT.md](HELD-OUTPUT.md). That test-only change does
+not rewrite the earlier clock red or cure the Mac owned OOM abort.
 An earlier4CPU/8GiB/10GiB request was denied for CPU headroom; the ask was not
 reduced or runner guard bypassed. Root subsequently
 authorized native Mac light checks: independent passes and the full-library RED
@@ -12,7 +16,10 @@ are recorded in [MAC.md](MAC.md). No ready-main/whole-library panic-free claim.
 Native Windowsamd64 focused light results on exact12233203 subsequently passed
 without production changes: [WINDOWS.md](WINDOWS.md). Mac full-library RED remains.
 
-Policy: implementer receipt renewed for canonical c921a0b1 / rules SHA256
+Current policy receipt: implementer full canonical g121-main AGENTS/R01–R16/evidence,
+CLAUDE/plan/handoff, `f5cec365d2e435afae5e6f613c92d9d3759ef60f`, rules SHA256
+`d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242`.
+Earlier checks retain their historical canonical c921a0b1 / rules SHA256
 `1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`; full AGENTS,
 R01–R16, evidence, CLAUDE, managed plan/G22 and handoff read. Root owns audits,
 profiling/benchmarks, heavy E2E/chaos/sweeps, final combined gates and merges. This

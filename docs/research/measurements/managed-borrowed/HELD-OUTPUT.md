@@ -64,12 +64,84 @@ the actual watchers and preserves ordinary regression coverage without either.
 
 ## Validation and remaining work
 
-Initial fixture source: targeted live result pending. The approved light scope
-is one native focused causal test, one temporary marker-recognition guard
-removal which must fail because refusal waits for writer release, byte-exact
-restoration/recompile, and focused ordinary regression/clippy. Raw commands,
-source/binary hashes and actual outcomes will be appended at the evidence
-checkpoint. The prior GNU timing red is retained independently.
+Native Linux r194 at clean `88c8b5fd2f33d92c4d4d05a64b2c36ad3a22b3ba`
+completed under one admitted 4 CPU / 8 GiB / 20 GiB envelope (30 of 32 cores idle
+at dispatch). Runner `8fadc1ec213332e16cb0d915a3fb913f`, Fedora Linux
+`6.19.10-300.fc44.x86_64`, pinned Rust 1.98.1
+`48a229ceaefd4985c50990b14116b6d856af0985`, LLVM 22.1.8. Private synced source
+`/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc`;
+new private target `~/managed-borrowed-held-target`. Earlier targets/binaries
+were untouched. Exact invocation was
+`bash docs/research/measurements/managed-borrowed/run-held-output-light.sh`.
+
+- Baseline causal test: 1 passed, writer held/alive/unreaped at refusal.
+- Exactly one marker-recognition removal: 1 failed, exit101. It observed
+  `refusal_before_writer_release=false writer_held_alive=true writer_unreaped=true`
+  and the final causal assertion received `Timeout`. The test explicitly released
+  the writer and joined workers before that assertion. No production mutation
+  was retained.
+- Byte-exact source restoration and actual recompile: causal test 1 passed.
+- Ordinary GNU API library: 49 passed / 0 failed / 9 ignored (including two new
+  private child roles); simulator integration: 14 passed / 0 failed / 2 ignored.
+  Real-VM test remains ignored/unrun. No prior fault campaign was rerun.
+- Strict GNU API/afunix all-target clippy: exit0. GNU afunix's Windows-only code
+  is not native Windows coverage.
+
+Baseline/restored API binary:
+`~/managed-borrowed-held-target/x86_64-unknown-linux-gnu/test-release/deps/shards_api-780ac76e90e497e3`,
+SHA256 `88940a52601f332b66d16ee0b27cc8468067b7c2a71a2b0103df8a5a566a4b55`.
+Mutation binary SHA256
+`39bec7e41d4b2e5d2ae7550857a0d7808e701851e598b10b4686eb9256b045d8`.
+All three selected compiler artifacts reported `fresh:false`; immutable copies
+are retained privately under `~/managed-borrowed-evidence/held-output-v1/*.bin`.
+Raw logs/commands/source manifest/patch/status/build JSON are in
+[held-output-v1](held-output-v1/); archive SHA256
+`f4d8c4b296a3d9cbbaec0056d6c8452275a2a14e848a6a765c9671fb986865a3`.
+The first local extraction attempt used Python's unavailable `filter` argument
+and failed before extracting; the subsequent extraction validated every regular
+file/directory path and archive SHA. This was evidence-transfer setup, not a test.
+
+The subsequent exact source `902f29a77c1dc8c919882a7b922bae6382bc1d0c`
+moves explicit actual child-status checks and the cleanup print before the
+causal assertion, so a mutation failure also logs release/reap/join outcomes.
+Root approved one focused repeat without a whole corpus rerun. Native Linux
+r198, same runner/toolchain/envelope (29 of 32 cores idle), completed exit0:
+baseline1/0, one marker-removal1red/101, byte-exact restored1/0, strict
+API/afunix clippy0. All three builds again reported `fresh:false`. The actual
+red log says:
+
+```text
+refusal_before_writer_release=false writer_held_alive=true writer_unreaped=true
+writer_explicitly_released=true writer_exit=Some(0) vm_reaped_exit=Some(7) all_workers_joined=true
+```
+
+Only then did the causal assertion report `Timeout`. The baseline and restored
+logs report refusal before release, with the same actual exit statuses and
+completed joins. The two children and four workers completed in the failing
+mutation too. This proves this fixture detects the relevant blocked-refusal
+ordering; it is not a general resource/leak/performance claim.
+
+Command:
+`HELD_OUTPUT_FOCUSED_ONLY=1 bash docs/research/measurements/managed-borrowed/run-held-output-light.sh`.
+Tracked source was exact902; status lists only previously retrieved untracked
+`held-output-v1` evidence. Raw [held-output-v2](held-output-v2/) archive SHA256
+`2735929b8f73d3a1aab112094a55c42fbdaa7ff57da726f58774b9bd3e0b3731`.
+The same private binary path now has baseline/restored SHA256
+`610acf10c3a1e38aa75c0d89b82126b041130ab4a0c20294acc3e53e587968af`;
+marker-removal SHA256
+`c69f5e52ec484c325c184cb21d864abda350dd2cac77513488616002b2a46e14`.
+All three immutable private copies remain under
+`~/managed-borrowed-evidence/held-output-v2/*.bin`. No production or causal
+condition changed; the full ordinary corpus was not rerun for evidence print
+ordering. The prior GNU timing red remains independently retained.
+
+Owed coordinator runs: focused native macOS arm64/musl coverage of this new
+fixture, any combined API/VM/matrix gates after integration, and review of the
+ordinary-corpus source88 versus evidence-order-only source902 distinction.
+Windows does not compile this Unix-only replacement (matching the old test's
+scope); its previous native borrowed results retain their original identities.
+No new profiles, heavy campaigns, native Windows repetitions or VM runs occurred.
+The non-UTF8 process-name suspicion is still unreproduced and deferred.
 
 R01–R16 account: this is test-only (R01/R04/R06/R07/R13), with primary EOF and
 endpoint evidence and no new runtime constants/architecture (R02/R03/R05/R12),

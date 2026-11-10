@@ -1,0 +1,13 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index c07ba02d..3bb27f95 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -473,7 +473,7 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
+                 }
+                 let over = tail.bytes.len().saturating_sub(keep);
+                 tail.bytes.drain(..over);
+-                if at.is_some() {
++                if false {
+                     break;
+                 }
+             }

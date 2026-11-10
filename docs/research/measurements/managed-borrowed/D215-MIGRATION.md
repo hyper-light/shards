@@ -35,5 +35,7 @@ Validation and limits: [CANDIDATE](CANDIDATE.md), [Mac](MAC.md),
 [Windows](WINDOWS.md), [Linux](LINUX.md). The full Mac owned-Guest OOM abort is
 not cured by the new variant: root traced a cold std OnceBox pthread-mutex
 allocation before the fallible Socket path. No warmed-state remedy or
-whole-library panic-free claim is adopted. The GNU refusal-bound failure and
-separate suspected non-UTF8 comm input case also remain open.
+whole-library panic-free claim is adopted. The historical GNU timing assertion
+red remains in the unchanged-source record; its causal test replacement and
+actual marker-removal red/restored results are in [HELD-OUTPUT](HELD-OUTPUT.md).
+The separate suspected non-UTF8 comm input case remains unreproduced and deferred.

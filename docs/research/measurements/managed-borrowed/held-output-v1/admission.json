@@ -1,0 +1,14 @@
+{
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "output": "",
+  "running": true,
+  "id": "r194",
+  "why": "linux/x86_64 · 30 of 32 cores idle · 43 GB free · room for 4 CPUs, 8 GiB of memory, 20 GiB of disk",
+  "synced": {
+    "to": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc",
+    "files_sent": 581,
+    "removed": 8,
+    "bytes": 51384786,
+    "ms": 1394
+  }
+}
