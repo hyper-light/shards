@@ -29,7 +29,7 @@ shutil.copyfile(config,records/'supplied-effective.config')
 PY
 touch crates/testguest/src/main.rs crates/testguest/src/linux.rs crates/testguest/src/managed_network.rs crates/shards/tests/managed_network.rs
 set +e
-cargo test --locked -j4 -p shards --test managed_network direct_guest_ -- --ignored --nocapture --test-threads=1 > "$SHARDS_NETWORK_RECORDS/campaign.log" 2>&1
+cargo test --locked -j4 --profile test-release -p shards --test managed_network direct_guest_ -- --ignored --nocapture --test-threads=1 > "$SHARDS_NETWORK_RECORDS/campaign.log" 2>&1
 code=$?
 set -e
 printf '%s\n' "$code" > "$SHARDS_NETWORK_RECORDS/campaign.exit"

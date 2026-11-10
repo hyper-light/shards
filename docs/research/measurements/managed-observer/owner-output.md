@@ -21,6 +21,16 @@ different binary tails to fd1/fd2, including NUL, invalid UTF-8, a terminal esca
 and a final fragment without a newline. Tests compare those bytes in memory;
 failure diagnostics show lengths/offsets rather than raw payloads.
 
+Coordinator real-VM correction: the outer managed transport carries canonical ABI
+capture records, beginning with `Open`, rather than bare stdout bytes. The client
+now uses `Record::decode` and `StreamState::accept`, checks member/channel/opening
+label and data offsets, and compares only `Data` bytes to the synthetic payload.
+It ACKs opening/intermediate records to obtain further credit, then leaves the
+last stdout record unconsumed for the cancellation case. Transport cursors include
+encoded capture headers; raw stdout offsets do not. Terminal assertions use the
+observed encoded cursors, independently of payload length. A diagnostic may render
+only these fixed synthetic mismatch bytes as hex; production logging is unchanged.
+
 `run vm -d` returns only after trusted setup published the private owner metadata.
 The fixture reads that file once after the synchronous reply, loads only its own
 temporary home's identity, verifies the server/owner fingerprints and checks the
@@ -30,7 +40,7 @@ the existing public `managed::client_config` and `net::Driver` APIs over real UD
 TLS. The test-only hyper-quic dependency is exactly the already-pinned source
 `f116ac276d2d53296de24c2a43837baf66ed1cbd`, needed to name public callback types.
 
-The positive case leaves AGENT stdout unacknowledged while that member's stderr
+The positive case leaves the final AGENT stdout record unacknowledged while that member's stderr
 delivers its exact bytes and returns application credit. It then closes the held
 observer locally and executes a new main-workload command before and after
 cancellation. Both HARNESS channels receive their first subscription/credit only
@@ -39,7 +49,7 @@ exact bytes. This tests sibling capture progress after the local cancellation;
 it does not infer a server retirement event from client completion.
 Each main command's stdout/stderr must remain exact. Owner
 revocation must complete and durable terminal metadata must distinguish the held
-channel's accepted-but-unconsumed bytes from the other channels' consumed bytes.
+channel's final accepted-but-unconsumed record from the other channels' consumed records.
 This proves only the effects actually observed when the coordinator runs it; the
 fixture's existence is not proof of capture/lifetime independence.
 
