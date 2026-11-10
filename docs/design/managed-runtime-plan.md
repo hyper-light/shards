@@ -72,6 +72,23 @@ AGENT/HARNESS mixtures, two tenants emitting concurrently, independent stdout/
 stderr stalls, cross-tenant subscriber/control attempts, one tenant exiting or
 faulting, and surviving-neighbor progress demonstrated after the failure.
 
+### Typed outcomes
+
+New management APIs and wire messages represent refusals, errors, rejections,
+responses and terminal outcomes with checked types. Preserve the cause, affected
+run/member/channel/generation and relevant retry/uncertainty semantics. Callers
+match variants; they do not infer authority, retry or failure scope from message
+text, errno alone, or sentinel values. Unknown versions/tags/reasons are explicit
+protocol errors, never a success or a default grant. A rejected owned payload is
+returned to its caller rather than silently dropped.
+
+Render human-readable text at presentation boundaries. Existing outer String
+interfaces may be bridged narrowly while migrating a seam, with that limit
+recorded; do not add a parallel string-based internal control protocol. Typed
+outcomes still require live effect/cleanup evidence and do not establish success
+merely because an enum variant exists. Tokens, credentials and private content
+never enter Debug/Display or ordinary telemetry as a side effect of typing them.
+
 ## 2. Complete gap register for this management effort
 
 Labels: **C** = confirmed source behavior; **R** = new requirement not implemented;
