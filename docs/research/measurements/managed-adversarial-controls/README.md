@@ -1,6 +1,8 @@
 # Authenticated adversarial application controls
 
-Latest actual result: [frozen eed0 campaign](LIVE-EED0.md) passed24 selected KVM
+Latest continuation: [post-End Subscribe at9e7](LIVE-9E7.md) passed both actual
+KVM channels, with real43+15-byte partial writes,7 pure checks and scoped Clippy0.
+The [frozen eed0 campaign](LIVE-EED0.md) passed24 selected KVM
 cases and4 native canonical-Aborted cases, with a fresh full caller build and
 scoped Clippy0. Its1387-member raw archive was verified locally. Successful main
 stdout/stderr are now retained. The [earlier57a8 campaign](LIVE-57A8.md) remains

@@ -1,0 +1,11 @@
+Warning: you are leaving 1 commit behind, not connected to
+any of your branches:
+
+  eed0ddd test: exercise canonical aborted records through a native endpoint
+
+If you want to keep it by creating a new branch, this may be a good time
+to do so with:
+
+ git branch <new-branch-name> eed0ddd
+
+HEAD is now at 9e7ef98 test: exercise subscribed terminal control at the wire bound

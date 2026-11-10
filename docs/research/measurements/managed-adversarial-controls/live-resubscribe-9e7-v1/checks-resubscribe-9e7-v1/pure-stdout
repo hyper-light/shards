@@ -1,0 +1,14 @@
+
+running 9 tests
+test tenant_exit::adversarial_controls::contract::tests::application_ack_uses_encoded_record_end_not_canonical_payload_offset ... ok
+test tenant_exit::adversarial_controls::contract::tests::cleanup_and_outer_bounds_share_the_original_start ... ok
+test tenant_exit::adversarial_controls::contract::tests::post_end_control_selection_keeps_exact_cursor_and_overflow_typed ... ok
+test tenant_exit::adversarial_controls::contract::tests::three_wrong_acks_are_derived_from_the_observed_interval ... ok
+test tenant_exit::adversarial_controls::control_inputs::malformed_inputs_keep_actual_buffers_bounded_without_allocating_declared_length ... ok
+test tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... ignored, assigned live VM; one selected control case/channel, new records, explicit phase/work/cleanup/outer bounds
+test tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit ... ignored, assigned native actual endpoint; explicit positive phase/cleanup/outer, scope/errno and new records
+test tenant_exit::adversarial_controls::write_receipts::accepted_count_overflow_never_commits_a_receipt ... ok
+test tenant_exit::adversarial_controls::write_receipts::receipts_require_actual_whole_write_and_preserve_partial_accounting_on_rejection ... ok
+
+test result: ok. 7 passed; 0 failed; 2 ignored; 0 measured; 20 filtered out; finished in 0.00s
+

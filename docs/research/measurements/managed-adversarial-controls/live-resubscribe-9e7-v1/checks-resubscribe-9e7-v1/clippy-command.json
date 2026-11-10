@@ -1,0 +1,1 @@
+["timeout", "--signal=TERM", "--kill-after=10s", "1200s", "cargo", "+1.98.1", "clippy", "--locked", "-p", "shards", "--test", "managed_output", "--profile", "test-release", "-j2", "--", "-D", "warnings"]

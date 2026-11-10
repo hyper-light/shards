@@ -1,0 +1,51 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,re,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-adversarial-controls-live-v1';source=base/'source';records=base/'collection-resubscribe-9e7-v1';records.mkdir()
+revision='9e7ef986458725d90128261ba6ca3591691777b9'
+fixture=json.loads((base/'resubscribe-build-9e7-v1/fixture.json').read_text())
+assert fixture['source']==revision and not fixture['fresh']
+assert hashlib.sha256((base/'artifacts/fixture-9e7').read_bytes()).hexdigest()==fixture['sha256']
+for name in ['resubscribe-build-9e7-v1/full-caller-build-exit','checks-resubscribe-9e7-v1/pure-exit','checks-resubscribe-9e7-v1/clippy-exit']:assert (base/name).read_text().strip()=='0'
+assert '7 passed; 0 failed; 2 ignored;' in (base/'checks-resubscribe-9e7-v1/pure-stdout').read_text()
+summary=[];runs=set();folders=[]
+for channel,number in [('stdout',1),('stderr',2)]:
+ folder=base/'cases'/f'terminal-end-resubscribe-{channel}-9e7-v1';folders.append(folder);rec=folder/'records'
+ assert (folder/'actual-case-exit').read_text().strip()=='0'
+ assert '1 passed; 0 failed; 0 ignored;' in (folder/'actual-case-stdout').read_text()
+ assert json.loads((rec/'inputs.json').read_text())['caller_declared_source']==revision
+ assert json.loads((rec/'artifacts.json').read_text())['fixture']['sha256']=='sha256:'+fixture['sha256']
+ teardown=json.loads((rec/'teardown.json').read_text());assert teardown['protocol_complete'] and teardown['run_removed'] and teardown['owner_stop_observer_join']['complete']
+ assert teardown['observer_fds']['before']==teardown['observer_fds']['after']==7
+ events=[json.loads(p.read_text()) for p in rec.glob('[0-9]*-refusal-*.json')];assert len(events)==1 and events[0]['kind']=='Lost' and events[0]['reason']=='Protocol' and events[0]['code']==1
+ attempt=json.loads((rec/'attempt.json').read_text());assert attempt['case']=='Terminal(Resubscribe)' and not attempt['finish']
+ receipts=json.loads((rec/'io-receipts.json').read_text());writes=[v for v in receipts['actual'] if v['kind']=='Write']
+ assert receipts['driver_joined'] and sum(v['accepted'] for v in writes)==attempt['control_bytes']==(rec/'invalid-control.bin').stat().st_size and writes[-1]['pending']==0
+ assert any(v['pending']>0 for v in writes) and all(v['kind']!='Finish' for v in receipts['actual'])
+ assert json.loads((rec/'refusal.json').read_text())['post_join_records']==0
+ end=json.loads((rec/'target-ended.json').read_text());assert end['state'].startswith('Ended ') and end['wire_consumed']==attempt['last_valid_ack']==attempt['observed_cursor_before_attempt']
+ metadata=(rec/'managed-output.stopped').read_text();run=next(line[4:] for line in metadata.splitlines() if line.startswith('run '));assert run not in runs;runs.add(run)
+ row=f'member 1 channel {number} state ended accepted {end["wire_consumed"]} consumed {end["wire_consumed"]} tail complete';assert row in metadata.splitlines()
+ for stem in ['main-after-refusal-raw','main-after-neighbor-raw']:
+  assert (rec/f'{stem}.stdout.bin').read_bytes()==b'main-progress\n'
+  assert (rec/f'{stem}.stderr.bin').read_bytes().startswith(b'main-error\n')
+ summary.append({'channel':channel,'run':run,'executed_tests':1,'exit':0,'reason':'Protocol','actual_writes':writes,'submitted_bytes':attempt['control_bytes'],'target_terminal_row':row,'fd_before':7,'fd_after':7,'main_raw_bytes_retained':True,'protocol_and_cleanup_complete':True})
+assert len(runs)==2
+(records/'validated-cases.json').write_text(json.dumps(summary,indent=2)+'\n')
+refs={}
+for name,sha in [('frozen/adversarial-57a8','57a8cdb3edefe0a363534ad5e2c2676d9f3dc886'),('frozen/adversarial-eed0','eed0dddf2abcf739e577b42a2f065d84512811de'),('frozen/adversarial-9e7',revision)]:
+ full='refs/heads/'+name;p=subprocess.run(['git','show-ref','--verify','--hash',full],cwd=source,capture_output=True,text=True)
+ if p.returncode==1:subprocess.run(['git','branch',name,sha],cwd=source,check=True)
+ else:assert p.returncode==0 and p.stdout.strip()==sha
+ refs[name]=sha
+(records/'preserved-refs.json').write_text(json.dumps(refs,indent=2)+'\n')
+roots=[base/name for name in ['resubscribe-build-9e7-v1','checks-resubscribe-9e7-v1','wave-resubscribe-9e7-v1','collection-resubscribe-9e7-v1']]+folders
+files=sorted({p for root in roots for p in root.rglob('*') if p.is_file() and not p.is_symlink() and 'tmp' not in p.relative_to(root).parts})
+manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-resubscribe-9e7-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'regular_members':len(manifest)+1,'cases':2,'unique_runs':len(runs),'source':revision,'full_build_exit':0,'pure':'7pass/0fail/2ignored','clippy_exit':0,'actual_partial_writes':summary,'originals_preserved':True}
+(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

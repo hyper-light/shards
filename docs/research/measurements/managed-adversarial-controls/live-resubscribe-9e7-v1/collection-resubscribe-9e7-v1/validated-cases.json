@@ -1,0 +1,52 @@
+[
+  {
+    "channel": "stdout",
+    "run": "8c25e184d38029c84ff5331cc86255b7291cbe944d5c61f7222c8c9ed6dd3c4b",
+    "executed_tests": 1,
+    "exit": 0,
+    "reason": "Protocol",
+    "actual_writes": [
+      {
+        "accepted": 43,
+        "kind": "Write",
+        "pending": 15
+      },
+      {
+        "accepted": 15,
+        "kind": "Write",
+        "pending": 0
+      }
+    ],
+    "submitted_bytes": 58,
+    "target_terminal_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "main_raw_bytes_retained": true,
+    "protocol_and_cleanup_complete": true
+  },
+  {
+    "channel": "stderr",
+    "run": "d8ac549b421e8f687f1aeb3003b784eaffc81d7243e0d2c919b1521a7874b5e7",
+    "executed_tests": 1,
+    "exit": 0,
+    "reason": "Protocol",
+    "actual_writes": [
+      {
+        "accepted": 43,
+        "kind": "Write",
+        "pending": 15
+      },
+      {
+        "accepted": 15,
+        "kind": "Write",
+        "pending": 0
+      }
+    ],
+    "submitted_bytes": 58,
+    "target_terminal_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "main_raw_bytes_retained": true,
+    "protocol_and_cleanup_complete": true
+  }
+]

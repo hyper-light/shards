@@ -1,0 +1,8 @@
+{
+  "channel": 2,
+  "member": 1,
+  "payload_hex": "6167656e74007374646572720a80fe6572722d7461696c",
+  "payload_offset": 23,
+  "state": "Ended { offset: 23 }",
+  "wire_consumed": 99
+}

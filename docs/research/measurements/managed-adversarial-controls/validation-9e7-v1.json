@@ -1,0 +1,70 @@
+{
+  "source": "9e7ef986458725d90128261ba6ca3591691777b9",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "policy_read_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "crates/shards/tests/managed_output/adversarial_controls.rs",
+        "crates/shards/tests/managed_output/adversarial_controls/contract.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/adversarial_controls.rs",
+        "crates/shards/tests/managed_output/adversarial_controls"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/measurements/managed-adversarial-controls/README.md",
+        "docs/research/measurements/managed-adversarial-controls/POST-END-SUBSCRIBE.md",
+        "docs/research/measurements/managed-adversarial-controls/LIVE-9E7.md",
+        "docs/research/measurements/managed-adversarial-controls/collector-errors-resubscribe.json",
+        "docs/research/measurements/managed-adversarial-controls/transfer-resubscribe-9e7-v1.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "unrestricted_raw_whitespace_exit": 2,
+  "raw_bytes_preserved": true,
+  "local_free_bytes": 231930654720,
+  "local_targets": []
+}

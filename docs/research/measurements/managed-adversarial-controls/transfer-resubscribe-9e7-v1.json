@@ -1,0 +1,10 @@
+{
+  "source": "9e7ef986458725d90128261ba6ca3591691777b9",
+  "archive": "live-resubscribe-9e7-v1.tar.gz",
+  "bytes": 47601,
+  "sha256": "60db778b7971c34b68b77a185035989daea456f83660efbd706d1519957b8e4d",
+  "regular_members": 146,
+  "unique_safe_regular_paths": true,
+  "all_member_hashes_verified": true,
+  "remote_originals_preserved": true
+}

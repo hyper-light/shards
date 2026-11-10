@@ -1,5 +1,10 @@
 # Valid Subscribe after an observed canonical terminal
 
+Actual follow-up: [9e7 full caller and raw record](LIVE-9E7.md) passed both
+selected KVM cases,7 pure checks and scoped Clippy0. Both actual raw controls
+required43-byte and15-byte writes. The source-stage pending gates below retain
+their original chronology.
+
 This next owned C case is `terminal-end-resubscribe`, selected once per new
 owned run/endpoint on stdout or stderr. It follows the frozen eed0 checkpoint;
 it does not change or rebase that campaign. Parent patches remain exactly the

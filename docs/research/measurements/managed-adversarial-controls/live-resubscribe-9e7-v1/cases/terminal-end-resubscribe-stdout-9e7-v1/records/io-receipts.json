@@ -1,0 +1,18 @@
+{
+  "actual": [
+    {
+      "accepted": 43,
+      "kind": "Write",
+      "pending": 15
+    },
+    {
+      "accepted": 15,
+      "kind": "Write",
+      "pending": 0
+    }
+  ],
+  "driver_joined": true,
+  "finish_requested": false,
+  "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+  "submitted_bytes": 58
+}

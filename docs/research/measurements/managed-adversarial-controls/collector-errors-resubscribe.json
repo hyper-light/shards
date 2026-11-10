@@ -1,0 +1,83 @@
+{
+  "failed_collector": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 38, in <module>\nAssertionError\n",
+    "running": false,
+    "why": "linux/x86_64 · 19 of 32 cores idle · 56 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 1
+  },
+  "missing_ref_diagnostic": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"name\": \"frozen/adversarial-57a8\", \"exit\": 128, \"stdout\": \"\", \"stderr\": \"fatal: 'refs/heads/frozen/adversarial-57a8' - not a valid ref\\n\"}\n{\"name\": \"frozen/adversarial-eed0\", \"exit\": 128, \"stdout\": \"\", \"stderr\": \"fatal: 'refs/heads/frozen/adversarial-eed0' - not a valid ref\\n\"}\n{\"name\": \"frozen/adversarial-9e7\", \"exit\": 128, \"stdout\": \"\", \"stderr\": \"fatal: 'refs/heads/frozen/adversarial-9e7' - not a valid ref\\n\"}\n",
+    "running": false,
+    "why": "linux/x86_64 · 19 of 32 cores idle · 56 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 0
+  },
+  "accepted_archive": {
+    "archive": "/home/adalundhe/managed-adversarial-controls-live-v1/evidence-resubscribe-9e7-v1.tar.gz",
+    "bytes": 47601,
+    "sha256": "60db778b7971c34b68b77a185035989daea456f83660efbd706d1519957b8e4d",
+    "regular_members": 146,
+    "cases": 2,
+    "unique_runs": 2,
+    "source": "9e7ef986458725d90128261ba6ca3591691777b9",
+    "full_build_exit": 0,
+    "pure": "7pass/0fail/2ignored",
+    "clippy_exit": 0,
+    "actual_partial_writes": [
+      {
+        "channel": "stdout",
+        "run": "8c25e184d38029c84ff5331cc86255b7291cbe944d5c61f7222c8c9ed6dd3c4b",
+        "executed_tests": 1,
+        "exit": 0,
+        "reason": "Protocol",
+        "actual_writes": [
+          {
+            "accepted": 43,
+            "kind": "Write",
+            "pending": 15
+          },
+          {
+            "accepted": 15,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "submitted_bytes": 58,
+        "target_terminal_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+        "fd_before": 7,
+        "fd_after": 7,
+        "main_raw_bytes_retained": true,
+        "protocol_and_cleanup_complete": true
+      },
+      {
+        "channel": "stderr",
+        "run": "d8ac549b421e8f687f1aeb3003b784eaffc81d7243e0d2c919b1521a7874b5e7",
+        "executed_tests": 1,
+        "exit": 0,
+        "reason": "Protocol",
+        "actual_writes": [
+          {
+            "accepted": 43,
+            "kind": "Write",
+            "pending": 15
+          },
+          {
+            "accepted": 15,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "submitted_bytes": 58,
+        "target_terminal_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+        "fd_before": 7,
+        "fd_after": 7,
+        "main_raw_bytes_retained": true,
+        "protocol_and_cleanup_complete": true
+      }
+    ],
+    "originals_preserved": true
+  },
+  "fixture_or_assertions_changed": false,
+  "cases_rerun_for_collection": false
+}
