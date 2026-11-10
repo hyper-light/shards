@@ -1,0 +1,14 @@
+{
+  "base_revision": "69dbc3180b8c8c55cb03f9f95f822d2752ba2887",
+  "role": "implementer",
+  "policyfiles": "f5cec365",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source_sha256": "821cbc12fa53778d9c4933bdbddecdb2dfe9801390847bdebc7a44ab3c8288fb",
+  "production_prefix_sha256": "abf3c9e06cd65f701dc60c576dafac414920baedfd0192b45b537f41a346624f",
+  "scope": "cfg(test) only; five pure composition cases",
+  "evidence_sha256": {
+    "README.md": "011733f7d2681df491ddb0a420cd028ff64e5d1acac40f13c630d38b93f49a4a",
+    "light-result.json": "8510e7214c40a259ed6875f27830d2c2fd5d2b558e038444ac4bde998666f5a7"
+  },
+  "unrun": "ROOT fullcombined/nativeother/matrix/guardmutations/protocol/VM/profile; no main merge"
+}
