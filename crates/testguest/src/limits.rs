@@ -126,7 +126,7 @@ impl Report {
             u32::from_be_bytes(self.errno.to_be_bytes()),
         ];
         let mut bytes = [0; Self::BYTES];
-        for (word, output) in words.into_iter().zip(bytes.chunks_exact_mut(4)) {
+        for (word, output) in words.into_iter().zip(bytes.as_chunks_mut::<4>().0) {
             output.copy_from_slice(&word.to_be_bytes());
         }
         bytes
@@ -135,8 +135,8 @@ impl Report {
     pub fn decode(bytes: &[u8]) -> Result<Self, Invalid> {
         let bytes: &[u8; Self::BYTES] = bytes.try_into().map_err(|_| Invalid::Length)?;
         let mut words = [0; 16];
-        for (word, input) in words.iter_mut().zip(bytes.chunks_exact(4)) {
-            *word = u32::from_be_bytes(input.try_into().map_err(|_| Invalid::Length)?);
+        for (word, input) in words.iter_mut().zip(bytes.as_chunks::<4>().0) {
+            *word = u32::from_be_bytes(*input);
         }
         let [
             version,
