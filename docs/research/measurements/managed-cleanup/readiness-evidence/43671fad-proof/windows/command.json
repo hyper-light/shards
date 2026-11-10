@@ -1,0 +1,12 @@
+[
+  "cargo",
+  "check",
+  "--offline",
+  "--locked",
+  "-j4",
+  "--target",
+  "x86_64-pc-windows-msvc",
+  "--tests",
+  "--manifest-path",
+  "/home/adalundhe/managed-cleanup-quality-evidence/43671fad-proof/windows/project/Cargo.toml"
+]

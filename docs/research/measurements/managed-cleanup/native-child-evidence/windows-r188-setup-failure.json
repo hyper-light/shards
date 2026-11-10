@@ -1,0 +1,14 @@
+{
+  "job": "r188",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "envelope": "windows/amd64,cpus=4,mem=8g,disk=20g",
+  "phase": "launcher",
+  "exit_code": 49,
+  "output": "Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.\r\n",
+  "clone_started": false,
+  "compiler_started": false,
+  "native_tests_started": false,
+  "classification": "setup failure, not product Windows red",
+  "correction": "built-in PowerShell launcher, no install or alias/security change",
+  "coordinator_authorized_corrected_same_envelope_admission": true
+}

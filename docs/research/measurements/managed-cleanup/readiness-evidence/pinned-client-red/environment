@@ -1,0 +1,10 @@
+{
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87",
+  "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "node": "fedora.attlocal.net",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "source_revision": "fa1b5d35654ac395e4ce24b8fee8ac59f4f0555e",
+  "python": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+  "script_sha256": "9d2329a5635939711ec5414febd906bf3b856fd2c50666143cdfea83d8f7daa1",
+  "child_sha256": "66c92979a05ed3688964b40547d6d5ff913898596670b045b590f11d990e96a3"
+}

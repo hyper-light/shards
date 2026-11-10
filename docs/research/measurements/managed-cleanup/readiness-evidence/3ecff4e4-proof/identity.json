@@ -1,0 +1,12 @@
+{
+  "source_ref": "3ecff4e4",
+  "source_sha256": "0b434f8ef2397046000ba61923d58cfdcc1a315074f4e16c2bdbce4cd2bff50b",
+  "guest_sha256": "684d8e1f70891157c117d6720d149cbb6330d408fcef60708d5830bb3c46b26a",
+  "child_sha256": "0c767657f930b169bb31cf96ad26a93a6bad4b0b49a9f2ee8f2970033c77c738",
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87",
+  "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "host": "fedora.attlocal.net",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "target_dir": "/home/adalundhe/managed-cleanup-quality-target",
+  "patience_ms": 500
+}

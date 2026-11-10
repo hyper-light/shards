@@ -1,0 +1,7 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87/crates/abi)
+    Checking windows-link v0.2.1
+    Checking windows-sys v0.61.2
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87/crates/ipc)
+    Checking cleanup-windows-typecheck v0.0.0 (/home/adalundhe/managed-cleanup-quality-evidence/8a29fa30-windows/project)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.44s
+

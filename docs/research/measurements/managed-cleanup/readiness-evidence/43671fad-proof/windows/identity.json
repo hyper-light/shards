@@ -1,0 +1,10 @@
+{
+  "host_source_sha256": "0b434f8ef2397046000ba61923d58cfdcc1a315074f4e16c2bdbce4cd2bff50b",
+  "extracted_source_sha256": "77d505c725ce00cb8fa4e7d5babe28e956fee6835537ab60683c56bfc40b99e2",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87",
+  "target": "x86_64-pc-windows-msvc",
+  "windows_sys": "0.61.2",
+  "target_dir": "/home/adalundhe/managed-cleanup-quality-target",
+  "scope": "actual Client/adapter/native tests only"
+}

@@ -1,0 +1,18 @@
+[
+  "cargo",
+  "test",
+  "--locked",
+  "-j4",
+  "--profile",
+  "test-release",
+  "-p",
+  "shards",
+  "--test",
+  "managed_cleanup",
+  "native::dropping_ready_client_reaps_without_releasing_the_child",
+  "--",
+  "--ignored",
+  "--exact",
+  "--test-threads=1",
+  "--nocapture"
+]

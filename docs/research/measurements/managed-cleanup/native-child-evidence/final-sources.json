@@ -1,0 +1,14 @@
+[
+  {
+    "path": "crates/shards/tests/managed_cleanup.rs",
+    "sha256": "60c22e7e52a1035b77c22edf202e686504a67972674f6671e682c0d3093d7d1b"
+  },
+  {
+    "path": "docs/research/measurements/managed-cleanup/readiness-child.rs",
+    "sha256": "a5d098d983bd9cd3dd10245f357b557fec52a8605faf013ad18f42e23541e200"
+  },
+  {
+    "path": "docs/research/measurements/managed-cleanup/run-readiness.py",
+    "sha256": "af6d3028db8eeffb02bf1320ecdad47981b1eefb36729974d42b2a1957c9f0b7"
+  }
+]

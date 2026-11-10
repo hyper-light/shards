@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/Users/adalundhe/g121-cleanup-native-child-light-v2/readiness-child",
+    "normal",
+    "stdin"
+  ],
+  "pid": 16180,
+  "exit": 0,
+  "stdout_hex": "72656164790a72656c65617365640a",
+  "stderr_hex": "434c45414e55505f4348494c445f5049442031363138300a",
+  "release_hex": "72"
+}

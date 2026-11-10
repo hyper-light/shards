@@ -1,0 +1,49 @@
+{
+  "mode": "early",
+  "caller_patience_ms": 500,
+  "deadline_hit": false,
+  "unjoined_child_rescued": true,
+  "probe_exit": 0,
+  "lines": [
+    [
+      "stderr",
+      "CLEANUP_CHILD_PID 2341739"
+    ],
+    [
+      "stderr",
+      ""
+    ],
+    [
+      "stderr",
+      "thread 'main' (2341738) panicked at /home/adalundhe/managed-cleanup-quality-evidence/pinned-client-red/probe.rs:37:5:"
+    ],
+    [
+      "stderr",
+      "assertion `left == right` failed: [\"early\"]: \"\""
+    ],
+    [
+      "stderr",
+      "  left: \"\""
+    ],
+    [
+      "stderr",
+      " right: \"ready\\n\""
+    ],
+    [
+      "stderr",
+      "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+    ],
+    [
+      "stdout",
+      "READINESS_PANIC"
+    ],
+    [
+      "observer",
+      "owned_child_state=Z (zombie)"
+    ],
+    [
+      "stdout",
+      "RESCUED_OWNED_CHILD 2341739 status=1792"
+    ]
+  ]
+}

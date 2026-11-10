@@ -1,0 +1,12 @@
+{"cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87", "helpers": "skip", "host": "fedora.attlocal.net", "patience_ms": "500", "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43", "source": "23f5f897", "target": "/home/adalundhe/managed-cleanup-quality-target"}
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+
+a24f33da09c88d5b956a279bd521da20a90375e81f5d8c2b19bc5e6329703a55 crates/shards/tests/managed_cleanup.rs
+684d8e1f70891157c117d6720d149cbb6330d408fcef60708d5830bb3c46b26a crates/testguest/src/cleanup.rs
+1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d docs/development-rules.md

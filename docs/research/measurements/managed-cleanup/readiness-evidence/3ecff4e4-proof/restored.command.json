@@ -1,0 +1,17 @@
+[
+  "cargo",
+  "test",
+  "--locked",
+  "-j4",
+  "--profile",
+  "test-release",
+  "-p",
+  "shards",
+  "--test",
+  "managed_cleanup",
+  "native::",
+  "--",
+  "--ignored",
+  "--test-threads=1",
+  "--nocapture"
+]
