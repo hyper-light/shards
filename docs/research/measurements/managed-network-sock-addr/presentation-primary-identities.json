@@ -1,0 +1,50 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/linux/bpf.h",
+    "bytes": 283778,
+    "sha256": "49628b45af2056037022909e72d8a09487f0e1cf0c8d0e51c3e0de89ae62aa03",
+    "retrieved_utc": "2026-11-10T12:51:18.408520+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/net/core/filter.c",
+    "bytes": 345423,
+    "sha256": "c5104d63c5ffd45e12e9f18e9fe73787153a5bb4dd8d05674cbc3e6524f73f90",
+    "retrieved_utc": "2026-11-10T12:51:18.958490+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/tools/testing/selftests/bpf/progs/connect4_prog.c",
+    "bytes": 4653,
+    "sha256": "ea3d891d838308c9ae73a592c7a841f63b33fab677a1944d007af5666d88815c",
+    "retrieved_utc": "2026-11-10T12:51:19.139561+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/tools/testing/selftests/bpf/progs/recvmsg4_prog.c",
+    "bytes": 723,
+    "sha256": "a173408b5ff61dffa6f969e98578dc9da5ec249f46cefbbe859db13c9eb5ca75",
+    "retrieved_utc": "2026-11-10T12:51:19.537652+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/tools/testing/selftests/bpf/progs/getpeername4_prog.c",
+    "bytes": 558,
+    "sha256": "17a75c23d0ad443992bbca89694feca5179df3d13bc78f6a5bd3bcc36ce3a124",
+    "retrieved_utc": "2026-11-10T12:51:19.730367+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/net/ipv4/udp.c",
+    "bytes": 104665,
+    "sha256": "4eb47097ff6883aa4c17762d6eaae45113395b59a972ee850065d0afaf19e703",
+    "retrieved_utc": "2026-11-10T12:51:20.336982+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/net/ipv4/af_inet.c",
+    "bytes": 51376,
+    "sha256": "50fa460424fb2d4cc95b9b62a50c4a4b775f58176b645091666ab22ae63ac5b7",
+    "retrieved_utc": "2026-11-10T12:51:20.802596+00:00"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/cilium/cilium/v1.18.0/bpf/bpf_sock.c",
+    "bytes": 33207,
+    "sha256": "2a5b7422d3f13d13218f021da4cb7a4f428917cd52c47c6fe6c2e29010dff3ef",
+    "retrieved_utc": "2026-11-10T12:51:21.040781+00:00"
+  }
+]

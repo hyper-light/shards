@@ -9,7 +9,10 @@ This is destination-rewrite comparison source, not product BPF adoption or a fix
 for the actual UDP-local `ReserveReplyTuple/AddrInUse/98` results recorded in
 [the coordinator record](../managed-network-udp-local/COORDINATOR.md). No actor
 cooperation, backend modification, NAT, raw packets, reuseport, transferred backend
-FD, presentation hook, legacy attach fallback or installed helper is introduced.
+FD, legacy attach fallback or installed helper is introduced. The separately
+selected fixed-original-peer presentation comparison is described in
+[PRESENTATION.md](PRESENTATION.md); it does not change the strict original endpoint
+contract or establish general reverse translation.
 
 ## Finite source contract
 
@@ -20,7 +23,8 @@ and one fresh leaf; current namespaces are never administered. Both fresh exec
 clients enter the held network namespace and write their own membership to the
 already-opened leaf `cgroup.procs` before exec and before socket creation.
 
-The baseline runs the real Binary/Empty script against the backend. Then one
+The baseline runs the real Binary/Empty script against the backend. In the
+destination-only profile, one
 unpinned link attaches CONNECT4 for connected UDP or UDP4_SENDMSG for unconnected
 UDP. Five selectors (AF_INET, SOCK_DGRAM, UDP, exact destination IP AND port)
 precede two destination writes. Unmatched operations are allowed by this isolated
@@ -135,7 +139,7 @@ Coordinator invocation, with caller-supplied absolute experimental kernel/config
 and prebuilt source-matching CLI/helpers/testguest (never production pin fallback):
 
 ```sh
-SHARDS_SOCK_ADDR_MODE=connected \
+SHARDS_SOCK_ADDR_MODE=connected SHARDS_SOCK_ADDR_PRESENTATION=destination-only \
 SHARDS_KERNEL=/absolute/experimental/vmlinux \
 SHARDS_NETWORK_EFFECTIVE_CONFIG=/absolute/experimental/config \
 SHARDS_NETWORK_CONFIG_PROVENANCE='exact source/build/config association evidence' \
@@ -146,7 +150,10 @@ cargo +1.98.1 test -p shards --test managed_network --profile test-release \
   direct_guest_socket_address_udp4_requires_original_native_tuple -- --ignored --exact --nocapture
 ```
 
-Replay separately with `SHARDS_SOCK_ADDR_MODE=unconnected`. The host fixture retains
+Replay separately with `SHARDS_SOCK_ADDR_MODE=unconnected`; the profile remains
+explicit. Current guest argv requires the final profile token; see
+[PRESENTATION.md](PRESENTATION.md) for exact historical/current replay and all four
+new comparison gates. The host fixture retains
 raw identities/output/status BEFORE strict assertions. A failed original tuple is
 an experimental RED, never accepted as a new passing contract. Root must inspect
 both clients' datagrams and worker counts even when an earlier host assertion
