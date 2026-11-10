@@ -1,0 +1,8 @@
+{
+  "transport": "compressed in-memory text JSON/base64; no local archive or executable transfer",
+  "bytes": 9017,
+  "sha256": "6a9eb1c8ca313943959aa05d1a8ae317b5aa16801a284c6922158d5132e53b42",
+  "files": 24,
+  "member_hashes_verified": true,
+  "originals": "Fedora ~/managed-relay-pending-io-light-v1, preserved"
+}

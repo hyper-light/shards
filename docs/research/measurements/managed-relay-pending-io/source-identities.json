@@ -1,0 +1,18 @@
+{
+  "source_base": "200089e47bc125037a350e0a3954863a86bb6d47",
+  "final_source_sha256": {
+    "crates/testguest/src/managed_network.rs": "5c44f5b696fbd8084a2ffe89ac9018972113226dafd1597117a2fc95f4b7d93f",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "9d47e42ad6b767508ec60a47ba1283ac1b3fdbe6b4742ef3e8b884a92b18eb4a",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "ec12509c7f360c46411b6f10edb04154071cc6de357b86ec53acf249592f4133",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61",
+    "crates/shards/tests/managed_network/cancel.rs": "bf5dbdfb05dd5e886db334a60c37d64b26aba3e35c4fede4258a0728a7081d76",
+    "docs/research/measurements/managed-relay-precommit/light.py": "548a8058dc499ca6cedf4a8dce7e289892c703a002d9ff31598df09a659a1d89"
+  },
+  "strict_fixture_and_worker_files_unchanged_from_base": {
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "9d47e42ad6b767508ec60a47ba1283ac1b3fdbe6b4742ef3e8b884a92b18eb4a",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "ec12509c7f360c46411b6f10edb04154071cc6de357b86ec53acf249592f4133",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61",
+    "crates/shards/tests/managed_network/cancel.rs": "bf5dbdfb05dd5e886db334a60c37d64b26aba3e35c4fede4258a0728a7081d76"
+  },
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242"
+}
