@@ -1,0 +1,6 @@
+{
+  "all_package_records_exact_original": true,
+  "original_packages": 213,
+  "light_packages": 17,
+  "method": "transitive closure of unchanged original lock records for the four light workspace packages; no dependency version/source/checksum changes"
+}

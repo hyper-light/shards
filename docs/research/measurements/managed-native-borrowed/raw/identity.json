@@ -1,0 +1,13 @@
+{
+  "base": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "source_archive_sha256": "d028d96e5642b1b5fbde6b527adf0cfd5fc3ce7c77f56f096e0d6292f48cda84",
+  "platform": {
+    "system": "Linux",
+    "node": "fedora.attlocal.net",
+    "release": "6.19.10-300.fc44.x86_64",
+    "version": "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "machine": "x86_64",
+    "processor": ""
+  },
+  "envelope": "1 CPU / 1 GiB / 2 GiB; private CARGO_HOME/source/target; no root cache"
+}

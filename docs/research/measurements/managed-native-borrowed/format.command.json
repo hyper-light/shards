@@ -1,0 +1,1 @@
+["rustfmt", "--edition", "2024", "--check", "crates/api/src/client.rs", "crates/api/src/lib.rs", "crates/api/src/taken.rs", "crates/api/src/stream.rs", "crates/afunix/src/lib.rs", "docs/research/measurements/managed-native-borrowed/focused.rs"]

@@ -1,0 +1,5 @@
+{
+  "all_actual_source_hashes_match": true,
+  "compared_files": 31,
+  "excluded": "Cargo.lock only: private light lock is exact original17-package closure, retained with full original and identity comparison"
+}

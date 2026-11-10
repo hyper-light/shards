@@ -99,14 +99,19 @@ impl Socket {
     /// protocol info, the way Winsock documents to share a socket, its bytes whole (PM
     /// M203).
     fn share(&self, pid: u32) -> io::Result<Vec<u8>> {
+        let info = self.protocol_info(pid)?;
+        // SAFETY: the structure's own bytes, all of them fields (it has no padding).
+        let bytes = unsafe { std::slice::from_raw_parts((&raw const info).cast::<u8>(), INFO) };
+        Ok(bytes.to_vec())
+    }
+
+    fn protocol_info(&self, pid: u32) -> io::Result<WSAPROTOCOL_INFOW> {
         let mut info = WSAPROTOCOL_INFOW::default();
         // SAFETY: a socket this value owns; a structure for the call to fill.
         if unsafe { WSADuplicateSocketW(self.0, pid, &raw mut info) } != 0 {
             return Err(last());
         }
-        // SAFETY: the structure's own bytes, all of them fields (it has no padding).
-        let bytes = unsafe { std::slice::from_raw_parts((&raw const info).cast::<u8>(), INFO) };
-        Ok(bytes.to_vec())
+        Ok(info)
     }
 
     /// This process's copy of a socket another process shared with it ([`Socket::share`]).
@@ -122,13 +127,17 @@ impl Socket {
         // SAFETY: the structure's own size, from bytes of that length; any bytes are some
         // value of its fields, which Winsock checks.
         unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), (&raw mut parsed).cast::<u8>(), INFO) };
+        Self::from_info(&parsed)
+    }
+
+    fn from_info(parsed: &WSAPROTOCOL_INFOW) -> io::Result<Socket> {
         // SAFETY: the info as WSADuplicateSocketW wrote it for this process.
         let s = unsafe {
             WSASocketW(
                 FROM_PROTOCOL_INFO,
                 FROM_PROTOCOL_INFO,
                 FROM_PROTOCOL_INFO,
-                &raw const parsed,
+                parsed,
                 0,
                 FLAGS,
             )
@@ -148,16 +157,13 @@ const INFO: usize = std::mem::size_of::<WSAPROTOCOL_INFOW>();
 fn address(path: &Path) -> io::Result<SOCKADDR_UN> {
     let text = path
         .to_str()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "a socket path that is not UTF-8"))?;
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
     let mut addr = SOCKADDR_UN {
         sun_family: AF_UNIX,
         sun_path: [0; 108],
     };
     if text.len() >= addr.sun_path.len() || text.contains('\0') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "socket path too long for sockaddr_un",
-        ));
+        return Err(io::ErrorKind::InvalidInput.into());
     }
     for (d, b) in addr.sun_path.iter_mut().zip(text.bytes()) {
         *d = b as i8;
@@ -267,11 +273,31 @@ impl UnixStream {
 
     /// [`Self::connect_nonblocking`], its connect's "under way" waited out no longer than
     /// `wait` (`None`: until the kernel ends it): one still under way then fails `TimedOut`,
-    /// so a caller with a patience is never held past it.
+    /// so a caller with a patience is never held past it. An unrepresentable deadline
+    /// is refused as InvalidInput; only explicit None selects the unbounded mode.
     pub fn connect_within(path: &Path, wait: Option<std::time::Duration>) -> io::Result<UnixStream> {
+        let deadline = wait
+            .map(|wait| {
+                std::time::Instant::now()
+                    .checked_add(wait)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
+            })
+            .transpose()?;
+        Self::connect_until(path, deadline)
+    }
+
+    /// Connect under the caller's absolute deadline, including setup and interrupted
+    /// readiness waits. `None` preserves the existing unbounded connect mode.
+    pub fn connect_until(path: &Path, deadline: Option<std::time::Instant>) -> io::Result<UnixStream> {
+        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         let addr = address(path)?;
         let s = Socket::new()?;
         s.set_nonblocking(true)?;
+        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
         // SAFETY: an address of its own length.
         if unsafe { connect(s.0, (&raw const addr).cast(), ADDRESS_LEN) } != 0 {
             let e = last();
@@ -283,27 +309,40 @@ impl UnixStream {
                 events: POLLWRNORM,
                 revents: 0,
             };
-            // In WSAPoll's unit, ms, rounded up, as a wait of 0 returns at once.
-            let ms = wait.map_or(-1, |w| {
-                i32::try_from(w.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
-            });
-            // SAFETY: one entry, a socket this function owns; until the connect ends, which
-            // the kernel ends without its listener's process, or `ms` pass.
-            let polled = unsafe { WSAPoll(&raw mut fd, 1, ms) };
-            if polled < 0 {
-                return Err(last());
-            }
-            if polled == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "the connect was still under way as its wait ended",
-                ));
+            loop {
+                let ms = match deadline {
+                    None => -1,
+                    Some(at) => {
+                        let left = at.saturating_duration_since(std::time::Instant::now());
+                        if left.is_zero() {
+                            return Err(io::ErrorKind::TimedOut.into());
+                        }
+                        // WSAPoll's milliseconds rounded up, bounded by its signed input.
+                        i32::try_from(left.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+                    }
+                };
+                // SAFETY: one entry owned throughout this readiness/deadline wait.
+                let polled = unsafe { WSAPoll(&raw mut fd, 1, ms) };
+                if polled < 0 {
+                    let error = last();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                } else if polled > 0 {
+                    break;
+                }
             }
             let stream = UnixStream::wrap(s);
             if let Some(e) = stream.take_error()? {
                 return Err(e);
             }
+            if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
             return Ok(stream);
+        }
+        if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+            return Err(io::ErrorKind::TimedOut.into());
         }
         Ok(UnixStream::wrap(s))
     }
@@ -383,7 +422,8 @@ impl UnixStream {
 
     /// Another handle to this connection, as std's `try_clone`: shared with this process.
     pub fn try_clone(&self) -> io::Result<UnixStream> {
-        Socket::shared(&self.socket.share(std::process::id())?).map(UnixStream::wrap)
+        let info = self.socket.protocol_info(std::process::id())?;
+        Socket::from_info(&info).map(UnixStream::wrap)
     }
 
     /// What process `pid` makes its own copy of this connection from, by [`Self::from_shared`]
@@ -416,9 +456,7 @@ impl UnixStream {
             return Err(last());
         }
         if usize::try_from(len).ok() != Some(size) {
-            return Err(io::Error::other(format!(
-                "option {name}: {len} bytes, not an int"
-            )));
+            return Err(io::ErrorKind::InvalidData.into());
         }
         Ok(value)
     }

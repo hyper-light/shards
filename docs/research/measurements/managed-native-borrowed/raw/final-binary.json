@@ -1,0 +1,6 @@
+{
+  "path": "/home/adalundhe/native-borrowed-eb565-v1/artifacts/final-api-unit",
+  "bytes": 10636416,
+  "sha256": "9d8d5bb1ab3daae209a2970f6f59ad10641f17e3cb322750783a122f97a9afc5",
+  "source": "source-v2; source-v1 archive plus exact source-v2 delta; test-only proc allocator linked; OOM tests not run"
+}

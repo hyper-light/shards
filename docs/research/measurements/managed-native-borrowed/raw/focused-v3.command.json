@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j1", "--profile", "test-release", "-p", "shards-api", "--lib", "client::borrowed_tests", "--", "--test-threads=1", "--nocapture"]

@@ -1,0 +1,9 @@
+{
+  "file": "source-v2-delta.tar.gz",
+  "bytes": 29908,
+  "sha256": "caa3fa40c41218f211f3751aa2050d5de5943a1c63253cbbd2e733f8d43e9a7c",
+  "files": [
+    "crates/api/src/client.rs",
+    "crates/api/src/lib.rs"
+  ]
+}

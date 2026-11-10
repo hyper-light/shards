@@ -1,0 +1,13 @@
+feat(api): add finite borrowed guest connector
+
+Adapt reviewed candidate 53535ab61225905acfa98f12dabdabb75138c808 onto
+current main eb5654d6f5356cacaca536ff51f14a632fa7e801. Preserve the current
+typed process parser, reuse the shared CONNECT/Socket/afunix seams and
+return Refusal without acquiring Guest lifetime ownership.
+
+Light validation: focused7/0 with coordinator-only allocation case unrun;
+ready-I/O1/0; strict library clippy, format and development-policy checks0.
+Current-source native/OOM/VM/mutation/matrix and performance gates remain
+coordinator work; MR-OOM-MAC-1 remains separately open.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

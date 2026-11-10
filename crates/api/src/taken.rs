@@ -64,6 +64,15 @@ impl Held {
         self.os.exited(true).map(drop)
     }
 
+    /// A second observation of the same held process, without waiting or ownership transfer.
+    pub(crate) fn check(&self) -> Result<(), ProcessFailure> {
+        if self.os.exited(false)? {
+            Err(ProcessFailure::Exited)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Kills it (SIGKILL): on Linux through its pidfd, which no process given its pid since
     /// receives; on macOS, which has none, by its pid, which its caller sends only while its
     /// exit has not been seen.

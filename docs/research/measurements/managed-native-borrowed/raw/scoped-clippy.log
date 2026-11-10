@@ -1,0 +1,14 @@
+    Checking typenum v1.20.1
+    Checking hybrid-array v0.4.15
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking const-oid v0.10.2
+   Compiling shards-abi v0.1.0 (/home/adalundhe/native-borrowed-eb565-v1/source-v2/crates/abi)
+   Compiling libc v0.2.189
+    Checking digest v0.11.3
+    Checking cpufeatures v0.3.1
+    Checking cfg-if v1.0.5
+    Checking sha2 v0.11.0
+    Checking triomphe v0.1.17
+    Checking shards-api v0.1.0 (/home/adalundhe/native-borrowed-eb565-v1/source-v2/crates/api)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.03s
