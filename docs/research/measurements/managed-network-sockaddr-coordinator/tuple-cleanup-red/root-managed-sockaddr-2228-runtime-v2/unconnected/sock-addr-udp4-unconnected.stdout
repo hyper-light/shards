@@ -1,0 +1,31 @@
+[    0.008596] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-udp4", "unconnected", "30000"]
+managed-sock-addr {"type":"Target","mode":"Unconnected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:34806","responder":"127.0.0.1:58707","address_hooks":"DestinationOnly","presentation_hooks":"None"}
+managed-sock-addr {"type":"Child","pid":542,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:34806","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:48103","original":"127.0.0.1:34806"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:34806","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:48103","original":"127.0.0.1:34806"}
+managed-sock-addr {"type":"ClientIdentity","pid":542,"namespace":4026532020,"requested":"127.0.0.1:34806","local":"127.0.0.1:48103","mode":"Unconnected","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:48103","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:34806","original":"127.0.0.1:48103"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:48103","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:34806","original":"127.0.0.1:48103"}
+managed-sock-addr {"type":"ClientCompletion","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0}
+managed-sock-addr {"type":"Program","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f00000161121800000000005602020087f60000620104007f00000162011800e5530000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"Child","pid":544,"role":"Relay","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Binary","ordinal":1,"local":"127.0.0.1:58707","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:37328","original":"127.0.0.1:58707"}
+managed-intercept {"type":"UdpArrival","role":"Relay","step":"Empty","ordinal":2,"local":"127.0.0.1:58707","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:37328","original":"127.0.0.1:58707"}
+managed-sock-addr {"type":"ClientIdentity","pid":544,"namespace":4026532020,"requested":"127.0.0.1:34806","local":"127.0.0.1:37328","mode":"Unconnected","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Binary","ordinal":1,"local":"127.0.0.1:37328","reported":7,"flags":0,"copied_hex":"52454c41590080","metadata":"Known","peer":"127.0.0.1:58707","original":"127.0.0.1:37328"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrHookClient","step":"Empty","ordinal":2,"local":"127.0.0.1:37328","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:58707","original":"127.0.0.1:37328"}
+managed-sock-addr {"type":"Error","stage":"Compatibility","kind":"InvalidInput","errno":null}
+managed-sock-addr {"type":"ClientCompletion","expected":"Relay","stage":"Compatibility","exchanges":2,"compatibility":"Mismatch","script":"Complete","success":false}
+managed-network failed kind=InvalidInput errno=None: original endpoint/port or datagram compatibility differs
+managed-sock-addr {"type":"ChildReaped","role":"Relay","reaped":true,"success":false,"code":1}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"Cancelled"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Relay","joined":true,"arrivals":2,"matched":2,"empty":1,"terminal":"ScriptComplete"}
+managed-sock-addr {"type":"Error","stage":"RemoveCgroup","kind":"InvalidInput","errno":22}
+managed-sock-addr {"type":"Error","stage":"RemoveCgroup","kind":"InvalidInput","errno":22}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"link_detached":true,"cgroup_removed":false,"after_window":"Unverified"}
+managed-network failed kind=InvalidInput errno=None: hooked native compatibility failed
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.106471] reboot: Power down

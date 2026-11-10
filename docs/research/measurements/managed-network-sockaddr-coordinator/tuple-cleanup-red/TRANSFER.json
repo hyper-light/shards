@@ -1,0 +1,12 @@
+{
+  "archive": "/Users/adalundhe/g121-sockaddr-tuple-cleanup-red-v1.tgz",
+  "bytes": 22888,
+  "sha256": "db55e46697ae19c4dedad83fdcbd231a0891ea4a7716e903dbff6db9b4bf77f1",
+  "files": 53,
+  "root_runs": [
+    "r484",
+    "r492",
+    "r493"
+  ],
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f"
+}

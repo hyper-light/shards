@@ -38,8 +38,56 @@ included. The other cleanup suspicion involving CLONE_FS remains unverified;
 it was not changed as part of this fix.
 
 The follow-up source `22286c3cf385742ef31af5097a48bbf022664994` prepares `/tmp`
-before the existing exclusive mount-directory creation. Actual replay and all
-later setup, socket, tuple and cleanup results are separate owed gates.
+before the existing exclusive mount-directory creation. Root r484's first replay
+stopped before any guest because the invocation omitted the network fixture's
+required `SHARDS_KERNEL` input. Supplying only `SHARDS_TEST_KERNEL`, the common
+tests' override, is insufficient for this fixture. Both original failures remain
+retained. No source fix follows from that invocation error.
+
+Root r492's corrected actual KVM replay passes the original setup point in both
+modes. Each baseline child receives its exact backend binary and empty replies.
+Each hooked child actually receives the responder's binary and empty replies;
+connected `getpeername` and received peer tuples expose the responder's port,
+and unconnected receive tuples also expose that port. Both strict compatibility
+verdicts are therefore Mismatch, with test exit101. Destination rewriting alone
+is not native compatibility. Both child exits are reaped, both workers join and
+the link detaches, while mount/cgroup cleanup fails with EINVAL.
+
+Root r493 instruments the actual mount-namespace operation: creating the private
+namespace succeeds, then each attempt to reenter its held namespace returns
+-1/errno22. The original source is restored exactly afterward, SHA256
+`0184eab9bfa8ecc629a6170ba1418fe7623ff948e4ec1805879546c74d095939`, with empty
+source diff. This supersedes the earlier unverified cleanup suspicion with an
+operation-level live failure. The minimal researched CLONE_FS follow-up remains
+a separate source and after-run gate; overall compatibility must remain red
+until original endpoint semantics really hold.
+
+`tuple-cleanup-red` retains all 53 raw setup/replay/instrumentation files and
+its verified transfer/manifest. Archive22888 bytes, SHA256
+`db55e46697ae19c4dedad83fdcbd231a0891ea4a7716e903dbff6db9b4bf77f1`.
+
+## Alternatives and next comparison
+
+The actual tuple failures are consistent with distinct kernel hook contracts:
+Linux v6.18 has separate [connect4](https://github.com/torvalds/linux/blob/v6.18/tools/testing/selftests/bpf/progs/connect4_prog.c),
+[recvmsg4](https://github.com/torvalds/linux/blob/v6.18/tools/testing/selftests/bpf/progs/recvmsg4_prog.c)
+and [getpeername4](https://github.com/torvalds/linux/blob/v6.18/tools/testing/selftests/bpf/progs/getpeername4_prog.c)
+selftests. Cilium v1.18.0's [socket translation implementation](https://github.com/cilium/cilium/blob/v1.18.0/bpf/bpf_sock.c)
+also reverses translation at recvmsg and optionally getpeername, backed by its
+socket-keyed reverse-translation state. That implementation is not evidence
+that this fixture, ownership, grants, maps or resource bounds already work.
+The existing comparison deliberately has no presentation hooks or reverse map.
+Any next extension remains a finite isolated test before a product choice;
+multiple destinations, socket/FD transfer, epochs, unsupported routes, costs and
+fail-closed integration are still separate required proofs.
+
+For cleanup, [setns(2)](https://man7.org/linux/man-pages/man2/setns.2.html) documents
+the mount-namespace filesystem-sharing restriction. Linux v6.18
+[`mntns_install`](https://github.com/torvalds/linux/blob/v6.18/fs/namespace.c)
+returns EINVAL when the filesystem state has multiple users, and
+[`prepare_nsset`](https://github.com/torvalds/linux/blob/v6.18/kernel/nsproxy.c)
+uses the caller's filesystem state for a mount-only setns. These explain the
+minimal follow-up to the operation-level failure without changing host policy.
 
 ## Replay and provenance
 

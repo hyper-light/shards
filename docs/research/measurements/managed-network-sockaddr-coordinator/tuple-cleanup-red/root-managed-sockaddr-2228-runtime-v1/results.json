@@ -1,0 +1,12 @@
+[
+  {
+    "mode": "connected",
+    "cargo_exit": 101,
+    "records": []
+  },
+  {
+    "mode": "unconnected",
+    "cargo_exit": 101,
+    "records": []
+  }
+]

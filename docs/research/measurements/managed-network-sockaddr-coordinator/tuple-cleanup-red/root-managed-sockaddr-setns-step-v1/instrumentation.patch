@@ -1,0 +1,20 @@
+--- crates/testguest/src/managed_network/intercept/sock_addr.rs
++++ crates/testguest/src/managed_network/intercept/sock_addr.rs
+@@ -447,8 +447,15 @@
+                         None => libc::unshare(libc::CLONE_NEWNS),
+                     }
+                 };
+-                if rc != 0 {
+-                    return Err(io::Error::last_os_error());
++                let failure = (rc != 0).then(io::Error::last_os_error);
++                let _ = record(format_args!(
++                    "{{\"type\":\"MountNamespaceStep\",\"operation\":\"{}\",\"return\":{},\"errno\":{}}}",
++                    if namespace.is_some() { "SetnsHeldMount" } else { "UnshareNewMount" },
++                    rc,
++                    failure.as_ref().and_then(io::Error::raw_os_error).unwrap_or(0)
++                ));
++                if let Some(error) = failure {
++                    return Err(error);
+                 }
+                 f()
+             })?
