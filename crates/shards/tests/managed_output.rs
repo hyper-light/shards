@@ -169,7 +169,11 @@ impl Handler for Client {
     fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {
         self.fail("stream stopped".into());
     }
-    fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, _: &str, code: Option<u64>) {
+    fn lost(&mut self, _: &mut Io<'_>, _: ConnKey, why: &str, code: Option<u64>) {
+        let _ = writeln!(
+            std::io::stderr(),
+            "[DEBUG-reconnect-541] lost: {why}; code={code:?}"
+        );
         let _ = self.events.send(Event::Lost(code));
         self.done = true;
     }
