@@ -1,0 +1,174 @@
+{
+  "raw/0.log": {
+    "bytes": 119,
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  },
+  "raw/1.log": {
+    "bytes": 196,
+    "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+  },
+  "raw/2.log": {
+    "bytes": 327,
+    "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+  },
+  "raw/3.log": {
+    "bytes": 77,
+    "sha256": "00cfe4c65c74e90d1e4de8551b03098bed76625a7a051c0e5e782cc102e53a5d"
+  },
+  "raw/4.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw/5.log": {
+    "bytes": 84,
+    "sha256": "d3fa794366c50ca11e991ae79f22a29f21122dea59d6d861cbb9129ddf899954"
+  },
+  "raw/6.log": {
+    "bytes": 41,
+    "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+  },
+  "raw/7.log": {
+    "bytes": 1261,
+    "sha256": "884ef6fcf7684867c6533f6445abea6006b17f0ccb98904a8a577efbc39a7405"
+  },
+  "raw/8.log": {
+    "bytes": 9305,
+    "sha256": "ca85ee25dee9dadab54394c33b29cf32773b95a7933112d62251dec0bc1ec56a"
+  },
+  "raw/commands.json": {
+    "bytes": 3456,
+    "sha256": "ee766de22f0cb8142b5f796fe078aa58a6167e258fd1e023e9d2beb06b3b62ff"
+  },
+  "raw-v2/0.log": {
+    "bytes": 1261,
+    "sha256": "555d2dff439be9a9a35b119529a8520ffdad143d260de653fca5bb0149a031ef"
+  },
+  "raw-v2/1.log": {
+    "bytes": 2197,
+    "sha256": "cca9ad1efd5b37b618380f3056f23cf613a8c8f4d288484df7b8d348c087f918"
+  },
+  "raw-v2/2.log": {
+    "bytes": 2197,
+    "sha256": "ee246964ac3882ac9e95b2c462e46e3084f2db42667cc6810cad8722bef88105"
+  },
+  "raw-v2/3.log": {
+    "bytes": 59,
+    "sha256": "d339d3719a3a2fd01e32f3b3c98bbff4b34502847a5cb775162aff62a8d5d75e"
+  },
+  "raw-v2/commands.json": {
+    "bytes": 1429,
+    "sha256": "dc3e255080243d63cb83b690b1f259a8e7e3f16f31b56436c21c4eebe944043c"
+  },
+  "raw-v2/lock-comparison.json": {
+    "bytes": 266,
+    "sha256": "faac75593f9583bdeb9ff9d84004c2639b94e17e8820bd9040412d1865261d02"
+  },
+  "fixture/.cargo/config.toml": {
+    "bytes": 1094,
+    "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+  },
+  "fixture/Cargo.lock": {
+    "bytes": 29710,
+    "sha256": "8cb6cfb82afc0b131a6386487193e66a5f379889e7ccbd7a0b82237ebc4053c5"
+  },
+  "fixture/Cargo.toml": {
+    "bytes": 1404,
+    "sha256": "e2a09a0cec42b70db8c2893b086de476457a5be74c2be7cf3c6d721f8369ac26"
+  },
+  "fixture/admission.fragment": {
+    "bytes": 152,
+    "sha256": "0c4a6572e1ae6cf86971ff49368ea41631c62c06c1c6190a79a0c5710f5dfec0"
+  },
+  "fixture/charge_output.fragment": {
+    "bytes": 7100,
+    "sha256": "d5d1493a9e3d5ab1dd09d45f4b0699bd107b72d77ff1700da70d4344ca88b958"
+  },
+  "fixture/clippy.toml": {
+    "bytes": 526,
+    "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+  },
+  "fixture/credits.fragment": {
+    "bytes": 6429,
+    "sha256": "48baac1d02aa96f83ff6109aef2bdd5d51abe7b2b6e9ba90197060aa082a5c4d"
+  },
+  "fixture/lib.rs": {
+    "bytes": 15016,
+    "sha256": "8997ae2e0698b55d0d624bb23b633edf8581e6ebfbc0cd094d283f5589c4915b"
+  },
+  "fixture/lock.fragment": {
+    "bytes": 103,
+    "sha256": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5"
+  },
+  "fixture/log.fragment": {
+    "bytes": 235,
+    "sha256": "a4e31def54e745dd5f1294f607978744c391b66367ce047721dfdf9c78f0c16c"
+  },
+  "fixture/source.json": {
+    "bytes": 1321,
+    "sha256": "8edb286a8b0a225276b5355abc3b24b60805e27eb9d8439f4e895fb0e991bb66"
+  },
+  "fixture-v2/.cargo/config.toml": {
+    "bytes": 1094,
+    "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+  },
+  "fixture-v2/Cargo.lock": {
+    "bytes": 29710,
+    "sha256": "8cb6cfb82afc0b131a6386487193e66a5f379889e7ccbd7a0b82237ebc4053c5"
+  },
+  "fixture-v2/Cargo.toml": {
+    "bytes": 1404,
+    "sha256": "e2a09a0cec42b70db8c2893b086de476457a5be74c2be7cf3c6d721f8369ac26"
+  },
+  "fixture-v2/admission.fragment": {
+    "bytes": 152,
+    "sha256": "0c4a6572e1ae6cf86971ff49368ea41631c62c06c1c6190a79a0c5710f5dfec0"
+  },
+  "fixture-v2/charge_output.fragment": {
+    "bytes": 7100,
+    "sha256": "d5d1493a9e3d5ab1dd09d45f4b0699bd107b72d77ff1700da70d4344ca88b958"
+  },
+  "fixture-v2/clippy.toml": {
+    "bytes": 526,
+    "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+  },
+  "fixture-v2/credits.fragment": {
+    "bytes": 6429,
+    "sha256": "48baac1d02aa96f83ff6109aef2bdd5d51abe7b2b6e9ba90197060aa082a5c4d"
+  },
+  "fixture-v2/lib.rs": {
+    "bytes": 15021,
+    "sha256": "047b5e971c053eda4c1ddfd00a27bf57d8eb881695573bd5f7c5f94156473f21"
+  },
+  "fixture-v2/lock.fragment": {
+    "bytes": 103,
+    "sha256": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5"
+  },
+  "fixture-v2/log.fragment": {
+    "bytes": 235,
+    "sha256": "a4e31def54e745dd5f1294f607978744c391b66367ce047721dfdf9c78f0c16c"
+  },
+  "fixture-v2/source.json": {
+    "bytes": 1321,
+    "sha256": "5bd17672cb45b6f508a4c2e463122d4afa3b940b4b7766884c1f8711ea9a8c03"
+  },
+  "light.py": {
+    "bytes": 5233,
+    "sha256": "5986e0476373f35dd5d18934dc9e9ff0da25f607262a4b1fef9e50b2c2c34b5f"
+  },
+  "light-v1.py": {
+    "bytes": 5228,
+    "sha256": "1b377a448b27853f5c914871ca1bf5351e10ba64d37662062e68b19fc98e7d35"
+  },
+  "source/Cargo.toml": {
+    "bytes": 3885,
+    "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+  },
+  "source/Cargo.lock": {
+    "bytes": 45787,
+    "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+  },
+  "source/crates/shards/src/daemon/managed/terminal_order_tests.rs": {
+    "bytes": 13932,
+    "sha256": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f"
+  }
+}

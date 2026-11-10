@@ -1,0 +1,6 @@
+fn log(message: impl std::fmt::Display) {
+    #[cfg(test)]
+    LOGGED.fetch_add(1, Ordering::Relaxed);
+    let line = format!("shards daemon {}: {message}\n", std::process::id());
+    let _ = io::stderr().write_all(line.as_bytes());
+}

@@ -1,0 +1,218 @@
+struct Charge {
+    budget: Arc<Mutex<Option<u64>>>,
+    bytes: Mutex<u64>,
+}
+
+impl Charge {
+    fn reserve(budget: &Arc<Mutex<Option<u64>>>, bytes: u64) -> Result<Self, Admission> {
+        let charge = Self {
+            budget: Arc::clone(budget),
+            bytes: Mutex::new(0),
+        };
+        charge.grow(bytes)?;
+        Ok(charge)
+    }
+
+    fn grow(&self, extra: u64) -> Result<(), Admission> {
+        let available = crate::build::host_available().ok_or(Admission::UnknownHeadroom)?;
+        let mut held = lock(&self.bytes);
+        let mut budget = lock(&self.budget);
+        let used = budget.ok_or(Admission::Unavailable)?;
+        let next = used.checked_add(extra).ok_or(Admission::Overflow)?;
+        if next > available {
+            return Err(Admission::Insufficient {
+                requested: extra,
+                available: available.saturating_sub(used),
+            });
+        }
+        *held = held.checked_add(extra).ok_or(Admission::Overflow)?;
+        *budget = Some(next);
+        Ok(())
+    }
+}
+
+impl Drop for Charge {
+    fn drop(&mut self) {
+        let held = *lock(&self.bytes);
+        let mut budget = lock(&self.budget);
+        *budget = budget.and_then(|used| used.checked_sub(held));
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Terminal {
+    End,
+    Aborted(i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Life {
+    Serving,
+    Draining(Terminal),
+    Ended,
+    // None means no canonical terminal was submitted before interruption.
+    Aborted(Option<Terminal>),
+}
+
+#[derive(Clone, Copy)]
+enum Resolve {
+    Complete,
+    Stop,
+}
+
+impl Life {
+    fn drain(&mut self, terminal: Terminal) -> io::Result<()> {
+        if !matches!(self, Self::Serving) {
+            return Err(io::Error::other("capture scope ended"));
+        }
+        *self = Self::Draining(terminal);
+        Ok(())
+    }
+
+    fn resolve(&mut self, state: State, event: Resolve) -> Option<Self> {
+        let next = match (*self, state, event) {
+            (Self::Draining(Terminal::End), State::Finished(_), _) => Self::Ended,
+            (Self::Draining(terminal), State::Finished(_) | State::Aborted(_), _)
+            | (Self::Draining(terminal), _, Resolve::Stop) => Self::Aborted(Some(terminal)),
+            (Self::Serving, State::Aborted(_), _) | (Self::Serving, _, Resolve::Stop) => Self::Aborted(None),
+            _ => return None,
+        };
+        *self = next;
+        Some(next)
+    }
+
+    fn write(self, metadata: &mut impl io::Write, scope: Scope, at: Progress) -> io::Result<()> {
+        let (state, tail) = match self {
+            Self::Ended => ("ended", "complete"),
+            Self::Aborted(_) => ("aborted", "unknown"),
+            _ => return Ok(()),
+        };
+        if let Self::Aborted(Some(Terminal::Aborted(errno))) = self {
+            writeln!(
+                metadata,
+                "member {} channel {} canonical aborted errno {errno}",
+                scope.member, scope.channel as u8
+            )?;
+        }
+        writeln!(
+            metadata,
+            "member {} channel {} state {state} accepted {} consumed {} tail {tail}",
+            scope.member, scope.channel as u8, at.accepted, at.consumed
+        )
+    }
+}
+
+struct Output {
+    scope: Scope,
+    address: std::net::SocketAddr,
+    control: Control,
+    metadata: Arc<Mutex<File>>,
+    life: Mutex<Life>,
+    credits: std::sync::Weak<Credits>,
+    index: usize,
+    learning: Mutex<Learning>,
+    charge: Arc<Charge>,
+}
+
+struct Sample {
+    began: Instant,
+    end: u64,
+    bytes: u64,
+}
+struct Learning {
+    quantum: shards_registry::Quantum,
+    sample: Option<Sample>,
+    admitted: usize,
+}
+
+impl Output {
+    fn observed(&self) {
+        let at = self.control.progress().consumed;
+        let mut learning = lock(&self.learning);
+        if learning.sample.as_ref().is_some_and(|sample| sample.end <= at)
+            && let Some(sample) = learning.sample.take()
+        {
+            learning
+                .quantum
+                .consumed(sample.began, Instant::now(), sample.bytes);
+        }
+    }
+
+    fn capacity(&self, producer: &Producer) -> io::Result<usize> {
+        let mut learning = lock(&self.learning);
+        let desired = learning.quantum.desired();
+        if desired > learning.admitted {
+            let extra = desired
+                .checked_sub(learning.admitted)
+                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| u64::try_from(n).ok())
+                .ok_or_else(|| io::Error::other("capture growth overflow"))?;
+            // One VM-owned record and one daemon-owned record may overlap while IPC copies.
+            // QUIC's in-flight window remains fixed and separately reserved.
+            if self.charge.grow(extra).is_ok() {
+                producer.admit(desired).map_err(io::Error::other)?;
+                learning.admitted = desired;
+            }
+        }
+        Ok(desired.min(learning.admitted))
+    }
+
+    fn resolve(&self, event: Resolve) -> Option<(Life, State)> {
+        let mut life = lock(&self.life);
+        // Stop must observe Finished before retiring Shared, even if the credit
+        // worker has not yet published it. Life arbitrates that single winner.
+        let state = self.control.state();
+        life.resolve(state, event).map(|next| (next, state))
+    }
+
+    fn publish(&self, terminal: Option<(Life, State)>) {
+        let Some((life, state)) = terminal else { return };
+        let result = life.write(&mut *lock(&self.metadata), self.scope, state.progress());
+        if let Err(error) = result {
+            // Logical consumption is sticky, but a failed append is not publication.
+            // Retire this transport without holding metadata/Life/credit locks.
+            self.stop_transport();
+            log(format!(
+                "managed output metadata member {} channel {}: {error}",
+                self.scope.member, self.scope.channel as u8
+            ));
+        }
+    }
+
+    fn abort(&self) {
+        let terminal = self.resolve(Resolve::Stop);
+        self.stop_transport();
+        self.publish(terminal);
+    }
+
+    fn stop_transport(&self) {
+        if let Some(credits) = self.credits.upgrade() {
+            credits.revoke(self.index);
+        }
+        // Logical terminal does not release ownership of the endpoint's driver.
+        // Stop is unconditional and precedes fallible metadata I/O.
+        self.control.abort();
+    }
+
+    fn finish(&self, terminal: Terminal) -> io::Result<()> {
+        lock(&self.life).drain(terminal)?;
+        // Shared invokes the wake inline; never hold Life across it. A concurrent
+        // stop remains terminal, and remote finish cannot revive an aborted slot.
+        self.control.finish().map_err(io::Error::other)
+    }
+
+    fn complete(&self) {
+        self.observed();
+        let terminal = self.resolve(Resolve::Complete);
+        if matches!(terminal, Some((_, State::Aborted(_)))) {
+            self.stop_transport();
+        }
+        self.publish(terminal);
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}

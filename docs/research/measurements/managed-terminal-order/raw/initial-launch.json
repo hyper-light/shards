@@ -1,0 +1,9 @@
+{
+  "command": "python3 - <<'PY'\nimport base64,os\nexec(compile(base64.b64decode(os.environ.pop('SHARDS_TERMINAL_LIGHT_DRIVER_B64')), '<retained-remote-light.py>', 'exec'))\nPY",
+  "driver_bytes": "raw/driver-r2.py",
+  "output": "usage: - [-h] --base BASE --revision REVISION\n         --step-timeout-seconds STEP_TIMEOUT_SECONDS\n-: error: the following arguments are required: --base, --revision, --step-timeout-seconds\n",
+  "exit_code": 2,
+  "created_private_path": false,
+  "native_execution": false,
+  "source": "copy of actual first tool response; failure occurred in argparse before mkdir"
+}

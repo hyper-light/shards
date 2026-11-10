@@ -1,0 +1,7 @@
+#[derive(Debug)]
+pub(super) enum Admission {
+    UnknownHeadroom,
+    Unavailable,
+    Insufficient { requested: u64, available: u64 },
+    Overflow,
+}

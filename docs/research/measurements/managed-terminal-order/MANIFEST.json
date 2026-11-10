@@ -1,0 +1,281 @@
+{
+  "prepared_source_revision": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "policy_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "native_cases_executed": 0,
+  "files": {
+    "docs/research/measurements/managed-terminal-order/README.md": {
+      "bytes": 18460,
+      "sha256": "83c5cfa86ae3f1d231ec4b921b450fff8163772dbecd7bf9d5e071c67f23b261"
+    },
+    "docs/research/measurements/managed-terminal-order/caller.py": {
+      "bytes": 10869,
+      "sha256": "a6d68c6090a6c75452d4cd65e796f93db51fdd0a589db8ccd09f624cdcf0e59d"
+    },
+    "docs/research/measurements/managed-terminal-order/light.py": {
+      "bytes": 5233,
+      "sha256": "5986e0476373f35dd5d18934dc9e9ff0da25f607262a4b1fef9e50b2c2c34b5f"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/archive-driver.sh": {
+      "bytes": 1739,
+      "sha256": "e8802c5b25b8d4435046069a40dec2d81538bb44373f73ec04c1b4a4395404a1"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/commit-message.txt": {
+      "bytes": 1157,
+      "sha256": "610ac19c1bb88e72b4accf18e17f4bb07303af6265d05993fae6d56282910b90"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/driver-r2.py": {
+      "bytes": 4026,
+      "sha256": "d75b52f36dbd97bab352fee0977625688549d72adb89b321b56bb41cf79bd2f4"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/driver-r3.sh": {
+      "bytes": 1539,
+      "sha256": "31f8ed51c42255ded1200105cb36f086765b3f483f74dcc1fd46492a99dca08a"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/initial-launch.json": {
+      "bytes": 601,
+      "sha256": "2beb11c56d1e8cfd4975ef89e8e1cbbbd38564f76d3d1178f169ed7148963b28"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/kiln-receipts.json": {
+      "bytes": 19387,
+      "sha256": "446336534da9ffdf2ec41a0a460637b42d6f87c579845ec79808d8281a7e1a7c"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/light-artifacts.tar.gz": {
+      "bytes": 57918,
+      "sha256": "48202afc8ad739a62ad4321b472bfa7c3b2fa18e9d0580dd8168ccc69f4cbabc"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/0.log": {
+      "bytes": 149,
+      "sha256": "0f707749a5b30d468cec162044ef2a4ce81e6bb0599e9421add6d2a2a16ee03a"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/1.log": {
+      "bytes": 13,
+      "sha256": "fd0fd4290ad100adc37e4a82e45f821faeacbecae70f4d3eba08e85be138c632"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/2.log": {
+      "bytes": 45,
+      "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/3.log": {
+      "bytes": 110,
+      "sha256": "107c5c58a93f234b4eedbc7bbb493a73524fe2a57bbb091eeefd5b5404a89d38"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/4.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/5.log": {
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/6.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/7.log": {
+      "bytes": 320,
+      "sha256": "a9fd9a400a6290dad46aa8459ccac14daf0ceffd5396299132693e1b12ae89f3"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/8.log": {
+      "bytes": 192,
+      "sha256": "f4e1cee27074d8c7539d8597d56fd1ec628f14913bf36e083d86fb5da966705d"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/ast.json": {
+      "bytes": 596,
+      "sha256": "abce9fa02be667f4242282f36cd05601ad0b279c6ee31f1bde63cf75ce3ecb90"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/local/commands.json": {
+      "bytes": 2212,
+      "sha256": "e0b8f42510311422e38db158a8a2d0367388a5d9be6f273238734e5d8b58a82a"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/ARTIFACT-MANIFEST.json": {
+      "bytes": 5657,
+      "sha256": "494452ae6f04f5613f32232b6384e9f07165b29a9d92e02f35f7c28651750b61"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/.cargo/config.toml": {
+      "bytes": 1094,
+      "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/Cargo.lock": {
+      "bytes": 29710,
+      "sha256": "8cb6cfb82afc0b131a6386487193e66a5f379889e7ccbd7a0b82237ebc4053c5"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/Cargo.toml": {
+      "bytes": 1404,
+      "sha256": "e2a09a0cec42b70db8c2893b086de476457a5be74c2be7cf3c6d721f8369ac26"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/admission.fragment": {
+      "bytes": 152,
+      "sha256": "0c4a6572e1ae6cf86971ff49368ea41631c62c06c1c6190a79a0c5710f5dfec0"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/charge_output.fragment": {
+      "bytes": 7100,
+      "sha256": "d5d1493a9e3d5ab1dd09d45f4b0699bd107b72d77ff1700da70d4344ca88b958"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/clippy.toml": {
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/credits.fragment": {
+      "bytes": 6429,
+      "sha256": "48baac1d02aa96f83ff6109aef2bdd5d51abe7b2b6e9ba90197060aa082a5c4d"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/lib.rs": {
+      "bytes": 15016,
+      "sha256": "8997ae2e0698b55d0d624bb23b633edf8581e6ebfbc0cd094d283f5589c4915b"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/lock.fragment": {
+      "bytes": 103,
+      "sha256": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/log.fragment": {
+      "bytes": 235,
+      "sha256": "a4e31def54e745dd5f1294f607978744c391b66367ce047721dfdf9c78f0c16c"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture/source.json": {
+      "bytes": 1321,
+      "sha256": "8edb286a8b0a225276b5355abc3b24b60805e27eb9d8439f4e895fb0e991bb66"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/.cargo/config.toml": {
+      "bytes": 1094,
+      "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/Cargo.lock": {
+      "bytes": 29710,
+      "sha256": "8cb6cfb82afc0b131a6386487193e66a5f379889e7ccbd7a0b82237ebc4053c5"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/Cargo.toml": {
+      "bytes": 1404,
+      "sha256": "e2a09a0cec42b70db8c2893b086de476457a5be74c2be7cf3c6d721f8369ac26"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/admission.fragment": {
+      "bytes": 152,
+      "sha256": "0c4a6572e1ae6cf86971ff49368ea41631c62c06c1c6190a79a0c5710f5dfec0"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/charge_output.fragment": {
+      "bytes": 7100,
+      "sha256": "d5d1493a9e3d5ab1dd09d45f4b0699bd107b72d77ff1700da70d4344ca88b958"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/clippy.toml": {
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/credits.fragment": {
+      "bytes": 6429,
+      "sha256": "48baac1d02aa96f83ff6109aef2bdd5d51abe7b2b6e9ba90197060aa082a5c4d"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/lib.rs": {
+      "bytes": 15021,
+      "sha256": "047b5e971c053eda4c1ddfd00a27bf57d8eb881695573bd5f7c5f94156473f21"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/lock.fragment": {
+      "bytes": 103,
+      "sha256": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/log.fragment": {
+      "bytes": 235,
+      "sha256": "a4e31def54e745dd5f1294f607978744c391b66367ce047721dfdf9c78f0c16c"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/fixture-v2/source.json": {
+      "bytes": 1321,
+      "sha256": "5bd17672cb45b6f508a4c2e463122d4afa3b940b4b7766884c1f8711ea9a8c03"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/light-v1.py": {
+      "bytes": 5228,
+      "sha256": "1b377a448b27853f5c914871ca1bf5351e10ba64d37662062e68b19fc98e7d35"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/light.py": {
+      "bytes": 5233,
+      "sha256": "5986e0476373f35dd5d18934dc9e9ff0da25f607262a4b1fef9e50b2c2c34b5f"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/0.log": {
+      "bytes": 119,
+      "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/1.log": {
+      "bytes": 196,
+      "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/2.log": {
+      "bytes": 327,
+      "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/3.log": {
+      "bytes": 77,
+      "sha256": "00cfe4c65c74e90d1e4de8551b03098bed76625a7a051c0e5e782cc102e53a5d"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/4.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/5.log": {
+      "bytes": 84,
+      "sha256": "d3fa794366c50ca11e991ae79f22a29f21122dea59d6d861cbb9129ddf899954"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/6.log": {
+      "bytes": 41,
+      "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/7.log": {
+      "bytes": 1261,
+      "sha256": "884ef6fcf7684867c6533f6445abea6006b17f0ccb98904a8a577efbc39a7405"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/8.log": {
+      "bytes": 9305,
+      "sha256": "ca85ee25dee9dadab54394c33b29cf32773b95a7933112d62251dec0bc1ec56a"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw/commands.json": {
+      "bytes": 3456,
+      "sha256": "ee766de22f0cb8142b5f796fe078aa58a6167e258fd1e023e9d2beb06b3b62ff"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/0.log": {
+      "bytes": 1261,
+      "sha256": "555d2dff439be9a9a35b119529a8520ffdad143d260de653fca5bb0149a031ef"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/1.log": {
+      "bytes": 2197,
+      "sha256": "cca9ad1efd5b37b618380f3056f23cf613a8c8f4d288484df7b8d348c087f918"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/2.log": {
+      "bytes": 2197,
+      "sha256": "ee246964ac3882ac9e95b2c462e46e3084f2db42667cc6810cad8722bef88105"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/3.log": {
+      "bytes": 59,
+      "sha256": "d339d3719a3a2fd01e32f3b3c98bbff4b34502847a5cb775162aff62a8d5d75e"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/commands.json": {
+      "bytes": 1429,
+      "sha256": "dc3e255080243d63cb83b690b1f259a8e7e3f16f31b56436c21c4eebe944043c"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/raw-v2/lock-comparison.json": {
+      "bytes": 266,
+      "sha256": "faac75593f9583bdeb9ff9d84004c2639b94e17e8820bd9040412d1865261d02"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/source/Cargo.lock": {
+      "bytes": 45787,
+      "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/source/Cargo.toml": {
+      "bytes": 3885,
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+    },
+    "docs/research/measurements/managed-terminal-order/raw/remote/source/crates/shards/src/daemon/managed/terminal_order_tests.rs": {
+      "bytes": 13932,
+      "sha256": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f"
+    },
+    "docs/research/measurements/managed-terminal-order/remote-light.py": {
+      "bytes": 4145,
+      "sha256": "a90a80d0c51aaee53027a12e4c6a588c25813612eb6fc72a766ff757ee4f7279"
+    },
+    "docs/research/measurements/managed-terminal-order/test_caller.py": {
+      "bytes": 4526,
+      "sha256": "f27e5c5199074b2cbe1fe465a8f09b653e16faaabdd81fe9123933cc7d5b1055"
+    },
+    "crates/shards/src/daemon/managed/terminal_order_tests.rs": {
+      "bytes": 13932,
+      "sha256": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+Add owned terminal publication-order and metadata I/O fixtures
+
+Add five ROOT-run ignored cases at the real Output/Life/Control/Shared/File
+seam, plus an exact source/binary-hashed bounded native caller. Streams are
+empty and unsubscribed; the completion case explicitly splits resolve/publish.
+Read-only File and isolated-child FSIZE preserve absent/partial bytes separately
+from sticky logical outcomes and actual endpoint retirement. No production fix.
+
+Prepared source b02e8592c547553c788702ac6c52ea6b633e875d.
+Policy eb5654d6f5356cacaca536ff51f14a632fa7e801, rules SHA256
+ d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
+Implementer owns only new leaf/evidence; R01-R16 evidence in linked README.
+11 pure caller checks pass. Corrected GNU compile-only exact fragments plus
+actual remote/registry crates check and scoped Clippy pass. Retain initial
+launcher2/scaffold101 and corrected logs/hashes; native cases executed zero.
+ROOT owes parent registration/full daemon/native failure-order/mutation,
+resource-return, seven-target and hardware gates. Production hashes unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
