@@ -1,5 +1,13 @@
 # Current-source normal and inherited-writer result
 
+**Before caption correction:** ROOT found that the known factual release-caption
+fix had not been carried into this current adapter. The raw0691 records below
+prove the contradiction: release.json says both actor channels ended while the
+concurrent A phase records correctly retain Open68/62. These originals remain
+unchanged. The next source freeze changes ONLY that shared caption to
+OwnerReleasedNeighborAfterGateEof; all caller-specific assertions stay intact.
+Fresh normal+A and actual caption readback are required before corrected readiness.
+
 Tested signed source0691b8ce103f08f016a188fa1b44863febeeb824, assigned ROOT
 base28e147c4dda846ca023020e03bc9b00eb2e58e94. Implementer/assigned adversarial
 01a1c5d28cea74a5b0241200190d6c54; coordinator01a148884a4770fdaf0111f3f792a248.
@@ -96,7 +104,11 @@ no children/goals/autoplanning/main merge; ROOT review/integration owed. R16:
 headroom admission, existing Mac worktree/no local target/cache, all old/frozen/
 protected data and paused WinARM preserved; no held campaign retried.
 
-Continue the already proposed minimum positive A input in this same frozen
-campaign: challenge1, report239=227+2*(1+4+1), unchanged TASKS5, grants and
-240s+15s bounds. It is not counted as run at this checkpoint. Full management
+The minimum positive A input continued after396d in this same frozen0691 campaign:
+r39 challenge1/report239=227+2*(1+4+1) passed exactly1 test/23filtered, unchanged
+TASKS5/grants/240s+15s bounds. Cleanup and FD11→11 passed. Its BEFORE-caption
+raw archive13,624bytes SHAcd63afd3efd6b5beb81587510a8fa092c8dec03bdeca66e6f59b68107fa5cb26
+has66 safe regular members and all65 original sizes/hashes verified under
+raw-minimum-before. This passing functional case retains the same false caption;
+it is not a corrected-caption gate. Full management
 P0–P13/G25 and this lane remain OPEN until ROOT release.
