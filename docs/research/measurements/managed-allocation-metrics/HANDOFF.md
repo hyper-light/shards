@@ -23,9 +23,11 @@ fixtures or other lanes' source. Root wires the only actual caller centrally.
 Status: official pinned Rust1.98.1 contracts, stats_alloc0.1.10/dhat0.3.3
 alternatives, actual fixture/HOST-EXIT and root f062/output-exit records read.
 Minimal PROPOSAL sent via stable key `managed-allocation-metrics-proposal-v1`;
-allocator/fixture edits await root response. This README is the durable design;
-no code/build/test/profile/VM/socket/ns/BPF/campaign has executed. Fault seam
-research underway; source/API unchanged and measurements unrun.
+fixture hooks await root response. The authorized new counter source is now
+implemented, after the minimal proposal; no actual registration or fixture edit.
+The standalone light runner is prepared; no compile/test/profile/VM/socket/ns/
+BPF/campaign has executed yet. Fault proposal is complete in FAULT-PROPOSAL.md;
+platform source/API unchanged and measurements unrun.
 
 R15 root owns every audit/profile/benchmark/heavy E2E/chaos/stress/sweep/mutation
 campaign/main merge. No children. Light compile only NEW private sources/targets
@@ -35,8 +37,8 @@ root ~/managed-capture-check or target/~/managed-capture-target, root Mac
 ~/managed-combined-seven-target-check or cache, frozen evidence/user data.
 No hostroot/admin/security/crypto/platform API/production optimization changes.
 
-Next: incorporate coordinator proposal response; implement narrow event source
-and approved phase hooks; run pure/light private tests, policy/format checks;
+Next: incorporate coordinator proposal response and approved phase hooks; run
+pure/light private tests, policy/format checks;
 retain exact commands/source/binary/log identities; signed named-path commits
 using /Users/adalundhe/.kiln-run/bin/gits plus required Claude Opus5.5 trailer;
 push only own branch. Return all actual/paired/interleaved/mutation/cleanup/matrix
