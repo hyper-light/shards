@@ -1,0 +1,186 @@
+{
+  "native/withheld/stdout.log": {
+    "bytes": 19993,
+    "sha256": "53a9c0029dd09ed6d50c01aa0720bdfc062b4cc5afabc0bdc926fa39d804b90f"
+  },
+  "native-v2/withheld/receipt.json": {
+    "bytes": 1263,
+    "sha256": "4dc4b8d24c7f25b508a3903de94e5ded929711e3ced29719b70cc2a3d8f10f2d"
+  },
+  "native-v2/wrong-start/receipt.json": {
+    "bytes": 1260,
+    "sha256": "272e1512aef74143f6ed2b75dbd887916c74bcc4361bcb4041c87dba9d54969e"
+  },
+  "raw-v2/check.log": {
+    "bytes": 532,
+    "sha256": "99a100597da8ac5c67317bf5764c93ddc5c0eb851078de1a013fd6d20be14d89"
+  },
+  "native/withheld/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "fixture/Cargo.lock": {
+    "bytes": 3316,
+    "sha256": "529538f81ab967f804fb9a7597a073b838e5cb2ab6ab978492f2c174f2e2deb8"
+  },
+  "raw-v2/check.json": {
+    "bytes": 350,
+    "sha256": "9bbeb6a8005680275bbda6d6bcc42f7107d34a2bc77419fc6dab3f6462f9f7d4"
+  },
+  "native-v2/withheld/stdout.log": {
+    "bytes": 19994,
+    "sha256": "6a44dfcb5ab1e969cb7486167ed13cbb445dc53f5cd10d00508865e034c80ecd"
+  },
+  "compile-light.ps1": {
+    "bytes": 2144,
+    "sha256": "7f9a3c67b17a640b8776c7aa804b31c9664df0bbbabef43790ddc320aee62301"
+  },
+  "raw-v2/clippy.log": {
+    "bytes": 536,
+    "sha256": "fcc88f57e08e89651bdba49e3def716f1053a106b5d7ed1262973026a981e557"
+  },
+  "finish-build.ps1": {
+    "bytes": 3858,
+    "sha256": "49abc8ee2144f8dcff5ec5a6b5b2c0a6c360769cd5486beeba642c9d426233ec"
+  },
+  "focused-v1.rs": {
+    "bytes": 28012,
+    "sha256": "34b95c33e6fc813f574b99eadbc9f01d82712355d0408978beb6af56216ba48e"
+  },
+  "native-v2/wrong-start/stdout.log": {
+    "bytes": 21836,
+    "sha256": "32760303f58d5a58b9563eb85abe574e7bb865d5ab9403192ca13d43667c96d2"
+  },
+  "raw/cargo.log": {
+    "bytes": 332,
+    "sha256": "dc6aaa1f90414450398b3c7f3c822d3caa8d961cd84c6c207b429c96b01ac923"
+  },
+  "raw-v2/build.json": {
+    "bytes": 420,
+    "sha256": "5e4b981a38589859848f740c0d0a56b032d117b194c8814d7778069bba2f81f6"
+  },
+  "raw/clippy.json": {
+    "bytes": 521,
+    "sha256": "fb9e120ba52def3b3be469f458afa2190e0926c83a6f97dea756d651e98d0256"
+  },
+  "native-v2/success/stdout.log": {
+    "bytes": 15648,
+    "sha256": "e8d27804d3f603ee07da5ded20334c8847bb4c5b58fe17a7d5fb6829f554f829"
+  },
+  "native-driver.ps1": {
+    "bytes": 1895,
+    "sha256": "ad9d7936f5cfeb9a42e605943da7180b9764637cd40f1bde10af9ad2ebf9f7c2"
+  },
+  "native-v2/success/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "caller-v1.ps1": {
+    "bytes": 4601,
+    "sha256": "aceebb1d40eea540aa0ce6996ed30c6a0e449f50aabce6feab01fdaf2d10e6a9"
+  },
+  "native-v2/success/receipt.json": {
+    "bytes": 1253,
+    "sha256": "586447ac96aae25fb29e8f8a2bed9d504ea61095529a35ba437ed75accce3376"
+  },
+  "native-v2/withheld/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source/docs/research/measurements/managed-borrowed-handles/focused.rs": {
+    "bytes": 28601,
+    "sha256": "969e2c519e79f86e776b59231ce4e1070b4bc71d455b41d22e0b9bcdb2ed5ebf"
+  },
+  "native/wrong-start/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "native/success/receipt.json": {
+    "bytes": 1256,
+    "sha256": "40e032e293b1841a013e9adccf913909d6e713815355abd1da1992d24a09c37c"
+  },
+  "raw/clippy.log": {
+    "bytes": 6728,
+    "sha256": "27668d49371ce68a9c292b354840e58e984932c0f728263da2c04a82dde35363"
+  },
+  "raw/check.log": {
+    "bytes": 1673,
+    "sha256": "d170ece2fadf73b8abf64b912315cbcebf7ef40733db7aaf80f8286e78d1f606"
+  },
+  "raw/rustc.log": {
+    "bytes": 204,
+    "sha256": "c847ffa85f324a9880600db9b9f659a5b401420b0294cfdf76bad0310017d6da"
+  },
+  "native-summary.json": {
+    "bytes": 416,
+    "sha256": "233ea79678f7fdb6146b233383ab24fc759b98cc799d2a4020a0ff4766de2168"
+  },
+  "native-v2/wrong-start/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "native/withheld/receipt.json": {
+    "bytes": 1266,
+    "sha256": "06d641dc4ca38ba1e362aef138cc3a30679de16ae498888bae32bc1e96845c9e"
+  },
+  "raw-v2/clippy.json": {
+    "bytes": 460,
+    "sha256": "a8738c1594b8230dd4959c1c79651edfa2feb2b7f7d8641026981d17704bb833"
+  },
+  "compile-light-v1.ps1": {
+    "bytes": 2085,
+    "sha256": "f1e62c2832bc9baf602baf5ab0928a67b0e33508669e29a0ff0525c7940d7002"
+  },
+  "native/success/stderr.log": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "raw-v2/source-before.json": {
+    "bytes": 4342,
+    "sha256": "37c7e392894dc577045bc05691b6de3e034c5d8b305f5e5dea466173953b764d"
+  },
+  "caller.ps1": {
+    "bytes": 4957,
+    "sha256": "609668e658e5961cdc41f32dbafd739168db75f559f89092fe6ac9f980757752"
+  },
+  "raw-v2/build-json.log": {
+    "bytes": 17669,
+    "sha256": "6c07a7937e72ba74bcf36262b1bbe1e788ee6e409f27a8f2dfd55f0f8fce8c96"
+  },
+  "native/wrong-start/receipt.json": {
+    "bytes": 1263,
+    "sha256": "266c56e299ca591248b4167ad07a1772d309768734827fd2310495b96a079085"
+  },
+  "BUNDLE-MANIFEST.json": {
+    "bytes": 6601,
+    "sha256": "058f9f75d5090c97371f0b97ef07b6a33faba63b5bf12d8778fae2387d5a6fae"
+  },
+  "build-receipt.json": {
+    "bytes": 6310,
+    "sha256": "117c40ec3ea772b6cdffa87d3815bbe8b449ba82be797575f7305948b85895a7"
+  },
+  "fixture/Cargo.toml": {
+    "bytes": 2972,
+    "sha256": "e3c032ec67dae99454279cf0c6ba1ea55bffc22acb50ae212d964ffcf7894edf"
+  },
+  "native-v2-summary.json": {
+    "bytes": 1331,
+    "sha256": "cb00b435ac447096448bf4105c293a0e75d52c8e1816747edd0de15189f5c0be"
+  },
+  "raw-v2/build-stderr.log": {
+    "bytes": 1277,
+    "sha256": "3ab870e6e7c09612c696625bfa6c5579e2053f095c86ae15d1410825ce020ac3"
+  },
+  "native/success/stdout.log": {
+    "bytes": 15648,
+    "sha256": "02ce39907faed4e95c4871cb2dcad888223ba8ee21b737c7aec64f59b7d57d1b"
+  },
+  "raw/check.json": {
+    "bytes": 409,
+    "sha256": "d5ec1e8e6c5fb7ddb6b6c7490b93a74fea748ea508818e6ecfaa52b4b8b2cb7e"
+  },
+  "native/wrong-start/stdout.log": {
+    "bytes": 21835,
+    "sha256": "4675403f38041fb962c17bf3250c41178e68bc993925586293c1d7c444e34442"
+  }
+}

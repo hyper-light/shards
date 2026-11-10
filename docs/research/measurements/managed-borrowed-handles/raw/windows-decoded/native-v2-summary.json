@@ -1,0 +1,31 @@
+{
+    "process_and_kernel_resource_return":  "not inferred",
+    "source_changed_after_native":  [
+
+                                    ],
+    "outer_ms":  120000,
+    "case_ms":  90000,
+    "binary_sha256_after":  "d7e47c7f78c934b09be7e1e734dc8b134987a163059fc2703abfec803150ff4c",
+    "call_ms":  1000,
+    "handle_stability":  "not established by raw point counts",
+    "source_revision":  "3b3817eea489d107fb9820f0f46c4fe429709fa3",
+    "cleanup_ms":  5000,
+    "repetitions_per_mode":  16,
+    "cases":  [
+                  {
+                      "driver_exit_code":  0,
+                      "mode":  "success",
+                      "receipt":  "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\native-v2\\success\\receipt.json"
+                  },
+                  {
+                      "driver_exit_code":  0,
+                      "mode":  "wrong-start",
+                      "receipt":  "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\native-v2\\wrong-start\\receipt.json"
+                  },
+                  {
+                      "driver_exit_code":  0,
+                      "mode":  "withheld",
+                      "receipt":  "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\native-v2\\withheld\\receipt.json"
+                  }
+              ]
+}

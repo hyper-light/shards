@@ -1,0 +1,12 @@
+{
+    "exit_code":  0,
+    "argv":  [
+                 "check",
+                 "--manifest-path",
+                 "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\fixture\\Cargo.toml",
+                 "--tests",
+                 "--target",
+                 "x86_64-pc-windows-msvc",
+                 "-j1"
+             ]
+}

@@ -1,0 +1,32 @@
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/success/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/withheld/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/wrong-start/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/success/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/withheld/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/wrong-start/stdout.log:62: new blank line at EOF.
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/build-stderr.log:7: trailing whitespace.
++
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/check.log:7: trailing whitespace.
++
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/clippy.log:7: trailing whitespace.
++
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/check.log:7: trailing whitespace.
++
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:7: trailing whitespace.
++
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:26: trailing whitespace.
++595 | |             "BORROWED_HANDLES
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:54: trailing whitespace.
++    = help: for further information visit
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:65: trailing whitespace.
++    = help: for further information visit
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:74: trailing whitespace.
++    = help: for further information visit
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:81: trailing whitespace.
++629 | | ...       "BORROWED_HANDLES
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:96: trailing whitespace.
++640 | | ...       "BORROWED_HANDLES
+docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log:127: trailing whitespace.
++657 | |         "BORROWED_HANDLES
+docs/research/measurements/managed-borrowed-handles/registration.patch:7: trailing whitespace.
++

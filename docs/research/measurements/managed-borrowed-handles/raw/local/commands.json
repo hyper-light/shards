@@ -1,0 +1,56 @@
+[
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "docs/research/measurements/managed-borrowed-handles/test_caller.py"
+    ],
+    "exit_code": 0,
+    "log": "0.log",
+    "sha256": "3af354abd6afd2f4f662a367159a8b8107385935ded6c8a2b929734becedb43c"
+  },
+  {
+    "argv": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "max_width=110",
+      "--check",
+      "docs/research/measurements/managed-borrowed-handles/focused.rs"
+    ],
+    "exit_code": 0,
+    "log": "1.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "git",
+      "apply",
+      "--check",
+      "docs/research/measurements/managed-borrowed-handles/registration.patch"
+    ],
+    "exit_code": 0,
+    "log": "2.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit_code": 0,
+    "log": "3.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "argv": [
+      "df",
+      "-k",
+      "."
+    ],
+    "exit_code": 0,
+    "log": "4.log",
+    "sha256": "0e0e85137d604c97621df99d9e8756e4fd18ff0971377e602569ac744470aeb6"
+  }
+]

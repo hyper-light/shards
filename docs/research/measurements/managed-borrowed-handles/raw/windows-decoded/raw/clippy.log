@@ -1,0 +1,138 @@
+cargo.exe :     Checking borrowed-handles-light v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\fixture)
+At C:\Users\corph\native-borrowed-handles-3b-light-v1\compile-light.ps1:35 char:1
++ & cargo.exe @clippy *> (Join-Path $raw 'clippy.log')
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking bo...ght-v1\fixture):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:587:5
+    |
+587 | /     println!(
+588 | |         "BORROWED_HANDLES {{\"kind\":\"identity\",\"mode\":\"{}\",\"pid\":{},\"started\":{}}}",
+589 | |         report.mode.name(),
+590 | |         report.pid,
+591 | |         report.started.map_or("null".into(), |n| n.to_string())
+592 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+    = note: requested on the command line with `-D clippy::print-stdout`
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:594:9
+    |
+594 | /         println!(
+595 | |             "BORROWED_HANDLES
+{{\"kind\":\"count\",\"phase\":\"{}\",\"iteration\":{},\"returned\":{},\"count\":{},\"error\":{}}}",
+596 | |             count.phase,
+597 | |             count.iteration.map_or("null".into(), |n| n.to_string()),
+...   |
+600 | |             count.error.map_or("null".into(), |n| n.to_string())
+601 | |         );
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:603:5
+    |
+603 | /     println!(
+604 | |         "BORROWED_HANDLES {{\"kind\":\"listener-flags\",\"raw_debug_hex\":\"{}\"}}",
+605 | |         hex(&report.listener_flags)
+606 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: the borrowed expression implements the required traits
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:605:13
+    |
+605 |         hex(&report.listener_flags)
+    |             ^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `report.listener_flags`
+    |
+    = help: for further information visit
+https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrows_for_generic_args
+    = note: `-D clippy::needless-borrows-for-generic-args` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::needless_borrows_for_generic_args)]`
+
+error: the borrowed expression implements the required traits
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:612:32
+    |
+612 |         let client_flags = hex(&operation.client_flags);
+    |                                ^^^^^^^^^^^^^^^^^^^^^^^ help: change this to: `operation.client_flags`
+    |
+    = help: for further information visit
+https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrows_for_generic_args
+
+error: the borrowed expression implements the required traits
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:615:22
+    |
+615 |             _ => hex(&Option::<u32>::None),
+    |                      ^^^^^^^^^^^^^^^^^^^^ help: change this to: `Option::<u32>::None`
+    |
+    = help: for further information visit
+https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#needless_borrows_for_generic_args
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:628:9
+    |
+628 | / ...   println!(
+629 | | ...       "BORROWED_HANDLES
+{{\"kind\":\"operation\",\"iteration\":{},\"api\":\"{}\",\"server_receipt\":\"{}\",\"server_eof_and_c...
+630 | | ...       operation.iteration,
+631 | | ...       operation.api,
+...   |
+637 | | ...       hex(operation)
+638 | | ...   );
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:639:9
+    |
+639 | / ...   println!(
+640 | | ...       "BORROWED_HANDLES
+{{\"kind\":\"operation-detail\",\"iteration\":{},\"refusal_debug_hex\":{},\"client_flags_debug_hex\":...
+641 | | ...       operation.iteration, refusal, client_flags, server_flags
+642 | | ...   );
+    | |_______^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:645:9
+    |
+645 | /         println!(
+646 | |             "BORROWED_HANDLES {{\"kind\":\"failure\",\"raw_debug_hex\":\"{}\"}}",
+647 | |             hex(error)
+648 | |         );
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:655:5
+    |
+655 |     println!("BORROWED_HANDLES {{\"kind\":\"listener-inheritance\",\"inheritable\":{listener_inherit}}}");
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: use of `println!`
+   --> ..\source\crates\api\src\..\..\..\docs\research\measurements\managed-borrowed-handles\focused.rs:656:5
+    |
+656 | /     println!(
+657 | |         "BORROWED_HANDLES
+{{\"kind\":\"result\",\"mode\":\"{}\",\"functional_pass\":{},\"server_joined\":{},\"listener_close_rc\"...
+658 | |         report.mode.name(),
+659 | |         report.errors.is_empty() && report.joined && counts_known,
+660 | |         report.joined,
+661 | |         counts_known
+662 | |     );
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#print_stdout
+
+error: could not compile `borrowed-handles-light` (lib test) due to 11 previous errors

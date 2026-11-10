@@ -1,0 +1,23 @@
+cargo.exe :    Compiling typenum v1.20.1
+At C:\Users\corph\native-borrowed-handles-3b-light-v1\finish-build.ps1:37 char:1
++ & cargo.exe @build 1> (Join-Path $raw 'build-json.log') 2> (Join-Path ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling typenum v1.20.1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+   Compiling hybrid-array v0.4.15
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling const-oid v0.10.2
+   Compiling windows-link v0.2.1
+   Compiling windows-sys v0.61.2
+   Compiling digest v0.11.3
+   Compiling cpufeatures v0.3.1
+   Compiling cfg-if v1.0.5
+   Compiling sha2 v0.11.0
+   Compiling shards-abi v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\source\crates\abi)
+   Compiling shards-afunix v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\source\crates\afunix)
+   Compiling triomphe v0.1.17
+   Compiling shards-testdir v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\source\crates\testdir)
+   Compiling borrowed-handles-light v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\fixture)
+    Finished `test` profile [unoptimized] target(s) in 13.60s

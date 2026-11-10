@@ -1,0 +1,13 @@
+{
+    "source_changed_after_native":  [
+
+                                    ],
+    "native_modes_attempted":  3,
+    "binary_sha256_after":  "d7e47c7f78c934b09be7e1e734dc8b134987a163059fc2703abfec803150ff4c",
+    "call_ms":  1000,
+    "handle_stability":  "raw unadjusted point counts only",
+    "case_ms":  90000,
+    "cleanup_ms":  5000,
+    "repetitions_per_mode":  16,
+    "outer_ms":  120000
+}

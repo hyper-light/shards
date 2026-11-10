@@ -1,0 +1,1079 @@
+{
+  "checks": [
+    {
+      "group": "native",
+      "mode": "success",
+      "actual_exit_code": null,
+      "issues": [
+        "native process exit None"
+      ],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 105,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 121,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "success",
+        "pid": 303240,
+        "started": 134388041692948082
+      },
+      "claimed_stability": "none; raw point counts only"
+    },
+    {
+      "group": "native",
+      "mode": "wrong-start",
+      "actual_exit_code": null,
+      "issues": [
+        "native process exit None"
+      ],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 99,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 106,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "wrong-start",
+        "pid": 317700,
+        "started": 134388041699250414
+      },
+      "claimed_stability": "none; raw point counts only"
+    },
+    {
+      "group": "native",
+      "mode": "withheld",
+      "actual_exit_code": null,
+      "issues": [
+        "native process exit None"
+      ],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 99,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 109,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "withheld",
+        "pid": 316784,
+        "started": 134388041704181900
+      },
+      "claimed_stability": "none; raw point counts only"
+    },
+    {
+      "group": "native-v2",
+      "mode": "success",
+      "actual_exit_code": 0,
+      "issues": [],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 102,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "success",
+        "pid": 318836,
+        "started": 134388043116523748
+      },
+      "claimed_stability": "none; raw point counts only"
+    },
+    {
+      "group": "native-v2",
+      "mode": "wrong-start",
+      "actual_exit_code": 0,
+      "issues": [],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 102,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 109,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "wrong-start",
+        "pid": 319528,
+        "started": 134388043123600129
+      },
+      "claimed_stability": "none; raw point counts only"
+    },
+    {
+      "group": "native-v2",
+      "mode": "withheld",
+      "actual_exit_code": 0,
+      "issues": [],
+      "counts_raw": [
+        {
+          "kind": "count",
+          "phase": "cold",
+          "iteration": null,
+          "returned": 1,
+          "count": 102,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "setup",
+          "iteration": null,
+          "returned": 1,
+          "count": 115,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 0,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 1,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 2,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 3,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 4,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 5,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 6,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 7,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 8,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 9,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 10,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 11,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 12,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 13,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 14,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operation",
+          "iteration": 15,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "after-operations",
+          "iteration": null,
+          "returned": 1,
+          "count": 118,
+          "error": null
+        },
+        {
+          "kind": "count",
+          "phase": "post-join",
+          "iteration": null,
+          "returned": 1,
+          "count": 112,
+          "error": null
+        }
+      ],
+      "operations": 16,
+      "identity": {
+        "kind": "identity",
+        "mode": "withheld",
+        "pid": 320324,
+        "started": 134388043128465812
+      },
+      "claimed_stability": "none; raw point counts only"
+    }
+  ],
+  "lock_comparison": {
+    "added": [
+      [
+        "borrowed-handles-light",
+        "0.1.0",
+        null,
+        null
+      ]
+    ],
+    "removed_count": 197,
+    "real_dependency_identities_unchanged": true
+  },
+  "verdict": "functional/component and exact native facts only; no handle leak/stability guarantee"
+}

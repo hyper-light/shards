@@ -1,0 +1,473 @@
+[
+  {
+    "kind": "identity",
+    "mode": "success",
+    "pid": 303240,
+    "started": 134388041692948082
+  },
+  {
+    "kind": "count",
+    "phase": "cold",
+    "iteration": null,
+    "returned": 1,
+    "count": 105,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "setup",
+    "iteration": null,
+    "returned": 1,
+    "count": 118,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 0,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 1,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 2,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 3,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 4,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 5,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 6,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 7,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 8,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 9,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 10,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 11,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 12,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 13,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 14,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operation",
+    "iteration": 15,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "after-operations",
+    "iteration": null,
+    "returned": 1,
+    "count": 121,
+    "error": null
+  },
+  {
+    "kind": "count",
+    "phase": "post-join",
+    "iteration": null,
+    "returned": 1,
+    "count": 115,
+    "error": null
+  },
+  {
+    "kind": "listener-flags",
+    "raw_debug_hex": "536f6d65284f6b28302929"
+  },
+  {
+    "kind": "operation",
+    "iteration": 0,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20302c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20302c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 0,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 1,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20312c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20312c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 1,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 2,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20322c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20322c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 2,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 3,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20332c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20332c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 3,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 4,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20342c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20342c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 4,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 5,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20352c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20352c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 5,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 6,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20362c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20362c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 6,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 7,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20372c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20372c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 7,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 8,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20382c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20382c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 8,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 9,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a20392c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a20392c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 9,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 10,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031302c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031302c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 10,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 11,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031312c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031312c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 11,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 12,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031322c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031322c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 12,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 13,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031332c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031332c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 13,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 14,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031342c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031342c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 14,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "operation",
+    "iteration": 15,
+    "api": "connected",
+    "server_receipt": "closed",
+    "server_eof_and_close_confirmed": true,
+    "close_returned": 0,
+    "close_error": null,
+    "no_dial_error": null,
+    "raw_debug_hex": "4f7065726174696f6e207b20697465726174696f6e3a2031352c206170693a2022636f6e6e6563746564222c207265667573616c3a204e6f6e652c20636c69656e745f666c6167733a20536f6d65284f6b283029292c20726563656970743a20536f6d6528436c6f736564207b20697465726174696f6e3a2031352c2065786368616e67653a204f6b282829292c20636c6f73653a20436c6f7365207b2072657475726e65643a20302c206572726f723a204e6f6e65207d2c20696e6865726974616e63653a204f6b283029207d29207d"
+  },
+  {
+    "kind": "operation-detail",
+    "iteration": 15,
+    "refusal_debug_hex": null,
+    "client_flags_debug_hex": "536f6d65284f6b28302929",
+    "server_flags_debug_hex": "4f6b283029"
+  },
+  {
+    "kind": "listener-inheritance",
+    "inheritable": false
+  },
+  {
+    "kind": "result",
+    "mode": "success",
+    "functional_pass": true,
+    "server_joined": true,
+    "listener_close_rc": null,
+    "counts_known": true,
+    "handle_stability": "raw-point-counts-only"
+  }
+]

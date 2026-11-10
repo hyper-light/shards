@@ -1,0 +1,8 @@
+cargo.exe :     Checking borrowed-handles-light v0.1.0 (C:\Users\corph\native-borrowed-handles-3b-light-v1\fixture)
+At C:\Users\corph\native-borrowed-handles-3b-light-v1\finish-build.ps1:25 char:1
++ & cargo.exe @check *> (Join-Path $raw 'check.log')
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking bo...ght-v1\fixture):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+    Finished `dev` profile [unoptimized] target(s) in 0.53s

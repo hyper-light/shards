@@ -1,0 +1,21 @@
+test(api): record bounded native Windows borrowed handle cases
+
+Add three ignored actual positive connector cases plus source-hashed bounded
+Windows/strict evidence callers, using real current-process creation producer,
+owned AF_UNIX effects and explicit native closesocket receipts before counts.
+Keep raw cold/setup/all-operation/post-join counts unadjusted with no threshold.
+No API/client/lib/stream/afunix changes; registration patch remains unapplied.
+
+Exact API source 3b3817eea489d107fb9820f0f46c4fe429709fa3, generated NEW
+private module-registration context only. Current policy cbd39284937d024640c56db6f8d8ef2bd9b0ee24,
+SHA256 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3.
+Assigned adversarial role: final Windows three fresh-process modes each actual
+exit0/one test passed/N16, exact typed/EOF/native close0/join/count facts.
+Native source snapshots and binary hashes unchanged.12 pure checks, scoped
+Windows compile/Clippy/build, Rust format/policy/named whitespace checks pass.
+Retain transport/clippy/wrapper failures, raw Windows archive and decoded maps.
+Raw cold-to-post-join rise remains unattributed; no leak/stability/performance,
+zero/MAX, full workspace/API, hardware, kernel-return or managed-plan claim.
+R01-R16/primary sources/limits/remaining integration gates in README.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,28 @@
+{
+    "binary_sha256_after":  "d7e47c7f78c934b09be7e1e734dc8b134987a163059fc2703abfec803150ff4c",
+    "cleanup_ms":  5000,
+    "process_id":  318836,
+    "source_revision":  "3b3817eea489d107fb9820f0f46c4fe429709fa3",
+    "source_context":  "exact API/ABI/afunix/testdir sources; NEW generated lib/client module contexts only; new focused fixture v2",
+    "outer_ms":  120000,
+    "binary_sha256":  "d7e47c7f78c934b09be7e1e734dc8b134987a163059fc2703abfec803150ff4c",
+    "process":  "actual owned process exit observed",
+    "mode":  "success",
+    "case_ms":  90000,
+    "build_receipt":  "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\build-receipt.json",
+    "timed_out":  false,
+    "byte_identity_unchanged":  true,
+    "handle_stability":  "unverified; raw point counts only",
+    "binary":  "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\artifacts\\borrowed-handles.exe",
+    "argv":  [
+                 "client::borrowed_handle_tests::native_success_handles",
+                 "--exact",
+                 "--ignored",
+                 "--nocapture",
+                 "--test-threads=1"
+             ],
+    "call_ms":  1000,
+    "exit_code":  0,
+    "repetitions":  16,
+    "native_elapsed_ms":  289
+}

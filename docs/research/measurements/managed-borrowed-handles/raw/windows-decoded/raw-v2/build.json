@@ -1,0 +1,14 @@
+{
+    "exit_code":  0,
+    "argv":  [
+                 "test",
+                 "--manifest-path",
+                 "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\fixture\\Cargo.toml",
+                 "--lib",
+                 "--no-run",
+                 "--target",
+                 "x86_64-pc-windows-msvc",
+                 "-j1",
+                 "--message-format=json"
+             ]
+}

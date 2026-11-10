@@ -1,0 +1,352 @@
+{
+  "api_source_revision": "3b3817eea489d107fb9820f0f46c4fe429709fa3",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer and assigned adversarial tester",
+  "native_modes": 3,
+  "repetitions_per_mode": 16,
+  "native_final_exit_codes": [
+    0,
+    0,
+    0
+  ],
+  "handle_stability": "not inferred from raw point counts",
+  "files": {
+    "docs/research/measurements/managed-borrowed-handles/README.md": {
+      "bytes": 18860,
+      "sha256": "6018ae0187ce817ad6bd2202721ab16a00fe81af75473fb653cf29bcfae858b0"
+    },
+    "docs/research/measurements/managed-borrowed-handles/caller.ps1": {
+      "bytes": 4957,
+      "sha256": "609668e658e5961cdc41f32dbafd739168db75f559f89092fe6ac9f980757752"
+    },
+    "docs/research/measurements/managed-borrowed-handles/caller.py": {
+      "bytes": 14259,
+      "sha256": "97842c2d99e3e69a1295819dd782bbe8140e7dec44526d74d8d3556dfe4b532a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/collect.ps1": {
+      "bytes": 2064,
+      "sha256": "46b17fdba4610150259843bddd0262bbbd85f65021cb3e8d23258335150e16a7"
+    },
+    "docs/research/measurements/managed-borrowed-handles/compile-light.ps1": {
+      "bytes": 2144,
+      "sha256": "7f9a3c67b17a640b8776c7aa804b31c9664df0bbbabef43790ddc320aee62301"
+    },
+    "docs/research/measurements/managed-borrowed-handles/finish-build.ps1": {
+      "bytes": 3858,
+      "sha256": "49abc8ee2144f8dcff5ec5a6b5b2c0a6c360769cd5486beeba642c9d426233ec"
+    },
+    "docs/research/measurements/managed-borrowed-handles/focused.rs": {
+      "bytes": 28601,
+      "sha256": "969e2c519e79f86e776b59231ce4e1070b4bc71d455b41d22e0b9bcdb2ed5ebf"
+    },
+    "docs/research/measurements/managed-borrowed-handles/native-driver.ps1": {
+      "bytes": 1895,
+      "sha256": "ad9d7936f5cfeb9a42e605943da7180b9764637cd40f1bde10af9ad2ebf9f7c2"
+    },
+    "docs/research/measurements/managed-borrowed-handles/pack-light.py": {
+      "bytes": 3903,
+      "sha256": "9e82272d920a491b164fa1e8216df9baa7bc4c436712fcc0a39f084ccdf26dcc"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/commit-message.txt": {
+      "bytes": 1376,
+      "sha256": "a5c8bc349973bbb2011ef57c39fb243ef159a36ce1dfae34647a5fd2fb1a9a0c"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/decoding.json": {
+      "bytes": 19000,
+      "sha256": "00faadcf041ff176d2c8a21b0a846a015eb7940ecbf779d2c76a8830dd62b3ae"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/first-staged-whitespace-original.log.gz": {
+      "bytes": 348,
+      "sha256": "94312a851ffbb7945261dc3cee3e3570bed92bf81000b57016c431efc6120eb1"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/first-staged-whitespace.json": {
+      "bytes": 566,
+      "sha256": "b3380ad1ee705e6f62570fc188a589769095ae5d9a5261413657a8113d394611"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/first-staged-whitespace.log": {
+      "bytes": 2506,
+      "sha256": "f02b0c79b6bb4918901cdda73f51ca2193b4651bded82c531b53d6f9084a2a02"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/0.log": {
+      "bytes": 111,
+      "sha256": "3af354abd6afd2f4f662a367159a8b8107385935ded6c8a2b929734becedb43c"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/1.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/2.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/3.log": {
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/4.log": {
+      "bytes": 192,
+      "sha256": "0e0e85137d604c97621df99d9e8756e4fd18ff0971377e602569ac744470aeb6"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/local/commands.json": {
+      "bytes": 1257,
+      "sha256": "c9877cac131840e2f5fb5ae44bef2dbae99e523e342764d6274621c889c156ff"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/native-driver-v1.ps1": {
+      "bytes": 1822,
+      "sha256": "442014c07fbc87ad80637f5e6c0d5448a724f6e578477734df48a18698780339"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/native-validation.json": {
+      "bytes": 24863,
+      "sha256": "8bb74551c1aaa8e3629f76b2589e1b34529a210469ec2362f60c2e545543f1ca"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/registration-context-failed.patch": {
+      "bytes": 422,
+      "sha256": "c937e0c67e8defc9f4936a0aa9706939af43d4d87aaf45809cb1676ba863f1d1"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/source-bundle-v1/bundle.json": {
+      "bytes": 7130,
+      "sha256": "294656129a6aca05a157cddbfcca9931c684b921b1d9d3f80c2a8f056a1b3e89"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/source-bundle-v1/compile-source.tar.gz": {
+      "bytes": 191882,
+      "sha256": "36691329abdaec9f9b7580c47710c397f462858c8a1013aa14fa934aee86468a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/tool-receipts.json": {
+      "bytes": 17089,
+      "sha256": "a8343611fcf1f2b256e7e6079000f97845d3947caafaabedb56f44a836abc3a3"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-artifact-manifest.json": {
+      "bytes": 6227,
+      "sha256": "5ccde50b84f661956f79768003708d1e063952d09b5db388f43c636139210b89"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/ARTIFACT-MANIFEST.json": {
+      "bytes": 10741,
+      "sha256": "bbb5e6cec3f0a10f190e104230b92273823f3e657236b2ab35acd876916a73e8"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/BUNDLE-MANIFEST.json": {
+      "bytes": 6601,
+      "sha256": "058f9f75d5090c97371f0b97ef07b6a33faba63b5bf12d8778fae2387d5a6fae"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/build-receipt.json": {
+      "bytes": 6246,
+      "sha256": "e163fba519e51f807d68ddb5f22ad59239f7770228bc8087933353aa57f1b5ae"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/caller-v1.ps1": {
+      "bytes": 4601,
+      "sha256": "aceebb1d40eea540aa0ce6996ed30c6a0e449f50aabce6feab01fdaf2d10e6a9"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/caller.ps1": {
+      "bytes": 4957,
+      "sha256": "609668e658e5961cdc41f32dbafd739168db75f559f89092fe6ac9f980757752"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/compile-light-v1.ps1": {
+      "bytes": 2085,
+      "sha256": "f1e62c2832bc9baf602baf5ab0928a67b0e33508669e29a0ff0525c7940d7002"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/compile-light.ps1": {
+      "bytes": 2144,
+      "sha256": "7f9a3c67b17a640b8776c7aa804b31c9664df0bbbabef43790ddc320aee62301"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/finish-build.ps1": {
+      "bytes": 3858,
+      "sha256": "49abc8ee2144f8dcff5ec5a6b5b2c0a6c360769cd5486beeba642c9d426233ec"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/fixture/Cargo.lock": {
+      "bytes": 3316,
+      "sha256": "529538f81ab967f804fb9a7597a073b838e5cb2ab6ab978492f2c174f2e2deb8"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/fixture/Cargo.toml": {
+      "bytes": 2972,
+      "sha256": "e3c032ec67dae99454279cf0c6ba1ea55bffc22acb50ae212d964ffcf7894edf"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/focused-v1.rs": {
+      "bytes": 28012,
+      "sha256": "34b95c33e6fc813f574b99eadbc9f01d82712355d0408978beb6af56216ba48e"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/success/receipt.json": {
+      "bytes": 1229,
+      "sha256": "22a9159bb36df66107e9240a42b2fd52bc1dc25e58ad143a7ecf7a8af808671a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/success/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/success/stdout.log": {
+      "bytes": 15647,
+      "sha256": "640ce5103411171cc19c443f8fc5667ad694737cec9abc8a95bdc5e53690d5d7"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/success/validated-records.json": {
+      "bytes": 17010,
+      "sha256": "40a5e221b7dd4c8a21892b4d0c9a4f84ad2b2c8b99cd7558dcc3cd793764e5e9"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/withheld/receipt.json": {
+      "bytes": 1239,
+      "sha256": "e6d169ad8b9bc92d879e5ac6af1e7c7a1a491c94b0b61b574df1c4079ae15357"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/withheld/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/withheld/stdout.log": {
+      "bytes": 19992,
+      "sha256": "c6a2bbf3f59c4d37bc1ac4aed1980f8d361d84b220fbf680fbd332c9a818e76b"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/withheld/validated-records.json": {
+      "bytes": 21347,
+      "sha256": "7a14ef4c2debe1a89b2e7272a6c937ee1080053cf5eeaf725ddda05e45efd813"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/wrong-start/receipt.json": {
+      "bytes": 1236,
+      "sha256": "a6c66174ae53fcc73e09fdb831f28043c94c07c6a945d7a2d6f7ce32eb4c68d2"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/wrong-start/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/wrong-start/stdout.log": {
+      "bytes": 21834,
+      "sha256": "327e0218dcb1e358a412a667a29f0e99ef6bd6bb7b03edc5e5cfd90984ddaab5"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native/wrong-start/validated-records.json": {
+      "bytes": 23193,
+      "sha256": "99191a3ed681d921e9eb6ab00f83477997e94c7deb417c7967f1f131a4156d0d"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-driver.ps1": {
+      "bytes": 1895,
+      "sha256": "ad9d7936f5cfeb9a42e605943da7180b9764637cd40f1bde10af9ad2ebf9f7c2"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-summary.json": {
+      "bytes": 400,
+      "sha256": "38ccbf3c33f55c76430fd758c9d8cfcc1918c9fc2c4346c0981f91e12ef33d29"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/success/receipt.json": {
+      "bytes": 1226,
+      "sha256": "1656b727be60d6dec1a8302489d10f24abe3fc9476e8e018dfa09e9c3d94ba8f"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/success/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/success/stdout.log": {
+      "bytes": 15647,
+      "sha256": "2bd9f4cef62dc736a5cad19b67bfdab60bb1ff0e7aa20b47565d7329211b9f11"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/success/validated-records.json": {
+      "bytes": 17010,
+      "sha256": "b82a2fb54e8831112056861ebbba4312563643d893969b661eec6c598343c84c"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/withheld/receipt.json": {
+      "bytes": 1236,
+      "sha256": "1e5e558618f1a9d1f6f0a6ec138de573d1e103a7ac69a7f1fef5f3089964cd2a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/withheld/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/withheld/stdout.log": {
+      "bytes": 19993,
+      "sha256": "e8812b60c2db1afc19486a26eb7684df314c8b64d8ba0aa7e050c0c7442700ec"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/withheld/validated-records.json": {
+      "bytes": 21348,
+      "sha256": "7484eadb9579e0f082c455a93cfa31a28cc4e016818ddf30d452a8ecdda299d4"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/wrong-start/receipt.json": {
+      "bytes": 1233,
+      "sha256": "888c60f4a2d25c4633e8c4c3253761f1449039089c9ea3dddd1ccae84381821a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/wrong-start/stderr.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/wrong-start/stdout.log": {
+      "bytes": 21835,
+      "sha256": "a8df4fdd156f5c16cf470583325ce7fa856c9ca7df463be8360580a800981dff"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2/wrong-start/validated-records.json": {
+      "bytes": 23194,
+      "sha256": "b7a4e455acc1bc94ba2c24d841c47cca6c7178f4ba7be1604434ac0813c5aac7"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/native-v2-summary.json": {
+      "bytes": 1297,
+      "sha256": "478c318de1e80798a64049848a6c7aae1cae604d3f3c502d2b8cbd765d13b224"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/cargo.log": {
+      "bytes": 321,
+      "sha256": "613ef90fed72bfc5779b39f28cdfd9a30a438925b3a48f57d5cd96614820891f"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/check.json": {
+      "bytes": 393,
+      "sha256": "4b7d8a89a917820ebf99c61617fdd8005257cded351ac4edc2f88e48993d13af"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/check.log": {
+      "bytes": 1632,
+      "sha256": "77b9a32da36a7d69a3b298d7c03694a6decea72086b70e1092388539115db052"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.json": {
+      "bytes": 501,
+      "sha256": "d321e4c139fb329ec91ffd260719bc88a49203d68a2766aad5f5752c7dd8ca6d"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/clippy.log": {
+      "bytes": 6579,
+      "sha256": "f873b5024f85edd0f1c5802692f1409556f9b0dadd5cce1a0cd2e59cf96287ba"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw/rustc.log": {
+      "bytes": 194,
+      "sha256": "5477f9bad65b15c4c5b31fc050fc72feba651ea1b330bc75cf356a4d6b0fbc80"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/build-json.log": {
+      "bytes": 17647,
+      "sha256": "e62391fe89517dcb82b62af75805e1503d558996573fe3bf2086089b4236d83d"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/build-stderr.log": {
+      "bytes": 1250,
+      "sha256": "a9c69dd94372d687a4776ef51b9f34dcd8d0ce9913c3a33156ddbe428056ed2a"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/build.json": {
+      "bytes": 403,
+      "sha256": "6f01c72a8ad4eed1fc208a720418ec75a13105a3b5ed68edb4e3e2d33c651820"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/check.json": {
+      "bytes": 335,
+      "sha256": "a728f6c830c48f3cddc5108c0865d0250146cad825c666bfa74d67704439b7ea"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/check.log": {
+      "bytes": 520,
+      "sha256": "f621c002fcdab064e91e65c70caee3b50d32c259ae5748ea5c52b26cb7c99b7c"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/clippy.json": {
+      "bytes": 441,
+      "sha256": "31cef4c447278b351a8833600dcea5e41f912dcb2321e5f1ebb46d0b6d528459"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/clippy.log": {
+      "bytes": 524,
+      "sha256": "15a9f8579c5193b5e7a232d3695f2bfb0878baf603b4e2b6f1ae800e4efd41f8"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/raw-v2/source-before.json": {
+      "bytes": 4299,
+      "sha256": "8ec9c1913ae8e9e3d95b29a04489260d3528ea76ade5db95c94e4b6050becee6"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-decoded/source/docs/research/measurements/managed-borrowed-handles/focused.rs": {
+      "bytes": 28601,
+      "sha256": "969e2c519e79f86e776b59231ce4e1070b4bc71d455b41d22e0b9bcdb2ed5ebf"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-records.tar.gz": {
+      "bytes": 38339,
+      "sha256": "b4c3f67771143058444bbc86053dcc1275b6ee243ec80103162b59abd14bc8da"
+    },
+    "docs/research/measurements/managed-borrowed-handles/raw/windows-transfer.json": {
+      "bytes": 282,
+      "sha256": "9d395e22609c43ae1f6e9b0cf90fc337cc22dc5fa011691aa677519ba4dc6e79"
+    },
+    "docs/research/measurements/managed-borrowed-handles/registration.patch": {
+      "bytes": 467,
+      "sha256": "b1f78d81ebc5be5a2ea5846d7c6fac83f484ad71b1dc87a386450f894a6520a9"
+    },
+    "docs/research/measurements/managed-borrowed-handles/test_caller.py": {
+      "bytes": 5631,
+      "sha256": "2620d983ae9177e1d88fd4214b3a9f74692a3f45272954254550648e9a0c3062"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+    "exit_code":  0,
+    "argv":  [
+                 "clippy",
+                 "--manifest-path",
+                 "C:\\Users\\corph\\native-borrowed-handles-3b-light-v1\\fixture\\Cargo.toml",
+                 "--tests",
+                 "--no-deps",
+                 "--target",
+                 "x86_64-pc-windows-msvc",
+                 "-j1",
+                 "--",
+                 "-D",
+                 "warnings"
+             ]
+}

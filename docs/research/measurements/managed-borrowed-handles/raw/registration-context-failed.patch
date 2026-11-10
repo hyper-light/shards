@@ -1,0 +1,10 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -1005,2 +1005,6 @@ pub fn connect_borrowed(
+ #[path = "../../../docs/research/measurements/managed-native-borrowed/focused.rs"]
+ mod borrowed_tests;
++
++#[cfg(all(test, windows))]
++#[path = "../../../docs/research/measurements/managed-borrowed-handles/focused.rs"]
++mod borrowed_handle_tests;

@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-borrowed-handles"
+  ],
+  "exit_code": 2,
+  "classification": "decoded Windows log whitespace and literal blank context in unapplied patch; originals immutable in Windows archive; no source/global whitespace exception",
+  "original_sha256": "64d979adf27983398c0628bff746e8d7e7fcc3fdd18782077c3fb3d384fc656e",
+  "original_file": "first-staged-whitespace-original.log.gz",
+  "review_derivative": "LF and trailing whitespace normalized in .log only"
+}
