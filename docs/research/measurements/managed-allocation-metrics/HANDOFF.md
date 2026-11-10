@@ -27,6 +27,11 @@ ROOT APPROVED counter and narrow allocation phase hooks. The historical patch
 is now applied to fixture.rs; root global/module registration remains reserved.
 Cargo rust-version1.98.1 is MSRV, not an enforced choice of compiler/formatter;
 explicit light commands used Rust1.98.1 and actual versions are retained.
+ROOT now reports allocation-only033c full normal caller11pass/2ignore, N0/N1/N2
+strict0 (functional n1 each) and full7target/format/GPU0, landed main7c26e5292161fc891a7c6c6525305464a3a044be.
+These gates do NOT validate the later native hooks or paired runner. Startup
+aggregate~632MBrequested/~269MBrecordedpeak has NO established allocation cause;
+ROOT owns isolation and every optimization decision. Do not infer artifact cause.
 Final source0183cf0683515974250f84999ae5be7bb44b585e is tested: standalone
 GNU5/musl5 plus Clippy0 through Kiln Fedora admitted1CPU/1GiB/2GiB, new private
 source/target dirs only, no sync/root source/target write. Exact logs, source,
@@ -35,6 +40,16 @@ records/light-{1309b9864,0975a51c0,0183cf068}. Source SHA256
 7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc.
 No profile/VM/socket/ns/BPF/campaign executed. Fault proposal is complete in
 FAULT-PROPOSAL.md; platform source/API unchanged and measurements unrun.
+APPROVED native hooks now APPLIED and signed4fffe0f70e68828304515d0103d66be82cf5decc.
+Pure native model f78c3c8919285bc067bae6006b35bf57e6acb472 GNU5/musl5/Clippy0;
+new actual native caller compilation/execution ROOTowed. Native probes use
+existing held identity checker before/after process_usage, retain both query
+and identity errors, no newOSadapter; cleanup self probe precedes original total
+FD sample, released daemon/VM Unknown. Raw in records/faults-f78c3c891.
+Paired runner current source47c6b9cb3cbb4147138bc12ab5c3ee23adb3b9e2 pure11/11;
+original a718 and release-receipt5333 results preserved. Actual paired.main/
+executor, source preflight, VM/profile/campaign NEVER run. See PAIRING.md and
+QUEUE-CHECKPOINT.md; all physical/paired/mutation/cleanup gates ROOTowned.
 fixture-hooks.proposed.patch is the preserved APPROVED/APPLIED proposal. No
 actual caller build/profile/matrix or integration success is claimed.
 
@@ -56,11 +71,24 @@ Persistent lane goal/plan01a1c5cfb1457788825ed52ecb517527 remains active until
 coordinator closure; never mark it done for one checkpoint. Re-read current
 policy/handoff on compaction/resume. Root owns all real execution.
 
-Next: implement pure fault state model and root-approved hooks, continue paired
-runner implementation; retain exact source/command/binary/log identities;
+Next: finish current raw/source proof packaging and root review follow-up, then
+the next root-selected approved scope; retain exact source/command/binary/log identities;
 signed named-path commits
 using /Users/adalundhe/.kiln-run/bin/gits plus required Claude Opus5.5 trailer;
 push only own branch. Return all actual/paired/interleaved/mutation/cleanup/matrix
 gates. Primary-source fault proposal through existing seams is done, no execution.
 Send checkpoints through agents_send stable keys and CONTINUE the queue;
 no final-idle, fake keepalive or measurement substitutes. Keep this lane sustained.
+Latest next-scope proposal sent: fixed startup allocator snapshots for ROOT's
+cause isolation (test entry/inputs/artifact resolution+hash/recording). NOT yet
+approved or implemented; no chosen optimization/cache/number. Await ROOT's
+selection while completing current evidence/review work, no invented busywork.
+All own remote jobs complete/private targets preserved; ZERO active LOCAL build
+targets/cache paths. Root headroom hold/recovery acknowledged; still no local
+heavy build or new worktree. Protected ROOT0456/r597 and allocation033c probe/
+targets and pausedWindowsARM remain untouched. Policy hash unchanged by latest
+root main7c26 receipt. Re-read full policy/current handoff after compaction.
+Latest headroom receipt33,713,639,424bytes free after root-only inactive-object
+reclamation; no local builds/targets were started during either below-floor hold.
+ROOT Fedora r644/source1533 ACTIVE/exclusive; ROOT Macr634/source1533 full7+native12
+reported0 for THAT source, not evidence for this new native/paired source.

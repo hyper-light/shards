@@ -1,0 +1,10 @@
+
+running 5 tests
+test tests::native_labels_and_widths_remain_distinct ... ok
+test tests::native_range_and_lossy_zero_cannot_become_observed_zero ... ok
+test tests::read_exit_and_unreached_states_remain_unknown ... ok
+test tests::source_identity_and_phase_mismatches_refuse_deltas ... ok
+test tests::valid_pairs_are_conditional_and_decreasing_pairs_are_unknown ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

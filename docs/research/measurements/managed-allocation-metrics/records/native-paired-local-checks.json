@@ -1,0 +1,102 @@
+{
+  "source_head": "4fffe0f70e68828304515d0103d66be82cf5decc",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "checks": [
+    {
+      "command": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "crates/shards/tests/common/managed_alloc.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docs/research/measurements/managed-allocation-metrics/run-light.sh"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "python_syntax": "AST parse only; no bytecode or execution",
+  "sources": [
+    {
+      "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+      "sha256": "31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+      "sha256": "3946267e81571fcfd1c0853b1033bf170ef45632a7d9d99d747bef9ffd710513"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/paired.py",
+      "sha256": "32473517d77a9df4a5ed4d192baf6c01a2aa5bf30ca7474a3d356a37cd1dc016"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/test_paired.py",
+      "sha256": "b54758711f0d82902a6e741b584b940559a2ab1b52be41793d1338356d010ca4"
+    }
+  ],
+  "transfers": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/faults-f78c3c891/TRANSFER.json",
+      "raw_files_verified": 24
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/paired-a7188ac08/TRANSFER.json",
+      "raw_files_verified": 6
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/paired-5333cc073/TRANSFER.json",
+      "raw_files_verified": 6
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/paired-47c6b9cb3/TRANSFER.json",
+      "raw_files_verified": 6
+    }
+  ],
+  "actual_caller_compile_and_profiles": "Unrun by implementer; ROOTowed on new native source",
+  "local_target_or_cache_paths": []
+}

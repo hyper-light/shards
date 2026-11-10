@@ -1,0 +1,30 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/native-hooks.proposed.patch:5: trailing whitespace.\n+ \ndocs/research/measurements/managed-allocation-metrics/native-hooks.proposed.patch:204: trailing whitespace.\n+ \ndocs/research/measurements/managed-allocation-metrics/records/faults-f78c3c891/x86_64-unknown-linux-gnu-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/faults-f78c3c891/x86_64-unknown-linux-musl-test.log:10: new blank line at EOF.\n",
+  "unchanged_artifacts": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/native-hooks.proposed.patch",
+      "sha256": "9b0d90c4ef8991a6e319070d3a8af63e4e5f36858b1da9cbb09ff41425dca447",
+      "reason": "Preserved historical proposed unified diff; blank context lines require a space prefix."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/faults-f78c3c891/x86_64-unknown-linux-gnu-test.log",
+      "sha256": "23d7319cf62eeea68bdb5f0884384c1f5e15e3ba1c3aeced3a0513c564984289",
+      "reason": "Original standalone libtest output; blank EOF retained byte-for-byte with verified transfer hash."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/faults-f78c3c891/x86_64-unknown-linux-musl-test.log",
+      "sha256": "23d7319cf62eeea68bdb5f0884384c1f5e15e3ba1c3aeced3a0513c564984289",
+      "reason": "Original standalone libtest output; blank EOF retained byte-for-byte with verified transfer hash."
+    }
+  ],
+  "other_staged_paths": 56,
+  "other_staged_check_exit": 0,
+  "no_rule_or_raw_log_relaxation": true
+}
