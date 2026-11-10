@@ -1,0 +1,30 @@
+{
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/abi-build": {
+    "sha256": "267eb606330cf14c16102ade16294ce7aa532a687194fdaaba18aea34f278276",
+    "bytes": 599864
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/contract-clippy.rmeta": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/contract-tests": {
+    "sha256": "3005e902ff9294b2d04fbbc5a9a418027a7529682bdf38a5a44ac131ff73ffe2",
+    "bytes": 1124736
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/libshards_abi.rlib": {
+    "sha256": "b69067c171c946fd9578e5adf9b949633c959190cbea49ee010e40bf5a823a2e",
+    "bytes": 1649344
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/out/identity.rs": {
+    "sha256": "8691b92bff542832354e0db3dfb16cd5b482ce97806223e1126855bfab2dd539",
+    "bytes": 208
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/receipt-clippy.rmeta": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "/Users/adalundhe/managed-adversarial-controls-light-v2/target/receipt-tests": {
+    "sha256": "69ced04cd301460fcde89c5c5855740bb59641975c46095c75eb3ccab4f3e7b8",
+    "bytes": 1030336
+  }
+}

@@ -1,0 +1,1 @@
+["rustc", "+1.98.1", "--edition=2024", "--test", "/Users/adalundhe/managed-adversarial-controls-light-v2/source/crates/shards/tests/managed_output/adversarial_controls/write_receipts.rs", "-o", "/Users/adalundhe/managed-adversarial-controls-light-v2/target/receipt-tests"]

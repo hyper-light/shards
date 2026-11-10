@@ -3,11 +3,16 @@ use super::*;
 
 #[path = "adversarial_controls/contract.rs"]
 mod contract;
-use contract::{AckCase, Limits};
+use contract::{AckCase, ControlCase, Limits, Selection, TerminalCase};
+
+#[path = "adversarial_controls/control_inputs.rs"]
+mod control_inputs;
+#[path = "adversarial_controls/write_receipts.rs"]
+mod write_receipts;
 
 struct Supplied {
     base: Inputs,
-    case: AckCase,
+    case: Selection,
     channel: Channel,
     limits: Limits,
     source: String,
@@ -20,7 +25,7 @@ impl Supplied {
                 .unwrap_or_else(|_| panic!("supply SHARDS_ADVERSARIAL_{key}"))
         };
         let number = |key: &str| required(key).parse::<u64>().unwrap();
-        let case = AckCase::parse(&required("CASE")).unwrap();
+        let case = Selection::parse(&required("CASE")).unwrap();
         let channel = match required("CHANNEL").as_str() {
             "stdout" => Channel::Stdout,
             "stderr" => Channel::Stderr,
@@ -129,10 +134,104 @@ fn observed_record(
     (start, *wire)
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ExpectedTarget {
+    Held { accepted: u64, consumed: u64 },
+    Ended { wire: u64 },
+}
+
+impl ExpectedTarget {
+    fn cursors(self) -> (u64, u64) {
+        match self {
+            Self::Held { accepted, consumed } => (accepted, consumed),
+            Self::Ended { wire } => (wire, wire),
+        }
+    }
+}
+
 struct Outcome {
-    target_end: u64,
-    last_valid_ack: u64,
+    target: ExpectedTarget,
     other: Vec<(u32, Channel, Capture)>,
+}
+
+struct Attempt {
+    target: ExpectedTarget,
+    bytes: Vec<u8>,
+    finish: bool,
+    reason: Reason,
+    command: Ask,
+    receipts: Option<mpsc::Receiver<ControlReceipt>>,
+}
+
+impl Attempt {
+    fn ack(target: ExpectedTarget, cursor: u64, finish: bool) -> Self {
+        Self {
+            target,
+            bytes: managed::consumed(cursor).to_vec(),
+            finish,
+            reason: Reason::Protocol,
+            command: if finish {
+                Ask::AckAndFinish(cursor)
+            } else {
+                Ask::Ack(cursor)
+            },
+            receipts: None,
+        }
+    }
+
+    fn raw(target: ExpectedTarget, case: ControlCase, wire: u64) -> Self {
+        let (bytes, finish, reason) = case.wire(wire);
+        let (sender, receipts) = mpsc::channel();
+        Self {
+            target,
+            command: Ask::RawControl {
+                bytes: bytes.clone(),
+                finish,
+                receipts: sender,
+            },
+            bytes,
+            finish,
+            reason,
+            receipts: Some(receipts),
+        }
+    }
+}
+
+fn receipt_value(receipt: &ControlReceipt) -> Value {
+    match receipt {
+        ControlReceipt::Write { accepted, pending } => {
+            json!({"kind":"Write","accepted":accepted,"pending":pending})
+        }
+        ControlReceipt::Read { bytes, ended } => json!({"kind":"Read","bytes":bytes,"ended":ended}),
+        ControlReceipt::Finish { error } => json!({"kind":"Finish","error":error}),
+        ControlReceipt::WriteError(error) => json!({"kind":"WriteError","error":error}),
+    }
+}
+
+fn check_receipts(receipts: &[ControlReceipt], submitted: usize, finish: bool) {
+    let mut writes = write_receipts::Writes::new(submitted).unwrap();
+    let mut finishes = 0usize;
+    for receipt in receipts {
+        match receipt {
+            ControlReceipt::Write { accepted, pending } => writes.accept(*accepted, *pending).unwrap(),
+            ControlReceipt::Read { .. } => {}
+            ControlReceipt::Finish { error } => {
+                assert!(error.is_none(), "actual send-side FIN failure: {error:?}");
+                finishes = finishes.checked_add(1).unwrap();
+            }
+            ControlReceipt::WriteError(error) => panic!("actual raw-control write failure: {error}"),
+        }
+    }
+    assert_eq!(
+        writes.complete().unwrap(),
+        submitted,
+        "all actual input bytes accepted"
+    );
+    assert_eq!(
+        finishes,
+        usize::from(finish),
+        "exact requested send-side FIN receipt"
+    );
 }
 
 fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
@@ -166,24 +265,71 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
         matches!(state, StreamState::Open { offset: 0 }),
         "first record is Open"
     );
-    let last_valid_ack = if input.case == AckCase::Replay {
-        observer
-            .sender
-            .send(Command::Handler(Ask::Ack(interval.1)))
+    let attempt = match input.case {
+        Selection::Ack(case) => {
+            let last_valid_ack = if case == AckCase::Replay {
+                observer
+                    .sender
+                    .send(Command::Handler(Ask::Ack(interval.1)))
+                    .unwrap();
+                let acknowledged = interval.1;
+                interval = observed_record(observer, &mut state, &mut wire, &mut trace, until);
+                assert!(matches!(state, StreamState::Open { offset } if offset > 0));
+                acknowledged
+            } else {
+                0
+            };
+            let cursor = case.cursor(interval.0, interval.1, last_valid_ack).unwrap();
+            Attempt::ack(
+                ExpectedTarget::Held {
+                    accepted: interval.1,
+                    consumed: last_valid_ack,
+                },
+                cursor,
+                false,
+            )
+        }
+        Selection::Control(case) => Attempt::raw(
+            ExpectedTarget::Held {
+                accepted: wire,
+                consumed: 0,
+            },
+            case,
+            wire,
+        ),
+        Selection::Terminal(case) => {
+            observer.sender.send(Command::Handler(Ask::Ack(wire))).unwrap();
+            let mut capture = Capture {
+                wire,
+                state,
+                trace: Some(base.records.clone()),
+                ..Capture::default()
+            };
+            capture.receive(
+                observer,
+                &payload("agent", input.channel),
+                ReadGoal::CanonicalEnd,
+                until,
+            );
+            base.write("target-ended.json", &capture.record(1, input.channel));
+            std::fs::copy(
+                fixture.record.as_ref().unwrap(),
+                base.records.join("managed-output.target-ended"),
+            )
             .unwrap();
-        let acknowledged = interval.1;
-        interval = observed_record(observer, &mut state, &mut wire, &mut trace, until);
-        assert!(matches!(state, StreamState::Open { offset } if offset > 0));
-        acknowledged
-    } else {
-        0
+            Attempt::ack(
+                ExpectedTarget::Ended { wire: capture.wire },
+                case.cursor(capture.wire).unwrap(),
+                case == TerminalCase::Finish,
+            )
+        }
     };
-    let invalid = input.case.cursor(interval.0, interval.1, last_valid_ack).unwrap();
-    let control = managed::consumed(invalid);
-    std::fs::write(base.records.join("invalid-ack.bin"), control).unwrap();
-    base.write("attempt.json", &json!({"case":format!("{:?}",input.case),"member":1,"channel":input.channel as u8,"observed_wire_start":interval.0,"observed_wire_end":interval.1,"last_valid_ack":last_valid_ack,"rejected_ack":invalid,"authentication":"existing owner; actual record already observed","endpoint_reuse":false}));
+    let target = attempt.target;
+    let (accepted, last_valid_ack) = target.cursors();
+    std::fs::write(base.records.join("invalid-control.bin"), &attempt.bytes).unwrap();
+    base.write("attempt.json", &json!({"case":format!("{:?}",input.case),"member":1,"channel":input.channel as u8,"observed_wire_start":interval.0,"observed_wire_end":interval.1,"observed_cursor_before_attempt":accepted,"expected_target":format!("{target:?}"),"last_valid_ack":last_valid_ack,"control_bytes":attempt.bytes.len(),"finish":attempt.finish,"expected_reason":format!("{:?}",attempt.reason),"authentication":"existing owner; actual record already observed","endpoint_reuse":false}));
     left(until);
-    let enqueued = observer.sender.send(Command::Handler(Ask::Ack(invalid)));
+    let enqueued = observer.sender.send(Command::Handler(attempt.command));
     base.write("enqueue.json", &json!({"accepted":enqueued.is_ok(),"error":enqueued.as_ref().err().map(ToString::to_string),"meaning":"command enqueue only; no assumed peer consumption"}));
     enqueued.unwrap();
     let refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -191,10 +337,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
         let Event::Lost(Some(code)) = event else {
             panic!("expected typed application protocol refusal, actual={event:?}");
         };
-        assert_eq!(
-            Reason::try_from(u32::try_from(code).unwrap()),
-            Ok(Reason::Protocol)
-        );
+        assert_eq!(Reason::try_from(u32::try_from(code).unwrap()), Ok(attempt.reason));
     }));
     // Local cancellation is owned cleanup, not a remote connection-drain barrier.
     fixture.observers[index].sender.request_stop();
@@ -203,11 +346,21 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
     for event in &remaining {
         trace.record(&fixture.observers[index], "after-join", event);
     }
-    base.write("refusal.json", &json!({"matched_protocol_refusal":refusal.is_ok(),"assertion_failure":refusal.as_ref().err().map(|e|panic_text(e.as_ref())),"borrowed_driver_join":{"complete":joined.is_ok(),"error":joined.as_ref().err()},"remote_connection_drained":"Unknown; endpoint is never reused","post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count()}));
+    let receipts = attempt
+        .receipts
+        .as_ref()
+        .map(|receiver| receiver.try_iter().collect::<Vec<_>>());
+    if let Some(receipts) = &receipts {
+        base.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":attempt.bytes.len(),"finish_requested":attempt.finish,"meaning":"local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata"}));
+    }
+    base.write("refusal.json", &json!({"matched_expected_refusal":refusal.is_ok(),"assertion_failure":refusal.as_ref().err().map(|e|panic_text(e.as_ref())),"borrowed_driver_join":{"complete":joined.is_ok(),"error":joined.as_ref().err()},"remote_connection_drained":"Unknown; endpoint is never reused","post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count()}));
     if let Err(error) = refusal {
         std::panic::resume_unwind(error);
     }
     joined.unwrap();
+    if let Some(receipts) = &receipts {
+        check_receipts(receipts, attempt.bytes.len(), attempt.finish);
+    }
     assert!(
         !remaining.iter().any(|event| matches!(event, Event::Record(..))),
         "no future target payload after invalid ACK"
@@ -281,10 +434,9 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
             .insert((*member, *channel as u8), (capture.wire, capture.wire));
     }
     fixture.main_progress(left(until));
-    base.write("progress.json", &json!({"state":"ExactNewNeighborFd1Fd2AfterTypedRefusalAndGatePlusIndependentMain","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"target":{"accepted_must_equal":interval.1,"consumed_must_equal":last_valid_ack},"population_kernel_cost":"Unknown; no ownership inference from observer or metadata"}));
+    base.write("progress.json", &json!({"state":"ExactNewNeighborFd1Fd2AfterTypedRefusalAndGatePlusIndependentMain","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"target":{"accepted_must_equal":accepted,"consumed_must_equal":last_valid_ack},"population_kernel_cost":"Unknown; no ownership inference from observer or metadata"}));
     Outcome {
-        target_end: interval.1,
-        last_valid_ack,
+        target,
         other: channels
             .into_iter()
             .map(|(m, c, _, capture)| (m, c, capture))
@@ -293,7 +445,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
 }
 
 #[test]
-#[ignore = "assigned live VM; one selected ACK case/channel, new records, explicit phase/work/cleanup/outer bounds"]
+#[ignore = "assigned live VM; one selected control case/channel, new records, explicit phase/work/cleanup/outer bounds"]
 fn invalid_application_ack_after_record_preserves_credit_neighbor_and_main() {
     let began = Instant::now();
     let input = Supplied::read();
@@ -302,7 +454,7 @@ fn invalid_application_ack_after_record_preserves_credit_neighbor_and_main() {
     let base = &input.base;
     assert!(!common::cannot_run_vms(), "requires a supported real VM host");
     let artifact = |path: &std::path::Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
-    base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"leaf_sha256":common::sha256_digest(include_bytes!("adversarial_controls.rs")),"contract_sha256":common::sha256_digest(include_bytes!("adversarial_controls/contract.rs"))}));
+    base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"leaf_sha256":common::sha256_digest(include_bytes!("adversarial_controls.rs")),"contract_sha256":common::sha256_digest(include_bytes!("adversarial_controls/contract.rs")),"control_inputs_sha256":common::sha256_digest(include_bytes!("adversarial_controls/control_inputs.rs")),"write_receipts_sha256":common::sha256_digest(include_bytes!("adversarial_controls/write_receipts.rs"))}));
     base.write("inputs.json", &json!({"case":format!("{:?}",input.case),"channel":input.channel as u8,"port":base.port,"phase_ms":input.limits.phase_ms,"work_ms":input.limits.work_ms,"cleanup_ms":input.limits.cleanup_ms,"outer_ms":input.limits.outer_ms,"caller_declared_source":input.source,"outer_enforcement":"admitted caller enforces supplied OUTER_MS on the fixture process","owner":"fresh retained Fixture; one target subscription; no endpoint reuse"}));
     let mut fixture = Fixture::new();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -330,12 +482,16 @@ fn invalid_application_ack_after_record_preserves_credit_neighbor_and_main() {
         .lines()
         .filter(|line| line.starts_with(&prefix))
         .collect();
+    let (state, tail) = match outcome.target {
+        ExpectedTarget::Held { .. } => ("aborted", "unknown"),
+        ExpectedTarget::Ended { .. } => ("ended", "complete"),
+    };
+    let (accepted, consumed) = outcome.target.cursors();
     assert_eq!(
         rows,
         [format!(
-            "{prefix}aborted accepted {} consumed {} tail unknown",
-            outcome.target_end, outcome.last_valid_ack
+            "{prefix}{state} accepted {accepted} consumed {consumed} tail {tail}"
         )],
-        "invalid ACK must return no target credit, invent no consumption and mark no complete tail"
+        "invalid control must preserve held credit and already observed canonical completion"
     );
 }

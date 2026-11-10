@@ -45,6 +45,67 @@ impl AckCase {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalCase {
+    Duplicate,
+    Forward,
+    Finish,
+}
+
+impl TerminalCase {
+    pub(crate) fn cursor(self, end: u64) -> Result<u64, Invalid> {
+        match self {
+            Self::Duplicate | Self::Finish => Ok(end),
+            Self::Forward => end.checked_add(1).ok_or(Invalid::Overflow),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ControlCase {
+    UnknownTag,
+    WrongKnownTag,
+    Overdeclared,
+    AckLength,
+    ShortHeader,
+    ShortAck,
+}
+
+impl ControlCase {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "control-unknown-tag" => Self::UnknownTag,
+            "control-wrong-tag" => Self::WrongKnownTag,
+            "control-overdeclared" => Self::Overdeclared,
+            "control-ack-length" => Self::AckLength,
+            "control-short-header" => Self::ShortHeader,
+            "control-short-ack" => Self::ShortAck,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Selection {
+    Ack(AckCase),
+    Control(ControlCase),
+    Terminal(TerminalCase),
+}
+
+impl Selection {
+    pub(crate) fn parse(value: &str) -> Result<Self, Invalid> {
+        match value {
+            "terminal-end-duplicate" => Ok(Self::Terminal(TerminalCase::Duplicate)),
+            "terminal-end-forward" => Ok(Self::Terminal(TerminalCase::Forward)),
+            "terminal-end-finish" => Ok(Self::Terminal(TerminalCase::Finish)),
+            _ => ControlCase::parse(value)
+                .map(Self::Control)
+                .map(Ok)
+                .unwrap_or_else(|| AckCase::parse(value).map(Self::Ack)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Limits {
     pub phase_ms: u64,
@@ -180,5 +241,23 @@ mod tests {
             .deadlines(began),
             Err(Invalid::Overflow)
         ));
+    }
+
+    #[test]
+    fn post_end_control_selection_keeps_exact_cursor_and_overflow_typed() {
+        let end = 102;
+        assert_eq!(TerminalCase::Duplicate.cursor(end), Ok(end));
+        assert_eq!(TerminalCase::Finish.cursor(end), Ok(end));
+        assert_eq!(TerminalCase::Forward.cursor(end), Ok(end + 1));
+        assert_eq!(TerminalCase::Forward.cursor(u64::MAX), Err(Invalid::Overflow));
+        assert_eq!(
+            Selection::parse("terminal-end-finish"),
+            Ok(Selection::Terminal(TerminalCase::Finish))
+        );
+        assert_eq!(
+            Selection::parse("ack-replay"),
+            Ok(Selection::Ack(AckCase::Replay))
+        );
+        assert_eq!(Selection::parse("terminal-aborted-assumed"), Err(Invalid::Case));
     }
 }

@@ -105,9 +105,47 @@ envelope; no old passing binary is presented as this new leaf's gate.
 [Raw-control proposal](RAW-CONTROL-PROPOSAL.md) records actual callers, primary
 contracts, alternatives and exact unapplied receipt patch sent for ROOT review.
 Existing pending/partial-write/readiness handling must remain authoritative.
-No raw-control caller is implemented against an unapproved parent seam.
-Next: selected malformed/unknown/overdeclared/truncated control inputs using one
-fresh owned endpoint each, then terminal duplicate ACK/control variants. Current
+ROOT approved both exact patches for this lane's private candidate/campaign and
+eventual reviewed composition. Source parents remain unchanged in this worktree;
+the private campaign applies the approved patches. Raw patch SHA-256
+`0178601648d07a27eff18f944eb03ac775c121190bc059cb88fb86bbda8923ee`, registration
+SHA-256 `41e04e2d0b1099aae02d698bb1f8cb7c635c99e90bda76549412014a4e090489`.
+
+B now implements `control-unknown-tag`, `control-wrong-tag`,
+`control-overdeclared`, `control-ack-length`, `control-short-header` and
+`control-short-ack`. The real consumed encoder supplies the base; checked frame
+peek/put establishes the selected framing. Actual bytes never exceed the
+existing CONTROL_BYTES and the declared huge length is only a header. A real
+observed Open precedes the one raw command on a fresh endpoint. Malformed cases
+require Protocol; incomplete header/body plus FIN requires Closed under the
+current Service contract. Every actual receipt is saved before checking complete
+positive writes/remaining-pending consistency and the exact requested FIN result.
+Read counts and send acceptance are not application consumption or durability.
+
+C implements `terminal-end-duplicate`, `terminal-end-forward` and
+`terminal-end-finish`. Actual canonical End, its single ACK and transport EOF
+precede the invalid control; final metadata must remain ended/complete with
+unchanged accepted/consumed. The same surviving-neighbor/main and cleanup checks
+apply. No canonical Aborted(errno) trigger has been established in this fixture;
+it remains owed and is not inferred from an actor exit, refusal or owner stop.
+
+Actual ARM64 Mac d132 private `~/managed-adversarial-controls-light-v2` r41 exited0
+under 1CPU/1GiB/2GiB: 4 pure contract +2 pure write-receipt tests passed, both
+scoped Clippy invocations with warnings denied passed. Raw commands/exits and
+hashes are retained in `light-r41/`; target4,404,488B, disk remained >30GiB.
+Those tests predate adding Control selection to the contract; they are not the
+current full caller's gate. Only unchanged `write_receipts.rs` and ABI bytes match
+that snapshot now. The whole leaf/control_inputs were saved but not compiled in
+that light run. Maccec preflight observed26,725,994,496B, refused before source
+creation/build; Mac2768 remained unused due its reported disk floor failure.
+
+Next is the full normal caller/helper build and bounded selected live cases in
+Fedora private `~/managed-adversarial-controls-live-v1/{source,target,cargo-home,records}`,
+2CPU/4GiB/16GiB subject to runtime admission, build1800s/outer2100s. Case inputs:
+phase300000ms, guestwork240000ms, cleanup120000ms, outer480000ms, explicit guest
+port and one selected case/channel per new process/records/run. No protected
+ROOT target/clone/frozen helper is used. No current full caller compilation or
+live pass is claimed at this source checkpoint. Current
 End versus Aborted(errno), logical terminal versus transport and owner lifecycle
 contracts remain strict; no speculative production correction is authorized.
 

@@ -1,0 +1,9 @@
+
+running 4 tests
+test tests::application_ack_uses_encoded_record_end_not_canonical_payload_offset ... ok
+test tests::cleanup_and_outer_bounds_share_the_original_start ... ok
+test tests::post_end_control_selection_keeps_exact_cursor_and_overflow_typed ... ok
+test tests::three_wrong_acks_are_derived_from_the_observed_interval ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

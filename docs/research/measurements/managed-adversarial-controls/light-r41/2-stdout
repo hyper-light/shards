@@ -1,0 +1,2 @@
+cargo::rerun-if-changed=src
+cargo::rerun-if-env-changed=SHARDS_ABI_IDENTITY
