@@ -3,7 +3,6 @@
 import difflib
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -26,7 +25,13 @@ def execute(name, test, ignored, expected, marker=None):
     # Source sync can restore old mtimes. Force our crate to rebuild and retain the
     # actual compilation/output for both mutation and restoration; never touch peers.
     Path("crates/api/src/lib.rs").touch()
-    args = ["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards-api", "--lib", test, "--", "--exact", "--test-threads=1", "--nocapture"]
+    args = ["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards-api", "--lib"]
+    if test:
+        args.append(test)
+    args.append("--")
+    if test:
+        args.append("--exact")
+    args.extend(["--test-threads=1", "--nocapture"])
     if ignored:
         args.append("--ignored")
     with (out / f"{name}.log").open("w") as log:
