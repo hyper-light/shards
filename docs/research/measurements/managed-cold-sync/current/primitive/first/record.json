@@ -1,0 +1,90 @@
+{
+  "root": "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z",
+  "source_hashes": {
+    "sync.rs": "1685d88186cab60f197a81f26d8b2e82b75b1cb19817fdbfe72d9fa8bfda8ddd",
+    "primitive_case.rs": "7b16c2c7917b29650d707058818c7fbf84dd18d2b3b368799750b1cf2bf0d6c0",
+    "allocation.rs": "e5ba7620f48a1d9cafe2057bc9dd88832ec44f1179e8a7ef080fdf8725e373b8"
+  },
+  "libc": {
+    "path": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+    "sha256": "85646a3e267421fc07d236d20e625beaef4018c60b9291405b82f35766985f3a"
+  },
+  "commands": [
+    {
+      "name": "identity",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "-vV"
+      ],
+      "exit": 0,
+      "stdout": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "stderr": ""
+    },
+    {
+      "name": "compile",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive-tests"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "cases",
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive-tests",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "stdout": "\nrunning 2 tests\ntest cold_pair_wait_notify_and_timeout_under_refusal ... ok\ntest storage_refusal_returns_the_owned_value ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "stderr": "COLD_REFUSED_BYTES 72\n"
+    },
+    {
+      "name": "negative-guard-send",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive-tests",
+        "--cfg",
+        "send_guard"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "error[E0277]: `*mut ()` cannot be sent between threads safely\n   --> /Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive_case.rs:112:19\n    |\n112 |     requires_send(guard);\n    |     ------------- ^^^^^ `*mut ()` cannot be sent between threads safely\n    |     |\n    |     required by a bound introduced by this call\n    |\n    = help: within `Guard<'_, ()>`, the trait `Send` is not implemented for `*mut ()`\nnote: required because it appears within the type `PhantomData<*mut ()>`\n   --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/marker.rs:811:11\nnote: required because it appears within the type `Guard<'_, ()>`\n   --> /Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/sync.rs:182:19\n    |\n182 | pub(crate) struct Guard<'a, T> {\n    |                   ^^^^^\nnote: required by a bound in `requires_send`\n   --> /Users/adalundhe/managed-cold-sync-primitive-v1-hoxizp0z/primitive_case.rs:111:25\n    |\n111 |     fn requires_send<T: Send>(_: T) {}\n    |                         ^^^^ required by this bound in `requires_send`\nhelp: consider dereferencing here\n    |\n112 |     requires_send(*guard);\n    |                   +\n\nerror: aborting due to 1 previous error\n\nFor more information about this error, try `rustc --explain E0277`.\n"
+    }
+  ],
+  "scope": "candidate native backend, no API binding; 1CPU/1GiB/2GiB admission only, no data/RSS quota claim",
+  "test_exit": 0,
+  "negative_expected": true
+}
