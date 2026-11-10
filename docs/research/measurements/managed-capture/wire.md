@@ -2,6 +2,8 @@
 
 Implementer `/root/managed_capture`, policy SHA-256
 `0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936`.
+This is the original wire-review receipt; the renewed policy and implementation
+checkpoint are recorded in [core.md](core.md).
 Parent approved this scoped representation after its actual KVM red at fixture
 `cdc463b4302bbe85ca2d6107a0b4c2cc6b8a594a`: Fedora runner `8fadc`, kiln r47,
 42.08 s, exit 101, 0 passed/1 failed. The parent retains
@@ -39,9 +41,10 @@ reader serving other admitted records or main/control progress.
 Files-only declarations keep their declared identity without starting an output
 service. `managed-active=` carries a nonempty sorted unique list of u32BE declared
 IDs below `managed-members`; its checked parser borrows fixed-width entries.
-The daemon derives the active plan from authoritative image files using the
-existing EROFS/VFS resolution seam; trusted init verifies its actual runnable
-ordinals match before release. IDs remain the existing `Domain.id - DOMAIN_FIRST_ID`
+The experimental daemon prototype derives the active plan from image files using
+the existing EROFS/VFS resolution seam; root is reviewing that duplicated read
+against a single authoritative trusted-init prelaunch activation gate. Trusted
+init verifies actual runnable ordinals match before release. IDs remain the existing `Domain.id - DOMAIN_FIRST_ID`
 (agents then harnesses, including gaps); scheduling positions are separate.
 
 Normal duplex management closure uses empty `MANAGED_CONTROL_END` (wire ordinal47,

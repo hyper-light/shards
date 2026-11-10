@@ -57,7 +57,7 @@ const LINKS: [(&CStr, &CStr); 4] = [
 /// A domain to start.
 #[derive(Debug, Clone)]
 pub struct Domain {
-    /// `agent main`, `harness drive`: what its output lines are prefixed with.
+    /// The trusted display label, independent of its numeric tenant identity.
     pub label: String,
     /// Its cgroup's name, `agent-main`, which is its host name too.
     pub cgroup: String,
@@ -538,22 +538,26 @@ fn domain(
     })
 }
 
-/// A started domain: its label, and its output's read end.
+/// A started tenant: stable declared identity, owned lifetime and private output.
 #[derive(Debug)]
 pub struct Started {
+    pub member: u32,
+    pub output_control: crate::capture::OutputControl,
     pub label: String,
     /// Its cgroup's directory.
     pub cgroup: String,
     pub lifecycle: crate::managed::Owned,
-    pub out: Option<OwnedFd>,
-    /// What it wrote past its last whole line.
-    pub partial: Vec<u8>,
+    pub stdout: crate::capture::Pipe,
+    pub stderr: crate::capture::Pipe,
 }
 
 impl Started {
-    pub fn abort_output(&mut self, _errno: i32) {
-        self.out = None;
-        self.partial.clear();
+    pub fn abort_output(&mut self, errno: i32) {
+        self.stdout.abort();
+        self.stderr.abort();
+        if matches!(self.output_control, crate::capture::OutputControl::Active) {
+            self.output_control = crate::capture::OutputControl::Pending(errno);
+        }
     }
 }
 
@@ -1613,6 +1617,9 @@ pub fn start(
     };
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
+        let member =
+            d.id.checked_sub(FIRST_ID)
+                .ok_or("managed member ordinal precedes its namespace")?;
         let group = format!("{CGROUPS}/{}", d.cgroup);
         std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
         if let Some(n) = d.pids {
@@ -1781,17 +1788,10 @@ pub fn start(
             }
             None => None,
         };
-        let mut fds = [0 as RawFd; 2];
-        // SAFETY: pipe2(2) into a two-element array.
-        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
-            return Err(format!(
-                "{}: its output pipe: {}",
-                d.label,
-                io::Error::last_os_error()
-            ));
-        }
-        // SAFETY: both descriptors were just made, and are owned here alone.
-        let (read_end, write_end) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let (stdout, stdout_write) =
+            crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
+        let (stderr, stderr_write) =
+            crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
         let mut launch = crate::managed::Launch::new(last_cap, &cgroup)
             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
@@ -1816,14 +1816,23 @@ pub fn start(
         }
         if pid == 0 {
             let setup = launch.child();
-            child(d, &prepared, write_end.as_raw_fd(), setup, filter.0, &program);
+            child(
+                d,
+                &prepared,
+                stdout_write.as_raw_fd(),
+                stderr_write.as_raw_fd(),
+                setup,
+                filter.0,
+                &program,
+            );
         }
         let pid = libc::pid_t::try_from(pid)
             .map_err(|_| format!("{}: the kernel returned a PID out of range", d.label))?;
         let mut lifecycle = launch
             .parent(pid, cgroup)
             .map_err(|e| format!("{}: retaining its owner: {e}", d.label))?;
-        drop(write_end);
+        drop(stdout_write);
+        drop(stderr_write);
         drop(root);
         drop(copies);
         if let (Some(link), Some((r, w))) = (&d.link, go) {
@@ -1866,13 +1875,14 @@ pub fn start(
         lifecycle
             .launched()
             .map_err(|e| format!("{}: its launch: {e}", d.label))?;
-        crate::run::set_nonblocking(read_end.as_raw_fd(), true);
         started.push(Started {
+            member,
+            output_control: crate::capture::OutputControl::Active,
             label: d.label.clone(),
             cgroup: group.clone(),
             lifecycle,
-            out: Some(read_end),
-            partial: Vec::new(),
+            stdout,
+            stderr,
         });
     }
     drop(joined);
@@ -2210,7 +2220,15 @@ fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, what: &CStr) -> ! 
 }
 
 /// A domain's first process, before its program.
-fn child(d: &Domain, p: &Prepared, out: RawFd, setup: RawFd, flags: u32, program: &libc::sock_fprog) -> ! {
+fn child(
+    d: &Domain,
+    p: &Prepared,
+    stdout: RawFd,
+    out: RawFd,
+    setup: RawFd,
+    flags: u32,
+    program: &libc::sock_fprog,
+) -> ! {
     let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
     let null = std::ptr::null::<libc::c_char>();
     let nil = std::ptr::null::<libc::c_void>();
@@ -2476,7 +2494,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, setup: RawFd, flags: u32, program
         if devnull < 0
             || status < 0
             || libc::dup2(devnull, 0) < 0
-            || libc::dup2(out, 1) < 0
+            || libc::dup2(stdout, 1) < 0
             || libc::dup2(out, 2) < 0
         {
             fail(out, c"giving it its stdio");

@@ -7,6 +7,8 @@ mod build;
 #[cfg(target_os = "linux")]
 mod caches;
 #[cfg(target_os = "linux")]
+mod capture;
+#[cfg(target_os = "linux")]
 mod changes;
 #[cfg(target_os = "linux")]
 mod chooser;

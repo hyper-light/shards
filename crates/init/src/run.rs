@@ -229,6 +229,19 @@ pub fn main(device: &str, template: bool) -> ! {
         ];
         let declared = declared.map_or_else(crate::domains::read, Ok);
         match declared.and_then(|(all, domains, pairs)| {
+            workload.capture = crate::capture::Capture::prepare(
+                &spec.setup,
+                domains.iter().map(|d| (d.id, d.label.as_str())),
+            )?;
+            if workload.capture.is_some() {
+                if signals.is_none() {
+                    return Err("managed output has no independent control connection".into());
+                }
+                let active = run::managed::active(&spec.setup)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("managed activation missing")?;
+                workload.capture_control = Some(crate::capture::ControlQueue::prepare(active.len())?);
+            }
             crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
         }) {
             Ok(domains) if domains.is_empty() => {}
@@ -2167,9 +2180,10 @@ struct Workload {
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
     tty: bool,
-    /// The image's agents and harnesses, started before it (D59): their output is relayed
-    /// on its stderr, each line prefixed with the domain.
+    /// The image's agents and harnesses, with separately owned output capture.
     domains: Vec<crate::domains::Started>,
+    capture: Option<crate::capture::Capture>,
+    capture_control: Option<crate::capture::ControlQueue>,
     /// Their memory, watched, where there are any.
     memory: Option<crate::domains::Memory>,
     /// The process events connector, listened to for the run's record of processes (D123),
@@ -2829,6 +2843,8 @@ impl Standby {
             sigchld,
             tty: false,
             domains: Vec::new(),
+            capture: None,
+            capture_control: None,
             memory: None,
             procs: None,
             binds: None,
@@ -3010,6 +3026,8 @@ impl Standby {
                 sigchld,
                 tty: false,
                 domains: Vec::new(),
+                capture: None,
+                capture_control: None,
                 memory: None,
                 procs: None,
                 binds,
@@ -3030,6 +3048,8 @@ impl Standby {
             sigchld,
             tty: true,
             domains: Vec::new(),
+            capture: None,
+            capture_control: None,
             memory: None,
             procs: None,
             binds,
@@ -4274,7 +4294,8 @@ enum Owner {
     /// An exec's, by its index.
     Exec(usize, Part),
     /// A domain's output, by its index.
-    Domain(usize),
+    Domain(usize, shards_abi::run::managed::Channel),
+    Capture,
     DomainLife(usize),
     /// The domains' memory.
     Memory,
@@ -4377,6 +4398,72 @@ impl Workload {
         let mut fatal = None;
         'relay: loop {
             let exited = status.is_some();
+            if exited {
+                for domain in &mut self.domains {
+                    domain.stdout.abort();
+                    domain.stderr.abort();
+                }
+                self.capture = None;
+                if let Some(control) = self.capture_control.as_mut()
+                    && let Err(e) = control.end()
+                {
+                    fatal = Some(setup_failed(format!("managed control end: {e}")));
+                    break 'relay;
+                }
+            }
+            if self
+                .capture
+                .as_ref()
+                .is_some_and(crate::capture::Capture::drained)
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal())
+            {
+                self.capture = None;
+            }
+            for domain in &mut self.domains {
+                if let crate::capture::OutputControl::Pending(errno) = domain.output_control {
+                    if exited {
+                        domain.output_control = crate::capture::OutputControl::Reported;
+                        continue;
+                    }
+                    let result = self
+                        .capture_control
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other("missing managed terminal reservation"))
+                        .and_then(|control| {
+                            control.push(run::managed::Abort {
+                                member: domain.member,
+                                errno,
+                            })
+                        });
+                    if let Err(e) = result {
+                        fatal = Some(setup_failed(format!("managed abort control: {e}")));
+                        break 'relay;
+                    }
+                    if let Some(capture) = self.capture.as_mut()
+                        && let Err(e) = capture.abort_member(domain.member)
+                    {
+                        fatal = Some(setup_failed(format!("managed abort credit: {e}")));
+                        break 'relay;
+                    }
+                    domain.output_control = crate::capture::OutputControl::Reported;
+                }
+            }
+            if let Some(capture) = self.capture.as_mut() {
+                for domain in &mut self.domains {
+                    for (channel, pipe) in [
+                        (run::managed::Channel::Stdout, &mut domain.stdout),
+                        (run::managed::Channel::Stderr, &mut domain.stderr),
+                    ] {
+                        if let Err(e) = capture.open(domain.member, channel, &domain.label, pipe) {
+                            fatal = Some(setup_failed(format!("managed output: {e}")));
+                            break 'relay;
+                        }
+                    }
+                }
+            }
             // The host gone, binds on its network are answered by no one: their process
             // ends, which fails what waits (D124).
             if host.is_none() {
@@ -4418,7 +4505,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.out.is_none() && d.lifecycle.settled())
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && d.lifecycle.settled())
             {
                 if oom_killed() {
                     let facts = oom_facts(WORKLOAD_CGROUP);
@@ -4451,6 +4538,10 @@ impl Workload {
             // or closed the connection, which the run's end after the loop does not
             // wait for again (D119).
             if exited
+                && self
+                    .capture_control
+                    .as_ref()
+                    .is_none_or(crate::capture::ControlQueue::ended)
                 && flushing.is_none()
                 && !quiet
                 && self.stdout.is_none()
@@ -4463,7 +4554,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.out.is_none() && d.lifecycle.settled())
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && d.lifecycle.settled())
                 && (host.is_none()
                     || self
                         .procs
@@ -4513,6 +4604,15 @@ impl Workload {
             );
             let signal_events = if signals_connected {
                 libc::POLLIN
+                    | if self
+                        .capture_control
+                        .as_ref()
+                        .is_some_and(crate::capture::ControlQueue::pending)
+                    {
+                        libc::POLLOUT
+                    } else {
+                        0
+                    }
             } else {
                 libc::POLLOUT
             };
@@ -4534,11 +4634,36 @@ impl Workload {
             );
             for (i, d) in self.domains.iter().enumerate() {
                 poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
-                poll(
-                    d.out.as_ref().map(AsRawFd::as_raw_fd),
-                    out_events,
-                    Owner::Domain(i),
-                );
+            }
+            if let Some(capture) = self.capture.as_ref() {
+                poll(Some(capture.fd()), capture.events(), Owner::Capture);
+                if capture.drained() && !self.domains.is_empty() {
+                    let start = (capture.next() / 2) % self.domains.len();
+                    let channels = if capture.next() % 2 == 0 {
+                        [run::managed::Channel::Stdout, run::managed::Channel::Stderr]
+                    } else {
+                        [run::managed::Channel::Stderr, run::managed::Channel::Stdout]
+                    };
+                    for (i, d) in self
+                        .domains
+                        .iter()
+                        .enumerate()
+                        .cycle()
+                        .skip(start)
+                        .take(self.domains.len())
+                    {
+                        for channel in channels {
+                            if !capture.ready(d.member, channel) {
+                                continue;
+                            }
+                            let pipe = match channel {
+                                run::managed::Channel::Stdout => &d.stdout,
+                                run::managed::Channel::Stderr => &d.stderr,
+                            };
+                            poll(pipe.fd(), libc::POLLIN, Owner::Domain(i, channel));
+                        }
+                    }
+                }
             }
             poll(
                 self.memory.as_ref().map(crate::domains::Memory::fd),
@@ -4820,6 +4945,13 @@ impl Workload {
                             }
                             continue;
                         }
+                        if let Some(control) = self.capture_control.as_mut()
+                            && control.pending()
+                            && let Err(e) = control.write(fd)
+                        {
+                            fatal = Some(setup_failed(format!("managed control connection: {e}")));
+                            break 'relay;
+                        }
                         match read(fd, &mut buf) {
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
                             Ok(0) | Err(_) => signals = None,
@@ -4926,24 +5058,36 @@ impl Workload {
                             }
                         }
                     }
-                    Owner::Domain(i) => {
-                        let Some(d) = self.domains.get_mut(i) else {
+                    Owner::Capture => {
+                        if let Some(capture) = self.capture.as_mut()
+                            && let Err(e) = capture.progress()
+                            && !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
+                        {
+                            fatal = Some(setup_failed(format!("managed output connection: {e}")));
+                            break 'relay;
+                        }
+                    }
+                    Owner::Domain(i, channel) => {
+                        let (Some(domain), Some(capture)) = (self.domains.get_mut(i), self.capture.as_mut())
+                        else {
                             continue;
                         };
-                        if d.lifecycle.quarantined() {
+                        if domain.lifecycle.quarantined() {
                             continue;
                         }
-                        let (data, eof) = match read(fd, &mut buf) {
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                            Ok(0) | Err(_) => (&[][..], true),
-                            Ok(n) => (buf.get(..n).unwrap_or_default(), false),
+                        let pipe = match channel {
+                            run::managed::Channel::Stdout => &mut domain.stdout,
+                            run::managed::Channel::Stderr => &mut domain.stderr,
                         };
-                        crate::frames::prefixed_lines(&d.label, &mut d.partial, data, eof, |line| {
-                            let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
-                            to_host.extend(&[&run::header(kind::STDERR, len), line]);
-                        });
-                        if eof {
-                            d.out = None;
+                        if let Err(e) = capture.read(domain.member, channel, pipe) {
+                            fatal = Some(setup_failed(format!("managed output read: {e}")));
+                            break 'relay;
+                        }
+                        if !capture.drained()
+                            && let Err(e) = capture.advance(i, channel)
+                        {
+                            fatal = Some(setup_failed(format!("managed scheduling: {e}")));
+                            break 'relay;
                         }
                     }
                     Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
@@ -5537,13 +5681,13 @@ pub(crate) fn set_nonblocking(fd: RawFd, on: bool) {
     }
 }
 
-fn read(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     // SAFETY: `buf` is valid for its length.
     let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
     usize::try_from(n).map_err(|_| io::Error::last_os_error())
 }
 
-fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
+pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
     // SAFETY: `buf` is valid for its length.
     let n = unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) };
     match usize::try_from(n) {

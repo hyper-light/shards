@@ -30,22 +30,27 @@ pub fn wait_readable(
     sockets: &[super::RawSocket],
     timeout: Option<std::time::Duration>,
 ) -> io::Result<Vec<bool>> {
-    let mut polled: Vec<libc::pollfd> = sockets
-        .iter()
-        .map(|&fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect();
+    let mut polled: Vec<libc::pollfd> = Vec::new();
+    polled
+        .try_reserve_exact(sockets.len())
+        .map_err(io::Error::other)?;
+    polled.extend(sockets.iter().map(|&fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    }));
+    let count = libc::nfds_t::try_from(polled.len()).map_err(io::Error::other)?;
+    let mut ready = Vec::new();
+    ready.try_reserve_exact(polled.len()).map_err(io::Error::other)?;
     // Rounded up, so that a wait never ends early.
     let ms = timeout.map_or(-1, |t| {
         libc::c_int::try_from(t.as_micros().div_ceil(1000)).unwrap_or(libc::c_int::MAX)
     });
     loop {
         // SAFETY: poll(2) on `polled.len()` entries of descriptors the caller holds.
-        if unsafe { libc::poll(polled.as_mut_ptr(), polled.len() as libc::nfds_t, ms) } >= 0 {
-            return Ok(polled.iter().map(|p| p.revents != 0).collect());
+        if unsafe { libc::poll(polled.as_mut_ptr(), count, ms) } >= 0 {
+            ready.extend(polled.iter().map(|p| p.revents != 0));
+            return Ok(ready);
         }
         let e = io::Error::last_os_error();
         if e.kind() != io::ErrorKind::Interrupted {

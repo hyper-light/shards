@@ -230,6 +230,8 @@ impl fmt::Display for Error {
     }
 }
 
+impl core::error::Error for Error {}
+
 impl Record<'_> {
     pub fn decode(bytes: &[u8]) -> Result<Record<'_>, Error> {
         let (header, payload) = bytes.split_first_chunk::<HEADER>().ok_or(Error::Header)?;

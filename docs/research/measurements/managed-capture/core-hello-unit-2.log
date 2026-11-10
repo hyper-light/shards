@@ -1,0 +1,9 @@
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+     Running unittests src/main.rs (target/debug/deps/shards_vm-9f74ba2411604028)
+
+running 1 test
+test workload::tests::exec_connections_go_only_to_the_exec_they_name ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+

@@ -28,23 +28,28 @@ pub fn wait_readable(
     timeout: Option<std::time::Duration>,
 ) -> io::Result<Vec<bool>> {
     use windows_sys::Win32::Networking::WinSock::{POLLRDNORM, WSAPOLLFD, WSAPoll};
-    let mut polled: Vec<WSAPOLLFD> = sockets
-        .iter()
-        .map(|&fd| WSAPOLLFD {
-            fd,
-            events: POLLRDNORM,
-            revents: 0,
-        })
-        .collect();
+    let mut polled: Vec<WSAPOLLFD> = Vec::new();
+    polled
+        .try_reserve_exact(sockets.len())
+        .map_err(io::Error::other)?;
+    polled.extend(sockets.iter().map(|&fd| WSAPOLLFD {
+        fd,
+        events: POLLRDNORM,
+        revents: 0,
+    }));
+    let count = u32::try_from(polled.len()).map_err(io::Error::other)?;
+    let mut ready = Vec::new();
+    ready.try_reserve_exact(polled.len()).map_err(io::Error::other)?;
     // Rounded up, so that a wait never ends early.
     let ms = timeout.map_or(-1, |t| {
         i32::try_from(t.as_micros().div_ceil(1000)).unwrap_or(i32::MAX)
     });
     // SAFETY: `polled.len()` entries of sockets the caller holds.
-    if unsafe { WSAPoll(polled.as_mut_ptr(), polled.len() as u32, ms) } < 0 {
+    if unsafe { WSAPoll(polled.as_mut_ptr(), count, ms) } < 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(polled.iter().map(|p| p.revents != 0).collect())
+    ready.extend(polled.iter().map(|p| p.revents != 0));
+    Ok(ready)
 }
 
 /// Makes `dir` and its missing parents. Under `%LOCALAPPDATA%`, they inherit ACLs that

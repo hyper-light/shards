@@ -171,7 +171,7 @@ pub struct Muxer {
     /// Host ports served in this process, each for its first connection.
     served: HashMap<u32, Sender<UnixStream>>,
     /// Host ports served in this process for every connection.
-    every: HashMap<u32, Sender<UnixStream>>,
+    every: HashMap<u32, crate::vm::ServedPort>,
     handshakes: Vec<Handshake>,
     conns: HashMap<Key, Conn>,
     /// Ended connections whose host sockets are held until their peers end their sides
@@ -405,9 +405,16 @@ impl Muxer {
         // the guest runs, and a later dial, by a workload, is refused (AGENTFILE_ARCH.md
         // §9.7).
         let served = self.served.remove(&key.local_port);
-        let connected = match served.as_ref().or_else(|| self.every.get(&key.local_port)) {
-            Some(port) => serve(port),
-            None => match &self.listener {
+        let connected = match (served.as_ref(), self.every.get(&key.local_port)) {
+            (Some(port), _) => serve(|stream| {
+                if port.send(stream).is_ok() {
+                    crate::vm::Admission::Accepted
+                } else {
+                    crate::vm::Admission::Closed
+                }
+            }),
+            (None, Some(port)) => serve(|stream| port.accept(stream)),
+            (None, None) => match &self.listener {
                 Some((path, _)) => {
                     let mut target = OsString::from(path.as_os_str());
                     target.push(format!("_{}", key.local_port));
@@ -689,11 +696,24 @@ impl Drop for Muxer {
 
 /// A connection to a port this process serves: the muxer's end of a socket pair, whose
 /// other end goes to the port's sender. Refused once nothing receives there.
-fn serve(port: &Sender<UnixStream>) -> io::Result<UnixStream> {
+fn serve(accept: impl FnOnce(UnixStream) -> crate::vm::Admission) -> io::Result<UnixStream> {
     let (ours, theirs) = UnixStream::pair()?;
     ours.set_nonblocking(true)?;
-    port.send(theirs)
-        .map_err(|_| io::Error::new(io::ErrorKind::ConnectionRefused, "no longer served"))?;
+    match accept(theirs) {
+        crate::vm::Admission::Accepted => {}
+        crate::vm::Admission::Full => {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "host port admission is full",
+            ));
+        }
+        crate::vm::Admission::Closed => {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "host port is closed",
+            ));
+        }
+    }
     Ok(ours)
 }
 
@@ -968,7 +988,7 @@ mod tests {
         let host = VsockHost {
             path: Some(dir.clone()),
             ports: Vec::new(),
-            every: vec![(54, sender)],
+            every: vec![(54, sender.into())],
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: one slot, which the guest's connection holds.
@@ -1201,7 +1221,7 @@ mod tests {
         let host = VsockHost {
             path: None,
             ports: Vec::new(),
-            every: vec![(54, sender)],
+            every: vec![(54, sender.into())],
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1236,7 +1256,7 @@ mod tests {
         let host = VsockHost {
             path: None,
             ports: Vec::new(),
-            every: vec![(54, sender)],
+            every: vec![(54, sender.into())],
         };
         let mut m = Muxer::new(host, 3).unwrap();
         let mem = GuestMemory::anonymous(&[(0x8000_0000, 1 << 16)]).unwrap();
@@ -1316,7 +1336,7 @@ mod tests {
         let host = VsockHost {
             path: Some(dir_guard.join("v")),
             ports: Vec::new(),
-            every: vec![(54, sender)],
+            every: vec![(54, sender.into())],
         };
         let mut m = Muxer::new(host, 3).unwrap();
         // An input: few slots and small rings, which saves in a row outgrow.
