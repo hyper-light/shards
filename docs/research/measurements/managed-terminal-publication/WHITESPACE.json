@@ -1,0 +1,46 @@
+{
+  "classification": "Original raw light results and exact candidate mutation preserved byte-identically; no source/global exception",
+  "actual_exit": 2,
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/candidate-edge-red.log",
+      "sha256": "a6d8e46c6a678b93273aafcbb18fc2cdc035b5bba271ef558711e9046997005e"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/candidate-edge-red.patch",
+      "sha256": "2ffa3a3efe7b5526462be089d59ba08e118c0de10354d151be04bca83921ccdf"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/candidate-edge-red/1.log",
+      "sha256": "d473fe5a8135e557f7259e3a6a8714f1cb66c1f0dc236cadab0f5658e1fe6b1d"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-final.log",
+      "sha256": "1ffaf6f7a9e98216559324cc4caaba424099c2d659a2c3adad0a75154020a915"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-final/1.log",
+      "sha256": "edb5f7324792a2d4206ba9670f5dce9ee32bcb3c407291a4056b3912981df3f2"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-final2.log",
+      "sha256": "3fee8e518c1318938a9938fee7732481e7df2bdb451a6d77a1beb927338c8f8b"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-final2/1.log",
+      "sha256": "edb5f7324792a2d4206ba9670f5dce9ee32bcb3c407291a4056b3912981df3f2"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-green.log",
+      "sha256": "63fe8596d70cba89801ae12375cda2b42053d081326e9b51bca466e06938a42e"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/pure-green/1.log",
+      "sha256": "07fa732e1bebb442780a71870485fa0d75005dc3596e62db040e3ada48d4a45c"
+    },
+    {
+      "path": "docs/research/measurements/managed-terminal-publication/raw/remote-terminal-pure.log",
+      "sha256": "18e53f8a7e202c74036650a016256989f7b9a1e87d335309ab88908734d52001"
+    }
+  ]
+}

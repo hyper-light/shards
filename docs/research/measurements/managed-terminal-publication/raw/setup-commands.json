@@ -1,0 +1,85 @@
+[
+  {
+    "argv": [
+      "git",
+      "clone",
+      "--filter=blob:none",
+      "--sparse",
+      "--no-checkout",
+      "--single-branch",
+      "--branch",
+      "main",
+      "git@github.com:hyper-light/shards.git",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1",
+    "exit_code": 0,
+    "log": "clone.log",
+    "sha256": "d6483bec2f4090430cfd060ace5b1aa73251ff554a72c995b9445b4e15d03b6d"
+  },
+  {
+    "argv": [
+      "git",
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "/Cargo.toml",
+      "/Cargo.lock",
+      "/AGENTS.md",
+      "/CLAUDE.md",
+      "/clippy.toml",
+      "/rustfmt.toml",
+      "/.cargo/",
+      "/scripts/check-development-policy",
+      "/scripts/lint",
+      "/resources/supported-targets.txt",
+      "/.github/workflows/ci.yml",
+      "/.github/workflows/release.yml",
+      "/docs/development-rules.md",
+      "/docs/development-evidence.md",
+      "/crates/abi/",
+      "/crates/ipc/",
+      "/crates/remote/",
+      "/crates/testdir/",
+      "/crates/shards/src/daemon.rs",
+      "/crates/shards/src/daemon/managed.rs",
+      "/vendor/aws-lc-rs/",
+      "/vendor/aws-lc-sys/",
+      "/vendor/rquickjs-sys/"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "sparse.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "git",
+      "checkout",
+      "--detach",
+      "4bfaceb3887e857b2d1e03abd533bccc2833e681"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "checkout.log",
+    "sha256": "eb0f29558e0d98c754e7cdb98e15724c7d14f7db447ed3d1036ba06db949e379"
+  },
+  {
+    "argv": [
+      "python3",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/docs/research/measurements/managed-terminal-publication/pure.py",
+      "--source",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+      "--output",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/candidate-edge-red",
+      "--timeout-seconds",
+      "30",
+      "--filter",
+      "terminal_tests::endpoint_loss_"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 101,
+    "log": "candidate-edge-red.log",
+    "sha256": "a6d8e46c6a678b93273aafcbb18fc2cdc035b5bba271ef558711e9046997005e"
+  }
+]

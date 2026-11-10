@@ -1,0 +1,8 @@
+[package]
+name="managed-terminal-light"
+version="0.0.0"
+edition.workspace=true
+[lib]
+path="/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final2/terminal-pure.rs"
+[lints]
+workspace=true

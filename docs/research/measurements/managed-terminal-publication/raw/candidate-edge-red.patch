@@ -1,0 +1,89 @@
+--- a/crates/shards/src/daemon/managed.rs
++++ b/crates/shards/src/daemon/managed.rs
+@@ -180,7 +180,7 @@
+             (Self::Draining(Terminal::End), State::Finished(_), _) => Self::Ended,
+             (Self::Draining(terminal), State::Finished(_) | State::Aborted(_), _)
+             | (Self::Draining(terminal), _, Resolve::Stop) => Self::Aborted(Some(terminal)),
+-            (Self::Serving, State::Aborted(_), _) | (Self::Serving, _, Resolve::Stop) => Self::Aborted(None),
++            (Self::Serving, _, Resolve::Stop) => Self::Aborted(None),
+             _ => return None,
+         };
+         *self = next;
+@@ -263,17 +263,17 @@
+         Ok(desired.min(learning.admitted))
+     }
+ 
+-    fn resolve(&self, event: Resolve) -> Option<(Life, State)> {
++    fn resolve(&self, event: Resolve) -> Option<(Life, Progress)> {
+         let mut life = lock(&self.life);
+         // Stop must observe Finished before retiring Shared, even if the credit
+         // worker has not yet published it. Life arbitrates that single winner.
+         let state = self.control.state();
+-        life.resolve(state, event).map(|next| (next, state))
+-    }
+-
+-    fn publish(&self, terminal: Option<(Life, State)>) {
+-        let Some((life, state)) = terminal else { return };
+-        let result = life.write(&mut *lock(&self.metadata), self.scope, state.progress());
++        life.resolve(state, event).map(|next| (next, state.progress()))
++    }
++
++    fn publish(&self, terminal: Option<(Life, Progress)>) {
++        let Some((state, at)) = terminal else { return };
++        let result = state.write(&mut *lock(&self.metadata), self.scope, at);
+         if let Err(error) = result {
+             // Logical consumption is sticky, but a failed append is not publication.
+             // Retire this transport without holding metadata/Life/credit locks.
+@@ -309,11 +309,7 @@
+ 
+     fn complete(&self) {
+         self.observed();
+-        let terminal = self.resolve(Resolve::Complete);
+-        if matches!(terminal, Some((_, State::Aborted(_)))) {
+-            self.stop_transport();
+-        }
+-        self.publish(terminal);
++        self.publish(self.resolve(Resolve::Complete));
+     }
+ }
+ 
+@@ -504,11 +500,7 @@
+                     (CreditSlot::Captured(bytes, after), State::Ready(_)) => {
+                         Some(Action::Submit(index, bytes, after))
+                     }
+-                    (CreditSlot::Draining, State::Finished(_))
+-                    | (
+-                        CreditSlot::Waiting | CreditSlot::Captured(..) | CreditSlot::Draining,
+-                        State::Aborted(_),
+-                    ) => {
++                    (CreditSlot::Draining, State::Finished(_) | State::Aborted(_)) => {
+                         *slot = CreditSlot::Ended;
+                         Some(Action::Complete(index))
+                     }
+@@ -1503,26 +1495,6 @@
+ 
+     #[test]
+     fn readiness_is_derived_and_a_spurious_wake_does_not_issue_credit() {
+-        let waiting = queue(vec![CreditSlot::Waiting]);
+-        let remote = Mutex::new(State::Pending(at(0, 0)));
+-        let (inspected, observed) = std::sync::mpsc::sync_channel(1);
+-        std::thread::scope(|threads| {
+-            let worker = threads.spawn(|| {
+-                waiting.next(|_| {
+-                    let state = *lock(&remote);
+-                    if matches!(state, State::Pending(_)) {
+-                        let _ = inspected.try_send(());
+-                    }
+-                    Ok(state)
+-                })
+-            });
+-            observed.recv().unwrap();
+-            waiting.wake();
+-            observed.recv().unwrap();
+-            *lock(&remote) = State::Ready(at(0, 0));
+-            waiting.wake();
+-            assert!(matches!(worker.join().unwrap().unwrap(), Some(Action::Grant(0))));
+-        });
+         let credits = queue(vec![
+             CreditSlot::Waiting,
+             CreditSlot::Captured(vec![1], After::More),

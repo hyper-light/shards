@@ -27,3 +27,32 @@ rebuilt together at this source. macOS arm64 only; Windows ARM stays paused.
 No production constant/cache/polling/manager, authority/profile/crypto or installed
 binary change is selected by these finite caller-input fixtures. New ignored
 cases remain explicitly unrun until ROOT executes them. Full plan stays open.
+
+## Root-reviewed terminal correction composition
+
+This candidate now composes only signed d26084720cb86e530bf9f9b69af91984b6c85539.
+Its daemon/remote bytes match the implementer final hashes exactly. ROOT reviewed
+all changed production paths, strict source and14 fragment/call plus3 real-Shared
+light records and limits. Shared is the authoritative wire/credit view; Life
+arbitrates the canonical terminal and stop; the existing credit worker handles
+completion. Callback remains wake-only. Held edges are credit→Shared and
+Life→Shared, with guards released before metadata I/O/stop callbacks. Canonical
+Aborted errno and equal-cursor uncertainty are preserved; no new queue capacity,
+cache/polling/worker, wire version, privilege or crypto choice. Learning now
+includes worker dispatch delay, which remains a measured-cost obligation.
+
+Actual clean before-source26bab0778 rootr692 compiled full helpers0 and ran
+one normal and one stdio case. Both completed their exact causal protocol and
+owned cleanup/FD7→7, then returned101 at the same strict final metadata assertion.
+The stdio case independently echoed a fresh owner challenge after both actor
+output EOFs while actor/sibling/main stayed alive. Raw records and frozen artifacts
+are under ~/root-managed-terminal-before-26ba-v1 and its artifacts-v1 on Fedora;
+no passing correction or full plan is claimed before ROOT's next actual gates.
+
+ROOT owes complete source-matching after/guard-removal/restored cases, actual
+full native callers, metadata readers/slow or failed publication, concurrent
+owner-stop/completion/abort/withheld ACK/revocation/retirement and all target/
+hardware/cost evidence. In particular logical completion is separate from an
+actual successful/durable metadata append; this source review is not its fault
+or concurrent publication proof. Full aggregate budgets, mandatory routes,
+broker/adapters/credentials and generations remain open; WinARM remains paused.

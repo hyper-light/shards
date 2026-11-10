@@ -1,0 +1,15 @@
+
+running 10 tests
+test terminal_tests::drain_wait_rechecks_the_predicate_across_the_atomic_condvar_release ... ok
+test terminal_tests::draining_completion_is_actionable_without_capacity_and_only_once ... ok
+test terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity ... ok
+test terminal_tests::fully_consumed_canonical_abort_keeps_errno_and_unknown_tail ... ok
+test terminal_tests::known_normal_completion_survives_stop_before_the_worker_publishes ... ok
+test terminal_tests::metadata_failure_is_returned_without_changing_the_logical_winner ... ok
+test terminal_tests::pending_or_aborted_equal_cursors_cannot_publish_normal_completion ... ok
+test terminal_tests::readiness_is_derived_and_a_spurious_wake_does_not_issue_credit ... ok
+test terminal_tests::revocation_and_close_wake_a_drain_without_reopening_it ... ok
+test terminal_tests::stop_before_ack_is_sticky_and_retains_the_known_canonical_failure ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+
+running 1 test
+test terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity ... 
+thread 'terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity' (1017307) panicked at /home/adalundhe/managed-terminal-publication-light-4bfa-v1/candidate-edge-red/terminal-pure.rs:473:13:
+assertion `left == right` failed
+  left: None
+ right: Some(Aborted(None))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+

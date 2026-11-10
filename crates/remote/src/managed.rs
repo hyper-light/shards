@@ -254,6 +254,24 @@ pub struct Progress {
     pub consumed: u64,
 }
 
+/// An observation of the authoritative slot, not a second terminal ledger.
+/// Ready and Finished can have the same cursors as a revoked slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    Pending(Progress),
+    Ready(Progress),
+    Finished(Progress),
+    Aborted(Progress),
+}
+
+impl State {
+    pub fn progress(self) -> Progress {
+        match self {
+            Self::Pending(at) | Self::Ready(at) | Self::Finished(at) | Self::Aborted(at) => at,
+        }
+    }
+}
+
 fn progress(slot: &Slot) -> Progress {
     match slot {
         Slot::Waiting(at) | Slot::Ready(at) | Slot::Finished(at) => Progress {
@@ -272,6 +290,32 @@ fn progress(slot: &Slot) -> Progress {
 }
 
 impl Shared {
+    fn state(&self) -> State {
+        let state = lock(self);
+        let at = progress(&state.0);
+        match state.0 {
+            Slot::Aborted { .. } => State::Aborted(at),
+            Slot::Finished(_) => State::Finished(at),
+            Slot::Ready(_) if matches!(state.1, Ending::Open) => State::Ready(at),
+            _ => State::Pending(at),
+        }
+    }
+
+    fn finish(&self) -> Result<(), Error> {
+        {
+            let mut state = lock(self);
+            if matches!(state.0, Slot::Aborted { .. }) || matches!(state.1, Ending::Aborted) {
+                return Err(Error::Closed);
+            }
+            state.1 = Ending::Finishing;
+            if let Slot::Ready(at) | Slot::Waiting(at) = state.0 {
+                state.0 = Slot::Finished(at);
+            }
+        }
+        self.notify();
+        Ok(())
+    }
+
     fn notify(&self) {
         self.changed.notify_all();
         let wake = self
@@ -450,16 +494,13 @@ impl Control {
         progress(&lock(&self.shared).0)
     }
 
+    pub fn state(&self) -> State {
+        self.shared.state()
+    }
+
     /// Ends normally after the admitted record is application-acknowledged.
     pub fn finish(&self) -> Result<(), Error> {
-        {
-            let mut state = lock(&self.shared);
-            state.1 = Ending::Finishing;
-            if let Slot::Ready(at) | Slot::Waiting(at) = state.0 {
-                state.0 = Slot::Finished(at);
-            }
-        }
-        self.shared.notify();
+        self.shared.finish()?;
         // Shared owns finishing; a queued unit wake will flush that state too.
         // Only this endpoint's producer/control enqueue these unit notifications.
         match self.sender.try_send(Command::Handler(())) {
@@ -1000,6 +1041,94 @@ mod tests {
             state: Subscription::Listening,
             control: [0; CONTROL_BYTES],
             control_len: 0,
+        }
+    }
+
+    #[test]
+    fn terminal_observations_do_not_infer_completion_from_equal_cursors() {
+        let at = Progress {
+            accepted: 8,
+            consumed: 8,
+        };
+        for (slot, expected) in [
+            (Slot::Waiting(8), State::Pending(at)),
+            (Slot::Ready(8), State::Ready(at)),
+            (Slot::Finished(8), State::Finished(at)),
+            (
+                Slot::Aborted {
+                    accepted: 8,
+                    consumed: 8,
+                },
+                State::Aborted(at),
+            ),
+        ] {
+            let service = service(slot);
+            assert_eq!(service.shared.state(), expected);
+        }
+    }
+
+    #[test]
+    fn terminal_ack_notification_exposes_finished_after_releasing_shared() {
+        let service = service(Slot::AwaitingAck {
+            start: 3,
+            bytes: vec![1, 2],
+        });
+        service.shared.finish().unwrap();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let weak = Arc::downgrade(&service.shared);
+        let sink = Arc::clone(&observed);
+        *service.shared.waker.lock().unwrap() = Some(Arc::new(move || {
+            // try_lock distinguishes the promised post-unlock callback without hanging.
+            let shared = weak.upgrade().unwrap();
+            assert!(shared.slot.try_lock().is_ok());
+            sink.lock().unwrap().push(shared.state());
+        }));
+        assert!(!service.consumed(4));
+        assert!(observed.lock().unwrap().is_empty());
+        assert!(service.consumed(5));
+        assert_eq!(
+            *observed.lock().unwrap(),
+            [State::Finished(Progress {
+                accepted: 5,
+                consumed: 5
+            })]
+        );
+        assert!(!service.consumed(5));
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        service.shared.finish().unwrap();
+        assert_eq!(
+            service.shared.state(),
+            State::Finished(Progress {
+                accepted: 5,
+                consumed: 5
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_finish_never_revives_an_aborted_slot_or_ending() {
+        for (slot, ending) in [
+            (
+                Slot::Aborted {
+                    accepted: 8,
+                    consumed: 5,
+                },
+                Ending::Open,
+            ),
+            (
+                Slot::Aborted {
+                    accepted: 8,
+                    consumed: 8,
+                },
+                Ending::Aborted,
+            ),
+            (Slot::Ready(8), Ending::Aborted),
+        ] {
+            let service = service(slot);
+            lock(&service.shared).1 = ending;
+            let before = service.shared.state();
+            assert!(matches!(service.shared.finish(), Err(Error::Closed)));
+            assert_eq!(service.shared.state(), before);
         }
     }
 

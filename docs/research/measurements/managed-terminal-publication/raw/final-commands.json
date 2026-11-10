@@ -1,0 +1,41 @@
+[
+  {
+    "argv": [
+      "python3",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source/docs/research/measurements/managed-terminal-publication/pure.py",
+      "--source",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+      "--output",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/pure-final",
+      "--timeout-seconds",
+      "30"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 0,
+    "log": "pure-final.log",
+    "sha256": "1ffaf6f7a9e98216559324cc4caaba424099c2d659a2c3adad0a75154020a915"
+  },
+  {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "-p",
+      "managed-terminal-light",
+      "--all-targets",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/home/adalundhe/managed-terminal-publication-light-4bfa-v1/source",
+    "exit_code": 101,
+    "log": "pure-clippy.log",
+    "sha256": "fc36d01f64fdd05516fd4bc77848f9601129a035f9dac03e7ce01d3e558a22be"
+  }
+]
