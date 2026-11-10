@@ -17452,6 +17452,31 @@ read from that context; before D111 shards refused a policy with one ("not suppo
 
 ### D110. buildx's `exec.proxy` cap: a build's network through a proxy its policies check
 
+**Capacity completion follow-up (2026-11-10).** The native reproduction at
+`23f2e86d` held one admitted worker at its real policy question and queued a second
+Unix connection. The unchanged acceptor woke 91 times in 100.18 ms without a
+completion or stop; the diagnostic test failed its idle-wait assertion. The acceptor
+now excludes the listener while the existing worker map is full and waits on the
+existing stop socket plus a private completion socket. Worker removal publishes a
+notification when it makes room; ending the session also wakes the acceptor. Drain
+notifications before reading the map, so an earlier completion is reflected in the
+predicate and a later one remains readable through the wait. Stop is checked before
+admission. Notification EOF/error ends this session's admission and connections.
+The socketpair adds two session-owned descriptors and kernel socket queues; it
+does not add a cached count, semaphore, worker, runtime dependency or OS-specific
+implementation. One byte is the minimum stream notification; its contents grant
+nothing. The existing connection bound is preserved under the coordinator's scoped
+instruction, with its derivation explicitly owed to the constants lane.
+
+The adjacent identity boundary was reproduced with the test-only next identifier
+set to `u64::MAX`: the original optimized code admitted a connection and wrapped
+its next counter. Admission now checks advancement and reserves map storage before
+committing ownership, retaining typed closed/identity/socket/allocation refusals at
+the actual caller. Native measurements, mutations, primary-source alternatives,
+source hashes and unrun platform gates are recorded in
+[`proxy-capacity`](../research/measurements/proxy-capacity/README.md). This follow-up
+does not establish a real-VM, seven-target or 4–5× comparative performance result.
+
 buildx v0.37.1's policies may ask for the `exec.proxy` cap (`caps := {"exec.proxy":
 true}`, asked once as the build begins with `input.env.capsRequest`); BuildKit v0.33.0 then
 runs every `RUN` step's network through a proxy of its own, each HTTP request and each

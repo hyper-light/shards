@@ -11,6 +11,10 @@ mkdir -p "$proxy_evidence"
     uname -a
     rustc -Vv
     getconf CLK_TCK
+    if test -r /proc/sys/kernel/sched_schedstats; then
+        printf 'sched_schedstats='
+        cat /proc/sys/kernel/sched_schedstats
+    fi
     printf 'samples=%s sample_ms=%s profile=release\n' "${SHARDS_PROXY_SAMPLES:-20}" "${SHARDS_PROXY_SAMPLE_MS:-100}"
 } > "$proxy_evidence/$proxy_phase.environment"
 SHARDS_HELPERS=skip cargo test -j 4 --release -p shards --bin shards \

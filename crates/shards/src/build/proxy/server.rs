@@ -744,7 +744,28 @@ pub struct Session<'p> {
     capture: Mutex<Capture>,
     /// The step's connections, to shut as it ends, and the next one's number.
     live: Mutex<(u64, HashMap<u64, UnixStream>)>,
+    /// Completion wakes only the acceptor; policy questions have their own receiver.
+    capacity: (UnixStream, UnixStream),
     ended: AtomicBool,
+}
+
+#[derive(Debug)]
+enum Admission {
+    Closed,
+    IdentityExhausted,
+    Socket(io::Error),
+    Memory(std::collections::TryReserveError),
+}
+
+impl std::fmt::Display for Admission {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => out.write_str("the proxy session ended"),
+            Self::IdentityExhausted => out.write_str("the proxy connection identities are exhausted"),
+            Self::Socket(e) => write!(out, "retaining the proxy connection: {e}"),
+            Self::Memory(e) => write!(out, "reserving the proxy connection: {e}"),
+        }
+    }
 }
 
 impl std::fmt::Debug for Session<'_> {
@@ -782,7 +803,8 @@ impl<'p> Session<'p> {
     ) -> Result<(Session<'p>, Questions), String> {
         let (asks, asked) = mpsc::channel();
         let (wake, woken) = UnixStream::pair().map_err(|e| format!("the build's proxy: {e}"))?;
-        for s in [&wake, &woken] {
+        let capacity = UnixStream::pair().map_err(|e| format!("the build's proxy: {e}"))?;
+        for s in [&wake, &woken, &capacity.0, &capacity.1] {
             s.set_nonblocking(true)
                 .map_err(|e| format!("the build's proxy: {e}"))?;
         }
@@ -808,6 +830,7 @@ impl<'p> Session<'p> {
                 wake,
                 capture: Mutex::new(Capture::default()),
                 live: Mutex::new((0, HashMap::new())),
+                capacity,
                 ended: AtomicBool::new(false),
             },
             Questions { asks: asked, woken },
@@ -818,24 +841,44 @@ impl<'p> Session<'p> {
     /// (its other end closed).
     pub fn serve<'s>(&'s self, scope: &'s std::thread::Scope<'s, '_>, stop: &'s UnixStream) {
         loop {
-            let Ok(ready) = shards_vmm::platform::wait_readable(
-                &[self.proxy.listener.raw_socket(), stop.raw_socket()],
-                None,
-            ) else {
-                return;
-            };
-            if ready.get(1) != Some(&false) || self.ended.load(Ordering::SeqCst) {
+            // Drain before checking the authority: a completion after that check stays
+            // readable until this thread takes it, even if it precedes the wait.
+            if let Err(e) = self.drain_capacity() {
+                shards_vmm::debug!("the build's proxy capacity: {e}");
+                self.end();
                 return;
             }
-            if self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= self.proxy.connections {
-                std::thread::sleep(Duration::from_millis(1));
+            if self.ended.load(Ordering::SeqCst) {
+                return;
+            }
+            let full =
+                self.live.lock().unwrap_or_else(PoisonError::into_inner).1.len() >= self.proxy.connections;
+            let controls = [stop.raw_socket(), self.capacity.1.raw_socket()];
+            let all = [
+                stop.raw_socket(),
+                self.capacity.1.raw_socket(),
+                self.proxy.listener.raw_socket(),
+            ];
+            let Ok(ready) = shards_vmm::platform::wait_readable(if full { &controls } else { &all }, None)
+            else {
+                return;
+            };
+            if ready.first() != Some(&false) || self.ended.load(Ordering::SeqCst) {
+                return;
+            }
+            if ready.get(1) == Some(&true) || ready.get(2) != Some(&true) {
                 continue;
             }
             let Ok((conn, _)) = self.proxy.listener.accept() else {
                 continue;
             };
-            let Some(id) = self.hold(&conn) else {
-                continue;
+            let id = match self.hold(&conn) {
+                Ok(id) => id,
+                Err(Admission::Closed) => return,
+                Err(error) => {
+                    shards_vmm::debug!("the build's proxy admission: {error}");
+                    continue;
+                }
             };
             let spawned = std::thread::Builder::new()
                 .name("build proxy".into())
@@ -852,25 +895,58 @@ impl<'p> Session<'p> {
     }
 
     /// Keeps a connection to shut as the step ends: none once it has.
-    fn hold(&self, conn: &UnixStream) -> Option<u64> {
+    fn hold(&self, conn: &UnixStream) -> Result<u64, Admission> {
         let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
         if self.ended.load(Ordering::SeqCst) {
             crate::build::end(conn);
-            return None;
+            return Err(Admission::Closed);
         }
-        let copy = conn.try_clone().ok()?;
         let id = live.0;
-        live.0 += 1;
+        let next = id.checked_add(1).ok_or(Admission::IdentityExhausted)?;
+        let copy = conn.try_clone().map_err(Admission::Socket)?;
+        live.1.try_reserve(1).map_err(Admission::Memory)?;
+        live.0 = next;
         live.1.insert(id, copy);
-        Some(id)
+        Ok(id)
     }
 
     fn let_go(&self, id: u64) {
-        self.live
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .1
-            .remove(&id);
+        let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+        let full = live.1.len() >= self.proxy.connections;
+        let removed = live.1.remove(&id).is_some();
+        drop(live);
+        if full && removed {
+            self.notify_capacity();
+        }
+    }
+
+    fn notify_capacity(&self) {
+        let error = loop {
+            match (&self.capacity.0).write(&[1]) {
+                Ok(1) => return,
+                Ok(_) => break io::Error::from(io::ErrorKind::WriteZero),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => break e,
+            }
+        };
+        shards_vmm::debug!("the build's proxy capacity notification: {error}");
+        // A full socket already signals readiness. Other failures close the
+        // notification path, so the acceptor ends admission instead of sleeping.
+        crate::build::end(&self.capacity.0);
+    }
+
+    fn drain_capacity(&self) -> io::Result<()> {
+        let mut token = [0];
+        loop {
+            match (&self.capacity.1).read(&mut token) {
+                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// The step has ended: each of its connections is shut and each request upstream
@@ -883,6 +959,7 @@ impl<'p> Session<'p> {
         }
         drop(live);
         self.cancel.cancel();
+        self.notify_capacity();
     }
 
     /// What the step's requests came to.

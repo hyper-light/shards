@@ -218,6 +218,151 @@ fn exchange(socket: &Path, raw: &[u8], until: Option<&[u8]>) -> Vec<u8> {
 /// Exercise the production accept loop with one occupied worker and another real
 /// connection in the listener backlog. Policy questions establish admission without
 /// adding instrumentation to the server.
+#[test]
+fn a_full_proxy_refills_on_worker_completion_and_stops_with_a_queued_socket() {
+    let dir = scratch("capacity");
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
+    proxy.connections = 1;
+    let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+    let (stop, stopped) = UnixStream::pair().unwrap();
+    let (ended, end) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let (session, stopped) = (&session, &stopped);
+        std::thread::Builder::new()
+            .spawn_scoped(scope, move || {
+                session.serve(scope, stopped);
+                ended.send(()).unwrap();
+            })
+            .unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let request =
+                b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n";
+            let mut first = UnixStream::connect(proxy.socket()).unwrap();
+            first.write_all(request).unwrap();
+            let first_question = questions.asks.recv_timeout(Duration::from_secs(5)).unwrap();
+            let mut queued = UnixStream::connect(proxy.socket()).unwrap();
+            queued.write_all(request).unwrap();
+            assert_eq!(session.live.lock().unwrap().1.len(), proxy.connections);
+            assert!(matches!(
+                questions.asks.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            first_question.answer(false);
+            drop(first);
+            let second_question = questions.asks.recv_timeout(Duration::from_secs(5)).unwrap();
+            let mut next = UnixStream::connect(proxy.socket()).unwrap();
+            next.write_all(request).unwrap();
+            drop(stop);
+            end.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                questions.asks.try_recv(),
+                Err(mpsc::TryRecvError::Empty)
+            ));
+            second_question.answer(false);
+        }));
+        session.end();
+        drop(questions);
+        result.unwrap_or_else(|p| std::panic::resume_unwind(p));
+    });
+    assert!(session.live.lock().unwrap().1.is_empty());
+}
+
+#[test]
+fn a_completion_posted_before_the_acceptor_waits_is_not_lost() {
+    let dir = scratch("capacity-early");
+    let mut proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
+    proxy.connections = 1;
+    let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+    let (held, _peer) = UnixStream::pair().unwrap();
+    let id = session.hold(&held).unwrap();
+    session.let_go(id);
+    let (stop, stopped) = UnixStream::pair().unwrap();
+    std::thread::scope(|scope| {
+        let (session, stopped) = (&session, &stopped);
+        std::thread::Builder::new()
+            .spawn_scoped(scope, move || session.serve(scope, stopped))
+            .unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut client = UnixStream::connect(proxy.socket()).unwrap();
+            client
+                .write_all(b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\nConnection: close\r\n\r\n")
+                .unwrap();
+            questions
+                .asks
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .answer(false);
+        }));
+        drop(stop);
+        session.end();
+        drop(questions);
+        result.unwrap_or_else(|p| std::panic::resume_unwind(p));
+    });
+    assert!(session.live.lock().unwrap().1.is_empty());
+}
+
+#[test]
+fn a_broken_completion_path_closes_admission_and_owned_connections() {
+    let dir = scratch("capacity-closed");
+    let proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
+    let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+    let (stop, stopped) = UnixStream::pair().unwrap();
+    let (ended, end) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let (session, stopped) = (&session, &stopped);
+        std::thread::Builder::new()
+            .spawn_scoped(scope, move || {
+                session.serve(scope, stopped);
+                ended.send(()).unwrap();
+            })
+            .unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut client = UnixStream::connect(proxy.socket()).unwrap();
+            client
+                .write_all(b"GET http://example.invalid/ HTTP/1.1\r\nHost: example.invalid\r\n\r\n")
+                .unwrap();
+            let question = questions.asks.recv_timeout(Duration::from_secs(5)).unwrap();
+            crate::build::end(&session.capacity.0);
+            end.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(
+                shards_vmm::platform::wait_readable(&[client.raw_socket()], Some(Duration::from_secs(5)))
+                    .unwrap(),
+                vec![true]
+            );
+            match crate::build::reading(&client).read(&mut [0]) {
+                Ok(0) => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::BrokenPipe
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionAborted
+                    ) => {}
+                other => panic!("the admitted connection survived notification failure: {other:?}"),
+            }
+            question.answer(false);
+        }));
+        drop(stop);
+        session.end();
+        drop(questions);
+        result.unwrap_or_else(|p| std::panic::resume_unwind(p));
+    });
+    assert!(session.live.lock().unwrap().1.is_empty());
+}
+
+/// OS counters measure only the accept thread while its admitted worker cannot finish.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "native wait-cost measurement: docs/research/measurements/proxy-capacity/run.sh"]
@@ -1730,4 +1875,42 @@ fn request_costs() {
     for (name, t) in timings {
         println!("{name}: n={n} {}", quantiles(t));
     }
+}
+
+#[test]
+fn exhausted_proxy_connection_identity_grants_no_connection() {
+    let dir = scratch("capacity-identity");
+    let proxy = Proxy::new(
+        crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
+        &shards_image::store::Limits::none(),
+    )
+    .unwrap();
+    let (session, _questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+    let (connection, _peer) = UnixStream::pair().unwrap();
+    session.live.lock().unwrap().0 = u64::MAX;
+    let refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.hold(&connection).into_iter().next().is_none()
+    }));
+    let admitted = session
+        .live
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .1
+        .len();
+    println!(
+        "PROXY_IDENTITY_BOUNDARY refused={} panicked={} admitted={admitted}",
+        matches!(refusal, Ok(true)),
+        refusal.is_err()
+    );
+    assert!(
+        matches!(refusal, Ok(true)),
+        "exhausted connection identity was not refused"
+    );
+    assert_eq!(admitted, 0);
+    assert!(matches!(
+        session.hold(&connection),
+        Err(Admission::IdentityExhausted)
+    ));
+    session.end();
+    assert!(matches!(session.hold(&connection), Err(Admission::Closed)));
 }
