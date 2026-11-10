@@ -1,0 +1,9 @@
+{
+  "source": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+  "base": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "positive_fin_accountant_byte_identical_after_only_enum_field_ignore": true,
+  "normalized_accountant_sha256": "ca1f539d77a65ede2e17802abd08616132050e334bf1fd5c96729f6e56a9999a",
+  "shared_client_only_approved_schema_and_actual_pending_receipt": true,
+  "write_receipts_source_unchanged": true,
+  "meaning": "source integrity bookkeeping; not an endpoint or compiler pass"
+}

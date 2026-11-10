@@ -1,0 +1,44 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,json,hashlib,tarfile,io
+base=Path.home()/'managed-empty-fin-0342-v1';source=base/'source';records=base/'records/collection-v1';records.mkdir()
+revision='d8a2bf8aa4469c8962a825cb8e2154b7c175f091'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+fixture=json.loads((base/'records/build/fixture.json').read_text());assert fixture['source']==revision and not fixture['fresh'] and hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+scope=json.loads((base/'records/build/source-scope.json').read_text())
+for path,digest in (scope['owned']|scope['unchanged']).items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+folder=base/'records/native-empty-fin-v1/empty-finish-stdout-5';rec=folder/'records'
+read=lambda p:json.loads(p.read_text())
+summary={'source':revision,'base':scope['base'],'fixture':fixture,'actual_native_cases':1,'validation_errors':[],'no_VM_or_mutation':True,'population_parent_kernel_cost':'Unknown; no audit/profile/benchmark claim'}
+for name in ['records/build/full-caller-build-exit','records/checks-v1/pure-exit','records/checks-v1/clippy-exit']:
+ summary[name]=(base/name).read_text().strip() if (base/name).exists() else 'UNRUN'
+try:
+ summary['actual_exit']=int((folder/'exit').read_text())
+ assert summary['actual_exit']==0 and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
+ inputs=read(rec/'inputs.json');assert inputs['source']==revision and inputs['control']=='EmptyFinish' and inputs['channel']==1 and inputs['supplied_errno']==5 and inputs['fixture_sha256']=='sha256:'+fixture['sha256']
+ canonical=read(rec/'canonical.json');assert canonical['actual_transport_end'] and canonical['canonical_state']=='Aborted { offset: 26, errno: 5 }'
+ assert canonical['control']['state'].startswith('Finished(') and canonical['control']['accepted']==canonical['control']['consumed']==90
+ assert (rec/'postterminal-control.bin').read_bytes()==b''
+ receipts=read(rec/'io-receipts.json');assert receipts['driver_joined'] and receipts['submitted_bytes']==0 and receipts['finish_requested']
+ finishes=[v for v in receipts['actual'] if v['kind']=='Finish'];assert len(finishes)==1 and finishes[0]['error'] is None and finishes[0]['pending']==0
+ assert not any(v['kind'] in ['Write','WriteError'] for v in receipts['actual'])
+ events=[read(p) for p in rec.glob('[0-9]*-native-control-*.json')];assert len(events)==1 and events[0]['kind']=='Lost' and events[0]['reason']=='Closed' and events[0]['code']==4
+ refusal=read(rec/'control-refusal.json');assert refusal['reason']=='Closed' and refusal['canonical_state']==canonical['canonical_state'] and refusal['control']==canonical['control']
+ assert refusal['producer_capacity']==0 and refusal['same_allocation'] and refusal['capacity_submitted']==refusal['capacity_returned']==refusal['returned_payload_bytes']==42
+ candidate=(rec/'postterminal-candidate.bin').read_bytes();returned=(rec/'postterminal-returned.bin').read_bytes();assert candidate==returned and len(returned)==42 and refusal['returned_payload_sha256']=='sha256:'+hashlib.sha256(returned).hexdigest()
+ observer=read(rec/'observer-stop.json');assert observer['joined'] and observer['post_join_records']==0 and observer['owner_control']==canonical['control']
+ owner=read(rec/'owner-stop.json');assert owner['control']['state'].startswith('Aborted(') and owner['control']['accepted']==owner['control']['consumed']==90 and owner['finish_after_abort']=='Err(Closed)'
+ teardown=read(rec/'teardown.json');assert teardown['protocol_complete'] and teardown['cleanup_completed'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']==4
+ summary.update({'run':inputs['run'],'canonical':canonical,'receipts':receipts,'refusal':refusal,'observer':observer,'owner':owner,'teardown':teardown})
+except Exception as error:summary['validation_errors'].append(repr(error))
+(records/'validated-case.json').write_text(json.dumps(summary,indent=2)+'\n')
+subprocess.run(['git','branch','frozen/empty-fin-d8a2',revision],cwd=source,check=True)
+files=sorted(p for p in (base/'records').rglob('*') if p.is_file() and not p.is_symlink());manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-empty-fin-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'original_payloads':len(manifest),'total_members':len(manifest)+1,'source':revision,'actual_native_cases':1,'validation_errors':summary['validation_errors'],'originals_preserved':True}
+(records/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY
