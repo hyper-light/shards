@@ -1,0 +1,65 @@
+    Updating git repository `https://github.com/hyper-light/hyper-raft`
+   Compiling typenum v1.20.1
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed/crates/abi)
+   Compiling const-oid v0.10.2
+   Compiling cfg-if v1.0.5
+   Compiling triomphe v0.1.17
+   Compiling hybrid-array v0.4.15
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling cpufeatures v0.3.1
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed/crates/testdir)
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling shards-api v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3.91s
+     Running unittests src/lib.rs (/Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7)
+
+running 55 tests
+test borrowed::tests::changed_identity_is_rejected_before_dial ... stale_identity_actual_CONNECT=false
+ok
+test borrowed::tests::dribbled_reply_does_not_renew_deadline ... ok
+test borrowed::tests::dropping_borrowed_stream_leaves_process_alive_and_responsive ... borrowed_drop_child_alive_and_actual_reply=true
+ok
+test borrowed::tests::exact_bytes_clone_half_close_and_resource_return ... ok
+test borrowed::tests::malformed_or_closed_replies_remain_typed ... ok
+test borrowed::tests::overflow_with_withheld_muxer_never_dials ... patience=18446744073709551615.999999999s actual_CONNECT=false
+ok
+test borrowed::tests::private_refcounts_are_bounded_by_retained_socket_storage ... ok
+test borrowed::tests::process_exit_before_or_during_handshake_is_rejected ... actual_process_reaped_before_OK=true returned_stream=false
+ok
+test borrowed::tests::process_role ... ignored, private child role, launched only by focused borrowed tests
+test borrowed::tests::shared_state_and_stream_box_oom_return_without_allocating_errors ... ok
+test borrowed::tests::withheld_reply_expires_without_fixture_release ... ok
+test borrowed::tests::zero_and_overflow_are_typed_before_any_io ... ok
+test borrowed::tests::zero_with_withheld_muxer_never_dials ... patience=0ns actual_CONNECT=false
+ok
+test client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::borrowed_repro::legacy_refusal_bridge_oom_returns_typed_without_allocating ... ok
+test client::borrowed_repro::old_patch_overflow_is_refused_before_io ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::borrowed_repro::old_patch_zero_is_expired_before_io ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::tests::a_dial_to_a_full_listener_is_asked_again_within_its_patience ... ok
+test client::tests::a_dials_cost_is_its_work_not_its_wait_for_an_answer ... ok
+test client::tests::a_dropped_guest_leaves_no_zombie ... ok
+test client::tests::a_guest_names_itself_by_pid_start_and_socket ... ok
+test client::tests::a_guest_taken_back_ends_as_it_drops_or_by_itself ... ok
+test client::tests::a_path_ending_in_ro_is_refused ... ok
+test client::tests::a_patience_of_max_dials_until_the_guest_listens ... ok
+test client::tests::a_patience_of_zero_dials_once ... ok
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+test client::tests::a_socket_directory_too_long_is_passed_over_or_refused ... ok
+test client::tests::a_spec_is_the_flags_shards_run_reads ... ok
+test client::tests::a_stop_kills_at_once ... ok
+test client::tests::an_answer_past_the_longest_ok_is_refused ... ok
+test client::tests::attach_takes_back_a_guest_whose_client_crashed ... ok
+test client::tests::attach_takes_back_a_guest_whose_handle_was_lost ... ok
+test client::tests::child_a_client_that_crashes ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::child_a_vm_process_serving_its_vsock ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::owned_connection_oom_is_typed_before_error_formatting ... memory allocation of 64 bytes failed
+memory allocation of 64 bytes failed
+skipping backtrace printing to avoid potential recursion
+error: test failed, to rerun pass `-p shards-api --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed/scripts/hvf-run /Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7 --test-threads=1 --nocapture` (signal: 6, SIGABRT: process abort signal)

@@ -1,0 +1,26 @@
+Focused guard-run status returned by kiln r185 (not a substitute for raw files).
+Source11913786, production predicates fromac8c2834; private native Linux runner
+8fadc1ec213332e16cb0d915a3fb913f,4CPU/8GiB/10GiB.
+Command: python3 docs/research/measurements/managed-borrowed/guards.py "$HOME/managed-borrowed-evidence/guards"
+
+zero: exit=101, expected=101; required actual_CONNECT=true marker checked
+zero-restored: exit=0, expected=0
+overflow: exit=101, expected=101; required actual_CONNECT=true marker checked
+overflow-restored: exit=0, expected=0
+identity: exit=101, expected=101; required stale_identity_actual_CONNECT=true marker checked
+identity-restored: exit=0, expected=0
+post-exit: exit=101, expected=101; required actual_process_reaped_before_OK=true returned_stream=true marker checked
+post-exit-restored: exit=0, expected=0
+total-deadline: exit=101, expected=101; required accepted_late_reply=true marker checked
+total-deadline-restored: exit=0, expected=0
+allocation: exit=101, expected=101; required memory allocation of marker checked
+allocation-restored: exit=0, expected=0
+restored-corpus: exit=0, expected=0
+Subsequent restored all-target API clippy0, binary hash and git diff --exit-code0;
+whole r185 wrapper exit0.
+
+All exact raw patches/logs/source hashes remain preserved in
+~/managed-borrowed-evidence/guards on that private runner. They were not fetched
+after CPU admission became saturated, and must be retrieved centrally. Later53535
+stream ready-I/O correction has separate Mac green proof and latest Linux gate
+owed; do not misattribute these older guard results to the latest productionSHA.

@@ -3,9 +3,11 @@
 Current production-source checkpoint: signed
 `53535ab61225905acfa98f12dabdabb75138c808`, branch `p/managed-borrowed`, isolated
 worktree `managed-borrowed`, based on combined `cbe3d027`. Experimental; no main
-merge or adoption claim. Exact53535 light rerun is pending: kiln rejected the
+merge or adoption claim. Exact53535 Linux light rerun is pending: kiln rejected the
 4CPU/8GiB/10GiB request when the assigned Linux runner had fewer than4 idle CPUs.
-The ask was not reduced and the runner guard was not bypassed. No local build.
+The ask was not reduced and the runner guard was not bypassed. Root subsequently
+authorized native Mac light checks: independent passes and the full-library RED
+are recorded in [MAC.md](MAC.md). No ready-main/whole-library panic-free claim.
 
 Policy: implementer receipt renewed for canonical c921a0b1 / rules SHA256
 `1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`; full AGENTS,
@@ -113,8 +115,8 @@ Assigned runner `8fadc1ec213332e16cb0d915a3fb913f`, private source
 target `~/managed-borrowed-target`, raw evidence `~/managed-borrowed-evidence`.
 Rust1.98.1 `48a229cea`, LLVM22.1.8 selected by repo rust-toolchain.toml,
 Fedora Linux6.19.10 amd64. Home-directory default1.99.1 is not these builds'
-compiler. Mac builds, root clones/caches, frozen RPK artifacts and paused Windows
-ARM VM were untouched.
+compiler. Root clones/caches, frozen RPK artifacts and paused Windows ARM VM were
+untouched. The subsequently authorized private Mac build is recorded separately.
 
 | Source/job | Actual result |
 | --- | --- |
@@ -123,7 +125,7 @@ ARM VM were untouched.
 | ac8c2834 / r184 | Ordinary units45 pass/0fail/7ignored; integration15 pass/0fail/2 measurement ignored; real measurement1 ignored; strict all-targets API clippy0 |
 | 11913786 / r185 | Six independent local guard mutations each cargo101 for actual forbidden effect/allocator abort; each restored focused test0, restored library corpus0 and strict clippy0. No VM/profile sweep |
 | 389e823e / r186 | Additional candidate regression actually reproduced: queued byte with1ns wait incorrectly returns WouldBlock before initial I/O |
-| 53535ab6 | Narrows the low-level wait check to EINTR retries/required readiness waits, preserving initial ready I/O. Latest green rerun held by kiln CPU admission; not yet passed |
+| 53535ab6 production / c5c8e4c6 source | Mac borrowed12/0, Stream11/0 (including ready-I/O regression), sim15/0, scoped clippy0; full lib RED via owned-OOM64B SIGABRT. Latest Linux complete rerun still held/unverified |
 
 The r184 corpus includes exact binary payload with u32::MAX port, clone and
 half-close; withheld and dribbled reply deadlines; malformed/closed reply typing;
@@ -169,18 +171,20 @@ ulimit -c 0
 python3 docs/research/measurements/managed-borrowed/guards.py "$HOME/managed-borrowed-evidence/guards-latest"
 ```
 
-First owed:53535 exact full light corpus/clippy and actual latest binary identity;
+First owed:53535 exact Linux full light corpus/clippy and latest Linux binary identity;
 retrieve/preserve remaining raw runner evidence when admission returns. Then root
 review of the narrow source/diagnostic text changes, D215 integration note,
-seven-target check/lint and actual macOSarm64/Windows behavior. Native repeated
+seven-target check/lint and remaining macOSarm64/Windows behavior. The Mac full-lib
+owned-OOM abort remains RED; root owns isolated cold-primitive confirmation before
+any broader synchronization remedy. No warming/skip is used to call it green. Native repeated
 Windows success/zero/overflow/identity/error handle counts, live VM borrowed
 attach/drop/lifetime, large/dribbled/interrupt/connect boundary cases and aggregate
 resource behavior are not passed. Root owns those platform/heavy gates plus any
 profiling/comparisons and final combined source validation. There is no4–5x,
 allocation-free, hard-quota, leak-free or managed-runtime-completion claim.
 
-R01: new allocation/error paths are fallible with actual unit injection; latest
-ready-I/O correction and other-platform paths still need final checks; existing
+R01: borrowed allocation/error paths passed scoped injection on Linux/Mac; Mac's
+owned cold-OOM full-lib abort remains RED, and latest Linux still needs final checks; existing
 unrelated allocation hazards explicitly retained. R02: primary alternatives,
 coordinator decision, actual red/green/failure data linked. R03: protocol/u32
 buffer bounds, two directions, OS rights/layout and milliseconds units derived;
@@ -191,7 +195,8 @@ modules, resource and unsafe/precondition comments; no speculative manager.
 R08/R14: performance work remains root-owned and unclaimed. R09: pre-fix native
 red and candidate regression red retained. R10: reproducible fixtures/raw records,
 actual-effect mutation/removal and restored runs; latest source gaps explicit.
-R11: only Linuxamd64 native checked; six other targets/real VM hosts unverified.
+R11: Linuxamd64 and Macarm64 scoped native checks recorded, with exact-source/red
+limits above; Windows/Linuxarm64/musl and real VM hosts remain unverified here.
 R12: shared handshake/stream + minimal Unix held reuse/Windows adapter, rootless,
 one installed binary, no security bypass. R13: concrete API and real failure causes,
 no generic allocation framework. R15: signed isolated checkpoints, no children,

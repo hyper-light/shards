@@ -1,0 +1,20 @@
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (/Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7)
+
+running 11 tests
+test stream::tests::a_buffer_size_of_zero_or_less_is_an_error ... ok
+test stream::tests::a_clone_is_the_same_connection ... ok
+test stream::tests::a_connection_reports_its_buffer_sizes ... buffer_sizes: send 8192, receive 8192
+buffer_sizes: send 8192, receive 8192
+ok
+test stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read ... ok
+test stream::tests::a_pair_carries_bytes_both_ways_and_a_half_close ... ok
+test stream::tests::a_read_a_clone_raced_ends_at_its_timeout ... ok
+test stream::tests::a_read_times_out_and_the_connection_goes_on ... ok
+test stream::tests::a_timeout_is_kept_as_given ... ok
+test stream::tests::a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills ... ok
+test stream::tests::a_write_to_a_peer_that_stops_reading_ends_at_its_timeout ... ok
+test stream::tests::already_queued_data_is_read_before_waiting_out_a_timeout ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.46s
+
