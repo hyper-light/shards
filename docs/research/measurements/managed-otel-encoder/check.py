@@ -11,9 +11,10 @@ resources = request["resourceMetrics"]
 assert len(resources) == 3
 for resource in resources:
     attributes = {a["key"]: a["value"] for a in resource["resource"]["attributes"]}
-    assert attributes["shards.microvm.id"] == {
+    assert attributes["shards.run.id"] == {
         "stringValue": 'é—🦀"\\/\x00\x08\t\n\r\x1b\x1f'
     }
+    assert attributes["shards.microvm.id"] == {"stringValue": "vm"}
     assert attributes["shards.microvm.restore.generation"] == {
         "stringValue": str(2**64 - 1)
     }

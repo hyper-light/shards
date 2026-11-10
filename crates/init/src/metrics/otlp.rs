@@ -33,7 +33,13 @@ pub struct Snapshot {
 /// One ExportMetricsServiceRequest, with cumulative kernel values. Unknown counter
 /// birth times are omitted, not replaced with each collection's timestamp.
 /// `generation` is the VMM lineage restore count, not a management epoch.
-pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapshot]) -> io::Result<()> {
+pub fn write(
+    out: &mut impl Write,
+    run: &str,
+    microvm: &str,
+    generation: u64,
+    samples: &[Snapshot],
+) -> io::Result<()> {
     if samples.iter().any(|s| s.time_unix_nano == 0) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -42,14 +48,22 @@ pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapsh
         if at != 0 {
             out.write_all(b",")?;
         }
-        resource(out, run, generation, sample)?;
+        resource(out, run, microvm, generation, sample)?;
     }
     out.write_all(b"]}\n")
 }
 
-fn resource(out: &mut impl Write, run: &str, generation: u64, sample: &Snapshot) -> io::Result<()> {
+fn resource(
+    out: &mut impl Write,
+    run: &str,
+    microvm: &str,
+    generation: u64,
+    sample: &Snapshot,
+) -> io::Result<()> {
     out.write_all(b"{\"resource\":{\"attributes\":[")?;
-    attribute(out, "shards.microvm.id", run)?;
+    attribute(out, "shards.run.id", run)?;
+    out.write_all(b",")?;
+    attribute(out, "shards.microvm.id", microvm)?;
     // The VMM lineage restore count is u64; AnyValue.int_value is int64.
     write!(
         out,
@@ -270,7 +284,7 @@ mod tests {
 
     fn encode(samples: &[Snapshot]) -> String {
         let mut bytes = Vec::new();
-        write(&mut bytes, "run", u64::MAX, samples).unwrap();
+        write(&mut bytes, "run", "vm", u64::MAX, samples).unwrap();
         String::from_utf8(bytes).unwrap()
     }
 
@@ -282,6 +296,16 @@ mod tests {
         let mut member = sample();
         member.scope = Scope::Member(u32::MAX);
         let text = encode(&[run, workload, member]);
+        assert_eq!(
+            text.matches("\"shards.run.id\",\"value\":{\"stringValue\":\"run\"}")
+                .count(),
+            3
+        );
+        assert_eq!(
+            text.matches("\"shards.microvm.id\",\"value\":{\"stringValue\":\"vm\"}")
+                .count(),
+            3
+        );
         for name in ["run", "workload", "member"] {
             assert!(text.contains(&format!(
                 "\"shards.cgroup.scope\",\"value\":{{\"stringValue\":\"{name}\"}}"
@@ -388,7 +412,7 @@ mod tests {
         let mut invalid = sample();
         invalid.time_unix_nano = 0;
         let mut bytes = Vec::new();
-        let error = write(&mut bytes, "run", 0, &[sample(), invalid]).unwrap_err();
+        let error = write(&mut bytes, "run", "vm", 0, &[sample(), invalid]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(bytes.is_empty());
     }
@@ -444,7 +468,7 @@ mod tests {
                 bytes: Vec::new(),
                 after,
             };
-            let error = write(&mut ending, "run", u64::MAX, &[sample()]).unwrap_err();
+            let error = write(&mut ending, "run", "vm", u64::MAX, &[sample()]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert_eq!(ending.bytes, complete.as_bytes().get(..after).unwrap());
         }
@@ -452,7 +476,7 @@ mod tests {
             bytes: Vec::new(),
             after: complete.len(),
         };
-        write(&mut whole, "run", u64::MAX, &[sample()]).unwrap();
+        write(&mut whole, "run", "vm", u64::MAX, &[sample()]).unwrap();
         assert_eq!(whole.bytes, complete.as_bytes());
     }
 }

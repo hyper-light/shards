@@ -20567,7 +20567,10 @@ ingress straight to an agent's address, so that init tracks no agent's flow eith
 Implementation/evaluation in progress: [G25/P9](managed-runtime-plan.md),
 [primary contracts and alternatives](../research/managed-runtime-otel-metrics.md),
 [actual baseline and required gates](../research/measurements/managed-otel/README.md).
-No collector, full real-VM, resource or supported-target pass is established yet.
+The initial28e slice has actual KVM/Collector, seven-target compilation and scoped
+encoding-profile evidence. The [validation record](../research/measurements/managed-otel/VALIDATION.md)
+states their limits. A later live joiner probe reproduced wrong VM attribution;
+its correction and source-specific gates are recorded separately below.
 
 `shards read metrics MICROVM` collects through the existing trusted init builtin
 and owner output transport. It emits an OTLP JSON request artifact, not an HTTP
@@ -20582,7 +20585,15 @@ Group memory, CPU, tasks and block-I/O are not process measurements or complete
 physical VM/parent/kernel charges. Parent/child aggregates overlap. Observation
 does not grant authority, reserve resources or settle D59 victim policy.
 
-The resource identity is the canonical microVM ID, scope and stable member ID.
+Resource identity distinguishes canonical run ID from actual provider microVM ID,
+then scope and stable member ID. D119 joiners share a microVM but keep distinct
+workload cgroups and run IDs. The actual daemon `Tracked::joined` relationship,
+already normalized by `join_vm`, supplies the provider ID; no request-file walk,
+lookup cache or actor label creates it. Both IDs travel through the same private
+builtin and receive the existing canonical ID validation. A joiner still exports
+only its own workload, so this metadata does not widen collection access.
+The [live reproduction and gates](../research/measurements/managed-otel/joiner-identity/README.md)
+retain both actual exports and the shared guest boot witness.
 The additional generation is explicitly the VMM's **lineage restore count**, not
 the owner-output management generation or proof of restart-safe execution IDs.
 Check that marker before and after collection; a changed marker refuses the
@@ -20600,6 +20611,7 @@ Docker STATS compatibility/display path remains separate.
 | --- | --- |
 | METRICS18 | Next private builtin protocol discriminant after DEVICE17; not a capacity or timeout. Unknown builtins still fail. |
 | MicroVM ID32 random bytes,64 hex digits | Existing stringid.GenerateRandomID-compatible 256-bit identity, now one ABI constant re-exported by containers; no entropy/security change. |
+| Two private metric arguments | Actual distinct run and provider-microVM identities; each string is copied fallibly from the daemon's existing run relationship, with no new authority or picked chain-depth limit. |
 | Run + workload scopes; joiner one scope | Actual containment objects: provider aggregate and its main workload, plus each started declared member; a joiner's request reads its own workload group only. Storage reserve is checked from that actual count. |
 | One input page per request | Actual `_SC_PAGESIZE`, fallibly reserved once and reused for all files; no chosen sampling interval or retained cache. |
 | Selected token buffer | `len("wbytes=") + decimal_digits(u64::MAX)`,27 bytes. Numeric overflow is explicit; unknown long kernel fields are not retained. |
@@ -20613,9 +20625,9 @@ Docker STATS compatibility/display path remains separate.
 
 The CLI/daemon continues its existing typed-I/O/outer presentation bridge; field
 diagnostics contain no paths, prompts, credentials, arbitrary labels or actor-
-claimed tool identities. Root still owes actual collector/caller/mutation proof,
-seven-target and real-VM validation, admitted aggregate costs/control survival,
-comparative profiles and transport outcomes for any future HTTP exporter.
+claimed tool identities. Source-specific correction gates, the rest of the real
+VM matrix, admitted aggregate costs/control survival, complete process/management
+observations and transport outcomes for a future HTTP exporter remain owed.
 
 ### D59: owned native domain lifetime
 

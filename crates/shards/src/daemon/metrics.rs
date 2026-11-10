@@ -5,7 +5,7 @@ use std::io::{self, Write as _};
 use shards_ipc::fd::{AsFd as _, OwnedFd};
 
 use super::commands::{Asker, Reply};
-use super::{Daemon, Disk, lock};
+use super::{Daemon, Disk, RunState, lock};
 
 enum Failure {
     Resolve(String),
@@ -64,12 +64,23 @@ impl<D: Disk> Daemon<D> {
             return Err(io::Error::from(io::ErrorKind::NotConnected).into());
         }
         let allocation = |_| io::Error::from(io::ErrorKind::OutOfMemory);
-        let mut name = Vec::new();
-        name.try_reserve_exact(id.len()).map_err(allocation)?;
-        name.extend_from_slice(id.as_bytes());
         let mut argv = Vec::new();
-        argv.try_reserve_exact(1).map_err(allocation)?;
-        argv.push(name);
+        argv.try_reserve_exact(2).map_err(allocation)?;
+        {
+            let runs = lock(&self.runs);
+            let Some(RunState::Tracked(run)) = runs.get(&id) else {
+                return Err(io::Error::from(io::ErrorKind::NotConnected).into());
+            };
+            // join_vm already resolves this to the actual provider at admission;
+            // use its held relationship, not a second pathname walk or cache.
+            let microvm = run.joined.as_deref().unwrap_or(&id);
+            for id in [id.as_str(), microvm] {
+                let mut name = Vec::new();
+                name.try_reserve_exact(id.len()).map_err(allocation)?;
+                name.extend_from_slice(id.as_bytes());
+                argv.push(name);
+            }
+        }
         let spec = shards_abi::run::Spec {
             builtin: shards_abi::run::builtin::METRICS,
             argv,

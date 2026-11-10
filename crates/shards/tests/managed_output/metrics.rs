@@ -17,6 +17,7 @@ fn scopes<'a>(document: &'a Value, run: &str) -> BTreeMap<String, &'a Value> {
     for resource in document["resourceMetrics"].as_array().unwrap() {
         let identity = attrs(&resource["resource"]["attributes"]);
         assert_eq!(identity["shards.microvm.id"]["stringValue"], run);
+        assert_eq!(identity["shards.run.id"]["stringValue"], run);
         let restore = identity["shards.microvm.restore.generation"]["stringValue"]
             .as_str()
             .unwrap();

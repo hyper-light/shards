@@ -956,13 +956,18 @@ fn metrics(
     use crate::metrics::otlp::Scope;
     use std::os::unix::fs::OpenOptionsExt as _;
 
-    let [id] = args else {
+    let [id, microvm] = args else {
         return Err(io::ErrorKind::InvalidInput.into());
     };
-    let run = std::str::from_utf8(id)
-        .ok()
-        .filter(|s| s.len() == 2 * shards_abi::MICROVM_ID_BYTES && s.bytes().all(|b| b.is_ascii_hexdigit()))
-        .ok_or(io::ErrorKind::InvalidInput)?;
+    fn canonical(id: &[u8]) -> io::Result<&str> {
+        std::str::from_utf8(id)
+            .ok()
+            .filter(|s| {
+                s.len() == 2 * shards_abi::MICROVM_ID_BYTES && s.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
+    }
+    let (run, microvm) = (canonical(id)?, canonical(microvm)?);
     let generation = crate::linux::control_read64(control::GENERATION)?;
     let mut reader = crate::metrics::Reader::new()?;
     let count = if joiner {
@@ -992,7 +997,7 @@ fn metrics(
     if crate::linux::control_read64(control::GENERATION)? != generation {
         return Err(io::ErrorKind::Interrupted.into());
     }
-    crate::metrics::otlp::write(out, run, generation, &samples)
+    crate::metrics::otlp::write(out, run, microvm, generation, &samples)
 }
 
 /// Freezes the cgroup at `dir`, or thaws it (D119): `cgroup.freeze` written, then, for a

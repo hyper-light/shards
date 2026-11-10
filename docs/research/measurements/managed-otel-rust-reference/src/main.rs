@@ -44,20 +44,19 @@ impl Mode {
 pub fn write(
     out: &mut impl Write,
     run: &str,
+    microvm: &str,
     generation: u64,
     samples: &[Snapshot],
 ) -> io::Result<()> {
     match Mode::selected()? {
-        Mode::NativeStream => native_codec::write(out, run, generation, samples),
+        Mode::NativeStream => native_codec::write(out, run, microvm, generation, samples),
         mode => {
-            let request = reference::request(run, generation, samples)?;
+            let request = reference::request(run, microvm, generation, samples)?;
             let bytes = match mode {
                 Mode::OfficialCompactBuffer => serde_json::to_vec(&request),
                 // Pinned OTLP HTTP source uses this String -> Vec path. This is
                 // its encoding pattern, not an invocation of the SDK pipeline.
-                Mode::OfficialPrettyBuffer => {
-                    serde_json::to_string_pretty(&request).map(String::into_bytes)
-                }
+                Mode::OfficialPrettyBuffer => serde_json::to_string_pretty(&request).map(String::into_bytes),
                 Mode::NativeStream => return Err(io::ErrorKind::InvalidInput.into()),
             }
             .map_err(io::Error::other)?;

@@ -30,9 +30,9 @@ impl Mode {
 
     fn emit(self, out: &mut impl Write, run: &str, generation: u64, samples: &[Snapshot]) -> io::Result<()> {
         match self {
-            Self::Native => native_codec::write(out, run, generation, samples),
+            Self::Native => native_codec::write(out, run, "vm", generation, samples),
             mode => {
-                let request = reference::request(run, generation, samples)?;
+                let request = reference::request(run, "vm", generation, samples)?;
                 let bytes = match mode {
                     Self::Compact => serde_json::to_vec(&request),
                     Self::Pretty => serde_json::to_string_pretty(&request).map(String::into_bytes),

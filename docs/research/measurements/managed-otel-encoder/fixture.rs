@@ -30,6 +30,7 @@ fn main() -> std::io::Result<()> {
     write(
         &mut std::io::stdout().lock(),
         "é—🦀\"\\/\u{0}\u{8}\t\n\r\u{1b}\u{1f}",
+        "vm",
         u64::MAX,
         &[healthy, failed, boundary],
     )

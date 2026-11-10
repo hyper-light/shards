@@ -672,8 +672,8 @@ pub mod builtin {
     /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
     /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
     pub const DEVICE: u8 = 17;
-    /// On-demand OTLP JSON cgroup metrics. The sole argument is the supervisor's
-    /// canonical microVM ID; no actor-supplied labels or collection authority.
+    /// On-demand OTLP JSON cgroup metrics: the supervisor's canonical run and
+    /// physical provider IDs; no actor-supplied labels or collection authority.
     pub const METRICS: u8 = 18;
 }
 

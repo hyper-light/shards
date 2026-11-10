@@ -3,8 +3,8 @@ use std::io;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::metrics::v1::{
-    AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum,
-    metric, number_data_point,
+    AggregationTemporality, Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric,
+    number_data_point,
 };
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
@@ -14,6 +14,7 @@ type Value = number_data_point::Value;
 
 pub(super) fn request(
     run: &str,
+    microvm: &str,
     generation: u64,
     samples: &[Snapshot],
 ) -> io::Result<ExportMetricsServiceRequest> {
@@ -23,7 +24,7 @@ pub(super) fn request(
     Ok(ExportMetricsServiceRequest {
         resource_metrics: samples
             .iter()
-            .map(|sample| resource(run, generation, sample))
+            .map(|sample| resource(run, microvm, generation, sample))
             .collect::<io::Result<Vec<_>>>()?,
     })
 }
@@ -124,9 +125,7 @@ fn gauge(name: &str, points: Vec<NumberDataPoint>) -> Metric {
     Metric {
         name: name.into(),
         unit: "{error}".into(),
-        data: Some(metric::Data::Gauge(Gauge {
-            data_points: points,
-        })),
+        data: Some(metric::Data::Gauge(Gauge { data_points: points })),
         ..Default::default()
     }
 }
@@ -144,13 +143,10 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
             .iter()
             .filter(|observation| observation.instrument == instrument)
             .filter_map(|observation| {
-                observation.value.ok().map(|value| {
-                    point(
-                        sample.time_unix_nano,
-                        value,
-                        directions(observation.direction),
-                    )
-                })
+                observation
+                    .value
+                    .ok()
+                    .map(|value| point(sample.time_unix_nano, value, directions(observation.direction)))
             })
             .collect();
         if !points.is_empty() {
@@ -167,10 +163,7 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
             });
         }
     }
-    let failures = observations
-        .iter()
-        .filter(|value| value.value.is_err())
-        .count();
+    let failures = observations.iter().filter(|value| value.value.is_err()).count();
     metrics.push(gauge(
         "shards.cgroup.collection.error.count",
         vec![point(
@@ -183,10 +176,7 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
         .iter()
         .filter_map(|observation| {
             let cause = observation.value.err()?;
-            let mut attrs = vec![string(
-                "shards.cgroup.metric",
-                observation.instrument.fields().0,
-            )];
+            let mut attrs = vec![string("shards.cgroup.metric", observation.instrument.fields().0)];
             attrs.extend(directions(observation.direction));
             attrs.push(string(
                 "error.type",
@@ -209,9 +199,10 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
     Ok(metrics)
 }
 
-fn resource(run: &str, generation: u64, sample: &Snapshot) -> io::Result<ResourceMetrics> {
+fn resource(run: &str, microvm: &str, generation: u64, sample: &Snapshot) -> io::Result<ResourceMetrics> {
     let mut attributes = vec![
-        string("shards.microvm.id", run),
+        string("shards.run.id", run),
+        string("shards.microvm.id", microvm),
         string("shards.microvm.restore.generation", &generation.to_string()),
         string(
             "shards.cgroup.scope",
