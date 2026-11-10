@@ -520,6 +520,8 @@ impl Cgroup {
     fn new() -> io::Result<Self> {
         in_mount(None, || {
             let namespace = File::open("/proc/thread-self/ns/mnt")?;
+            // Direct initramfs boot need not provide the scratch parent; MOUNT stays exclusive.
+            fs::create_dir_all("/tmp")?;
             fs::create_dir(MOUNT.to_str().map_err(io::Error::other)?)?;
             let mut scope = MountScope {
                 namespace,
