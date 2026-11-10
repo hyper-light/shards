@@ -207,7 +207,14 @@ struct Observer {
 }
 
 impl Observer {
-    fn start(owner: &Identity, metadata: &Metadata, scope: Scope, address: SocketAddr) -> Self {
+    fn start(
+        owner: &Identity,
+        metadata: &Metadata,
+        scope: Scope,
+        address: SocketAddr,
+        until: Instant,
+    ) -> Self {
+        let patience = until.saturating_duration_since(Instant::now());
         let window = metadata.capacity.checked_add(managed::DATA_HEAD).unwrap();
         let admitted = Admitted {
             record_bytes: metadata.capacity,
@@ -215,7 +222,7 @@ impl Observer {
             // RFC 8446 Handshake length: uint24 plus the four-byte handshake header.
             handshake_bytes: (1 << 24) - 1 + 4,
             datagram_bytes: managed::DATAGRAM_BYTES,
-            patience: WITHIN,
+            patience,
         };
         let (event, events) = mpsc::channel();
         let client = Client {
@@ -228,7 +235,7 @@ impl Observer {
             inbound: Vec::new(),
             finish: false,
             done: false,
-            deadline: Instant::now() + WITHIN,
+            deadline: until,
             window,
         };
         let (mut driver, sender) = Driver::bind_bounded(
@@ -239,7 +246,7 @@ impl Observer {
                 connections: 1,
                 command_slots: 1,
                 queued_datagram_bytes: admitted.datagram_bytes,
-                handshake_patience: WITHIN,
+                handshake_patience: patience,
             },
         )
         .unwrap();
@@ -266,8 +273,7 @@ impl Observer {
             .unwrap_or_else(|error| panic!("observer event before deadline: {error}"))
     }
 
-    fn exact(&self, label: &str, expected: &[u8]) -> (u64, u64) {
-        let until = Instant::now() + WITHIN;
+    fn exact(&self, label: &str, expected: &[u8], until: Instant) -> (u64, u64) {
         let mut bytes = Vec::new();
         let mut wire = 0u64;
         let mut state = StreamState::New;
@@ -306,8 +312,8 @@ impl Observer {
         panic!("nonempty fixture output required");
     }
 
-    fn refused(&self, expected: Option<Reason>) {
-        match self.next(Instant::now() + WITHIN) {
+    fn refused(&self, expected: Option<Reason>, until: Instant) {
+        match self.next(until) {
             Event::Lost(code) => assert_eq!(code, expected.map(|reason| u64::from(reason as u32))),
             Event::Record(offset, bytes) => {
                 panic!("refused subscription received {} bytes at {offset}", bytes.len())
@@ -317,20 +323,23 @@ impl Observer {
         }
     }
 
-    fn ack_and_finish(&self, wire: u64) {
+    fn ack_and_finish(&self, wire: u64, until: Instant) {
         self.sender
             .send(Command::Handler(Ask::AckAndFinish(wire)))
             .unwrap();
         // QUIC FIN follows the consumed frame in the same ordered stream. The service
         // processes controls before its End branch emits this typed close reason.
-        self.refused(Some(Reason::Closed));
+        self.refused(Some(Reason::Closed), until);
     }
 
-    fn join(&mut self) -> Result<(), String> {
+    fn join(&mut self, until: Instant) -> Result<(), String> {
         if self.thread.is_none() {
             return Ok(());
         }
-        let result = match self.ended.recv_timeout(WITHIN) {
+        let result = match self
+            .ended
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
             Ok(result) => result.map_err(|e| e.to_string()),
             Err(mpsc::RecvTimeoutError::Disconnected) => Err("observer completion disconnected".into()),
             Err(mpsc::RecvTimeoutError::Timeout) => return Err("observer completion deadline".into()),
@@ -456,7 +465,7 @@ impl Fixture {
         }
     }
 
-    fn command(&self, args: &[&str]) -> common::Run {
+    fn command(&self, args: &[&str], within: Duration) -> common::Run {
         common::run_shards_env(
             &[],
             args,
@@ -465,7 +474,7 @@ impl Fixture {
                 ("SHARDS_KERNEL", common::kernel().as_os_str()),
                 ("SHARDS_INIT", common::guest_init().as_os_str()),
             ],
-            WITHIN,
+            within,
         )
     }
 
@@ -498,23 +507,29 @@ impl Fixture {
         )
         .unwrap();
         std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n")).unwrap();
-        let built = self.command(&[
-            "build",
-            "image",
-            "-t",
-            "owner-output:1",
-            self.context.to_str().unwrap(),
-        ]);
+        let built = self.command(
+            &[
+                "build",
+                "image",
+                "-t",
+                "owner-output:1",
+                self.context.to_str().unwrap(),
+            ],
+            WITHIN,
+        );
         assert_eq!(built.status, Some(0), "{built}");
-        let started = self.command(&[
-            "run",
-            "vm",
-            "-d",
-            "--name",
-            "owner-output",
-            "owner-output:1",
-            "sleep",
-        ]);
+        let started = self.command(
+            &[
+                "run",
+                "vm",
+                "-d",
+                "--name",
+                "owner-output",
+                "owner-output:1",
+                "sleep",
+            ],
+            WITHIN,
+        );
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(
@@ -537,7 +552,14 @@ impl Fixture {
         self.initial_fds = Some(std::fs::read_dir("/proc/self/fd").unwrap().count());
     }
 
-    fn observe(&mut self, member: u32, channel: Channel, offered: Option<Scope>, outsider: bool) -> usize {
+    fn observe(
+        &mut self,
+        member: u32,
+        channel: Channel,
+        offered: Option<Scope>,
+        outsider: bool,
+        until: Instant,
+    ) -> usize {
         let metadata = self.metadata.as_ref().unwrap();
         let _ = writeln!(
             std::io::stdout(),
@@ -550,21 +572,25 @@ impl Fixture {
             metadata,
             offered.unwrap_or_else(|| metadata.scope(member, channel)),
             metadata.endpoints[&(member, channel as u8)],
+            until,
         );
         self.observers.push(observer);
         self.observers.len() - 1
     }
 
-    fn main_progress(&self) {
+    fn main_progress(&self, within: Duration) {
         let _ = writeln!(std::io::stdout(), "managed-owner main exec");
-        let progress = self.command(&[
-            "exec",
-            "owner-output",
-            "/bin/testguest",
-            "streams",
-            "main-progress",
-            "main-error",
-        ]);
+        let progress = self.command(
+            &[
+                "exec",
+                "owner-output",
+                "/bin/testguest",
+                "streams",
+                "main-progress",
+                "main-error",
+            ],
+            within,
+        );
         assert_eq!(progress.status, Some(0), "{progress}");
         assert_eq!(progress.stdout, "main-progress\n", "{progress}");
         let stderr = progress
@@ -578,10 +604,11 @@ impl Fixture {
     }
 
     fn consume(&mut self, member: u32, label: &str, channel: Channel) {
-        let observer = self.observe(member, channel, None, false);
+        let observer = self.observe(member, channel, None, false, Instant::now() + WITHIN);
         let expected = payload(label, channel);
-        let (_, wire) = self.observers[observer].exact(declared_label(member), &expected);
-        self.observers[observer].ack_and_finish(wire);
+        let (_, wire) =
+            self.observers[observer].exact(declared_label(member), &expected, Instant::now() + WITHIN);
+        self.observers[observer].ack_and_finish(wire, Instant::now() + WITHIN);
         self.observed.insert((member, channel as u8), (wire, wire));
         let _ = writeln!(
             std::io::stdout(),
@@ -591,19 +618,24 @@ impl Fixture {
         );
     }
 
-    fn shutdown(&mut self) -> Result<(), String> {
+    fn shutdown(&mut self, until: Instant) -> Result<(), String> {
         let _ = writeln!(std::io::stdout(), "managed-owner owner stop");
         let mut errors = Vec::new();
         for observer in &self.observers {
             observer.sender.request_stop();
         }
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.command(&["stop", "daemon"]))) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.command(
+                &["stop", "daemon"],
+                until.saturating_duration_since(Instant::now()),
+            )
+        })) {
             Ok(stopped) if stopped.status != Some(0) => errors.push(format!("owner stop: {stopped}")),
             Err(_) => errors.push("owner-stop CLI helper panicked".into()),
             _ => {}
         }
         for observer in &mut self.observers {
-            if let Err(error) = observer.join() {
+            if let Err(error) = observer.join(until) {
                 errors.push(error);
             }
         }
@@ -679,7 +711,7 @@ fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
         fixture.start();
         test(&mut fixture);
     }));
-    let stopped = fixture.shutdown();
+    let stopped = fixture.shutdown(Instant::now() + WITHIN);
     if let Err(error) = result {
         let _ = writeln!(std::io::stderr(), "owner cleanup: {stopped:?}");
         std::panic::resume_unwind(error);
@@ -691,19 +723,22 @@ fn with_fixture(test: impl FnOnce(&mut Fixture)) -> Option<Fixture> {
 #[test]
 fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent() {
     let Some(fixture) = with_fixture(|fixture| {
-        let held = fixture.observe(1, Channel::Stdout, None, false);
-        let (start, end) =
-            fixture.observers[held].exact(declared_label(1), &payload("agent", Channel::Stdout));
+        let held = fixture.observe(1, Channel::Stdout, None, false, Instant::now() + WITHIN);
+        let (start, end) = fixture.observers[held].exact(
+            declared_label(1),
+            &payload("agent", Channel::Stdout),
+            Instant::now() + WITHIN,
+        );
         fixture.observed.insert((1, Channel::Stdout as u8), (end, start));
         fixture.consume(1, "agent", Channel::Stderr);
-        fixture.main_progress();
+        fixture.main_progress(WITHIN);
         fixture.observers[held]
             .sender
             .send(Command::Handler(Ask::Cancel))
             .unwrap();
-        fixture.observers[held].join().unwrap();
+        fixture.observers[held].join(Instant::now() + WITHIN).unwrap();
         let _ = writeln!(std::io::stdout(), "managed-owner local cancellation complete");
-        fixture.main_progress();
+        fixture.main_progress(WITHIN);
         // The sibling receives its first output credit only after observer loss.
         fixture.consume(2, "harness", Channel::Stdout);
         fixture.consume(2, "harness", Channel::Stderr);
@@ -723,19 +758,19 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
 #[test]
 fn private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope() {
     let Some(fixture) = with_fixture(|fixture| {
-        let outsider = fixture.observe(1, Channel::Stdout, None, true);
+        let outsider = fixture.observe(1, Channel::Stdout, None, true, Instant::now() + WITHIN);
         // The current public Driver erases the typed TLS cause. A peer close without
         // an application code is observed; local errors/deadlines/data are failures.
-        fixture.observers[outsider].refused(None);
+        fixture.observers[outsider].refused(None, Instant::now() + WITHIN);
         let mut stale = fixture.metadata.as_ref().unwrap().scope(1, Channel::Stderr);
         stale.generation = stale.generation.checked_add(1).unwrap();
-        let observer = fixture.observe(1, Channel::Stderr, Some(stale), false);
-        fixture.observers[observer].refused(Some(Reason::Stale));
+        let observer = fixture.observe(1, Channel::Stderr, Some(stale), false, Instant::now() + WITHIN);
+        fixture.observers[observer].refused(Some(Reason::Stale), Instant::now() + WITHIN);
         let other = fixture.metadata.as_ref().unwrap().scope(1, Channel::Stdout);
-        let observer = fixture.observe(2, Channel::Stdout, Some(other), false);
-        fixture.observers[observer].refused(Some(Reason::Scope));
+        let observer = fixture.observe(2, Channel::Stdout, Some(other), false, Instant::now() + WITHIN);
+        fixture.observers[observer].refused(Some(Reason::Scope), Instant::now() + WITHIN);
         fixture.consume(2, "harness", Channel::Stderr);
-        fixture.main_progress();
+        fixture.main_progress(WITHIN);
     }) else {
         return;
     };
@@ -760,3 +795,6 @@ fn metadata_requires_unique_scoped_loopback_endpoints() {
     assert!(Metadata::parse(&format!("{header}member 2 channel 1 address 192.0.2.1:12345\n")).is_none());
     assert!(Metadata::parse(&format!("{header}member 2 channel 3 address 127.0.0.1:12345\n")).is_none());
 }
+
+#[path = "../../../docs/research/measurements/managed-output-cost/fixture.rs"]
+mod cost;
