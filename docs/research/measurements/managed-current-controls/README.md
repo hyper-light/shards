@@ -7,8 +7,9 @@ runs; source/binaries stayed frozen as directed. No lane/management closure.
 
 Actual follow-up: [requested current-caller proof](RESULTS.md) passed the fresh
 normal caller/matching guest builds, two real KVM header-FIN channels, one native
-canonical-Aborted Subscribe case, seven pure checks and scoped Clippy. The173
-original raw files are retained in the verified archive. Source-stage pending
+canonical-Aborted Subscribe case, seven pure checks and scoped Clippy. The172
+original payload files plus member-hashes.json (173 total members) are retained
+in the verified archive. Source-stage pending
 gates below preserve their original chronology; checkpoint is not lane release.
 
 Base `28e147c4dda846ca023020e03bc9b00eb2e58e94`, canonical main33df95b08,

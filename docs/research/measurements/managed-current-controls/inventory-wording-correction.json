@@ -1,0 +1,24 @@
+{
+  "correction": "Metadata wording only; payload count excludes member-hashes.json. No campaign/product failure or rerun.",
+  "inventories": [
+    {
+      "archive": "requested-v1.tar.gz",
+      "sha256": "c6397b7a3db9c1cdedfd733ea6de617b46ba41193c183d5f85c698ffda755c96",
+      "original_payload_files": 172,
+      "manifest_members": 1,
+      "total_members": 173,
+      "embedded_manifest_equals_outside_index": true,
+      "raw_unchanged": true
+    },
+    {
+      "archive": "continuation-v1.tar.gz",
+      "sha256": "e5e1f5bc3c3a0c60bf1f332f38f5f889608cca3e9bb60dee6d350f8731221aef",
+      "original_payload_files": 1513,
+      "manifest_members": 1,
+      "total_members": 1514,
+      "embedded_manifest_equals_outside_index": true,
+      "raw_unchanged": true
+    }
+  ],
+  "source_rust_unchanged": true
+}
