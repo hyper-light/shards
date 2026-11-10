@@ -1,0 +1,25 @@
+[package]
+name = "shards-managed-otel-encoder-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+path = "../../../../crates/init/src/metrics/otlp.rs"
+
+[[bin]]
+name = "fixture"
+path = "fixture.rs"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
