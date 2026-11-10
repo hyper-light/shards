@@ -1,0 +1,14 @@
+[package]
+name = "linux-preferred-reader-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+shards-testdir = { path = "../../../../../crates/testdir" }
+
+[profile.release]
+opt-level = 2
