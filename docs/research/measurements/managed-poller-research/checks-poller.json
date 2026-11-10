@@ -1,0 +1,69 @@
+{
+  "kind": "documentation/source identity checks only; no runtime tests or measurements",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "utc": "2026-11-10T14:03:45.672211+00:00",
+  "prior_check_attempts": [
+    {
+      "outcome": "failed before record creation",
+      "detail": "Local-link validator tried to resolve this not-yet-created checks-poller.json through base Git objects; exit 1. No source defect. Subsequent named-path add of nonexistent record exited 128; no staged mutation. Ordering corrected by validating the record link after writing it."
+    }
+  ],
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/README.md",
+        "docs/research/measurements/managed-poller-research/source-identity.json"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "Python: exact HEAD/staged ownership, local source SHA-256 identities, relative Markdown link resolution against files or base Git objects (including output record after creation)",
+      "exit_code": 0,
+      "verified_local_blobs": 15,
+      "relative_links": 15
+    }
+  ],
+  "files": [
+    {
+      "path": "docs/research/managed-poller-capacity.md",
+      "sha256": "ee474b8adaf4212b3a4221bc2f3ceeea8c7a2286ab5a9ce03fbb51f9de91144b"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/README.md",
+      "sha256": "c2755f7be811f5e7d8452293dd1f4b357b0fd8e8f9feba48d8b3a65c7fd453e0"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/source-identity.json",
+      "sha256": "a25bf1f899d19425f66affa3be9c2d5c0b717327d8ce025b60b6eb4ace9daa34"
+    }
+  ],
+  "unrun": [
+    "compile",
+    "unit/integration/E2E tests",
+    "live syscall fixture",
+    "OOM/fault injection",
+    "mutations",
+    "all-target lint",
+    "VM/namespace/BPF/socket campaign",
+    "audit",
+    "profiling",
+    "benchmark"
+  ]
+}
