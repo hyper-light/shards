@@ -17611,6 +17611,18 @@ completeness; `--network=none` and `host` steps.
 
 ### D109. An Agentfile's volumes at run, and every grant checked at build and at run
 
+**Revalidation follows the opened image.** The process-wide map keyed by root
+pathname and normalized-Agentfile digest is removed. A live file-backed EROFS
+example replaced a runnable configuration at the same path without changing that
+digest; the map returned its old activation. Each lookup now reads and verifies
+the opened image, with no replacement cache, invalidation protocol or new runtime
+literal. The regression passes4/4 relevant tests; restoring the map makes its
+specific stale-members assertion fail again. Source, logs, mutation and unrun cost/
+platform gates are in [the cache evidence](../research/measurements/managed-cache/README.md).
+This establishes reader behavior, not an exploit against production image storage.
+The separate experimental host whole-tree activation scan still needs replacement/
+cost review; cache removal is not its performance justification.
+
 AGENTFILE_ARCH.md §4.5 and §12 answers 8 and 9: `VOLUME <name> <dest>` names a volume, as
 Compose's `volumes:` does; `VOLUME <path>…` with options is an anonymous volume at each;
 without `FOR` a volume is every workspace's and agent's, with `FOR` the named agents' and
