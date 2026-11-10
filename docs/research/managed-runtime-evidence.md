@@ -4,10 +4,11 @@ Research record `01a1c33a30dd72afa53e3cbda62339cb`, retrieved 2026-11-10 UTC.
 These are Kiln's automated citation-support grades, not security assurance or benchmark scores.
 A found quotation verifies the cited text exists; it does not prove every inference or implementation guarantee.
 Pinned historical protocol facts are scoped to that revision. Falcon architecture remains vendor-reported (F/26), with no independent implementation audit here.
+Findings f13–f15 add the kernel-prerequisite and native-reaping obligations used by the implementation plan.
 
 **Research:** Design native, typed, rootless-host Shards management of AGENT/HARNESS process trees at arbitrary depth, tool-call mediation and telemetry, mandatory buffered per-flow network/output interception and relay, safe output sanitization, and low overhead. Build upon Shards' Linux guest namespaces/cgroups/seccomp/Landlock, owned process lifecycle, per-domain MCP servers, existing network stack and typed host APIs. Compare Falco/Sysdig, CrowdStrike Falcon Sensor, Cilium Tetragon, kernel enforcement primitives and native Codex/Claude tool interfaces. Distinguish observable evidence, actual pre-action enforcement, after-the-fact detection, vendor claims, and unknowns; preserve TLS, one-binary delivery and all eight host targets. Capture primary-source evidence and an actionable validation/benchmark plan; no unsupported universal interception or performance claims.
 
-12 findings (A 8, B 1, C 2, F 1) from 11 sources (4 internal, 7 external)
+15 findings (A 8, B 4, C 2, F 1) from 15 sources (8 internal, 7 external)
 
 - **A · 90 (high)** The inspected Shards launcher creates domains directly into cgroups with private namespaces and applies identity, capability, Landlock and seccomp restrictions before exec. [1]
   _1 independent source (code); 1 of 1 quotes found where cited_
@@ -46,6 +47,18 @@ Pinned historical protocol facts are scoped to that revision. Falcon architectur
 - **A · 90 (high)** OpenTelemetry's stable log model distinguishes the event occurrence Timestamp from the collection-system ObservedTimestamp. [11]
   _1 independent source (a standard); 1 of 1 quotes found where cited_
   - [11] "Time when the event was observed by the collection system." (ObservedTimestamp) · quote found
+- **B · 79 (good)** Both checked-in kernel base configs disable NFT_TPROXY and NFT_SOCKET. A transparent-relay plan must verify effective kernel features rather than assume these mechanisms are available. [12][13]
+  _2 independent sources (code); 2 of 2 quotes found where cited; inferred from them_
+  - [12] "# CONFIG_NFT_TPROXY is not set" (Netfilter config) · quote found
+  - [13] "# CONFIG_NFT_TPROXY is not set" (Netfilter config) · quote found
+- **B · 72 (good)** Linux 6.18 nft_tproxy validates the PREROUTING hook and handles TCP/UDP. A switch rule alone does not demonstrate same-domain loopback interception. [14]
+  _1 independent source (code); 2 of 2 quotes found where cited; inferred from them_
+  - [14] "return nft_chain_validate_hooks(ctx->chain, 1 << NF_INET_PRE_ROUTING);" (nft_tproxy_validate) · quote found
+  - [14] "pkt->tprot != IPPROTO_TCP" (nft_tproxy_eval_v4) · quote found
+- **B · 72 (good)** The current domain launcher creates a PID namespace and directly execs the selected actor there. Independent orphan reaping is therefore a management proof obligation, not an established property of an arbitrary harness. [15]
+  _1 independent source (code); 2 of 2 quotes found where cited; inferred from them_
+  - [15] "libc::CLONE_NEWPID" (start clone_args) · quote found
+  - [15] "libc::execve(" (child final exec) · quote found
 
 **Sources**
 
@@ -60,3 +73,7 @@ Pinned historical protocol facts are scoped to that revision. Falcon architectur
 9. MCP 2025-11-25 tools content and trust rules (a standard, external) — https://modelcontextprotocol.io/specification/2025-11-25/server/tools · 2025-11-25 · out of date
 10. OWASP Logging Cheat Sheet (official docs, external) — https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
 11. OpenTelemetry stable logs data model (a standard, external) — https://opentelemetry.io/docs/specs/otel/logs/data-model/
+12. Shards 9d562993 checked-in x86_64 kernel base (code, internal) — /Users/adalundhe/Projects/shards/.claude/worktrees/g121-i7/resources/kernel/firecracker-x86_64-6.18.config
+13. Shards 9d562993 checked-in aarch64 kernel base (code, internal) — /Users/adalundhe/Projects/shards/.claude/worktrees/g121-i7/resources/kernel/firecracker-aarch64-6.18.config
+14. Linux 6.18 nft_tproxy implementation (code, internal) — https://raw.githubusercontent.com/torvalds/linux/v6.18/net/netfilter/nft_tproxy.c
+15. Shards 9d562993 domain clone and direct exec (code, internal) — /Users/adalundhe/Projects/shards/.claude/worktrees/g121-i7/crates/init/src/domains.rs
