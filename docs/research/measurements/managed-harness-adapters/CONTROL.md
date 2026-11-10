@@ -95,6 +95,33 @@ separate existing SIGNAL right. This mapping and the exact runtime target API
 were sent input/ROOT7807–7808/7842–7843; the owning lane supplies the concrete gate
 delta. No target or right is inferred from request IDs, method names or bytes.
 
+Input subsequently agreed the exact finite runtime API (receipt7887, agreement
+7903; parent/ROOT7905–7906):
+
+```text
+Owner::attach(binding, Target::Raw | Target::Native(adapter), endpoint, storage)
+Owner::native_region(adapter, scope, current_admission, NativeOperation::Turn|Interrupt)
+    -> Result<&mut [u8], Report>
+Owner::native_stage(adapter, scope, current_admission, operation, count)
+    -> Result<(), Report>
+```
+
+Raw stage also receives scope/admission checks. Raw operations refuse WrongTarget
+before native/storage access. Native region AND stage recheck exact selected
+adapter/current scope and WRITE or SIGNAL. Native+TTY returns rejected owned
+endpoint/storage; lifecycle revoke()/ended() remains separate from raw control.
+The caller matches Command::operation explicitly, refuses unsupported operations
+before requesting a native region, encodes into that region, and stages with a
+fresh current admission check. It reports kernel-accepted input bytes separately
+from a native interrupt acknowledgement/terminal turn or canonical broker fact.
+
+Signed encoder source is7f69480bdf36f26cbd76d1c18cffcd89be197c3c. Input's target
+component/actual pipe witness is still pending its dependency on a small signed
+canonical ABI adapter.rs plus registration checkpoint from parent. Parent's
+active uncommitted schema is not copied, and no second enum/queue is introduced
+to bypass the missing dependency. The contract is agreed; its actual target
+denial result and production protected producer have NOT been proved here.
+
 This checkpoint tests the codec, NOT that gate or actual protected producer.
 The required next light caller witness is an actual disposable input pipe:
 raw Session against Native target emits zero bytes; an explicitly target-checked

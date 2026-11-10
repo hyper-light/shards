@@ -1,5 +1,17 @@
 # Harness adapter lane checkpoint
 
+Signed pushed current CODE7f69480bdf36f26cbd76d1c18cffcd89be197c3c. Current
+17componenttests/strictprod+test/fmt/policy0 at light-native-control-01; no jobs.
+Input target API now AGREED7887/7903: SAME Owner TargetRaw/Native(adapter),
+native_region/native_stage(adapter,scope,currentadmission,Turn|Interrupt), raw
+operations WrongTarget beforetouch, native+TTY rejected ownedpayloadreturn,
+trusted lifecycle revoke/ended separate. Exact caller API recorded CONTROL.md.
+Actual target pipe/session witness awaits input implementation and PARENT small
+SIGNED canonical ABI adapter.rs/modtoken dependency; requested7905/ROOT7906.
+No second enum or active uncommitted writer bytes copied. Audit small reserve
+closure being frozen per ROOT; signed audit branch lastread11249. Full actual
+private endpoint/owner grant/admission and P8/G16/G24 still OPEN.
+
 Current policy refreshed FULL at origin/mainca3ab10c151aa5539e757f1cc76029746ccbb561,
 same df2 hash, implementer readback ROOT7806. NEW native control encoder in
 harness/control.rs writes only pinned plaintext Turn/Interrupt into caller's

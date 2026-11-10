@@ -1,5 +1,13 @@
 # Exact caller handoff, not a completion claim
 
+Current owned CODE7f69480bdf36f26cbd76d1c18cffcd89be197c3c adds checked typed
+native Turn/Interrupt encoder;17componenttests/strict/fmt/policy0. CONTROL.md now
+records the agreed input Target Raw/Native ownership API and exact region/stage
+caller. That component's actual raw-session-denial pipe result awaits input and
+parent signed canonical adapter.rs dependency. No private runtime endpoint or
+grant/admission authority is established by this codec. Earlier source counts
+below describe their checkpoints and do not supersede this current source.
+
 Current signed source `590882ecce0f29ed2ee29c544e7b11865c636cf7`, same0342/df2
 implementer policy. Fourteen native component tests/scoped strict/fmt/policy0;
 actual supplied/native effects and all P8/G16/G24 closure remain unverified.
