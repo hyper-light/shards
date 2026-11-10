@@ -2165,6 +2165,18 @@ pub static READ_PORTS: Command = Command {
     error_prefix: "",
 };
 
+/// On-demand OTLP observations; no implicit listener or background sampling.
+pub static READ_METRICS: Command = Command {
+    usage: "MICROVM",
+    about: "Read current microVM cgroup observations as OpenTelemetry OTLP JSON metrics",
+    aliases: "shards read metrics",
+    args: Args::Exactly(1),
+    flags: &[HELP],
+    unserved: "",
+    interspersed: true,
+    error_prefix: "",
+};
+
 /// `shards read processes` (D123): the processes a microVM's members started and ended.
 pub static READ_PROCESSES: Command = Command {
     usage: "MICROVM",
@@ -3005,6 +3017,7 @@ pub fn find(words: &[&str]) -> Option<(&'static Command, &'static str, usize)> {
         ["container", "kill", ..] => (&KILL, "shards container kill", 2),
         ["port", ..] => (&PORT, "shards port", 1),
         ["read", "ports", ..] => (&READ_PORTS, "shards read ports", 2),
+        ["read", "metrics", ..] => (&READ_METRICS, "shards read metrics", 2),
         ["read", "processes", ..] => (&READ_PROCESSES, "shards read processes", 2),
         ["watch", "processes", ..] => (&WATCH_PROCESSES, "shards watch processes", 2),
         ["images", ..] => (&IMAGES, "shards images", 1),

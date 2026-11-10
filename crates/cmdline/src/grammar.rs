@@ -81,7 +81,7 @@ pub fn rewrite(args: &[String]) -> Option<Vec<String>> {
     let (first, second) = (args.first()?.as_str(), args.get(1).map(String::as_str));
     // What a microVM or an image holds, read once or watched as it comes (D123): what a
     // microVM's command printed, what it changed of its image's files, how an image's
-    // layers were made. `read ports`, `read processes` and `watch processes` are commands
+    // layers were made. `read ports`, `read metrics`, `read processes` and `watch processes` are commands
     // of their own (commands.rs).
     let view: Option<&[&str]> = match (first, second) {
         ("read", Some("logs")) => Some(&["logs"]),
@@ -312,8 +312,8 @@ pub static ACTIONS: &[(&str, &str, &str, &str)] = &[
     (
         "inspect",
         "read",
-        "processes | ports | logs | changes | history",
-        "Read what a microVM ran, where its ports go, what its command printed or changed, or how an image was made",
+        "metrics | processes | ports | logs | changes | history",
+        "Read a microVM's metrics, processes, ports, output or changed files, or how an image was made",
     ),
     (
         "inspect",
@@ -599,6 +599,12 @@ pub static USES: &[(&str, &str, &str, &str)] = &[
         "list",
         "clients | invitations",
         "List the machines enrolled to run shards here, or the invitations still open",
+    ),
+    (
+        "inspect",
+        "read",
+        "metrics NAME",
+        "Current cgroup observations as OpenTelemetry OTLP JSON; no background collection",
     ),
     (
         "inspect",

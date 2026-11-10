@@ -1,0 +1,8 @@
+{
+  "original": "unit.log",
+  "original_bytes": 1508,
+  "original_sha256": "e8d3a923fa9a1bf969ddc4a0cd74cf97995e5e3960f57291bc7fd463b2941c42",
+  "stored": "unit.log.gz",
+  "stored_sha256": "f0b280d920fe64bf95056814dcb7d28c2a9557a6016a898009f91455c7b018ce",
+  "reason": "Preserve original libtest final blank line without changing raw bytes."
+}

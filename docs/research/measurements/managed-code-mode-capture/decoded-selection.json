@@ -1,0 +1,229 @@
+{
+  "archive_sha256": "cfe54c29e246da56a55e573833ef735c697ba1100f42efc7a2ba985eb33e3cbf",
+  "records": {
+    "evidence/inputs.json": {
+      "revision": "0219ab2eb2466ee3e9b08064434dc9efd70053d5",
+      "source_hashes": {
+        "crates/shards/tests/common/managed_capture.rs": "431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d",
+        "crates/shards/tests/managed_output.rs": "be5fa582b7d691a88a127e179412cba1e7609101f5bd34e2baeb156ff55881a1",
+        "crates/shards/tests/build.rs": "343814e9bb65005fbc61a9df2acf2ecc24b5c84987b38416746ba73371ba0ee7"
+      },
+      "binary_sha256": "cbc81f550374b02d74c912a2da8b404723f49b796147ec1654800b96f4b18c2f",
+      "guest_sha256": "09d1ed31a6893f5b6500f4020b2233dc4f187f85973ad9b3d5a317e537f20c5b",
+      "kernel_sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+    },
+    "evidence/artifacts.json": [
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/build-80db23d53dc40e41",
+        "bytes": 103342224,
+        "sha256": "cbc81f550374b02d74c912a2da8b404723f49b796147ec1654800b96f4b18c2f"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+        "bytes": 60381768,
+        "sha256": "a5e25dec6a39242cb1eb8004bf1b9ab21631544c7c757d72c0981935d1c41049"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/shards",
+        "bytes": 270585008,
+        "sha256": "fb299fb871dda253d48e25497e582f2e6b4b7170068ed3f30b9245a6193eb8bd"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/guests/guest/shards-testguest",
+        "bytes": 3673760,
+        "sha256": "09d1ed31a6893f5b6500f4020b2233dc4f187f85973ad9b3d5a317e537f20c5b"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/source/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+        "bytes": 27758808,
+        "sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+        "bytes": 2370992,
+        "sha256": "0cdcf077569b0d928b8406aa069c17c82ed57fda1c3afa756159d0737e4b7f79"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+        "bytes": 3292136,
+        "sha256": "1abbb05a417aea21c6a59b350e03c8985322e06aca8209650ac71acb37b67a63"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-2cb7a07bffb06345/out/shards-init",
+        "bytes": 2388176,
+        "sha256": "c53e5f2c4f6e0a2547ab8b91d03f6867638baa1054a323a3d123f6013acfac41"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-2cb7a07bffb06345/out/shards-server",
+        "bytes": 3291880,
+        "sha256": "c2fa89a6178da8999ff85099eef9cad066e2a7aa2fa971a4d1b0612b3fbe6f22"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+        "bytes": 30934048,
+        "sha256": "8f617ed7bb881673a57cb3eca2f7310d49410a24c6d41699784c87cf352646dc"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+        "bytes": 7908800,
+        "sha256": "01a8a7cc4a9717bbfe132278cfc80286092d42f8d85aadbf60f9eea743bf12fe"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm-gpu",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-vm",
+        "bytes": 30644008,
+        "sha256": "ffc1574121d0e7968fae2e16f57446c43fd45c88e774c657f7035057c4db4b72"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-net",
+        "bytes": 7901088,
+        "sha256": "b03aa14cd3af61477e05479286301ad2c825541259066a868aa73ae73b5beb6e"
+      },
+      {
+        "path": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-vm-gpu",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "evidence/test-paths.json": {
+      "build": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/build-80db23d53dc40e41",
+      "managed_output": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/managed_output-87d4844abdafeb5c"
+    },
+    "evidence/run-v1/association.json": {
+      "revision": "0219ab2eb2466ee3e9b08064434dc9efd70053d5",
+      "source_hashes": {
+        "crates/shards/tests/managed_output.rs": "be5fa582b7d691a88a127e179412cba1e7609101f5bd34e2baeb156ff55881a1",
+        "crates/shards/tests/common/managed_capture.rs": "431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d",
+        "crates/shards/tests/build.rs": "343814e9bb65005fbc61a9df2acf2ecc24b5c84987b38416746ba73371ba0ee7"
+      },
+      "expected_inputs": {
+        "revision": "0219ab2eb2466ee3e9b08064434dc9efd70053d5",
+        "source_hashes": {
+          "crates/shards/tests/common/managed_capture.rs": "431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d",
+          "crates/shards/tests/managed_output.rs": "be5fa582b7d691a88a127e179412cba1e7609101f5bd34e2baeb156ff55881a1",
+          "crates/shards/tests/build.rs": "343814e9bb65005fbc61a9df2acf2ecc24b5c84987b38416746ba73371ba0ee7"
+        },
+        "binary_sha256": "cbc81f550374b02d74c912a2da8b404723f49b796147ec1654800b96f4b18c2f",
+        "guest_sha256": "09d1ed31a6893f5b6500f4020b2233dc4f187f85973ad9b3d5a317e537f20c5b",
+        "kernel_sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+      },
+      "inputs_sha256": "a585d61c9f45e8ed4806ac0e62230f9ad0912dbc35f7dbd114bd47b569361a6b",
+      "binary_sha256": "cbc81f550374b02d74c912a2da8b404723f49b796147ec1654800b96f4b18c2f",
+      "binary_bytes": 103342224,
+      "guest_sha256": "09d1ed31a6893f5b6500f4020b2233dc4f187f85973ad9b3d5a317e537f20c5b",
+      "kernel_sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7",
+      "caller_sha256": "1efede7fd1481a3df2753b36021fa0df328e00785309c5572c3eca36f6d140f1",
+      "command": [
+        "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/build-80db23d53dc40e41",
+        "code_mode_runs_a_program_with_the_callers_grants",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "arguments": {
+        "source": "/home/adalundhe/native-code-mode-capture-0219-v1/source",
+        "binary": "/home/adalundhe/native-code-mode-capture-0219-v1/target/test-release/deps/build-80db23d53dc40e41",
+        "records": "/home/adalundhe/native-code-mode-capture-0219-v1/evidence/run-v1",
+        "guests": "/home/adalundhe/native-code-mode-capture-0219-v1/guests",
+        "kernel": "/home/adalundhe/native-code-mode-capture-0219-v1/source/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+        "inputs": "/home/adalundhe/native-code-mode-capture-0219-v1/evidence/inputs.json",
+        "outer_ms": 240000,
+        "reap_ms": 15000
+      },
+      "test_bounds": "one ordinary test,120s original work deadline+at most15s cleanup"
+    },
+    "evidence/run-v1/result.json": {
+      "exit_code": 0,
+      "outer_timeout": false,
+      "signals": [],
+      "passed": true,
+      "elapsed_seconds": 3.565442272999917,
+      "cleanup_limit": "process-group reap bound only; full kernel return not inferred"
+    },
+    "evidence/run-v1/native/capture-cuts.json": [
+      {
+        "channel": 1,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 0,
+        "payload_received": 390,
+        "state": "Open { offset: 390 }",
+        "wire_ack_enqueued": 685
+      },
+      {
+        "channel": 2,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 0,
+        "payload_received": 0,
+        "state": "Open { offset: 0 }",
+        "wire_ack_enqueued": 23
+      },
+      {
+        "channel": 1,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 1,
+        "payload_received": 324,
+        "state": "Open { offset: 324 }",
+        "wire_ack_enqueued": 571
+      },
+      {
+        "channel": 2,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 1,
+        "payload_received": 0,
+        "state": "Open { offset: 0 }",
+        "wire_ack_enqueued": 23
+      },
+      {
+        "channel": 1,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 2,
+        "payload_received": 1151,
+        "state": "Open { offset: 1151 }",
+        "wire_ack_enqueued": 1526
+      },
+      {
+        "channel": 2,
+        "limit": "receipt cut only, not End or future stderr absence",
+        "member": 2,
+        "payload_received": 0,
+        "state": "Open { offset: 0 }",
+        "wire_ack_enqueued": 23
+      }
+    ],
+    "evidence/run-v1/native/cleanup.json": {
+      "body_passed": true,
+      "limit": "point kernel worker snapshot; full population/kernel resource return unverified",
+      "owner_stop_observer_join_errors": []
+    },
+    "evidence/post-case-host-processes.json": {
+      "matching_owned_scope_processes": [],
+      "limit": "one kernel process snapshot by owned cwd/exe/argv, not all kernel resource return"
+    },
+    "evidence/runtime-cache-files.json": [
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/8f617ed7bb8801a8a7cc4a97e3b0c44298fc/lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/8f617ed7bb8801a8a7cc4a97e3b0c44298fc/shards-net",
+        "bytes": 7908800,
+        "sha256": "01a8a7cc4a9717bbfe132278cfc80286092d42f8d85aadbf60f9eea743bf12fe"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/8f617ed7bb8801a8a7cc4a97e3b0c44298fc/shards-vm",
+        "bytes": 30934048,
+        "sha256": "8f617ed7bb881673a57cb3eca2f7310d49410a24c6d41699784c87cf352646dc"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  }
+}

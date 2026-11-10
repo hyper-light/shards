@@ -1,0 +1,18 @@
+=== RUN   TestExactNumbersAndScope
+--- PASS: TestExactNumbersAndScope (0.00s)
+=== RUN   TestGaugeDoubleAndSignedBoundary
+--- PASS: TestGaugeDoubleAndSignedBoundary (0.00s)
+=== RUN   TestOfficialParserVersusAddedSemanticChecks
+=== RUN   TestOfficialParserVersusAddedSemanticChecks/absent
+=== RUN   TestOfficialParserVersusAddedSemanticChecks/both-number-fields
+=== RUN   TestOfficialParserVersusAddedSemanticChecks/duplicate-point-attribute
+--- PASS: TestOfficialParserVersusAddedSemanticChecks (0.00s)
+    --- PASS: TestOfficialParserVersusAddedSemanticChecks/absent (0.00s)
+    --- PASS: TestOfficialParserVersusAddedSemanticChecks/both-number-fields (0.00s)
+    --- PASS: TestOfficialParserVersusAddedSemanticChecks/duplicate-point-attribute (0.00s)
+=== RUN   TestRejectMalformedAndUnsupported
+--- PASS: TestRejectMalformedAndUnsupported (0.00s)
+=== RUN   TestCallerBoundAndInputModes
+--- PASS: TestCallerBoundAndInputModes (0.00s)
+PASS
+ok  	shards-research/managed-otel-oracle	0.001s

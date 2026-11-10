@@ -1,0 +1,26 @@
+{
+  "source_parent": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "host": "macOS-26.4.1-arm64-arm-64bit",
+  "architecture": "arm64",
+  "utc": "2026-11-10T18:41:24.814106+00:00",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+  "disk_free_bytes": 235179515904,
+  "source_files": {
+    "crates/init/src/metrics/otlp.rs": "9aa16e1df9b84c4cad69744e50a44f93be66d83afd59642304d010d0b85de354",
+    "docs/research/measurements/managed-otel-encoder/Cargo.toml": "478de5fd8a5473b5ed38846d0ae3a8434709aa87cca81211ec7b1b8049999ab5",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": "fceed6875c1ce02b1437fedca57778f2e1fafee8a01a87ef0d44e9f05737bf8a",
+    "docs/research/measurements/managed-otel-encoder/check.py": "e9136ebbfcf1c32b2decfd73ccafcd3c6de0f76bb988437c2bd2770da23462a7"
+  },
+  "unit_passed": 10,
+  "unit_failed": 0,
+  "strict_clippy_rc": 0,
+  "json_fixture_check_rc": 0,
+  "collector_conformance": "not_run",
+  "profiles": "not_run",
+  "vm_e2e": "not_run",
+  "seven_target_matrix": "not_run",
+  "production_registration": "not_added"
+}

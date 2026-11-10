@@ -182,6 +182,7 @@ enumerate every unrelated Shards defect or certify every existing isolation rule
 | G22 V | Original vendor patch mapped zero/overflow patience to unbounded waits. The corrected finite/immediate contract is adopted on main0e024f8ed with native Linux/Mac and Windows API evidence; native Windows zero-withheld and final handle attribution remain unverified. | P3/P8/P11 integration dependency: retain owning-Guest compatibility, close the remaining native Windows contract/handle gates and current cold Mac allocation fault. | Revision-specific zero-withheld, overflow/no-dial, dribbled-answer deadline and native handle/cleanup evidence; ordinary compilation/passes do not close unrun fault or handle attribution. |
 | G23 V | Low overhead, fairness, leak freedom and cross-platform behavior of the proposed layer are unmeasured. | P12/P13: adversarial/mutation/fuzz gates and paired measurements on actual supported VM hosts. | Report distributions, resource high-water marks, failures, contention and neighbor impact; pass the supported seven-target and real-VM matrix. |
 | G24 R/V | Startup support is not yet a complete real Codex harness demonstration or a typed interactive input/TTY contract. | P3/P8/P10: explicit input ownership, actual supplied Linux artifact, provider grants and sign-in behavior. | A real Codex session works from HARNESS-supplied content without RUN/VOLUME installation; raw protocol output is preserved. |
+| G25 R | MicroVM and management metrics have no OpenTelemetry export contract or collector conformance proof. | P9: expose observations through OTLP with pinned metric semantics, units, resource identities, provenance, collection failures and reset/loss behavior; use existing supervision and transport. | A real collector accepts the export; VM, tenant and process accounting remain distinct; unavailable counters are not zero; cardinality and exporter resources stay within admitted bounds, and collector failure does not change enforcement. |
 
 Existing source evidence is concentrated in `init::{domains,run,procevents,links,
 netplan,inroot,frames}`, `server::{server,sandbox}`, `net::{lib,tcp,poll,ring}`,
@@ -437,6 +438,17 @@ authorized content retention; safe CLI/TUI/HTML/log views escape their own contr
 syntax, terminal sequences, invalid encodings and misleading labels. Ordinary
 telemetry excludes auth material and minimizes content. Bound exporter queues,
 attributes and cardinality; an exporter cannot change enforcement policy.
+
+Expose microVM and management metrics as OpenTelemetry metrics using OTLP.
+Use the pinned semantic conventions where their definitions match the actual
+observation; document Shards-specific instruments where they do not. Resource
+identity distinguishes a VM from its tenants and individual executions. A cgroup
+aggregate is not an individual process measurement. Preserve units, temporality,
+clock and reset semantics, missing observations and collection loss. Existing
+grants govern collection and delivery; telemetry confers no authority. Collector availability
+must not determine lifecycle control or admission. Establish the export topology
+from the existing stats/transport seams and real collector/resource evidence;
+do not introduce a periodic guest sensor or duplicate state store by default.
 
 Where durable evidence is mandatory, reserve its capacity before committing an
 effect. When finite retention is exhausted, backpressure/refusal is explicit.

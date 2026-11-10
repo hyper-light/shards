@@ -70,6 +70,7 @@ mod layers;
 mod load;
 mod logs;
 mod managed;
+mod metrics;
 mod moves;
 mod network;
 mod networks;

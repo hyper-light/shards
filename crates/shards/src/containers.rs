@@ -185,7 +185,7 @@ pub struct PortRecord {
 pub use crate::spec::now;
 
 /// The random bytes of an ID ([`new_id`]): `stringid.GenerateRandomID`'s 32.
-pub const ID_BYTES: usize = 32;
+pub use shards_abi::MICROVM_ID_BYTES as ID_BYTES;
 
 /// A new microVM's ID: 32 random bytes in hex, the form clients parse
 /// (`stringid.GenerateRandomID`), drawn again while the first 12 digits are all decimal:

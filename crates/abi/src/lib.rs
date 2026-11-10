@@ -5,6 +5,10 @@
 
 extern crate alloc;
 
+/// A microVM ID's random bytes, rendered as twice as many hex digits. Existing
+/// stringid.GenerateRandomID compatibility; the 256-bit identity is unchanged.
+pub const MICROVM_ID_BYTES: usize = 32;
+
 /// The first agent's or harness's uid and gid in a microVM (D59): the n-th domain, agents
 /// first in the order the Agentfile declares them and then harnesses, runs as this plus
 /// n, and the build checks that no file outside a domain is its user's (§9.2).

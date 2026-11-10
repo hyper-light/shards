@@ -20562,6 +20562,61 @@ in init; none of init's own threads outlives the call that spawns it. The childr
 Next: egress without init's NAT (the network process taking the agents' addresses), and
 ingress straight to an agent's address, so that init tracks no agent's flow either.
 
+### D229: on-demand OpenTelemetry cgroup observations
+
+Implementation/evaluation in progress: [G25/P9](managed-runtime-plan.md),
+[primary contracts and alternatives](../research/managed-runtime-otel-metrics.md),
+[actual baseline and required gates](../research/measurements/managed-otel/README.md).
+No collector, full real-VM, resource or supported-target pass is established yet.
+
+`shards read metrics MICROVM` collects through the existing trusted init builtin
+and owner output transport. It emits an OTLP JSON request artifact, not an HTTP
+delivery acknowledgment. No listener, periodic sensor, retry queue, background
+aggregator or additional installed process is introduced. The serializer is
+evaluated against the official Collector and Rust alternatives before adoption;
+source-level allocation observations alone establish no performance advantage.
+
+Read the run and workload cgroups separately, and each runnable declared member
+through its existing held cgroup object. Files-only members retain their holes.
+Group memory, CPU, tasks and block-I/O are not process measurements or complete
+physical VM/parent/kernel charges. Parent/child aggregates overlap. Observation
+does not grant authority, reserve resources or settle D59 victim policy.
+
+The resource identity is the canonical microVM ID, scope and stable member ID.
+The additional generation is explicitly the VMM's **lineage restore count**, not
+the owner-output management generation or proof of restart-safe execution IDs.
+Check that marker before and after collection; a changed marker refuses the
+artifact. Unknown true counter birth time stays omitted. Sequential file reads
+are not an atomic snapshot or a statement of clock accuracy. Restart/recreation,
+rollback/move and complete generation handling remain P11/G20 obligations.
+
+Preserve per-field typed native-I/O, missing, invalid and overflow outcomes.
+Unavailable measurements are omitted, with timestamped failed-observation
+diagnostics and an always-present current collection-error count. Neither a
+missing counter nor a prior paused sample becomes a fresh zero. The existing
+Docker STATS compatibility/display path remains separate.
+
+| Literal / bound | Source or derivation |
+| --- | --- |
+| METRICS18 | Next private builtin protocol discriminant after DEVICE17; not a capacity or timeout. Unknown builtins still fail. |
+| MicroVM ID32 random bytes,64 hex digits | Existing stringid.GenerateRandomID-compatible 256-bit identity, now one ABI constant re-exported by containers; no entropy/security change. |
+| Run + workload scopes; joiner one scope | Actual containment objects: provider aggregate and its main workload, plus each started declared member; a joiner's request reads its own workload group only. Storage reserve is checked from that actual count. |
+| One input page per request | Actual `_SC_PAGESIZE`, fallibly reserved once and reused for all files; no chosen sampling interval or retained cache. |
+| Selected token buffer | `len("wbytes=") + decimal_digits(u64::MAX)`,27 bytes. Numeric overflow is explicit; unknown long kernel fields are not retained. |
+| Decimal base10 / ASCII digits | Kernel cgroup decimal grammar; checked multiplication/addition. Empty, duplicate selected IO fields and malformed scalar values fail explicitly. |
+| CPU1,000,000 usec/s and six fractional digits | SI microseconds. OTLP asDouble is binary64, so large values do not promise exact microsecond preservation. |
+| CUMULATIVE2 / monotonic flags | Pinned OTLP enum and actual kernel cumulative CPU/IO or additive current memory/task semantics. Counter origin is not fabricated. |
+| Bytes `By`, CPU `s`, tasks `{task}` | UCUM/OTel units. pids.current counts subtree TIDs, not process leaders. |
+| Five observations; failed-field diagnostic1 | Actual fields CPU/memory/tasks/IO-read/IO-write;1 denotes that failed observation. Current aggregate error count is computed from those outcomes, including real0 after a healthy collection. |
+| OTLP signed integer edge | Checked u64→i64; out-of-range values become explicit overflow diagnostics. Full unsigned restore count is consistently a decimal string resource attribute. |
+| JSON escaping and string integers | OTLP1.11.1/ProtoJSON control escaping, lowerCamelCase fields, numeric enums and decimal-string 64-bit integers/timestamps; no fake semantic schema URL. |
+
+The CLI/daemon continues its existing typed-I/O/outer presentation bridge; field
+diagnostics contain no paths, prompts, credentials, arbitrary labels or actor-
+claimed tool identities. Root still owes actual collector/caller/mutation proof,
+seven-target and real-VM validation, admitted aggregate costs/control survival,
+comparative profiles and transport outcomes for any future HTTP exporter.
+
 ### D59: owned native domain lifetime
 
 Implementation slice P2 of [the management plan](managed-runtime-plan.md) extends
