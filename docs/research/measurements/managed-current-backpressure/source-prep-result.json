@@ -1,0 +1,12 @@
+{
+  "workflow": "r151",
+  "source": "4ef5589087306f7cc9a10cec075a8433213dc55e",
+  "actual_exit": 128,
+  "actual_phase": "fetch",
+  "stderr": "kex_exchange_identification: read: Connection timed out\nbanner exchange: Connection to 172.182.252.133 port 22: Connection timed out\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+  "clippy_started": false,
+  "process_stop_issued": false,
+  "deadline_reset": false,
+  "recorded_utc": "2026-11-10T20:50:38.407014+00:00",
+  "meaning": "source preparation network timeout; not a campaign or compiler failure"
+}

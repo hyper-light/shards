@@ -13,5 +13,31 @@
   "pure": "9pass/0fail/5explicitignored",
   "strict_clippy_at_live_source": 101,
   "original_remote_archive": "/home/adalundhe/managed-current-backpressure-a920-v1/evidence-backpressure-v1.tar.gz",
-  "originals_preserved": true
+  "originals_preserved": true,
+  "separate_lint_delta": {
+    "source": "4ef5589087306f7cc9a10cec075a8433213dc55e",
+    "archive": "evidence-lint-rendering-v1.tar.gz",
+    "sha256": "772d74c264a4bc09fe660943ae1d6fb01895d3624b22fe79ea2d523c6384b3d9",
+    "bytes": 7003,
+    "original_payloads": 23,
+    "manifest_members": 1,
+    "total_members": 24,
+    "all_unique_safe_regular_paths": true,
+    "all_23_original_hashes_verified": true,
+    "strict_clippy_exit": 0,
+    "live_cases_at_delta": "UNRUN; ROOT combined campaign owed"
+  },
+  "source_preparation_failure": {
+    "archive": "evidence-source-prep-final-v1.tar.gz",
+    "sha256": "2b59ccce0b8bb5a2ddf6f27ce4162097cc6c48d95f774688e56a8899de300ed4",
+    "bytes": 2593,
+    "original_payloads": 14,
+    "manifest_members": 1,
+    "total_members": 15,
+    "all_unique_safe_regular_paths": true,
+    "all_14_original_hashes_verified": true,
+    "actual_fetch_exit": 128,
+    "clippy_started": false,
+    "original_snapshot_wording_preserved_with_correction": true
+  }
 }

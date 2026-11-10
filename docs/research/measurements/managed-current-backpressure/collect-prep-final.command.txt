@@ -1,0 +1,18 @@
+python3 - <<'PY'
+from pathlib import Path
+from datetime import datetime,timezone
+import json,hashlib,tarfile,io
+base=Path.home()/'managed-current-backpressure-a920-v1';old=base/'records/lint-rendering-v1';snapshot=base/'records/source-prep-snapshot-v1';final=base/'records/source-prep-final-v1';final.mkdir()
+assert (old/'fetch-exit').read_text().strip()=='128' and not (old/'clippy-command.json').exists()
+result={'workflow':'r151','source':'4ef5589087306f7cc9a10cec075a8433213dc55e','actual_exit':128,'actual_phase':'fetch','stderr':(old/'fetch-stderr').read_text(),'clippy_started':False,'process_stop_issued':False,'deadline_reset':False,'recorded_utc':datetime.now(timezone.utc).isoformat(),'meaning':'source preparation network timeout; not a campaign or compiler failure'}
+(final/'result.json').write_text(json.dumps(result,indent=2)+'\n')
+correction={'original_snapshot':'records/source-prep-snapshot-v1/observation.json','original_label':'Unknown/in flight at observation','correction':'Snapshot did not read controller outcome and already observed fetch-exit present; generic in-flight label is not a terminal-status receipt. Actual controller subsequently read: r151 exit128 at fetch, no Clippy. Original snapshot retained unchanged.','same_live_campaign_source':'82019ce362dea316bfe582db54f6f0591579bede','separate_actual_clippy0_source':'4ef5589087306f7cc9a10cec075a8433213dc55e'}
+(final/'snapshot-wording-correction.json').write_text(json.dumps(correction,indent=2)+'\n')
+files=sorted({p for root in [old,snapshot,final] for p in root.rglob('*') if p.is_file() and not p.is_symlink()});manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-source-prep-final-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ data=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(data);tar.addfile(info,io.BytesIO(data))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'original_payloads':len(manifest),'total_members':len(manifest)+1,'source_prep_exit':128,'clippy_started':False,'originals_preserved':True}
+(base/'records/source-prep-final-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

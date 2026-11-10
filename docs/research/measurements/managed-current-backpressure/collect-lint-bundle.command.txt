@@ -1,0 +1,24 @@
+python3 - <<'PY'
+from pathlib import Path
+import json,hashlib,tarfile,io,subprocess
+base=Path.home()/'managed-current-backpressure-a920-v1';records=base/'records/lint-bundle-v1';source=base/'source-lint';original=base/'source'
+revision='4ef5589087306f7cc9a10cec075a8433213dc55e'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=original,text=True).strip()=='82019ce362dea316bfe582db54f6f0591579bede'
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+assert (records/'clippy-exit').read_text().strip()=='0'
+scope=json.loads((records/'source-scope.json').read_text())
+for path,digest in scope['owned'].items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+oldscope=json.loads((base/'records/build/source-scope.json').read_text())
+for path,digest in oldscope['owned'].items():assert hashlib.sha256((original/path).read_bytes()).hexdigest()==digest,path
+assert hashlib.sha256((base/'evidence-backpressure-v1.tar.gz').read_bytes()).hexdigest()=='9e081b23a468adea82acef7c06eb997623049361e53202acdefa9d754b820318'
+fixture=json.loads((base/'records/build/fixture.json').read_text());assert hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+result=json.loads((records/'result.json').read_text());assert result['source']==revision and result['clippy_exit']==0 and result['original_source_and_fixture_unchanged']
+files=sorted(p for p in records.rglob('*') if p.is_file() and not p.is_symlink());manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-lint-rendering-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ content=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(content);tar.addfile(info,io.BytesIO(content))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'original_payloads':len(manifest),'total_members':len(manifest)+1,'source':revision,'clippy_exit':0,'actual_live_cases_at_lint_delta':'UNRUN; ROOT combined campaign owed','original820_source_binary_archive_unchanged':True}
+(base/'records/lint-archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

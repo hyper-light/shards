@@ -1,0 +1,7 @@
+{
+  "original_snapshot": "records/source-prep-snapshot-v1/observation.json",
+  "original_label": "Unknown/in flight at observation",
+  "correction": "Snapshot did not read controller outcome and already observed fetch-exit present; generic in-flight label is not a terminal-status receipt. Actual controller subsequently read: r151 exit128 at fetch, no Clippy. Original snapshot retained unchanged.",
+  "same_live_campaign_source": "82019ce362dea316bfe582db54f6f0591579bede",
+  "separate_actual_clippy0_source": "4ef5589087306f7cc9a10cec075a8433213dc55e"
+}

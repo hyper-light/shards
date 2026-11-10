@@ -56,8 +56,8 @@ The exact submitted build/guest/Full/native-zero/VM/check/collector commands are
 the named *.command.txt records. Their actual argument arrays, stdout, stderr,
 exits, finite bounds, environment, artifact hashes and JSON/binary witnesses are
 inside the archive. The frozen remote source HEAD and frozen/backpressure-82019
-ref retain82019. For a new reproduction pin that commit explicitly (git fetch
-origin82019ce362dea316bfe582db54f6f0591579bede); the own branch has since advanced.
+ref retain82019. For a new reproduction pin that commit explicitly
+(`git fetch origin 82019ce362dea316bfe582db54f6f0591579bede`); the own branch has since advanced.
 Do not rebase the retained source or call a pure test an actual endpoint result.
 
 ## Focused checks and retained lint failure
@@ -75,7 +75,19 @@ signed4ef5589 delta replaces only that error renderer with unwrap_or_else(panic)
 using the same success/error condition. The shared-client and seven other scoped
 source hashes remain unchanged. lint-rendering-delta.patch and lint-source-scope.json
 record the exact distinction. The separate private source-lint/target-lint strict
-Clippy job r151 is RUNNING at this evidence checkpoint; no pass is claimed yet.
+Clippy workflow r151 is RUNNING at this evidence checkpoint, blocked in its source
+preparation git fetch; Clippy itself has NOT STARTED. Exact own git/ssh wait
+metadata was observed without FD/memory/other-process access. The original
+finite3600s deadline remains in force; ROOT was sent the concrete owned-source
+transfer alternative. A verified signed-source bundle subsequently populated
+the SAME assigned source-lint/target-lint through native exclusive worktree
+creation (r156). Its source hashes match4ef and policy passes0. Actual strict
+caller Clippy then passed0 (Cargo1m52s,152.97s including preparation); the result
+reverified unchanged82019 source, fixture and campaign archive. A losing
+preparation cannot start a second compiler. r151 naturally ended128 with SSH
+kex/banner connection timeout; it never reached Clippy. No process was stopped
+and no deadline reset. All build/live-case jobs are now inactive. Exact source
+preparation logs are retained separately and are not labeled compiler results.
 No additional live case/retry was scheduled for this rendering-only delta.
 
 Canonical named-source rustfmt--check0, source/prose diff-check0 and
@@ -95,9 +107,26 @@ to their archive members. The remote originals/archive and all frozen2c57/
 earlier checkpoints remain preserved. There were no case/collection validation
 errors. Original Clippy101 is a real retained failure, not relabeled green.
 
-Next in this approved queue is completion of the already running targeted lint
-correction and its signed raw proof. The three finite live selections are done;
-this does not release the lane or close P0–P13/G25. ROOT owes combined composition,
+Separate lint archive evidence-lint-rendering-v1.tar.gz is7003B, SHA256
+772d74c264a4bc09fe660943ae1d6fb01895d3624b22fe79ea2d523c6384b3d9:
+23 original payloads + manifest =24 total members, every original hash verified
+locally and all paths unique safe regular files. lint-result.json is the exact
+archive member, not a relabeling of the original Clippy101. Actual live cases at
+the rendering-only4ef revision remain unrun and ROOT-owned.
+
+Source-preparation archive evidence-source-prep-final-v1.tar.gz is2593B, SHA256
+2b59ccce0b8bb5a2ddf6f27ce4162097cc6c48d95f774688e56a8899de300ed4:
+14 original payloads + manifest =15 total members, all original hashes verified
+and paths safe/unique/regular. The first snapshot's generic in-flight label
+did not read controller status and already saw fetch-exit present; it is retained
+unchanged with an explicit wording correction and actual terminal128 receipt.
+This is an observed source-preparation timeout, not evidence of an auth-policy,
+product, compiler or campaign failure. No security/transport setting changed.
+
+The three finite live selections and targeted lint correction are returned;
+this does not release the lane or close P0–P13/G25. The next empty-pending FIN
+boundary is a concrete unapplied proposal in EMPTY-FIN-NEXT-PROPOSAL.md; no new
+Rust/actor for it starts without ROOT review. ROOT owes combined composition,
 meaningful guard mutations/restoration, supported-target/real-hypervisor matrices,
 broader disconnect/revoke/order/resource/race/durability gates and any audits/
 profiling/benchmarks. No held helper-control/worker-result allocator/cotenant

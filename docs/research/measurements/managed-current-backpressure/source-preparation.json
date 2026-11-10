@@ -1,0 +1,28 @@
+{
+  "live_source": "82019ce362dea316bfe582db54f6f0591579bede",
+  "lint_source": "4ef5589087306f7cc9a10cec075a8433213dc55e",
+  "original_lint_workflow": "r151",
+  "observed_original_phase": "git fetch; stdout/stderr empty; Clippy not started at observation",
+  "own_process_observation": "only git/ssh with exact private source cwd; sleeping anon_pipe_read/wait_woken; no origin of the stall established",
+  "original_deadline_s": 3600,
+  "original_process_stopped_or_deadline_reset": false,
+  "fallback_workflow": "r156",
+  "fallback": "verified signed Git bundle imported through native Git; exclusive creation of the same assigned source-lint/target-lint; only successful worktree creator can compile",
+  "bundle_bytes": 79443,
+  "bundle_sha256": "e4d9b8b19f3ae0c413045523ed552d640d85b4bcfc66562afa9f9a9f8db46183",
+  "bundle_remote": "/home/adalundhe/managed-current-backpressure-a920-v1/records/rendering-source.bundle",
+  "bundle_local": "/tmp/managed-backpressure-rendering.bundle",
+  "local_bundle_preparation_failure_retained": {
+    "command": "git bundle create /tmp/managed-backpressure-4ef-only.bundle 82019ce362dea316bfe582db54f6f0591579bede..4ef5589087306f7cc9a10cec075a8433213dc55e",
+    "exit": 1,
+    "stderr": "fatal: Refusing to create empty bundle.",
+    "subsequent_named_ref_command": "git bundle create /tmp/managed-backpressure-rendering.bundle refs/heads/p/managed-backpressure-owned-v1 ^82019ce362dea316bfe582db54f6f0591579bede",
+    "subsequent_named_ref_exit": 0
+  },
+  "actual_live_case_retries_or_retuning": 0,
+  "production_security_transport_or_trust_setting_changes": false,
+  "original_source_binary_and_152_payload_archive_preserved": true,
+  "lint_result": "r156 strict fullcaller Clippy0 at4ef; original820 source/fixture/archive unchanged; no new actors",
+  "original_final_outcome": "r151 naturally ended128: SSH kex/banner connection timed out; no Clippy started",
+  "active_build_or_case_jobs": []
+}

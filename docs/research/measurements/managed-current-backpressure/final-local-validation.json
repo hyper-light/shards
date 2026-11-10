@@ -1,0 +1,80 @@
+{
+  "source_code_equals": "4ef5589087306f7cc9a10cec075a8433213dc55e",
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/backpressure.rs",
+        "crates/shards/tests/managed_output/current_controls/contract.rs",
+        "crates/shards/tests/managed_output/current_controls/control_inputs.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "crates/shards/tests/managed_output/current_controls/write_receipts.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+        "--",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/backpressure.rs",
+        "crates/shards/tests/managed_output/current_controls/contract.rs",
+        "crates/shards/tests/managed_output/current_controls/control_inputs.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "crates/shards/tests/managed_output/current_controls/write_receipts.rs",
+        "docs/research/measurements/managed-current-backpressure/APPROVED-PROPOSAL.md",
+        "docs/research/measurements/managed-current-backpressure/EMPTY-FIN-NEXT-PROPOSAL.md",
+        "docs/research/measurements/managed-current-backpressure/HANDOFF.md",
+        "docs/research/measurements/managed-current-backpressure/README.md",
+        "docs/research/measurements/managed-current-backpressure/RESULTS.md",
+        "docs/research/measurements/managed-current-backpressure/evidence-backpressure-v1.member-hashes.json",
+        "docs/research/measurements/managed-current-backpressure/evidence-lint-rendering-v1.member-hashes.json",
+        "docs/research/measurements/managed-current-backpressure/evidence-source-prep-final-v1.member-hashes.json",
+        "docs/research/measurements/managed-current-backpressure/lint-result.json",
+        "docs/research/measurements/managed-current-backpressure/lint-source-scope.json",
+        "docs/research/measurements/managed-current-backpressure/local-validation.json",
+        "docs/research/measurements/managed-current-backpressure/raw-storage.json",
+        "docs/research/measurements/managed-current-backpressure/source-prep-result.json",
+        "docs/research/measurements/managed-current-backpressure/source-prep-wording-correction.json",
+        "docs/research/measurements/managed-current-backpressure/source-preparation.json",
+        "docs/research/measurements/managed-current-backpressure/source-scope.json",
+        "docs/research/measurements/managed-current-backpressure/validated-cases.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "no_source_changes_after_actual_strict_clippy": true,
+  "actual_live_source": "82019ce362dea316bfe582db54f6f0591579bede",
+  "live_delta_cases": "UNRUN; ROOT combined gates owed",
+  "local_target_cache": null,
+  "free_bytes": 196323004416
+}

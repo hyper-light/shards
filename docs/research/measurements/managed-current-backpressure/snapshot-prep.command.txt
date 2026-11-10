@@ -1,0 +1,18 @@
+python3 - <<'PY'
+from pathlib import Path
+from datetime import datetime,timezone
+import json,hashlib,shutil,tarfile,io
+base=Path.home()/'managed-current-backpressure-a920-v1';old=base/'records/lint-rendering-v1';snapshot=base/'records/source-prep-snapshot-v1';snapshot.mkdir()
+observation={'workflow':'r151','captured_utc':datetime.now(timezone.utc).isoformat(),'scope':'owned source preparation only; not a campaign failure or Clippy result','fetch_exit_present':(old/'fetch-exit').exists(),'clippy_command_present':(old/'clippy-command.json').exists(),'original_deadline_s':3600,'no_process_stop_or_deadline_reset_issued':True,'final_outcome':'Unknown/in flight at observation'}
+for name in ['environment.json','fetch-command.json','fetch-stdout','fetch-stderr','fetch-observation.json']:
+ p=old/name
+ if p.exists():shutil.copy2(p,snapshot/name)
+(snapshot/'observation.json').write_text(json.dumps(observation,indent=2)+'\n')
+files=sorted(p for p in snapshot.iterdir() if p.is_file());manifest={str(p.relative_to(base)):hashlib.sha256(p.read_bytes()).hexdigest() for p in files}
+archive=base/'evidence-source-prep-snapshot-v1.tar.gz';assert not archive.exists()
+with tarfile.open(archive,'w:gz') as tar:
+ for name in manifest:tar.add(base/name,arcname=name,recursive=False)
+ data=json.dumps(manifest,indent=2).encode();info=tarfile.TarInfo('member-hashes.json');info.size=len(data);tar.addfile(info,io.BytesIO(data))
+receipt={'archive':str(archive),'bytes':archive.stat().st_size,'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'original_payloads':len(manifest),'total_members':len(manifest)+1,'observation':observation}
+(base/'records/source-prep-snapshot-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY
