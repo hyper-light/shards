@@ -88,6 +88,24 @@ original optimized `hold` wrapped and retained one connection:
 failure is separate from the observed boundary failure. The follow-on job uses
 available tools. Release comparison had not started in `r6`.
 
+Kiln `r7` subsequently completed the release baseline: one test passed, zero failed,
+twenty samples, exit 0. Its source was the same old `a27bdb58` server/fixture plus
+the retained boundary patch; it saved `baseline-native` before any source sync.
+The occupied acceptor's wait channel was `hrtimer_nanosleep` in every sample.
+
+| Release baseline, n=20 | p50 | p90 | p99 / max |
+| --- | ---: | ---: | ---: |
+| Voluntary context switches / approximately 100 ms | 91 | 91 | 91 |
+| Scheduled acceptor CPU, ns | 480,221 | 559,931 | 565,334 |
+| Worker release to next policy question, ns | 719,472 | 977,863 | 1,035,372 |
+| Stop closure to acceptor return, ns | 1,067,397 | 1,121,410 | 1,124,086 |
+
+CPU tick, minor-fault and major-fault deltas were zero in these windows. Every
+session returned its descriptors after all workers and owned sockets dropped.
+The scheduler nanoseconds are higher-resolution observations than the recorded
+100 Hz CPU tick fields; zero ticks do not contradict the measured CPU cost.
+This first sequential baseline is separate from the alternating-order comparison.
+
 The implementation retains the live worker map as its authority, removes listener
 interest while full, and publishes worker completion/session end through a private
 nonblocking socketpair. Draining precedes the map check. A completion before the
@@ -101,6 +119,11 @@ held until its scoped workers finish and the session drops. There is no addition
 thread, cached count, parallel permit owner or runtime dependency. The single byte
 is the minimum nonempty stream write, independent of authority; the fixed wait
 positions name stop, completion and listener. No production timeout was added.
+On Windows the existing `crates/afunix/src/lib.rs::UnixStream::pair` creates a
+temporary pathname listener, then connects and accepts. This additionally uses a
+transient third socket and pathname at startup; its historical PM M199 time is
+not a measurement of this change. Current Windows startup and memory costs remain
+unmeasured.
 
 Admission also checks identifier advancement and uses `HashMap::try_reserve` before
 committing a cloned socket and next identity. Closed, exhausted identity, socket
@@ -118,26 +141,67 @@ All campaign jobs request 4 CPUs, 8 GiB memory and 10 GiB disk. A short repeat
 requested a mismatched smaller envelope, was rejected without execution, and was
 not retried at that size. Subsequent jobs retain the assigned envelope.
 
-Release comparison, completed mutations, green native tests and R01–R16 accounting
-remain pending; no completion or performance target is claimed here.
+Kiln `r8` tested production and fixtures from signed implementation commit
+`1eff4a324cc9c8f6cf7fd51221079ef7b9fd8e75`: **21 passed, zero failed, two ignored**
+native proxy tests in 5.23 s, followed by the explicitly selected strict-idle
+measurement: **one passed, zero failed**, twenty sessions, exit 0. The boundary
+reported `refused=true panicked=false admitted=0`. The portable cases observed
+refill, stop with another socket queued, an early completion, notification-path
+failure closure, HTTP/TLS compatibility and the existing connection limit.
+
+Every changed occupied window recorded zero voluntary context switches, CPU ticks,
+scheduler nanoseconds and page-fault deltas. Its wait channel was
+`poll_schedule_timeout.constprop.0`, an indefinite socket-readiness wait: the symbol
+name does not mean a periodic timeout was requested. Scheduler accounting recorded
+positive CPU for the baseline; these zeroes still establish only the sampled idle
+window, not zero total CPU or allocations. Each session returned its descriptors.
+`fds_live` is observed late in teardown before all worker joins; it is not a peak
+or a fixed-lifetime resource census.
+
+| Sequential changed release, n=20 | p50 | p90 | p99 / max |
+| --- | ---: | ---: | ---: |
+| Worker release to next policy question, ns | 156,898 | 428,252 | 486,753 |
+| Stop closure to acceptor return, ns | 11,894 | 51,676 | 90,070 |
+
+The alternating-order comparison, stress, completed mutations and clippy remain
+pending. Their unchanged 4 CPU / 8 GiB / 10 GiB follow-on request was rejected by
+kiln for zero idle CPU headroom, without execution. No completion or comparative
+target is claimed, and the envelope was not lowered.
+
+The retained `paired.py` runs the saved release binaries in alternating old/new
+order for twenty pairs, records binary hashes and host CPU pressure, then exercises
+two hundred changed sessions. `mutations.py` removes completion publication,
+listener disarming, checked identity advancement and notification-failure closure
+independently, retains source patches/hashes/logs/exits and restores the source.
+Mutation diagnostics use `test-release`; they make no comparative timing claim.
+Run each script in this lane's assigned admitted envelope, never alongside another
+job writing its private target:
+
+```sh
+PROXY_EVIDENCE_DIR="$HOME/managed-proxy-events-evidence" \
+python3 docs/research/measurements/proxy-capacity/paired.py
+CARGO_TARGET_DIR="$HOME/managed-proxy-events-target" \
+PROXY_EVIDENCE_DIR="$HOME/managed-proxy-events-evidence" \
+python3 docs/research/measurements/proxy-capacity/mutations.py
+```
 
 ## R01–R16 review record
 
 | Rule | Scoped evidence and remaining work |
 | --- | --- |
-| R01 | Admission advancement is checked and map growth is fallible before ownership commits; no production assert/unwrap/indexing was added. Counter boundary red is retained. Green/fault tests are pending. The coordinator separately composes the already implemented fallible `platform::wait_readable` adapter from capture `9151296a`; this branch does not duplicate it. Actual allocation-failure injection is not run. |
-| R02 | Primary Go/Mio/Rust/kernel sources and alternatives above; actual native repeated-wake and identity-boundary observations precede their fixes. Coordinator review and release comparison remain pending. |
+| R01 | Admission advancement is checked and map growth is fallible before ownership commits; no production assert/unwrap/indexing was added. Counter boundary red and green, notification-failure closure and existing compatibility tests are retained. The coordinator separately composes the already implemented fallible `platform::wait_readable` adapter from capture `9151296a`; this branch does not duplicate it. Actual allocation-failure injection and strict clippy are not run. |
+| R02 | Primary Go/Mio/Rust/kernel sources and alternatives above; actual native repeated-wake and identity-boundary observations precede their fixes. Sequential old/new release observations exist; interleaved comparison and coordinator review remain pending. |
 | R03 | The 1 ms production probe is removed. Added literals represent one minimum stream byte and the three concrete readiness positions; no new numeric runtime policy exists. Existing connection-limit derivation remains explicitly owed. Test durations/counts are workload inputs only. |
-| R04 | The worker map and existing ended flag remain authoritative; full/available interests derive from them. Typed admission variants preserve closed, identifier, socket and reservation causes. Persistent notifications have no authority. Stop and notification-failure paths are exercised by focused fixtures, with green execution pending. |
-| R05 | Actual polling was reproduced and replaced in source; no cache, cached count, permit ledger, trait or async manager was added. Before/after and independent mutation results remain owed; inventory alone is not claimed complete. |
-| R06 | Focused notification write/drain helpers contain interruption, coalescing and closure behavior; admission retains one owner. Native compatibility tests and clippy remain pending. |
+| R04 | The worker map and existing ended flag remain authoritative; full/available interests derive from them. Typed admission variants preserve closed, identifier, socket and reservation causes. Persistent notifications have no authority. Stop, early completion, full-to-available and notification-failure closure passed their actual native fixtures. |
+| R05 | Actual polling was reproduced, replaced and observed absent in twenty changed idle windows; no cache, cached count, permit ledger, trait or async manager was added. Independent mutation results remain owed; inventory alone is not claimed complete. |
+| R06 | Focused notification write/drain helpers contain interruption, coalescing and closure behavior; admission retains one owner. Native compatibility tests passed; clippy remains pending. |
 | R07 | Comments explain drain/check ordering, separate wake ownership and failure closure. D110 links this record. |
-| R08 | The pinned existing implementation is the same-workload comparison baseline. Release distributions and competing-system measurements are pending; no 4–5× claim is made. |
+| R08 | The pinned existing implementation is the same-workload comparison baseline. Sequential release distributions are above; alternating-order and competing-system measurements are pending. No 4–5× claim is made. |
 | R09 | Actual red `r3` and controlled boundary red `r6`, their source hashes and exact commands are retained. No production fault switch is used. The boundary preload is explicitly labelled rather than presented as an ordinary exploit. |
-| R10 | Fixture commits, run/summary scripts, boundary patch, D110 and this record retain the reproduction method. Raw logs remain on the named Fedora runner; local artifact transfer and completed green/mutation records are pending. |
-| R11 | Source uses the shared socket/readiness seam. Red observations are native Linux amd64 glibc only. Other six supported targets, actual VM paths and native macOS/Windows remain unverified. Intel Mac is unsupported; paused Windows ARM VM is untouched. |
+| R10 | Fixture commits, run/summary/interleaving/mutation scripts, boundary patch, D110 and this record retain the reproduction method. Raw red/green logs remain on the named Fedora runner; local artifact transfer and independent mutation results are pending. |
+| R11 | Source uses the shared socket/readiness seam. Red/green observations are native Linux amd64 glibc only. Other six supported targets, actual VM paths and native macOS/Windows remain unverified. Intel Mac is unsupported; paused Windows ARM VM is untouched. |
 | R12 | No OS branch, new dependency, helper deliverable, host-root action or cryptographic change. The existing shared platform adapters remain their owners' code. |
 | R13 | Existing admission bound and worker ownership persist. The additional control resource is one socketpair per session, whose actual memory cost remains unmeasured. |
-| R14 | The fixture observes actual per-thread switches/CPU/faults, refill/stop latency and descriptor cleanup. Release raw samples remain pending; allocator/copy/RSS/kernel-queue and neighbor-cost profiles remain unmeasured. `schedstat` zeroes can mean disabled accounting and are not proof of zero CPU; tick resolution is recorded. |
-| R15 | Explicit scoped implementation/live/performance authorization, policy receipt and runner envelope are recorded above. The coordinator owns combined gates/merges. No child agents, other-agent interruption, global sweep or merge to main occurred. Only fixture commits are currently signed; implementation validation/commit is pending. |
+| R14 | The fixture observes actual per-thread switches/CPU/faults, refill/stop latency and descriptor cleanup; sequential release samples are retained. Allocator/copy/RSS/kernel-queue and neighbor-cost profiles remain unmeasured. `schedstat` zeroes can mean disabled accounting; positive old-source observations and the sysctl are recorded, but no zero-total-CPU claim follows. |
+| R15 | Explicit scoped implementation/live/performance authorization, policy receipt and runner envelope are recorded above. The coordinator owns combined gates/merges. No child agents, other-agent interruption, global sweep or merge to main occurred. Signed implementation 1eff4a32 passed the native proxy group and strict-idle samples; follow-on proof is held by the runner guard. |
 | R16 | This Mac had 51 GiB free before work and 47 GiB at the later check, above the 30 GiB floor. The private Fedora target was reflinked only from the coordinator-confirmed inactive source; no original cache, source, user data or evidence was removed. Kiln headroom rejections were respected. |

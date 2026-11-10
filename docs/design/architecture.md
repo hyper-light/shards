@@ -17474,8 +17474,12 @@ its next counter. Admission now checks advancement and reserves map storage befo
 committing ownership, retaining typed closed/identity/socket/allocation refusals at
 the actual caller. Native measurements, mutations, primary-source alternatives,
 source hashes and unrun platform gates are recorded in
-[`proxy-capacity`](../research/measurements/proxy-capacity/README.md). This follow-up
-does not establish a real-VM, seven-target or 4–5× comparative performance result.
+[`proxy-capacity`](../research/measurements/proxy-capacity/README.md). The change
+passed 21 native Linux proxy tests with zero failures and twenty occupied release
+windows with zero acceptor wakeups, versus 90–91 timer sleeps per old-source window.
+Independent mutations and the alternating-order comparison remain pending.
+These results do not establish a real-VM, seven-target or 4–5× comparative
+performance result.
 
 buildx v0.37.1's policies may ask for the `exec.proxy` cap (`caps := {"exec.proxy":
 true}`, asked once as the build begins with `input.env.capsRequest`); BuildKit v0.33.0 then
