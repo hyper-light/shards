@@ -1,0 +1,61 @@
+python3 - <<'PY'
+from pathlib import Path
+import subprocess,os,json,hashlib,shutil,time,platform
+deadline_wall=1794353589.118;began=time.monotonic();remaining=deadline_wall-time.time();assert remaining>15;deadline=began+remaining;revision='9764144d5a7170c1ba6607ecd0222a0015db12de'
+base=Path.home()/'managed-after-open-fin-9764-fedora-v1';assert str(base)=='/home/adalundhe/managed-after-open-fin-9764-fedora-v1', 'unexpected home: hold for exact runner/path readback';assert not base.exists();base.mkdir();source=base/'source';records=base/'records/build';records.mkdir(parents=True)
+for name in ['target','cargo-home','zig-global-cache','zig-local-cache','runtime-cache','artifacts']:(base/name).mkdir()
+preflight={'requested_runner':os.environ['MANAGED_ADVERSARIAL_RUNNER_ID'],'hostname':platform.node(),'platform':platform.platform(),'libc':platform.libc_ver(),'machine':platform.machine(),'disk_free_bytes':shutil.disk_usage(base).free,'source':revision,'base':'0342b85d9c808e3ced041a6c3ef0e9bf70438272','resources':'2CPU/4GiB/24GiB j4','original_build_outer_s':3600,'original_deadline_epoch_s':deadline_wall,'original_remaining_s':remaining}
+(records/'preflight.json').write_text(json.dumps(preflight,indent=2)+'\n');print(json.dumps(preflight),flush=True);assert platform.system()=='Linux' and preflight['machine']=='x86_64' and preflight['libc'][0]=='glibc' and preflight['disk_free_bytes']>=24*1024**3
+assert str(base)=='/home/adalundhe/managed-after-open-fin-9764-fedora-v1', 'unexpected home: hold for exact runner/path readback, no actor'
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(base/'target'),'CARGO_BUILD_JOBS':'4','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache')})
+(records/'pre-compiler-environment.json').write_text(json.dumps({k:env[k] for k in ['CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL','RUSTUP_TOOLCHAIN','ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR','XDG_CACHE_HOME']},indent=2)+'\n')
+def run(name,args,cwd):
+ left=deadline-time.monotonic();assert left>15
+ command=['timeout','--signal=TERM','--kill-after=15s',f'{left-15:.3f}s',*args]
+ (records/(name+'-command.json')).write_text(json.dumps(command)+'\n');print(json.dumps({'phase':name,'started':True,'original_outer_remaining_s':left}),flush=True)
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:r=subprocess.run(command,cwd=cwd,env=env,stdout=out,stderr=err,timeout=left)
+ (records/(name+'-exit')).write_text(str(r.returncode)+'\n');print(json.dumps({'phase':name,'exit':r.returncode,'stdout_tail':(records/(name+'-stdout')).read_text(errors='replace')[-1200:],'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-4000:]}),flush=True)
+ if r.returncode:raise SystemExit(r.returncode)
+run('clone',['git','clone','--depth=1','--no-checkout','--single-branch','--branch','p/managed-after-open-fin-proposal-v1','--filter=blob:none','https://github.com/hyper-light/shards.git',str(source)],base)
+run('fetch-exact-source',['git','fetch','--depth=1','origin',revision],source)
+run('checkout-frozen-source',['git','checkout','--detach',revision],source)
+run('freeze-source-ref',['git','branch','frozen/after-open-fin-9764144d',revision],source)
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+(source/'target').symlink_to(base/'target',target_is_directory=True)
+scope=json.loads((source/'docs/research/measurements/managed-current-backpressure/after-open-fin-4a/source-scope.json').read_text())
+for path,digest in (scope['owned_source']|scope['unchanged']).items():assert hashlib.sha256((source/path).read_bytes()).hexdigest()==digest,path
+(records/'source-scope.json').write_text(json.dumps(scope,indent=2)+'\n')
+run('policy',['python3','scripts/check-development-policy'],source)
+run('installed-toolchains',['rustup','toolchain','list'],source)
+assert '1.98.1-x86_64-unknown-linux-gnu' in (records/'installed-toolchains-stdout').read_text(), 'do not implicitly install a global toolchain'
+tools=base/'runtime-cache/toolchain';tools.mkdir();archive=tools/'zig-x86_64-linux-0.16.0.tar.xz';compiler=tools/'zig-x86_64-linux-0.16.0';assert not archive.exists() and not compiler.exists()
+url='https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz';expected='70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
+pin_source=(source/'scripts/install-zig').read_bytes();assert expected.encode() in pin_source and b'version=0.16.0' in pin_source
+run('download-private-pinned-zig',['curl','--fail','--location','--output',str(archive),url],base)
+actual=hashlib.sha256(archive.read_bytes()).hexdigest()
+(records/'zig-provenance.json').write_text(json.dumps({'url':url,'expected_sha256':expected,'actual_sha256':actual,'bytes':archive.stat().st_size,'pin_source_revision':revision,'pin_source_path':'scripts/install-zig','pin_source_sha256':hashlib.sha256(pin_source).hexdigest(),'private_compiler':str(compiler),'host_global_configuration_changed':False},indent=2)+'\n');assert actual==expected
+with tarfile.open(archive,'r:xz') as package:
+ for member in package.getmembers():
+  path=PurePosixPath(member.name);assert not path.is_absolute() and '..' not in path.parts and path.parts[0]=='zig-x86_64-linux-0.16.0'
+ package.extractall(tools,filter='data')
+env['PATH']=str(compiler)+os.pathsep+env['PATH']
+(records/'environment.json').write_text(json.dumps({k:env[k] for k in ['PATH','CARGO_HOME','CARGO_TARGET_DIR','CARGO_BUILD_JOBS','CARGO_INCREMENTAL','RUSTUP_TOOLCHAIN','ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR','XDG_CACHE_HOME']},indent=2)+'\n')
+run('rustc',['rustc','+1.98.1','-Vv'],source);run('cargo',['cargo','+1.98.1','--version'],source);run('zig',['zig','version'],source)
+assert (records/'zig-stdout').read_text().strip()=='0.16.0', 'use the repository pinned existing toolchain, no fallback'
+run('full-caller-build',['cargo','+1.98.1','test','--locked','-p','shards','--test','managed_output','--profile','test-release','--no-run','-j4','--message-format=json'],source)
+items=[]
+for line in (records/'full-caller-build-stdout').read_text().splitlines():
+ try:item=json.loads(line)
+ except ValueError:continue
+ if item.get('reason')=='compiler-artifact' and item.get('target',{}).get('name')=='managed_output' and item.get('executable'):items.append(item)
+assert len(items)==1 and not items[0]['fresh'], 'require the actual fullcaller artifact from this private fresh target'
+binary=Path(items[0]['executable']);frozen=base/'artifacts/managed_output';shutil.copyfile(binary,frozen);frozen.chmod(binary.stat().st_mode)
+identity={'path':str(binary),'frozen':str(frozen),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest(),'fresh':items[0]['fresh'],'source':revision,'elapsed_s':time.monotonic()-began};assert hashlib.sha256(frozen.read_bytes()).hexdigest()==identity['sha256']
+(records/'fixture.json').write_text(json.dumps(identity,indent=2)+'\n')
+cli=base/'target/test-release/shards';copy=base/'artifacts/shards';shutil.copyfile(cli,copy);copy.chmod(cli.stat().st_mode)
+(records/'cli.json').write_text(json.dumps({'path':str(cli),'frozen':str(copy),'sha256':hashlib.sha256(cli.read_bytes()).hexdigest(),'source':revision},indent=2)+'\n');print(json.dumps(identity),flush=True)
+PY
