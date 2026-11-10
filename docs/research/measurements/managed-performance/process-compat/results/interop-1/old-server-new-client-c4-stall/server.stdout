@@ -1,0 +1,10 @@
+
+running 1 test
+test managed_process_role ... process_socket_allowance	0	851968
+process_socket_allowance	1	851968
+process_socket_allowance	2	851968
+process_socket_allowance	3	851968
+managed_ready
+managed_finished	2
+managed_finished	3
+managed_finished	1

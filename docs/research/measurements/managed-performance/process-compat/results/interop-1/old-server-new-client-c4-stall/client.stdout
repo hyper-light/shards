@@ -1,0 +1,20 @@
+
+running 1 test
+test managed_process_role ... managed_record	0
+managed_record	2
+managed_record	3
+managed_record	1
+managed_observer_done	2	Complete	records=16
+managed_observer_done	3	Complete	records=16
+managed_observer_done	1	Complete	records=16
+managed_lost	0	code=Some(0)	closed by peer: the daemon stopped (code 0)
+managed_observer_done	0	Failed("fixture deadline, not a pin refusal")	records=1
+FAILED
+
+failures:
+
+failures:
+    managed_process_role
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.01s
+

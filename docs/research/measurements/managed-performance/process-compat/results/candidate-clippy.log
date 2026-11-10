@@ -1,0 +1,86 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-rpk-compat-target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-rpk-compat-target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-rpk-compat-target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-rpk-compat-target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/vendor/aws-lc-sys)
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/crates/abi)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/crates/testdir)
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/vendor/aws-lc-rs)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/crates/ipc)
+    Checking rustls-webpki v0.103.16
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-rpk-compat-b28b290298/crates/remote)
+error: used `panic!()` or assertion in a function that returns `Result`
+   --> crates/remote/tests/../../../docs/research/measurements/managed-performance/process-compat/role.rs:90:1
+    |
+ 90 | / fn server(root: &Path, channels: usize, mode: &str) -> Result<()> {
+ 91 | |     let identity = Identity::load_or_create(&root.join("server.key"))?;
+ 92 | |     let owner = Identity::load_or_create(&root.join("owner.key"))?;
+ 93 | |     let (notice, notices) = mpsc::sync_channel(
+...   |
+194 | |     Ok(())
+195 | | }
+    | |_^
+    |
+    = help: `panic!()` or assertions should not be used in a function that returns `Result` as `Result` is expected to return an error instead of crashing
+note: return Err() instead of panicking
+   --> crates/remote/tests/../../../docs/research/measurements/managed-performance/process-compat/role.rs:137:13
+    |
+137 |             assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+176 |             assert_eq!(progress.consumed, (BYTES * RECORDS) as u64);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+177 |         } else if mode.starts_with("wrong") {
+178 |             assert_eq!(progress.accepted, 0);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+179 |             assert_eq!(progress.consumed, 0);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+180 |             assert!(result.is_err());
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^
+181 |         } else if index == 0 {
+182 |             assert_eq!(progress.accepted, BYTES as u64);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+183 |             assert_eq!(progress.consumed, 0);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+184 |             assert!(result.is_err());
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+187 |             assert_eq!(progress.consumed, (BYTES * RECORDS) as u64);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#panic_in_result_fn
+    = note: requested on the command line with `-D clippy::panic-in-result-fn`
+
+error: used `panic!()` or assertion in a function that returns `Result`
+   --> crates/remote/tests/../../../docs/research/measurements/managed-performance/process-compat/role.rs:422:1
+    |
+422 | / pub(super) fn run() -> Result<()> {
+423 | |     let root = PathBuf::from(std::env::var_os("MANAGED_PROCESS_ROOT").ok_or("fixture root")?);
+424 | |     let role = std::env::var("MANAGED_PROCESS_ROLE")?;
+425 | |     let mode = std::env::var("MANAGED_PROCESS_MODE")?;
+...   |
+447 | |     Ok(())
+448 | | }
+    | |_^
+    |
+    = help: `panic!()` or assertions should not be used in a function that returns `Result` as `Result` is expected to return an error instead of crashing
+note: return Err() instead of panicking
+   --> crates/remote/tests/../../../docs/research/measurements/managed-performance/process-compat/role.rs:443:5
+    |
+443 |     assert_eq!(before, after);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#panic_in_result_fn
+
+error: could not compile `shards-remote` (test "managed_process") due to 2 previous errors

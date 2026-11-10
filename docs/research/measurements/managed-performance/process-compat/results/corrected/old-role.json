@@ -1,0 +1,20 @@
+{
+  "source": "7bf115def108b9e61f481369c83161a1196b2661",
+  "binary": "/home/adalundhe/managed-rpk-compat-evidence/corrected/old-role",
+  "sha256": "54fd2548aaf799287b2fbf515bfe196e41563af9af7e99ac1ca276856d5cec08",
+  "fixture_sha256": "e16efa92d6d6a5a72e7a3892b1dfa3d77d890023b951a0183d48d41abcbe2f2e",
+  "manifest_sha256": "48dd31385523fdfa1ec9eb5da3aed68b300c274895d270c99b3ac869659bc3f9",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-j4",
+    "--release",
+    "-p",
+    "shards-remote",
+    "--test",
+    "managed_process",
+    "--no-run",
+    "--message-format=json"
+  ]
+}

@@ -1,0 +1,14 @@
+
+running 1 test
+test managed_process_role ... process_socket_allowance	0	851968
+process_socket_allowance	1	851968
+managed_ready
+managed_finished	1
+managed_finished	0
+managed_progress	0	accepted=16384	consumed=16384	completed=true
+managed_progress	1	accepted=16384	consumed=16384	completed=true
+managed_process_return	server	before=(4, 2)	after=(4, 2)
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
