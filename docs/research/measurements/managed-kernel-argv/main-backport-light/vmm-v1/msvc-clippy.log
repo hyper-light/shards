@@ -1,0 +1,12 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/abi)
+    Checking windows-link v0.2.1
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/vmm)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/testdir)
+    Checking windows-sys v0.61.2
+    Checking shards-afunix v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/afunix)
+    Checking shards-ntfs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/ntfs)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/ipc)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/netring)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.66s

@@ -1,0 +1,1 @@
+["cargo", "clippy", "--locked", "-p", "shards-vmm", "--lib", "--tests", "--target", "x86_64-pc-windows-msvc", "-j4", "--", "-D", "warnings"]

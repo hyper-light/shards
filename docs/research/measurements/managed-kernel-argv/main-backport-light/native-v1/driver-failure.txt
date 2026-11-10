@@ -1,0 +1,1 @@
+r68: historical run-native-helper.sh compiled and passed4unit tests, then shasum unavailable on Fedora; original artifacts.sha256 remains unchanged. Separate Python hashing follows.
