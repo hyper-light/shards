@@ -212,7 +212,7 @@ mod linux {
                 if n >= 0 {
                     return Ok(n > 0);
                 }
-                let e = io::Error::last_os_error();
+                let e = std::io::Error::last_os_error();
                 if e.raw_os_error() != Some(libc::EINTR) {
                     return Err(io_failure(ProcessOperation::PollExit, e));
                 }
@@ -314,7 +314,7 @@ mod macos {
                 if n >= 0 {
                     return Ok(n > 0);
                 }
-                let e = io::Error::last_os_error();
+                let e = std::io::Error::last_os_error();
                 if e.raw_os_error() != Some(libc::EINTR) {
                     return Err(io_failure(ProcessOperation::KeventExit, e));
                 }
