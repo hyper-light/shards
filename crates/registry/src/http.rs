@@ -2574,7 +2574,14 @@ mod tests {
         let cancelling = std::env::var("SHARDS_CANCEL_ACTION").as_deref() != Ok("complete");
         let count: usize = std::env::var("SHARDS_CANCEL_SAMPLES").unwrap().parse().unwrap();
         let mut samples = Vec::new();
+        let resources = || {
+            (
+                std::fs::read_dir("/proc/self/fd").unwrap().count(),
+                std::fs::read_dir("/proc/self/task").unwrap().count(),
+            )
+        };
         for sample in 0..count {
+            let before_resources = resources();
             let cancel = Cancel::new();
             let asked_cancel = cancel.clone();
             let resolving = mode == "resolve";
@@ -2634,6 +2641,7 @@ mod tests {
             }
             let result = done_rx.recv_timeout(Duration::from_secs(1));
             let elapsed = began.elapsed().as_nanos();
+            let retained = resources();
             // Release before asserting: even a broken cancellation guard must leave
             // the test's actual resolver/connect worker able to return and clean up.
             if cancelling {
@@ -2644,7 +2652,17 @@ mod tests {
                 0,
                 "worker retained its control socket"
             );
+            drop(held);
             asked.join().unwrap();
+            let cleanup_by = after(Duration::from_secs(3));
+            while resources() != before_resources && Instant::now() < cleanup_by {
+                std::thread::yield_now();
+            }
+            assert_eq!(resources(), before_resources, "worker resources did not return");
+            println!(
+                "REGISTRY_RESOURCES sample={sample} before={before_resources:?} retained={retained:?} after={:?}",
+                resources()
+            );
             let (result, switches, cpu_us) = result.expect("cancel did not wake the waiting request");
             let error = result.unwrap_err();
             if cancelling {
