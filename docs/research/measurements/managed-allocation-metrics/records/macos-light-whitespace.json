@@ -1,0 +1,57 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-allocation-metrics/HANDOFF.md",
+    "docs/research/measurements/managed-allocation-metrics/MAC-LIGHT.md",
+    "docs/research/measurements/managed-allocation-metrics/QUEUE-CHECKPOINT.md",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/MANIFEST.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/TRANSFER.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/binaries.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/environment.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/kiln-invocation.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/kiln-result.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-build.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-build.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-build.log",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-test.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-test.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-test.log",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-build.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-build.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-build.log",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-test.command.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-test.exit",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-test.log",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/outcomes.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/root-owed.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/rustc.txt",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/source.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-light-local-checks.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-preflight-2768-9e346b164/STATUS.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-preflight-2768-9e346b164/kiln-invocation.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-preflight-2768-9e346b164/kiln-result.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-preflight-2768-9e346b164/path-receipt.json",
+    "docs/research/measurements/managed-allocation-metrics/records/macos-preflight-2768-9e346b164/preflight.executed-command.txt"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-test.log:10: new blank line at EOF.\n",
+  "stderr": "",
+  "classified_original_raw_logs": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/managed_alloc-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "original libtest blank EOF preserved byte-identically; remote transfer hashes verified"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/macos-9e346b164/native_faults-test.log",
+      "sha256": "23d7319cf62eeea68bdb5f0884384c1f5e15e3ba1c3aeced3a0513c564984289",
+      "reason": "original libtest blank EOF preserved byte-identically; remote transfer hashes verified"
+    }
+  ],
+  "other_paths_check_exit": 0,
+  "source_or_whitespace_rule_relaxation": "NONE"
+}

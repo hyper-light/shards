@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+    "--edition",
+    "2024",
+    "--test",
+    "-D",
+    "warnings",
+    "-C",
+    "codegen-units=1",
+    "--target",
+    "aarch64-apple-darwin",
+    "/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults.rs",
+    "-o",
+    "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults-tests"
+  ],
+  "cwd": "/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20",
+  "TMPDIR": "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/tmp",
+  "timeout_seconds": 40,
+  "headroom_before": 95169482752
+}

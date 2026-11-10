@@ -1,0 +1,12 @@
+{
+  "unrun": [
+    "actual changed cost caller/helper compilation and native probes",
+    "normal managed-output caller tests on changed source",
+    "actual fault/read/identity failure paths",
+    "same-N paired/interleaved release profiling with caller-supplied n",
+    "parent/foreign-C/daemon/VM/guest/kernel/copy/CPU attribution",
+    "instrumentation perturbation/noise/contention",
+    "root adversarial/mutation/exact restoration/cleanup/matrix gates"
+  ],
+  "note": "these standalone units are not the managed_output caller; no completeness/performance/OSfault measurement claim"
+}

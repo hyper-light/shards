@@ -1,0 +1,8 @@
+{
+  "state": "HeldBeforeToolchainQueryAndPrivateSourceTargetCreation",
+  "source": "9e346b16408ea7d0353ac16808b285637071cf20",
+  "actual_free_bytes": 6549282816,
+  "required_free_bytes": 32212254720,
+  "scope": "no compiler/test/VM/profile/cleanup/download; only nonblocking common lock and disk floor preflight",
+  "local_target_or_cache_paths": []
+}

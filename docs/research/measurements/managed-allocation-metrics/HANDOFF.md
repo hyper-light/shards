@@ -107,3 +107,24 @@ Latest headroom receipt33,713,639,424bytes free after root-only inactive-object
 reclamation; no local builds/targets were started during either below-floor hold.
 ROOT Fedora r644/source1533 ACTIVE/exclusive; ROOT Macr634/source1533 full7+native12
 reported0 for THAT source, not evidence for this new native/paired source.
+
+Latest canonical main/origin/main receipt69dbc3180b8c8c55cb03f9f95f822d2752ba2887;
+rules hash stilld634... . New own-source9e346b164 standalone MacARM64 light:
+same counter7f59 source5pass + pure fault3946 source5pass, builds0, serial
+1CPU1GiB2GiB/sync:false undercommon nonblockingMaclock, only NEW own private
+source/target/light-macos-9e346...paths onb24.19raw verified; finalbinaries
+4d09cea84.../d51b4f387...reserved and preserved. MAC-LIGHT.md records actual
+Rust1.98.1/48a229ce/LLVM22.1.8 and both exact binary/source/command identities.
+No actualnativefaultAPI/costcaller/VM/profile or ROOTcache write. All own jobs
+complete, ZERO LOCALtargets/caches. Earlier2768 preflight held at6,549,282,816B;
+no source/target/light paths created (read-only receipt confirms). Full preflight
+command/result/path receipt in records/macos-preflight-2768-9e346b164, sent ROOT
+for exclusiveR16 reclamation. No cleanup performed. Root full caller/native/
+paired/mutation/cleanup gates unchanged; source approval for startup still pending.
+
+Latest ROOT localfloor receipt30,818,938,880B (~28.7GiB), BELOW30GiB. HOLD all
+LOCAL builds/cargo/compilation/large copies. Continue only source/small docs and
+admitted remote private light scopes; no agent target/cache deletion. No LOCAL
+targets/caches active and all own remote light jobs complete. Preserve all source,
+evidence/final binaries. Main4bfaceb38 receipt, policy unchanged. No children/
+auto goal dispatch or actor reset/stop. Root alone reclaims inactive intermediates.

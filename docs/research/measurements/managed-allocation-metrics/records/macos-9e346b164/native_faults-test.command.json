@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults-tests",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20",
+  "TMPDIR": "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/tmp",
+  "timeout_seconds": 40,
+  "headroom_before": 95168364544
+}

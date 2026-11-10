@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"b24c5c951260dcdfd0972f2aeaf3cf51\",\n    \"output\": \"{\\\"headroom_before\\\": 95170613248, \\\"minimum_free_bytes\\\": 32212254720, \\\"machine\\\": \\\"arm64\\\"}\\n{\\\"records\\\": \\\"/Users/adalundhe/managed-allocation-metrics-light-macos-9e346b16408ea7d0353ac16808b285637071cf20\\\", \\\"source\\\": \\\"9e346b16408ea7d0353ac16808b285637071cf20\\\", \\\"outcomes\\\": {\\\"managed_alloc-build\\\": 0, \\\"managed_alloc-test\\\": 0, \\\"native_faults-build\\\": 0, \\\"native_faults-test\\\": 0}, \\\"binaries\\\": [{\\\"module\\\": \\\"managed_alloc\\\", \\\"path\\\": \\\"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/managed_alloc-tests\\\", \\\"bytes\\\": 1054480, \\\"sha256\\\": \\\"4d09cea84c7ff70fa296711bcc48e230a5cc42b81dc27f594b8b01ac2a33c721\\\"}, {\\\"module\\\": \\\"native_faults\\\", \\\"path\\\": \\\"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults-tests\\\", \\\"bytes\\\": 1051360, \\\"sha256\\\": \\\"d51b4f387aa921689d14917e10705b55678fa48de588dc78021aef18a011cdad\\\"}], \\\"headroom_after\\\": 95168372736}\\n\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 \u00b7 11 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk \u00b7 1 CI jobs\",\n    \"exit_code\": 0\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+      "output": "{\"headroom_before\": 95170613248, \"minimum_free_bytes\": 32212254720, \"machine\": \"arm64\"}\n{\"records\": \"/Users/adalundhe/managed-allocation-metrics-light-macos-9e346b16408ea7d0353ac16808b285637071cf20\", \"source\": \"9e346b16408ea7d0353ac16808b285637071cf20\", \"outcomes\": {\"managed_alloc-build\": 0, \"managed_alloc-test\": 0, \"native_faults-build\": 0, \"native_faults-test\": 0}, \"binaries\": [{\"module\": \"managed_alloc\", \"path\": \"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/managed_alloc-tests\", \"bytes\": 1054480, \"sha256\": \"4d09cea84c7ff70fa296711bcc48e230a5cc42b81dc27f594b8b01ac2a33c721\"}, {\"module\": \"native_faults\", \"path\": \"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults-tests\", \"bytes\": 1051360, \"sha256\": \"d51b4f387aa921689d14917e10705b55678fa48de588dc78021aef18a011cdad\"}], \"headroom_after\": 95168372736}\n",
+      "running": false,
+      "why": "macos/aarch64 \u00b7 11 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk \u00b7 1 CI jobs",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

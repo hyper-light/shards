@@ -1,0 +1,55 @@
+{
+  "source_head": "9e346b16408ea7d0353ac16808b285637071cf20",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "9e346b16408ea7d0353ac16808b285637071cf20",
+        "--",
+        "crates/shards/tests/common/managed_alloc.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "docs/research/measurements/managed-allocation-metrics/paired.py",
+        "docs/research/measurements/managed-allocation-metrics/test_paired.py",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "raw_files_verified": 19,
+  "source": {
+    "revision": "9e346b16408ea7d0353ac16808b285637071cf20",
+    "files": [
+      {
+        "name": "managed_alloc.rs",
+        "sha256": "7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc"
+      },
+      {
+        "name": "native_faults.rs",
+        "sha256": "3946267e81571fcfd1c0853b1033bf170ef45632a7d9d99d747bef9ffd710513"
+      }
+    ]
+  },
+  "executed_binary_current_hashes_verified_on_remote_transfer": true,
+  "full_held_preflight_command_sha256": "7f05e2f54e405b80d4d147e72c53de790a2e8c24023aab81546561968c6108a1",
+  "local_scope": "small source/evidence read/write only; no compiler/build/unit/profile/large copy or cache/target deletion; below-floor hold respected",
+  "local_target_or_cache_paths": [],
+  "active_own_remote_builds": [],
+  "no_child_or_goal_plan_dispatch": true
+}

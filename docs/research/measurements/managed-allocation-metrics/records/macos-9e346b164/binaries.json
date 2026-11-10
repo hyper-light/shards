@@ -1,0 +1,14 @@
+[
+  {
+    "module": "managed_alloc",
+    "path": "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/managed_alloc-tests",
+    "bytes": 1054480,
+    "sha256": "4d09cea84c7ff70fa296711bcc48e230a5cc42b81dc27f594b8b01ac2a33c721"
+  },
+  {
+    "module": "native_faults",
+    "path": "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20/native_faults-tests",
+    "bytes": 1051360,
+    "sha256": "d51b4f387aa921689d14917e10705b55678fa48de588dc78021aef18a011cdad"
+  }
+]

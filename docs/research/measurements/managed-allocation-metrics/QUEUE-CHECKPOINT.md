@@ -42,6 +42,13 @@ namespace, BPF, profile, benchmark or campaign execution. No fake caller compile
 is substituted for the actual integration gate. Standalone Rust used explicitly
 selected1.98.1; actual compiler and formatter outputs are retained separately.
 
+Same unmodified counter/model source at9e346b164 now also has standalone
+MacARM64 counter5pass/purefault5pass, both builds0; [MAC-LIGHT.md](MAC-LIGHT.md)
+retains19raw and exact test-binary/tool identities. No nativefaultAPI/costcaller
+or fullmatrix result follows. Prior2768 floor preflight stopped BEFORE source
+creation/build; actual b24 run used own NEW private dirs/common lock with every
+recorded guard above30GiB. No ROOTtarget/cache writes; no local build/cache.
+
 No local builds/compiles, target/cache creation, full worktree/mirror or large
 archive was performed. Root's below-floor hold and subsequent headroom receipt
 were respected; small source/text evidence was preserved. All remote light jobs

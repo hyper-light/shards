@@ -1,0 +1,23 @@
+{
+  "system": "Darwin",
+  "release": "25.2.0",
+  "machine": "arm64",
+  "macos": "26.2",
+  "headroom_before": 95170613248,
+  "minimum_free_bytes": 32212254720,
+  "admission": "cpus=1,mem=1g,disk=2g; sync:false; serial standalone units only",
+  "source": "/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20",
+  "target": "/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20",
+  "records": "/Users/adalundhe/managed-allocation-metrics-light-macos-9e346b16408ea7d0353ac16808b285637071cf20",
+  "shared_build_lock": "/tmp/g121-mac.lock",
+  "scope": "same unmodified Rust modules, no global registration/caller/VM/native fault query/profile/campaign/ROOTcache write",
+  "python": {
+    "executable": "/Users/adalundhe/.pyenv/versions/3.14.2/bin/python3.14",
+    "version": "3.14.2 (main, Jan 31 2026, 19:45:59) [Clang 17.0.0 (clang-1700.6.3.2)]",
+    "sha256": "f3acb923091e1fe9127c92946157fe88b9da3ddc527ee2267d40897b0a8c1664"
+  },
+  "rustc": {
+    "executable": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+    "sha256": "766eda9d8f53afd6fc7f27b3cd2e444dd22afacb5afa710a5625fc8e45b8c941"
+  }
+}

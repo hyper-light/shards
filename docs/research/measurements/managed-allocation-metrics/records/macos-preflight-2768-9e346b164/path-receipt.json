@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"2768d0d5d2974f1e21d348edadff9d1b\",\n    \"output\": \"{\\\"home\\\": \\\"/Users/adalundhe\\\", \\\"own_only_paths\\\": [{\\\"path\\\": \\\"/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20\\\", \\\"exists\\\": false, \\\"is_symlink\\\": false}, {\\\"path\\\": \\\"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20\\\", \\\"exists\\\": false, \\\"is_symlink\\\": false}, {\\\"path\\\": \\\"/Users/adalundhe/managed-allocation-metrics-light-macos-9e346b16408ea7d0353ac16808b285637071cf20\\\", \\\"exists\\\": false, \\\"is_symlink\\\": false}], \\\"scope\\\": \\\"read-only own path metadata; no build/cache/source write or cleanup\\\"}\\n\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 \u00b7 13 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk\",\n    \"exit_code\": 0\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "2768d0d5d2974f1e21d348edadff9d1b",
+      "output": "{\"home\": \"/Users/adalundhe\", \"own_only_paths\": [{\"path\": \"/Users/adalundhe/managed-allocation-metrics-source-macos-9e346b16408ea7d0353ac16808b285637071cf20\", \"exists\": false, \"is_symlink\": false}, {\"path\": \"/Users/adalundhe/managed-allocation-metrics-target-macos-9e346b16408ea7d0353ac16808b285637071cf20\", \"exists\": false, \"is_symlink\": false}, {\"path\": \"/Users/adalundhe/managed-allocation-metrics-light-macos-9e346b16408ea7d0353ac16808b285637071cf20\", \"exists\": false, \"is_symlink\": false}], \"scope\": \"read-only own path metadata; no build/cache/source write or cleanup\"}\n",
+      "running": false,
+      "why": "macos/aarch64 \u00b7 13 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"2768d0d5d2974f1e21d348edadff9d1b\",\n    \"output\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 12, in <module>\\n  File \\\"<stdin>\\\", line 10, in headroom\\nRuntimeError: policy floor: hold builds below30GiB; free=6549282816\\n\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 \u00b7 13 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk\",\n    \"exit_code\": 1\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "2768d0d5d2974f1e21d348edadff9d1b",
+      "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 12, in <module>\n  File \"<stdin>\", line 10, in headroom\nRuntimeError: policy floor: hold builds below30GiB; free=6549282816\n",
+      "running": false,
+      "why": "macos/aarch64 \u00b7 13 of 14 cores idle \u00b7 32 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

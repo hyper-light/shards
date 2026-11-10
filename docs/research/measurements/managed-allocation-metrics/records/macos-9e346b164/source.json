@@ -1,0 +1,13 @@
+{
+  "revision": "9e346b16408ea7d0353ac16808b285637071cf20",
+  "files": [
+    {
+      "name": "managed_alloc.rs",
+      "sha256": "7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc"
+    },
+    {
+      "name": "native_faults.rs",
+      "sha256": "3946267e81571fcfd1c0853b1033bf170ef45632a7d9d99d747bef9ffd710513"
+    }
+  ]
+}
