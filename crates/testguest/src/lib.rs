@@ -3,6 +3,8 @@
 
 #![no_std]
 
+pub mod limits;
+
 /// The byte at `offset` of a disk filled with pattern `salt`: varies with every byte
 /// and every sector, so misplaced, torn, or stale transfers are all detected.
 pub fn pattern_byte(salt: u64, offset: u64) -> u8 {
