@@ -1,0 +1,55 @@
+[
+  {
+    "label": "std-adapter-mutant",
+    "compile": 0,
+    "source": {
+      "crates/api/src/sync.rs": "dbc7ec090fd7b2ebb15179f0804014d7fc3131c9278d93a2abf790143c40b29d",
+      "crates/api/src/client.rs": "50e11cbf8172925edf35d227f61ea0103bdc2559f20f9ee8952fdb4527354b25",
+      "crates/api/src/lib.rs": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01"
+    },
+    "binary_sha256": "16e8a90f9996e6e98289269db6edeb2ed9fe4a6f1e0d05815dad7667276329b0",
+    "expected_violation_observed": true,
+    "expected_correction_observed": null,
+    "cold_exits": [
+      -6
+    ],
+    "ordinary_exits": [],
+    "cold_native_reap": [
+      false
+    ],
+    "vsock_parent_absent": [
+      true
+    ]
+  },
+  {
+    "label": "restored-cd0649",
+    "compile": 0,
+    "source": {
+      "crates/api/src/sync.rs": "76a7dcda67e4e04693530c2a6d52c23af4249db5d2520bc3963960782ca18903",
+      "crates/api/src/client.rs": "50e11cbf8172925edf35d227f61ea0103bdc2559f20f9ee8952fdb4527354b25",
+      "crates/api/src/lib.rs": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01"
+    },
+    "binary_sha256": "b8b54856e8211bfaf13347d6cb78382d51d9491fac9b7fe91b29ac52a729f303",
+    "expected_violation_observed": null,
+    "expected_correction_observed": true,
+    "cold_exits": [
+      0,
+      0
+    ],
+    "ordinary_exits": [
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "cold_native_reap": [
+      true,
+      true
+    ],
+    "vsock_parent_absent": [
+      true,
+      true
+    ]
+  }
+]

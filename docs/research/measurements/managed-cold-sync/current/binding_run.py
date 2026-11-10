@@ -259,14 +259,32 @@ def main():
             selected = (source / "selection.stdout").read_text()
             if row["selection"]["exit"] != 0 or selected.count(SELECTOR + ": test") != 1 or "1 test," not in selected:
                 raise RuntimeError("missing exact single selected test")
+            mutation = version.get("expected_cold_abort", False)
+            cases = [("cold-refusal", False)] if mutation else [("cold-refusal", False), ("cold-refusal-trace", True)]
             row["cases"] = [case(binary, source / name, args.case_seconds, trace, version_env)
-                            for name, trace in [("cold-refusal", False), ("cold-refusal-trace", True)]]
-            row["ordinary"] = [ordinary(binary, source, version_env, name, args.case_seconds)
-                               for name in ORDINARY]
+                            for name, trace in cases]
+            row["ordinary"] = [] if mutation else [ordinary(binary, source, version_env, name, args.case_seconds)
+                                                    for name in ORDINARY]
+            if mutation:
+                actual = row["cases"][0]
+                stderr = (source / "cold-refusal/stderr").read_bytes()
+                row["expected_violation_observed"] = (actual["exit"] == -signal.SIGABRT
+                    and not actual["timed_out"] and actual["standin_exit_observed"]
+                    and b"COLD_REFUSED_BYTES 64\n" in stderr
+                    and b"memory allocation of 64 bytes failed" in stderr)
+            else:
+                row["expected_correction_observed"] = all(c["exit"] == 0 and not c["timed_out"]
+                    and c["standin_exit_observed"] and b"COLD_NATIVE_REAP_ECHILD\n" in
+                    (source / name / "stdout").read_bytes() for c, (name, _) in zip(row["cases"], cases))
+                row["expected_correction_observed"] &= all(c["exit"] == 0 and not c["timed_out"]
+                                                           for c in row["ordinary"])
         results.append(row)
         write_new(source / "summary.json", (json.dumps(row, indent=2) + "\n").encode())
     write_new(root / "results.json", (json.dumps(results, indent=2) + "\n").encode())
     print(json.dumps({"root": str(root), "results": [{"label": r["label"], "compile": r["compile"]["exit"], "binary": r.get("binary"), "cases": r.get("cases")} for r in results]}))
+    if any(r["compile"]["exit"] != 0 or not (r.get("expected_violation_observed", False)
+           or r.get("expected_correction_observed", False)) for r in results):
+        raise SystemExit("actual outcome did not match the separately declared expected outcome")
 
 
 if __name__ == "__main__":

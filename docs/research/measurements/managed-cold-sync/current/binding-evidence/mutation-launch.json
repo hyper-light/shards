@@ -1,0 +1,9 @@
+{
+  "packed_sha256": "15baf97a06fc9bdd5a56fd978cd1aac5fffd88a3138b385f6d24238e65afd233",
+  "driver_sha256": "dfe5789756f9d6c2c4571be9147c42e1e11d614b473003866a504b1ba88a1a55",
+  "parts": {
+    "input": 30,
+    "driver": 2
+  },
+  "private": "/Users/adalundhe/managed-cold-sync-binding-mutation-v1-um1lt394"
+}

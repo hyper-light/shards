@@ -5,6 +5,8 @@ main33df first reproduced the cold abort; the bound API then passed the two cold
 allocation-refusal cases and five ordinary compatibility cases on ARM64 macOS.
 This is a scoped implementation checkpoint for ROOT review. The seven-target,
 combined/native-error and performance gates remain owed; the lane stays assigned.
+The later [adapter-removal/restoration record](MUTATION.md) adds the bounded
+current-API mutation proof without changing this signed production source.
 
 ## Policy and source identity
 
@@ -167,7 +169,7 @@ waivers. Derived local originals are retained at
 | R07 | Safety/pairing/ownership/native representability comments retained; strict Clippy0 on final Mac closure. |
 | R08 | No comparable baseline, distributions or4–5x result claimed; all performance gates owed to ROOT. |
 | R09 | Actual exact main33df red captured before production wiring; historical122/f39 results alone were not used as current red. |
-| R10 | Current red and exact candidate green/raw commands/binaries/cleanup retained. Bound-API guard-removal/restored proof remains the next scoped correctness item; prior backend wake mutation is linked separately. |
+| R10 | Current red and exact candidate green/raw commands/binaries/cleanup retained. The later MUTATION.md closes bound-API adapter removal/restored proof; prior backend wake mutation is linked separately. Native-error races and combined gates remain owed. |
 | R11 | ARM64Mac actual seven focused cases/Clippy only. All seven-target and other native-host gates unrun here; Intel Mac unsupported, paused WinARM untouched. |
 | R12 | One shared caller contract, smallest necessary Darwin pthread adapter established by cold red; Linux/Windows preserve std backend. No extra installed binary, privilege or crypto change. |
 | R13 | Existing State/Tail/Child owners remain; no public mutex framework. Typed API variant requires exhaustive downstream review. |

@@ -1,0 +1,375 @@
+{
+  "revision": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+  "mutation": "only the two implementation cfg selections",
+  "restored_sync_sha256": "76a7dcda67e4e04693530c2a6d52c23af4249db5d2520bc3963960782ca18903",
+  "mutant_sync_sha256": "dbc7ec090fd7b2ebb15179f0804014d7fc3131c9278d93a2abf790143c40b29d",
+  "packed_sha256": "15baf97a06fc9bdd5a56fd978cd1aac5fffd88a3138b385f6d24238e65afd233",
+  "driver_sha256": "dfe5789756f9d6c2c4571be9147c42e1e11d614b473003866a504b1ba88a1a55",
+  "versions": [
+    {
+      "label": "std-adapter-mutant",
+      "revision": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+      "has_allocation_refusal": true,
+      "expected_cold_abort": true,
+      "files": {
+        "crates/abi/Cargo.toml": {
+          "sha256": "41b324548af8df170cb3507a4a0a0ce4e75fb9e6551985074924aa8bf27b8555",
+          "bytes": 243,
+          "private_test_edits": false
+        },
+        "crates/abi/build.rs": {
+          "sha256": "5daeaceeb36e04c1962ed90ffb3d7216cc12aebbaf8e6158eaffa5d7edb6b168",
+          "bytes": 2937,
+          "private_test_edits": false
+        },
+        "crates/abi/src/bounds.rs": {
+          "sha256": "e8297213757dae9f93bd562fa6f25c215a63d8476c8ec9ca94db2ecffd90108f",
+          "bytes": 9001,
+          "private_test_edits": false
+        },
+        "crates/abi/src/build.rs": {
+          "sha256": "a90290611ae47693edbfe5bef0484253f95f2df4eb8b86ecc9aefc25862df7bf",
+          "bytes": 28606,
+          "private_test_edits": false
+        },
+        "crates/abi/src/changes.rs": {
+          "sha256": "e3036a8559371fe2c39e25e93bb13622847669ac48488b5987d3e0f453609baa",
+          "bytes": 20243,
+          "private_test_edits": false
+        },
+        "crates/abi/src/emulate.rs": {
+          "sha256": "9bc88f80176e0c96fb6571161f36fb49e37a8493df88d2cca931276c0f87677d",
+          "bytes": 5461,
+          "private_test_edits": false
+        },
+        "crates/abi/src/lib.rs": {
+          "sha256": "d72676c26cf34b2b3d9623826ec31281523cb98048f2b1e32a50df9b5c1d0bfb",
+          "bytes": 7809,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run.rs": {
+          "sha256": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8",
+          "bytes": 53408,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run/managed.rs": {
+          "sha256": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+          "bytes": 18271,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run/quiesce.rs": {
+          "sha256": "dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092",
+          "bytes": 5846,
+          "private_test_edits": false
+        },
+        "crates/abi/tests/allocations.rs": {
+          "sha256": "91755703903a54630558cd79349c9d67629fd5218a524119f53628a76051a3cd",
+          "bytes": 3803,
+          "private_test_edits": false
+        },
+        "crates/afunix/Cargo.toml": {
+          "sha256": "37ee905425f3624f3a2e066462f623c372b0629c531ab71a24d80fa4d373c6d8",
+          "bytes": 455,
+          "private_test_edits": false
+        },
+        "crates/afunix/src/lib.rs": {
+          "sha256": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc",
+          "bytes": 37311,
+          "private_test_edits": false
+        },
+        "crates/api/Cargo.toml": {
+          "sha256": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+          "bytes": 722,
+          "private_test_edits": false
+        },
+        "crates/api/src/client.rs": {
+          "sha256": "50e11cbf8172925edf35d227f61ea0103bdc2559f20f9ee8952fdb4527354b25",
+          "bytes": 83527,
+          "private_test_edits": true
+        },
+        "crates/api/src/conformance.rs": {
+          "sha256": "aaa3c49a4c142614aed1562fae57fd8d762f95b128736648f298c53c12758d5b",
+          "bytes": 17423,
+          "private_test_edits": false
+        },
+        "crates/api/src/lib.rs": {
+          "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+          "bytes": 28800,
+          "private_test_edits": false
+        },
+        "crates/api/src/said.rs": {
+          "sha256": "8d6c4eb51f72372ea5e16c5787d7ea78958b0a05eeae18a62cd1b0ab87bca096",
+          "bytes": 6151,
+          "private_test_edits": false
+        },
+        "crates/api/src/sim.rs": {
+          "sha256": "910824d9a9fee4476bc9236958c38f90899fc67c4d9e19dff248efe4c711ba7f",
+          "bytes": 18297,
+          "private_test_edits": false
+        },
+        "crates/api/src/stream.rs": {
+          "sha256": "e4baba25f16965a6df4f67772453b3d838ce1e85ee45041304cd3e0d94611bcb",
+          "bytes": 29597,
+          "private_test_edits": false
+        },
+        "crates/api/src/sync.rs": {
+          "sha256": "dbc7ec090fd7b2ebb15179f0804014d7fc3131c9278d93a2abf790143c40b29d",
+          "bytes": 18684,
+          "private_test_edits": true
+        },
+        "crates/api/src/taken.rs": {
+          "sha256": "e83cd5fd233bb523bf4bf282365baed27373bf7f1efe36fdd79032f6a565cfd8",
+          "bytes": 13831,
+          "private_test_edits": false
+        },
+        "crates/api/src/while_runs.rs": {
+          "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+          "bytes": 4847,
+          "private_test_edits": false
+        },
+        "crates/api/tests/real.rs": {
+          "sha256": "c16f5c774667ce003b868f0f8250805427c2fa2d1cbbde06fe44d5053d6cc061",
+          "bytes": 5145,
+          "private_test_edits": false
+        },
+        "crates/api/tests/sim.rs": {
+          "sha256": "5a3107bd204bd5a4cb75f9c9814b5e6473f8e0576d3893c017b45ef9785fb8b2",
+          "bytes": 26180,
+          "private_test_edits": false
+        },
+        "crates/testdir/Cargo.toml": {
+          "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1",
+          "bytes": 536,
+          "private_test_edits": false
+        },
+        "crates/testdir/src/bin/shards-testhelper.rs": {
+          "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123",
+          "bytes": 5719,
+          "private_test_edits": false
+        },
+        "crates/testdir/src/lib.rs": {
+          "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc",
+          "bytes": 17917,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-borrowed-nowait/contract.rs": {
+          "sha256": "306245f3f9b444d1333ef36ee80e326202198ba9c1bb6791efc16817330ddce1",
+          "bytes": 2261,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-borrowed-nowait/focused.rs": {
+          "sha256": "84ae94fefbd4ca3b9bb3e813a24ce1e81750efa748f70662cf0d42caffe2f010",
+          "bytes": 7965,
+          "private_test_edits": false
+        },
+        "Cargo.toml": {
+          "sha256": "1155521515798e85deddd8729bb4be46a1b8644f2d38f7496a07ecc74d76322b",
+          "bytes": 2208,
+          "private_test_edits": true
+        },
+        "Cargo.lock": {
+          "sha256": "01a47a8fba5c5ffe56b16b71d406fa77fed43dcf3726b19076fe8afe44b63f13",
+          "bytes": 3364,
+          "private_test_edits": true
+        },
+        "rust-toolchain.toml": {
+          "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+          "bytes": 700,
+          "private_test_edits": false
+        },
+        "clippy.toml": {
+          "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+          "bytes": 526,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-cold-sync/current/native_case.rs": {
+          "sha256": "bbb1a36ecaf9d3a3abe0b8f5aa4e60bc5b82cb7b098bf23f36c443bcd54e8cdf",
+          "bytes": 6204,
+          "private_test_edits": false
+        }
+      }
+    },
+    {
+      "label": "restored-cd0649",
+      "revision": "cd0649bfedf2537bb4f9878b6e82c2c6b6e5faf0",
+      "has_allocation_refusal": true,
+      "files": {
+        "crates/abi/Cargo.toml": {
+          "sha256": "41b324548af8df170cb3507a4a0a0ce4e75fb9e6551985074924aa8bf27b8555",
+          "bytes": 243,
+          "private_test_edits": false
+        },
+        "crates/abi/build.rs": {
+          "sha256": "5daeaceeb36e04c1962ed90ffb3d7216cc12aebbaf8e6158eaffa5d7edb6b168",
+          "bytes": 2937,
+          "private_test_edits": false
+        },
+        "crates/abi/src/bounds.rs": {
+          "sha256": "e8297213757dae9f93bd562fa6f25c215a63d8476c8ec9ca94db2ecffd90108f",
+          "bytes": 9001,
+          "private_test_edits": false
+        },
+        "crates/abi/src/build.rs": {
+          "sha256": "a90290611ae47693edbfe5bef0484253f95f2df4eb8b86ecc9aefc25862df7bf",
+          "bytes": 28606,
+          "private_test_edits": false
+        },
+        "crates/abi/src/changes.rs": {
+          "sha256": "e3036a8559371fe2c39e25e93bb13622847669ac48488b5987d3e0f453609baa",
+          "bytes": 20243,
+          "private_test_edits": false
+        },
+        "crates/abi/src/emulate.rs": {
+          "sha256": "9bc88f80176e0c96fb6571161f36fb49e37a8493df88d2cca931276c0f87677d",
+          "bytes": 5461,
+          "private_test_edits": false
+        },
+        "crates/abi/src/lib.rs": {
+          "sha256": "d72676c26cf34b2b3d9623826ec31281523cb98048f2b1e32a50df9b5c1d0bfb",
+          "bytes": 7809,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run.rs": {
+          "sha256": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8",
+          "bytes": 53408,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run/managed.rs": {
+          "sha256": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+          "bytes": 18271,
+          "private_test_edits": false
+        },
+        "crates/abi/src/run/quiesce.rs": {
+          "sha256": "dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092",
+          "bytes": 5846,
+          "private_test_edits": false
+        },
+        "crates/abi/tests/allocations.rs": {
+          "sha256": "91755703903a54630558cd79349c9d67629fd5218a524119f53628a76051a3cd",
+          "bytes": 3803,
+          "private_test_edits": false
+        },
+        "crates/afunix/Cargo.toml": {
+          "sha256": "37ee905425f3624f3a2e066462f623c372b0629c531ab71a24d80fa4d373c6d8",
+          "bytes": 455,
+          "private_test_edits": false
+        },
+        "crates/afunix/src/lib.rs": {
+          "sha256": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc",
+          "bytes": 37311,
+          "private_test_edits": false
+        },
+        "crates/api/Cargo.toml": {
+          "sha256": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+          "bytes": 722,
+          "private_test_edits": false
+        },
+        "crates/api/src/client.rs": {
+          "sha256": "50e11cbf8172925edf35d227f61ea0103bdc2559f20f9ee8952fdb4527354b25",
+          "bytes": 83527,
+          "private_test_edits": true
+        },
+        "crates/api/src/conformance.rs": {
+          "sha256": "aaa3c49a4c142614aed1562fae57fd8d762f95b128736648f298c53c12758d5b",
+          "bytes": 17423,
+          "private_test_edits": false
+        },
+        "crates/api/src/lib.rs": {
+          "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+          "bytes": 28800,
+          "private_test_edits": false
+        },
+        "crates/api/src/said.rs": {
+          "sha256": "8d6c4eb51f72372ea5e16c5787d7ea78958b0a05eeae18a62cd1b0ab87bca096",
+          "bytes": 6151,
+          "private_test_edits": false
+        },
+        "crates/api/src/sim.rs": {
+          "sha256": "910824d9a9fee4476bc9236958c38f90899fc67c4d9e19dff248efe4c711ba7f",
+          "bytes": 18297,
+          "private_test_edits": false
+        },
+        "crates/api/src/stream.rs": {
+          "sha256": "e4baba25f16965a6df4f67772453b3d838ce1e85ee45041304cd3e0d94611bcb",
+          "bytes": 29597,
+          "private_test_edits": false
+        },
+        "crates/api/src/sync.rs": {
+          "sha256": "76a7dcda67e4e04693530c2a6d52c23af4249db5d2520bc3963960782ca18903",
+          "bytes": 18725,
+          "private_test_edits": false
+        },
+        "crates/api/src/taken.rs": {
+          "sha256": "e83cd5fd233bb523bf4bf282365baed27373bf7f1efe36fdd79032f6a565cfd8",
+          "bytes": 13831,
+          "private_test_edits": false
+        },
+        "crates/api/src/while_runs.rs": {
+          "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+          "bytes": 4847,
+          "private_test_edits": false
+        },
+        "crates/api/tests/real.rs": {
+          "sha256": "c16f5c774667ce003b868f0f8250805427c2fa2d1cbbde06fe44d5053d6cc061",
+          "bytes": 5145,
+          "private_test_edits": false
+        },
+        "crates/api/tests/sim.rs": {
+          "sha256": "5a3107bd204bd5a4cb75f9c9814b5e6473f8e0576d3893c017b45ef9785fb8b2",
+          "bytes": 26180,
+          "private_test_edits": false
+        },
+        "crates/testdir/Cargo.toml": {
+          "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1",
+          "bytes": 536,
+          "private_test_edits": false
+        },
+        "crates/testdir/src/bin/shards-testhelper.rs": {
+          "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123",
+          "bytes": 5719,
+          "private_test_edits": false
+        },
+        "crates/testdir/src/lib.rs": {
+          "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc",
+          "bytes": 17917,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-borrowed-nowait/contract.rs": {
+          "sha256": "306245f3f9b444d1333ef36ee80e326202198ba9c1bb6791efc16817330ddce1",
+          "bytes": 2261,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-borrowed-nowait/focused.rs": {
+          "sha256": "84ae94fefbd4ca3b9bb3e813a24ce1e81750efa748f70662cf0d42caffe2f010",
+          "bytes": 7965,
+          "private_test_edits": false
+        },
+        "Cargo.toml": {
+          "sha256": "1155521515798e85deddd8729bb4be46a1b8644f2d38f7496a07ecc74d76322b",
+          "bytes": 2208,
+          "private_test_edits": true
+        },
+        "Cargo.lock": {
+          "sha256": "01a47a8fba5c5ffe56b16b71d406fa77fed43dcf3726b19076fe8afe44b63f13",
+          "bytes": 3364,
+          "private_test_edits": true
+        },
+        "rust-toolchain.toml": {
+          "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+          "bytes": 700,
+          "private_test_edits": false
+        },
+        "clippy.toml": {
+          "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+          "bytes": 526,
+          "private_test_edits": false
+        },
+        "docs/research/measurements/managed-cold-sync/current/native_case.rs": {
+          "sha256": "bbb1a36ecaf9d3a3abe0b8f5aa4e60bc5b82cb7b098bf23f36c443bcd54e8cdf",
+          "bytes": 6204,
+          "private_test_edits": false
+        }
+      }
+    }
+  ]
+}
