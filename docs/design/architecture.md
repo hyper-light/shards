@@ -4479,6 +4479,49 @@ digest as it is stored, the platform's manifest chosen from an index, so a layou
 is built on as any base is (`oci_layout_contexts_are_the_images_they_hold`). buildx locks
 the index to read it, leaving a lock file in the layout; shards only reads.
 
+### Supplied agent and harness startup (D54, continued)
+
+A supplied directory or archive may hold its command in the root `agent.json` or
+`harness.json`, with the user-approved fields `entrypoint` (a command string) and
+`options` (an optional array of literal arguments). The same applies after a Git or
+HTTP source is fetched. A nonempty entrypoint is split into quoted/escaped words, with
+no implicit shell or variable, glob or command substitution; options follow as separate
+arguments, including whitespace and empty strings exactly as given. An explicit `nohup`
+is left as an ordinary program. No `ENTRYPOINT` or `CMD` scoping syntax is added to an
+Agentfile, and startup does not install a program through `RUN` or `VOLUME`.
+
+`startup::config` normalizes the simple descriptor to the existing OSI config, using the
+Agentfile's declared name; `shards build agent` and `shards build harness` use the
+explicit `-t` repository's basename instead, never a filesystem name. With no explicit
+name a simple descriptor is refused, while legacy OSI input keeps its own name. The
+full OSI descriptor remains readable with its schema,
+path and platform checks. `DomainConfig` is a graph operation over the unpacked source,
+so native builds and the BuildKit frontend run the same regular-file check and parser
+before copying `osi.json` beside the domain. Symlinks and non-regular descriptors are
+refused. A missing descriptor retains passive layout compatibility. The existing domain
+content checks still refuse escaping links, special files and set-ID bits.
+
+At runtime the domain's own root and `bin` precede the system directories on `PATH`,
+which is inherited by children too. This makes a supplied bare `codex` or `claude` work,
+and makes `nohup codex ...` find the same artifact's executable. This changes neither
+its cgroup nor its filesystem, process or network grants. Output routing is a separate
+contract; this startup decision makes no output grants.
+
+| Literal or field | Source |
+|---|---|
+| `agent.json`, `harness.json` | The supplied startup contract; the existing OSI artifact descriptor filenames |
+| OSI `schemaVersion` | Existing `osi::SCHEMA_VERSION`; simple manifests do not supply it |
+| DomainConfig protobuf field | The next shards-owned operation field after the existing Skills field, `SKILLS + 1` |
+| Generated directory/file modes | `0755`/`0644`, COPY's generated directory and regular-file modes |
+| File-action indices and `-1` | BuildKit `pb.FileAction`: one source input, actions chained after it, `-1` for scratch/no output |
+
+Tests: `startup::tests` covers Codex and Claude commands, quoted and escaped words,
+literal options, empty arguments, rejected malformed descriptors and retained OSI
+metadata. `supplied_domains_read_their_local_startup_config` covers planner copies,
+`a_supplied_harness_startup_is_normalized_through_the_gateway` the frontend's check,
+and `supplied_agents_and_harness_archives_start_their_declared_entrypoints` observes
+both a supplied directory agent and tar harness started in real confined domains.
+
 ### Skills checked as the Agent Skills reference checks them (D54)
 
 `SKILL` takes skills in the Agent Skills format (AGENTFILE_ARCH.md §8 Q12): a directory

@@ -3144,7 +3144,7 @@ impl Planner<'_> {
                 self.domain_sources
                     .entry(a.name.clone())
                     .or_insert_with(|| (b"agent".to_vec(), a.source.clone()));
-                self.fetch_into(d, b"agent", &a.source, &dest, &code, &loc, &lint)?;
+                self.fetch_into(d, b"agent", &a.name, &a.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Agent(a));
             }
             Kind::Agentfile(crate::agentfile::Directive::Harness(h)) => {
@@ -3157,7 +3157,7 @@ impl Planner<'_> {
                 self.domain_sources
                     .entry(h.name.clone())
                     .or_insert_with(|| (b"harness".to_vec(), h.source.clone()));
-                self.fetch_into(d, b"harness", &h.source, &dest, &code, &loc, &lint)?;
+                self.fetch_into(d, b"harness", &h.name, &h.source, &dest, &code, &loc, &lint)?;
                 self.ds(d)?
                     .agentfile
                     .push(crate::agentfile::Directive::Harness(h));
@@ -3179,7 +3179,7 @@ impl Planner<'_> {
                             .collect()
                     };
                     for dest in dests {
-                        self.fetch_into(d, b"mcp", &m.source, &dest, &code, &loc, &lint)?;
+                        self.fetch_into(d, b"mcp", &m.name, &m.source, &dest, &code, &loc, &lint)?;
                     }
                 }
                 self.ds(d)?.agentfile.push(crate::agentfile::Directive::Mcp(m));
@@ -4425,6 +4425,7 @@ impl Planner<'_> {
         &mut self,
         d: usize,
         kind: &[u8],
+        name: &[u8],
         source: &[u8],
         dest: &[u8],
         code: &[u8],
@@ -4434,8 +4435,22 @@ impl Planner<'_> {
         if let crate::agentfile::Source::Oci(r) = crate::agentfile::source_of(source).map_err(Fail::new)? {
             return self.artifact_into(d, kind, &r, dest, code, loc, lint);
         }
-        let _ = lint;
         let content = self.content_of(d, source)?;
+        let platform = self
+            .states
+            .get(d)
+            .and_then(|s| s.state.platform.as_ref())
+            .unwrap_or(&self.target_platform)
+            .clone();
+        let config = (kind == b"agent" || kind == b"harness").then(|| {
+            self.graph.domain_config(
+                &content,
+                kind,
+                name,
+                &platform,
+                custom_name(errb(&[b"[internal] read ", kind, b" config from ", source])),
+            )
+        });
         let mut dest = dest.to_vec();
         if !dest.ends_with(b"/") {
             dest.push(b'/');
@@ -4464,7 +4479,33 @@ impl Planner<'_> {
         };
         let first = self.graph.vertices.len();
         self.dispatch_copy(d, cfg, loc, lint)?;
-        self.own(first, dest_of_own);
+        self.own(first, dest_of_own.clone());
+        let Some(config) = config else { return Ok(()) };
+        let base = dest_of_own.strip_suffix(b"/").unwrap_or(&dest_of_own);
+        let cfg = CopyConfig {
+            sources: instructions::Sources {
+                dest: errb(&[base, b".d/"]),
+                paths: vec![b"/".to_vec()],
+                contents: Vec::new(),
+            },
+            exclude: Vec::new(),
+            from: Some(config),
+            is_add: false,
+            code: code.to_vec(),
+            chown: Vec::new(),
+            chmod: Vec::new(),
+            link: true,
+            keep_git_dir: None,
+            checksum: Vec::new(),
+            parents: false,
+            unpack: None,
+            onto: None,
+            history: Some(code.to_vec()),
+            location: loc.clone(),
+        };
+        let first = self.graph.vertices.len();
+        self.dispatch_copy(d, cfg, loc, lint)?;
+        self.own(first, base.to_vec());
         Ok(())
     }
 
@@ -6908,6 +6949,62 @@ mod tests {
                 config: br#"{"schemaVersion":1,"name":"main"}"#.to_vec(),
             })
         }
+    }
+
+    /// Local source descriptors are read after unpacking, and their normalized startup
+    /// config reaches the runtime alongside each domain's content (D54).
+    #[test]
+    fn supplied_domains_read_their_local_startup_config() {
+        let opts = Options {
+            target_platform: Platform::new("linux", "amd64"),
+            build_platforms: vec![Platform::new("linux", "amd64")],
+            dialect: crate::parser::Dialect::Agentfile,
+            ..Default::default()
+        };
+        let planned = plan(
+            b"FROM scratch\nAGENT worker FROM ./worker\nHARNESS codex FROM ./codex.tar TO /opt/cli\n",
+            &opts,
+            &Artifacts::default(),
+        )
+        .unwrap();
+        let def = planned.definition();
+        let checks: Vec<_> = def
+            .ops
+            .iter()
+            .filter_map(|o| match &o.kind {
+                llb::OpKind::DomainConfig { kind, name } => {
+                    Some((kind.as_slice(), name.as_slice(), o.platform.as_ref()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checks.len(), 2);
+        assert!(
+            checks
+                .iter()
+                .any(|(kind, name, _)| *kind == b"agent" && *name == b"worker")
+        );
+        assert!(
+            checks
+                .iter()
+                .any(|(kind, name, _)| *kind == b"harness" && *name == b"codex")
+        );
+        assert!(checks.iter().all(|(_, _, p)| *p == Some(&opts.target_platform)));
+        let copies: Vec<_> = def
+            .ops
+            .iter()
+            .filter_map(|o| match &o.kind {
+                llb::OpKind::File { actions } => Some(actions),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|a| match &a.action {
+                llb::OpActionKind::Copy { dest, .. } => Some(dest.as_slice()),
+                _ => None,
+            })
+            .collect();
+        assert!(copies.contains(&b"/agents/worker.d/".as_slice()));
+        assert!(copies.contains(&b"/opt/cli.d/".as_slice()));
     }
 
     /// An OSI artifact a named build context gives (D113) is taken from that context's

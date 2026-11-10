@@ -360,6 +360,13 @@ pub enum Kind {
         input: Output,
         name: Vec<u8>,
     },
+    /// A fetched domain's optional local descriptor, checked and normalized to
+    /// `osi.json` for its runtime grants directory; the input's content is untouched.
+    DomainConfig {
+        input: Output,
+        kind: Vec<u8>,
+        name: Vec<u8>,
+    },
     /// An operation of a definition given whole, as `llb.NewDefinitionOp` keeps one (a
     /// frontend's input): the bytes it was marshalled as, written again as they are, so
     /// that its digest and those its readers name stay what they were; the outputs it
@@ -450,7 +457,7 @@ impl Vertex {
                 }
             }
             Kind::Merge { inputs } => inputs.iter().copied().for_each(add),
-            Kind::Skills { input, .. } => add(*input),
+            Kind::Skills { input, .. } | Kind::DomainConfig { input, .. } => add(*input),
             Kind::Raw { inputs, .. } => inputs.iter().copied().for_each(add),
         }
         out
@@ -697,6 +704,32 @@ impl Graph {
         out
     }
 
+    /// The runtime config carried by a fetched domain, as [`Kind::DomainConfig`] says.
+    pub fn domain_config(
+        &mut self,
+        state: &State,
+        kind: &[u8],
+        name: &[u8],
+        platform: &Platform,
+        meta: Meta,
+    ) -> State {
+        let mut out = State::scratch();
+        out.platform = Some(platform.clone());
+        out.output = state.output.map(|input| {
+            let id = self.add(Vertex {
+                kind: Kind::DomainConfig {
+                    input,
+                    kind: kind.to_vec(),
+                    name: name.to_vec(),
+                },
+                platform: Some(platform.clone()),
+                meta,
+            });
+            Output { vertex: id, index: 0 }
+        });
+        out
+    }
+
     pub fn merge(&mut self, outputs: &[Option<Output>], meta: Meta) -> Option<Output> {
         let inputs: Vec<Output> = outputs.iter().flatten().copied().collect();
         match inputs.as_slice() {
@@ -848,6 +881,11 @@ pub enum OpKind {
     Merge,
     /// shards' own: see [`Kind::Skills`].
     Skills {
+        name: Vec<u8>,
+    },
+    /// shards' own: see [`Kind::DomainConfig`].
+    DomainConfig {
+        kind: Vec<u8>,
         name: Vec<u8>,
     },
     /// A [`Kind::Raw`]: its bytes as they came, and the source it is, if one.
@@ -1305,6 +1343,15 @@ impl<'g> Marshal<'g> {
                     inputs.push(i);
                 }
                 OpKind::Skills { name: name.clone() }
+            }
+            Kind::DomainConfig { input, kind, name } => {
+                if let Some(i) = self.input(*input) {
+                    inputs.push(i);
+                }
+                OpKind::DomainConfig {
+                    kind: kind.clone(),
+                    name: name.clone(),
+                }
             }
             // Its inputs only order it after what it reads: its bytes name them.
             Kind::Raw {

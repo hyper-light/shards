@@ -86,12 +86,25 @@ impl Fetched for Snapshot<'_> {
             return Ok(Found::Other);
         };
         let len = usize::try_from(*size).map_err(|e| e.to_string())?;
-        let mut buf = vec![0u8; len];
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len)
+            .map_err(|e| format!("reading a source file of {len} bytes: {e}"))?;
+        buf.resize(len, 0);
         self.sources
             .read_at(*data, 0, &mut buf)
             .map_err(|e| e.to_string())?;
         Ok(Found::File(buf))
     }
+}
+
+/// Read a regular file from the fetched snapshot, without following a symlink.
+/// Supplied domain startup descriptors use the same checked tree reader as skills.
+pub fn lookup(fetched: &Ref, path: &[u8], sources: &mut Sources) -> Result<Found, String> {
+    Snapshot {
+        tree: fetched.fs.tree(),
+        sources,
+    }
+    .lookup(path)
 }
 
 /// The `SKILL.md` (else `skill.md`) of the directory `dir` (empty for the root), if it has

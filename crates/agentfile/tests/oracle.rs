@@ -892,6 +892,12 @@ fn op_v(op: &shards_agentfile::llb::Op, md: &shards_agentfile::llb::Meta, order:
         OpKind::Skills { name } => {
             o.insert("skills".into(), serde_json::json!({ "name": ustr(name) }));
         }
+        OpKind::DomainConfig { kind, name } => {
+            o.insert(
+                "domainConfig".into(),
+                serde_json::json!({ "kind": ustr(kind), "name": ustr(name) }),
+            );
+        }
         // Given whole, which no plan of the oracle's holds.
         OpKind::Raw { bytes, .. } => {
             o.insert("raw".into(), serde_json::json!({ "len": bytes.len() }));
