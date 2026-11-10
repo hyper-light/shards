@@ -26,7 +26,9 @@ job at this checkpoint. Frozen/cba6d1c32 and source remain fixed for continuatio
 
 ROOT owes source/evidence review and combined/platform gates; independent wait
 receipts/full population/kernel and parent accounting remain Unknown. No full
-management or lane closure. Next finite input is D3/TASKS7 on SAME helper/source,
-fresh two ports/UUID16/report269, with exact new input readback before actors and
-the same normal/depth strict assertions and cleanup. This exercises another
-intermediate parent, not an unbounded sweep or new helper mechanism.
+management or lane closure. Continuation completed: r67normal+D3 and r70normal+legacyOneChild both0,
+each exactly1test/noignored, all strict assertions and FD11->11. See D3-LEGACY.md
+and verified182-original raw-v2. All Rust/helper bytes remain frozen cba. Next
+guest-expiry shape/T is proposal-only6862; no actors or implementation until ROOT
+approves that separate contract and supplies finite T. No independent approved
+compatibility path was left idle while preparing that proposal.

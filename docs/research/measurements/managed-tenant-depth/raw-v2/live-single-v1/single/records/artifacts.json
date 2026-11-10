@@ -1,0 +1,22 @@
+{
+  "cli": {
+    "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/target/e2e/shards-d96435be206f910f/shards",
+    "sha256": "sha256:d96435be206f910f876d093e0e05c8e92a8a55bb1cf0ec4613fc824cb6186404"
+  },
+  "fixture": {
+    "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/frozen/cba6d1c32/managed_output-87d4844abdafeb5c",
+    "sha256": "sha256:4066215ad51e74c7fe265245e1deed45ee0af106deb5b682053641911fbceb6c"
+  },
+  "init": {
+    "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "sha256": "sha256:0e9ad98daaf04af349531e086698c0baeb7c3493631b2327027f572992fedca9"
+  },
+  "kernel": {
+    "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/cache/vmlinux-6.18.48-x86_64-17c3ba205400",
+    "sha256": "sha256:48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+  },
+  "testguest": {
+    "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/frozen/cba6d1c32/guest/shards-testguest",
+    "sha256": "sha256:a9266f916668f0c960e69aef3e32b6acd2ce55540a3cfdc178de80e1e01d0f15"
+  }
+}

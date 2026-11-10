@@ -1,0 +1,59 @@
+{
+  "reason": "Lossless original whitespace/blank EOF preservation without Git waiver; unchanged original tar and remote remain.",
+  "files": [
+    {
+      "original": "collect-v2.command",
+      "representation": "collect-v2.command.gz",
+      "decoded_bytes": 2196,
+      "decoded_sha256": "88d9333f34f555223987d0f387a0c12ec6ccb0ed2007d3997d2e9ecfca224398"
+    },
+    {
+      "original": "live-d3-v1/depth/test.log",
+      "representation": "live-d3-v1/depth/test.log.gz",
+      "decoded_bytes": 597,
+      "decoded_sha256": "8369b0e5b13dca45d1fe89bfa9470e9951d91f501b14734a2ff4cb0b48c9792f"
+    },
+    {
+      "original": "live-d3-v1/normal/test.log",
+      "representation": "live-d3-v1/normal/test.log.gz",
+      "decoded_bytes": 566,
+      "decoded_sha256": "85a03986ffb4ad1527a668050e84473b730cdb8261a01b55a437bbe2c7c2ae66"
+    },
+    {
+      "original": "live-d3.command",
+      "representation": "live-d3.command.gz",
+      "decoded_bytes": 2899,
+      "decoded_sha256": "0d4a25ad9b4c596d5a56fea4e6ce07f6d4a8a2fb52c62cbce6d5d326b99fa4ce"
+    },
+    {
+      "original": "live-single-v1/normal/test.log",
+      "representation": "live-single-v1/normal/test.log.gz",
+      "decoded_bytes": 566,
+      "decoded_sha256": "fbc931dc9c28cbbfc011ea5da5ceb96d1765d3ae1b465039b24c1a9dcfad7414"
+    },
+    {
+      "original": "live-single-v1/single/test.log",
+      "representation": "live-single-v1/single/test.log.gz",
+      "decoded_bytes": 595,
+      "decoded_sha256": "d1b932ba88ada14caf43fcadb959e5bc9dffa9434db97796584f81ee4d95af66"
+    },
+    {
+      "original": "live-single.command",
+      "representation": "live-single.command.gz",
+      "decoded_bytes": 2904,
+      "decoded_sha256": "5d50a8fb6f0dfa8211e416d96d47ee5f08a0a19616ff89beba28fbe2324fe0e5"
+    },
+    {
+      "original": "prepare-d3-inputs.command",
+      "representation": "prepare-d3-inputs.command.gz",
+      "decoded_bytes": 5094,
+      "decoded_sha256": "1aef4be70eeba8cd8f4094f27aca2e903a0440c66bc9c82dced22983e0bc4c67"
+    },
+    {
+      "original": "prepare-single-inputs.command",
+      "representation": "prepare-single-inputs.command.gz",
+      "decoded_bytes": 5104,
+      "decoded_sha256": "6cd6184637a2038f5ac78d5ceb6608c4613fe080635843743f78e60a147687be"
+    }
+  ]
+}

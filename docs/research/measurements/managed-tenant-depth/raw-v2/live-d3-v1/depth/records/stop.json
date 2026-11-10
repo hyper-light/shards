@@ -1,0 +1,12 @@
+{
+  "args": [
+    "stop",
+    "vm",
+    "-t",
+    "0",
+    "owner-output"
+  ],
+  "status": 0,
+  "stderr": "",
+  "stdout": "owner-output\n"
+}

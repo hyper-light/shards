@@ -1,0 +1,12 @@
+{
+  "source": "cba6d1c32c5d27ef34b5cd9b49f95834253d6448",
+  "crates_unchanged": true,
+  "verified_originals": {
+    "raw-v1": 120,
+    "raw-v2": 182
+  },
+  "all_source_freeze_hashes_match": true,
+  "local_free_bytes": 193739726848,
+  "new_expiry_case": "Proposal only; no code/actors",
+  "independent_wait_full_population_parent_kernel_return": "Unknown"
+}

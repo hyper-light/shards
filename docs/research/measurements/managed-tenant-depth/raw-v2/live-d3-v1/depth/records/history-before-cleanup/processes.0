@@ -1,0 +1,39 @@
+1794343535606447719	command	907	exec	/bin/testguest sleep
+1794343535607487573	agent helper	909	fork	1
+1794343535609537978	agent helper	909	exec	shards-server "agent helper" /proc/self/fd/6 200001 3 4 "" [] 7
+1794343535614663369	agent helper	915	fork	909
+1794343535615311046	agent helper	915	exec	shards-server sandbox
+1794343535615849956	agent helper	919	fork	1
+1794343535616189221	agent helper	921	fork	919
+1794343535616440938	agent helper	919	exec	shards-init managed-reaper
+1794343535715658939	agent helper	921	exec	/agents/helper/member managed-capture agent inherit-stdio 46643 240000 15000 16 269 3
+1794343535716384113	harness driver	1705	fork	1
+1794343535716583448	agent helper	1706	fork	921
+1794343535716786182	agent helper	1706	exec	/agents/helper/member managed-capture agent inherited-child 46643 240000 16 269 2 240484749128 15000
+1794343535717238264	agent helper	1709	fork	1706
+1794343535717375102	agent helper	1709	exec	/agents/helper/member managed-capture agent inherited-child 46643 240000 16 269 1 240484749128 15000
+1794343535717580022	harness driver	1705	exec	shards-server "harness driver" /proc/self/fd/6 200002 3 4 "" [] 7
+1794343535717765146	agent helper	1712	fork	1709
+1794343535717969020	agent helper	1712	exec	/agents/helper/member managed-capture agent inherited-child 46643 240000 16 269 0 240484749128 15000
+1794343535719115689	harness driver	1713	fork	1705
+1794343535719261719	harness driver	1713	exec	shards-server sandbox
+1794343535720091049	harness driver	1717	fork	1
+1794343535720766053	harness driver	1718	fork	1717
+1794343535720883232	harness driver	1717	exec	shards-init managed-reaper
+1794343535773434231	harness driver	1718	exec	/harness/driver/bin/member managed-capture harness step 39821 240000
+1794343536011138130	command	2234	fork	1
+1794343536012410972	command	2234	exec	/bin/testguest streams main-progress main-error
+1794343536013280035	command	2234	exit	code 0
+1794343536149635367	command	2237	fork	1
+1794343536150642469	command	2237	exec	/bin/testguest streams main-progress main-error
+1794343536151002301	command	2237	exit	code 0
+1794343536168463104	agent helper	1712	exit	code 0
+1794343536168624002	agent helper	1709	exit	code 0
+1794343536168723992	agent helper	1706	exit	code 0
+1794343536169048398	agent helper	921	exit	code 0
+1794343536169243916	agent helper	919	exit	code 0
+1794343536169357154	agent helper	915	exit	signal 9
+1794343536169405742	agent helper	909	exit	signal 9
+1794343536226936963	command	2247	fork	1
+1794343536228358303	command	2247	exec	/bin/testguest streams main-progress main-error
+1794343536228992749	command	2247	exit	code 0

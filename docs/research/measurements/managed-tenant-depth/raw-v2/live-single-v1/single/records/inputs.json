@@ -1,0 +1,32 @@
+{
+  "actor_port": 50915,
+  "agent_tasks": 5,
+  "challenge": [
+    138,
+    186,
+    222,
+    80,
+    89,
+    3,
+    67,
+    215,
+    174,
+    125,
+    102,
+    81,
+    230,
+    156,
+    160,
+    234
+  ],
+  "cleanup_ms": 15000,
+  "deadline_provenance": "depth mode: first actor creates one guest CLOCK_MONOTONIC expiry; unchanged across exec; cleanup derives from that expiry plus original duration; host deadline is independent",
+  "descendant_depth": null,
+  "host_work_ms": 240000,
+  "lifetime_owner": "retained Fixture owner; each direct parent retains one private Child; observer/EOF is not owner",
+  "private_handoff_bytes": 1,
+  "report_bytes": 269,
+  "sibling_port": 42623,
+  "source": "cba6d1c32c5d27ef34b5cd9b49f95834253d6448",
+  "work_ms": 240000
+}

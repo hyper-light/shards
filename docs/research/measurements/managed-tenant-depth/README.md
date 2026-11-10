@@ -14,6 +14,10 @@ before edits. ROOT approved proposal tenant_descendant_depth_minimal_contract_v1
 (receipt6779). Prior b1f/629/fabd source, campaigns and all raw/frozen inputs remain
 unchanged. ROOT's combined 0ae results are prior evidence, not this revision's gate.
 
+Additional same-source actual D3 and unchanged-one-child compatibility results:
+[D3-LEGACY.md](D3-LEGACY.md). Six selected real cases pass in total; no rebuild
+or broader platform/performance/population claim.
+
 ## Owned extension
 
 Only existing inherited-fixture portions of testguest/workload.rs, the existing
