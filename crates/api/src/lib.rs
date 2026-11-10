@@ -28,6 +28,7 @@ use std::net::Shutdown;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod borrowed;
 mod client;
 pub mod conformance;
 mod said;
@@ -38,6 +39,7 @@ mod taken;
 #[cfg(test)]
 mod while_runs;
 
+pub use borrowed::connect_borrowed;
 pub use client::Shards;
 
 /// A guest to boot.

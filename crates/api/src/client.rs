@@ -683,8 +683,7 @@ impl ShardsGuest {
 /// When `child` was created: GetProcessTimes' creation time, a FILETIME (100 ns since
 /// 1601), as one number.
 #[cfg(windows)]
-fn created(child: &Child) -> io::Result<u64> {
-    use std::os::windows::io::AsRawHandle as _;
+pub(crate) fn created(child: &impl std::os::windows::io::AsRawHandle) -> io::Result<u64> {
     use windows_sys::Win32::Foundation::FILETIME;
     use windows_sys::Win32::System::Threading::GetProcessTimes;
     let zero = FILETIME {
@@ -735,7 +734,7 @@ fn said(what: &str, said: &str) -> String {
 /// So a few dials go out early and fewer as the wait grows: at 150 ms waited, 1.3 ms with a
 /// 5.5 µs dial and 3.6 ms with a 44 µs one, which dialing holds 0.4% and 1.2% of. A dial to a
 /// VM that listens waits for the guest's own answer, so the guest paces it. At most `left`.
-fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
+pub(crate) fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
     let product = dialed
         .as_nanos()
         .checked_mul(waited.as_nanos())
@@ -746,9 +745,48 @@ fn pause(dialed: Duration, waited: Duration, left: Duration) -> Duration {
 }
 
 /// Why a handshake failed: worth asking again, or not.
-enum Attempt {
+pub(crate) enum Attempt {
     Again(String),
     Refused(String),
+}
+
+/// How one handshake waits. Existing owned guests retain their per-operation wait;
+/// borrowed connects share one absolute deadline across every operation and retry.
+#[derive(Clone, Copy)]
+pub(crate) enum DialWait {
+    For(Option<Duration>),
+    Until(Instant),
+    Now,
+}
+
+impl DialWait {
+    fn remaining(self) -> Result<Option<Duration>, Attempt> {
+        match self {
+            Self::For(wait) => Ok(wait),
+            Self::Now => Ok(Some(Duration::ZERO)),
+            Self::Until(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    Err(Attempt::Again("its patience elapsed".into()))
+                } else {
+                    Ok(Some(left))
+                }
+            }
+        }
+    }
+
+    fn timeout(self, socket: &Socket, write: bool) -> Result<(), Attempt> {
+        if matches!(self, Self::Now) {
+            return Ok(());
+        }
+        let wait = self.remaining()?;
+        let set = if write {
+            Stream::set_write_timeout(socket, wait)
+        } else {
+            Stream::set_read_timeout(socket, wait)
+        };
+        set.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))
+    }
 }
 
 /// One `CONNECT <port>` over a new connection to `vsock`, its answer awaited at most `wait`
@@ -763,20 +801,25 @@ fn handshake(
     wait: Option<Duration>,
     cost: &mut Duration,
 ) -> Result<Socket, Attempt> {
+    handshake_waiting(vsock, port, DialWait::For(wait), cost)
+}
+
+pub(crate) fn handshake_waiting(
+    vsock: &Path,
+    port: u32,
+    wait: DialWait,
+    cost: &mut Duration,
+) -> Result<Socket, Attempt> {
     let began = Instant::now();
     // Its own work, the connect and the ask, as far as it got: not its wait for the answer.
     let done = |cost: &mut Duration| *cost = began.elapsed();
-    let mut s = stream::connect(vsock, wait).map_err(|e| {
+    let mut s = stream::connect(vsock, wait.remaining()?).map_err(|e| {
         done(cost);
         match e.kind() {
-            // Not yet bound, or bound and not yet listening: the VM is starting. Or its
-            // muxer's queue is full (Linux's EAGAIN) or the connect still under way at its
-            // wait's end: the VM takes no connection now.
             io::ErrorKind::NotFound
             | io::ErrorKind::ConnectionRefused
             | io::ErrorKind::WouldBlock
             | io::ErrorKind::TimedOut => Attempt::Again(format!("dialing: {e}")),
-            // Windows' full queue, its EAGAIN (PM M205).
             #[cfg(windows)]
             _ if e.raw_os_error() == Some(windows_sys::Win32::Networking::WinSock::WSAENOBUFS) => {
                 Attempt::Again(format!("dialing: {e}"))
@@ -784,13 +827,28 @@ fn handshake(
             _ => Attempt::Refused(format!("{}: {e}", vsock.display())),
         }
     })?;
-    if wait.is_some() {
-        let timeouts = Stream::set_write_timeout(&s, wait).and_then(|()| Stream::set_read_timeout(&s, wait));
-        timeouts.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
+    if matches!(wait, DialWait::Now) {
+        Stream::set_nonblocking(&s, true)
+            .map_err(|e| Attempt::Refused(format!("its nonblocking mode: {e}")))?;
     }
-    let asked = s.write_all(format!("CONNECT {port}\n").as_bytes());
+    let ask = format!("CONNECT {port}\n");
+    let mut unsent = ask.as_bytes();
+    while !unsent.is_empty() {
+        wait.timeout(&s, true)?;
+        match s.write(unsent) {
+            Ok(0) => {
+                done(cost);
+                return Err(Attempt::Again("closed while asking".into()));
+            }
+            Ok(n) => unsent = unsent.get(n..).unwrap_or_default(),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                done(cost);
+                return Err(Attempt::Again(format!("asking: {e}")));
+            }
+        }
+    }
     done(cost);
-    asked.map_err(|e| Attempt::Again(format!("asking: {e}")))?;
     let mut line = Vec::with_capacity(ANSWER);
     let mut byte = [0u8; 1];
     while line.last() != Some(&b'\n') {
@@ -800,8 +858,8 @@ fn handshake(
                 String::from_utf8_lossy(&line)
             )));
         }
+        wait.timeout(&s, false)?;
         match s.read(&mut byte) {
-            // The guest did not accept: its device closes the connection.
             Ok(0) => {
                 return Err(Attempt::Again(
                     "closed unanswered (the guest does not listen there)".into(),
@@ -819,7 +877,9 @@ fn handshake(
     if !ok {
         return Err(Attempt::Refused(format!("answered {answer:?}, not OK")));
     }
-    let cleared = Stream::set_write_timeout(&s, None).and_then(|()| Stream::set_read_timeout(&s, None));
+    let cleared = Stream::set_write_timeout(&s, None)
+        .and_then(|()| Stream::set_read_timeout(&s, None))
+        .and_then(|()| Stream::set_nonblocking(&s, false));
     cleared.map_err(|e| Attempt::Refused(format!("its timeouts: {e}")))?;
     Ok(s)
 }
@@ -892,7 +952,7 @@ impl Guest for ShardsGuest {
         #[cfg(windows)]
         let (pid, started) = {
             let child = lock(&self.child);
-            (child.id(), created(&child))
+            (child.id(), created(&*child))
         };
         drop(state);
         Ok(Identity {

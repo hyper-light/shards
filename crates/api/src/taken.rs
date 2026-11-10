@@ -44,6 +44,12 @@ impl Held {
         Ok(Held { os, pid })
     }
 
+    /// Whether the held process has exited, without waiting. A caller that sees an exit
+    /// must stop using it: macOS consumes its NOTE_EXIT event.
+    pub(crate) fn has_exited(&self) -> io::Result<bool> {
+        self.os.exited(false)
+    }
+
     /// Waits for it to exit.
     pub(crate) fn exited(&self) -> io::Result<()> {
         self.os.exited(true).map(drop)
