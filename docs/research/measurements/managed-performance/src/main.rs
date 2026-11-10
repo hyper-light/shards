@@ -706,11 +706,11 @@ fn worker(
             received.duration_since(start).as_nanos(),
             start.elapsed().as_nanos(),
         ));
-        if record == 0 {
-            if let Some(checkpoint) = &checkpoint {
-                checkpoint.wait();
-                checkpoint.wait();
-            }
+        if record == 0
+            && let Some(checkpoint) = &checkpoint
+        {
+            checkpoint.wait();
+            checkpoint.wait();
         }
     }
     Ok(samples)

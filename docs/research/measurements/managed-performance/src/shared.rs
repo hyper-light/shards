@@ -152,10 +152,10 @@ impl Handler for Server {
         self.flush(io);
     }
     fn stopped(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
-        if let Some((_, index)) = self.routes.iter().find(|(id, _)| *id == stream) {
-            if let Some(service) = self.services.get_mut(*index) {
-                service.stopped(io, conn, stream);
-            }
+        if let Some((_, index)) = self.routes.iter().find(|(id, _)| *id == stream)
+            && let Some(service) = self.services.get_mut(*index)
+        {
+            service.stopped(io, conn, stream);
         }
     }
     fn lost(&mut self, io: &mut Io<'_>, conn: ConnKey, why: &str, code: Option<u64>) {
