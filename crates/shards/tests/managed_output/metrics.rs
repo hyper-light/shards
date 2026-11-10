@@ -157,10 +157,10 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
     }) else {
         return;
     };
-    if let Some(record) = &fixture.record {
-        if let Ok(bytes) = std::fs::read(record) {
-            save("managed-output.after-stop", &bytes);
-        }
+    if let Some(record) = &fixture.record
+        && let Ok(bytes) = std::fs::read(record)
+    {
+        save("managed-output.after-stop", &bytes);
     }
     save("completed", b"fixture body and owner/observer cleanup returned\n");
 }
