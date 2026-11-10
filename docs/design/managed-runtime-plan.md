@@ -32,11 +32,21 @@ removals with actual direct backend receipts and restored passes.
 [Follow-up records](../research/measurements/managed-central-followup/README.md)
 add loopback/own-address guests, native cleanup on three host OSes, the exact
 seven-target gate and a narrow reader allocation/cost comparison. These do not
-establish a forwarding relay, mandatory route coverage or fail-closed relay death.
-The first finite task-limit VM run fails before exhaustion because its fixture
-incorrectly expects an internal reaper in top; the observation contract is being
-corrected without changing policy. The borrowed API candidate has focused
-native Mac/Windows passes but is not adopted. Its complete Mac library gate
+establish a forwarding relay or mandatory route coverage.
+[Phase 2 coordinator records](../research/measurements/managed-central-phase2/README.md)
+retain the corrected finite task-refusal/recovery and held-cancellation guests,
+actual missing-listener backend effects, independent fallback-DROP removal and
+byte-identical restored passes. The guarded result is explicitly no new backend
+effect before the original deadline, with behavior after that window unverified;
+it is not a permanent-denial or prompt-refusal claim. The original pre-Fill
+fixture failures remain retained. A root allocation-refusal probe also reproduces
+an abort when the safe command-line helper's typed error is converted to String;
+typed propagation and its caller validation are being implemented separately.
+Seven-target37a checks and reader/prototype measurements in that record do not
+establish later source gates or production adoption. Native IPv6 fixture source
+is composed; its actual guest/mutation results will be recorded by the coordinator.
+The borrowed API candidate has focused native Mac/Windows passes but is not
+adopted. Its complete Mac library gate
 exposes [MR-OOM-MAC-1](../research/measurements/managed-sync-coordinator/README.md):
 an actual fatal64-byte lazy std Mutex allocation in owned Guest::connect. No
 warming, skipped test or larger timing guard closes that defect. Hard resources,
