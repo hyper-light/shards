@@ -45,6 +45,9 @@ Admitted2CPU/2GiB/4GiB, <=600s and -j2; caller request13, greeting8, tail6,
 slots3/5, extra58, case30s/parent45s. These are finite caller inputs, not
 production capacity values or hard physical/kernel guarantees. No local target/cache.
 
-This first source checkpoint has not run compilation or native cases. Actual
-results and retained raw failures/effects will be added after those executions.
-ROOT still owns carried VSOCK, full callers/matrix, profiles and final integration.
+The first signed source checkpoint5a4b676aa explicitly had unrun compilation and
+native cases. The [actual validation record](VALIDATION.md) now retains GNU/musl
+checks and native passes, the exact guard-removal failure with an independent
+client58 receipt, exact restoration and10 restored controls. Original raw bytes,
+failures and source/binary identities are preserved. ROOT still owns carried
+VSOCK, full callers/matrix, profiles and final integration.

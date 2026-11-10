@@ -1,0 +1,40 @@
+{
+  "uname": [
+    "Linux",
+    "fedora-2",
+    "6.19.10-300.fc44.x86_64",
+    "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "x86_64"
+  ],
+  "os_release": "NAME=\"Fedora Linux\"\nVERSION=\"44 (KDE Plasma Desktop Edition)\"\nRELEASE_TYPE=stable\nID=fedora\nVERSION_ID=44\nVERSION_CODENAME=\"\"\nPRETTY_NAME=\"Fedora Linux 44 (KDE Plasma Desktop Edition)\"\nANSI_COLOR=\"0;38;2;60;110;180\"\nLOGO=fedora-logo-icon\nCPE_NAME=\"cpe:/o:fedoraproject:fedora:44\"\nDEFAULT_HOSTNAME=\"fedora\"\nHOME_URL=\"https://fedoraproject.org/\"\nDOCUMENTATION_URL=\"https://docs.fedoraproject.org/en-US/fedora/f44/\"\nSUPPORT_URL=\"https://ask.fedoraproject.org/\"\nBUG_REPORT_URL=\"https://bugzilla.redhat.com/\"\nREDHAT_BUGZILLA_PRODUCT=\"Fedora\"\nREDHAT_BUGZILLA_PRODUCT_VERSION=44\nREDHAT_SUPPORT_PRODUCT=\"Fedora\"\nREDHAT_SUPPORT_PRODUCT_VERSION=44\nSUPPORT_END=2027-05-19\nVARIANT=\"KDE Plasma Desktop Edition\"\nVARIANT_ID=kde\n",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)\n",
+  "libc": "ldd (GNU libc) 2.43\nCopyright (C) 2024 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\nWritten by Roland McGrath and Ulrich Drepper.\n",
+  "binaries": [
+    {
+      "path": "/home/adalundhe/relay-tcp-extra-backend-f6a-v1/artifacts/baseline-x86_64-unknown-linux-gnu",
+      "bytes": 12796688,
+      "sha256": "bdbe09bf69777abc5c75e74074b77d49679d6a777f7e4f6102fbe92221ec3d97"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-extra-backend-f6a-v1/artifacts/baseline-x86_64-unknown-linux-musl",
+      "bytes": 13101632,
+      "sha256": "5a906289796410b073a0058e7732fc3c09f8dd9da9594840f9c0b0a7bbfc3534"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-extra-backend-f6a-v1/artifacts/mutant-x86_64-unknown-linux-musl",
+      "bytes": 13060744,
+      "sha256": "64387d7f8b76def07bc7aba2490e444eecdca5d9faffec535416893f963b9da0"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-extra-backend-f6a-v1/artifacts/restored-x86_64-unknown-linux-gnu",
+      "bytes": 12796688,
+      "sha256": "bdbe09bf69777abc5c75e74074b77d49679d6a777f7e4f6102fbe92221ec3d97"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-extra-backend-f6a-v1/artifacts/restored-x86_64-unknown-linux-musl",
+      "bytes": 13101632,
+      "sha256": "5a906289796410b073a0058e7732fc3c09f8dd9da9594840f9c0b0a7bbfc3534"
+    }
+  ]
+}

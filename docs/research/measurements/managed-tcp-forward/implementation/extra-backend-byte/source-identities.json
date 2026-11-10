@@ -1,0 +1,57 @@
+{
+  "source_revision": "5a4b676aa4d4f83f29fa88e6512fb3edb5ce2e62",
+  "parent": "f6a16eca2b9d646b5add2c3df81232e6b340b6b8",
+  "policy_revision": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "paths": [
+    {
+      "path": "crates/init/src/engine.rs",
+      "bytes": 6704,
+      "sha256": "1f32faae6fb63c2beeb5accf0292d90f0608207f32bfe09f9495a0f4edd22de7",
+      "reviewed_1be_sha256": "1f32faae6fb63c2beeb5accf0292d90f0608207f32bfe09f9495a0f4edd22de7"
+    },
+    {
+      "path": "crates/init/src/relay.rs",
+      "bytes": 22823,
+      "sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+      "reviewed_1be_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27"
+    },
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "bytes": 39798,
+      "sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3",
+      "reviewed_1be_sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "bytes": 36683,
+      "sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773",
+      "reviewed_1be_sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "bytes": 89857,
+      "sha256": "d076019b672558ef53a8a8168f9b4989a08205972501cd6de62ed857e0c03e66",
+      "reviewed_1be_sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa"
+    },
+    {
+      "path": "crates/shards/tests/managed_network/tcp_forward.rs",
+      "bytes": 9320,
+      "sha256": "eb88d86c8283fb872add56e3dbd9e58b82574cad5e06571b113d7f1a9dcd6347",
+      "reviewed_1be_sha256": "eb88d86c8283fb872add56e3dbd9e58b82574cad5e06571b113d7f1a9dcd6347"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/engine-native/original_body.rs",
+      "bytes": 897,
+      "sha256": "f5d78a8638d209c1ccacda3f0b2bd17f7df8ba992a08d2265b2d45af245961a5",
+      "reviewed_1be_sha256": "f5d78a8638d209c1ccacda3f0b2bd17f7df8ba992a08d2265b2d45af245961a5"
+    }
+  ],
+  "cfgtest_addition_only": true,
+  "cfgtest_addition_bytes": 6389,
+  "cfgtest_addition_sha256": "fa76f6f746730d78705cb4b8a2916aa99a56d26a27a95092049065a56053a624",
+  "driver_sha256": "5330cc8f2859034bf3a6489ec7d0a406d1efe299a42cc6af7e30168e3e13c384",
+  "original_driver_sha256": "eef969298d83c23dc6247131c9ae14078971ab732b47f0c25864f55218838fd9",
+  "production_semantics_unchanged": true,
+  "unrun_at_source_checkpoint": true
+}
