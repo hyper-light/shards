@@ -1,0 +1,44 @@
+[package]
+name = "terminal-order-light"
+version = "0.0.0"
+edition = "2024"
+[lib]
+path = "lib.rs"
+[dependencies]
+shards-abi = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/crates/abi" }
+shards-remote = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/crates/remote" }
+shards-registry = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/crates/registry" }
+libc = "0.2"
+[lints]
+workspace = true
+[workspace]
+resolver = "3"
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/hyper-light/shards"
+rust-version = "1.98.1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+# Production code never panics (CLAUDE.md); clippy.toml exempts tests.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[patch.crates-io]
+aws-lc-rs = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/vendor/aws-lc-rs" }
+aws-lc-sys = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/vendor/aws-lc-sys" }
+rquickjs-sys = { path = "/home/adalundhe/native-terminal-order-light-b02e-v1/source/vendor/rquickjs-sys" }

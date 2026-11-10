@@ -1,0 +1,99 @@
+[
+  {
+    "argv": [
+      "uname",
+      "-a"
+    ],
+    "exit_code": 0,
+    "log": "0.log",
+    "sha256": "0f707749a5b30d468cec162044ef2a4ce81e6bb0599e9421add6d2a2a16ee03a"
+  },
+  {
+    "argv": [
+      "python3",
+      "--version"
+    ],
+    "exit_code": 0,
+    "log": "1.log",
+    "sha256": "fd0fd4290ad100adc37e4a82e45f821faeacbecae70f4d3eba08e85be138c632"
+  },
+  {
+    "argv": [
+      "rustfmt",
+      "--version"
+    ],
+    "exit_code": 0,
+    "log": "2.log",
+    "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+  },
+  {
+    "argv": [
+      "python3",
+      "-B",
+      "docs/research/measurements/managed-terminal-order/test_caller.py"
+    ],
+    "exit_code": 0,
+    "log": "3.log",
+    "sha256": "107c5c58a93f234b4eedbc7bbb493a73524fe2a57bbb091eeefd5b5404a89d38"
+  },
+  {
+    "argv": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config",
+      "max_width=110",
+      "--check",
+      "crates/shards/src/daemon/managed/terminal_order_tests.rs"
+    ],
+    "exit_code": 0,
+    "log": "4.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit_code": 0,
+    "log": "5.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check",
+      "--",
+      "crates/shards/src/daemon/managed/terminal_order_tests.rs",
+      "docs/research/measurements/managed-terminal-order"
+    ],
+    "exit_code": 0,
+    "log": "6.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "shasum",
+      "-a",
+      "256",
+      "crates/shards/src/daemon/managed.rs",
+      "crates/remote/src/managed.rs",
+      "crates/shards/src/daemon/managed/terminal_order_tests.rs"
+    ],
+    "exit_code": 0,
+    "log": "7.log",
+    "sha256": "a9fd9a400a6290dad46aa8459ccac14daf0ceffd5396299132693e1b12ae89f3"
+  },
+  {
+    "argv": [
+      "df",
+      "-k",
+      "."
+    ],
+    "exit_code": 0,
+    "log": "8.log",
+    "sha256": "f4e1cee27074d8c7539d8597d56fd1ec628f14913bf36e083d86fb5da966705d"
+  }
+]

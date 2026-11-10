@@ -1,0 +1,11 @@
+{
+  "added_package_identities": [
+    [
+      "terminal-order-light",
+      "0.0.0",
+      "path"
+    ]
+  ],
+  "removed_package_identity_count": 80,
+  "note": "workspace narrowed to fixture; additions must be only terminal-order-light; source Cargo.lock retained"
+}

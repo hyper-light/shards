@@ -1,0 +1,3 @@
+2b3e4d2c80be615a58b062b6a077c11511e2679c738c798a27f0e014a880f655  crates/shards/src/daemon/managed.rs
+79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd  crates/remote/src/managed.rs
+6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f  crates/shards/src/daemon/managed/terminal_order_tests.rs

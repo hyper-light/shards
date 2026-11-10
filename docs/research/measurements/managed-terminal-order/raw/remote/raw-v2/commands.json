@@ -1,0 +1,55 @@
+[
+  {
+    "argv": [
+      "/usr/bin/python3",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/light.py",
+      "--source",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/source",
+      "--output",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/fixture-v2"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "0.log",
+    "sha256": "555d2dff439be9a9a35b119529a8520ffdad143d260de653fca5bb0149a031ef"
+  },
+  {
+    "argv": [
+      "cargo",
+      "check",
+      "--tests",
+      "-j1"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/fixture-v2",
+    "exit_code": 0,
+    "log": "1.log",
+    "sha256": "cca9ad1efd5b37b618380f3056f23cf613a8c8f4d288484df7b8d348c087f918"
+  },
+  {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--tests",
+      "--no-deps",
+      "-j1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/fixture-v2",
+    "exit_code": 0,
+    "log": "2.log",
+    "sha256": "ee246964ac3882ac9e95b2c462e46e3084f2db42667cc6810cad8722bef88105"
+  },
+  {
+    "argv": [
+      "du",
+      "-sk",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "3.log",
+    "sha256": "d339d3719a3a2fd01e32f3b3c98bbff4b34502847a5cb775162aff62a8d5d75e"
+  }
+]

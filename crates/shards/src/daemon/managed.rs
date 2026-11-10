@@ -1,5 +1,8 @@
 //! A run's admitted, independently credited owner-output channels (D180).
 
+#[cfg(test)]
+mod terminal_order_tests;
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, Write as _};

@@ -1,0 +1,19 @@
+{
+  "source": {
+    "crates/shards/src/daemon/managed.rs": "2b3e4d2c80be615a58b062b6a077c11511e2679c738c798a27f0e014a880f655",
+    "crates/shards/src/daemon.rs": "2252aee45163c9dc2ce5a4dddb92051b5341bf8ea895dd34489f5e906345ecad",
+    "crates/shards/src/daemon/managed/terminal_order_tests.rs": "6379f2335f3220f9cb188c364d147871d9def135aa234f3ff844e45ee69f0f7f",
+    "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+    "Cargo.toml": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+  },
+  "fragments": {
+    "admission": "0c4a6572e1ae6cf86971ff49368ea41631c62c06c1c6190a79a0c5710f5dfec0",
+    "charge_output": "d5d1493a9e3d5ab1dd09d45f4b0699bd107b72d77ff1700da70d4344ca88b958",
+    "credits": "48baac1d02aa96f83ff6109aef2bdd5d51abe7b2b6e9ba90197060aa082a5c4d",
+    "lock": "34d1b72f7bfb6933c7a3d589e6de6b16286a90a5ba5a051a1892019af81177d5",
+    "log": "a4e31def54e745dd5f1294f607978744c391b66367ce047721dfdf9c78f0c16c"
+  },
+  "generated_lib_sha256": "8997ae2e0698b55d0d624bb23b633edf8581e6ebfbc0cd094d283f5589c4915b",
+  "generated_manifest_sha256": "e2a09a0cec42b70db8c2893b086de476457a5be74c2be7cf3c6d721f8369ac26",
+  "scope": "compile-only exact daemon fragments + actual remote/registry dependencies; inert host_available; native cases never run"
+}

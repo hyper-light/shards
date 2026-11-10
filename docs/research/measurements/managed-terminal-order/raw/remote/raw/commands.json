@@ -1,0 +1,131 @@
+[
+  {
+    "argv": [
+      "uname",
+      "-a"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "0.log",
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  },
+  {
+    "argv": [
+      "rustc",
+      "-Vv"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "1.log",
+    "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+  },
+  {
+    "argv": [
+      "cargo",
+      "-Vv"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "2.log",
+    "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+  },
+  {
+    "argv": [
+      "git",
+      "clone",
+      "--filter=blob:none",
+      "--sparse",
+      "--no-checkout",
+      "git@github.com:hyper-light/shards.git",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/source"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "3.log",
+    "sha256": "00cfe4c65c74e90d1e4de8551b03098bed76625a7a051c0e5e782cc102e53a5d"
+  },
+  {
+    "argv": [
+      "git",
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "/Cargo.toml",
+      "/Cargo.lock",
+      "/clippy.toml",
+      "/.cargo/",
+      "/AGENTS.md",
+      "/CLAUDE.md",
+      "/docs/development-rules.md",
+      "/docs/development-evidence.md",
+      "/docs/design/managed-runtime-plan.md",
+      "/crates/*/Cargo.toml",
+      "/crates/shards/src/daemon.rs",
+      "/crates/shards/src/daemon/managed.rs",
+      "/crates/abi/",
+      "/crates/ipc/",
+      "/crates/remote/",
+      "/crates/testdir/",
+      "/crates/registry/",
+      "/crates/image/",
+      "/crates/erofs/",
+      "/crates/apple/",
+      "/vendor/aws-lc-rs/",
+      "/vendor/aws-lc-sys/",
+      "/vendor/rquickjs-sys/"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/source",
+    "exit_code": 0,
+    "log": "4.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "git",
+      "checkout",
+      "--detach",
+      "b02e8592c547553c788702ac6c52ea6b633e875d"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/source",
+    "exit_code": 0,
+    "log": "5.log",
+    "sha256": "d3fa794366c50ca11e991ae79f22a29f21122dea59d6d861cbb9129ddf899954"
+  },
+  {
+    "argv": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/source",
+    "exit_code": 0,
+    "log": "6.log",
+    "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+  },
+  {
+    "argv": [
+      "/usr/bin/python3",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/light.py",
+      "--source",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/source",
+      "--output",
+      "/home/adalundhe/native-terminal-order-light-b02e-v1/fixture"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1",
+    "exit_code": 0,
+    "log": "7.log",
+    "sha256": "884ef6fcf7684867c6533f6445abea6006b17f0ccb98904a8a577efbc39a7405"
+  },
+  {
+    "argv": [
+      "cargo",
+      "check",
+      "--tests",
+      "-j1"
+    ],
+    "cwd": "/home/adalundhe/native-terminal-order-light-b02e-v1/fixture",
+    "exit_code": 101,
+    "log": "8.log",
+    "sha256": "ca85ee25dee9dadab54394c33b29cf32773b95a7933112d62251dec0bc1ec56a"
+  }
+]

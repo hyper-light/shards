@@ -1,0 +1,9 @@
+{
+  "python_ast": "passed",
+  "files": {
+    "docs/research/measurements/managed-terminal-order/remote-light.py": "a90a80d0c51aaee53027a12e4c6a588c25813612eb6fc72a766ff757ee4f7279",
+    "docs/research/measurements/managed-terminal-order/caller.py": "a6d68c6090a6c75452d4cd65e796f93db51fdd0a589db8ccd09f624cdcf0e59d",
+    "docs/research/measurements/managed-terminal-order/light.py": "5986e0476373f35dd5d18934dc9e9ff0da25f607262a4b1fef9e50b2c2c34b5f",
+    "docs/research/measurements/managed-terminal-order/test_caller.py": "f27e5c5199074b2cbe1fe465a8f09b653e16faaabdd81fe9123933cc7d5b1055"
+  }
+}

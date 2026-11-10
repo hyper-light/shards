@@ -1,0 +1,185 @@
+#[derive(Clone, Copy)]
+enum After {
+    More,
+    Terminal(Terminal),
+}
+
+enum CreditSlot {
+    Inactive,
+    Waiting,
+    Granted { capacity: usize, began: Instant },
+    Captured(Vec<u8>, After),
+    Sending,
+    Draining,
+    Ended,
+    Revoked,
+    RevokedGranted { capacity: usize },
+    Receiving,
+    RevokedReceiving,
+}
+
+enum QueueLife {
+    Open,
+    Closed,
+}
+struct Queue {
+    slots: Vec<CreditSlot>,
+    next: usize,
+    life: QueueLife,
+}
+struct Credits {
+    state: Mutex<Queue>,
+    changed: Condvar,
+}
+enum Action {
+    Grant(usize),
+    Submit(usize, Vec<u8>, After),
+    Complete(usize),
+}
+
+impl Credits {
+    fn revoke(&self, index: usize) {
+        let mut state = lock(&self.state);
+        if let Some(slot) = state.slots.get_mut(index) {
+            *slot = match slot {
+                CreditSlot::Granted { capacity, .. } => CreditSlot::RevokedGranted { capacity: *capacity },
+                CreditSlot::Receiving => CreditSlot::RevokedReceiving,
+                _ => CreditSlot::Revoked,
+            };
+        }
+        self.changed.notify_all();
+    }
+
+    fn close(&self) {
+        let mut state = lock(&self.state);
+        state.life = QueueLife::Closed;
+        for slot in &mut state.slots {
+            *slot = CreditSlot::Ended;
+        }
+        self.changed.notify_all();
+    }
+
+    fn wake(&self) {
+        // The predicate is read under this same mutex in next. Shared publishers
+        // release Shared before this callback, so credit -> Shared has no reverse edge.
+        let _state = lock(&self.state);
+        self.changed.notify_all();
+    }
+
+    fn begin_record(&self, index: usize, len: usize) -> io::Result<(usize, Instant)> {
+        let mut state = lock(&self.state);
+        let slot = state
+            .slots
+            .get_mut(index)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown capture route"))?;
+        match slot {
+            CreditSlot::Granted { capacity, began } if len <= *capacity => {
+                let grant = (*capacity, *began);
+                *slot = CreditSlot::Receiving;
+                Ok(grant)
+            }
+            CreditSlot::RevokedGranted { capacity } if len <= *capacity => {
+                let grant = (*capacity, Instant::now());
+                *slot = CreditSlot::RevokedReceiving;
+                Ok(grant)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "capture record exceeds issued channel credit",
+            )),
+        }
+    }
+
+    fn captured(&self, index: usize, bytes: Vec<u8>, after: After) -> io::Result<()> {
+        let mut state = lock(&self.state);
+        if let Some(slot @ CreditSlot::RevokedReceiving) = state.slots.get_mut(index) {
+            *slot = CreditSlot::Revoked;
+            return Ok(());
+        }
+        let slot = state
+            .slots
+            .get_mut(index)
+            .filter(|slot| matches!(slot, CreditSlot::Receiving))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "capture record has no channel credit")
+            })?;
+        *slot = CreditSlot::Captured(bytes, after);
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    fn next(&self, observe: impl Fn(usize) -> io::Result<State>) -> io::Result<Option<Action>> {
+        let mut state = lock(&self.state);
+        loop {
+            if matches!(state.life, QueueLife::Closed)
+                || state.slots.iter().all(|s| {
+                    matches!(
+                        s,
+                        CreditSlot::Inactive
+                            | CreditSlot::Ended
+                            | CreditSlot::Revoked
+                            | CreditSlot::RevokedGranted { .. }
+                            | CreditSlot::RevokedReceiving
+                    )
+                })
+            {
+                return Ok(None);
+            }
+            let len = state.slots.len();
+            if len == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "capture has no admitted channels",
+                ));
+            }
+            for step in 0..len {
+                let index = state.next.checked_add(step).map(|n| n % len).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "capture scheduler overflow")
+                })?;
+                let Some(slot) = state.slots.get_mut(index) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "capture scheduler index",
+                    ));
+                };
+                if !matches!(
+                    slot,
+                    CreditSlot::Waiting | CreditSlot::Captured(..) | CreditSlot::Draining
+                ) {
+                    continue;
+                }
+                // Observation releases Shared before an action leaves this credit
+                // guard. Life and metadata are touched only by the worker afterward.
+                let remote = observe(index)?;
+                let action = match (std::mem::replace(slot, CreditSlot::Sending), remote) {
+                    (CreditSlot::Waiting, State::Ready(_)) => Some(Action::Grant(index)),
+                    (CreditSlot::Captured(bytes, after), State::Ready(_)) => {
+                        Some(Action::Submit(index, bytes, after))
+                    }
+                    (CreditSlot::Draining, State::Finished(_))
+                    | (
+                        CreditSlot::Waiting | CreditSlot::Captured(..) | CreditSlot::Draining,
+                        State::Aborted(_),
+                    ) => {
+                        *slot = CreditSlot::Ended;
+                        Some(Action::Complete(index))
+                    }
+                    (old, _) => {
+                        *slot = old;
+                        None
+                    }
+                };
+                if action.is_some() {
+                    state.next = index.checked_add(1).map(|n| n % len).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "capture scheduler overflow")
+                    })?;
+                    return Ok(action);
+                }
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
