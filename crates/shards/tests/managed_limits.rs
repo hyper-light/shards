@@ -72,7 +72,7 @@ fn published(directory: &Path, name: &str, until: Instant) -> Vec<u8> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Process {
     pid: u32,
     parent: u32,
@@ -99,18 +99,22 @@ fn process_rows(text: &str) -> Result<Vec<Process>, &'static str> {
         .collect()
 }
 
-fn tree(rows: &[Process], expected_reserved: u32, held: u32) -> u32 {
+fn tree(rows: &[Process], held: u32) -> Process {
     let actors = rows
         .iter()
         .filter(|p| p.uid == shards_abi::DOMAIN_FIRST_ID)
         .collect::<Vec<_>>();
-    let actor = actors
+    let roots = actors
         .iter()
-        .find(|actor| rows.iter().any(|p| p.pid == actor.parent && p.uid == 0))
-        .unwrap_or_else(|| panic!("no actor below a root-owned reaper"));
-    let reaper = rows.iter().find(|p| p.pid == actor.parent).unwrap();
+        .filter(|actor| !actors.iter().any(|p| p.pid == actor.parent))
+        .collect::<Vec<_>>();
+    let [actor] = roots.as_slice() else {
+        panic!("expected exactly one visible actor root: {rows:?}");
+    };
+    assert_ne!(actor.pid, 0);
+    assert_ne!(actor.parent, 0);
+    assert_ne!(actor.parent, actor.pid);
     assert_eq!(actor.threads, 1);
-    assert_eq!(reaper.threads, 1);
     let children = actors
         .iter()
         .filter(|p| p.parent == actor.pid)
@@ -130,12 +134,13 @@ fn tree(rows: &[Process], expected_reserved: u32, held: u32) -> u32 {
             .any(|p| server.iter().any(|helper| helper.parent == p.pid)),
         "no server/helper tree"
     );
-    let observed_reserved = actor.threads + reaper.threads + server.iter().map(|p| p.threads).sum::<u32>();
-    assert_eq!(
-        observed_reserved, expected_reserved,
-        "source reservation prediction falsified"
+    let visible_idle_tasks = actor.threads + server.iter().map(|p| p.threads).sum::<u32>();
+    let visible_child_tasks = children.iter().map(|p| p.threads).sum::<u32>();
+    let _ = writeln!(
+        std::io::stderr(),
+        "visible actor {actor:?}; visible actor+server/helper tasks {visible_idle_tasks}; visible held-child tasks {visible_child_tasks}. Reaper row/threads, total tenant tasks and cgroup membership are unobserved."
     );
-    actor.pid
+    ***actor
 }
 
 struct Run<'a> {
@@ -147,11 +152,17 @@ impl Run<'_> {
     fn command(&self, words: &[&str]) -> common::Run {
         run_shards_env(&[], words, self.env, self.patience)
     }
-    fn snapshot(&self, phase: &str, budget: Budget, held: u32) {
+    fn snapshot(&self, phase: &str, budget: Budget, held: u32) -> Process {
         let result = self.command(&["top", "managed-limits", "-o", "pid,ppid,uid,nlwp"]);
         let _ = writeln!(std::io::stderr(), "{phase} trusted process snapshot:\n{result}");
         assert_eq!(result.status, Some(0));
-        tree(&process_rows(&result.stdout).unwrap(), budget.reserved, held);
+        let _ = writeln!(
+            std::io::stderr(),
+            "declared tasks {}; source-predicted reserved {} (not an observed total or admission authority)",
+            budget.tasks,
+            budget.reserved
+        );
+        tree(&process_rows(&result.stdout).unwrap(), held)
     }
 }
 impl Drop for Run<'_> {
@@ -362,7 +373,7 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     assert_eq!(started.status, Some(0), "{started}");
     let ready = report(&actor, "ready", Phase::Ready, budget, until);
     assert_eq!(published(&healthy, "ready", until), [1]);
-    run.snapshot("before fill", budget, 0);
+    let actor_observation = run.snapshot("before fill", budget, 0);
     let mut actor_control = connect(&run, actor_port, until);
     let mut healthy_control = connect(&run, healthy_port, until);
     actor_control.write_all(&Command::Fill.encode()).unwrap();
@@ -380,7 +391,10 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         Report::decode(&receive::<{ Report::BYTES }>(&mut actor_control, until)).unwrap(),
         refused
     );
-    run.snapshot("after actual EAGAIN", budget, budget.children);
+    assert_eq!(
+        run.snapshot("after actual EAGAIN", budget, budget.children),
+        actor_observation
+    );
     neighbor(&run, &mut healthy_control, "refused", until);
     actor_control.write_all(&Command::Release.encode()).unwrap();
     let recovered = report(&actor, "recovered", Phase::Recovered, budget, until);
@@ -401,7 +415,10 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
             .checked_add(budget.children.checked_mul(2).unwrap())
             .unwrap()
     );
-    run.snapshot("after replacement reaped", budget, 0);
+    assert_eq!(
+        run.snapshot("after replacement reaped", budget, 0),
+        actor_observation
+    );
     neighbor(&run, &mut healthy_control, "recovered", until);
     let stopped = run.command(&["stop", "vm", "-t", "0", "managed-limits"]);
     assert_eq!(stopped.status, Some(0), "{stopped}");
@@ -424,14 +441,54 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
 }
 
 #[test]
-fn fixture_process_observation_checks_threads_and_parentage() {
-    let rows = process_rows(
-        "PID PPID UID NLWP\n10 1 0 1\n11 10 200000 1\n12 1 4394304 1\n13 12 4394304 1\n14 11 200000 1\n",
-    )
-    .unwrap();
-    assert_eq!(tree(&rows, 4, 1), 11);
+fn fixture_synthetic_held_children_belong_to_one_visible_actor() {
+    let rows =
+        process_rows("PID PPID UID NLWP\n11 10 200000 1\n12 1 4394304 1\n13 12 4394304 1\n14 11 200000 1\n")
+            .unwrap();
+    assert_eq!(
+        tree(&rows, 1),
+        Process {
+            pid: 11,
+            parent: 10,
+            uid: 200000,
+            threads: 1
+        }
+    );
     assert!(process_rows("PID PPID UID NLWP\n1 2 x 1\n").is_err());
     assert!(process_rows("PID PPID UID NLWP\n1 2 3 1 extra\n").is_err());
+}
+
+#[test]
+fn fixture_actual_r222_rows_do_not_require_an_unlisted_reaper() {
+    let rows = process_rows(include_str!(
+        "../../../docs/research/measurements/managed-limits/root-r222-before-fill/top.txt"
+    ))
+    .unwrap();
+    assert_eq!(
+        tree(&rows, 0),
+        Process {
+            pid: 935,
+            parent: 933,
+            uid: 200000,
+            threads: 1
+        }
+    );
+}
+
+#[test]
+#[should_panic(expected = "expected exactly one visible actor root")]
+fn fixture_ambiguous_actor_roots_are_rejected() {
+    let mut rows = process_rows(include_str!(
+        "../../../docs/research/measurements/managed-limits/root-r222-before-fill/top.txt"
+    ))
+    .unwrap();
+    rows.push(Process {
+        pid: 2000,
+        parent: 1999,
+        uid: shards_abi::DOMAIN_FIRST_ID,
+        threads: 1,
+    });
+    tree(&rows, 0);
 }
 
 #[test]
