@@ -79,6 +79,30 @@ Persistent lane goal/plan01a1c5cfb1457788825ed52ecb517527 remains active until
 coordinator closure; never mark it done for one checkpoint. Re-read current
 policy/handoff on compaction/resume. Root owns all real execution.
 
+CURRENT AUTHORIZED IMPLEMENTATION (supersedes older startup-pending notes):
+ROOT explicitly reviewed full STARTUP-PROPOSAL.md +147linepatch and authorized
+EXACT startup fixed-field snapshots in existing costfixture +own startup
+evidence/records ONLY. FULL canonical AGENTS/rulesR01–R16/evidence/CLAUDE/plan/
+global+ownhandoff reread before edits at main/origin eb5654d6f5356cacaca536ff51f14a632fa7e801,
+rulesSHA d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
+POLICY_READ sent stablekeymanaged-startup-implementation-policy-read-eb565-v1.
+Exactpatchcd449c52 now APPLIED, fixtureSHA874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e
+(115adds/3deletes); protocolrun and latercleanup/identity/FD/terminal tail
+byteidentical except reviewed deferredrecord. Native4ff frozen exceptthese
+approved snapshotinsertions. Originalfive resolvers/read/hash/order/deadlines,
+outerpathborrow/JSONboundaries/noearlypanicrecord/Unknown/non-atomic/lifetime
+peak semantics preserved; no reset/registration/cache/optimization/adapter/
+manager/DropLogger/newcatch. AllactualRootgates owed on NEWstartupsnapshot source.
+Lighttype/shape tests ALLOWED <=1CPU1GiB2GiB NEWremoteprivate paths: unit-extract
+actualstartup structs +existingserializer with actualserde_json1.0.151 and
+unmodifiedmanaged_alloc; unregisteredprivate static, NO actualcaller/closure/
+resolver/nativeprobe/globalallocator registration or measurement. Three shape
+checks source startup_shape_tests.rs; compilation/units NOTRUN yet. Root still
+owes matching fullcaller/helpers, allrealN1/profile/fault/bench/paired/guard/
+seven-target/main gates. Paired14source/proof UNTOUCHED/unreviewed;22linepure
+setup-report proposal remainsUNIMPLEMENTED/unapproved. No child/goals/auto plan
+dispatch, localheavy/newfullworktree/ROOTcachewrite or target/cachedeletion.
+
 Central dispatch correction: no child sessions exist for this lane and none
 were created. Do NOT call plans_run modeagents, plans_ready thenagents,
 parallel/independent goal steps, goals_plan expansions or any new child.

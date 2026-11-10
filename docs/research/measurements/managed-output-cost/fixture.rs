@@ -210,6 +210,66 @@ fn native_fault_delta(before: Option<&NativeFaultSample>, after: Option<&NativeF
     record
 }
 
+#[derive(Default)]
+struct StartupArtifactAllocations {
+    before_resolution: Option<managed_alloc::Snapshot>,
+    after_resolution: Option<managed_alloc::Snapshot>,
+    artifact_value_ready: Option<managed_alloc::Snapshot>,
+}
+
+impl StartupArtifactAllocations {
+    fn record(&self) -> Value {
+        json!({
+            "before_resolution":allocation_snapshot_record(self.before_resolution),
+            "after_resolution":allocation_snapshot_record(self.after_resolution),
+            "artifact_value_ready":allocation_snapshot_record(self.artifact_value_ready),
+        })
+    }
+}
+
+struct StartupAllocations {
+    test_entered: managed_alloc::Snapshot,
+    supplied_inputs_ready: Option<managed_alloc::Snapshot>,
+    fixture: StartupArtifactAllocations,
+    cli: StartupArtifactAllocations,
+    testguest: StartupArtifactAllocations,
+    kernel: StartupArtifactAllocations,
+    init: StartupArtifactAllocations,
+    inputs_recorded: Option<managed_alloc::Snapshot>,
+}
+
+impl StartupAllocations {
+    fn new() -> Self {
+        Self {
+            test_entered: MANAGED_ALLOC.snapshot(),
+            supplied_inputs_ready: None,
+            fixture: StartupArtifactAllocations::default(),
+            cli: StartupArtifactAllocations::default(),
+            testguest: StartupArtifactAllocations::default(),
+            kernel: StartupArtifactAllocations::default(),
+            init: StartupArtifactAllocations::default(),
+            inputs_recorded: None,
+        }
+    }
+
+    fn record(&self) -> Value {
+        json!({
+            "scope":"observer/test parent Rust wrapper only; all threads and fixture/instrumentation included",
+            "coverage_start":"first Rust test-body statement; earlier libtest/loader/setup work remains outside these intervals",
+            "semantics":"ConcurrentNonAtomic cumulative snapshots and recorded process-lifetime peak; no quiescence, exact attribution, phase peak or native/process-tree completeness",
+            "artifact_boundary":"artifact_value_ready precedes outer inputs-JSON conversion/insertion; intervals include original resolver/read/hash/value costs, not exclusive call-site allocation attribution",
+            "test_entered":allocation_snapshot_record(Some(self.test_entered)),
+            "supplied_inputs_ready":allocation_snapshot_record(self.supplied_inputs_ready),
+            "fixture":self.fixture.record(),
+            "cli":self.cli.record(),
+            "testguest":self.testguest.record(),
+            "kernel":self.kernel.record(),
+            "init":self.init.record(),
+            "inputs_recorded":allocation_snapshot_record(self.inputs_recorded),
+        })
+    }
+}
+
 struct AllocationPhases {
     before_fixture: managed_alloc::Snapshot,
     after_start_and_watch_acquisition: Option<managed_alloc::Snapshot>,
@@ -1098,15 +1158,66 @@ fn run(
 #[test]
 #[ignore = "coordinator-only explicit member count/deadline/records; real VM resource observations"]
 fn owner_output_resources_at_explicit_member_count() {
+    let mut startup = StartupAllocations::new();
     let inputs = Inputs::supplied();
+    startup.supplied_inputs_ready = Some(MANAGED_ALLOC.snapshot());
     assert!(
         !common::cannot_run_vms(),
         "resource fixture requires a real supported VM host"
     );
     let until = Instant::now().checked_add(inputs.patience).unwrap();
-    let artifact =
-        |path: &Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
-    inputs.write("inputs.json", &json!({"members":inputs.members,"phase_deadline_ms":inputs.patience.as_millis(),"source":option_env!("SHARDS_OUTPUT_COST_SOURCE_REVISION"),"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"topology":"EXPERIMENTAL2N; unadopted","root_cost_comparison":"not executed by implementer"}));
+    let artifact = |path: &Path, phase: &mut StartupArtifactAllocations| {
+        phase.after_resolution = Some(MANAGED_ALLOC.snapshot());
+        let value = json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
+        phase.artifact_value_ready = Some(MANAGED_ALLOC.snapshot());
+        value
+    };
+    inputs.write(
+        "inputs.json",
+        &json!({
+            "members":inputs.members,
+            "phase_deadline_ms":inputs.patience.as_millis(),
+            "source":option_env!("SHARDS_OUTPUT_COST_SOURCE_REVISION"),
+            "fixture":artifact(
+                &{
+                    startup.fixture.before_resolution = Some(MANAGED_ALLOC.snapshot());
+                    std::env::current_exe().unwrap()
+                },
+                &mut startup.fixture
+            ),
+            "cli":artifact(
+                {
+                    startup.cli.before_resolution = Some(MANAGED_ALLOC.snapshot());
+                    common::shards()
+                },
+                &mut startup.cli
+            ),
+            "testguest":artifact(
+                {
+                    startup.testguest.before_resolution = Some(MANAGED_ALLOC.snapshot());
+                    common::test_guest()
+                },
+                &mut startup.testguest
+            ),
+            "kernel":artifact(
+                {
+                    startup.kernel.before_resolution = Some(MANAGED_ALLOC.snapshot());
+                    common::kernel()
+                },
+                &mut startup.kernel
+            ),
+            "init":artifact(
+                {
+                    startup.init.before_resolution = Some(MANAGED_ALLOC.snapshot());
+                    common::guest_init()
+                },
+                &mut startup.init
+            ),
+            "topology":"EXPERIMENTAL2N; unadopted",
+            "root_cost_comparison":"not executed by implementer"
+        }),
+    );
+    startup.inputs_recorded = Some(MANAGED_ALLOC.snapshot());
     let mut allocations = AllocationPhases::new();
     let mut faults = NativeFaultPhases::default();
     let mut fixture = Fixture::new();
@@ -1145,6 +1256,7 @@ fn owner_output_resources_at_explicit_member_count() {
     inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit":exit_record,"exit_observation_fds":fd_record,"host_process_exit_and_kernel_resource_return":"See held exit readiness proof; kernel/full-population return remain Unverified"}));
     inputs.write("allocation-phases.json", &allocations.record());
     inputs.write("native-fault-phases.json", &faults.record());
+    inputs.write("allocation-startup.json", &startup.record());
     assert!(fd_returned, "exit observation exact FD delta/return: {fd_record}");
     assert!(
         exit_passed,

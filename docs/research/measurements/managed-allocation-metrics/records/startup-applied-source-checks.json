@@ -1,0 +1,89 @@
+{
+  "policy_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "base_head": "3fe3bff4d2ae40eb8046a23d7eb5bed70f3d91c6",
+  "reviewed_patch_sha256": "cd449c529fd9cb7b39d89c0e0a34055890d46b63fcbf008b71e9ca194aae9e03",
+  "sources": [
+    {
+      "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+      "sha256": "874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/startup_shape_tests.rs",
+      "sha256": "d5997a2f5a5a9aca14f3904f8514c66e1f0f8e5597e2a5bb51be3d2a2a06f288"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/run-startup-light.py",
+      "sha256": "1521c142e979881c95287f9fe30be51290bd4b073f08af0d6df3e32ac07f00dc"
+    },
+    {
+      "path": "crates/shards/tests/common/managed_alloc.rs",
+      "sha256": "7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc"
+    }
+  ],
+  "original_run_body_identical": true,
+  "original_cleanup_identity_fd_terminal_deadline_tail_identical_except_reviewed_record": true,
+  "resolvers_once_in_original_order": [
+    "std::env::current_exe().unwrap()",
+    "common::shards()",
+    "common::test_guest()",
+    "common::kernel()",
+    "common::guest_init()"
+  ],
+  "artifact_read_hash_json_expression_unchanged": true,
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--version"
+      ],
+      "exit": 0,
+      "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "docs/research/measurements/managed-allocation-metrics/startup_shape_tests.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "crates/shards/tests/common/managed_alloc.rs",
+        "docs/research/measurements/managed-allocation-metrics/native_faults.rs",
+        "docs/research/measurements/managed-allocation-metrics/paired.py",
+        "docs/research/measurements/managed-allocation-metrics/test_paired.py",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "private_driver_syntax": "AST only, no imports/execution",
+  "light_type_shape_tests": "NOTRUN yet; actual caller/closure/probes/VM/profiles ROOTowned",
+  "local_target_or_cache_paths": []
+}
