@@ -1,4 +1,7 @@
 //! Real-VM ordinary-child cleanup with an independently owned joiner observing pidfds.
+// Staged Unix supervision proof. Windows coverage is held, not silently certified;
+// see managed-cleanup/readiness.md before composing this fixture.
+#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::unwrap_used,
@@ -8,9 +11,10 @@
 mod common;
 
 use common::{Run, TempDir, guest_init, kernel};
-use std::io::{BufRead as _, BufReader, Read as _};
+use std::io::{self, BufRead as _, BufReader, Write as _};
+use std::os::fd::AsRawFd as _;
 use std::path::Path;
-use std::process::{Child, ChildStdout, Stdio};
+use std::process::{Child, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const PATIENCE: Duration = Duration::from_secs(90);
@@ -26,12 +30,230 @@ fn call(home: &Path, args: &[&str]) -> Run {
         PATIENCE,
     )
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Readiness,
+    Completion,
+}
+
+#[derive(Debug)]
+enum ClientError {
+    Io(io::Error),
+    Deadline(Phase),
+    OutputEnded { ready_bytes: usize },
+    InvalidReadiness { bytes: usize },
+    InvalidPhase,
+    ExitNotification,
+    MissingStdout,
+    Patience,
+}
+
+impl From<io::Error> for ClientError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(out, "cleanup client I/O: {error}"),
+            Self::Deadline(phase) => write!(out, "cleanup client {phase:?} deadline"),
+            Self::OutputEnded { ready_bytes } => write!(
+                out,
+                "cleanup client output ended with {ready_bytes} readiness bytes"
+            ),
+            Self::InvalidReadiness { bytes } => {
+                write!(out, "cleanup client invalid readiness ({bytes} bytes)")
+            }
+            other => write!(out, "cleanup client {other:?}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientState {
+    Starting,
+    Ready,
+    Finished,
+}
+
+#[repr(u64)]
+enum Wake {
+    Output = 1,
+    Exit = 2,
+}
+
+struct Completed {
+    status: ExitStatus,
+    bytes: Vec<u8>,
+}
+
 struct Client {
     child: Child,
-    output: BufReader<ChildStdout>,
+    output: Option<BufReader<ChildStdout>>,
+    poller: shards_vmm::platform::Poller,
+    exit: Option<shards_vmm::platform::ExitWatch>,
+    status: Option<ExitStatus>,
+    state: ClientState,
 }
-fn ready(home: &Path, args: &[&str]) -> Client {
-    let mut child = common::interruptible(
+
+impl Client {
+    fn spawn(command: &mut Command) -> Result<Self, ClientError> {
+        let poller = shards_vmm::platform::Poller::new()?;
+        let child = command.stdout(Stdio::piped()).spawn()?;
+        // Ownership exists before taking stdout or installing any fallible watch.
+        let mut client = Self {
+            child,
+            output: None,
+            poller,
+            exit: None,
+            status: None,
+            state: ClientState::Starting,
+        };
+        let output = client.child.stdout.take().ok_or(ClientError::MissingStdout)?;
+        let fd = output.as_raw_fd();
+        // SAFETY: fcntl only reads/sets status flags on this owned pipe descriptor.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        // SAFETY: the same held descriptor, preserving every existing status flag.
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        client.poller.add(&output, Wake::Output as u64)?;
+        client.output = Some(BufReader::new(output));
+        let watched = client.poller.add_exit(client.child.id(), Wake::Exit as u64);
+        // Register before checking. macOS can refuse an already-exited process;
+        // a single status check then distinguishes that case from a watch failure.
+        client.status = client.child.try_wait()?;
+        match watched {
+            Ok(watch) if client.status.is_none() => client.exit = Some(watch),
+            Ok(_) => {}
+            Err(_) if client.status.is_some() => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(client)
+    }
+
+    fn deadline(patience: Duration) -> Result<Instant, ClientError> {
+        if patience.is_zero() {
+            return Err(ClientError::Patience);
+        }
+        Instant::now().checked_add(patience).ok_or(ClientError::Patience)
+    }
+
+    fn wait_change(&mut self, deadline: Instant, phase: Phase) -> Result<(), ClientError> {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(ClientError::Deadline(phase));
+        }
+        let mut events = Vec::new();
+        self.poller.wait(&mut events, Some(left))?;
+        if events.is_empty() {
+            return Err(ClientError::Deadline(phase));
+        }
+        if events.contains(&(Wake::Exit as u64)) {
+            self.status = self.child.try_wait()?;
+            if self.status.is_none() {
+                return Err(ClientError::ExitNotification);
+            }
+            // Linux pidfds remain readable after exit. Retire the watch so a
+            // surviving delegated stdout writer cannot turn this into a busy loop.
+            self.exit.take();
+        }
+        Ok(())
+    }
+
+    fn await_ready(&mut self, patience: Duration) -> Result<(), ClientError> {
+        if self.state != ClientState::Starting {
+            return Err(ClientError::InvalidPhase);
+        }
+        let deadline = Self::deadline(patience)?;
+        let expected = b"ready\n";
+        let mut ready = Vec::new();
+        while ready.len() < expected.len() {
+            if Instant::now() >= deadline {
+                return Err(ClientError::Deadline(Phase::Readiness));
+            }
+            let output = self.output.as_mut().ok_or(ClientError::MissingStdout)?;
+            match output.fill_buf() {
+                Ok([]) => {
+                    return Err(ClientError::OutputEnded {
+                        ready_bytes: ready.len(),
+                    });
+                }
+                Ok(bytes) => {
+                    let n = bytes.len().min(expected.len() - ready.len());
+                    ready.extend_from_slice(&bytes[..n]);
+                    output.consume(n);
+                    if !expected.starts_with(&ready) {
+                        return Err(ClientError::InvalidReadiness { bytes: ready.len() });
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.wait_change(deadline, Phase::Readiness)?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.state = ClientState::Ready;
+        Ok(())
+    }
+
+    fn finish(&mut self, patience: Duration) -> Result<Completed, ClientError> {
+        if self.state != ClientState::Ready {
+            return Err(ClientError::InvalidPhase);
+        }
+        let deadline = Self::deadline(patience)?;
+        let mut bytes = Vec::new();
+        loop {
+            if Instant::now() >= deadline {
+                return Err(ClientError::Deadline(Phase::Completion));
+            }
+            let output = self.output.as_mut().ok_or(ClientError::MissingStdout)?;
+            match output.fill_buf() {
+                Ok([]) => break,
+                Ok(part) => {
+                    let n = part.len();
+                    bytes.extend_from_slice(part);
+                    output.consume(n);
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.wait_change(deadline, Phase::Completion)?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        self.poller
+            .remove(self.output.as_ref().ok_or(ClientError::MissingStdout)?.get_ref())?;
+        while self.status.is_none() {
+            self.wait_change(deadline, Phase::Completion)?;
+        }
+        self.state = ClientState::Finished;
+        Ok(Completed {
+            status: self.status.ok_or(ClientError::ExitNotification)?,
+            bytes,
+        })
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        if self.status.is_none() {
+            let _ = self.child.kill();
+            if let Err(error) = self.child.wait() {
+                let _ = writeln!(io::stderr(), "cleanup client reap failed: {error}");
+            }
+        }
+    }
+}
+
+fn ready(home: &Path, args: &[&str], patience: Duration) -> Client {
+    let mut client = Client::spawn(common::interruptible(
         common::command()
             .args(args)
             .env("SHARDS_HOME", home)
@@ -40,21 +262,22 @@ fn ready(home: &Path, args: &[&str]) -> Client {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit()),
-    )
-    .spawn()
+    ))
     .unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    output.read_line(&mut line).unwrap();
-    assert_eq!(line, "ready\n", "{args:?}: {line:?}");
-    Client { child, output }
+    client
+        .await_ready(patience)
+        .unwrap_or_else(|error| panic!("{args:?}: {error}"));
+    client
 }
-fn finished(client: &mut Client) -> String {
-    let mut rest = String::new();
-    client.output.read_to_string(&mut rest).unwrap();
-    let status = client.child.wait().unwrap();
-    assert!(status.success(), "{status}: {rest}");
-    rest
+fn finished(client: &mut Client, patience: Duration) -> String {
+    let result = client.finish(patience).unwrap();
+    assert!(
+        result.status.success(),
+        "{}: {} output bytes",
+        result.status,
+        result.bytes.len()
+    );
+    String::from_utf8(result.bytes).unwrap()
 }
 struct Daemon<'a>(&'a Path);
 impl Drop for Daemon<'_> {
@@ -95,7 +318,7 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
             _ => {}
         }
         args.extend([&image, "cleanup", "/tmp/cleanup-control", &token, &count, "90000"]);
-        let mut main = ready(&home, &args);
+        let mut main = ready(&home, &args, PATIENCE);
         let join = call(
             &home,
             &[
@@ -128,6 +351,7 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
                 &count,
                 "20000",
             ],
+            PATIENCE,
         );
         if mode == "own" {
             // A held-live control proves the observer cannot report cleanup merely
@@ -144,13 +368,14 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
                     &count,
                     "100",
                 ],
+                PATIENCE,
             );
-            let mut rest = String::new();
-            negative.output.read_to_string(&mut rest).unwrap();
+            let negative = negative.finish(PATIENCE).unwrap();
             assert_eq!(
-                negative.child.wait().unwrap().code(),
+                negative.status.code(),
                 Some(1),
-                "known-live control passed: {rest}"
+                "known-live control passed; output bytes={}",
+                negative.bytes.len()
             );
             println!(
                 "CLEANUP_CONTROL deliberately_unreleased=true children={n} expected_observer_timeout=true"
@@ -169,9 +394,9 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
             ],
         );
         assert_eq!(release.status, Some(0), "{release}");
-        let ended = finished(&mut main);
+        let ended = finished(&mut main, PATIENCE);
         assert_eq!(ended, format!("released {n}\n"));
-        let observed = finished(&mut watcher);
+        let observed = finished(&mut watcher, PATIENCE);
         assert!(
             observed.contains(&format!("cleanup children {n} reaped {n} remaining 0")),
             "{observed}"
@@ -201,5 +426,112 @@ fn main_cleanup_reaps_owned_children_and_preserves_independent_joiner() {
         );
         let removed = call(&home, &["rm", "-f", "source", "observer"]);
         assert_eq!(removed.status, Some(0), "{removed}");
+    }
+}
+
+mod native {
+    use super::*;
+
+    fn patience() -> Duration {
+        let millis: u64 = std::env::var("CLEANUP_CLIENT_PATIENCE_MS")
+            .expect("caller supplies native test patience")
+            .parse()
+            .unwrap();
+        assert_ne!(millis, 0);
+        Duration::from_millis(millis)
+    }
+
+    fn child(mode: &str) -> Client {
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/research/measurements/managed-cleanup/readiness-child.py");
+        Client::spawn(
+            Command::new("python3")
+                .arg(helper)
+                .arg(mode)
+                .stdin(Stdio::null())
+                .stderr(Stdio::inherit()),
+        )
+        .unwrap()
+    }
+
+    /// One waitpid snapshot, not a probe loop. A failing mutation is rescued before
+    /// asserting so this test never leaves its own controlled child behind.
+    fn reaped(pid: u32) {
+        let pid = libc::pid_t::try_from(pid).unwrap();
+        let mut status = 0;
+        // SAFETY: exactly the controlled direct child's PID, never wait-any.
+        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        let error = io::Error::last_os_error();
+        if waited == 0 {
+            // SAFETY: waitpid established this is still our unreaped child; no
+            // concurrent waiter exists, so its PID cannot be reassigned.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, &mut status, 0);
+            }
+        }
+        assert_eq!(waited, -1, "controlled child needed explicit rescue: {waited}");
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+    }
+
+    fn rejected(mode: &str, deadline: bool) {
+        let mut client = child(mode);
+        let pid = client.child.id();
+        let result = client.await_ready(patience());
+        let expected = if deadline {
+            matches!(result, Err(ClientError::Deadline(Phase::Readiness)))
+        } else {
+            matches!(result, Err(ClientError::OutputEnded { ready_bytes: 0 }))
+        };
+        drop(client);
+        reaped(pid);
+        assert!(expected, "mode={mode} readiness result={result:?}");
+    }
+
+    #[test]
+    #[ignore = "explicit caller-bounded native child fixture"]
+    fn silent_child_deadline_reaps_the_owned_process() {
+        rejected("silent", true);
+    }
+
+    #[test]
+    #[ignore = "explicit caller-bounded native child fixture"]
+    fn early_exit_reaps_the_owned_process() {
+        rejected("early", false);
+    }
+
+    #[test]
+    #[ignore = "explicit caller-bounded native child fixture"]
+    fn partial_readiness_keeps_the_same_deadline_and_reaps() {
+        rejected("partial", true);
+    }
+
+    #[test]
+    #[ignore = "explicit caller-bounded native child fixture"]
+    fn normal_release_preserves_output_and_reaps() {
+        let mut client = child("normal");
+        let pid = client.child.id();
+        client.await_ready(patience()).unwrap();
+        // SAFETY: this held unreaped Child is the controlled helper, which blocks
+        // SIGUSR1 before publishing readiness and waits for exactly that release.
+        assert_eq!(
+            unsafe { libc::kill(libc::pid_t::try_from(pid).unwrap(), libc::SIGUSR1) },
+            0
+        );
+        let completed = client.finish(patience()).unwrap();
+        assert!(completed.status.success());
+        assert_eq!(completed.bytes, b"released\n");
+        drop(client);
+        reaped(pid);
+    }
+
+    #[test]
+    #[ignore = "explicit caller-bounded native child fixture"]
+    fn dropping_ready_client_reaps_without_releasing_the_child() {
+        let mut client = child("normal");
+        let pid = client.child.id();
+        client.await_ready(patience()).unwrap();
+        drop(client);
+        reaped(pid);
     }
 }
