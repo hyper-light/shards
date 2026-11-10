@@ -252,9 +252,9 @@ certificate trust chain.
 Light replay in the owned clone with the unchanged4CPU8GiB10GiB envelope:
 
 ```sh
-CARGO_TARGET_DIR="$HOME/managed-limits-target" \
+CARGO_TARGET_DIR="$HOME/managed-limits-cancel-target" \
 python3 docs/research/measurements/managed-limits/run-light.py \
-  --evidence "$HOME/managed-limits-evidence/reviewed-light"
+  --evidence "$HOME/managed-limits-cancel-evidence/reviewed-light"
 ```
 
 That path must not already exist. It sets SHARDS_HELPERS=skip, runs exactly the
