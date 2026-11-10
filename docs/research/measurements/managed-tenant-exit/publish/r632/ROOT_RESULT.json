@@ -1,0 +1,8 @@
+{
+  "source": "f31f58f4df913323dbc2d3450ede7bc60405d433",
+  "test_exit": 101,
+  "driver_exit": 0,
+  "command_record": "ROOT Fedora ~/root-managed-normal-f31f-v1/normal-tenant-exit/command.json",
+  "interpretation": "driver0 is recorder success; actual normal test101 at missing TCP publish, not a test pass",
+  "root_reported_cleanup": "owner stop/join true, FD7->7; protocol and private run removal not reached"
+}

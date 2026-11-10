@@ -486,11 +486,23 @@ impl Fixture {
             &["managed-capture", "agent"],
             &["managed-capture", "harness"],
             "",
+            None,
             Instant::now() + WITHIN,
         );
     }
 
-    fn start_with_options(&mut self, agent: &[&str], harness: &[&str], directives: &str, until: Instant) {
+    fn start_with_options(
+        &mut self,
+        agent: &[&str],
+        harness: &[&str],
+        directives: &str,
+        publish_port: Option<u16>,
+        until: Instant,
+    ) {
+        let publication = publish_port.map(|port| {
+            assert_ne!(port, 0, "explicit guest fixture port required");
+            format!("127.0.0.1::{port}")
+        });
         let (image, _) = common::served();
         std::fs::create_dir(self.context.join("files")).unwrap();
         std::fs::write(self.context.join("files/asset"), b"files-only").unwrap();
@@ -531,8 +543,20 @@ impl Fixture {
             until.saturating_duration_since(Instant::now()),
         );
         assert_eq!(built.status, Some(0), "{built}");
-        let started = self.command(
-            &[
+        let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
+        let started = match publication.as_deref() {
+            Some(binding) => run(&[
+                "run",
+                "vm",
+                "-d",
+                "--name",
+                "owner-output",
+                "-p",
+                binding,
+                "owner-output:1",
+                "sleep",
+            ]),
+            None => run(&[
                 "run",
                 "vm",
                 "-d",
@@ -540,9 +564,8 @@ impl Fixture {
                 "owner-output",
                 "owner-output:1",
                 "sleep",
-            ],
-            until.saturating_duration_since(Instant::now()),
-        );
+            ]),
+        };
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(

@@ -1,0 +1,10 @@
+{
+  "source": "ROOT Fedora root-managed-normal-f31f-v1/normal-tenant-exit/records",
+  "run": "r632",
+  "files": {
+    "ports.json": "a0d7991bb97c4a6206c3fbec0371171d47b71ed582c4adcc23af08acdef0dafc",
+    "Agentfile": "499ebb686510ee041b455fce60a3c2b6ab517470b2fb190a723d47bf0746c741",
+    "member-ended.json": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+  },
+  "scope": "ROOT actual baseline copied read-only; no implementer helper/VM execution"
+}
