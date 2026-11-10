@@ -19,5 +19,12 @@
     "sha256": "620ca0f0f1031c4eb72d2f2b642c97450dbf3e6c3060c2cc23dadeed7638259b",
     "verified_originals": 31,
     "safe_unique_regular_members": true
+  },
+  {
+    "archive": "profile-originals.tar.gz",
+    "bytes": 82499,
+    "sha256": "7d223974d328bddf15722560ba57633fbca8ddcc6bc18ea784346686a3486ccd",
+    "verified_originals": 118,
+    "safe_unique_regular_members": true
   }
 ]

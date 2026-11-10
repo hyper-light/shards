@@ -89,13 +89,13 @@ of independently retained mutant executable bytes would exceed this record.
 | R05 | On-demand collection on existing owner/builtin transport; no periodic guest reader, registry cache or retained last-good sample. Paused collection refuses rather than emitting fresh cached data. Existing shared transport waits remain its responsibility. |
 | R06 | Concrete fixed grammar and focused serializer; no new callback/state framework. Combined strict Clippy passes. |
 | R07 | Comments retain kernel/protocol/unsafe obligations and non-obvious uncertainty. |
-| R08 | 4–5× is a target, not a result. Equivalent encoding profiles pending; no full-SDK/VM speed claim. |
+| R08 | [Equivalent encoding profiles](profile/README.md) retain9000 samples/path: compact pooled p50 ratio4.139×, with misses below4× in some blocks and first calls. No full-SDK/VM superiority claim. |
 | R09 | Baseline command absence reproduced on frozen main-equivalent CLI; real new feature and false-attribution mutation above. Source observations about existing defaulting/allocation are not reported as reproduced defects. |
 | R10 | Original commands/outputs/source hashes retained compressed without whitespace normalization, transferred and every original verified. Remaining gaps are explicit. |
 | R11 | Supported seven-target compile/lint; real KVM amd64 only for this slice. Native HVF, WHP and arm64 guest coverage remain unverified. Paused Windows ARM VM stays untouched. |
 | R12 | Linux guest implementation is shared across host platforms through existing supervision/CLI; no host sensor or installed second deliverable. |
 | R13 | One on-demand owner command and one reader/codec. This produces an OTLP request artifact; production HTTP delivery/typed partial-success/retry is not implemented. |
-| R14 | Allocation/CPU/fault/latency encoding profiles pending. Parent/kernel producer accounting and protected control capacity are not inferred from child counters or FD return. |
+| R14 | Separate optimized timing/allocation binaries retain CPU, latency distributions, faults and observed heap calls for encoding. RSS advantage/copies and parent/kernel accounting remain unmeasured; no whole-operation resource guarantee. |
 | R15 | Scoped signed implementation checkpoints, coordinator gates/mutation/Collector and review. Five assigned private lanes remain separate; completed test cases do not close the management plan. |
 | R16 | Sources/evidence/frozen binaries preserved; root Mac remains above30GiB. Only regenerable, inactive output is eligible for cleanup. |
 
@@ -118,6 +118,8 @@ Mac originals: 25 files, `mac-originals.tar.gz`, SHA-256
 `5899787943f56c79a81e9cae932db3109fd38ec487d90f257bb3e004248f3ca8`.
 Mutation/restoration: 31 files, `member-mutation-originals.tar.gz`, SHA-256
 `620ca0f0f1031c4eb72d2f2b642c97450dbf3e6c3060c2cc23dadeed7638259b`.
+Profiles:118 originals, `profile-originals.tar.gz`, SHA-256
+`7d223974d328bddf15722560ba57633fbca8ddcc6bc18ea784346686a3486ccd`.
 Each archive includes a manifest of original sizes/hashes; all members are unique
 safe relative regular files. Frozen binaries/build caches are excluded and remain
 on their owned runner. The archive manifest explicitly lists excluded paths;

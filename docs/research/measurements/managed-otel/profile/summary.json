@@ -1,0 +1,201 @@
+{
+  "source": "cf8f8d600414aced7b24ddfea10410f8ddafd103",
+  "corrected_counts_source": "acd0b8dafc6f91fe2ac1ad12dd94a77117399d52",
+  "scope": "encoding only, actual complete generated request construction; uninstrumented latency; all VM/collection/transport/parent/kernel costs excluded",
+  "modes": {
+    "native-stream": {
+      "n": 9000,
+      "blocks": 9,
+      "latency_ns": {
+        "p50": 3775,
+        "p90": 4164,
+        "p99": 4410,
+        "max": 55303
+      },
+      "first_ns_each_process": [
+        14559,
+        13048,
+        12335,
+        15566,
+        10149,
+        13836,
+        10296,
+        13798,
+        16827
+      ],
+      "cpu_us": 31213,
+      "minor_faults_total": 27,
+      "major_faults_total": 0,
+      "max_rss_kib_each_process": [
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048
+      ],
+      "involuntary_context_switches": 5,
+      "bytes_per_request": 4833,
+      "writes_per_request": 535,
+      "allocation_count_samples": 100,
+      "allocations": {
+        "alloc_bytes": 0,
+        "alloc_calls": 0,
+        "dealloc_calls": 0,
+        "live_after": 2233,
+        "live_before": 2233,
+        "note": "observed System GlobalAlloc calls for this optimized binary, not a language guarantee or native/C/kernel allocation census",
+        "peak_live_delta_bytes": 0,
+        "realloc_calls": 0,
+        "realloc_new_bytes": 0
+      }
+    },
+    "official-compact-buffer": {
+      "n": 9000,
+      "blocks": 9,
+      "latency_ns": {
+        "p50": 15623,
+        "p90": 16943,
+        "p99": 23800,
+        "max": 453324
+      },
+      "first_ns_each_process": [
+        44895,
+        54107,
+        58693,
+        62510,
+        40947,
+        41888,
+        49377,
+        51556,
+        54776
+      ],
+      "cpu_us": 134578,
+      "minor_faults_total": 122,
+      "major_faults_total": 0,
+      "max_rss_kib_each_process": [
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048
+      ],
+      "involuntary_context_switches": 24,
+      "bytes_per_request": 6500,
+      "writes_per_request": 1,
+      "allocation_count_samples": 100,
+      "allocations": {
+        "alloc_bytes": 965200,
+        "alloc_calls": 17500,
+        "dealloc_calls": 17500,
+        "live_after": 2243,
+        "live_before": 2243,
+        "note": "observed System GlobalAlloc calls for this optimized binary, not a language guarantee or native/C/kernel allocation census",
+        "peak_live_delta_bytes": 19127,
+        "realloc_calls": 1500,
+        "realloc_new_bytes": 1999600
+      },
+      "paired_block_median_ratio_to_native": {
+        "min": 3.8986180605194187,
+        "median": 4.24537487828627,
+        "max": 6.666452991452991,
+        "values": [
+          4.1125922091367935,
+          4.24537487828627,
+          4.434052757793765,
+          3.8986180605194187,
+          5.2733041575492345,
+          4.021141110545084,
+          4.749787955894826,
+          3.938251503006012,
+          6.666452991452991
+        ]
+      },
+      "pooled_p50_ratio_to_native": 4.138543046357616
+    },
+    "official-pretty-buffer": {
+      "n": 9000,
+      "blocks": 9,
+      "latency_ns": {
+        "p50": 23949,
+        "p90": 33828,
+        "p99": 40623,
+        "max": 767490
+      },
+      "first_ns_each_process": [
+        88294,
+        69790,
+        59408,
+        75111,
+        73150,
+        50443,
+        77991,
+        54958,
+        77453
+      ],
+      "cpu_us": 240694,
+      "minor_faults_total": 140,
+      "major_faults_total": 0,
+      "max_rss_kib_each_process": [
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048,
+        19048
+      ],
+      "involuntary_context_switches": 32,
+      "bytes_per_request": 16108,
+      "writes_per_request": 1,
+      "allocation_count_samples": 100,
+      "allocations": {
+        "alloc_bytes": 965200,
+        "alloc_calls": 17500,
+        "dealloc_calls": 17500,
+        "live_after": 2242,
+        "live_before": 2242,
+        "note": "observed System GlobalAlloc calls for this optimized binary, not a language guarantee or native/C/kernel allocation census",
+        "peak_live_delta_bytes": 27319,
+        "realloc_calls": 1600,
+        "realloc_new_bytes": 3638000
+      },
+      "paired_block_median_ratio_to_native": {
+        "min": 5.884824036722771,
+        "median": 6.19970690114575,
+        "max": 14.667833698030634,
+        "values": [
+          6.119580691083215,
+          5.884824036722771,
+          6.19970690114575,
+          7.931856087681678,
+          14.667833698030634,
+          5.946128374936322,
+          10.239185750636132,
+          6.004509018036072,
+          10.086324786324786
+        ]
+      },
+      "pooled_p50_ratio_to_native": 6.3441059602649
+    }
+  },
+  "load_before": [
+    13.607421875,
+    15.052734375,
+    13.4423828125
+  ],
+  "load_after": [
+    13.607421875,
+    15.052734375,
+    13.4423828125
+  ]
+}

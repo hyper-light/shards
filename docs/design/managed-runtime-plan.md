@@ -23,9 +23,15 @@ retains the actual seven-target/GPU/format gate, normal carried-helper KVM case,
 36 native server tests, broker guard-removal effect and exact restored pass at
 byte-identical code `0219ab2eb`. These are narrow accepted pieces; hard parent
 entitlements, mandatory route coverage, native executors, durable audit, real
-harness adapters and the remaining P0–P13 obligations stay open. The old
-main-stderr code-mode fixture has an actual retained failure and is being migrated
-to the same canonical observer without dropping its original effect assertions.
+harness adapters and the remaining P0–P13 obligations stay open. The legacy
+code-mode fixture now uses the one canonical observer, preserving its original
+effect assertions; both it and the new metrics caller pass real KVM at
+`28e147c4d`. The [OTel record](../research/measurements/managed-otel/VALIDATION.md)
+retains the seven-target gate, official decoder/Collector acceptance, live member
+attribution mutation/restoration and scoped encoding profiles. This adds
+`shards read metrics MICROVM`, an on-demand cgroup OTLP request artifact through
+existing supervision. Whole-system/process/management accounting, production
+HTTP delivery, full resource admission and reset/restore coverage remain open.
 
 Main now contains partial lifecycle/capture work and an experimental owner-output
 endpoint. These pieces have not closed P0–P13. The
@@ -182,7 +188,7 @@ enumerate every unrelated Shards defect or certify every existing isolation rule
 | G22 V | Original vendor patch mapped zero/overflow patience to unbounded waits. The corrected finite/immediate contract is adopted on main0e024f8ed with native Linux/Mac and Windows API evidence; native Windows zero-withheld and final handle attribution remain unverified. | P3/P8/P11 integration dependency: retain owning-Guest compatibility, close the remaining native Windows contract/handle gates and current cold Mac allocation fault. | Revision-specific zero-withheld, overflow/no-dial, dribbled-answer deadline and native handle/cleanup evidence; ordinary compilation/passes do not close unrun fault or handle attribution. |
 | G23 V | Low overhead, fairness, leak freedom and cross-platform behavior of the proposed layer are unmeasured. | P12/P13: adversarial/mutation/fuzz gates and paired measurements on actual supported VM hosts. | Report distributions, resource high-water marks, failures, contention and neighbor impact; pass the supported seven-target and real-VM matrix. |
 | G24 R/V | Startup support is not yet a complete real Codex harness demonstration or a typed interactive input/TTY contract. | P3/P8/P10: explicit input ownership, actual supplied Linux artifact, provider grants and sign-in behavior. | A real Codex session works from HARNESS-supplied content without RUN/VOLUME installation; raw protocol output is preserved. |
-| G25 R | MicroVM and management metrics have no OpenTelemetry export contract or collector conformance proof. | P9: expose observations through OTLP with pinned metric semantics, units, resource identities, provenance, collection failures and reset/loss behavior; use existing supervision and transport. | A real collector accepts the export; VM, tenant and process accounting remain distinct; unavailable counters are not zero; cardinality and exporter resources stay within admitted bounds, and collector failure does not change enforcement. |
+| G25 C/R/V | On-demand run/workload/member cgroup OTLP artifacts now pass a real KVM caller and official decoder/Collector. Whole-system/process/manager observations, production delivery, hard exporter accounting and generation/reset coverage remain incomplete. | P9: extend the existing supervision/transport with truthful pinned observations, identities, typed missing/error/reset/loss and delivery outcomes; preserve enforcement independence. | A real collector accepts each supported source; VM, tenant and process accounting remain distinct; unavailable counters are not zero; cardinality and exporter resources stay within admitted bounds, and collector failure does not change enforcement. |
 
 Existing source evidence is concentrated in `init::{domains,run,procevents,links,
 netplan,inroot,frames}`, `server::{server,sandbox}`, `net::{lib,tcp,poll,ring}`,
@@ -490,7 +496,7 @@ branch is merged merely because it exists or carries an old claimed result.
 | P6 | Enforce the full route ledger and object-transfer policy | P5 | G04/G05/G06/G07/G13/G21 | All supported route classes pass mediation/grant tests; unsupported families/FD transfers refuse; relay/hook failure never restores direct routing. |
 | P7 | Typed effect broker, native executions and delegation | P1/P2/P3 | G03/G07/G13/G14/G15/G17/G19 | Authorization/resources precede actual effects; forged/stale calls and cross-principal cancellation fail; owned children/results clean up on every terminal path. |
 | P8 | Pinned Codex/Claude adapters and fallback closure | P7; strict closure also P6 | G03/G14/G15/G16/G22/G24 | Every supported built-in/external effect has a tested executor route; disabling hooks/dangerous flags cannot bypass Shards; unknown versions fail explicitly. |
-| P9 | Evidence, required retention, safe display and export | P1/P3/P5/P7 | G03/G14/G17/G19/G21 | Provenance stays honest; malicious output cannot forge control; storage/export failure follows its declared policy without secret leakage or control deadlock. |
+| P9 | Evidence, required retention, safe display and export | P1/P3/P5/P7 | G03/G14/G17/G19/G21/G25 | Provenance stays honest; malicious output cannot forge control; storage/export failure follows its declared policy without secret leakage or control deadlock; supported observations pass the pinned OTLP/Collector and accounting contract. |
 | P10 | Credential modes and real supplied Codex example | P3/P6/P8/P9 | G18/G24 | An actual Linux Codex artifact starts via HARNESS with NETWORK/EXPOSE, correct sign-in/grants and private managed output; no RUN/VOLUME installation or embedded secrets. |
 | P11 | Revocation, owner transfer, restore/move/restart | P2/P3/P6/P7/P9 | G08/G20/G21/G22 | New generations reject old handles/cursors; state resumes only after enforcement is ready; ambiguous committed effects are not replayed or misreported. |
 | P12 | Adversarial, fault, mutation and parser/state-machine campaigns | P3/P6/P8/P9/P10/P11 | all | Every promised guard has a real forbidden-effect test and a meaningful mutation check; failures leave bounded resources and continued control progress. |
