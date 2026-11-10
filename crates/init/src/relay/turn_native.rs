@@ -177,7 +177,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
             }))
         })?;
         match result {
-            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(0) => return Err(Failure::Io(io::ErrorKind::WriteZero.into())),
             Ok(n) => accepted += n,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 blocked = Some(error);
@@ -203,7 +203,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
         let bytes = request.get(source_accepted..).unwrap();
         let n = deadline.io(source.as_raw_fd(), libc::POLLOUT, || Ok(source.write(bytes)))??;
         if n == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
+            return Err(Failure::Io(io::ErrorKind::WriteZero.into()));
         }
         source_accepted += n;
     }
