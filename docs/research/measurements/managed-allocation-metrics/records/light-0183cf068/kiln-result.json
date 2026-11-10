@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n    \"output\": \"x86_64-unknown-linux-gnu-build exit=0\\nx86_64-unknown-linux-gnu-test exit=0\\nx86_64-unknown-linux-musl-build exit=0\\nx86_64-unknown-linux-musl-test exit=0\\ncounter-clippy exit=0\\n78fcfc69711f803de720ef6f0dd034debc71c580ec50789dfa3f594997d87333  /home/adalundhe/managed-allocation-metrics-light-0183cf0683515974250f84999ae5be7bb44b585e-raw.tgz\\n\",\n    \"running\": false,\n    \"why\": \"linux/x86_64 \u00b7 27 of 32 cores idle \u00b7 46 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk\",\n    \"exit_code\": 0\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "x86_64-unknown-linux-gnu-build exit=0\nx86_64-unknown-linux-gnu-test exit=0\nx86_64-unknown-linux-musl-build exit=0\nx86_64-unknown-linux-musl-test exit=0\ncounter-clippy exit=0\n78fcfc69711f803de720ef6f0dd034debc71c580ec50789dfa3f594997d87333  /home/adalundhe/managed-allocation-metrics-light-0183cf0683515974250f84999ae5be7bb44b585e-raw.tgz\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 27 of 32 cores idle \u00b7 46 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

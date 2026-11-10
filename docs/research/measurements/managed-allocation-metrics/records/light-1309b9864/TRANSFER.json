@@ -1,0 +1,127 @@
+{
+  "source": "1309b98649a08b460e2a31a687ef916fd7915e49",
+  "archive_sha256": "93fbf97372043c6b3e32f32f1dd3df818e52d6b4ba7d2891dad90c258c26cb13",
+  "archive_bytes": 2271,
+  "files": [
+    {
+      "path": "source-revision.txt",
+      "bytes": 41,
+      "sha256": "5656ea2669fab5d0d3066fbe972d44ceabdbaa69be6cc3cc4f8ed6860aeb6bcb"
+    },
+    {
+      "path": "scope.txt",
+      "bytes": 114,
+      "sha256": "15ad24fc317fabbd64b61bc23a13688cd4a5d69d2a1c3ad885970a61b03be030"
+    },
+    {
+      "path": "uname.txt",
+      "bytes": 119,
+      "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+    },
+    {
+      "path": "rustc.txt",
+      "bytes": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "source.sha256",
+      "bytes": 344,
+      "sha256": "64b468e30b36b812691cf2061a75ba0120aba760f5756d32fb3b6dc12e5fcc07"
+    },
+    {
+      "path": "source-verification.log",
+      "bytes": 220,
+      "sha256": "9bdc1bce63b8ad1cdb27666cb8082d56b383f52f5bb7234da95c4ea08cf5af0a"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-build.command",
+      "bytes": 334,
+      "sha256": "0ca63ead96df18cddc023c395fdd4aa52be61babddb59d6410b61c2c2fa466a8"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-build.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-binary.sha256",
+      "bytes": 188,
+      "sha256": "631944af65282aac06a1eaf5f3a26c80eee799ec3caa18b73f553a1203d27d77"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-test.command",
+      "bytes": 151,
+      "sha256": "38a22b514bae668a31546411c112ae7bc0ace2d460e9bd7c4260fc6de7b629e2"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-test.log",
+      "bytes": 498,
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-build.command",
+      "bytes": 336,
+      "sha256": "ef8737ad3ddbbbccf4a79cf4c60b6cf91b0d408de6f098d1dd4e826e0ab3ec6d"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-build.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-binary.sha256",
+      "bytes": 189,
+      "sha256": "29aa3de29fe7a681a5a5560ce7530c258246138b2bc0b97b1f00af4a29f84a9f"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-test.command",
+      "bytes": 152,
+      "sha256": "c4ccb82055a7c8e3a04d76007550c68af9195c3c2fb1c1f6a34fa08c401282c0"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-test.log",
+      "bytes": 498,
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "counter-clippy.command",
+      "bytes": 393,
+      "sha256": "0df7a6a7c4afbdf114555c7f0f9a96e00f92cbd72b9f042d2e907a3ee6dcd6c5"
+    },
+    {
+      "path": "counter-clippy.log",
+      "bytes": 888,
+      "sha256": "0f871bed4ece35626dd7d5c3a5619658fdf2e41d413ab2b3cf559bfe40fed256"
+    },
+    {
+      "path": "counter-clippy.exit",
+      "bytes": 2,
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "root-owed.txt",
+      "bytes": 237,
+      "sha256": "9c531df620c51bd04f46166a9db8ee5792388185e5cab209873ac8830ae89b9e"
+    }
+  ]
+}

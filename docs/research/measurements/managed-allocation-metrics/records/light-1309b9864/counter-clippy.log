@@ -1,0 +1,25 @@
+error: you should consider adding a `Default` implementation for `ManagedAlloc`
+   --> /home/adalundhe/managed-allocation-metrics-source-1309b98649a08b460e2a31a687ef916fd7915e49/managed_alloc.rs:120:5
+    |
+120 | /     pub const fn new() -> Self {
+121 | |         Self {
+122 | |             alloc_successes: Counter::new(),
+123 | |             alloc_failures: Counter::new(),
+...   |
+138 | |     }
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#new_without_default
+    = note: `-D clippy::new-without-default` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::new_without_default)]`
+help: try adding this
+    |
+119 + impl Default for ManagedAlloc {
+120 +     fn default() -> Self {
+121 +         Self::new()
+122 +     }
+123 + }
+    |
+
+error: aborting due to 1 previous error
+

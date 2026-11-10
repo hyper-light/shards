@@ -1,0 +1,212 @@
+{
+  "id": "01a1c5cfb1457788825ed52ecb517527",
+  "title": "Maintain Shards resource allocation and fault implementation lane until coordinator closure",
+  "body": "Canonical Shards R01\u2013R16, main24f policy SHA d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242. Implementer owns test-only common/managed_alloc.rs, ROOT-approved narrow managed-output-cost/fixture.rs fields/hooks and docs/research/measurements/managed-allocation-metrics. ROOT owns managed_output allocator registration, all audit/profile/benchmark/realVM/chaos/stress/sweeps/main merges and analysis before any production optimization. No child agents, rootcache writes, local builds, security/crypto/platform adapter changes. Pure/light new private sources/targets through Kiln <=1CPU1GiB2GiB; macOS arm64 floor30GiB; paused VM/root sources preserved. Send signed bounded checkpoints and continue next approved queue. No final-idle or goal completion at one checkpoint; only coordinator accepted main results and lane release can close the parent goal.",
+  "tags": [
+    "from a goal"
+  ],
+  "source": {
+    "session": "01a1c5be192972d8b05dc7c207cc6fca",
+    "harness": "codex",
+    "machine": "e30189ea29182644fe5a4b2e06c7dac2",
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-allocation-metrics",
+    "agent": "Shards resource optimization",
+    "goal": {
+      "agent": "01a1c5be192972d8b05dc7c207cc6fca",
+      "id": "225261e022b28f5c98077e5e00b5d00d",
+      "text": "Maintain the Shards resource/allocator/fault optimization IMPLEMENTATION lane through managed-runtime completion under canonical R01\u2013R16. Implement and light-test approved System-wrapper counters, approved narrowly placed phase/fault snapshots through existing platform seams, then the caller-parameterized source-matching paired/interleaved harness; root executes ALL profiles/benchmarks/audits/realVM/stress and returns data before any production optimization. After each signed bounded checkpoint immediately take the next approved independent queue item, do not stop at one source piece or mark this goal met on documentation. Continue root-measured optimizations with exact source/cleanup/mutation evidence as supplied. Done only after coordinator confirms relevant managed-runtime resource requirements accepted on main with actual comparable data and releases the lane. Preserve policy receipts, all other agents' ownership, <=1CPU1GiB2GiB light admission, no local heavy builds, no arbitrary constants/caches, no helper/ABI mismatch, no child agents/main merges, no fake keepalive or unmeasured performance claims."
+    }
+  },
+  "share": null,
+  "version": 2,
+  "created_at": 1794320085,
+  "updated_at": 1794320569,
+  "items": [
+    {
+      "title": "Preserve policy, ownership and sustained queue",
+      "description": "Refresh full canonical/current checkout policy/plan/handoff after resume or compaction. Record full hash/role/owned paths; preserve queued batches and goal IDs. Already refreshed at07b392c14; remains binding for every batch.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Policy readback is acknowledged, no conflicting path edits/resource envelope change, signed named-path commits retain attribution; no premature full-goal closure."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Policy/source-only checks and handoff inspection",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "scripts/check-development-policy passes and exact policy revision/hash/unrun root gates are recorded."
+            }
+          ]
+        }
+      ],
+      "basis": [
+        "f1"
+      ]
+    },
+    {
+      "title": "Implement approved System allocation recorder and explicit cost phases",
+      "description": "Counter source0183 and approved phase hooks07b are implemented. Maintain one shared System/GlobalAlloc test wrapper, checked sticky Unknown, no recorder allocation/unwind/reset, honest ConcurrentNonAtomic parent-Rust-only snapshots. Root central registration/actual caller build remains owed.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Separate alloc/zeroed/realloc success/failure, dealloc calls, request/live/recorded-peak bytes; invalid arithmetic remains Unknown and unchanged identity/FD/exit/protocol/shutdown invariants stay strict."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Standalone pure and valid System unit/light tests only",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "GNU/musl light builds/tests and Clippy pass with exact source/command/binary records; failure/overflow tests are synthetic and no invalid GlobalAlloc/OOM call occurs."
+            }
+          ]
+        }
+      ],
+      "needs": [
+        1
+      ],
+      "basis": [
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f11"
+      ]
+    },
+    {
+      "title": "Implement approved native fault phase snapshots through existing seam",
+      "description": "Pure native_faults.rs validates native source/width/range, ordered same-identity pairs and Unknown/conditional deltas. Obtain root confirmation for exact v2 fixture placements; use existing platform::process_usage plus existing pinned identity checks, no new OS adapter/API. No measurements by implementer.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Labels distinguish native Linux aggregate, macOS signed32, Windows DWORD32; identity/I/O/range/lossyZero/saturation/decrease failures are Unknown and valid differences remain conditional on wrap/reset/parser caveats."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Pure native model state tests and source-level fixture checks",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "Invalid source/identity/order/range/decreasing/unavailable states cannot become a valid difference; no actual process fault sampling executes in the lane."
+            }
+          ]
+        }
+      ],
+      "needs": [
+        2
+      ],
+      "basis": [
+        "f1",
+        "f6",
+        "f7",
+        "f8"
+      ]
+    },
+    {
+      "title": "Implement caller-parameterized paired interleaved runner without executing it",
+      "description": "Require positive caller n, same explicit N/deadline, independent exact source/artifact manifests and new records. Alternate AB/BA pairs serially; validate source/artifact hashes, actual fixture identities, strict terminal/exit/FD/cleanup before next sample. Preserve raw records and n/p50/p90/p99/max using named type1 empirical quantiles; include paired signed differences and Unknown coverage. No arbitrary n/allowance/default workload or actual campaign.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Two exact manifests match actual per-case inputs, no next case after uncertain cleanup/identity/timeout, raw failures retained; unknown/conditional metrics are never silently dropped or labelled exact/performance success."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Pure synthetic manifest/schedule/guard/quantile tests in new admitted private light target",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "Mismatched source/artifact/N/identity/cleanup and incomplete records are rejected; odd n/order imbalance, n1, signed paired differences and Unknown percentile coverage are explicit. No child fixture/VM/profile launches."
+            }
+          ]
+        }
+      ],
+      "needs": [
+        3
+      ],
+      "basis": [
+        "f2",
+        "f9",
+        "f10"
+      ]
+    },
+    {
+      "title": "Implement only optimizations selected by ROOT actual measured analysis",
+      "description": "ROOT runs and analyzes actual paired/interleaved native-host profiles and supplies a scoped source target, live reproduction and acceptance. Implement allocation/reallocation/copy/retention/fault changes only from that selected evidence, no arbitrary constants/cache or speculative fix. Return scoped light proof and owed root mutation/cleanup/matrix gates.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Each optimization has coordinator supplied actual evidence and scope, primary alternatives, correct state/error semantics, signed source/light record; all comparative claims remain root validated and misses explicit."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Targeted functional/light checks for each root-selected measured change",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "Relevant tests pass on exact source; root actual paired/interleaved/mutation/restoration/cleanup/host gates remain separately recorded, never claimed inherited."
+            }
+          ]
+        }
+      ],
+      "needs": [
+        4
+      ],
+      "basis": [
+        "f1",
+        "f2"
+      ]
+    },
+    {
+      "title": "Sustain implementation until coordinator accepts main evidence and releases lane",
+      "description": "Continue coordinator-selected batches while root validates/merges reviewed work. Preserve every checkpoint/handoff and the five-lane policy; never substitute a documentation checkpoint or one profile for full managed-runtime requirements. Parent goal stays open until coordinator explicitly confirms accepted source/data on main and releases this lane.",
+      "examples": "",
+      "acceptance": [
+        {
+          "kind": "qualitative",
+          "text": "Only coordinator confirmation of applicable main acceptance, actual comparable results and explicit lane release can close the sustained objective."
+        }
+      ],
+      "testing": [
+        {
+          "scenario": "Coordinator final acceptance receipt",
+          "criteria": [
+            {
+              "kind": "qualitative",
+              "text": "Receipt names main revision, root actual evidence, remaining contract gaps and lane release; implementer does not self-declare completion."
+            }
+          ]
+        }
+      ],
+      "needs": [
+        5
+      ],
+      "basis": [
+        "f1"
+      ]
+    }
+  ],
+  "steps": [
+    "Preserve policy, ownership and sustained queue\n\nRefresh full canonical/current checkout policy/plan/handoff after resume or compaction. Record full hash/role/owned paths; preserve queued batches and goal IDs. Already refreshed at07b392c14; remains binding for every batch.\n\nAcceptance criteria:\n- Policy readback is acknowledged, no conflicting path edits/resource envelope change, signed named-path commits retain attribution; no premature full-goal closure.\n\nTests:\n- Policy/source-only checks and handoff inspection \u2014 passes when scripts/check-development-policy passes and exact policy revision/hash/unrun root gates are recorded.",
+    "Implement approved System allocation recorder and explicit cost phases\n\nCounter source0183 and approved phase hooks07b are implemented. Maintain one shared System/GlobalAlloc test wrapper, checked sticky Unknown, no recorder allocation/unwind/reset, honest ConcurrentNonAtomic parent-Rust-only snapshots. Root central registration/actual caller build remains owed.\n\nAcceptance criteria:\n- Separate alloc/zeroed/realloc success/failure, dealloc calls, request/live/recorded-peak bytes; invalid arithmetic remains Unknown and unchanged identity/FD/exit/protocol/shutdown invariants stay strict.\n\nTests:\n- Standalone pure and valid System unit/light tests only \u2014 passes when GNU/musl light builds/tests and Clippy pass with exact source/command/binary records; failure/overflow tests are synthetic and no invalid GlobalAlloc/OOM call occurs.",
+    "Implement approved native fault phase snapshots through existing seam\n\nPure native_faults.rs validates native source/width/range, ordered same-identity pairs and Unknown/conditional deltas. Obtain root confirmation for exact v2 fixture placements; use existing platform::process_usage plus existing pinned identity checks, no new OS adapter/API. No measurements by implementer.\n\nAcceptance criteria:\n- Labels distinguish native Linux aggregate, macOS signed32, Windows DWORD32; identity/I/O/range/lossyZero/saturation/decrease failures are Unknown and valid differences remain conditional on wrap/reset/parser caveats.\n\nTests:\n- Pure native model state tests and source-level fixture checks \u2014 passes when Invalid source/identity/order/range/decreasing/unavailable states cannot become a valid difference; no actual process fault sampling executes in the lane.",
+    "Implement caller-parameterized paired interleaved runner without executing it\n\nRequire positive caller n, same explicit N/deadline, independent exact source/artifact manifests and new records. Alternate AB/BA pairs serially; validate source/artifact hashes, actual fixture identities, strict terminal/exit/FD/cleanup before next sample. Preserve raw records and n/p50/p90/p99/max using named type1 empirical quantiles; include paired signed differences and Unknown coverage. No arbitrary n/allowance/default workload or actual campaign.\n\nAcceptance criteria:\n- Two exact manifests match actual per-case inputs, no next case after uncertain cleanup/identity/timeout, raw failures retained; unknown/conditional metrics are never silently dropped or labelled exact/performance success.\n\nTests:\n- Pure synthetic manifest/schedule/guard/quantile tests in new admitted private light target \u2014 passes when Mismatched source/artifact/N/identity/cleanup and incomplete records are rejected; odd n/order imbalance, n1, signed paired differences and Unknown percentile coverage are explicit. No child fixture/VM/profile launches.",
+    "Implement only optimizations selected by ROOT actual measured analysis\n\nROOT runs and analyzes actual paired/interleaved native-host profiles and supplies a scoped source target, live reproduction and acceptance. Implement allocation/reallocation/copy/retention/fault changes only from that selected evidence, no arbitrary constants/cache or speculative fix. Return scoped light proof and owed root mutation/cleanup/matrix gates.\n\nAcceptance criteria:\n- Each optimization has coordinator supplied actual evidence and scope, primary alternatives, correct state/error semantics, signed source/light record; all comparative claims remain root validated and misses explicit.\n\nTests:\n- Targeted functional/light checks for each root-selected measured change \u2014 passes when Relevant tests pass on exact source; root actual paired/interleaved/mutation/restoration/cleanup/host gates remain separately recorded, never claimed inherited.",
+    "Sustain implementation until coordinator accepts main evidence and releases lane\n\nContinue coordinator-selected batches while root validates/merges reviewed work. Preserve every checkpoint/handoff and the five-lane policy; never substitute a documentation checkpoint or one profile for full managed-runtime requirements. Parent goal stays open until coordinator explicitly confirms accepted source/data on main and releases this lane.\n\nAcceptance criteria:\n- Only coordinator confirmation of applicable main acceptance, actual comparable results and explicit lane release can close the sustained objective.\n\nTests:\n- Coordinator final acceptance receipt \u2014 passes when Receipt names main revision, root actual evidence, remaining contract gaps and lane release; implementer does not self-declare completion."
+  ],
+  "runs": 0,
+  "phase": "ready",
+  "research": "01a1c5cfb146737ea308bd247e39f267"
+}

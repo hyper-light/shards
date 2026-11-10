@@ -1,0 +1,56 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/fixture-hooks.proposed.patch:5: trailing whitespace.\n+ \ndocs/research/measurements/managed-allocation-metrics/fixture-hooks.proposed.patch:75: trailing whitespace.\n+ \ndocs/research/measurements/managed-allocation-metrics/fixture-hooks.proposed.patch:81: trailing whitespace.\n+ \ndocs/research/measurements/managed-allocation-metrics/records/light-0183cf068/x86_64-unknown-linux-gnu-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-0183cf068/x86_64-unknown-linux-musl-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-0975a51c0/x86_64-unknown-linux-gnu-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-0975a51c0/x86_64-unknown-linux-musl-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-1309b9864/counter-clippy.log:25: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-1309b9864/x86_64-unknown-linux-gnu-test.log:10: new blank line at EOF.\ndocs/research/measurements/managed-allocation-metrics/records/light-1309b9864/x86_64-unknown-linux-musl-test.log:10: new blank line at EOF.\n",
+  "stderr": "",
+  "unchanged_artifacts": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/fixture-hooks.proposed.patch",
+      "sha256": "be1fd790f623d0f0c309e6ce6055e4a6ef35973973e7c57b043164b63d66513f",
+      "reason": "Unapplied unified diff; literal blank context lines have a mandatory space prefix."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0183cf068/x86_64-unknown-linux-gnu-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0183cf068/x86_64-unknown-linux-musl-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0975a51c0/x86_64-unknown-linux-gnu-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0975a51c0/x86_64-unknown-linux-musl-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-1309b9864/counter-clippy.log",
+      "sha256": "0f871bed4ece35626dd7d5c3a5619658fdf2e41d413ab2b3cf559bfe40fed256",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-1309b9864/x86_64-unknown-linux-gnu-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-1309b9864/x86_64-unknown-linux-musl-test.log",
+      "sha256": "5b858807c8e77dd9ed04ac676e628755e4c4c63a24d6fa647b29862b29e50ff4",
+      "reason": "Original native unit/lint output with blank EOF; hash matches retained transfer manifest."
+    }
+  ],
+  "other_staged_paths": 79,
+  "other_staged_paths_check_exit": 0,
+  "no_rules_or_raw_logs_changed": true
+}

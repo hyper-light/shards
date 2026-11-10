@@ -1,0 +1,79 @@
+{
+  "source_revision": "0183cf0683515974250f84999ae5be7bb44b585e",
+  "checks": [
+    {
+      "command": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/shards/tests/common/managed_alloc.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "bash",
+        "-n",
+        "docs/research/measurements/managed-allocation-metrics/run-light.sh"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "docs/research/measurements/managed-allocation-metrics/fixture-hooks.proposed.patch"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "docs/research/measurements/managed-output-cost/fixture.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "transfers": [
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0183cf068/TRANSFER.json",
+      "raw_files_verified": 24,
+      "archive_sha256": "78fcfc69711f803de720ef6f0dd034debc71c580ec50789dfa3f594997d87333"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-0975a51c0/TRANSFER.json",
+      "raw_files_verified": 24,
+      "archive_sha256": "5346936732b3c4939b9f6e2d03fc6e809ec7568fba82ac692239e692539ad287"
+    },
+    {
+      "path": "docs/research/measurements/managed-allocation-metrics/records/light-1309b9864/TRANSFER.json",
+      "raw_files_verified": 24,
+      "archive_sha256": "93fbf97372043c6b3e32f32f1dd3df818e52d6b4ba7d2891dad90c258c26cb13"
+    }
+  ],
+  "scope": "local source/transfer checks only, no local compile, profile or actual caller execution"
+}

@@ -1,0 +1,1 @@
+Kiln admission: cpus=1,mem=1g,disk=2g; standalone counter unit/light only; no profiling/VM/socket/ns/BPF/campaign
