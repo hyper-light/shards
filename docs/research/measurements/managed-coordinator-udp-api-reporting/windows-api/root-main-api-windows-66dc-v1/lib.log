@@ -1,0 +1,44 @@
+   Compiling typenum v1.20.1
+   Compiling const-oid v0.10.2
+   Compiling shards-abi v0.1.0 (C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-main-safety-e4eb0bfc03\crates\abi)
+   Compiling windows-link v0.2.1
+   Compiling windows-sys v0.61.2
+   Compiling cpufeatures v0.3.1
+   Compiling cfg-if v1.0.5
+   Compiling shards-testdir v0.1.0 (C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-main-safety-e4eb0bfc03\crates\testdir)
+   Compiling hybrid-array v0.4.15
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling shards-afunix v0.1.0 (C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-main-safety-e4eb0bfc03\crates\afunix)
+   Compiling shards-api v0.1.0 (C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-main-safety-e4eb0bfc03\crates\api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.73s
+     Running unittests src\lib.rs (C:/Users/corph/root-main-api-windows-target\debug\deps\shards_api-a654a23a6938da4e.exe)
+
+running 20 tests
+test client::tests::a_dial_to_a_full_listener_is_asked_again_within_its_patience ... ok
+test client::tests::a_path_ending_in_ro_is_refused ... ok
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+test client::tests::a_socket_directory_too_long_is_passed_over_or_refused ... ok
+test client::tests::a_spec_is_the_flags_shards_run_reads ... ok
+test client::tests::attach_is_refused_gone_on_windows ... ok
+test client::tests::the_socket_directory_is_named_apart_from_the_pid ... ok
+test said::tests::a_kernels_pin_is_its_bytes_digest ... ok
+test stream::tests::a_clone_is_the_same_connection ... ok
+test stream::tests::a_connection_reports_its_buffer_sizes ... buffer_sizes: send 65536, receive 65536
+buffer_sizes: send 65536, receive 65536
+ok
+test stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read ... ok
+test stream::tests::a_pair_carries_bytes_both_ways_and_a_half_close ... ok
+test stream::tests::a_read_a_clone_raced_ends_at_its_timeout ... ok
+test stream::tests::a_read_times_out_and_the_connection_goes_on ... ok
+test stream::tests::a_timeout_is_kept_as_given ... ok
+test stream::tests::a_write_to_a_peer_that_stops_reading_ends_at_its_timeout ... ok
+test tests::a_bound_seeds_from_the_records_and_rises_with_what_it_sees ... ok
+test tests::backends_are_named_per_host ... ok
+test tests::bounds_are_refused_by_name ... ok
+test tests::the_hypervisors_bounds_are_its_own_to_refuse ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+

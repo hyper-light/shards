@@ -1,0 +1,18 @@
+[
+  {
+    "phase": "guarded",
+    "exit": 0
+  },
+  {
+    "phase": "guard-removed",
+    "exit": 101
+  },
+  {
+    "phase": "restored-recovery",
+    "exit": 0
+  },
+  {
+    "phase": "restored-held-cancel",
+    "exit": 0
+  }
+]

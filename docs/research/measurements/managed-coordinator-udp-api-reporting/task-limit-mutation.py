@@ -35,7 +35,7 @@ def run(name, test):
 
 
 def patch(name, path, before, after):
-    assert before.count(after) == 0 if after else True
+    assert before != after
     (r / (name + ".patch")).write_text("".join(difflib.unified_diff(
         before.decode().splitlines(True), after.decode().splitlines(True),
         fromfile=str(path), tofile=str(path))))

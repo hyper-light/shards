@@ -1,0 +1,12 @@
+   Compiling shards-api v0.1.0 (C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-main-safety-e4eb0bfc03\crates\api)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.67s
+     Running tests\sim.rs (C:/Users/corph/root-main-api-windows-target\debug\deps\sim-95b3a6bc34337967.exe)
+
+running 4 tests
+test a_connect_waits_for_a_guest_that_listens_late ... ok
+test a_guest_ends_as_its_program_says ... ok
+test no_clock_waits_for_the_fact ... ok
+test the_simulator_conforms ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+

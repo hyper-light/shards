@@ -1,0 +1,6 @@
+{
+  "observed_child_pid": 5,
+  "witness": "owned child ready, normal release, pidfd exit, waitpid and ECHILD before publication",
+  "bounded_attempts": "existing finite held children plus exactly one excess",
+  "limit": "Other population/host/kernel resource return unobserved"
+}

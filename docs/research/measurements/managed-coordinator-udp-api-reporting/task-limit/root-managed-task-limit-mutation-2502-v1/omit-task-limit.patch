@@ -1,0 +1,14 @@
+--- crates/init/src/domains.rs
++++ crates/init/src/domains.rs
+@@ -1622,10 +1622,7 @@
+                 .ok_or("a domain's identity precedes its declared range")?;
+         let group = format!("{CGROUPS}/{}", d.cgroup);
+         std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
+-        if let Some(n) = d.pids {
+-            std::fs::write(format!("{group}/pids.max"), n.to_string())
+-                .map_err(|e| format!("{group}/pids.max: {e}"))?;
+-        }
++        // Coordinator mutation: omit only the private domain pids.max write.
+         // Out of memory, a domain ends whole, and no other with it.
+         std::fs::write(format!("{group}/memory.oom.group"), "1")
+             .map_err(|e| format!("{group}/memory.oom.group: {e}"))?;

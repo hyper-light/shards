@@ -1,0 +1,77 @@
+{
+  "source_checkpoint": "08316c12f7c980b580d0182431e31d445f9a86f6",
+  "migration_checkpoint": "2a45ce9db367b7ec6ac298c142f609feaa5cdc2f",
+  "base": "66dc1d2cae7d6cf0db234b31b20b36a79dd3b0d9",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "source_sha256": {
+    "docs/development/managed-safety-migration.md": "931be703fde74b4f7e84e6db49a87227b6ecee14a68d89fd32f3edcd0941c063",
+    "crates/api/src/lib.rs": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+    "crates/vmm/src/vm/mod.rs": "4a4f7d122859dd6bb95e6ec80f9f8e209f2131fbbd68a79887f24bef621a2352",
+    "crates/vmm/src/vm/runtime.rs": "1b08b5efe788ea56446c150562152afb1c5311a0b604e3f36385ce762fb59498",
+    "crates/vmm/src/arch/x86_64/cpuid.rs": "1592ccf9f8851f36c3a3d3933ee55695668b3747d70f6d2c27de0cf21b84430e",
+    "crates/vmm/src/devices/virtio/fs/server_guest.rs": "119a04717feb2dfbbaba55b70fba68877567f51e28b91ad180a8ce3ae29db561",
+    "crates/vmm/src/devices/virtio/fs/mod.rs": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+  },
+  "checks": {
+    "r82_original_strict_docs": 101,
+    "r83_api_strict_docs": 0,
+    "r83_new_compile_only_doctest": "1/0",
+    "r85_exact_original_strict_docs": 0,
+    "r85_existing_private_link_warnings": 22,
+    "r85_new_compile_only_doctest": "1/0",
+    "rustfmt_narrow": 0,
+    "policy": 0,
+    "diff_check": 0,
+    "markdown_example_equals_typechecked_rustdoc": true,
+    "all_changed_rust_lines_are_documentation": true
+  },
+  "raw_archives": [
+    {
+      "files": 12,
+      "sha256": "ecc633803377b4756230795594fdd25e9cd7131eb4ffd5295102b17d5ea06f07"
+    },
+    {
+      "files": 9,
+      "sha256": "5b29ea24517e2f07692c1488b8a249ea49fdaa4485d8b9cb6bcabf40f88e4dd4"
+    }
+  ],
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "envelope": {
+    "cpus": 2,
+    "memory_gib": 1,
+    "disk_gib": 2
+  },
+  "private_clone": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db",
+  "private_target": "/home/adalundhe/managed-safety-migration-target",
+  "target_logical_kib": 521824,
+  "active_own_jobs": [],
+  "signature_headers_and_trailers_verified": true,
+  "certificate_chain_verified": false,
+  "runtime_or_api_logic_changed": false,
+  "root_owed": [
+    "review and composition",
+    "combined final matrix and any runtime/adoption gates",
+    "remaining owned-Mac mutex and cold stderr OOM",
+    "unadopted C prototype mixed-lock/lifetime/native-allocation disposition"
+  ],
+  "rules": {
+    "R01": "documentation only; known OOM limits retained, no panic-free claim",
+    "R02": "existing producer/consumer source and root reviewed evidence, no new mechanism choice",
+    "R03": "no runtime constants",
+    "R04": "preserve typed cause/identity/uncertainty and traits in guidance",
+    "R05": "no wait/cache/abstraction implementation; no delegated broad audit",
+    "R06": "focused migration and narrow comments",
+    "R07": "correct public contract/reference formatting",
+    "R08": "no performance claim",
+    "R09": "r82 actual failed docs before authorized repair; no new product bug claim",
+    "R10": "21 raw logs/commands/exits/hashes retained externally, both source checkpoints signed",
+    "R11": "GNU docs/type only; other platforms/runtime not inherited as this revision passes",
+    "R12": "shared APIs and dependencies unchanged",
+    "R13": "seven authorized doc-only paths, no framework",
+    "R14": "no profiling or allocation/resource performance claim",
+    "R15": "scoped light only, root all heavy/audit/merge, no children or main merge",
+    "R16": "new private admitted target, previous artifacts/root caches preserved, no local cargo or cleanup"
+  }
+}

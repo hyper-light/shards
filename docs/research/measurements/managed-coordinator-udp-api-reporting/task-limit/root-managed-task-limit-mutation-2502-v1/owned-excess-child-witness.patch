@@ -1,0 +1,12 @@
+--- crates/testguest/src/managed_limits.rs
++++ crates/testguest/src/managed_limits.rs
+@@ -349,7 +349,8 @@
+                 Err(Failure::Fork(e)) => return Err(Failure::WrongRefusal(e.raw_os_error().unwrap_or(0))),
+                 Err(e) => return Err(e),
+                 Ok(child) => {
+-                    drop(child);
++                    report.replacement = child.release(until)?;
++                    report.reaped = 1;
+                     return Err(Failure::UnexpectedAdmission);
+                 }
+             }

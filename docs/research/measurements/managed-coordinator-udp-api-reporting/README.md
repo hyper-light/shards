@@ -81,6 +81,7 @@ Current-main-only candidate `66dc1d2cae7d6cf0db234b31b20b36a79dd3b0d9`:
 | --- | --- | --- |
 | Fedora GNU amd64 r399 | 42 passed, 5 ignored | 15 passed, 2 ignored |
 | macOS arm64 r400 | 33 passed, 3 ignored | 15 passed, 2 ignored |
+| Windows amd64 r449 | 20 passed, none ignored | 4 passed, none ignored |
 
 Raw includes commands, source/toolchain identity and output under `linux`/`macos`.
 Ignored cases remain unverified. Root r404 runs `scripts/lint` on exact combined
@@ -127,7 +128,8 @@ No production architecture or allocation workaround is selected from this result
 
 ## Integrity and policy accounting
 
-Eight immutable archive transfers have exact byte/SHA identities in `transfer.json`.
+Eight initial immutable archive transfers have exact byte/SHA identities in `transfer.json`;
+later Windows-API and task-limit transfers have their own named transfer records.
 Regular safe paths only were extracted; executable/object/PDB artifacts remain
 with their owners and their identities are recorded. The first Linux archive
 accidentally retained an ELF probe because its archive filter matched escaped
@@ -184,3 +186,60 @@ are in `native-sockets/root-managed-native-sockets-4674-v1`. These are native
 compatibility regressions after the receive-wrapper change; their identity
 records explicitly say interception is unverified. They do not add12 mediation
 proofs or settle the unrun UDP loopback/self interception cases.
+
+## Task-limit guard: actual excess admission and exact restoration
+
+Root r448 at `250269aba0b9717dd9819a58b825018a6ad22aed` exercises one finite
+recovery cycle with caller-supplied tasks=6/reserved=4/children=2. The guarded case
+passes. The only enforcement mutation omits the private guest domain's
+`pids.max` write. The actor's existing single excess attempt then actually creates
+child PID 5. Test-only observation releases that child normally, observes its
+pidfd exit, waits and checks `ECHILD` before publishing PID 5/reaped=1 and
+`UnexpectedAdmission`. The real host test fails with exit101 for that actual effect.
+There is no unbounded process creation or host cgroup modification.
+
+The instrumentation changes only the unexpected-success witness; it does not
+make an extra attempt or weaken admission. Both production manager and actor
+source files are restored byte-identically, the final diff is empty, and actual
+recovery and held-population cancellation pass again. Raw source patches,
+commands, inputs, typed failure and restoration hashes are under
+`task-limit/root-managed-task-limit-mutation-2502-v1`. Replay uses the adjacent
+coordinator-only `task-limit-mutation.py` in an exclusively owned Linux checkout,
+private target and the retained explicit environment. The recorded driver is
+immutable; its nonidentical-patch assertion is simplified in the replay source.
+These observations prove this guard catches bounded excess admission, not
+complete task/memory/descriptor/storage accounting or every cleanup outcome.
+
+The restored log also reported missing host memory-controller watch files.
+Root independently read its own real cgroup/mount and ancestor file state:
+the directories exist; the lower three levels have empty controller lists and
+ENOENT memory interfaces; the service ancestor has memory available but empty
+subtree control. This supports controller unavailability there, **not** the
+initial pathname-resolution suspicion. The observation is retained under
+`task-limit/root-managed-cgroup-observation-v1`. The
+[kernel cgroup-v2 controller contract](https://docs.kernel.org/admin-guide/cgroup-v2.html#enabling-and-disabling)
+explains that parent enablement creates child controller files. No controller,
+host hierarchy or fallback was changed. Kiln headroom requests are not evidence
+of a memory-controller hard limit; hard parent/kernel accounting stays open.
+
+## Migration and strict documentation evidence
+
+Reviewed comment-only source commits `2a45ce9db367b7ec6ac298c142f609feaa5cdc2f` and
+`08316c12f7c980b580d0182431e31d445f9a86f6` are composed in `c7e87dc506abfe73a7839a32f8ecc514993ab63c`.
+The [migration guide](../../../development/managed-safety-migration.md) names both
+public startup return-type changes, the new refusal variant, retained traits,
+identity/uncertainty and the separate unresolved macOS allocation failures.
+The original strict API+VMM Rustdoc attempt actually fails with exit101 on preexisting
+references. Narrow reference-format corrections make that exact broken-link
+gate pass; 22 private-link warnings remain unsuppressed. The `StartError`
+compile-only example passes (1 passed, 0 failed). Commands, original red, fixed logs, source hashes
+and all R01–R16 accounting are retained in `migration`; no runtime logic or API
+change is introduced by this documentation batch. Native Windows r449's 20/4
+results and actual 66dc source/status/toolchain are under `windows-api`.
+
+Closing root r455 runs format and all seven supported targets, including GPU checks,
+on exact `c7e87dc506abfe73a7839a32f8ecc514993ab63c`: all pass. The actual stages,
+source, log and exit0 are retained in `matrix-c7e8`. This includes the UDP-local
+fixture and composed migration comments, not the still-unimplemented BPF
+comparison or every native hypervisor. Later record-only edits do not add a
+runtime result.

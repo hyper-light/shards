@@ -1,0 +1,4 @@
+{
+  "crates/init/src/domains.rs": "4d961f3ad04b3fcb93680900bbfc28955fef308c8cadd846790abc217e5efa70",
+  "crates/testguest/src/managed_limits.rs": "da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171"
+}

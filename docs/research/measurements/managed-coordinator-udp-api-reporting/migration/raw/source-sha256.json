@@ -1,0 +1,6 @@
+{
+  "docs/development/managed-safety-migration.md": "931be703fde74b4f7e84e6db49a87227b6ecee14a68d89fd32f3edcd0941c063",
+  "crates/api/src/lib.rs": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+  "crates/vmm/src/vm/mod.rs": "4a4f7d122859dd6bb95e6ec80f9f8e209f2131fbbd68a79887f24bef621a2352",
+  "crates/vmm/src/vm/runtime.rs": "1b08b5efe788ea56446c150562152afb1c5311a0b604e3f36385ce762fb59498"
+}

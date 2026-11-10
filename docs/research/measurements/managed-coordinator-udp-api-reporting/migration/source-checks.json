@@ -1,0 +1,18 @@
+{
+  "base": "66dc1d2cae7d6cf0db234b31b20b36a79dd3b0d9",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "only_changed_rust_lines_are_rustdocs": true,
+  "markdown_startup_example_equals_compiled_rustdoc_example": true,
+  "relative_source_links_valid": [
+    "../../crates/shards/src/vm_run.rs",
+    "../../crates/shards/tests/lifecycle.rs",
+    "../../crates/api/src/conformance.rs",
+    "../../crates/api/src/client.rs"
+  ],
+  "rustfmt_narrow_exit": 0,
+  "policy_exit": 0,
+  "diff_check_exit": 0,
+  "compiler_job": "r82 pending; no result claimed here"
+}

@@ -1,0 +1,9 @@
+{
+  "docs/development/managed-safety-migration.md": "931be703fde74b4f7e84e6db49a87227b6ecee14a68d89fd32f3edcd0941c063",
+  "crates/api/src/lib.rs": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+  "crates/vmm/src/vm/mod.rs": "4a4f7d122859dd6bb95e6ec80f9f8e209f2131fbbd68a79887f24bef621a2352",
+  "crates/vmm/src/vm/runtime.rs": "1b08b5efe788ea56446c150562152afb1c5311a0b604e3f36385ce762fb59498",
+  "crates/vmm/src/arch/x86_64/cpuid.rs": "1592ccf9f8851f36c3a3d3933ee55695668b3747d70f6d2c27de0cf21b84430e",
+  "crates/vmm/src/devices/virtio/fs/server_guest.rs": "119a04717feb2dfbbaba55b70fba68877567f51e28b91ad180a8ce3ae29db561",
+  "crates/vmm/src/devices/virtio/fs/mod.rs": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+}

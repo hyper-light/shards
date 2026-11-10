@@ -1,0 +1,201 @@
+{
+  "pid": 2749850,
+  "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c5568f5074f99d798c68900b889c\n",
+  "cgroup_mounts": [
+    "43 41 0:29 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:7 - cgroup2 cgroup2 rw,seclabel,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting"
+  ],
+  "chain": [
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c5568f5074f99d798c68900b889c",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": "2749847\n2749850"
+        },
+        "cgroup.controllers": {
+          "value": ""
+        },
+        "cgroup.subtree_control": {
+          "value": ""
+        },
+        "memory.current": {
+          "errno": 2
+        },
+        "memory.high": {
+          "errno": 2
+        },
+        "memory.max": {
+          "errno": 2
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": ""
+        },
+        "cgroup.subtree_control": {
+          "value": ""
+        },
+        "memory.current": {
+          "errno": 2
+        },
+        "memory.high": {
+          "errno": 2
+        },
+        "memory.max": {
+          "errno": 2
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": "1945\n2272\n69925"
+        },
+        "cgroup.controllers": {
+          "value": ""
+        },
+        "cgroup.subtree_control": {
+          "value": ""
+        },
+        "memory.current": {
+          "errno": 2
+        },
+        "memory.high": {
+          "errno": 2
+        },
+        "memory.max": {
+          "errno": 2
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "cgroup.subtree_control": {
+          "value": ""
+        },
+        "memory.current": {
+          "value": "39276453888"
+        },
+        "memory.high": {
+          "value": "max"
+        },
+        "memory.max": {
+          "value": "max"
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "cgroup.subtree_control": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "memory.current": {
+          "value": "47738277888"
+        },
+        "memory.high": {
+          "value": "max"
+        },
+        "memory.max": {
+          "value": "max"
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "cgroup.subtree_control": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "memory.current": {
+          "value": "47830929408"
+        },
+        "memory.high": {
+          "value": "max"
+        },
+        "memory.max": {
+          "value": "max"
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice/user-1000.slice",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "cgroup.subtree_control": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "memory.current": {
+          "value": "47831011328"
+        },
+        "memory.high": {
+          "value": "max"
+        },
+        "memory.max": {
+          "value": "max"
+        }
+      }
+    },
+    {
+      "path": "/sys/fs/cgroup/user.slice",
+      "directory_exists": true,
+      "files": {
+        "cgroup.procs": {
+          "value": ""
+        },
+        "cgroup.controllers": {
+          "value": "cpuset cpu io memory hugetlb pids rdma misc dmem"
+        },
+        "cgroup.subtree_control": {
+          "value": "cpuset cpu io memory pids"
+        },
+        "memory.current": {
+          "value": "48105693184"
+        },
+        "memory.high": {
+          "value": "max"
+        },
+        "memory.max": {
+          "value": "max"
+        }
+      }
+    }
+  ]
+}

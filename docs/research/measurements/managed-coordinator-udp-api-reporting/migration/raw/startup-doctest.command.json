@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "shards-vmm",
+    "--doc",
+    "vm::StartError"
+  ],
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-safety-migration-target",
+  "SHARDS_HELPERS": "skip",
+  "RUSTDOCFLAGS": "-D rustdoc::broken_intra_doc_links"
+}

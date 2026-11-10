@@ -1,0 +1,231 @@
+   Compiling libc v0.2.189
+    Checking typenum v1.20.1
+    Checking hybrid-array v0.4.15
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/abi)
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking const-oid v0.10.2
+    Checking cfg-if v1.0.5
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/vmm)
+    Checking digest v0.11.3
+    Checking cpufeatures v0.3.1
+    Checking sha2 v0.11.0
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/ipc)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/syscall-filter)
+ Documenting shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/api)
+ Documenting shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/vmm)
+error: unresolved link to `7:0`
+  --> crates/vmm/src/arch/x86_64/cpuid.rs:43:84
+   |
+43 | /// The physical address width a guest given `template` has: leaf 0x80000008's EAX[7:0]
+   |                                                                                    ^^^ invalid path separator
+   |
+   = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+   = note: requested on the command line with `-D rustdoc::broken-intra-doc-links`
+
+warning: public documentation for `raise_memlock` links to private item `Container::map`
+    --> crates/vmm/src/devices/pci/vfio.rs:1313:32
+     |
+1313 | /// mapping past it says so ([`Container::map`]).
+     |                                ^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+     = note: `#[warn(rustdoc::private_intra_doc_links)]` on by default
+
+warning: public documentation for `new` links to private item `VfioFunction::reach`
+    --> crates/vmm/src/devices/pci/vfio.rs:1515:21
+     |
+1515 |     /// function ([`VfioFunction::reach`]), where it has a pin; MSI and MSI-X as the guest
+     |                     ^^^^^^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `Join` links to private item `RANGE_ALIGN`
+   --> crates/vmm/src/devices/virtio/block.rs:136:62
+    |
+136 | /// write theirs to (D134), each a range of its own from a [`RANGE_ALIGN`] boundary, in the
+    |                                                              ^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `headroom` links to private item `reads_room`
+  --> crates/vmm/src/devices/virtio/fs/headroom.rs:12:34
+   |
+12 | //! reads ([`Headroom::fits`], [`reads_room`]), for its host's next reader, and drops it
+   |                                  ^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `read`
+  |
+  = note: the link appears in this line:
+          
+          attributes under names of its own. [`read`] gives a file as the server tells its guest
+                                              ^^^^^^
+  = note: no item named `read` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+error: unresolved link to `set`
+  |
+  = note: the link appears in this line:
+          
+          of it, and [`set`] and the makers keep it as the server keeps what a guest asks, so
+                      ^^^^^
+  = note: no item named `set` in scope
+  = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: public documentation for `GHOST_PREFIX` links to private item `ghost`
+   --> crates/vmm/src/devices/virtio/fs/server.rs:142:28
+    |
+142 | /// The prefix of a file [`ghost`] makes, which a daemon's start removes where a crash left
+    |                            ^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `rerecord` links to private item `Self::record_held`
+   --> crates/vmm/src/devices/virtio/fs/window.rs:440:62
+    |
+440 |     /// between `offset` and `offset + len` ([`record_held`](Self::record_held)), once a
+    |                                                              ^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `reconcile` links to private item `Self::follow`
+   --> crates/vmm/src/devices/virtio/fs/window.rs:797:21
+    |
+797 |     /// [`follow`]: Self::follow
+    |                     ^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+error: unresolved link to `descriptor_for`
+   --> crates/vmm/src/devices/virtio/fs/mod.rs:609:66
+    |
+609 | /// handle the asker is given, and the answer its value there ([`descriptor_for`]).
+    |                                                                  ^^^^^^^^^^^^^^ no item named `descriptor_for` in scope
+    |
+    = help: to escape `[` and `]` characters, add '\' before them like `\[` or `\]`
+
+warning: public documentation for `new` links to private item `HEAD_BLOCK`
+  --> crates/vmm/src/devices/virtio/head.rs:84:53
+   |
+84 |     /// `len` bytes of the VM's own memory, whole [`HEAD_BLOCK`]s, zeros until its guest
+   |                                                     ^^^^^^^^^^ this item is private
+   |
+   = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `changing` links to private item `left_alone`
+   --> crates/vmm/src/devices/virtio/head.rs:328:12
+    |
+328 |     /// ([`left_alone`]), so that a hypervisor whose stage 2 holds the pages it maps need be
+    |            ^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `follow` links to private item `Follows`
+   --> crates/vmm/src/devices/virtio/iommu.rs:376:12
+    |
+376 |     /// ([`Follows`]).
+    |            ^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `lost` links to private item `Shared::data_ranges`
+   --> crates/vmm/src/devices/virtio/pmem.rs:345:48
+    |
+345 |     /// ranges that could not be given back ([`Shared::data_ranges`]).
+    |                                                ^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `swap_staged` links to private item `Shared::replace`
+   --> crates/vmm/src/devices/virtio/pmem.rs:835:68
+    |
+835 |     /// system: its file system's mapping replaced where it was ([`Shared::replace`]), taken
+    |                                                                    ^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `save` links to private item `Shared::data_ranges`
+   --> crates/vmm/src/devices/virtio/pmem.rs:941:39
+    |
+941 |     /// where a mapping hides them ([`Shared::data_ranges`]).
+    |                                       ^^^^^^^^^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `flush` links to private item `Shared::flush`
+    --> crates/vmm/src/devices/virtio/pmem.rs:1035:65
+     |
+1035 |     /// them back. Written back and synced to stable storage ([`Shared::flush`]), as
+     |                                                                 ^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `max_vcpus` links to private item `VCPU_LIMIT`
+   --> crates/vmm/src/hv/kvm/mod.rs:128:8
+    |
+128 | /// ([`VCPU_LIMIT`]).
+    |        ^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `device_written` links to private item `DEVICE_PAGE`
+   --> crates/vmm/src/memory.rs:830:11
+    |
+830 |     /// [`DEVICE_PAGE`] long, in order of their addresses.
+    |           ^^^^^^^^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `pin` links to private item `Pins`
+   --> crates/vmm/src/memory.rs:927:86
+    |
+927 |     /// Pins `gpa..gpa+len` for a device's DMA, as the host's IOMMU has mapped it ([`Pins`]),
+    |                                                                                      ^^^^ this item is private
+    |
+    = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `open_dir_beneath` links to private item `dirs_beneath`
+    --> crates/vmm/src/platform/unix.rs:1280:22
+     |
+1280 | /// `root` a link ([`dirs_beneath`]).
+     |                      ^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `open_beneath` links to private item `dirs_beneath`
+    --> crates/vmm/src/platform/unix.rs:1288:7
+     |
+1288 | /// [`dirs_beneath`] says why a check of each name is enough.
+     |       ^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `FileWatch` links to private item `notify`
+    --> crates/vmm/src/platform/unix.rs:2108:29
+     |
+2108 | /// one inotify instance ([`notify`]), its own descriptor an eventfd its events are counted
+     |                             ^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `watch_writes` links to private item `notify`
+    --> crates/vmm/src/platform/unix.rs:2322:43
+     |
+2322 | /// the process's one inotify instance ([`notify`]), calling `call` with the watch's number
+     |                                           ^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: public documentation for `vfio_places` links to private item `passed_functions`
+    --> crates/vmm/src/vm/mod.rs:1559:63
+     |
+1559 | /// share a device, which nothing isolates from each other ([`passed_functions`]), so that
+     |                                                               ^^^^^^^^^^^^^^^^ this item is private
+     |
+     = note: this link will resolve properly if you pass `--document-private-items`
+
+warning: `shards-vmm` (lib doc) generated 22 warnings
+error: could not document `shards-vmm`

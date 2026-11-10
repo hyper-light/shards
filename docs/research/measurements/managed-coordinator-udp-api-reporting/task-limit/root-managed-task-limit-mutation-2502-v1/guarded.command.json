@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards", "--test", "managed_limits", "a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors", "--", "--ignored", "--exact", "--nocapture", "--test-threads=1"]

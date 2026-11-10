@@ -1,0 +1,11 @@
+{
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db",
+  "source": "2a45ce9db367b7ec6ac298c142f609feaa5cdc2f",
+  "status": " M crates/vmm/src/arch/x86_64/cpuid.rs\n M crates/vmm/src/devices/virtio/fs/mod.rs\n M crates/vmm/src/devices/virtio/fs/server_guest.rs\n",
+  "envelope": {
+    "cpus": 2,
+    "memory_gib": 1,
+    "disk_gib": 2
+  },
+  "prior_red": "r82 retained in v1 unchanged"
+}

@@ -1,0 +1,10 @@
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-safety-migration-24a8a8d0db/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.09s
+   Doc-tests shards_vmm
+
+running 1 test
+test crates/vmm/src/vm/mod.rs - vm::StartError (line 27) - compile ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.15s; merged doctests compilation took 0.15s
