@@ -2,6 +2,9 @@
 use super::*;
 use std::io;
 
+#[path = "current_tenant_stdio.rs"]
+mod current_tenant_stdio;
+
 struct Supplied {
     base: Inputs,
     actor: u16,

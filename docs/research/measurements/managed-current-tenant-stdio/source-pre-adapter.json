@@ -1,0 +1,26 @@
+[
+  {
+    "path": "crates/shards/tests/managed_output/current_tenant_stdio.rs",
+    "sha256": "db3e803007b7978f8ab9be35dd93eddc6e508479c4857bfe08dd3fce86e731ca"
+  },
+  {
+    "path": "crates/shards/tests/managed_output/tenant_stdio.rs",
+    "sha256": "bbec8b2f87caf3c284bfc0344a8655af6f3d8ba5b44b5409ab27b1d820480943"
+  },
+  {
+    "path": "crates/shards/tests/common/managed_capture.rs",
+    "sha256": "431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d"
+  },
+  {
+    "path": "crates/shards/tests/managed_output.rs",
+    "sha256": "b3812dfcd43a89941377c07628076c6ce99737d1c3cc2b1789c792b18bdc68b0"
+  },
+  {
+    "path": "crates/testguest/src/workload.rs",
+    "sha256": "6ad6e7cd35211d20acc6fbd0cfda91326565a6b46be1b2e45c406d80d9bea444"
+  },
+  {
+    "path": "crates/shards/tests/managed_output/tenant_exit.rs",
+    "sha256": "b07ce14c30db6fb812aaa33a8da9c00e7f13cdb4bc6738a03c575dca4ca76aff"
+  }
+]
