@@ -1,0 +1,11 @@
+cab396cecf6e94e307c7dac3480844112ecd245e
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: aarch64-apple-darwin
+release: 1.98.1
+LLVM version: 22.1.8
+Darwin Adas-MacBook-Pro-2.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64
+Filesystem   1024-blocks       Used Available Capacity  iused     ifree %iused  Mounted on
+/dev/disk3s5  7811034400 7744071900  40079308   100% 16700629 400793080    4%   /System/Volumes/Data

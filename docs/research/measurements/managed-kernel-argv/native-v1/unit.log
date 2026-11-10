@@ -1,0 +1,9 @@
+
+running 4 tests
+test cmdline::tests::delimiter_matches_kernel_quotes_and_values ... ok
+test cmdline::tests::without_delimiter_existing_order_and_spacing_are_unchanged ... ok
+test cmdline::tests::required_options_precede_only_the_first_delimiter_and_keep_raw_tail ... ok
+test cmdline::tests::command_line_max_includes_the_nul_and_overflow_is_typed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
