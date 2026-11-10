@@ -117,13 +117,24 @@ fn fault_observed(home: &std::path::Path) -> String {
     use std::io::Read as _;
     let directory = shards_vmm::platform::open_dir(home).unwrap();
     let mut changed = shards_vmm::platform::FileWatch::new(&directory).unwrap();
-    let mut log = std::fs::File::open(home.join("daemon.log")).unwrap();
-    changed.file(&log).unwrap();
+    let mut log = None;
     let deadline = std::time::Instant::now() + TIMEOUT;
     let mut observed = String::new();
     loop {
         changed.clear();
-        log.read_to_string(&mut observed).unwrap();
+        if log.is_none() {
+            match std::fs::File::open(home.join("daemon.log")) {
+                Ok(file) => {
+                    changed.file(&file).unwrap();
+                    log = Some(file);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("opening the console log: {error}"),
+            }
+        }
+        if let Some(log) = &mut log {
+            log.read_to_string(&mut observed).unwrap();
+        }
         if let Some(line) = observed.lines().find(|line| {
             line.contains("quarantined after population observation") || line.contains("shared boundary:")
         }) {
