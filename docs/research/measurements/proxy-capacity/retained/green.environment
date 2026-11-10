@@ -1,0 +1,15 @@
+phase=green
+1eff4a324cc9c8f6cf7fd51221079ef7b9fd8e75
+f05c440213be82fbfc9142c161dd972f79b441d2abad7e9127c80adc2dfa205c  crates/shards/src/build/proxy/server.rs
+e2e1b35b7f78d2cc60feb022db3c0ff8a000fd70d9f61309ecfb2b8d171c9728  crates/shards/src/build/proxy/tests.rs
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+100
+sched_schedstats=0
+samples=20 sample_ms=100 profile=release

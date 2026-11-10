@@ -1,0 +1,14 @@
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+100
+/proc/loadavg
+15.02 22.53 22.44 3/3172 1465626
+/proc/pressure/cpu
+some avg10=0.20 avg60=1.09 avg300=1.54 total=7433977074
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+/proc/sys/kernel/sched_schedstats
+0
+started_ns=1794293087495068742
+ended_ns=1794293096467426757
+13.33 21.92 22.24 4/3140 1487208
+some avg10=0.23 avg60=0.99 avg300=1.50 total=7434057323
+full avg10=0.00 avg60=0.00 avg300=0.00 total=0

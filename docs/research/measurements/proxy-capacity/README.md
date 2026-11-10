@@ -59,6 +59,13 @@ exit status, source hashes and summary for each source. Comparative runs use rel
 - [Linux proc documentation](https://docs.kernel.org/filesystems/proc.html) identifies
   voluntary context switches, thread CPU fields and wait channels. These are OS
   observations of the production thread, not implementation counters.
+  [Linux v6.19 proc source](https://raw.githubusercontent.com/torvalds/linux/v6.19/fs/proc/base.c)
+  implements scheduler nanoseconds in `proc_pid_schedstat`, or zero fields if
+  `sched_info_on()` is false. The
+  [corresponding configuration helper](https://raw.githubusercontent.com/torvalds/linux/v6.19/include/linux/sched/stat.h)
+  tests `CONFIG_SCHED_INFO`, separately from `kernel.sched_schedstats`. The latter
+  sysctl was zero in this campaign while old-source runtime deltas were positive;
+  it was recorded, not changed. No host tracing/accounting setting was enabled.
 
 A Condvar alone cannot wait on the existing external stop socket; adding a stop
 watcher thread would introduce another lifetime and cost. A separate completion
@@ -77,6 +84,15 @@ made **91 voluntary context switches in 100,181,689 ns** while the admitted work
 could not finish. Refill took 1,032,120 ns; stop took 1,026,903 ns. CPU ticks and
 fault deltas were zero in that window; the tick resolution is not evidence of no
 CPU cost. These diagnostic values are not the release-profile comparison.
+
+The actual `r3` invocation at `23f2e86d` was:
+
+```sh
+CARGO_TARGET_DIR="$HOME/managed-proxy-events-target" SHARDS_HELPERS=skip \
+SHARDS_PROXY_SAMPLES=1 SHARDS_PROXY_REQUIRE_IDLE=1 \
+cargo test -j4 --profile test-release -p shards --bin shards \
+build::proxy::server::tests::proxy_capacity_wait_costs -- --exact --ignored --nocapture
+```
 
 The second controlled boundary, kiln `r6`, restored production and fixture from
 `a27bdb581668a5099476592efd01269a66272ab1` and applied
@@ -163,10 +179,60 @@ or a fixed-lifetime resource census.
 | Worker release to next policy question, ns | 156,898 | 428,252 | 486,753 |
 | Stop closure to acceptor return, ns | 11,894 | 51,676 | 90,070 |
 
-The alternating-order comparison, stress, completed mutations and clippy remain
-pending. Their unchanged 4 CPU / 8 GiB / 10 GiB follow-on request was rejected by
-kiln for zero idle CPU headroom, without execution. No completion or comparative
-target is claimed, and the envelope was not lowered.
+The first unchanged 4 CPU / 8 GiB / 10 GiB follow-on request was rejected by kiln
+for zero idle CPU headroom, without execution. The same envelope was admitted when
+headroom returned as kiln `r10`; it was never lowered to evade the guard.
+
+The interleaved campaign ran twenty pairs in alternating old/new order, each a
+fresh process and the same native fixture. Every run passed. Saved release binary
+hashes, per-run order and host CPU-pressure observations accompany the raw logs.
+
+| Interleaved release, n=20 each | Old p50 / p90 / p99=max, ns | Changed p50 / p90 / p99=max, ns |
+| --- | ---: | ---: |
+| Worker release to next policy question | 790,178 / 1,292,562 / 1,304,369 | 328,466 / 410,739 / 565,450 |
+| Stop closure to acceptor return | 31,921 / 1,131,304 / 1,139,888 | 9,831 / 32,270 / 59,895 |
+
+Median refill improved **2.41×** and median stop **3.25×**, missing the 4–5× target
+against this internal baseline. No leading-system comparison was run. Tail stop
+latency improved more, but the two-mode old stop distribution and n=20 limit the
+claim; the large sequential median ratio did not persist in the interleaved run.
+Old occupied windows recorded 90–91 voluntary sleeps and scheduler CPU p50/p90/max
+496,995 / 642,291 / 783,385 ns; changed windows recorded zero. Both had zero sampled
+fault deltas. Late-teardown descriptor p50 was nine old versus eleven changed,
+consistent with the added pair; these are not peak counts or kernel-memory costs.
+
+The changed release binary also completed **200 sequential sessions**, each with
+a 1 ms sample plus the fixture's settling period, actual worker refill, queued
+stop and descriptor-return assertions. All passed; no parallel-load or VM claim
+is inferred. Refill p50/p90/p99/max was 198,161 / 305,517 / 413,077 / 454,790 ns;
+stop was 12,641 / 32,399 / 134,335 / 212,562 ns.
+
+Four independent source mutations reached their intended native behavior and each
+reported **zero passed, one failed, cargo exit 101**:
+
+| Mutation | Actual observed guard failure |
+| --- | --- |
+| Remove worker completion publication | Queued request never reached its policy question; refill test timed out after 5.01 s. |
+| Keep listener interested while full | Another request was admitted; policy-question-empty assertion failed in 0.03 s. |
+| Replace checked identity advancement with wrapping | Boundary retained one connection: `refused=false panicked=false admitted=1`. |
+| Return on notification EOF without ending connections | The admitted client remained open; readable/closed assertion saw `[false]` instead of `[true]` after 5.22 s. |
+
+The driver restored source in a `finally` block, then reran the native group:
+**21 passed, zero failed, two ignored**, 4.68 s. Strict Linux bin/tests clippy also
+passed with exit 0:
+
+```sh
+CARGO_TARGET_DIR="$HOME/managed-proxy-events-target" SHARDS_HELPERS=skip \
+cargo clippy -j4 -p shards --bin shards --tests -- -D warnings
+```
+
+`r10` used harness `8b79c269` with unchanged production/fixture `1eff4a32`. The
+restored source hashes exactly match the passing release source. Raw logs, source
+and binary identities, patches, statuses and order/environment records are copied
+without rewriting into [`retained/`](retained/); `SHA256SUMS` verifies each file.
+The original remote logs, cargo artifact records and both binaries remain preserved
+on the runner. The native campaign is complete; coordinator review/composition and
+the unrun platform/resource gates below remain owed.
 
 The retained `paired.py` runs the saved release binaries in alternating old/new
 order for twenty pairs, records binary hashes and host CPU pressure, then exercises
@@ -189,19 +255,19 @@ python3 docs/research/measurements/proxy-capacity/mutations.py
 
 | Rule | Scoped evidence and remaining work |
 | --- | --- |
-| R01 | Admission advancement is checked and map growth is fallible before ownership commits; no production assert/unwrap/indexing was added. Counter boundary red and green, notification-failure closure and existing compatibility tests are retained. The coordinator separately composes the already implemented fallible `platform::wait_readable` adapter from capture `9151296a`; this branch does not duplicate it. Actual allocation-failure injection and strict clippy are not run. |
-| R02 | Primary Go/Mio/Rust/kernel sources and alternatives above; actual native repeated-wake and identity-boundary observations precede their fixes. Sequential old/new release observations exist; interleaved comparison and coordinator review remain pending. |
+| R01 | Admission advancement is checked and map growth is fallible before ownership commits; no production assert/unwrap/indexing was added. Counter boundary red/green, notification-failure closure, restored compatibility tests and strict clippy passed. The coordinator separately composes the already implemented fallible `platform::wait_readable` adapter from capture `9151296a`; this branch does not duplicate it. Actual allocation-failure injection is not run. |
+| R02 | Primary Go/Mio/Rust/kernel sources and alternatives above; actual native repeated-wake and identity-boundary observations precede their fixes. Sequential and alternating-order old/new release observations are retained. Coordinator review remains pending. |
 | R03 | The 1 ms production probe is removed. Added literals represent one minimum stream byte and the three concrete readiness positions; no new numeric runtime policy exists. Existing connection-limit derivation remains explicitly owed. Test durations/counts are workload inputs only. |
 | R04 | The worker map and existing ended flag remain authoritative; full/available interests derive from them. Typed admission variants preserve closed, identifier, socket and reservation causes. Persistent notifications have no authority. Stop, early completion, full-to-available and notification-failure closure passed their actual native fixtures. |
-| R05 | Actual polling was reproduced, replaced and observed absent in twenty changed idle windows; no cache, cached count, permit ledger, trait or async manager was added. Independent mutation results remain owed; inventory alone is not claimed complete. |
-| R06 | Focused notification write/drain helpers contain interruption, coalescing and closure behavior; admission retains one owner. Native compatibility tests passed; clippy remains pending. |
+| R05 | Actual polling was reproduced, replaced and observed absent in changed idle windows; no cache, cached count, permit ledger, trait or async manager was added. Completion-removal and listener-interest mutations detected actual stuck/excess admission; the original code and changed code were compared live. This closes the scoped capacity probe, not the broader repository wait/cache inventory. |
+| R06 | Focused notification write/drain helpers contain interruption, coalescing and closure behavior; admission retains one owner. Native compatibility tests and strict clippy passed. |
 | R07 | Comments explain drain/check ordering, separate wake ownership and failure closure. D110 links this record. |
-| R08 | The pinned existing implementation is the same-workload comparison baseline. Sequential release distributions are above; alternating-order and competing-system measurements are pending. No 4–5× claim is made. |
+| R08 | The pinned existing implementation is the same-workload comparison baseline. Alternating-order release distributions above show 2.41× median refill and 3.25× median stop improvements, missing the 4–5× target against this baseline. Leading-system comparisons remain unmeasured; no target achievement is claimed. |
 | R09 | Actual red `r3` and controlled boundary red `r6`, their source hashes and exact commands are retained. No production fault switch is used. The boundary preload is explicitly labelled rather than presented as an ordinary exploit. |
-| R10 | Fixture commits, run/summary/interleaving/mutation scripts, boundary patch, D110 and this record retain the reproduction method. Raw red/green logs remain on the named Fedora runner; local artifact transfer and independent mutation results are pending. |
+| R10 | Fixture commits, run/summary/interleaving/mutation scripts, boundary patch, D110 and this record retain the reproduction method. Original red/green and four independent behavioral mutation logs/patches/statuses are retained locally with checksums and on the named runner. Restored source hashes match the green source. |
 | R11 | Source uses the shared socket/readiness seam. Red/green observations are native Linux amd64 glibc only. Other six supported targets, actual VM paths and native macOS/Windows remain unverified. Intel Mac is unsupported; paused Windows ARM VM is untouched. |
 | R12 | No OS branch, new dependency, helper deliverable, host-root action or cryptographic change. The existing shared platform adapters remain their owners' code. |
 | R13 | Existing admission bound and worker ownership persist. The additional control resource is one socketpair per session, whose actual memory cost remains unmeasured. |
-| R14 | The fixture observes actual per-thread switches/CPU/faults, refill/stop latency and descriptor cleanup; sequential release samples are retained. Allocator/copy/RSS/kernel-queue and neighbor-cost profiles remain unmeasured. `schedstat` zeroes can mean disabled accounting; positive old-source observations and the sysctl are recorded, but no zero-total-CPU claim follows. |
-| R15 | Explicit scoped implementation/live/performance authorization, policy receipt and runner envelope are recorded above. The coordinator owns combined gates/merges. No child agents, other-agent interruption, global sweep or merge to main occurred. Signed implementation 1eff4a32 passed the native proxy group and strict-idle samples; follow-on proof is held by the runner guard. |
-| R16 | This Mac had 51 GiB free before work and 47 GiB at the later check, above the 30 GiB floor. The private Fedora target was reflinked only from the coordinator-confirmed inactive source; no original cache, source, user data or evidence was removed. Kiln headroom rejections were respected. |
+| R14 | The fixture observes actual per-thread switches/CPU/faults, refill/stop latency and descriptor cleanup; release samples, CPU-pressure context and 200-session stress are retained. Allocator/copy/RSS/kernel-queue and neighbor-cost profiles remain unmeasured. CPU measurements concern only the occupied sample; no zero-total-CPU or overall leak-freedom claim follows. |
+| R15 | Explicit scoped implementation/live/performance authorization, policy receipt and runner envelope are recorded above. The coordinator owns combined gates/merges. No child agents, other-agent interruption, global sweep or merge to main occurred. Signed production 1eff4a32 passed the native group before/after mutations, strict-idle and interleaved/stress runs; all four independent mutations were killed. Final combined gates remain with the coordinator. |
+| R16 | This Mac had 51 GiB free before work and 41 GiB at the later check, above the 30 GiB floor. The private Fedora target was reflinked only from the coordinator-confirmed inactive source; no original cache, source, user data or evidence was removed. Final du reported 10G private target and 366M evidence including preserved binaries. Kiln headroom rejections were respected. |

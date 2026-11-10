@@ -17477,7 +17477,13 @@ source hashes and unrun platform gates are recorded in
 [`proxy-capacity`](../research/measurements/proxy-capacity/README.md). The change
 passed 21 native Linux proxy tests with zero failures and twenty occupied release
 windows with zero acceptor wakeups, versus 90–91 timer sleeps per old-source window.
-Independent mutations and the alternating-order comparison remain pending.
+Four independent mutations each failed at their actual stuck/excess-admission,
+wrapped-identity or unclosed-connection guard; restored tests and strict clippy
+passed. Alternating release binaries across twenty pairs removed the observed
+idle timer wakes and improved median refill 2.41× and stop 3.25×; these latency
+results miss the 4–5× target against this internal baseline. Two hundred repeated
+sessions returned their descriptors. Kernel queue/memory, allocator/copy and
+neighbor costs remain unmeasured, and the extra socketpair is retained overhead.
 These results do not establish a real-VM, seven-target or 4–5× comparative
 performance result.
 

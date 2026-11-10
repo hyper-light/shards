@@ -1,0 +1,11 @@
+--- a/crates/shards/src/build/proxy/server.rs
++++ b/crates/shards/src/build/proxy/server.rs
+@@ -859,7 +859,7 @@
+                 self.capacity.1.raw_socket(),
+                 self.proxy.listener.raw_socket(),
+             ];
+-            let Ok(ready) = shards_vmm::platform::wait_readable(if full { &controls } else { &all }, None)
++            let Ok(ready) = shards_vmm::platform::wait_readable(if full && false { &controls } else { &all }, None)
+             else {
+                 return;
+             };

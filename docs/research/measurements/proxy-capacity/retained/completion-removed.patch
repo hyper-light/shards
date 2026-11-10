@@ -1,0 +1,11 @@
+--- a/crates/shards/src/build/proxy/server.rs
++++ b/crates/shards/src/build/proxy/server.rs
+@@ -916,7 +916,7 @@
+         let removed = live.1.remove(&id).is_some();
+         drop(live);
+         if full && removed {
+-            self.notify_capacity();
++            // Mutation: omit the completion publication.
+         }
+     }
+ 
