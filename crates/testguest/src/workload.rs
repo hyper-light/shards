@@ -34,6 +34,7 @@ pub fn main() -> ! {
     let arg = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
     let code = match arg(0) {
         "report" => report(),
+        "managed-lifecycle" => crate::managed_lifecycle::probe(arg(1)),
         "cat" => cat(),
         // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154):
         // its group's, or its own device node's and iommufd.
