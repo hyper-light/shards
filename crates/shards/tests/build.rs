@@ -1773,7 +1773,8 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
          RUN [\"/bin/testguest\", \"fs\", \"mkdir:/etc/ssl\", \"mkdir:/etc/ssl/certs\", \"write:/etc/ssl/certs/ca-certificates.crt=original\"]\n\
          RUN [\"/bin/testguest\", \"fetch\", {}]\n\
          RUN --network=none [\"/bin/testguest\", \"fs\", \"print:/etc/ssl/certs/ca-certificates.crt\"]\n\
-         RUN [\"/bin/testguest\", \"report\"]\n",
+         RUN [\"/bin/testguest\", \"report\"]\n\
+         RUN [\"/bin/testguest\", \"fs\", \"print:/proc/net/route\"]\n",
         quoted.join(", ")
     );
     let ctx = context("build-proxy-ctx", &dockerfile);
@@ -1843,7 +1844,7 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
     let summary = format!(
         "proxy network requests:\n- GET {p}/hello -> 200\n- POST {p}/hello -> 200\n- GET {p}/hello -> 200\n- GET {p}/redirect -> 302\n- GET {s}/ -> 502\n"
     );
-    let logged: String = e
+    let emitted: Vec<&str> = e
         .lines()
         .filter_map(|l| {
             let rest = l.split_once(' ')?.1;
@@ -1851,16 +1852,35 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
                 rest,
                 |(stamp, r)| if stamp.parse::<f64>().is_ok() { r } else { rest },
             );
-            (rest.starts_with("proxy network requests:") || rest.starts_with("- "))
-                .then(|| format!("{rest}\n"))
+            Some(rest)
         })
+        .collect();
+    let logged: String = emitted
+        .iter()
+        .filter(|rest| rest.starts_with("proxy network requests:") || rest.starts_with("- "))
+        .map(|rest| format!("{rest}\n"))
         .collect();
     assert!(logged.contains(&summary), "{logged}\n{e}");
     // The bundle as it was after the step, as BuildKit leaves it (D110): a newline gained.
     assert!(said(" original"), "{e}");
     assert!(!e.contains("buildkit proxy CA"), "{e}");
-    // BuildKit's eight variables, the gateway's proxy.
-    let gateway = format!("http://{}:3128", bridge().gateway());
+    // BuildKit's eight variables, the gateway's proxy. The guest keeps the bridge the
+    // builder elected at startup; the host's routes may change before this assertion.
+    // Read that guest's default route, not a later election on the host. /proc/net/route
+    // prints each address's bytes as a native-endian hex integer (Linux fib_trie.c).
+    let gateway = emitted
+        .iter()
+        .find_map(|line| {
+            let mut fields = line.split_ascii_whitespace();
+            let _interface = fields.next()?;
+            if fields.next()? != "00000000" {
+                return None;
+            }
+            let gateway = u32::from_str_radix(fields.next()?, 16).ok()?;
+            Some(std::net::Ipv4Addr::from(gateway.to_ne_bytes()))
+        })
+        .unwrap_or_else(|| panic!("no guest default route in\n{e}"));
+    let gateway = format!("http://{gateway}:3128");
     for name in [
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -1869,7 +1889,10 @@ fn steps_under_the_proxy_cap_reach_the_network_through_it_alone() {
         "https_proxy",
         "all_proxy",
     ] {
-        assert!(said(&format!(" env {name}={gateway}")), "{name} in\n{e}");
+        assert!(
+            said(&format!(" env {name}={gateway}")),
+            "{name}, expected {gateway} in\n{e}"
+        );
     }
     assert!(said(" env NO_PROXY=127.0.0.1,localhost,::1"), "{e}");
     // The servers were asked by the proxy alone: the refused paths never, the client's
