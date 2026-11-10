@@ -1,0 +1,10 @@
+[package]
+name = "sock-addr-pure"
+version = "0.0.0"
+edition = "2024"
+[workspace]
+[lib]
+path = "lib.rs"
+[dependencies]
+libc = "=0.2.189"
+shards-devcgroup = { path = "../devcgroup" }

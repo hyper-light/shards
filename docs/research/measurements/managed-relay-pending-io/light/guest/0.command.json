@@ -1,0 +1,1 @@
+["rustup", "run", "1.98.1", "rustc", "--version", "--verbose"]

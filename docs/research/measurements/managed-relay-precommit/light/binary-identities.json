@@ -1,0 +1,17 @@
+[
+  {
+    "path": "/home/adalundhe/managed-relay-precommit-proof-v1/target/debug/deps/sock_addr_pure-4d0aea933e747bf9",
+    "bytes": 10525784,
+    "sha256": "4fe586576764ef641243ded69789c42dd90a10b36c1395a85c5202be571f8945"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-precommit-proof-v1/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-328004e9ce9a3c8e",
+    "bytes": 10825632,
+    "sha256": "863fc491dc186abbb126755a437096e2009723d00e9d8b77158573af5da01276"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-precommit-host-v1/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11550848,
+    "sha256": "64b9cfd586f7f65b1ce0e8704d2da7c80725b0abfb57726e7222e51513f10873"
+  }
+]

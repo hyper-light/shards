@@ -46,7 +46,42 @@ enum ControllerKind {
     ScriptedResponder,
     BufferedRelay { buffer_bytes: usize },
     CancelUpstreamReceive { buffer_bytes: usize },
+    CancelBeforeUpstreamSend { buffer_bytes: usize },
 }
+enum Cancellation {
+    Receive {
+        entered: OwnedFd,
+        receipt: OwnedFd,
+    },
+    BeforeSend {
+        ready: OwnedFd,
+        release: OwnedFd,
+        receipt: OwnedFd,
+    },
+}
+impl Cancellation {
+    fn ready(&self) -> &OwnedFd {
+        match self {
+            Self::Receive { entered, .. } => entered,
+            Self::BeforeSend { ready, .. } => ready,
+        }
+    }
+    fn receipt(&self) -> &OwnedFd {
+        match self {
+            Self::Receive { receipt, .. } | Self::BeforeSend { receipt, .. } => receipt,
+        }
+    }
+    fn control(&self) -> io::Result<udp::forward::Control> {
+        match self {
+            Self::Receive { entered, .. } => Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?)),
+            Self::BeforeSend { ready, release, .. } => Ok(udp::forward::Control::BeforeUpstreamSend {
+                ready: ready.try_clone()?,
+                release: release.try_clone()?,
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClientRole {
     BaselineBackend,
@@ -126,6 +161,16 @@ impl Inputs {
             }),
             ["sock-addr-cancel4", how, millis, budget] => Ok(Role::Controller {
                 kind: ControllerKind::CancelUpstreamReceive {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
+            ["sock-addr-precommit4", how, millis, budget] => Ok(Role::Controller {
+                kind: ControllerKind::CancelBeforeUpstreamSend {
                     buffer_bytes: budget
                         .parse()
                         .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
@@ -729,7 +774,8 @@ fn controller(
     let payload = match kind {
         ControllerKind::ScriptedResponder => Payload::Scripted,
         ControllerKind::BufferedRelay { buffer_bytes }
-        | ControllerKind::CancelUpstreamReceive { buffer_bytes } => {
+        | ControllerKind::CancelUpstreamReceive { buffer_bytes }
+        | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -762,6 +808,7 @@ fn controller(
         ControllerKind::ScriptedResponder => "ScriptedResponder",
         ControllerKind::BufferedRelay { .. } => "BufferedRelay",
         ControllerKind::CancelUpstreamReceive { .. } => "CancelUpstreamReceive",
+        ControllerKind::CancelBeforeUpstreamSend { .. } => "CancelBeforeUpstreamSend",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -777,15 +824,21 @@ fn controller(
     let mut hook_setup = HookSetup::NotStarted;
     let comparison_role = match kind {
         ControllerKind::ScriptedResponder => ClientRole::ScriptedResponder,
-        ControllerKind::BufferedRelay { .. } | ControllerKind::CancelUpstreamReceive { .. } => {
-            ClientRole::ForwardedBackend
-        }
+        ControllerKind::BufferedRelay { .. }
+        | ControllerKind::CancelUpstreamReceive { .. }
+        | ControllerKind::CancelBeforeUpstreamSend { .. } => ClientRole::ForwardedBackend,
     };
-    // Only this explicit coordinator fixture has the two finite boundary signals.
-    let cancellation = if matches!(kind, ControllerKind::CancelUpstreamReceive { .. }) {
-        Some((udp::notification()?, udp::notification()?))
-    } else {
-        None
+    let cancellation = match kind {
+        ControllerKind::CancelUpstreamReceive { .. } => Some(Cancellation::Receive {
+            entered: udp::notification()?,
+            receipt: udp::notification()?,
+        }),
+        ControllerKind::CancelBeforeUpstreamSend { .. } => Some(Cancellation::BeforeSend {
+            ready: udp::notification()?,
+            release: udp::notification()?,
+            receipt: udp::notification()?,
+        }),
+        _ => None,
     };
     let work = match payload {
         Payload::Scripted => Work::Scripted {
@@ -807,10 +860,11 @@ fn controller(
                 upstream,
                 backend: destination.into(),
                 slots,
-                receive_entered: cancellation
+                control: cancellation
                     .as_ref()
-                    .map(|(entered, _)| entered.try_clone())
-                    .transpose()?,
+                    .map(Cancellation::control)
+                    .transpose()?
+                    .unwrap_or(udp::forward::Control::Ordinary),
             })
         }
     };
@@ -830,11 +884,11 @@ fn controller(
         .checked_mul(backend_scripts)
         .ok_or_else(|| invalid("expected empty count overflow"))?;
     let backend_work = match &cancellation {
-        Some((_, receipt)) => Work::HeldReply {
+        Some(cancellation) => Work::HeldReply {
             receiver: backend.try_clone()?,
             sender: backend,
             destination: destination.into(),
-            receipt: receipt.try_clone()?,
+            receipt: cancellation.receipt().try_clone()?,
         },
         None => Work::Scripted {
             receiver: backend.try_clone()?,
@@ -888,33 +942,55 @@ fn controller(
         }
         hook_setup = HookSetup::Ready;
         relay = Some(DatagramWorker::start(work, &deadline)?);
-        if let Some((entered, receipt)) = &cancellation {
+        if let Some(cancellation) = &cancellation {
             let client = start_client(&namespace, &cgroup, mode, destination, comparison_role, &deadline)?;
-            // Both independent receipt and explicit stage entry must precede the
-            // cancel request. Neither notification claims an observed kernel sleep.
+            // Receive cancellation also requires the independent backend receipt;
+            // each case requires its owned phase entry before the cancel request.
+            // Neither notification claims an observed kernel sleep.
             let boundary = (|| {
+                if let Cancellation::Receive { receipt, .. } = cancellation {
+                    at(
+                        Stage::AwaitCancellationBoundary,
+                        udp::notified(receipt, &deadline),
+                    )?;
+                }
                 at(
                     Stage::AwaitCancellationBoundary,
-                    udp::notified(receipt, &deadline),
-                )?;
-                at(
-                    Stage::AwaitCancellationBoundary,
-                    udp::notified(entered, &deadline),
+                    udp::notified(cancellation.ready(), &deadline),
                 )?;
                 let left = deadline.left()?;
                 let worker = relay
                     .as_ref()
                     .ok_or_else(|| invalid("relay worker not started"))?;
                 at(Stage::CancelRelay, worker.request_cancel(&deadline))?;
+                let (stage, receipt) = match cancellation {
+                    Cancellation::Receive { .. } => ("UpstreamReceive", "ValidatedBackendDatagram"),
+                    Cancellation::BeforeSend { .. } => ("BeforeUpstreamSend", "ValidatedOwnedIngress"),
+                };
                 record(format_args!(
-                    "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"UpstreamReceive\",\"receipt\":\"ValidatedBackendDatagram\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
+                    "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"{stage}\",\"receipt\":\"{receipt}\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
                     left.as_nanos()
                 ))
             })();
+            // The trusted gate is always released, including a failed request or
+            // record; its wait cannot retain this worker beyond the original deadline.
+            let released = match cancellation {
+                Cancellation::BeforeSend { release, .. } => udp::notify(release, &deadline).and_then(|()| {
+                    if boundary.is_ok() {
+                        record(format_args!(
+                            "{{\"type\":\"PreSendRelease\",\"state\":\"ReleasedAfterCancelRequest\"}}"
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                }),
+                Cancellation::Receive { .. } => Ok(()),
+            };
             // Even a failed boundary/cancel report ends and reaps this owned child
             // before the existing worker/link/cgroup cleanup path proceeds.
             let status = client.finish(&deadline, ChildEnd::Cancelled);
             boundary?;
+            released?;
             if status?.signal() != Some(libc::SIGKILL) {
                 return Err(invalid("waiting client was not reaped after owned cancellation"));
             }
@@ -932,8 +1008,25 @@ fn controller(
     let pending = record(format_args!(
         "{{\"type\":\"Cleanup\",\"state\":\"Pending\",\"stage\":\"JoinWorkers\"}}"
     ));
-    let backend = at(Stage::JoinWorkers, backend.finish());
-    let relay = relay.as_mut().map(DatagramWorker::finish);
+    let (backend, relay, backend_witness) = match &cancellation {
+        Some(Cancellation::BeforeSend { receipt, .. }) => {
+            let relay = relay.as_mut().map(DatagramWorker::finish);
+            // On a red, retain the independent actual backend effect before
+            // cancelling its observer. A send count is not a delivery receipt.
+            let witness = match &relay {
+                Some(Ok(udp::Completion::Forwarded(done))) if done.report.upstream_sent != 0 => at(
+                    Stage::AwaitCancellationBoundary,
+                    udp::notified(receipt, &deadline),
+                ),
+                _ => Ok(()),
+            };
+            (at(Stage::JoinWorkers, backend.finish()), relay, witness)
+        }
+        _ => {
+            let backend = at(Stage::JoinWorkers, backend.finish());
+            (backend, relay.as_mut().map(DatagramWorker::finish), Ok(()))
+        }
+    };
     let cancellation_deadline = if cancellation.is_some() && result.is_ok() {
         deadline.left().and_then(|left| record(format_args!("{{\"type\":\"CancelBoundary\",\"state\":\"JoinedWithinWorkDeadline\",\"work_remaining_ns\":{}}}", left.as_nanos())))
     } else {
@@ -986,20 +1079,23 @@ fn controller(
     pending?;
     reports?;
     cancellation_deadline?;
+    backend_witness?;
     let backend = backend?.scripted()?;
-    let (expected_backend, expected_empty) = if cancellation.is_some() {
-        (
-            Exchange::SCRIPT
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| invalid("held backend count overflow"))?,
+    let (expected_backend, expected_empty) = match &cancellation {
+        Some(cancellation) => (
+            match cancellation {
+                Cancellation::Receive { .. } => Exchange::SCRIPT
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("held backend count overflow"))?,
+                Cancellation::BeforeSend { .. } => Exchange::SCRIPT.len(),
+            },
             Exchange::SCRIPT
                 .into_iter()
                 .filter(|step| matches!(step, Exchange::Empty))
                 .count(),
-        )
-    } else {
-        (expected_backend, expected_empty)
+        ),
+        None => (expected_backend, expected_empty),
     };
     if backend.report.arrivals != expected_backend
         || backend.report.matched != expected_backend
@@ -1040,6 +1136,11 @@ fn controller(
         (ControllerKind::CancelUpstreamReceive { .. }, udp::Completion::Forwarded(relay)) => {
             if !relay.cancelled_upstream_receive() {
                 return Err(invalid("relay did not cancel at the upstream receive boundary"));
+            }
+        }
+        (ControllerKind::CancelBeforeUpstreamSend { .. }, udp::Completion::Forwarded(relay)) => {
+            if !relay.cancelled_before_upstream_send() {
+                return Err(invalid("relay did not cancel before an upstream send attempt"));
             }
         }
         _ => return Err(invalid("comparison completion type differs")),
@@ -1140,6 +1241,30 @@ mod tests {
             vec!["sock-addr-cancel4", "connected", "1000", "bad"],
             vec!["sock-addr-cancel4", "other", "1000", "18"],
             vec!["sock-addr-cancel4", "connected", "1000", "18", "extra"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+    #[test]
+    fn precommit_command_selects_only_its_explicit_control() {
+        for mode in ["connected", "unconnected"] {
+            let parsed = Inputs::parse(&["sock-addr-precommit4", mode, "1000", "18"]).unwrap();
+            assert!(matches!(
+                parsed.0,
+                Role::Controller {
+                    kind: ControllerKind::CancelBeforeUpstreamSend { buffer_bytes: 18 },
+                    presentation: Presentation::FixedOriginalPeer,
+                    ..
+                }
+            ));
+        }
+        for words in [
+            vec!["sock-addr-precommit4", "connected", "1000"],
+            vec!["sock-addr-precommit4", "connected", "1000", "bad"],
+            vec!["sock-addr-precommit4", "other", "1000", "18"],
         ] {
             assert_eq!(
                 Inputs::parse(&words).unwrap_err().kind(),
