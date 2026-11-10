@@ -1,0 +1,25 @@
+--- crates/testguest/src/managed_network/intercept/udp/forward.rs
++++ crates/testguest/src/managed_network/intercept/udp/forward.rs
+@@ -48,21 +48,13 @@
+             .len()
+             .checked_add(Reply::Backend.bytes().len())
+             .ok_or(ReserveError::Overflow)?;
+-        if required > provided {
+-            return Err(ReserveError::Limit { provided, required });
+-        }
+         let request = buffer(SENT.len()).map_err(ReserveError::Io)?;
+         let reply = buffer(Reply::Backend.bytes().len()).map_err(ReserveError::Io)?;
+         let usable = request
+             .capacity()
+             .checked_add(reply.capacity())
+             .ok_or(ReserveError::Overflow)?;
+-        if usable > provided {
+-            return Err(ReserveError::Limit {
+-                provided,
+-                required: usable,
+-            });
+-        }
++        let _ = (required, usable);
+         Ok(Self {
+             request,
+             reply,

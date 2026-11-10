@@ -1,0 +1,397 @@
+[
+  {
+    "path": "root-managed-admission-c141-v1/checkout.log",
+    "bytes": 173,
+    "sha256": "7b05058887530ecc8f1eb6497ca27fa12fd482501d476e1351ba70dc0182139c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/compile.jsonl",
+    "bytes": 260586,
+    "sha256": "b09824f071bd78e7a95b0e47c942751a266d78509825830c3a2589f3f1be8645"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/compile.log",
+    "bytes": 1778,
+    "sha256": "d108aaf189ce9b3100631bb59f74a6bcbe3f9f348312ed67e94929c96cbde798"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/driver.actual-exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/driver.log",
+    "bytes": 270,
+    "sha256": "c058843152e6e4121aa8ceb3272f189a84e2d177af2f0f32f03a68ec25b87306"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/driver.py",
+    "bytes": 5468,
+    "sha256": "add2d8cf8f76d42e94d2594b223c1b8b1ba65b180d6125bc7738b5cb7efbd75c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/driver.sha256",
+    "bytes": 65,
+    "sha256": "1e1d7a46d33045b35908006b5bbb202504adc9507b4f643e920fb4904aaf660d"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/fetch.log",
+    "bytes": 199,
+    "sha256": "b9118c560bc96f3fd859e4b33dd3b98e07e60e088a4cc471cb63bab18c76be03"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/environment.json",
+    "bytes": 820,
+    "sha256": "72a73365d7195a974f3405de89fd56749cdd5b79175951c7a5116677e5bdc3be"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/observed.json",
+    "bytes": 8965,
+    "sha256": "1392886cd1844f5c51c757addf05a0baa6c6477e0be94daa585ab72a2a3b3ed8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "3d91478dce055c83ff649d57a6f056ccbfa2b87622241df14887778eb5df2afb"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "773ef591a20e6efa9a931f58322cfeff969681d97f7e6c72b70504db7fe555ac"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "eb061e7a00726dbcce5749392f3c299ee7d1a928eb710d2a68b02c4b0fe0bf37"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-connected/test.log",
+    "bytes": 4010,
+    "sha256": "b1a059c300462f9f0b269da74484664fafe08d0be2914d4c3625109d327c24ba"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/environment.json",
+    "bytes": 824,
+    "sha256": "04ff62d036243de1d19ae9f2f97884c54b75ce79aa9c6a36152c23c28a3473b5"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/observed.json",
+    "bytes": 8412,
+    "sha256": "72683a2848c292a403febdde2671c9464a9abd3d0d7635e979251314e2b92415"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "749b307df91125ea9de8878f21129aa98373c590afc9d8c8aecb1690f90f73be"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "4f656c1dc4dc155d9e1fba68b38471e2f76564a81364973fdba40be723a7ffe1"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7432,
+    "sha256": "5dc403cc869c1070df3bc4c314c4c35c081d9e23fa7a0808a24ce6e0989d1ca8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/forward-unconnected/test.log",
+    "bytes": 4012,
+    "sha256": "a5eb204fba8f0bfb6eb087927d98ba212e66138640f84bf86c1107aec08c9980"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/previous-restoration.json",
+    "bytes": 271,
+    "sha256": "d5de4b1793319f837176efc6baefdcf4e6ea1473013ef87facc9639ba8bde9b7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/environment.json",
+    "bytes": 820,
+    "sha256": "d51ac04bee58289aeee9aa32de8653d80ad30d554f27a6472682e5570b788e33"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/observed.json",
+    "bytes": 210,
+    "sha256": "6d81e0c336fddf18228267c9b200d17a80cf9178e70166888395c275616728b8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "7d7e3e600c1fdc44332966e69c8e5b5c79b6ecab88222e3f27d0e2fcb9ee7f4c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "514578fdfdcb7cda35ed7e3b4a7b64c3c9910c27dbdb7f6020b45257561a0c90"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "96dd3b775464e35d17746a678be0993d30582e0bfcae3db3ee13d0e08364e523"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "e2e45254a905a3190c430bbf43f95968c35f5e473adb0e534c838b13c8a7038f"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 594,
+    "sha256": "fd679b46e0a8ff746bbf7025f3b070673386990745c04ab8e7e3024f2477cb2b"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-connected/test.log",
+    "bytes": 5372,
+    "sha256": "b3e8d6eab7d65aab9e693eec367a7b191d233cfc7945564b711b4157d9bc8091"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/environment.json",
+    "bytes": 824,
+    "sha256": "f099505693143fb566d7d5f8ec13a5c9f08ce2347f879369b8606c81936690d6"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/observed.json",
+    "bytes": 210,
+    "sha256": "6d81e0c336fddf18228267c9b200d17a80cf9178e70166888395c275616728b8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "59d966b451b7119ef09c931029241e3a2580b0dd93644fd1df06da06124ab417"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "a035338a16f5b551ce7168d21a3fbad46619fa29f420cbf4c769519ecf21525b"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "96dd3b775464e35d17746a678be0993d30582e0bfcae3db3ee13d0e08364e523"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "49cbed32a9e97d7b03972b124a0d118ee23ae86edd9a98ad70aaf9c4ee290df1"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 596,
+    "sha256": "17729225148103f7d593e89289fcb72504ca5acbb9d5bc8cb7b3123efbd841b2"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/refusal-unconnected/test.log",
+    "bytes": 5278,
+    "sha256": "039328ac46e8262d1ceabe891da72179cdf8adca662deb87741b5ed193c9054c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/results.json",
+    "bytes": 3601,
+    "sha256": "f91b5472d6b3b15b155e08782e3be5d440af47d32212c5cd014754137302d9ad"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/environment.json",
+    "bytes": 821,
+    "sha256": "2fd3057959b3605712b780ea4dd6af168dcee69d992acc13d91738b9432aa59b"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/observed.json",
+    "bytes": 6438,
+    "sha256": "69f6a52e591434e157db825495db1f1b51adc954b078d9a6517233beb6758831"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.cmdline",
+    "bytes": 126,
+    "sha256": "5a110cc3d60729729bce2294fd856f152f2d70ce14766d105979a8d5380e4946"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.identity.json",
+    "bytes": 2072,
+    "sha256": "57209d7eaef0be890f531995c18a5e314c01a9ed47e8c78df2f109b99c7f0cb8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "0340ac4a15e8f1ed6416f163782ce91808bf58b858bb4f4e5e74cff3681b9e99"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.stdout",
+    "bytes": 5809,
+    "sha256": "9b6620c2d29c72dd010961cfeb523bc3b574bea19495470ac5abb685b8b767db"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-connected/test.log",
+    "bytes": 4004,
+    "sha256": "6ab3281dcf5a5d42e2e87a7a95800fb9cfa3f803e70d2c741c6432a9f36efd44"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/environment.json",
+    "bytes": 825,
+    "sha256": "4f42edd925a1ebcefe1ebf5121806bea5657bab004b4cec3f252369e2ad136bd"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/observed.json",
+    "bytes": 5885,
+    "sha256": "95bf5fa23115021811830e9511596512aefa7ab552cd33187608d904337bfc36"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 128,
+    "sha256": "c3d615e38f66f9ec80ff5dfb0c57f04e618ace3b224f17caec4bb10549a8ae86"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "32d296e52c0a6d6fb1ffc3d630330d857f53aa585936cf8961891ebacf2eb7b8"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "af559da9f3f6633a8738ecdd7106d124ce5235ed372c7ee1d059395eb201daf3"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stdout",
+    "bytes": 5285,
+    "sha256": "55a5ca10688f8e0dd0f0addd89b66d34b562407bde1b284715483f2eb5b8b131"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/scripted-unconnected/test.log",
+    "bytes": 4006,
+    "sha256": "ee562c670ba7d74c0d5696b1511d7b4d275711827e81bde24f49d8074444086a"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/source.txt",
+    "bytes": 41,
+    "sha256": "903f1769ba6b47eba023dd987f4824b046215a3662f5e51aa690e2b01ed7aafb"
+  },
+  {
+    "path": "root-managed-admission-c141-v1/test-artifact.json",
+    "bytes": 192,
+    "sha256": "e18a5da87b3e2ea785a7b7b08af1551d84e68f4f119054786814918c6231d197"
+  }
+]

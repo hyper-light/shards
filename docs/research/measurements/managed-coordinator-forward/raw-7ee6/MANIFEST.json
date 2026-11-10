@@ -1,0 +1,912 @@
+[
+  {
+    "path": "root-managed-forward-7ee6-v1/checkout.log",
+    "bytes": 180,
+    "sha256": "3ab427551be03a0695b3e245569d76b8d61d5ad14b5e8fc43d022ad99bca8bd4"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/compile.jsonl",
+    "bytes": 260888,
+    "sha256": "3f61337b487a1bc4ad535355c857fe110571f0bacb2d0f06332b3df67440c2d5"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/compile.log",
+    "bytes": 8500,
+    "sha256": "0eef814e1df939d650057385a4259082e30f42a2bd71c5e99b4495d4d2153364"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/environment.json",
+    "bytes": 824,
+    "sha256": "8f43b7f57962f3a2446a3b9ebe5b31d5551c268967d0ae4bae297e02720e658b"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/observed.json",
+    "bytes": 7980,
+    "sha256": "3bb07471387566ddbf8594e317d92784cbc95de14a10048bda72ce145820ba24"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.cmdline",
+    "bytes": 128,
+    "sha256": "3648280f5439db6f6b9af41b80843efee0903fde6a77f21fce134bb0f0e06dd5"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.identity.json",
+    "bytes": 2072,
+    "sha256": "e507993e87c360642945c819c22f12eb28fa96956cff514ddff6e456a7dded4d"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.stderr",
+    "bytes": 225,
+    "sha256": "0ae329b00cb9b939115478bd0a239cf3d2febe7639aa3ca0d84556a9417cb046"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/sock-addr-relay4-connected-destination-only.stdout",
+    "bytes": 7268,
+    "sha256": "a7e86c31e5ed18afc26d951ca55404f5605e119f4aadc99959a1c13938f63807"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-destination-only/test.log",
+    "bytes": 12119,
+    "sha256": "f072c1a6ba4ee98bf8b5c820a018165e0de657e30c2edf58553dc3709c118f76"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/environment.json",
+    "bytes": 830,
+    "sha256": "64f0c1d83f7faf512f4b5bbdd4d7027941a413053497fc6829b80bf6053ef536"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/observed.json",
+    "bytes": 8965,
+    "sha256": "39f503601215d78e536242863a812814d3bb3da7e9aaec6d3a92e6d8147a13ef"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2075,
+    "sha256": "e232cd1bea832af11ea3705299b29405711b87d43c722bb4003e48c038bed6e4"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "ea6cf2f9cd46e0f33c3eab7f1ab0a2def8acc0a68f9e17b289c47089371d360a"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "4f38b9ed363790add374f1a83056b83614e0360b3897049be188166330ef50fb"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/connected-fixed-original-peer/test.log",
+    "bytes": 4011,
+    "sha256": "3289f16ea0e24be5a0ae03ad46890262c290db98f2631af29647cbafe191998a"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/fetch.log",
+    "bytes": 208,
+    "sha256": "8747564032f70307307257b10595398c46a79ee04f39a9bc7a20f15748694898"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/freeze-preflight.json",
+    "bytes": 1408,
+    "sha256": "9f71d576faf7896dd9ecaf4a5f5262562736d9347ce4b2bbca2e9da7c76871ed"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/frozen-artifacts.json",
+    "bytes": 366,
+    "sha256": "f08edc28e827d2d02d3330c1980240b5d7de6d46dd79381913e6903a4c8fd0c8"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/results.json",
+    "bytes": 10177,
+    "sha256": "2de968b111ab18a43b67f7d9607ec041f115fa27cb646de0090106b5362c8cc0"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/source.txt",
+    "bytes": 41,
+    "sha256": "1cb429bf9033cb55d282b74c1f18bdfc03e23bd6b0f1d7076830b48c656dff38"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/test-artifact.json",
+    "bytes": 192,
+    "sha256": "e18a5da87b3e2ea785a7b7b08af1551d84e68f4f119054786814918c6231d197"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/environment.json",
+    "bytes": 828,
+    "sha256": "0cd8aaab30a49fb4c3064e305c532bca5043726821021e9cb166ef347f87ed1f"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/observed.json",
+    "bytes": 7980,
+    "sha256": "2a8aae21a46347ebfa7ae980a40d0fb3c670d10f964cf57aac204d4221409668"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.cmdline",
+    "bytes": 130,
+    "sha256": "b1b4b71468f3136cbc727ada1c256ede0dc4b5ffb47d9ece5550679ae80f0587"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.identity.json",
+    "bytes": 2074,
+    "sha256": "b7a7e73048c409863bf2f27bcdedac9720d3ad4143e66a900901a4367fd35419"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.stderr",
+    "bytes": 225,
+    "sha256": "422d3b642ebdfdd002a2cd42933e3c97237bba1ef0f1420e65fcba71b40b33fc"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.stdout",
+    "bytes": 7270,
+    "sha256": "1b7e0552a060463d1619d86d2bd19237c79533dc8a973952337acb5e9cff1ced"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-destination-only/test.log",
+    "bytes": 4438,
+    "sha256": "9f7fb5d1e3dc86f8cfcbbbecbd6318b124f2bd78f465b1656aadebe054ada7b8"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/environment.json",
+    "bytes": 834,
+    "sha256": "724c49dc8993fe84892f8a6d936befbb2b72942343d96d919c40efded09d43c8"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/observed.json",
+    "bytes": 8412,
+    "sha256": "4e88c803855916821be8684626e61032e93c7f8241ecd6f7a1fec98cce5651ab"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2077,
+    "sha256": "bbb0b2174e83282974893281c3d77f8cfe154b631e4fbe7998a28f9639b437ac"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "888c0ad2d9a26adb40a2b335a20c9b59d262e93a45a3df396f67e5c4d407b91b"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7432,
+    "sha256": "03f45711e54e9543803552901a7c924d48de698281fffb796ab4823fafafbac2"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-7ee6-v1/unconnected-fixed-original-peer/test.log",
+    "bytes": 4013,
+    "sha256": "c0b9d6547535afb04180d555d7d0972f001bf8135f0af3c641a24ea0f6a7e107"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/environment.json",
+    "bytes": 822,
+    "sha256": "5d1e7d451df8e79cebfd07674e0dc6769cb632ada34baf6678d4912705c9bcb2"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/observed.json",
+    "bytes": 458,
+    "sha256": "fa4f06aa3247508b847f4761e3568885fddc64a2c5618be9304a5b519f996feb"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "7d7e3e600c1fdc44332966e69c8e5b5c79b6ecab88222e3f27d0e2fcb9ee7f4c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2073,
+    "sha256": "c21e4bac0fae4cef800a6c086040b3f3bacedfa8486a6fa5b92a478f1881b034"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "96dd3b775464e35d17746a678be0993d30582e0bfcae3db3ee13d0e08364e523"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "4c1666f3bea8c75f5d14aa40b789e254b32532d0f749c35f951b1fffcf39374a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 807,
+    "sha256": "152ef9e4a77930f228ab478ed42196f449c0dbaba20913717cf65d42df579512"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/below-capacity/test.log",
+    "bytes": 5494,
+    "sha256": "b1b24ce85fb88bed6d5f6d2004e86f8d36f4d607927d3cc08348096772759b79"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/driver.actual-exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/driver.log",
+    "bytes": 603,
+    "sha256": "f7a20b9e5efa8b437d5bcbeb414bbd5b32aa873ded3df611c046fe46fedff02e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/driver.py",
+    "bytes": 9335,
+    "sha256": "bf44be181b162eba93239bb7363b4837b423dfa38f0e3d6ca68a190ef28b780c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/forward.rs.original",
+    "bytes": 12894,
+    "sha256": "a044d1d16ef3de0094c9f73e5338042317d2d835ec8fd674cec66c2947f5d31e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/environment.json",
+    "bytes": 824,
+    "sha256": "1201300c0af503be9929f862e71c48d0051e8b4b4b24fd65ccee136050e8e977"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/observed.json",
+    "bytes": 6631,
+    "sha256": "44afa42d6f9487e3ee1ef21a8ab0eff60c742973d779dc4199c69977068fde16"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2073,
+    "sha256": "5bcaf6439fba2c932ce4d7662467cfe1b7b7879bbed8e3eb23af259ca7f9d458"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "2643c2018cd9be0d616557fb1560c6044108a9a6dbca2321d7248d13c17845f4"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 6085,
+    "sha256": "ee6cebb22d775bc1ffa46e75147fcdbb0020378fb47d8f915620da41fc418431"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4/test.log",
+    "bytes": 10882,
+    "sha256": "6b0d4c7db9e12c926dec2281b2bfe4352d09c3100b5ef22be1bdda1cbc25b85d"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Connect4.patch",
+    "bytes": 602,
+    "sha256": "8a5efbfa787a4b5c4283531d0aaa4d830f9744c5cae7ef99c7a0e908e2e464d9"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/environment.json",
+    "bytes": 826,
+    "sha256": "bd7c3177d384cc4a0ea23c5d1aa82ca7ac947751bf4dc6c77167bdcdd43b451f"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/observed.json",
+    "bytes": 6078,
+    "sha256": "f8506e34048500a46a66392bfc69d1897afd800b40759b9d43c8386b188ff776"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "11e35e22fc4a7b272adaf38055dd7b72a499385af2998554e53e9e2f39dee64a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "97902e5bddc41d741c81bd3afe89c7c6435d4ad08572ec45cd8e5cf29ab1d6fb"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 5561,
+    "sha256": "7d53ee0131ba6b82811c794e222b19c8896caa1a860db1f1d2ac411988c2ddf9"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4/test.log",
+    "bytes": 10362,
+    "sha256": "267eace9380610b60ef629fcd05e2396fb4532b50ecc79d1211e95151c4f2c5f"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-Sendmsg4.patch",
+    "bytes": 563,
+    "sha256": "0d230a63f0cf98f50c60769e4f9fae8a5850ddc443950f7281f992b2b713e5dd"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/environment.json",
+    "bytes": 833,
+    "sha256": "0128ed0afcaa6c9a88d1d90434d46d55d9ca25e7b875e934b0afe71c2a68d013"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/observed.json",
+    "bytes": 8965,
+    "sha256": "552c949c267d31f821397bc2d44441a1e4312d783e6045a911de5ed2285aef6b"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "7d7e3e600c1fdc44332966e69c8e5b5c79b6ecab88222e3f27d0e2fcb9ee7f4c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "63629ad22c2e497fb61ff75b5b1db2d4b92d0a7d3342f7a288829479f404ee9a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "96dd3b775464e35d17746a678be0993d30582e0bfcae3db3ee13d0e08364e523"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "d176411c9fe98329990295181cc86c85e7e70d1b4c2fd70c5b04de4136f9add1"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "394158e1e9895512a3599eb793d538daab8bf2767a1e1d401a684e66911fd871"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission/test.log",
+    "bytes": 5155,
+    "sha256": "fcb59b1aea43772211da20c03f906f152a8161941b96901d3dc59108a937bb6e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/removed-payload-admission.patch",
+    "bytes": 955,
+    "sha256": "be36f4ba745fbeb69e142a34bcc57bc00b24b81e5c0551f38f5fbb34a02a1abe"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/environment.json",
+    "bytes": 842,
+    "sha256": "508a1a1904bedfc8bcf5ae04308facef08bab4035f755a16d1649f62c57e16cf"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/observed.json",
+    "bytes": 8523,
+    "sha256": "11082241907c68fa9e72c57d131726add793687934a2e6491634d05e6060c053"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "aa99e964f99296dd1d0ea4b479c7b09cb0e529b884daacf76a8986875cb3babc"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "8f1006124c74320f1b9e5ecd59b3c064497108f0b7ed63267bdcf8ad0101cdf0"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7789,
+    "sha256": "5f6d8145774cfcd4cb16ea8f361f4915b18806f90b98fb3822b77b9d262dd62b"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation/test.log",
+    "bytes": 4533,
+    "sha256": "65f33a396a39d562e0f01110836fecd947f872f769162ba13b2a4c09f7fe71e3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/reply-corrupted-after-validation.patch",
+    "bytes": 530,
+    "sha256": "fbbebd01b52983a15a082bb5f5cc1206f6a7375f84898d78320506533d4ba0e9"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/environment.json",
+    "bytes": 842,
+    "sha256": "43d78d2bc8ad13c5de4613c3cb1aea83387778509d424d3bb0cb7aea555a1a3e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/observed.json",
+    "bytes": 7318,
+    "sha256": "d20da5c2e3cb7ae06eaedcd23468266ce7f7ffcdfa84c205e50115339bb19c30"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "43c81332b96c7a95abc992b5e2fcb0ae79da1aee5b0b00f3a0236fc15bd67aa9"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "58fb965367f03fb3cd8094780851bce5794b753ebbb06bb7bd0e184c1df8576d"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 6812,
+    "sha256": "d747967e867815b3324df5599e54280b400751ff5cc44439f58aeca7a7d7a887"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation/test.log",
+    "bytes": 11607,
+    "sha256": "df372d21fc883cc9a31c1418471a09ec9a7327ef06526ed2cb428f55ae44287a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/request-corrupted-after-validation.patch",
+    "bytes": 622,
+    "sha256": "9cd105cdb57ba6c3b1845fa79428405d6e013ea3fed73fcc01819ffe38e9944b"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/environment.json",
+    "bytes": 833,
+    "sha256": "7c3f4acc05c18a67d09e4234fa25902a141c92cc04838d0d1918d3bec0cbb587"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/observed.json",
+    "bytes": 8965,
+    "sha256": "db5704410fe0ea3427e768f06b10fe5c64a2b3823e471c5d856d6530ef0221ae"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "49ef157c82aa5ef1a2ba4bc76b92389c0f5aa6b3a86024d5749189a125714ae1"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "7d9ee244d92c2e9e1ff88da593caea639e040258969980ed4bc56037bb250fde"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "3ae155faeb5dd4b33c01b35bbd6f0bcaa0b7092b78ebbb62d1e647b447a1da0d"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Connect4/test.log",
+    "bytes": 4106,
+    "sha256": "5065aa6a2b3ab86c10cd22e4e84592ee33c649afa2b3b0e386a6bb08b6a6e823"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/environment.json",
+    "bytes": 835,
+    "sha256": "4578addd0bbd6fcc440e84683289201c8b7d010695d666ddaf6f96a9bba5656e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/observed.json",
+    "bytes": 8412,
+    "sha256": "73e8e03b72717d61b65179a4a9e255d8e2dbe8e372d0695b39c3de663d1b9453"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "540c22fc8c8e39b147b50bc3ec9ef414d5e44a95fc81bf001d552002c714f87c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "b2befce2a1cf650c93360d8c9f7331564a43cedfeae3e13c26f837e0e18b6b86"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7432,
+    "sha256": "e261a67134c43936fce97ed13d7cbc7356b1fb1b6d946af7e138e9b8359b418d"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-Sendmsg4/test.log",
+    "bytes": 4108,
+    "sha256": "7294d9c15d4431dc108a926e400c30c0488464271f7d58ec143f4dfa5a101430"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/environment.json",
+    "bytes": 842,
+    "sha256": "0848e4c10571cfc288ad86bd63d10dd5ee67329294dbc5fb3dedab1de56abc60"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/observed.json",
+    "bytes": 8965,
+    "sha256": "939fe3dee065df8cf5fad7a3bbec6b2f5611fb39dff094310caa7510352e7792"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "055f2636def20a6e6828b74ea135d02abc64de6c56359d40401ccbb3d483122a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "c3bedfe932f736c81580515ec3f1e35d82b8415c76f9a9dfb046ca91b659a34a"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "ec0d9f38e0aedeb55a9fb846db66550ef0952300bf292048b3410ff90e5530e0"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-removed-payload-admission/test.log",
+    "bytes": 4106,
+    "sha256": "4ed37fa8adfa1afdf237dcfec912e69b64396582af53d8e1c79721d3a60d0964"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/environment.json",
+    "bytes": 851,
+    "sha256": "bf55b1193af8f26f63507eaff388a9956877d90aa7bd12d47bb80fc0c1a9c174"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/observed.json",
+    "bytes": 8412,
+    "sha256": "c17ab7bdec65208053eb17beabcb65a3e6e50ffef09d1544418124006548860e"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2076,
+    "sha256": "8cbbd6cf251edd8263965c0905596977a2cb1992ac0f9c9cd572c751760bfe67"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "c468ba35c82302d2d30c32a4f1a125a24394fd054402b60e083b2a244f9a39ff"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7432,
+    "sha256": "4ff60e668ee75d29aa727214116fb533d8dcf63889a38437279fe71a3f94c3b2"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-reply-corrupted-after-validation/test.log",
+    "bytes": 4108,
+    "sha256": "4b4b7bf98efe812e6e860d97d8cf44d2c625864aae5c7ace4375f9df439dbb4c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/environment.json",
+    "bytes": 851,
+    "sha256": "1957e816d9232b8248c0ecb748cae9fc4b670173dc129c3c22ac1c6af26eac3c"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/observed.json",
+    "bytes": 8965,
+    "sha256": "cc3ee9ed4f997d1ce4e074773aaeddc46a49d74cc458b5c662814651fe2103a9"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2074,
+    "sha256": "dd32672a5127a5716238a1db92a03b5d14ff1a14e3fe26a1c98906038d15ad31"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "53d590739de3822a1f48c004b4268480db64da16b7a31490d66015897bff5509"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 7956,
+    "sha256": "c15710da5ebc2218f735dd0039ff794ed4895184dd8b389149c3650eff0a2b58"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-request-corrupted-after-validation/test.log",
+    "bytes": 4106,
+    "sha256": "e5094e30341a8a89f5cc76eb0f7a97b47d5fc45c2811da25ba41bddd5dca8974"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored-source.json",
+    "bytes": 271,
+    "sha256": "d5de4b1793319f837176efc6baefdcf4e6ea1473013ef87facc9639ba8bde9b7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/restored.diff",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/results.json",
+    "bytes": 10520,
+    "sha256": "bf744d1b37909c3e38f6207ef6d474aacc3668e9cc91477d37475047710ba6c7"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/sock_addr.rs.original",
+    "bytes": 37072,
+    "sha256": "3fd2abe3355735d3d3c7ed79246b153dc85ac9e07cdf4118d371436e3b20d759"
+  },
+  {
+    "path": "root-managed-forward-guards-7ee6-v2/source.json",
+    "bytes": 664,
+    "sha256": "600112d43b6065cdc2504bdb34537ea0215e34b9aae4be8cd37883c8721d604d"
+  }
+]

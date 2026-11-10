@@ -1,0 +1,7 @@
+[    0.011450] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-relay4", "connected", "30000", "fixed-original-peer", "17"]
+managed-sock-addr {"type":"PayloadRefusal","cause":"Limit","provided":17,"required":18}
+managed-sock-addr {"type":"Error","stage":"ReservePayload","kind":"InvalidInput","errno":null}
+managed-network failed kind=InvalidInput errno=None: retained payload slots exceed caller envelope
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.080697] reboot: Power down

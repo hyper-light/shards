@@ -1,0 +1,11 @@
+below-capacity 101 actual witness checked
+removed-Connect4 101 actual witness checked
+restored-removed-Connect4 0 actual witness checked
+removed-Sendmsg4 101 actual witness checked
+restored-removed-Sendmsg4 0 actual witness checked
+request-corrupted-after-validation 101 actual witness checked
+restored-request-corrupted-after-validation 0 actual witness checked
+reply-corrupted-after-validation 101 actual witness checked
+restored-reply-corrupted-after-validation 0 actual witness checked
+removed-payload-admission 101 actual witness checked
+restored-removed-payload-admission 0 actual witness checked

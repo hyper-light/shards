@@ -1,0 +1,1 @@
+console=ttyS0 quiet panic=-1 shards_test=managed-network -- managed-network sock-addr-relay4 unconnected 30000 fixed-original-peer 17

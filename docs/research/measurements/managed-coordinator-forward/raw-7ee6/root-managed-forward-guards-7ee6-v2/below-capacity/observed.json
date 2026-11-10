@@ -1,0 +1,24 @@
+[
+  {
+    "type": "Target",
+    "mode": "Connected",
+    "namespace": 4026532020,
+    "cgroup_inode": 21,
+    "backend": "127.0.0.1:36648",
+    "responder": "127.0.0.1:45211",
+    "profile": "FixedOriginalPeer",
+    "operation": "BufferedRelay"
+  },
+  {
+    "type": "PayloadRefusal",
+    "cause": "Limit",
+    "provided": 17,
+    "required": 18
+  },
+  {
+    "type": "Error",
+    "stage": "ReservePayload",
+    "kind": "InvalidInput",
+    "errno": null
+  }
+]

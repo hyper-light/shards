@@ -1,0 +1,140 @@
+[
+  {
+    "operation": "refusal",
+    "mode": "connected",
+    "budget": 17,
+    "actual_exit": 101,
+    "witness": {
+      "refusal": [
+        {
+          "type": "PayloadRefusal",
+          "cause": "Limit",
+          "provided": 17,
+          "required": 18
+        }
+      ],
+      "setup_target_absent": true,
+      "scope": "typed return precedes setup in exact source; no general kernel-resource accounting claim"
+    },
+    "cleanup": [],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  },
+  {
+    "operation": "refusal",
+    "mode": "unconnected",
+    "budget": 17,
+    "actual_exit": 101,
+    "witness": {
+      "refusal": [
+        {
+          "type": "PayloadRefusal",
+          "cause": "Limit",
+          "provided": 17,
+          "required": 18
+        }
+      ],
+      "setup_target_absent": true,
+      "scope": "typed return precedes setup in exact source; no general kernel-resource accounting claim"
+    },
+    "cleanup": [],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  },
+  {
+    "operation": "forward",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": {
+      "slots_before_target": true,
+      "strict_two_leg_and_backend_peer": true
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  },
+  {
+    "operation": "forward",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": {
+      "slots_before_target": true,
+      "strict_two_leg_and_backend_peer": true
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  },
+  {
+    "operation": "scripted",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": {
+      "scripted_exact_and_no_payload_slot_record": true
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  },
+  {
+    "operation": "scripted",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": {
+      "scripted_exact_and_no_payload_slot_record": true
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "705288147381cc6c18beb93522051aa84950aea3d3a59b2eb0d6c452ffeae035"
+  }
+]

@@ -1,0 +1,10 @@
+--- crates/testguest/src/managed_network/intercept/udp/forward.rs
++++ crates/testguest/src/managed_network/intercept/udp/forward.rs
+@@ -196,6 +196,7 @@
+             stage = Stage::ValidateIngress;
+             let metadata = validate_received(received, &input.slots.request, step.request(), local, None)?;
+             peer.observe(metadata.peer)?;
++            if step == Exchange::Binary { if let Some(byte) = input.slots.request.first_mut() { *byte ^= 1; } }
+             let request = input.slots.request.get(..length).ok_or(Fault::Payload)?;
+             stage = Stage::UpstreamSend;
+             let sent = deadline

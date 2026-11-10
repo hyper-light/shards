@@ -1,0 +1,33 @@
+{
+  "initial_preflight": "assertion failed before new guard campaign; retain this diagnosis",
+  "guests": [
+    {
+      "case": "connected-destination-only",
+      "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/3849883/shards-testguest",
+      "recorded": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412",
+      "current_sha256": null,
+      "exists": false
+    },
+    {
+      "case": "connected-fixed-original-peer",
+      "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/3901582/shards-testguest",
+      "recorded": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412",
+      "current_sha256": null,
+      "exists": false
+    },
+    {
+      "case": "unconnected-destination-only",
+      "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/3903610/shards-testguest",
+      "recorded": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412",
+      "current_sha256": null,
+      "exists": false
+    },
+    {
+      "case": "unconnected-fixed-original-peer",
+      "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/3904855/shards-testguest",
+      "recorded": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412",
+      "current_sha256": "5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412",
+      "exists": true
+    }
+  ]
+}

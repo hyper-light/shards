@@ -1,0 +1,10 @@
+--- crates/testguest/src/managed_network/intercept/udp/forward.rs
++++ crates/testguest/src/managed_network/intercept/udp/forward.rs
+@@ -235,6 +235,7 @@
+                 Some(input.backend),
+             )?;
+             progress = UpstreamProgress::ReplyValidated;
++            if step == Exchange::Binary { if let Some(byte) = input.slots.reply.first_mut() { *byte ^= 1; } }
+             let reply = input.slots.reply.get(..length).ok_or(Fault::Payload)?;
+             stage = Stage::ClientSend;
+             let sent = deadline

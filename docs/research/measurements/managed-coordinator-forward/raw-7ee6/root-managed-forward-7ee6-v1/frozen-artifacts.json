@@ -1,0 +1,6 @@
+{
+  "paths": [
+    "/home/adalundhe/root-managed-forward-7ee6-artifacts-v1/5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412.guest"
+  ],
+  "scope": "same actual guest across four cases; digest prefix normalized according to common::sha256_digest. Original preflight refused prefix mismatch before guard execution; no integrity comparison weakened."
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "path": "root-managed-seven-target-c2eb-v1/checkout.log",
+    "bytes": 203,
+    "sha256": "e63b746f749acec21ead53f2dca97d42dc1622c061eee7a9d730e5cc85252581"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/command.txt",
+    "bytes": 121,
+    "sha256": "c54ab20b0e31ea697485438691ca9a264b24134175a5cf80c09b18048d694e11"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/disk.txt",
+    "bytes": 188,
+    "sha256": "3aaf65482a149cabb79577e3c5a48fbf28247c276782b8c3dcc2e4a0bd051a9d"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/fetch.log",
+    "bytes": 93,
+    "sha256": "c2744b4b32accff40fd8792a5e12386ed86e478af4a27a1957bcc250f765eb57"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/host.txt",
+    "bytes": 147,
+    "sha256": "a8819b89ffeb83f242c37a5cd3918fdc2fe6be74f5bf53e319e6ff8da537fa48"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/lint.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/lint.log",
+    "bytes": 27622,
+    "sha256": "3c2ac66d59b22129687ac02a85a42f75176ed1cf4ff407692c4e89f912a26ef6"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/local-source-fetch.log",
+    "bytes": 182,
+    "sha256": "70bb70eb87da309281bafdd92a81dc4a3e088e6d7d84542b4c95f578c18672fe"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/policy.txt",
+    "bytes": 92,
+    "sha256": "b724b9894064f60845e15fa6f092de9d6841b96a6627ea25ab51183fabbba515"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/preflight-metadata.json",
+    "bytes": 566,
+    "sha256": "eb9e8c09e4dcb8de357124dd935dcce797a9c8541aac398353c916998a71bc97"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/source.txt",
+    "bytes": 41,
+    "sha256": "d6e3983637c253d84fa7358a4ef39a51ba3a576a1cff6cfda91ad8d0333a0c8e"
+  },
+  {
+    "path": "root-managed-seven-target-c2eb-v1/toolchain.txt",
+    "bytes": 192,
+    "sha256": "e2211d4c0760a2a3b03eab88e42f8848952b7aa2ed649277a8fdbf3ce1838fd4"
+  }
+]

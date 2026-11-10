@@ -1,0 +1,272 @@
+[
+  {
+    "type": "Target",
+    "mode": "Connected",
+    "namespace": 4026532020,
+    "cgroup_inode": 21,
+    "backend": "127.0.0.1:43590",
+    "responder": "127.0.0.1:56865",
+    "profile": "FixedOriginalPeer",
+    "operation": "ScriptedResponder"
+  },
+  {
+    "type": "Child",
+    "pid": 541,
+    "role": "Backend",
+    "state": "ExecReturned"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Backend",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:43590",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "5245515545535400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:53648",
+    "original": "127.0.0.1:43590"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Backend",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:43590",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:53648",
+    "original": "127.0.0.1:43590"
+  },
+  {
+    "type": "ClientIdentity",
+    "pid": 541,
+    "namespace": 4026532020,
+    "requested": "127.0.0.1:43590",
+    "local": "127.0.0.1:53648",
+    "mode": "Connected",
+    "role": "BaselineBackend",
+    "peer": "127.0.0.1:43590",
+    "peer_error": null,
+    "cgroup_hex": "303a3a2f736f636b2d616464722d636c69656e740a"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrBaselineClient",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:53648",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "4241434b454e4400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:43590",
+    "original": "127.0.0.1:53648"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrBaselineClient",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:53648",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:43590",
+    "original": "127.0.0.1:53648"
+  },
+  {
+    "type": "ClientCompletion",
+    "role": "BaselineBackend",
+    "expected": "Backend",
+    "stage": "Compatibility",
+    "exchanges": 2,
+    "compatibility": "Exact",
+    "script": "Complete",
+    "success": true
+  },
+  {
+    "type": "ChildReaped",
+    "role": "Backend",
+    "reaped": true,
+    "success": true,
+    "code": 0
+  },
+  {
+    "type": "Program",
+    "hook": "Connect4",
+    "from": "127.0.0.1:43590",
+    "to": "127.0.0.1:56865",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200aa460000620104007f00000162011800de210000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Connect4"
+  },
+  {
+    "type": "Program",
+    "hook": "Recvmsg4",
+    "from": "127.0.0.1:56865",
+    "to": "127.0.0.1:43590",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200de210000620104007f00000162011800aa460000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Recvmsg4"
+  },
+  {
+    "type": "Program",
+    "hook": "Getpeername4",
+    "from": "127.0.0.1:56865",
+    "to": "127.0.0.1:43590",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200de210000620104007f00000162011800aa460000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Getpeername4"
+  },
+  {
+    "type": "Child",
+    "pid": 543,
+    "role": "Relay",
+    "state": "ExecReturned"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Relay",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:56865",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "5245515545535400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:39408",
+    "original": "127.0.0.1:56865"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Relay",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:56865",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:39408",
+    "original": "127.0.0.1:56865"
+  },
+  {
+    "type": "ClientIdentity",
+    "pid": 543,
+    "namespace": 4026532020,
+    "requested": "127.0.0.1:43590",
+    "local": "127.0.0.1:39408",
+    "mode": "Connected",
+    "role": "ScriptedResponder",
+    "peer": "127.0.0.1:43590",
+    "peer_error": null,
+    "cgroup_hex": "303a3a2f736f636b2d616464722d636c69656e740a"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrHookClient",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:39408",
+    "reported": 7,
+    "flags": 0,
+    "copied_hex": "52454c41590080",
+    "metadata": "Known",
+    "peer": "127.0.0.1:43590",
+    "original": "127.0.0.1:39408"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrHookClient",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:39408",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:43590",
+    "original": "127.0.0.1:39408"
+  },
+  {
+    "type": "ClientCompletion",
+    "role": "ScriptedResponder",
+    "expected": "Relay",
+    "stage": "Compatibility",
+    "exchanges": 2,
+    "compatibility": "Exact",
+    "script": "Complete",
+    "success": true
+  },
+  {
+    "type": "ChildReaped",
+    "role": "Relay",
+    "reaped": true,
+    "success": true,
+    "code": 0
+  },
+  {
+    "type": "Cleanup",
+    "state": "Pending",
+    "stage": "JoinWorkers"
+  },
+  {
+    "type": "UdpWorkerCompletion",
+    "role": "Backend",
+    "joined": true,
+    "arrivals": 2,
+    "matched": 2,
+    "empty": 1,
+    "terminal": "Cancelled"
+  },
+  {
+    "type": "UdpWorkerCompletion",
+    "role": "Relay",
+    "joined": true,
+    "arrivals": 2,
+    "matched": 2,
+    "empty": 1,
+    "terminal": "ScriptComplete"
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Connect4",
+    "detached": true
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Recvmsg4",
+    "detached": true
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Getpeername4",
+    "detached": true
+  },
+  {
+    "type": "Cleanup",
+    "state": "Observed",
+    "backend_joined": true,
+    "relay_joined": true,
+    "hook_setup": "Ready",
+    "links_required": 3,
+    "links_acquired": 3,
+    "link_detached": true,
+    "cgroup_removed": true,
+    "after_window": "Unverified"
+  }
+]

@@ -1,0 +1,373 @@
+[
+  {
+    "case": "below-capacity",
+    "mode": "connected",
+    "budget": 17,
+    "actual_exit": 101,
+    "witness": {
+      "refusal": {
+        "type": "PayloadRefusal",
+        "cause": "Limit",
+        "provided": 17,
+        "required": 18
+      },
+      "cleanup_observation": [],
+      "limit": "No child-release record; early scoped Drop success is NOT independently observed"
+    },
+    "cleanup": [],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  },
+  {
+    "case": "removed-Connect4",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 101,
+    "witness": {
+      "backend_received_directly": [
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Binary",
+          "ordinal": 3,
+          "local": "127.0.0.1:49283",
+          "reported": 9,
+          "flags": 0,
+          "copied_hex": "5245515545535400ff",
+          "metadata": "Known",
+          "peer": "127.0.0.1:38259",
+          "original": "127.0.0.1:49283"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Empty",
+          "ordinal": 4,
+          "local": "127.0.0.1:49283",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:38259",
+          "original": "127.0.0.1:49283"
+        }
+      ],
+      "client_correct_despite_bypass": {
+        "type": "ClientCompletion",
+        "role": "ForwardedBackend",
+        "expected": "Backend",
+        "stage": "Compatibility",
+        "exchanges": 2,
+        "compatibility": "Exact",
+        "script": "Complete",
+        "success": true
+      }
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:0e198769ad72d6bec86a8721e10d409e61283928bb0c0e7d36d4e41135934780"
+  },
+  {
+    "case": "restored-removed-Connect4",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": "strict real two-leg bytes, client presentation, backend source and owned cleanup passed",
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  },
+  {
+    "case": "removed-Sendmsg4",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 101,
+    "witness": {
+      "backend_received_directly": [
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Binary",
+          "ordinal": 3,
+          "local": "127.0.0.1:51537",
+          "reported": 9,
+          "flags": 0,
+          "copied_hex": "5245515545535400ff",
+          "metadata": "Known",
+          "peer": "127.0.0.1:54929",
+          "original": "127.0.0.1:51537"
+        },
+        {
+          "type": "UdpArrival",
+          "role": "Backend",
+          "step": "Empty",
+          "ordinal": 4,
+          "local": "127.0.0.1:51537",
+          "reported": 0,
+          "flags": 0,
+          "copied_hex": "",
+          "metadata": "Known",
+          "peer": "127.0.0.1:54929",
+          "original": "127.0.0.1:51537"
+        }
+      ],
+      "client_correct_despite_bypass": {
+        "type": "ClientCompletion",
+        "role": "ForwardedBackend",
+        "expected": "Backend",
+        "stage": "Compatibility",
+        "exchanges": 2,
+        "compatibility": "Exact",
+        "script": "Complete",
+        "success": true
+      }
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 1,
+        "links_acquired": 1,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:a736f33a1569a28eb0131867b8f8c07afb07fd6a66ddb7638ea3505a295d4325"
+  },
+  {
+    "case": "restored-removed-Sendmsg4",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": "strict real two-leg bytes, client presentation, backend source and owned cleanup passed",
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  },
+  {
+    "case": "request-corrupted-after-validation",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 101,
+    "witness": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:33121",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5345515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:58337",
+        "original": "127.0.0.1:33121"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:24cb888245ebe2ca753bd78e503931832ff9a6bbe80d75c65c393e69a092cdb6"
+  },
+  {
+    "case": "restored-request-corrupted-after-validation",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": "strict real two-leg bytes, client presentation, backend source and owned cleanup passed",
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  },
+  {
+    "case": "reply-corrupted-after-validation",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 101,
+    "witness": [
+      {
+        "type": "UdpArrival",
+        "role": "SockAddrForwardedClient",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:49328",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "4341434b454e4400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:36666",
+        "original": "127.0.0.1:49328"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:8c650d7a10201884b54f86ab30e0eee04d53221af5947e55ccdb479fa4baad6d"
+  },
+  {
+    "case": "restored-reply-corrupted-after-validation",
+    "mode": "unconnected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": "strict real two-leg bytes, client presentation, backend source and owned cleanup passed",
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  },
+  {
+    "case": "removed-payload-admission",
+    "mode": "connected",
+    "budget": 17,
+    "actual_exit": 101,
+    "witness": {
+      "real_retained_capacity_exceeds_envelope": {
+        "type": "PayloadSlots",
+        "provided": 17,
+        "request_len": 9,
+        "reply_len": 9,
+        "request_capacity": 9,
+        "reply_capacity": 9,
+        "charge_scope": "PayloadCapacityOnly",
+        "allocator_kernel_console": "Unaccounted"
+      },
+      "guest_forwarded_anyway": {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Empty",
+        "stage": "ExchangeComplete",
+        "upstream_progress": "ReplyValidated",
+        "ingress_received": 2,
+        "upstream_sent": 2,
+        "upstream_received": 2,
+        "client_sent": 2,
+        "empty_ingress": 1,
+        "empty_reply": 1,
+        "terminal": "ScriptComplete",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      },
+      "host_guard": "strict host assertion still rejects excess capacity"
+    },
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:77cce64e21354f315f9808a1298ff3ab7e8ad98161cf40ae05479eec53378a14"
+  },
+  {
+    "case": "restored-removed-payload-admission",
+    "mode": "connected",
+    "budget": 18,
+    "actual_exit": 0,
+    "witness": "strict real two-leg bytes, client presentation, backend source and owned cleanup passed",
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ],
+    "guest_sha256": "sha256:5885eb4c84024c4115ff362413207c5a058c42d70e600683c4209e11ab08c412"
+  }
+]
