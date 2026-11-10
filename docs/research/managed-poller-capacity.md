@@ -226,6 +226,196 @@ implementation can be scoped later after coordinator approval.
 
 ## 6. Memory::relieve inotify buffer
 
-Second scoped item: the `4096` read buffer in `crates/init/src/domains.rs`.
-Research continues immediately after the first signed Poller checkpoint. No
-finding, replacement bound or implementation is claimed yet for that item.
+The second item is `Memory::{watch,relieve}` and `Ooms::of` in
+[`domains.rs`](../../crates/init/src/domains.rs), lines 886–1043 at base, plus only
+its setup and poll/dispatch callers in
+[`run.rs`](../../crates/init/src/run.rs), near lines 248, 4679 and 5124.
+`watch` creates one nonblocking/CLOEXEC inotify instance and registers
+`{CGROUPS}/memory.events` itself for `IN_MODIFY`. It does not register a directory,
+one watch per domain, or ONESHOT. The successful watch descriptor is not retained
+separately; the owned inotify fd controls this instance's lifetime.
+
+`relieve` creates a zeroed 4096-byte stack array and reads until `read <= 0`,
+discarding the returned bytes. It does not distinguish EAGAIN, EINTR, EINVAL or
+another read failure, and does not inspect overflow/invalidation records. It then
+rereads per-domain OOM counters/population and current aggregate memory/high,
+and retains the existing largest-populated-domain victim policy. These are
+specific source facts, not observed failed relief, lost notifications, excessive
+stack cost or starvation. No fix to this code is approved by these observations.
+
+The relay polls this fd for `POLLIN` and invokes relief inline with other owner
+handlers. Therefore the amount of drain work before state evaluation and return
+to control handling matters independently of byte-array size. A nonblocking
+descriptor prevents sleeping for an unavailable record; it does not impose a
+bound on a loop whose queue can keep receiving notifications.
+
+### A record bound is not a service-batch choice
+
+Let `H = size_of::<libc::inotify_event>()` on the guest target. The pinned
+[Linux UAPI](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h)
+has four 32-bit fields followed by an optional name. The
+[inotify reader](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c)
+uses `H + round_event_name_len(event)` for each record. An absent name adds zero;
+a present name includes a terminating NUL and padding to a multiple of H. The
+buffer receives whole records. If the next record does not fit, `get_one_event`
+returns EINVAL **before removing it from the queue**; after a successful prefix,
+`inotify_read` normally returns those bytes instead of that later size error.
+A short read consequently does not prove that the queue is empty.
+By contrast, the source removes a record before copying it to userspace; an
+EFAULT copy failure is not evidence that retry preserves every notification.
+
+This exact watch has a useful conditional framing invariant. The
+[fsnotify dispatcher](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c)
+strips the parent name when delivering a non-directory-entry event to the file's
+inode watch (`fsnotify_handle_event`). Thus its file-modification record has no
+name. IN_IGNORED/IN_Q_OVERFLOW also have no filename. H is a researched bound for
+**one record under that unchanged file-watch contract**. It is not the chosen
+read length, an upper bound on queued records or evidence that reading one at a
+time is a suitable service policy. Adding directory/named-event watches would
+invalidate the premise and require a checked variable-record bound.
+
+Neither a host/guest page size nor 4096 is the inotify record protocol limit. A
+larger buffer changes how many records one read can collect; it does not enlarge
+the kernel queue or prove absence of overflow. The
+[notification queue](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c)
+has its own event-count bound and separately queues an overflow marker. Queue
+configuration is not an admitted userspace byte budget and must not be changed
+on the host to make a candidate pass.
+
+`FIONREAD` is an alternative demand input: the pinned inotify implementation
+scans the queued records under its lock and returns the aggregate bytes through
+an `int`. It is a snapshot, not a reservation or an upper bound on a later read's
+queue. A caller must validate the signed result, byte/layout arithmetic, memory
+admission and allocation failure, and still accept a complete prefix/retry.
+An extra ioctl, locked scan and possible retained high-water allocation require
+measurement; one observed queued length cannot become a new runtime constant.
+
+### Notifications, authoritative state and terminal conditions
+
+The [cgroup v2 contract](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst)
+defines `memory.events` counters and modified-event notification, including
+hierarchical behavior and the separate local-events interface. Actual mount and
+controller configuration must be named in a reproduction. The current code uses
+the notification as a wake to reread current state, not as a counted OOM history.
+Keep that distinction: coalesced or lost wake records are not the source of the
+counter values, and a snapshot of several files is not an atomic history.
+
+The [inotify event backend](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c)
+merges identical successive queued events. That can reduce demand for this
+one-file watch, but proves neither a finite service latency nor impossible loss:
+its kernel event-allocation failure explicitly queues overflow too. More storage
+in this userspace array cannot repair such a lost notification.
+
+The [inotify contract](https://man7.org/linux/man-pages/man7/inotify.7.html) and
+[watch-removal contract](https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html)
+also distinguish invalidation from ordinary modification. Removal produces
+IN_IGNORED; pending records can outlive their watch. Closing the last descriptor
+for the inotify instance destroys its watches. Closing an unrelated open of the
+watched file does not cancel this instance's watch. ONESHOT, if ever introduced,
+removes a watch after an event; current Memory does not use it. Re-registering
+by pathname or recycled watch number must not silently adopt stale records or
+an unrelated replacement object.
+
+| Input/state to distinguish in an approved candidate | Required meaning; current behavior is not claimed verified |
+| --- | --- |
+| Cold setup succeeds or fails | Admission and object/watch registration precede active notification ownership. Read a coherent-enough initial state under the selected contract; do not assume registration synthesizes past pressure. Startup ordering needs actual before/after registration cases. |
+| Positive read | Complete records were dequeued; notification counts are not counter increments. Validate a parsed prefix and retain any record needed for a later action before fallible work. |
+| EAGAIN / EWOULDBLOCK | Queue had no available record at that check. State can change immediately afterward; preserve event-driven reentry. |
+| EINTR | Interrupted operation, not proven drain completion. Follow the actual caller's control/deadline contract without an unbounded retry that postpones control. |
+| EINVAL / zero / other failure | Not interchangeable with clean queue exhaustion. Represent a size/invariant failure, unavailable watch or read error explicitly as the selected boundary contract requires. No typed production change is made here. |
+| IN_Q_OVERFLOW | Notification loss/uncertainty. Reconcile authoritative counters/current state if that suffices for the chosen policy; never reconstruct exact history from the number of queued events. |
+| IN_IGNORED / IN_UNMOUNT | Future notifications from the old watch are unavailable. Rescanning current state alone does not restore a live watch. Any reopen/re-register or terminal failure needs owned identity, lifecycle and cleanup proof. |
+| Cancel/owner teardown | Release this actual instance and its owned storage; allow relay control and neighbor work to progress. No new periodic state-probe fallback or duplicate counter/watch cache is justified. |
+
+For byte-buffer parsing, do not cast an arbitrary `[u8]` address into an aligned
+reference to `libc::inotify_event`. Validate the returned prefix and checked
+`offset + H + len`; use an appropriate unaligned copy or field decoding, native
+integer byte order, and the real UAPI layout. Overflow's negative watch number
+is a protocol event, not an array index. If a candidate validates the one owned
+watch ID, retain the successful registration receipt and its state; a parallel
+general watched-object map is unnecessary. This is a constraint on alternatives,
+not a speculative parser/interface implementation.
+
+### Established comparison and alternatives
+
+The same pinned [libev 4.33 archive](https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz)
+contains `EV_INOTIFY_BUFSIZE` in `ev.c`: a header/name/padding-derived expression,
+not a page size. `infy_cb` does one read and visits complete records; `infy_wd`
+rechecks its watched state on overflow and re-adds invalidated stat watches.
+Its generic stat watcher can also use timed stat fallback. That broader contract,
+infallible allocation policy and formula are not an adoption decision for this
+single cgroup file. The earlier libevent/mio comparisons concern **native
+readiness records**, a different buffer from these inotify payload records.
+
+| Alternative, all unselected | Cold start / failure / resource tradeoff |
+| --- | --- |
+| Current 4096-byte stack drain as baseline | No new allocation or interface. Retains the unexplained literal and existing errno/record treatment; measure exact symptoms before claiming a defect or cost. |
+| File-watch framing derived from H, serviced in bounded turns | Fixed record storage can avoid a new heap allocation under the unchanged unnamed-record premise. Batch/number-of-reads policy still needs admitted service demand and control-progress evidence; H alone cannot select it. Unexpected named records/size errors must fail explicitly rather than silently stop. |
+| Reusable, fallibly provisioned byte storage based on admitted/observed demand | Can collect several complete records without recreating heap storage. Provision before dequeue; keep retained bytes charged, check growth arithmetic and hold the prior valid buffer on optional-growth refusal only if progress remains valid. FIONREAD is optional feedback with its own syscall/lock cost, not automatic authority. |
+| One bounded collection/rescan per relay turn instead of drain-until-empty | Distinguishes scheduling policy from record framing. Remaining records keep the inotify fd readable, but state/readiness races, redundant rescans and control fairness require proof. No arbitrary read-count or time quantum is selected. |
+| Hold `memory.events` and wait for its change condition directly | Could remove the inotify payload-buffer question at a different existing OS seam. Requires a separate reproduced compatibility/cost decision and precise read-to-ack/object-removal contract; not an approved refactor. |
+
+The last alternative has a specific primary-source basis. The
+[memory controller file definition](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c)
+associates `memory.events` with an events-file notification object;
+[memory event accounting](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h)
+updates counters and calls
+[`cgroup_file_notify`](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c).
+[kernfs](https://github.com/torvalds/linux/blob/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c)
+wakes its open-file poll state, marks changed state with POLLPRI/ERR, and samples
+the notification generation in `kernfs_seq_show`. Ordinary POLLIN can already be
+true without a change, so copying the current relay's POLLIN interest would be
+incorrect for this alternative. Seeking/rereading through the **same retained
+open file** and notification-before/during/after-ack races need actual evidence.
+This is event-driven kernel notification, not periodic cgroup probing.
+
+Changing buffer storage must not silently change the D59 victim/entitlement
+policy, OOM reporting or management lifetime. No source observation here settles
+the managed plan's unresolved owner-budget or fairness requirements.
+
+## 7. Coordinator-owned inotify plan — entirely unrun
+
+1. Pin exact source/kernel/config/libc/UAPI, cgroup mount options, actual watched
+   object, allowed memory/current/high values and owned member identities. Begin
+   with a bounded private fixture on the existing coordinator-approved guest
+   setup. No host sysctl, mount/controller provisioning or privileged host change
+   is proposed. This lane ran no fixture or cgroup operation.
+2. Reproduce the specific claimed symptom before a production change. Trace the
+   actual watch mask/ID, raw record lengths/masks, read returns/errno, unread
+   readiness, authoritative state before/after and actual relief outcome. Show
+   pre-watch existing pressure, update during registration, ordinary coalescing
+   and a later independent update. A regular-file write fixture can prove framing
+   but cannot stand in for actual cgroup notification/relief semantics.
+3. Compare buffers relative to the **derived framing**, including below a next
+   record, exactly fitting one and a complete-prefix read with more records
+   pending. Add a separate test-owned directory/named-record case as an invalidated
+   premise control, not as evidence that Memory already watches names. Independent
+   queue/readiness observation must establish that a too-small failed read left
+   its next record pending. Do not infer queue emptiness from a short positive read.
+4. Exercise interruption, watch creation refusal, watched-object deletion or owned
+   removal, pending records after removal, closure, partial setup and owner cancel.
+   Only a separately approved failure fixture may inject allocator/read/overflow
+   outcomes. Scripted overflow records validate consumer handling only; they do
+   not prove actual kernel queue exhaustion or kernel-allocation failure. Do not
+   change host queue limits or claim overflow impossible from coalescing.
+5. Under controlled changing memory demand, independently observe main/sibling
+   progress and stop processing while Memory is readable. Record drain work,
+   state-read work, control/deadline latency and whether the actual population
+   chosen by the unchanged policy ended. An event mask or log alone is not that
+   effect. Establish watch/storage/FD and parent/kernel return on error/cancel.
+6. For any candidate, remove only its relevant errno/invalidation/record-bound/
+   per-turn guard and require the associated actual stale-watch, stuck record,
+   wrong state/effect or delayed control witness; restore exact source and rerun.
+   There is no implemented guard or executed mutation in this research batch.
+7. Pair/interleave current and approved alternatives on the same workloads,
+   including cold start, burst/coalesced demand and idle-to-active transitions.
+   Root records n and p50/p90/p99/max, syscall/read counts, allocation/reallocation/
+   copies, stack/retained storage, faults, CPU and parent/kernel/neighbor costs.
+   A changed record batch is justified by its method/invariants and live evidence,
+   never a copied library formula or fastest observed number. Direct kernfs poll
+   additionally needs ack/removal/race compatibility proof on named actual kernels.
+8. This guest code is Linux-specific on amd64/arm64 with GNU/musl build coverage;
+   it also runs inside guests hosted by supported macOS arm64 and Windows hosts.
+   Coordinator owns changed-source lint and real-guest gates. No host platform
+   result follows from the Linux document, no unavailable/paused hardware is a
+   passing skip, and all tests/costs above remain **unrun** here.

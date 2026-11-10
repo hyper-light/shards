@@ -77,30 +77,38 @@ Policy receipt was sent with stable key
 `managed-poller-research-setup-hold-no-writes-v1`; resumed receipt/finding with
 `managed-poller-research-resume-policy-24f-v1`.
 
-First batch documents Poller facts, syscall limits versus defaults, existing
+First batch `df37d254f366e8a7c9d75c876d816927860ee620` was signed and pushed;
+it documents Poller facts, syscall limits versus defaults, existing
 callers/ownership, alternatives and an **unrun** coordinator reproduction/cost
-plan. The next batch immediately researches Memory::relieve's 4096 buffer while
-root reviews this piece. After both batches, request the next specific literal
+plan. That checkpoint was sent with stable key
+`managed-poller-research-checkpoint-poller-df37-v1`. The second batch immediately
+researched Memory::relieve's 4096 buffer while root reviewed the first. Its early
+finding was sent with `managed-poller-research-inotify-finding-24f-v1`.
+It documents the unnamed-file-record derivation, complete-read framing,
+kernel queue/coalescing/overflow versus userspace storage, errno/invalidation,
+control progress, direct kernfs change-notification alternative, and another
+**unrun** coordinator plan. Neither a number nor architecture was selected.
+After both batches, request the next specific literal
 from root and remain available without manufacturing an idle campaign or waiter.
 Signed checkpoints use `/Users/adalundhe/.kiln-run/bin/gits`, named paths and the
 required Claude Opus 5.5 trailer. Only this lane's branch is pushed; no self-main
 merge. Commit IDs are sent in coordinator messages and visible in Git history.
 
-## R01–R16 account for first research batch
+## R01–R16 account for both research batches
 
 | Rule | Actual work and remaining limit |
 | --- | --- |
-| R01 | Production unchanged. Distinguishes possible infallible Vec growth from a live OOM result; derived pre-dequeue obligation recorded. Reproduction/error-path proof unrun. |
-| R02 | Pinned Linux/XNU/UAPI, Rust, libevent/libev/mio and official manuals read. Alternatives documented; no architectural choice without live data. |
-| R03 | No literal introduced or replaced. Kernel ABI bounds separated from defaults, startup/overflow/refusal requirements listed. Method/number selection remains open. |
-| R04 | Existing add/wait/remove/close/exit/interrupt/cancel transitions described; candidate preservation obligations listed. No production state machine changed. |
-| R05 | Focused named wait and semantic callers only. Existing reuse versus fresh caller Vec distinguished; duplicate membership cache rejected absent consistency proof. No repository audit or cache benefit claim. |
+| R01 | Production unchanged. Distinguishes possible infallible Vec growth from a live OOM result; derived pre-dequeue obligation and inotify byte parsing/errno requirements recorded. Reproduction/error-path proof unrun. |
+| R02 | Pinned Linux/XNU/UAPI, Rust, libevent/libev/mio and official manuals read. Inotify framing/queue/cgroup/kernfs source chain added. Alternatives documented; no architectural choice without live data. |
+| R03 | Neither 64 nor 4096 replaced. Kernel batch bounds, conditional unnamed-record H and queue limits separated from service choices/defaults. Cold-start/overflow/refusal requirements listed. Method/number selection remains open. |
+| R04 | Existing add/wait/remove/close/exit/interrupt/cancel and notification/overflow/invalidation transitions described; candidate obligations listed. No production state machine changed. |
+| R05 | Focused named waits and semantic callers only. Existing Vec reuse, inotify notification versus counter state and bounded-turn/direct-notification alternatives distinguished. Duplicate membership/counter cache rejected absent consistency proof. No repository audit or cache benefit claim. |
 | R06 | Documentation-only diff; no runtime branch/complexity change. Future candidate must be scoped and locally understandable. |
 | R07 | Claims link to primary source and exact local blobs. No production comments changed. |
 | R08 | No performance result or winning architecture. Pinned equivalent comparison and distributions are root-owed; 4–5× target remains unproven. |
 | R09 | No reproduced runtime defect claimed or production fix made. Exact caller reproduction is the first proposed coordinator step. |
 | R10 | Durable note, source-byte identity, existing root-evidence links and unrun method retained. Before/after/mutations explicitly unrun. |
-| R11 | Linux GNU/musl amd64/arm64 and macOS arm64 ABI obligations recorded. Windows and all build/real-VM coverage unrun here. |
+| R11 | Linux GNU/musl amd64/arm64 and macOS arm64 ABI obligations recorded; inotify is guest Linux even on macOS/Windows hosts. Windows and all build/real-VM coverage unrun here. |
 | R12 | Existing platform seam and caller ownership considered; no parallel Poller, manager, OS abstraction, dependency or binary added. |
 | R13 | Only research note and textual identity/evidence, no runtime code/interface or speculative test framework. |
 | R14 | No allocations, faults, CPU, latency, memory or kernel costs measured. All such work remains coordinator-owned. |
@@ -113,8 +121,10 @@ Source retrieval and local-blob hashing are identity checks, not runtime
 measurements. `python3 scripts/check-development-policy` at exact base 24f
 returned 0: "Development policy checks passed; evidence/coordinator review is
 still required." Named-path staged whitespace and local-link/manifest checks are
-recorded in [checks-poller.json](checks-poller.json) before the checkpoint commit.
-No Rust compile,
+recorded in [checks-poller.json](checks-poller.json) before the first checkpoint
+commit; those hashes belong to that historical documentation version, not the
+expanded note/manifest. The second documentation checks are retained separately
+in [checks-inotify.json](checks-inotify.json). No Rust compile,
 unit/integration test, syscall fixture, fault injection, mutation, VM, lint matrix,
 benchmark, profile or audit ran in this batch. All runtime and comparative plans
 in the note are coordinator-owed and unrun; historic evidence is identified at

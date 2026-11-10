@@ -1,0 +1,67 @@
+{
+  "kind": "documentation/source identity checks only; no runtime tests or measurements",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "documentation_parent": "df37d254f366e8a7c9d75c876d816927860ee620",
+  "utc": "2026-11-10T14:09:11.954491+00:00",
+  "commands": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        "docs/research/managed-poller-capacity.md",
+        "docs/research/measurements/managed-poller-research/README.md",
+        "docs/research/measurements/managed-poller-research/source-identity.json"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "Python: exact parent/staged ownership; all base source hashes; relative links; pinned code citations match fetched manifest; no changed paths outside assigned documentation",
+      "exit_code": 0,
+      "verified_local_blobs": 17,
+      "relative_links": 18,
+      "pinned_code_citations": 21,
+      "source_identity_records": 26
+    }
+  ],
+  "files": [
+    {
+      "path": "docs/research/managed-poller-capacity.md",
+      "sha256": "2d87f6b005c090b47e04d257790e76421786d3f41e20b511e002543b18e7768c"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/README.md",
+      "sha256": "3c70c9ff23ce83434a58f3e4117cde2e7ffd6598a1bf225879f12945f4baa701"
+    },
+    {
+      "path": "docs/research/measurements/managed-poller-research/source-identity.json",
+      "sha256": "1dbfdeddba6d4deffa741393ae7d20f172dbdfcf98ae5c6a6d8e8cc5d8ecfe51"
+    }
+  ],
+  "unrun": [
+    "compile",
+    "unit/integration/E2E tests",
+    "live syscall/cgroup fixture",
+    "cold-start/overflow/refusal/invalidation/cancel cases",
+    "OOM/fault injection",
+    "mutations",
+    "all-target lint",
+    "VM/namespace/BPF/socket campaign",
+    "audit",
+    "profiling",
+    "benchmark"
+  ]
+}

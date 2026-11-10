@@ -1,6 +1,6 @@
 {
   "schema": "managed-poller-source-identity-v1",
-  "scope": "Poller primary-source research; no runtime measurement",
+  "scope": "Two scoped literals: Unix Poller capacity and guest Memory::relieve inotify read storage; no runtime measurement",
   "base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
   "policy_rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
   "projects": [
@@ -291,6 +291,170 @@
       "sha256": "89581e15d32ad4f9303241a39d5d8e63fd0fd88e4ea446a0d630c958d65c73ef",
       "etag": null,
       "last_modified": "Fri, 30 Jan 2026 23:12:48 GMT"
+    },
+    {
+      "id": "linux:include/uapi/linux/inotify.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.202144+00:00",
+      "bytes": 3304,
+      "sha256": "48c09a53335353490f94cd465c96f092d0b3a9736b42aae8691e41b9c6390370",
+      "etag": "\"aeb79b4b705e64eedb3a229d6c833f0ebd5f7421275dc0993c341c28e64e7717\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "include/uapi/linux/inotify.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_user.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.196207+00:00",
+      "bytes": 22108,
+      "sha256": "9a98d8a927c6b2ffa2d403cc52bb1cf45a65f30048143be3dc1178d8e6c1cf3e",
+      "etag": "\"3da8f63efcd371107b4887768c6c5b485c3c3c0c082600c4bebef7412144a4e2\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/inotify/inotify_user.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.205902+00:00",
+      "bytes": 5998,
+      "sha256": "ac62662f1843eb4d899d8adb419fe3393d1f4f0ab29d2123aa1abcaaf1203096",
+      "etag": "\"2bbda79433ddb4a3f5df6a2d41760b534010c239e08fdf0b81d5bee66322e371\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/inotify/inotify_fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.196554+00:00",
+      "bytes": 23595,
+      "sha256": "a29dc638b23cee7f5334746f9d36ff65529f90539534ca632b00d10c264cf8e1",
+      "etag": "\"9b595cf1c0121beca045791494aacdfa559abdc1acdfc5702e5aae0ec33fc335\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/notification.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.269628+00:00",
+      "bytes": 5797,
+      "sha256": "3a756d5c49b822aa8d88c198866d6ab74aac7252c7f2f632cddbecf9d646f981",
+      "etag": "\"c49c1d693713d59a5b9f2ce258bd298c099c74171e0d3e8ac850f94898fb58aa\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/notification.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/kernfs/file.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.279682+00:00",
+      "bytes": 28107,
+      "sha256": "32d8998ea0ffac621b535748f6a327c6e1f126e0f75f4a54b98319b475599cb7",
+      "etag": "\"8e53e1c410b1d02a09d6ae5417ae9510f38c8a8acffc2b514a092dd7fe449134\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/kernfs/file.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:Documentation/admin-guide/cgroup-v2.rst",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.326429+00:00",
+      "bytes": 128488,
+      "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97",
+      "etag": "\"de3193f04492af1410cd60e7e65248cf037f026be6c911bd9bd157bc91b22003\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "Documentation/admin-guide/cgroup-v2.rst",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:mm/memcontrol.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.329504+00:00",
+      "bytes": 147656,
+      "sha256": "537b9bdde4a0adade97279051fbce43590a18390293dd1119af15ea08267cbba",
+      "etag": "\"59fe916019182714f2ac68190eb45a3fdfbc02747f5cf48f9d902cbc689a97fb\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "mm/memcontrol.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:include/linux/memcontrol.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.361114+00:00",
+      "bytes": 48700,
+      "sha256": "e82eed5049eec3c0cf080095814d0582baf95408366350e2057dd04f2467585f",
+      "etag": "\"69d37b312da0c01f8fbd0e36f60e63add3237d2231786019bb7c359c6e3de4db\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "include/linux/memcontrol.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:kernel/cgroup/cgroup.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.406518+00:00",
+      "bytes": 199222,
+      "sha256": "de44cafc76c19f8da3289ae23e4f12ed0ba43cbe7ceb6c5822e34ac570371616",
+      "etag": "\"0e8ca5e29b8187c5ba81d417b0c8c859cacad0b413ad8e92b7e60330393bae82\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "kernel/cgroup/cgroup.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "man7-inotify",
+      "url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:58.152288+00:00",
+      "bytes": 44066,
+      "sha256": "79f5ab18e2fc423631cf4949ef82ca1384844353ea11a4dba42e1a77e8fdd8fd",
+      "etag": "\"ac22-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision"
+    },
+    {
+      "id": "man7-inotify-rm-watch",
+      "url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:58.008989+00:00",
+      "bytes": 8967,
+      "sha256": "33c801472a97eec100dde587e3265fcd74fa15e3297fbd5d67563d30e01f7b91",
+      "etag": "\"2307-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision"
     }
   ],
   "libev": {
@@ -416,6 +580,18 @@
       "git_blob": "5ab5970ef29be8b6ae7f8f40457f763d2ae0c442",
       "bytes": 6961,
       "sha256": "e4d17f1ee5e0e9223a34597f6952a187f8b312ca60633a1a25b2515907e7c506"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "git_blob": "cf79e05e1fcbb3ea98f0352dd93cd3990c81bddb",
+      "bytes": 114588,
+      "sha256": "4d961f3ad04b3fcb93680900bbfc28955fef308c8cadd846790abc217e5efa70"
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "git_blob": "3adc4bbe5e4b7e03f941cdee5eb2065b59224458",
+      "bytes": 264811,
+      "sha256": "7ba4a1b4014b213c160cc7303a75faf5af75414ff7783664fcbbec7103fe9555"
     }
   ],
   "handoff": {
@@ -428,6 +604,8 @@
     "Versions intentionally named; no latest-release or exact running-kernel equivalence claimed.",
     "Raw-byte hashes differ from browser-rendered line numbering; use raw source line numbers.",
     "libev official archive fetched successfully using HTTPS Python urllib; browser tool could not open archive/CVS.",
-    "Historical libevent/libev releases establish alternatives, not a selected current performance baseline."
+    "Historical libevent/libev releases establish alternatives, not a selected current performance baseline.",
+    "inotify source chain includes only the selected file-watch framing, cgroup notification, queue/read/overflow semantics and direct-poll alternative. No repository/kernel audit.",
+    "libev ev.c identity already records the same bytes inspected for infy_cb/infy_wd/EV_INOTIFY_BUFSIZE in the second batch."
   ]
 }
