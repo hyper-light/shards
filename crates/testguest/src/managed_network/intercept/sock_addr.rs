@@ -10,12 +10,44 @@ use udp::{DatagramWorker, Exchange, Mode};
 
 mod bpf;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Presentation {
+    DestinationOnly,
+    FixedOriginalPeer,
+}
+impl Presentation {
+    fn parse(word: &str) -> io::Result<Self> {
+        match word {
+            "destination-only" => Ok(Self::DestinationOnly),
+            "fixed-original-peer" => Ok(Self::FixedOriginalPeer),
+            _ => Err(invalid("profile must be destination-only or fixed-original-peer")),
+        }
+    }
+    fn hooks(self, mode: Mode) -> &'static [bpf::Hook] {
+        use bpf::Hook::*;
+        match (self, mode) {
+            (Self::DestinationOnly, Mode::Connected) => &[Connect4],
+            (Self::DestinationOnly, Mode::Unconnected) => &[Sendmsg4],
+            (Self::FixedOriginalPeer, Mode::Connected) => &[Connect4, Recvmsg4, Getpeername4],
+            (Self::FixedOriginalPeer, Mode::Unconnected) => &[Sendmsg4, Recvmsg4],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HookSetup {
+    NotStarted,
+    Partial,
+    Ready,
+}
+
 #[derive(Debug)]
 pub(in super::super) struct Inputs(Role);
 
 #[derive(Debug)]
 enum Role {
     Controller {
+        presentation: Presentation,
         mode: Mode,
         within: Duration,
     },
@@ -40,7 +72,8 @@ impl Inputs {
             Ok(duration)
         };
         let role: io::Result<Role> = match words {
-            ["sock-addr-udp4", how, millis] => Ok(Role::Controller {
+            ["sock-addr-udp4", how, millis, profile] => Ok(Role::Controller {
+                presentation: Presentation::parse(profile)?,
                 mode: mode(how)?,
                 within: within(millis)?,
             }),
@@ -63,7 +96,9 @@ impl Inputs {
                     },
                 })
             }
-            _ => Err(invalid("use sock-addr-udp4 {connected|unconnected} DEADLINE_MS")),
+            _ => Err(invalid(
+                "use sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}",
+            )),
         };
         role.map(Self)
     }
@@ -76,8 +111,7 @@ enum Stage {
     BindBackend,
     BindResponder,
     Baseline,
-    Emit,
-    LoadLink,
+    ReserveHooks,
     ExecClient,
     WaitChild,
     ReapChild,
@@ -89,7 +123,6 @@ enum Stage {
     Record,
     Compatibility,
     JoinWorkers,
-    Detach,
     RemoveCgroup,
 }
 fn error(stage: Stage, error: &io::Error) {
@@ -120,7 +153,11 @@ fn record(args: std::fmt::Arguments<'_>) -> io::Result<()> {
 
 pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     match input.0 {
-        Role::Controller { mode, within } => controller(mode, within),
+        Role::Controller {
+            presentation,
+            mode,
+            within,
+        } => controller(presentation, mode, within),
         Role::Client {
             mode,
             within,
@@ -573,7 +610,12 @@ impl Cgroup {
     }
 }
 
-fn controller(mode: Mode, within: Duration) -> io::Result<()> {
+fn hook_error(failure: bpf::HookFailure) -> io::Error {
+    let _ = failure.write_record(&mut io::stdout().lock());
+    failure.cause
+}
+
+fn controller(presentation: Presentation, mode: Mode, within: Duration) -> io::Result<()> {
     if std::process::id() != 1 {
         return Err(invalid("controller requires direct guest PID1"));
     }
@@ -599,10 +641,17 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
         _ => return Err(invalid("IPv4 responder required")),
     };
     record(format_args!(
-        "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"address_hooks\":\"DestinationOnly\",\"presentation_hooks\":\"None\"}}",
+        "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\"}}",
         namespace.inode()?,
         cgroup.handle.metadata()?.ino()
     ))?;
+    let plan = presentation.hooks(mode);
+    let mut links = Vec::new();
+    at(
+        Stage::ReserveHooks,
+        links.try_reserve_exact(plan.len()).map_err(io::Error::other),
+    )?;
+    let mut hook_setup = HookSetup::NotStarted;
     let mut backend = DatagramWorker::start(
         backend.try_clone()?,
         backend,
@@ -611,7 +660,6 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
         &deadline,
     )?;
     let mut relay = None;
-    let mut link = None;
     let result = (|| {
         if !at(
             Stage::Baseline,
@@ -619,20 +667,34 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
         )? {
             return Err(invalid("baseline native script failed"));
         }
-        let bytes = at(Stage::Emit, bpf::program(destination, rewritten))?;
-        let mut out = io::stdout().lock();
-        write!(
-            out,
-            "managed-sock-addr {{\"type\":\"Program\",\"bytecode_hex\":\""
-        )?;
-        udp::hex(&mut out, &bytes)?;
-        writeln!(out, "\",\"verifier_log\":\"NotRequested\"}}")?;
-        out.flush()?;
-        drop(out);
-        link = Some(at(
-            Stage::LoadLink,
-            bpf::Link::attach(&bytes, &cgroup.handle, mode),
-        )?);
+        for &hook in plan {
+            let (from, to) = hook.endpoints(destination, rewritten);
+            let bytes = bpf::program(from, to).map_err(|cause| {
+                hook_error(bpf::HookFailure {
+                    hook,
+                    stage: bpf::HookStage::Emit,
+                    cause,
+                })
+            })?;
+            let mut out = io::stdout().lock();
+            write!(
+                out,
+                "managed-sock-addr {{\"type\":\"Program\",\"hook\":\"{hook:?}\",\"from\":\"{from}\",\"to\":\"{to}\",\"bytecode_hex\":\""
+            )?;
+            udp::hex(&mut out, &bytes)?;
+            writeln!(out, "\",\"verifier_log\":\"NotRequested\"}}")?;
+            out.flush()?;
+            drop(out);
+            let link = bpf::Link::attach(&bytes, &cgroup.handle, hook).map_err(hook_error)?;
+            // Reservation precedes loading; every acquired link enters this owner
+            // before any reporting failure can leave the setup closure.
+            links.push(link);
+            hook_setup = HookSetup::Partial;
+            record(format_args!(
+                "{{\"type\":\"LinkAttached\",\"hook\":\"{hook:?}\"}}"
+            ))?;
+        }
+        hook_setup = HookSetup::Ready;
         relay = Some(DatagramWorker::start(
             responder.try_clone()?,
             responder,
@@ -664,16 +726,37 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
         }
         Ok(())
     })();
-    let detached = match link {
-        Some(link) => at(Stage::Detach, link.detach()),
-        None => Ok(()),
-    };
+    let acquired = links.len();
+    let mut detach_failure = None;
+    let mut detach_report_failure = None;
+    for link in links {
+        let hook = link.hook;
+        let detached = link.detach();
+        let reported = match &detached {
+            Ok(()) => record(format_args!(
+                "{{\"type\":\"LinkDetached\",\"hook\":\"{hook:?}\",\"detached\":true}}"
+            )),
+            Err(failure) => failure.write_record(&mut io::stdout().lock()),
+        };
+        // Neither a failed detach nor a failed record can skip another owned link.
+        if let Err(error) = reported
+            && detach_report_failure.is_none()
+        {
+            detach_report_failure = Some(error);
+        }
+        if let Err(failure) = detached
+            && detach_failure.is_none()
+        {
+            detach_failure = Some(failure);
+        }
+    }
     let removed = at(Stage::RemoveCgroup, cgroup.cleanup());
     record(format_args!(
-        "{{\"type\":\"Cleanup\",\"state\":\"Observed\",\"backend_joined\":{},\"relay_joined\":{},\"link_detached\":{},\"cgroup_removed\":{},\"after_window\":\"Unverified\"}}",
+        "{{\"type\":\"Cleanup\",\"state\":\"Observed\",\"backend_joined\":{},\"relay_joined\":{},\"hook_setup\":\"{hook_setup:?}\",\"links_required\":{},\"links_acquired\":{acquired},\"link_detached\":{},\"cgroup_removed\":{},\"after_window\":\"Unverified\"}}",
         backend.is_ok(),
         relay.as_ref().is_none_or(Result::is_ok),
-        detached.is_ok(),
+        plan.len(),
+        detach_failure.is_none(),
         removed.is_ok()
     ))?;
     result?;
@@ -695,7 +778,12 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
     {
         return Err(invalid("responder script/terminal differs"));
     }
-    detached?;
+    if let Some(error) = detach_report_failure {
+        return Err(error);
+    }
+    if let Some(failure) = detach_failure {
+        return Err(failure.cause);
+    }
     removed
 }
 
@@ -703,13 +791,43 @@ fn controller(mode: Mode, within: Duration) -> io::Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn missing_or_unknown_profile_is_typed_invalid_input() {
+        for words in [
+            vec!["sock-addr-udp4", "connected", "1000"],
+            vec!["sock-addr-udp4", "connected", "1000", "unknown"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+    #[test]
+    fn finite_hook_plans_are_explicit_and_mode_specific() {
+        use bpf::Hook::*;
+        assert_eq!(Presentation::DestinationOnly.hooks(Mode::Connected), [Connect4]);
+        assert_eq!(Presentation::DestinationOnly.hooks(Mode::Unconnected), [Sendmsg4]);
+        assert_eq!(
+            Presentation::FixedOriginalPeer.hooks(Mode::Connected),
+            [Connect4, Recvmsg4, Getpeername4]
+        );
+        assert_eq!(
+            Presentation::FixedOriginalPeer.hooks(Mode::Unconnected),
+            [Sendmsg4, Recvmsg4]
+        );
+    }
+    #[test]
     fn finite_parser_and_strict_original_port() {
         for mode in ["connected", "unconnected"] {
-            assert!(Inputs::parse(&["sock-addr-udp4", mode, "1000"]).is_ok());
+            for profile in ["destination-only", "fixed-original-peer"] {
+                assert!(Inputs::parse(&["sock-addr-udp4", mode, "1000", profile]).is_ok());
+            }
         }
         for words in [
-            vec!["sock-addr-udp4", "other", "1000"],
-            vec!["sock-addr-udp4", "connected", "0"],
+            vec!["sock-addr-udp4", "other", "1000", "destination-only"],
+            vec!["sock-addr-udp4", "connected", "1000"],
+            vec!["sock-addr-udp4", "connected", "1000", "unknown"],
+            vec!["sock-addr-udp4", "connected", "0", "destination-only"],
             vec!["sock-addr-client4", "connected", "10", "127.0.0.1:0", "Relay"],
             vec!["sock-addr-client4", "connected", "10", "192.0.2.1:42", "Relay"],
         ] {
