@@ -1,0 +1,40 @@
+diff --git a/crates/shards/tests/managed_output/tenant_exit.rs b/crates/shards/tests/managed_output/tenant_exit.rs
+index fc2cf1641..7922af917 100644
+--- a/crates/shards/tests/managed_output/tenant_exit.rs
++++ b/crates/shards/tests/managed_output/tenant_exit.rs
+@@ -72,34 +72,7 @@ enum ReadGoal {
+ impl Capture {
+     fn receive(&mut self, observer: &Observer, expected: &[u8], goal: ReadGoal, until: Instant) {
+         loop {
+-            let event = observer.next(until);
+-            let failure = match &event {
+-                Event::Record(..) => None,
+-                Event::Lost(code) => Some(json!({"variant":"Lost","code":code})),
+-                Event::Failed(cause) => Some(json!({"variant":"Failed","cause":cause})),
+-                Event::End => Some(json!({"variant":"End"})),
+-            };
+-            if let (Some(directory), Some(failure)) = (&self.trace, failure) {
+-                let result = std::fs::File::create_new(directory.join(format!(
+-                    "non-record-{}-{}-{}.json",
+-                    observer.scope.member, observer.scope.channel as u8, self.wire
+-                )))
+-                .and_then(|file| {
+-                    serde_json::to_writer_pretty(
+-                        file,
+-                        &json!({"event":failure,"member":observer.scope.member,"channel":observer.scope.channel as u8,"last_canonical_state":format!("{:?}",self.state),"wire_consumed":self.wire}),
+-                    )
+-                    .map_err(std::io::Error::other)
+-                });
+-                if let Err(error) = result {
+-                    let _ = writeln!(
+-                        std::io::stderr(),
+-                        "member non-record trace write failed: {:?}",
+-                        error.kind()
+-                    );
+-                }
+-            }
+-            let Event::Record(offset, chunk) = event else {
++            let Event::Record(offset, chunk) = observer.next(until) else {
+                 panic!("expected canonical member record before terminal");
+             };
+             if let Some(directory) = &self.trace {

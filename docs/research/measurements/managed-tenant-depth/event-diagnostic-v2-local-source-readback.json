@@ -1,0 +1,55 @@
+{
+  "canonical_policy": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer/assigned adversarial",
+  "policy_receipt": 7855,
+  "candidate": "249dc4cf047586bcb040ae7895bc95769cde5b57",
+  "working_head": "1915889d60cb482d3fb301d4d542681bb88fcfa2",
+  "files": {
+    "crates/shards/tests/managed_output/tenant_exit.rs": {
+      "candidate_sha256": "cfe3d4abab06045babce3f6574c7528fcfdba0311f1234c9962ca63d75c00b52",
+      "current_ca3_sha256": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938"
+    },
+    "crates/shards/tests/managed_output/current_tenant_stdio.rs": {
+      "candidate_sha256": "6dc79f09089d0c9cc3b66ff97a1291dfcb1d197756476615f2351b3c11a49c1b",
+      "current_ca3_sha256": "8f4fe97c2a24780fb1161cb0845c327aeb5e386077cb514ee85b45bb500d4669"
+    },
+    "crates/testguest/src/workload.rs": {
+      "candidate_sha256": "a03ef0dde5769629bcc7da47c9548d24bcc1b17840985ebc96e6e63e3ad139c9",
+      "current_ca3_sha256": "b548fbee772ae87a822e0603fa0588d326f0829039057235c3460944b06a2315"
+    },
+    "crates/shards/tests/common/managed_capture.rs": {
+      "candidate_sha256": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+      "current_ca3_sha256": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce"
+    },
+    "crates/shards/tests/managed_output.rs": {
+      "candidate_sha256": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36",
+      "current_ca3_sha256": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36"
+    }
+  },
+  "current_capture_matches_pre_diagnostic": true,
+  "capture_diff_sha256": "f9c30e62c9587c473fdcff66885d7cba5bf60b4b57a0fe6aeeea780058863ce5",
+  "old_archive_bytes": 37056,
+  "old_archive_sha256": "17a785e9b59502797cfe1f6371ab26c18caf51562961acccc1fb650e40c7c66d",
+  "expected_original_inputs": {
+    "depth": 2,
+    "tasks": 6,
+    "actor_guest_port": 40023,
+    "sibling_guest_port": 36935,
+    "challenge_hex": "955572fd23dc4b5a969a98aba3e7eaa3",
+    "challenge_bytes": 16,
+    "report_bytes": 269,
+    "actor_ms": 120000,
+    "host_sibling_work_ms": 240000,
+    "cleanup_ms": 15000,
+    "hard_s": 255,
+    "guest_expiry": "Runtime value first actor creates ONCE with guest CLOCK_MONOTONIC; same absolute value serialized to descendants, not historical timestamp or host Instant"
+  },
+  "expected_product_manifest": "raw-expiry-v1/build/artifacts.json; historical only, no Adacachy artifact/readiness claim",
+  "linux_admission": "Refused at0idle below2; no command or target created",
+  "linux_clippy": "Unrun",
+  "actual_new_vm_cases": 0,
+  "fedora_writes": false,
+  "local_cargo_build": false,
+  "local_free_bytes": 152202784768
+}

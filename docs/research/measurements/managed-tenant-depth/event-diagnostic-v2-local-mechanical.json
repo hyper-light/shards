@@ -1,0 +1,18 @@
+{
+  "command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "python3",
+    "-c",
+    "import subprocess,json\ncmds={\"policy\":[\"python3\",\"scripts/check-development-policy\"],\"syntax\":[\"bash\",\"-n\",\"docs/research/measurements/managed-tenant-depth/event-diagnostic-v2-lint.command\"],\"diff\":[\"git\",\"diff\",\"--check\"]}\nresults={}\nfor name,cmd in cmds.items():\n p=subprocess.run(cmd,capture_output=True,text=True);results[name]={\"command\":cmd,\"exit\":p.returncode,\"stdout\":p.stdout,\"stderr\":p.stderr}\nprint(json.dumps(results,indent=2))\nraise SystemExit(any(v[\"exit\"]!=0 for v in results.values()))"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"policy\": {\n    \"command\": [\n      \"python3\",\n      \"scripts/check-development-policy\"\n    ],\n    \"exit\": 0,\n    \"stdout\": \"Development policy checks passed; evidence/coordinator review is still required.\\n\",\n    \"stderr\": \"\"\n  },\n  \"syntax\": {\n    \"command\": [\n      \"bash\",\n      \"-n\",\n      \"docs/research/measurements/managed-tenant-depth/event-diagnostic-v2-lint.command\"\n    ],\n    \"exit\": 0,\n    \"stdout\": \"\",\n    \"stderr\": \"\"\n  },\n  \"diff\": {\n    \"command\": [\n      \"git\",\n      \"diff\",\n      \"--check\"\n    ],\n    \"exit\": 0,\n    \"stdout\": \"\",\n    \"stderr\": \"\"\n  }\n}\n",
+  "stderr": "",
+  "local_free_bytes": 152201146368,
+  "local_cargo_build": false,
+  "linux_clippy": "Unrun; admission refused",
+  "vm_executions": 0
+}
