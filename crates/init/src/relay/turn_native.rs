@@ -84,12 +84,7 @@ struct Suffix {
     bytes: Vec<u8>,
 }
 
-fn snapshot(
-    stage: &str,
-    direction: &Direction,
-    progress: &Progress,
-    result: &Result<bool, Fault>,
-) -> Suffix {
+fn snapshot(stage: &str, direction: &Direction, progress: &Progress, result: &Result<bool, Fault>) -> Suffix {
     let end = direction.sent.checked_add(progress.pending).unwrap();
     let bytes = direction.bytes.get(direction.sent..end).unwrap().to_vec();
     println!(
@@ -206,9 +201,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
     let mut source_accepted = 0;
     while source_accepted < request.len() {
         let bytes = request.get(source_accepted..).unwrap();
-        let n = deadline.io(source.as_raw_fd(), libc::POLLOUT, || {
-            Ok(source.write(bytes))
-        })??;
+        let n = deadline.io(source.as_raw_fd(), libc::POLLOUT, || Ok(source.write(bytes)))??;
         if n == 0 {
             return Err(io::ErrorKind::WriteZero.into());
         }
@@ -238,9 +231,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
         || pending.sent != 0
         || request.get(..pending.read) != Some(pending.bytes.as_slice())
     {
-        return Err(Failure::Check(
-            "turn did not obtain its actual source prefix",
-        ));
+        return Err(Failure::Check("turn did not obtain its actual source prefix"));
     }
     let would_block = progress.write_would_block;
     let second = direction.turn(
@@ -251,9 +242,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
         EndPolicy::Independent,
     );
     let retained = snapshot("BlockedSend", &direction, &progress, &second);
-    if second.map_err(Failure::Turn)?
-        || progress.write_would_block != would_block + 1
-        || pending != retained
+    if second.map_err(Failure::Turn)? || progress.write_would_block != would_block + 1 || pending != retained
     {
         return Err(Failure::Check(
             "one native turn sendWouldBlock did not retain the exact suffix",
@@ -262,11 +251,7 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
     // The backend independently receives only the recorded prefill before
     // the same Direction is allowed a positive recovery turn.
     let mut received = vec![0; accepted.checked_add(request.len()).unwrap()];
-    receive(
-        &mut backend,
-        received.get_mut(..accepted).unwrap(),
-        &deadline,
-    )?;
+    receive(&mut backend, received.get_mut(..accepted).unwrap(), &deadline)?;
     bytes_record("PrefillDrained", received.get(..accepted).unwrap());
     if received.get(..accepted) != prefill.get(..accepted) {
         return Err(Failure::Check("independent prefill receipt differs"));
@@ -293,16 +278,10 @@ fn exercise(original: &Deadline) -> Result<(), Failure> {
         }
         let start = accepted.checked_add(written).unwrap();
         let end = accepted.checked_add(progress.written).unwrap();
-        receive(
-            &mut backend,
-            received.get_mut(start..end).unwrap(),
-            &deadline,
-        )?;
+        receive(&mut backend, received.get_mut(start..end).unwrap(), &deadline)?;
     }
     let mut extra = [0u8; 1];
-    let eof = deadline.io(backend.as_raw_fd(), libc::POLLIN, || {
-        backend.read(&mut extra)
-    })?;
+    let eof = deadline.io(backend.as_raw_fd(), libc::POLLIN, || backend.read(&mut extra))?;
     bytes_record("DestinationReceived", &received);
     println!(
         "managed-tcp-forward {{\"type\":\"NativeTurnTerminal\",\"eof_read\":{eof},\"prefill_bytes\":{accepted},\"relayed_bytes\":{},\"read\":{},\"written\":{},\"pending\":{},\"extra_consumed\":{},\"half\":\"{:?}\"}}",
@@ -360,10 +339,7 @@ fn native_direction_turn_retains_suffix_under_native_pressure() {
     let remaining = original.at.saturating_duration_since(Instant::now());
     let (failure_kind, cause) = match &result {
         Ok(()) => ("None", String::new()),
-        Err(Failure::Io(error)) => (
-            "Io",
-            format!("{:?}/{:?}", error.kind(), error.raw_os_error()),
-        ),
+        Err(Failure::Io(error)) => ("Io", format!("{:?}/{:?}", error.kind(), error.raw_os_error())),
         Err(Failure::Turn(fault)) => ("Turn", format!("{fault:?}")),
         Err(Failure::Check(reason)) => ("Check", (*reason).to_owned()),
     };
