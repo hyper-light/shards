@@ -440,6 +440,12 @@ fn fixture_agentfile_preserves_the_finite_task_declaration_and_grants() {
         matches!(&directives[0], Directive::Agent(domain) if domain.processes == Processes::AtMost(budget.tasks))
     );
     assert!(matches!(&directives[1], Directive::Harness(domain) if domain.processes == Processes::Unbounded));
+    assert_eq!(
+        shards_agentfile::agentfile::boundary(&directives, b"control", false),
+        [(6, 7100, 7100), (6, 7101, 7101)],
+        "fixture must grant both actual ingress ports"
+    );
+    assert!(shards_agentfile::agentfile::boundary(&directives, b"control", true).is_empty());
     let _ = writeln!(
         std::io::stderr(),
         "checked fixture normalized declaration: {}",
