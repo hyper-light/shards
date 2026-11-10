@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import platform
 import selectors
 import signal
 import subprocess
@@ -76,7 +77,14 @@ fn main() {
 source = args.evidence / "probe.rs"
 source.write_text(prefix + actual + suffix)
 binary = args.evidence / "probe"
-build = subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], capture_output=True)
+(args.evidence / "environment").write_text(json.dumps({
+    "cwd": str(root), "platform": platform.platform(), "node": platform.node(),
+    "rustc": subprocess.check_output(["rustc", "-Vv"], cwd=root, text=True),
+    "source_revision": args.revision, "python": sys.version,
+    "script_sha256": hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest(),
+    "child_sha256": hashlib.sha256(pathlib.Path(__file__).with_name("readiness-child.py").read_bytes()).hexdigest(),
+}, indent=2) + "\n")
+build = subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(binary)], cwd=root, capture_output=True)
 (args.evidence / "build.log").write_bytes(build.stdout + build.stderr)
 (args.evidence / "build.exit").write_text(str(build.returncode) + "\n")
 if build.returncode:

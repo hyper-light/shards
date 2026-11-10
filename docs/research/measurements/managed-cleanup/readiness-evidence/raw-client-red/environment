@@ -1,0 +1,9 @@
+{
+  "host": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+  "node": "fedora.attlocal.net",
+  "clone": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1\n",
+  "python": "3.14.3 (main, Mar 26 2026, 00:00:00) [GCC 16.0.1 20260321 (Red Hat 16.0.1-0)]",
+  "command": "python3 docs/research/measurements/managed-cleanup/readiness-red.py --patience-ms 500 --evidence ~/managed-cleanup-quality-evidence/raw-client-red",
+  "input": "fa1 Client/ready/finished bytes; local source composition cb0843eb with 5d0d06b6 probe plus ordered notification patch"
+}

@@ -1,0 +1,174 @@
+{
+  "host_source_sha256": "d1f049f1900b16779e8da5412fdf3792eefea5437180a252b6cbe23475e064f3",
+  "actual_client_sha256": "3ec493202945a33646bc8149bcb4ac2b164ea2acf91ce6a199287c214ac21dc0",
+  "samples": [
+    {
+      "mode": "silent",
+      "caller_patience_ms": 500,
+      "deadline_hit": true,
+      "unjoined_child_rescued": true,
+      "probe_exit": 0,
+      "lines": [
+        [
+          "stderr",
+          "CLEANUP_CHILD_PID 2300684"
+        ],
+        [
+          "stderr",
+          ""
+        ],
+        [
+          "stderr",
+          "thread 'main' (2300683) panicked at /home/adalundhe/managed-cleanup-quality-evidence/raw-client-red/probe.rs:37:5:"
+        ],
+        [
+          "stderr",
+          "assertion `left == right` failed: [\"silent\"]: \"\""
+        ],
+        [
+          "stderr",
+          "  left: \"\""
+        ],
+        [
+          "stderr",
+          " right: \"ready\\n\""
+        ],
+        [
+          "stderr",
+          "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+        ],
+        [
+          "stdout",
+          "READINESS_PANIC"
+        ],
+        [
+          "observer",
+          "owned_child_state=Z (zombie)"
+        ],
+        [
+          "stdout",
+          "RESCUED_OWNED_CHILD 2300684 status=9"
+        ]
+      ]
+    },
+    {
+      "mode": "early",
+      "caller_patience_ms": 500,
+      "deadline_hit": false,
+      "unjoined_child_rescued": true,
+      "probe_exit": 0,
+      "lines": [
+        [
+          "stderr",
+          "CLEANUP_CHILD_PID 2300717"
+        ],
+        [
+          "stderr",
+          ""
+        ],
+        [
+          "stderr",
+          "thread 'main' (2300716) panicked at /home/adalundhe/managed-cleanup-quality-evidence/raw-client-red/probe.rs:37:5:"
+        ],
+        [
+          "stderr",
+          "assertion `left == right` failed: [\"early\"]: \"\""
+        ],
+        [
+          "stderr",
+          "  left: \"\""
+        ],
+        [
+          "stderr",
+          " right: \"ready\\n\""
+        ],
+        [
+          "stderr",
+          "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+        ],
+        [
+          "stdout",
+          "READINESS_PANIC"
+        ],
+        [
+          "observer",
+          "owned_child_state=Z (zombie)"
+        ],
+        [
+          "stdout",
+          "RESCUED_OWNED_CHILD 2300717 status=1792"
+        ]
+      ]
+    },
+    {
+      "mode": "partial",
+      "caller_patience_ms": 500,
+      "deadline_hit": true,
+      "unjoined_child_rescued": true,
+      "probe_exit": 0,
+      "lines": [
+        [
+          "stderr",
+          "CLEANUP_CHILD_PID 2300721"
+        ],
+        [
+          "stderr",
+          ""
+        ],
+        [
+          "stderr",
+          "thread 'main' (2300720) panicked at /home/adalundhe/managed-cleanup-quality-evidence/raw-client-red/probe.rs:37:5:"
+        ],
+        [
+          "stderr",
+          "assertion `left == right` failed: [\"partial\"]: \"rea\""
+        ],
+        [
+          "stderr",
+          "  left: \"rea\""
+        ],
+        [
+          "stderr",
+          " right: \"ready\\n\""
+        ],
+        [
+          "stderr",
+          "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+        ],
+        [
+          "stdout",
+          "READINESS_PANIC"
+        ],
+        [
+          "observer",
+          "owned_child_state=Z (zombie)"
+        ],
+        [
+          "stdout",
+          "RESCUED_OWNED_CHILD 2300721 status=9"
+        ]
+      ]
+    },
+    {
+      "mode": "normal",
+      "caller_patience_ms": 500,
+      "deadline_hit": false,
+      "unjoined_child_rescued": false,
+      "probe_exit": 0,
+      "lines": [
+        [
+          "stderr",
+          "CLEANUP_CHILD_PID 2300744"
+        ],
+        [
+          "stdout",
+          "CLIENT_READY"
+        ],
+        [
+          "stdout",
+          "CLIENT_FINISHED \"released\\n\""
+        ]
+      ]
+    }
+  ]
+}

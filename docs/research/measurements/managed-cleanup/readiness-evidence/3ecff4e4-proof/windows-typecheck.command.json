@@ -1,0 +1,8 @@
+[
+  "python3",
+  "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87/docs/research/measurements/managed-cleanup/windows-check.py",
+  "--target",
+  "x86_64-pc-windows-msvc",
+  "--evidence",
+  "/home/adalundhe/managed-cleanup-quality-evidence/3ecff4e4-proof/windows"
+]

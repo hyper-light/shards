@@ -1,0 +1,12 @@
+--- crates/shards/tests/managed_cleanup.rs
++++ crates/shards/tests/managed_cleanup.rs
+@@ -245,9 +245,6 @@
+     fn drop(&mut self) {
+         if self.status.is_none() {
+             let _ = self.child.kill();
+-            if let Err(error) = self.child.wait() {
+-                let _ = writeln!(io::stderr(), "cleanup client reap failed: {error}");
+-            }
+         }
+     }
+ }

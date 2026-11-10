@@ -1,0 +1,13 @@
+[
+  "cargo",
+  "clippy",
+  "--locked",
+  "-j4",
+  "-p",
+  "shards",
+  "--test",
+  "managed_cleanup",
+  "--",
+  "-D",
+  "warnings"
+]

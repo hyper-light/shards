@@ -1,0 +1,21 @@
+{
+  "mode": "normal",
+  "caller_patience_ms": 500,
+  "deadline_hit": false,
+  "unjoined_child_rescued": false,
+  "probe_exit": 0,
+  "lines": [
+    [
+      "stderr",
+      "CLEANUP_CHILD_PID 2341780"
+    ],
+    [
+      "stdout",
+      "CLIENT_READY"
+    ],
+    [
+      "stdout",
+      "CLIENT_FINISHED \"released\\n\""
+    ]
+  ]
+}

@@ -1,0 +1,12 @@
+--- /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87/crates/shards/tests/managed_cleanup.rs
++++ /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-quality-e3e1e56b87/crates/shards/tests/managed_cleanup.rs
+@@ -344,9 +344,6 @@
+     fn drop(&mut self) {
+         if self.status.is_none() {
+             let _ = self.child.kill();
+-            if let Err(error) = self.child.wait() {
+-                let _ = writeln!(io::stderr(), "cleanup client reap failed: {error}");
+-            }
+         }
+     }
+ }
