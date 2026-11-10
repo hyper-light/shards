@@ -1,5 +1,39 @@
 # Harness adapter lane checkpoint
 
+Current continuation: ROOT delivered GO for private owner-selected native
+ingress, main's harness module, canonical peer dispatcher and broker bound/typed
+Presented API. Audit owns the shared broker/Prepared/call composition; its API
+is applied but a small signed checkpoint is awaited before integration. Public
+MCP native_protocol pass-through is explicitly REJECTED. This supersedes the
+earlier unapproved-span paragraphs below, which describe the first checkpoint.
+See INGRESS.md for exact native transport/caller and API contracts.
+
+Current owned source adds NativeMessage::Tool|Mcp, actual Claude bootstrap packet
+decoding and canonical response wrapping; concrete Bootstrap four cases; same
+canonical peer descriptors rendered as MCP or Codex dynamic namespace. Ten codec
+tests0failed/0ignored at codec-06, scoped production/test Clippy+policy0 at
+final-light-03. Source hashes there govern this continuation, not prior seven-test
+results. No shared source/Cargo.lock changed by this lane yet.
+
+ROOT-authorized ONE actual Claude SDK causal check ran once: initialize -> native
+MCP initialize/notification/catalog, exact18258stdout/0stderr/1830stdin, version
+2.1.321/tokenSource none, EOF/exit0/reapECHILD/controllerFD4->4. Later mcp_status
+is EMPTY; do not infer model-visible tools/registered-status or actual effects.
+No retry/tuning/provider/user turn. Exact original receipt/source/catalog in
+raw/claude-mcp-causal-01, driver claude-mcp-probe.py. A later strict-check attempt
+was held by Mac lock(exit75) before compilation; after fresh headroom and proper
+lock admission current strict checks pass. Original hold is in the tool transcript;
+no separate original stderr file was captured. No native probe was rerun.
+
+Per-member NativeAdapter applies to existing Domain MemberActor Launch->Started
+->Owned, not a second CLI/Programs Worker. Separate real Worker only if actually
+owner-created. JSONL needs explicit Pipe input owner+byte right/storage; selector
+and data-only Epoch create no authority. Parent owns Run.management/protected Spec,
+input owns Execution data/queue/rights, epoch owns same durable mint, native owns
+actor view, audit owns protected startup/dispatch. NativeAdapter shared ABI module
+and public owner CLI syntax proposed seq7419/7420 are pending ROOT, unedited.
+Implementation does not discover protocol mode from ordinary output or alter argv.
+
 POLICY_READ origin/main0342b85d9c808e3ced041a6c3ef0e9bf70438272,
 docs/development-rules.md SHA256
 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3,

@@ -1,0 +1,20 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/cli/src/main.rs",
+    "path": "sources/codex-codex-rs--cli--src--main.rs",
+    "bytes": 181610,
+    "sha256": "fdd2b41303dba1f0d022c1d40268ffc0c1cb086c852a87ef437937822bda5339"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/lib.rs",
+    "path": "sources/codex-codex-rs--app-server--src--lib.rs",
+    "bytes": 65043,
+    "sha256": "a44b0266619d6adda0c1e7135d5be18e6581cff44307e78097efecc5195f8b6c"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/src/transport.rs",
+    "path": "sources/codex-codex-rs--app-server--src--transport.rs",
+    "bytes": 9115,
+    "sha256": "5b4cb5599deae1af2153976fee7586be3f87df53a2e2816f2011bddf638bda06"
+  }
+]

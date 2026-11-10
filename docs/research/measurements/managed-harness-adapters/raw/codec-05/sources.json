@@ -1,0 +1,8 @@
+{
+  "crates/server/src/harness/claude.rs": "5f29eeaf52c4fd50b5d3cac65cce164f806bd662e24c8d3c69a0fbb19916b512",
+  "crates/server/src/harness/codex.rs": "71aca592baaa7178f774b408b6916b8c2273c9d7d2072bcbd948a1abe7e97fb3",
+  "crates/server/src/harness/mod.rs": "16b92f5fa5f154aa4e36d95035e1dca3279b1e87608ae8ff90240392891b43c4",
+  "crates/server/src/harness/tests.rs": "2a6864c6db58441e52a82b7dc9bda77dcfd94e2d46e02f6b3bb78adb2676bed6",
+  "crates/server/src/harness/wire.rs": "cd9ca8e0d11bab62b32917f768936dff361219c70dad0643ff385ee1cb6288c2",
+  "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+}

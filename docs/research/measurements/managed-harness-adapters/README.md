@@ -1,5 +1,12 @@
 # P8/G16/G24 native harness adapters — implementation record
 
+Current private-ingress continuation and actual one-shot Claude SDK causal proof
+are in [INGRESS.md](INGRESS.md). ROOT has since approved canonical extraction,
+typed broker presentation/bound and private owner-selected transport; the audit
+owner composes shared tokens. The initial held-span account below is historical.
+Current codec-06/final-light-03 gives10 scoped tests and strict checks; actual
+private owner/caller activation and full P8 remain open. No public MCP pass-through.
+
 NEW work, not a reproduced Shards defect. This checkpoint is incomplete and is
 not a strict native-harness compatibility, whole-layer, performance or readiness
 claim. Shared caller registration is held for ROOT's exact-span approval. No

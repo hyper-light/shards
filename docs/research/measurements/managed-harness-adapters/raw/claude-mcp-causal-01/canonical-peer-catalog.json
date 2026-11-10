@@ -1,0 +1,68 @@
+{
+  "tools": [
+    {
+      "name": "send",
+      "description": "Sends a peer the caller may send requests a request; its ID, which the peer's answer carries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "answer",
+      "description": "Answers a request a peer sent the caller, by its ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "id",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "hand",
+      "description": "Hands a peer a file of the caller's scratch, /tmp: a request where the caller may send the peer requests, or, with id, the answer to its request of that ID. The file is a regular one, which the caller's group may read, of at most 1 MiB less its name; its server opens it beneath /tmp, through no link, and reads it whole.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "to",
+          "path"
+        ]
+      }
+    }
+  ]
+}

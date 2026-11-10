@@ -1,3 +1,4 @@
+use super::catalog::{CatalogFormat, catalog};
 use super::*;
 use crate::server::json;
 
@@ -225,5 +226,125 @@ fn result_capacity_is_prepared_before_effect_and_cannot_grow_while_filling() {
             slot.finish(Completion::Uncertain, result),
             Err(ReplyFailure::BoundExceeded)
         );
+    }
+}
+
+#[test]
+fn actual_native_claude_bootstrap_packets_reach_canonical_mcp_envelopes() {
+    let bytes = include_bytes!(
+        "../../../../docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/native.stdout"
+    );
+    let mut methods = Vec::new();
+    for line in bytes.split(|&byte| byte == b'\n').filter(|line| !line.is_empty()) {
+        let packet = json::parse(line).unwrap();
+        if packet.get("type").and_then(Value::str) != Some("control_request") {
+            continue;
+        }
+        let NativeMessage::Mcp(control) = Protocol::Claude.receive_native(&packet).unwrap() else {
+            panic!("native bootstrap unexpectedly became a peer effect");
+        };
+        methods.push(control.method);
+        assert!(std::ptr::eq(
+            control.message(),
+            packet.get("request").unwrap().get("message").unwrap(),
+        ));
+        let canonical = match control.method {
+            Bootstrap::Initialize => r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"shards","version":"0.1.0"}}}"#.to_string(),
+            Bootstrap::ToolsList => format!(
+                r#"{{"jsonrpc":"2.0","id":1,"result":{}}}"#,
+                include_str!("../../../../docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/canonical-peer-catalog.json").trim(),
+            ),
+            Bootstrap::Initialized => String::new(),
+            Bootstrap::Ping => panic!("the native capture did not emit ping"),
+        };
+        let reply = if control.method == Bootstrap::Initialized {
+            McpReply::Notification
+        } else {
+            McpReply::Message(&canonical)
+        };
+        let mut output = Vec::new();
+        control.respond(&mut output, reply).unwrap();
+        let outer = json::parse(&output).unwrap();
+        let response = outer.get("response").unwrap();
+        assert_eq!(response.get("request_id"), packet.get("request_id"));
+        let rpc = response.get("response").unwrap().get("mcp_response").unwrap();
+        if control.method == Bootstrap::Initialized {
+            assert_eq!(rpc.get("id"), None);
+            assert_eq!(rpc.get("result"), Some(&Value::Object(Vec::new())));
+        } else {
+            assert_eq!(rpc, &json::parse(canonical.as_bytes()).unwrap());
+        }
+    }
+    assert_eq!(
+        methods,
+        [
+            Bootstrap::Initialize,
+            Bootstrap::Initialized,
+            Bootstrap::ToolsList
+        ]
+    );
+}
+
+#[test]
+fn native_ingress_keeps_peer_effects_and_bootstrap_distinct() {
+    let packet = claude("hand", r#"{"to":"agent peer","path":"/tmp/report"}"#);
+    let NativeMessage::Tool(request) = Protocol::Claude.receive_native(&packet).unwrap() else {
+        panic!("peer call unexpectedly became bootstrap");
+    };
+    assert_eq!(request.tool, Tool::Hand);
+    let packet = codex(
+        "answer",
+        "shards",
+        r#"{"to":"agent peer","id":7,"text":"literal"}"#,
+    );
+    let NativeMessage::Tool(request) = Protocol::Codex.receive_native(&packet).unwrap() else {
+        panic!("Codex call unexpectedly became MCP bootstrap");
+    };
+    assert_eq!(request.tool, Tool::Answer);
+    for inner in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"notifications/initialized"}"#,
+        r#"{"jsonrpc":"2.0","method":"tools/list"}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///private"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}"#,
+    ] {
+        let packet = json::parse(format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"mcp_message","server_name":"shards","message":{inner}}}}}"#).as_bytes()).unwrap();
+        assert!(Protocol::Claude.receive_native(&packet).is_err());
+    }
+}
+
+#[test]
+fn both_native_catalog_formats_preserve_the_canonical_peer_schemas() {
+    const SOURCE: &str = include_str!(
+        "../../../../docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/canonical-peer-catalog.json"
+    );
+    let expected = json::parse(SOURCE.as_bytes()).unwrap();
+    let server_source = include_str!("../server.rs");
+    let descriptors: Vec<&str> = server_source
+        .lines()
+        .filter_map(|line| {
+            let tail = line.strip_prefix(r#"{"name":""#)?;
+            let (name, _) = tail.split_once('"')?;
+            matches!(name, "send" | "answer" | "hand").then(|| line.trim_end_matches(','))
+        })
+        .collect();
+    assert_eq!(descriptors.len(), 3);
+    for format in [CatalogFormat::Mcp, CatalogFormat::CodexDynamic] {
+        let mut bytes = Vec::new();
+        catalog(&mut bytes, format, descriptors.iter().copied()).unwrap();
+        let actual = json::parse(&bytes).unwrap();
+        let actual_tools = actual.get("tools").unwrap().array();
+        assert_eq!(actual_tools.len(), 3);
+        for (got, wanted) in actual_tools.iter().zip(expected.get("tools").unwrap().array()) {
+            for key in ["name", "description", "inputSchema"] {
+                assert_eq!(got.get(key), wanted.get(key));
+            }
+            if format == CatalogFormat::CodexDynamic {
+                assert_eq!(got.get("type").and_then(Value::str), Some("function"));
+            }
+        }
+        if format == CatalogFormat::CodexDynamic {
+            assert_eq!(actual.get("name").and_then(Value::str), Some("shards"));
+            assert_eq!(actual.get("type").and_then(Value::str), Some("namespace"));
+        }
     }
 }

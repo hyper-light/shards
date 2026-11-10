@@ -1,0 +1,67 @@
+{
+  "argv": [
+    "/Users/adalundhe/.local/share/claude/versions/2.1.321",
+    "--print",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-prompt-tool",
+    "stdio",
+    "--setting-sources",
+    "",
+    "--settings",
+    "{}",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{\"shards\":{\"type\":\"sdk\",\"name\":\"shards\"}}}",
+    "--tools",
+    "",
+    "--no-session-persistence"
+  ],
+  "environment": {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/disposable-state/home",
+    "CLAUDE_CONFIG_DIR": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/disposable-state/claude",
+    "TMPDIR": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/disposable-state/tmp",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
+    "CLAUDE_AGENT_SDK_VERSION": "0.2.180"
+  },
+  "binary_sha256": "abc9feeeca8091d51b623291e044cf0528c2f6b74e0c1d6ef671d52c73f7cd3c",
+  "catalog_source_sha256": "818358c23bc449c1248200a6e9c89da0171c78f5d84ac01c1b9727f8d7b5192a",
+  "events": [
+    {
+      "control": "mcp_message",
+      "method": "initialize",
+      "id": 0
+    },
+    {
+      "control": "mcp_message",
+      "method": "notifications/initialized",
+      "id": null
+    },
+    {
+      "control": "mcp_message",
+      "method": "tools/list",
+      "id": 1
+    }
+  ],
+  "initialized": true,
+  "catalogued": true,
+  "mcp_status": {
+    "mcpServers": []
+  },
+  "pid": 68140,
+  "exit": 0,
+  "reap": "ECHILD",
+  "fd_before": 4,
+  "fd_after": 4,
+  "elapsed_s": 0.39353712500000004,
+  "failure": null,
+  "stdout_bytes": 18258,
+  "stderr_bytes": 0,
+  "stdin_bytes": 1830
+}

@@ -3,6 +3,7 @@
 //! D-HA1 in managed-harness-adapters/README.md records the source/schema pins. These
 //! packets are supplied explicitly on the tool channel, never recognized in output.
 
+pub(crate) mod catalog;
 mod claude;
 mod codex;
 mod wire;
@@ -32,6 +33,50 @@ impl Protocol {
             Self::Codex => codex::receive(message),
             Self::Claude => claude::receive(message),
         }
+    }
+
+    pub fn receive_native(self, message: &Value) -> Result<NativeMessage<'_>, Refusal> {
+        match self {
+            Self::Codex => self.receive(message).map(NativeMessage::Tool),
+            Self::Claude => claude::receive_native(message),
+        }
+    }
+}
+
+/// Only an owner-selected native protocol pipe uses this ingress. Its packets
+/// carry no principal, epoch or input right; the held launch supplies those.
+pub(crate) enum NativeMessage<'a> {
+    Tool(Request<'a>),
+    Mcp(McpControl<'a>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Bootstrap {
+    Initialize,
+    Initialized,
+    ToolsList,
+    Ping,
+}
+
+pub(crate) struct McpControl<'a> {
+    pub method: Bootstrap,
+    control_id: &'a str,
+    message: &'a Value,
+}
+
+/// Encoded by the canonical MCP dispatcher, never copied from actor output.
+pub(crate) enum McpReply<'a> {
+    Message(&'a str),
+    Notification,
+}
+
+impl McpControl<'_> {
+    pub fn message(&self) -> &Value {
+        self.message
+    }
+
+    pub fn respond(&self, out: &mut impl Write, reply: McpReply<'_>) -> io::Result<()> {
+        claude::control_response(out, self.control_id, reply)
     }
 }
 
