@@ -1,0 +1,18 @@
+{
+  "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "archive": "requested-v1.tar.gz",
+  "bytes": 50591,
+  "sha256": "c6397b7a3db9c1cdedfd733ea6de617b46ba41193c183d5f85c698ffda755c96",
+  "regular_members": 173,
+  "unique_safe_regular_paths": true,
+  "every_member_hash_verified": true,
+  "original_raw_bytes_not_normalized": true,
+  "remote_originals_preserved": true,
+  "selected_byte_exact_copies": {
+    "member-hashes.json": "requested-v1.member-hashes.json",
+    "records/collection-requested-v1/validated-cases.json": "requested-v1.validated-cases.json",
+    "records/build/fixture.json": "requested-v1.fixture.json",
+    "records/guest-build/artifacts.json": "requested-v1.artifacts.json"
+  }
+}

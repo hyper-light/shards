@@ -1,0 +1,23 @@
+{
+  "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "artifacts": {
+    "artifacts/managed_output": {
+      "sha256": "6217535e1bdfc54e81334318d68f4359c6d2648234f81c2e67a6156c4f614a69",
+      "bytes": 62235448
+    },
+    "artifacts/shards": {
+      "sha256": "643cbf39cae4d3774a89a864103b633a84857283485a7b105edb423d3e2ab007",
+      "bytes": 231518232
+    },
+    "artifacts/experimental-kernel": {
+      "sha256": "97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae",
+      "bytes": 27760784
+    },
+    "artifacts/guest/shards-testguest": {
+      "sha256": "301cbb100b9aab5ad4e58a51bc77d3f04aa5fefca0692309af5c27b944da723b",
+      "bytes": 3301624
+    }
+  },
+  "kernel_scope": "own verified experimental TPROXY kernel; not product-pin gate",
+  "elapsed_s": 51.38077238000005
+}

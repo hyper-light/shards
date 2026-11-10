@@ -1,0 +1,18 @@
+docs/research/measurements/managed-current-controls/frozen-leaf-adaptation.diff:18: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/frozen-leaf-adaptation.diff:28: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/frozen-raw-control.patch:6: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/frozen-raw-control.patch:26: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/frozen-register.patch:7: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/registration.patch:8: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/shared-client.patch:8: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/shared-client.patch:30: trailing whitespace.
++ 
+docs/research/measurements/managed-current-controls/shared-client.patch:114: trailing whitespace.
++ 

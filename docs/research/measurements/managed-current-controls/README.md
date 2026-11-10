@@ -1,5 +1,11 @@
 # Current shared-client control adaptation
 
+Actual follow-up: [requested current-caller proof](RESULTS.md) passed the fresh
+normal caller/matching guest builds, two real KVM header-FIN channels, one native
+canonical-Aborted Subscribe case, seven pure checks and scoped Clippy. The173
+original raw files are retained in the verified archive. Source-stage pending
+gates below preserve their original chronology; checkpoint is not lane release.
+
 Base `28e147c4dda846ca023020e03bc9b00eb2e58e94`, canonical main33df95b08,
 rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
 Assigned implementer/adversarial01a1c5d2ee5871a2a9a9cdc9f56793f0;
