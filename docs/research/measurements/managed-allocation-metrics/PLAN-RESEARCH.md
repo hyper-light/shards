@@ -4,7 +4,7 @@ Automated quote-verification grades/scores are retained as returned. They are no
 
 **Research:** Maintain the Shards resource/allocator/fault optimization IMPLEMENTATION lane through managed-runtime completion under canonical R01–R16. Implement and light-test approved System-wrapper counters, approved narrowly placed phase/fault snapshots through existing platform seams, then the caller-parameterized source-matching paired/interleaved harness; root executes ALL profiles/benchmarks/audits/realVM/stress and returns data before any production optimization. After each signed bounded checkpoint immediately take the next approved independent queue item, do not stop at one source piece or mark this goal met on documentation. Continue root-measured optimizations with exact source/cleanup/mutation evidence as supplied. Done only after coordinator confirms relevant managed-runtime resource requirements accepted on main with actual comparable data and releases the lane. Preserve policy receipts, all other agents' ownership, <=1CPU1GiB2GiB light admission, no local heavy builds, no arbitrary constants/caches, no helper/ABI mismatch, no child agents/main merges, no fake keepalive or unmeasured performance claims.
 
-11 findings (A 4, B 2, C 5) from 11 sources (7 internal, 4 external)
+15 findings (A 4, B 4, C 7) from 15 sources (9 internal, 6 external)
 
 - **A · 90 (high)** Shards reserves profiling, benchmarking, heavy execution and audits to the main coordinator; this lane returns scoped signed implementation/light evidence. [1]
   _1 independent source (code); 1 of 1 quotes found where cited_
@@ -40,6 +40,18 @@ benchmarking, heavy real E2E, chaos, stress campaigns and sweeps**" · quote fou
 - **B · 80 (good)** Final standalone counter source0183 passed five GNU tests; real caller integration and profiling are separate root gates. [11]
   _1 independent source (logs); 1 of 1 quotes found where cited_
   - [11] "test result: ok. 5 passed; 0 failed; 0 ignored;" · quote found
+- **C · 68 (moderate)** Function/method call operands evaluate left to right. The draft places each before-resolution snapshot in the existing path argument before borrowing its named snapshot fields. [12]
+  _1 independent source (official docs); 1 of 1 quotes found where cited; inferred from them_
+  - [12] "Expressions taking multiple operands are evaluated left to right as written in the source code." (expr.operand-order.operands-before-primary) · quote found
+- **C · 68 (moderate)** Block-tail temporaries have narrower scope in Rust2024. Keep the owned current_exe return value outside its resolution block's final borrow, and avoid new long-lived PathBuf locals; exact changed-caller behavior still needs root review/validation. [13]
+  _1 independent source (official docs); 1 of 1 quotes found where cited; inferred from them_
+  - [13] "temporaries of tail expressions of blocks are dropped immediately after the tail expression is evaluated." (destructors.scope.temporary.edition2024) · quote found
+- **B · 72 (good)** Pinned serde_json1.0.151 emits one object-insert statement per entry then recursively processes the remaining tokens. Retain the original five artifact expressions and order; artifact_value_ready is before outer json conversion/insertion, not all per-artifact startup work. [14]
+  _1 independent source (code); 1 of 1 quotes found where cited; inferred from them_
+  - [14] "let _ = $object.insert(($($key)+).into(), $value);" (json_internal! @object, lines138–140) · quote found
+- **B · 70 (good)** Root's033c pilots show aggregate setup allocations before before_fixture and establish no cause or optimization. Additional fixed phase instrumentation is a proposal for root cause isolation, not a selected production fix. [15]
+  _1 independent source (a document); 1 of 1 quotes found where cited_
+  - [15] "No cause or optimization is inferred from that aggregate alone;" (What the records mean) · quote found
 
 **Sources**
 
@@ -54,3 +66,7 @@ benchmarking, heavy real E2E, chaos, stress campaigns and sweeps**" · quote fou
 9. R Core sample quantile definitions (official docs, external) — https://stat.ethz.ch/R-manual/R-devel/library/stats/html/quantile.html
 10. Python subprocess.run timeout (official docs, external) — https://docs.python.org/3/library/subprocess.html
 11. Exact0183 standalone GNU unit/light output (logs, internal) — /Users/adalundhe/Projects/shards/.claude/worktrees/managed-allocation-metrics/docs/research/measurements/managed-allocation-metrics/records/light-0183cf068/x86_64-unknown-linux-gnu-test.log
+12. Rust Reference operand evaluation order (retrieved 2026-11-10) (official docs, external) — https://doc.rust-lang.org/reference/expressions.html#evaluation-order-of-operands
+13. Rust Reference temporary scopes and 2024 edition (retrieved 2026-11-10) (official docs, external) — https://doc.rust-lang.org/reference/destructors.html#temporary-scopes
+14. serde_json v1.0.151 json macro, Cargo.lock source pin (code, internal) — https://raw.githubusercontent.com/serde-rs/json/v1.0.151/src/macros.rs
+15. Root allocation033c source-specific gates and limits on main7c26 (a document, internal) — /Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/docs/research/measurements/managed-coordinator-allocation/README.md

@@ -74,8 +74,10 @@ no children/main merge, root heavy role/cache ownership and paused VM preserved.
 
 The sustained goal is not complete. A next narrow **proposal** was sent for
 startup allocator snapshots at test entry, supplied-input readiness, around each
-existing artifact resolution/hash and after input-record serialization. No code
-for that proposal has been written. It would help ROOT isolate its aggregate
+existing artifact resolution/hash and after input-record serialization. The
+[concrete proposal](STARTUP-PROPOSAL.md) now includes an UNAPPLIED147-line patch
+against96b6bb43b, with formatter/source comparisons and git-apply-check only.
+Actual fixture source remains unchanged. It would help ROOT isolate its aggregate
 startup observation, not assert an artifact-hash cause or optimize production.
 Root must select/approve the next batch; actual optimization only follows ROOT
 measured analysis and scoped acceptance. Continue the approved queue without

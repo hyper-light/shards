@@ -1,0 +1,28 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-allocation-metrics/STARTUP-PROPOSAL.md",
+    "docs/research/measurements/managed-allocation-metrics/startup-hooks.proposed.patch",
+    "docs/research/measurements/managed-allocation-metrics/records/startup-proposal-source-checks.json",
+    "docs/research/measurements/managed-allocation-metrics/PLAN-RESEARCH.md",
+    "docs/research/measurements/managed-allocation-metrics/HANDOFF.md",
+    "docs/research/measurements/managed-allocation-metrics/QUEUE-CHECKPOINT.md"
+  ],
+  "exit": 2,
+  "stdout": "docs/research/measurements/managed-allocation-metrics/startup-hooks.proposed.patch:68: trailing whitespace.\n+ \n",
+  "stderr": "",
+  "classified_artifact": {
+    "path": "docs/research/measurements/managed-allocation-metrics/startup-hooks.proposed.patch",
+    "sha256": "cd449c529fd9cb7b39d89c0e0a34055890d46b63fcbf008b71e9ca194aae9e03",
+    "lines": [
+      68
+    ],
+    "reason": "standard unified-diff blank context lines are a single leading context marker; retained as patch data; no source/raw normalization or whitespace rule relaxation"
+  },
+  "other_named_paths_check_exit": 0,
+  "unapplied": true
+}

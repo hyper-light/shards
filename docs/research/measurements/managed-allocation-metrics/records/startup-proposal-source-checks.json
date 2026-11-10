@@ -1,0 +1,86 @@
+{
+  "status": "UNAPPLIED proposal; no compiler, fixture/artifact getter, VM or measurement execution",
+  "base_head": "96b6bb43bf0610497f426cfcbc4ae1654172090c",
+  "base_fixture_sha256": "31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7",
+  "draft_fixture_sha256": "874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e",
+  "patch_sha256": "cd449c529fd9cb7b39d89c0e0a34055890d46b63fcbf008b71e9ca194aae9e03",
+  "patch_lines": 147,
+  "formatter_version": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)",
+  "formatter_command": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "--emit",
+    "stdout"
+  ],
+  "formatter_stderr": "",
+  "python": "3.9.6 (default, May 22 2026, 11:13:45) \n[Clang 21.0.0 (clang-2100.1.1.101)]",
+  "git_apply_check_command": [
+    "git",
+    "apply",
+    "--check",
+    "docs/research/measurements/managed-allocation-metrics/startup-hooks.proposed.patch"
+  ],
+  "git_apply_check_exit": 0,
+  "preserved_source_checks": {
+    "actual_fixture_unmodified": true,
+    "original_run_protocol_body_identical": true,
+    "original_cleanup_exit_fd_assertions_and_terminal_tail_identical_except_new_post_teardown_record": true,
+    "same_five_resolver_expressions_once_each": true,
+    "same_artifact_read_hash_json_expression": true
+  },
+  "unrun": [
+    "actual full caller compile/typecheck",
+    "changed caller normal suite",
+    "real startup/native queries",
+    "same-N paired/interleaved profiles",
+    "instrumentation perturbation and causal attribution",
+    "root mutation/cleanup/seven-target gates"
+  ],
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "release": "25.4.0"
+  },
+  "formatter_executable": {
+    "path": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+    "sha256": "98e8da71078a8b5710f1818c98da25d92de162a122bd9a6db222ca929e545468"
+  },
+  "source_check_python_executable": {
+    "path": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
+    "sha256": "271143990bc83af0fb2404a255038f5faafb96df1584ed7f085e5018c0f33ffb"
+  },
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--",
+        "docs/research/measurements/managed-output-cost/fixture.rs",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform/unix.rs",
+        "crates/vmm/src/platform/windows_process.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "compiled_test_binary": "NONE; no compiler/build/test/fixture invocation",
+  "local_target_or_cache_paths": []
+}

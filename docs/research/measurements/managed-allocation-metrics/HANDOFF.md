@@ -81,7 +81,10 @@ Send checkpoints through agents_send stable keys and CONTINUE the queue;
 no final-idle, fake keepalive or measurement substitutes. Keep this lane sustained.
 Latest next-scope proposal sent: fixed startup allocator snapshots for ROOT's
 cause isolation (test entry/inputs/artifact resolution+hash/recording). NOT yet
-approved or implemented; no chosen optimization/cache/number. Await ROOT's
+approved or applied; concrete STARTUP-PROPOSAL.md and startup-hooks.proposed.patch
+now retain the exact proposed changes against96b6bb43b. Only formatter/source
+comparisons/git-apply-check executed, no compiler/getter/fixture/profile. Actual
+fixture remains31df9e2b; draft874e8b38, patchcd449c52. No chosen optimization/cache/number. Await ROOT's
 selection while completing current evidence/review work, no invented busywork.
 All own remote jobs complete/private targets preserved; ZERO active LOCAL build
 targets/cache paths. Root headroom hold/recovery acknowledged; still no local
