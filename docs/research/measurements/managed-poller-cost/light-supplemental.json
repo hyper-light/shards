@@ -1,0 +1,32 @@
+{
+  "supplement": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"base\": \"/home/adalundhe/managed-poller-cost-review-e1cb-v1\", \"checks\": [{\"check\": \"python AST syntax\", \"exit_code\": 0}, {\"check\": \"pure nearest-rank accounting: empty, singleton, odd unordered\", \"exit_code\": 0}, {\"argv\": [\"rustfmt\", \"--check\", \"--edition\", \"2024\", \"--config\", \"skip_children=true\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/accounting.rs\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/fixture.rs\"], \"exit_code\": 0, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/Cargo.toml\"], \"exit_code\": 1, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/accounting.rs\"], \"exit_code\": 1, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/fixture.rs\"], \"exit_code\": 1, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/run.py\"], \"exit_code\": 1, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/light-check.py\"], \"exit_code\": 1, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--no-index\", \"--check\", \"/dev/null\", \"/home/adalundhe/managed-poller-cost-review-e1cb-v1/README.md\"], \"exit_code\": 1, \"output\": \"\"}], \"hashes\": {\"Cargo.toml\": \"70ed429881d165f9f10d78b0362e62a0bb74087adf13452ce113e45d14a3ad22\", \"run.py\": \"345dbd2fda6c8e3edfd00e34a2d8fe1cfa7cf3a3df2d5d263f7d4916eecabb4b\", \"accounting.rs\": \"f4967f978c06cc19e7ace30b49ff593f8f162c666851e956cb79a93b1983afa7\", \"fixture.rs\": \"f63ac590a61b70ad656d5e9f94983237a88d9e1e7d655e6625242dadf7f2a39f\", \"README.md\": \"8152194d900365834657b6cc4605b75f195d8f917f89810222170c89e94c59ad\", \"light-result.json\": \"2b7aa58504b0ac807734c7ff741099dda7ca1c854296d1b5b05772cab9ac006e\", \"light-check.py\": \"0dbf04ca371b665674188cc625001587f03282c4e74091cbcf4ba050941d7fe6\"}, \"scope\": \"syntax/format/whitespace and pure percentile accounting only; no fixture main/native operations\"}\n",
+      "running": false,
+      "why": "linux/x86_64 · 26 of 32 cores idle · 48 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "correctedWhitespace": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"base\": \"/home/adalundhe/managed-poller-cost-review-e1cb-v2\", \"checks\": [{\"argv\": [\"git\", \"init\", \"--quiet\"], \"exit_code\": 0, \"output\": \"\"}, {\"argv\": [\"git\", \"add\", \"--intent-to-add\", \"--\", \"Cargo.toml\", \"accounting.rs\", \"fixture.rs\", \"run.py\", \"light-check.py\", \"README.md\"], \"exit_code\": 0, \"output\": \"\"}, {\"argv\": [\"git\", \"diff\", \"--check\", \"--\", \"Cargo.toml\", \"accounting.rs\", \"fixture.rs\", \"run.py\", \"light-check.py\", \"README.md\"], \"exit_code\": 0, \"output\": \"\"}], \"hashes\": {\"Cargo.toml\": \"70ed429881d165f9f10d78b0362e62a0bb74087adf13452ce113e45d14a3ad22\", \"accounting.rs\": \"f4967f978c06cc19e7ace30b49ff593f8f162c666851e956cb79a93b1983afa7\", \"fixture.rs\": \"f63ac590a61b70ad656d5e9f94983237a88d9e1e7d655e6625242dadf7f2a39f\", \"run.py\": \"345dbd2fda6c8e3edfd00e34a2d8fe1cfa7cf3a3df2d5d263f7d4916eecabb4b\", \"light-check.py\": \"0dbf04ca371b665674188cc625001587f03282c4e74091cbcf4ba050941d7fe6\", \"README.md\": \"8152194d900365834657b6cc4605b75f195d8f917f89810222170c89e94c59ad\"}, \"correction\": \"previous --no-index diff against /dev/null returned 1 for added files despite no whitespace diagnostics; retained, not called exit0\", \"scope\": \"new tiny private source directory, git metadata only; no checkout clone/build/native execution\"}\n",
+      "running": false,
+      "why": "linux/x86_64 · 26 of 32 cores idle · 48 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  }
+}

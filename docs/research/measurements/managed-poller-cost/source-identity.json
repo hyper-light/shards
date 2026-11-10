@@ -1,0 +1,22 @@
+{
+  "base_revision": "e1cb83139551b404736bc036277ccdb536ad409d",
+  "branch": "p/managed-poller-cost",
+  "canonical_main": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "policy_files_revision": "f5cec365",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "owned_path": "docs/research/measurements/managed-poller-cost",
+  "files": {
+    "Cargo.toml": "70ed429881d165f9f10d78b0362e62a0bb74087adf13452ce113e45d14a3ad22",
+    "README.md": "9cd3aefa8073ad387df2bb411c2eeab0299dafa1e83cd353450547f3bbdb3748",
+    "accounting.rs": "f4967f978c06cc19e7ace30b49ff593f8f162c666851e956cb79a93b1983afa7",
+    "fixture.rs": "f63ac590a61b70ad656d5e9f94983237a88d9e1e7d655e6625242dadf7f2a39f",
+    "light-check.py": "0dbf04ca371b665674188cc625001587f03282c4e74091cbcf4ba050941d7fe6",
+    "light-result.json": "2b7aa58504b0ac807734c7ff741099dda7ca1c854296d1b5b05772cab9ac006e",
+    "light-supplemental.json": "a81f6f4216537c04adaa0f3fc56ae858a8bf4ba5e670707f2f2d946d86636498",
+    "run.py": "345dbd2fda6c8e3edfd00e34a2d8fe1cfa7cf3a3df2d5d263f7d4916eecabb4b"
+  },
+  "actual_pure_source": "accounting.rs",
+  "native_harness_compile_and_execution": "UNRUN; ROOT-owned",
+  "unmerged_ABI_checkpoint": "82425ae5d20cb80d4385ba571936cfa537caa25e; host and guest must rebuild together"
+}

@@ -1,0 +1,16 @@
+[package]
+name = "managed-poller-cost"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "managed-poller-cost"
+path = "fixture.rs"
+
+[dependencies]
+shards-vmm = { path = "../../../../crates/vmm" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "=1.0.151"
