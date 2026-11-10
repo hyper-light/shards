@@ -4,8 +4,8 @@
 //! mode in the server's owner attribute beside the host's own mode, and a device node the
 //! host makes none of as an empty file the attribute names the kind of (D38); Windows all
 //! of it in WSL's `$LX` metadata and reparse points (D197); and each its extended
-//! attributes under names of its own. [`read`] gives a file as the server tells its guest
-//! of it, and [`set`] and the makers keep it as the server keeps what a guest asks, so
+//! attributes under names of its own. `read` gives a file as the server tells its guest
+//! of it, and `set` and the makers keep it as the server keeps what a guest asks, so
 //! that a volume moved between any two hosts shows its guest there what it showed it here.
 
 use std::ffi::{OsStr, OsString};

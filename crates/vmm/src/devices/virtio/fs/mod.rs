@@ -606,7 +606,7 @@ fn read_any_into(from: &mut impl io::Read, bytes: &mut Vec<u8>) -> io::Result<Op
 /// (D176), and is answered with one: 0 then what it asked for, or 1 then why not; or asks
 /// for a file's descriptor (D189), answered as a shards_ipc message: 0 and the
 /// descriptor, or 1 and the errno that refused it. On Windows (D197) the descriptor is a
-/// handle the asker is given, and the answer its value there ([`descriptor_for`]).
+/// handle the asker is given, and the answer its value there (`descriptor_for`).
 pub fn answer(server: &server::Server, mut conn: Stream) -> io::Result<()> {
     // Each request read into, and each reply built in, a buffer kept from one to the next
     // (`Server::handle_into`).

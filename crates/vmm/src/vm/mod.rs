@@ -19,6 +19,22 @@ use crate::devices::virtio::{head, mem, pmem, vsock};
 
 /// A boot refusal kept typed until presentation; other startup errors retain their
 /// existing owned messages while those seams are migrated.
+///
+/// Both [`start`] and [`run`] return this type in place of `String`. Move existing
+/// messages with `From<String>`; preserve command-line causes by matching
+/// [`StartError::CommandLine`] and render them only at presentation.
+///
+/// ```no_run
+/// use shards_vmm::vm::{self, Config, ExitReason, Handle, Running, StartError};
+///
+/// fn start(cfg: &Config) -> Result<(Handle, Running), StartError> {
+///     vm::start(cfg)
+/// }
+///
+/// fn run(cfg: &Config) -> Result<ExitReason, StartError> {
+///     vm::run(cfg)
+/// }
+/// ```
 #[derive(Debug)]
 pub enum StartError {
     CommandLine(crate::arch::x86_64::boot::BootError),
@@ -2485,7 +2501,9 @@ pub enum ExitReason {
     Error(String),
 }
 
-/// Boots a VM and waits for it to exit.
+/// Boots a VM and waits for it to exit. Startup failures retain [`StartError`]
+/// through this wrapper, just as [`start`] does; callers previously returning
+/// `String` must migrate their error annotation and propagation together.
 pub fn run(cfg: &Config) -> Result<ExitReason, StartError> {
     let (_, running) = start(cfg)?;
     Ok(running.wait())

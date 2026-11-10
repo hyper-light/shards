@@ -1194,7 +1194,9 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Boots a VM.
+/// Boots a VM. Returns [`super::StartError`] in place of the earlier `String`:
+/// existing message errors are moved into `Legacy`, while the command-line
+/// composition error remains typed in `CommandLine` until presentation.
 pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;

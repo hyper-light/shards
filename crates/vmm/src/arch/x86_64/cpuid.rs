@@ -40,7 +40,7 @@ const LEVEL_CORE: u32 = 2;
 const XTILE_CFG: u32 = 1 << 17;
 const XTILE_DATA: u32 = 1 << 18;
 
-/// The physical address width a guest given `template` has: leaf 0x80000008's EAX[7:0]
+/// The physical address width a guest given `template` has: leaf 0x80000008's `EAX[7:0]`
 /// (MAXPHYADDR), or 36 where its CPU has no such leaf (Intel SDM Vol. 3A §4.1.4).
 pub fn phys_bits(template: &[Leaf]) -> u32 {
     template
