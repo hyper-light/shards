@@ -22,15 +22,24 @@ fn malformed_ack_does_not_resynchronize_into_a_following_valid_control() {
         let mut wrong = consumed(0);
         wrong[1..FRAME_HEAD].copy_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
         let joined = [wrong.as_slice(), valid.as_slice()].concat();
-        assert!(matches!(input(&joined), Err(Error::Protocol(ProtocolError::Length))));
+        assert!(matches!(
+            input(&joined),
+            Err(Error::Protocol(ProtocolError::Length))
+        ));
     }
     for tag in [0, Tag::Stdout as u8] {
         let mut wrong = consumed(0);
         wrong[0] = tag;
         let joined = [wrong.as_slice(), valid.as_slice()].concat();
-        assert!(matches!(input(&joined), Err(Error::Protocol(ProtocolError::ControlKind))));
+        assert!(matches!(
+            input(&joined),
+            Err(Error::Protocol(ProtocolError::ControlKind))
+        ));
     }
-    assert_eq!(input(&valid).unwrap(), Some((Input::Consumed(u64::MAX), valid.len())));
+    assert_eq!(
+        input(&valid).unwrap(),
+        Some((Input::Consumed(u64::MAX), valid.len()))
+    );
 }
 
 #[test]
@@ -46,7 +55,13 @@ fn invalid_subscription_channel_is_not_an_alternate_scope() {
     for channel in [0, u8::MAX] {
         let mut wrong = valid;
         wrong[channel_at] = channel;
-        assert!(matches!(input(&wrong), Err(Error::Protocol(ProtocolError::Channel))));
+        assert!(matches!(
+            input(&wrong),
+            Err(Error::Protocol(ProtocolError::Channel))
+        ));
     }
-    assert_eq!(input(&valid).unwrap(), Some((Input::Subscribe(scope, u64::MAX), valid.len())));
+    assert_eq!(
+        input(&valid).unwrap(),
+        Some((Input::Subscribe(scope, u64::MAX), valid.len()))
+    );
 }

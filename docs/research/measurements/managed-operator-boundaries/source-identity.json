@@ -1,0 +1,18 @@
+{
+  "base_revision": "096c9c7be1752a5eaf99eda2c7eb4723c2a8f6db",
+  "role": "implementer",
+  "policy_files": "f5cec365",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "source_scope": "docs-only candidate tests/recipes; real repository module unchanged",
+  "actual_results": "r10 parser3/3; r12 actual private full remote test module pure cases5/5 + scoped Clippy0; no socket/VM",
+  "unrun": "actual protocol/transport/mutations/combined target matrix and ROOT integration",
+  "files": {
+    "PROPOSAL.md": "d480374519de470778456933750276844bb617b38236d6fbf617276ffd1b1b0c",
+    "light-check.py": "b34f8ad66b6c791d9c881831183532c85317c8ada11b61692e50a1b7f471f5e2",
+    "light-result.json": "8c97b18e245c1d42e4144005b95e727018edcece472387d2069381965cf57c98",
+    "parser-cases.rs": "7b31d68a74c6eb9f1ccc3b0957133afe072f116f84c71fa63d329bb43f33adcf",
+    "state-cases.rs": "051286d38757ab862c71fc4d14634dccbeee9413448a4f9aec0b3467addffd1f",
+    "state-light-check.py": "332edb01aa6a863411add802eb2f8e645418d40f4b30819861a7b9bd561dfa5f",
+    "state-light-result.json": "8d347d05e6997b79f16509e7a51fb2a0c0152acc0a938695854ed2c024807605"
+  }
+}

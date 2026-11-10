@@ -2,8 +2,12 @@
 
 This is scoped test preparation plus a source-only diagnostic proposal. No
 production file is changed. No operator endpoint, socket, VM, namespace, BPF,
-stress/profile or mutation workload is run by this lane. The current terminal
-production hypothesis is **not established by these pure cases**.
+stress/profile or mutation workload is run by this preparation batch. These pure cases do
+not establish terminal causation. ROOT subsequently proved the finish-Full
+cause in r606 and authorized the separate signed fix
+`d6f2e4e63cc6e155a041da63a3e42cc61fdd8185`, native red/green evidence under
+`docs/research/measurements/managed-finish-notify` on its own branch. The original
+normal-guest, matrix and distinct e1cb metadata obligations remain ROOT-owned.
 
 POLICY_READ IMPLEMENTER: full canonical AGENTS.md, development-rules.md R01–R16,
 development-evidence.md, CLAUDE.md, managed-runtime-plan.md and
@@ -40,8 +44,9 @@ integer endpoints or these finite owned fixture bytes.
 [state-cases.rs](state-cases.rs) contains two additional bodies prepared for the
 **existing** inline `remote::managed::tests` module and its actual `service`
 helper. ROOT can review and insert these bodies at that seam; no module wiring
-or production edit has happened here. State cases are **uncompiled/unrun** until
-ROOT compiles the complete real module. A malformed frame's actual protocol path
+or production edit has happened here. The first checkpoint 4038 left state cases
+uncompiled/unrun; the later private full-module r12 result below fills that pure
+compile/run gap. ROOT still owns integration/combined gates. A malformed frame's actual protocol path
 refuses and disconnects; these tests do not pretend it accepts the next ACK on
 the same live connection.
 
@@ -85,9 +90,11 @@ Failed(`managed read Ok(Reset)`) would not identify its underlying cause.
 Reason::Closed is code4; code0 is not that typed reason. Driver request_stop and
 Command::Stop can send code0, but observing code0 alone does not select a caller.
 
-ROOT's next diagnostic logs exact Output.finish Err and snapshots metadata and
-queued controlled sibling events **before cleanup**. No terminal fix is
-authorized from r604 or the older metadata-only prediction.
+ROOT then logged exact Output.finish Full in r606, with pre-stop aborted102/86
+metadata and other channels queued only Open. That later causal result authorized
+the separate focused Control::finish fix; r604 and the metadata-only prediction
+alone did not authorize it. The source-only instrumentation and alternatives
+below record the proposal as it stood before that evidence, not a new fix here.
 
 ## Exact handoff hypothesis and smallest diagnostic seam
 
@@ -118,7 +125,7 @@ separate local Output abort from owner-wide failure. They do not prove main/
 sibling causal progress, process reap or a complete atomic history. Preserve
 the original strict EOF and metadata expectations and all cleanup attempts.
 
-## Primary alternatives, not a selected production change
+## Primary alternatives reviewed before ROOT's separate selection
 
 Rust's [SyncSender::try_send contract](https://doc.rust-lang.org/std/sync/mpsc/struct.SyncSender.html#method.try_send)
 distinguishes a full live handoff from disconnection without blocking. The
@@ -144,8 +151,84 @@ A bare UDP wake is insufficient in current source: the driver ignores its wake
 datagram and dispatches Handler::command only from queued commands. Enlarging the
 queue needs a derived admission bound; blocking retry can obstruct cancellation.
 No option, new capacity, retry loop, cache, thread or manager is adopted here.
-The older e1cb proposal remains conditional and its distinct logical metadata
+ROOT later selected endpoint-private unit coalescing for the separately confirmed
+finish-Full cause. The older e1cb proposal remains conditional and its distinct logical metadata
 obligations must not be substituted for this observed connection loss.
+
+## Actual parser-only light checkpoint
+
+Kiln r10: Fedora amd64 `8fadc1ec213332e16cb0d915a3fb913f`, Linux
+6.19.10-300.fc44/glibc2.43, rustc1.99.1
+(58cf8f9c35b355199727627d07ae34a4e2846d67), LLVM23.1.1. NEW private source/target
+`/home/adalundhe/managed-operator-boundaries-light-096c-v1`; explicit
+1 CPU/1 GiB/2 GiB headroom admission, one Cargo build/test thread. Exact root
+rustfmt.toml was copied and explicitly selected. Policy and formatting exited0.
+
+```text
+python3 light-check.py REPO NEW_PRIVATE --target x86_64-unknown-linux-gnu
+cargo test --offline --manifest-path NEW_PRIVATE/Cargo.toml \
+  --target-dir NEW_PRIVATE/target --target x86_64-unknown-linux-gnu \
+  -p managed-operator-boundaries --lib -- --test-threads=1
+exit0; 3 passed, 0 failed, 0 ignored
+```
+
+Only the three actual extracted parser tests ran in r10. The real ABI was compiled
+as their dependency, with no ABI/source change. That run formatted the two state
+cases without compiling/running them or the complete actual remote module;
+the subsequent r12 result below extends the pure scope. Protocol dispatch, I/O
+and transport for these prepared additions remain unrun.
+The extraction generated SHA256
+`53c9feb683586cbad9ec7ede594887641de5f3a893d124fdc6f22e25731d98e4`.
+Parser-cases SHA256
+`7b31d68a74c6eb9f1ccc3b0957133afe072f116f84c71fa63d329bb43f33adcf`;
+formatted-only state-cases SHA256
+`051286d38757ab862c71fc4d14634dccbeee9413448a4f9aec0b3467addffd1f`.
+[light-result.json](light-result.json) retains exact commands, full original logs,
+scope, source hashes and resolved lock. No local build/compile or protected ROOT
+cache write occurred. Full-module/source ownership approval and ROOT campaigns
+remain owed; no state or live-transport pass follows from r10's parser result alone.
+
+## Actual full-module pure state checkpoint
+
+Kiln r12 used NEW private
+`/home/adalundhe/managed-operator-state-light-096c-v1/{source,target}`, Fedora
+amd64, 1 CPU/1 GiB/2 GiB admission, build/test threads1 and debug/incremental0.
+It copied the existing lane-owned minimal four-crate source snapshot, excluding
+Git/build output, and restored the actual main096c managed.rs from its Git object.
+It inserted the exact prepared cases in a private cfg(test) child module of the
+existing tests, using that module's real service helper. There were **no** service,
+parser, mutex, transport or state stubs and no production method substitutions.
+The repository's managed.rs remained unchanged. Original production SHA256:
+`eeb45ad4e8a7fd2fcaaff293bede87b2adc99e37cd5fa9f3d036da2d7f6d852f`.
+Private source with test-only insertion:
+`4777135e5b58403ccd1d91376b64494571cdabdcdbd2e76fa613f25067577fe5`.
+
+```text
+cargo test --offline -p shards-remote --lib managed::tests::operator_boundaries \
+  --target x86_64-unknown-linux-gnu --target-dir PRIVATE/target --jobs 1 -- --test-threads=1
+exit0; 5 passed, 0 failed, 0 ignored
+cargo clippy --offline -p shards-remote --lib --tests \
+  --target x86_64-unknown-linux-gnu --target-dir PRIVATE/target --jobs 1 -- -D warnings
+exit0
+```
+
+Only the three parser and two direct Service state compositions executed.
+No native endpoint/driver/socket, actual wire connection, protocol controls
+dispatch, refusal I/O or VM ran. Full source+target/storage measured348,936KiB;
+CPU/RSS were not profiled and headroom admission is not a hard quota. Ordinary
+unchanged provider notices and unused-patch warning remain in raw logs.
+[state-light-result.json](state-light-result.json) retains full original logs,
+commands, case hashes and receipt. [state-light-check.py](state-light-check.py)
+keeps the same private insertion/build recipe for replay; its Python AST passed,
+while the actual first run used the recorded equivalent inline setup. No ABI
+source changes or additional target/hardware results are implied.
+
+This closes the local pure-case compile/run gap, not ROOT's module ownership,
+integration, actual protocol, adversarial/mutation or seven-target gates. ROOT's
+reported r632 now observes both member1 ACKs and transport EOF after the separate
+wake fix, but the fixture's missing TCP gate entry prevents final metadata and
+causally later sibling checks. Header-only intermediate metadata is not a closed
+whole-case result or authority to implement e1cb.
 
 ## Policy and owed evidence
 
