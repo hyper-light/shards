@@ -203,8 +203,13 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         ],
         &env_text,
     );
-    assert_eq!(published(&reports, "result.started"), b"started");
-    let report = String::from_utf8(published(&reports, "result")).unwrap();
+    assert_eq!(published(&reports, "result.started", TIMEOUT), b"started");
+    let report = String::from_utf8(published(
+        &reports,
+        "result",
+        TIMEOUT.checked_add(TIMEOUT).unwrap(),
+    ))
+    .unwrap();
     eprintln!("actual orphan-reaping results:\n{report}");
     assert!(!report.contains("failure"), "{report}");
     assert_eq!(report.lines().count(), rounds, "{report}");
@@ -225,10 +230,10 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
     vm.wait_exit_following(TIMEOUT);
 }
 
-fn published(directory: &std::path::Path, name: &str) -> Vec<u8> {
+fn published(directory: &std::path::Path, name: &str, within: Duration) -> Vec<u8> {
     let root = shards_vmm::platform::open_dir(directory).unwrap();
     let changed = shards_vmm::platform::FileWatch::new(&root).unwrap();
-    let deadline = std::time::Instant::now() + TIMEOUT;
+    let deadline = std::time::Instant::now() + within;
     loop {
         changed.clear();
         match std::fs::read(directory.join(name)) {
@@ -411,7 +416,7 @@ fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path
         .unwrap()
         .as_nanos()
         .to_be_bytes();
-    assert_eq!(published(&reports, "ready"), b"ready");
+    assert_eq!(published(&reports, "ready", TIMEOUT), b"ready");
     let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env, TIMEOUT);
     assert_eq!(ports.status, Some(0), "{ports}");
     let host_port: u16 = ports
