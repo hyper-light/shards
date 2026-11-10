@@ -2845,41 +2845,48 @@ mod usage_tests {
         let version = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
         let takes_slices = version >= (6, 12);
         std::thread::spawn(move || {
-            // The test may inherit SCHED_IDLE from its launcher. Establish the policy
-            // whose slice this fixture checks; run_promptly must not change policies.
-            let mut other = attr();
-            other.sched_policy = libc::SCHED_OTHER as u32;
-            // SAFETY: sched_setattr(2) of the calling thread from its own attributes.
-            let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &other as *const _, 0) };
-            assert_eq!(set, 0, "{}", io::Error::last_os_error());
-            // A weight of its own first, which an unprivileged thread may take.
+            // A weight of its own first, lowered from its launcher's: setpriority(2)
+            // permits an unprivileged thread to raise nice, through PRIO_MAX - 1.
+            let nice = attr().sched_nice.saturating_add(1).min(libc::PRIO_MAX - 1);
             // SAFETY: gettid(2) has no preconditions.
             let tid = unsafe { libc::gettid() };
             // SAFETY: setpriority(2) of the calling thread, by its ID.
-            let set = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, 5) };
+            let set = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, nice) };
             assert_eq!(set, 0);
+            let before = attr();
             run_promptly().unwrap();
             let prompt = attr();
-            assert_eq!(prompt.sched_policy, libc::SCHED_OTHER as u32);
-            assert_eq!(prompt.sched_nice, 5);
-            if takes_slices {
-                assert_eq!(prompt.sched_runtime, PROMPT_SLICE_NS, "Linux {release}");
-            }
+            assert_eq!(prompt.sched_policy, before.sched_policy);
+            assert_eq!(prompt.sched_nice, nice);
+            let runtime = if takes_slices && before.sched_policy == libc::SCHED_OTHER as u32 {
+                PROMPT_SLICE_NS
+            } else {
+                before.sched_runtime
+            };
+            assert_eq!(prompt.sched_runtime, runtime, "Linux {release}");
         })
         .join()
         .unwrap();
         std::thread::spawn(|| {
-            let mut batch = attr();
+            let inherited = attr();
+            let mut batch = inherited;
             batch.sched_policy = libc::SCHED_BATCH as u32;
             batch.sched_runtime = 0;
             // SAFETY: sched_setattr(2) of the calling thread from `batch`.
             let set = unsafe { libc::syscall(libc::SYS_sched_setattr, 0, &batch as *const _, 0) };
-            assert_eq!(set, 0);
+            if set != 0 {
+                // sched(7): leaving SCHED_IDLE may need CAP_SYS_NICE when RLIMIT_NICE
+                // does not permit it. Then the inherited idle policy must still be kept.
+                assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+                assert_eq!(inherited.sched_policy, libc::SCHED_IDLE as u32);
+            }
+            let before = attr();
             run_promptly().unwrap();
-            // Its slice the kernel's default, which 6.12 and later report.
-            let left = attr();
-            assert_eq!(left.sched_policy, libc::SCHED_BATCH as u32);
-            assert_ne!(left.sched_runtime, PROMPT_SLICE_NS);
+            let after = attr();
+            assert_eq!(
+                (after.sched_policy, after.sched_nice, after.sched_runtime),
+                (before.sched_policy, before.sched_nice, before.sched_runtime)
+            );
         })
         .join()
         .unwrap();
