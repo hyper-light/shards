@@ -138,7 +138,9 @@ state. Profiling/allocation/copy/kernel and unfairness costs remain unmeasured.
 
 ## Light checks and exact coordinator invocation
 
-Final checked source is `6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a`.
+Current checked source is `aab5b4ce2a9619ebb2e45dbf455179142aa13827`.
+The earlier boundary-only checkpoint
+`6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a` remains historical evidence.
 Fedora44 amd64 / kernel6.19.10-300.fc44 / Rust1.98.1(48a229cea), LLVM22.1.8;
 identity was captured in the private repository cwd before each proof. Actual
 Linux-GNU guest workload and host fixture strict clippy passed. These are compile
@@ -152,8 +154,9 @@ and pure units, not a carried-musl executable or live VM result.
 | r51 / `owned-birth-light` | 3fec1300 | record2/0, host2/0, guest+host clippy0 after exact birth cleanup follow-up. Same incomplete network-boundary assertion. |
 | r53 / `boundary-red` | a4a743ef | record2/0; host1pass/1fail (exit101), actual boundary[]; guest+host clippy0, wrapper1. |
 | r54 / `boundary-green` | 6d00dd0c | record2/0, host2/0 including effective boundaries; guest+host strict clippy0, wrapper0. |
+| r56 / `connections-light` | aab5b4ce | record2/0, host3/0 including existing validator rejection and corrected grants; guest+host strict clippy0, wrapper0. |
 
-All84 raw identity, source-hash, command, log and exit files remain verbatim in
+All98 raw identity, source-hash, command, log and exit files remain verbatim in
 [light-evidence](light-evidence/), with SHA256SUMS. The first14 files predate the
 durable driver and carry equivalent plain command/identity text; subsequent runs
 use `run-light.py`. Archive transfers were SHA256-verified. Source touching forces
@@ -161,7 +164,7 @@ actual recompile after sync; no stale binary result is reused. Final source hash
 
 - guest actor `da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171`
 - shared codec `241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a`
-- host fixture `f8a1f5e741d47f72cb73b4180ee78ce732e2a557ac3265bbccbd4378d5bc296c`
+- host fixture `a28b29b5e42309ee321190917f576987315fab1e723f73944694cc5b2f861a5d`
 
 The first constructor used `NETWORK --ingress=7100,7101 control`. The parser,
 instructions parser and `agentfile::check` returned Ok, preserving one raw ingress
@@ -170,9 +173,25 @@ assertion reproduced **no effective ingress**, `[]`, against expected
 `[(6,7100,7100),(6,7101,7101)]`. The corrected constructor uses repeated
 `--ingress=7100 --ingress=7101`; its native assertion observes exactly that vector
 and empty outward boundary. Historical comma source/raw logs remain intact.
-This fixes the fixture's declaration. Accepting then dropping a malformed port
-request is a separate coordinator-owned checked-plan validation question; no
-production parser/grant fix or networking product failure is asserted here.
+This fixed the fixture's declaration, but the partial parse/check→boundary probe
+omitted an existing validation stage. The coordinator found that
+`agentfile::connections` validates every network port through `protocol_of` and
+rejects this malformed comma input. Both existing build planning
+(`crates/agentfile/src/plan.rs:5120`) and image/runtime checking
+(`crates/shards/src/agentfile.rs:200`) already call it. The earlier implication
+that this might expose a production checked-plan gap was incomplete; there is no
+demonstrated product defect and no production fix here.
+
+The follow-up constructor parses/checks/resolves the fixture and calls existing
+`connections` before returning its text. The corrected declaration unit calls it
+before observing the exact boundary vector. A separate targeted unit reconstructs
+the original comma input, confirms parse/check/resolve still succeed, and matches
+`connections` as Err before any boundary is used. Error bytes are printed only
+as diagnostics, never parsed to decide control or authority. Original partial
+pipeline logs and all signed source history remain unchanged. The targeted test
+observed the existing rejection diagnostic `NETWORK --ingress=7100,7101 on network
+control: no port, range of ports or Unix socket ...`; it did not inspect that text
+to select a result. No guest/task/production source changed in this follow-up.
 
 The original `scripts/check-development-policy` first failed because this sparse
 checkout omitted `.github/workflows/ci.yml`; adding the existing tracked `.github`
