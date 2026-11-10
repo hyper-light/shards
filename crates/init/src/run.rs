@@ -259,9 +259,13 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = send(&conn, kind::STARTED, &[]);
             workload.relay(conn, signals)
         }
+        Err(f) => (Err(f), false, conn),
+    };
+    let status = match status {
+        Ok(status) => status,
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
-            (f.status, false, conn)
+            f.status
         }
     };
     // Said by the relay already where joiners of its network outlived it (D119).
@@ -4260,6 +4264,7 @@ enum Owner {
     Exec(usize, Part),
     /// A domain's output, by its index.
     Domain(usize),
+    DomainLife(usize),
     /// The domains' memory.
     Memory,
     /// The process events connector (D123).
@@ -4311,7 +4316,7 @@ impl Workload {
     /// as the host asks, while the joiners go on. And the host's connection, which a save of
     /// the run may have it dial again (D176): the microVM saved goes quiet for the save, and
     /// a microVM restored from it dials the host anew, with the tokens the save gave.
-    fn relay(mut self, conn: File, mut signals: Option<File>) -> (u32, bool, File) {
+    fn relay(mut self, conn: File, mut signals: Option<File>) -> (Result<u32, Failure>, bool, File) {
         let mut conn = conn;
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
@@ -4358,7 +4363,8 @@ impl Workload {
         // the run's end spares, and which then finishes its relays' connections before the
         // run's end is said.
         let mut hosts_pid = self.hosts.as_ref().map(crate::hostbind::Supervisor::pid);
-        loop {
+        let mut fatal = None;
+        'relay: loop {
             let exited = status.is_some();
             // The host gone, binds on its network are answered by no one: their process
             // ends, which fails what waits (D124).
@@ -4398,7 +4404,10 @@ impl Workload {
                 && !reported
                 && self.stdout.is_none()
                 && self.stderr.is_none()
-                && self.domains.iter().all(|d| d.out.is_none())
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.out.is_none() && d.lifecycle.ended())
             {
                 if oom_killed() {
                     let facts = oom_facts(WORKLOAD_CGROUP);
@@ -4440,7 +4449,10 @@ impl Workload {
                 && packing.is_none()
                 && (!reported || asked || host.is_none())
                 && (self.hosts.is_some() || hosts_pid.is_none())
-                && self.domains.iter().all(|d| d.out.is_none())
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.out.is_none() && d.lifecycle.ended())
                 && (host.is_none()
                     || self
                         .procs
@@ -4510,6 +4522,9 @@ impl Workload {
                 Owner::Stderr,
             );
             for (i, d) in self.domains.iter().enumerate() {
+                if !d.lifecycle.ended() {
+                    poll(Some(d.lifecycle.events()), libc::POLLPRI, Owner::DomainLife(i));
+                }
                 poll(
                     d.out.as_ref().map(AsRawFd::as_raw_fd),
                     out_events,
@@ -4591,6 +4606,13 @@ impl Workload {
                         keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
                         reap(&self.sigchld, |pid, code| {
+                            if let Some(d) =
+                                self.domains.iter_mut().find(|d| d.lifecycle.awaiting_status(pid))
+                                && let Err(e) = d.lifecycle.reaped(code)
+                            {
+                                fatal =
+                                    Some(setup_failed(format!("{}: ending its population: {e}", d.label)));
+                            }
                             if Some(pid) == hosts_pid {
                                 hosts_pid = None;
                                 self.hosts = None;
@@ -4701,6 +4723,9 @@ impl Workload {
                             // The workload's stdin goes with it.
                             self.stdin = None;
                             to_stdin.clear();
+                        }
+                        if fatal.is_some() {
+                            break 'relay;
                         }
                     }
                     Owner::Host => {
@@ -4874,6 +4899,14 @@ impl Workload {
                     Owner::Stdin => feed(&mut self.stdin, &mut to_stdin),
                     Owner::Stdout => drain_into(&mut self.stdout, kind::STDOUT, &mut buf, &mut to_host),
                     Owner::Stderr => drain_into(&mut self.stderr, kind::STDERR, &mut buf, &mut to_host),
+                    Owner::DomainLife(i) => {
+                        if let Some(d) = self.domains.get_mut(i)
+                            && let Err(e) = d.lifecycle.changed()
+                        {
+                            fatal = Some(setup_failed(format!("{}: its population: {e}", d.label)));
+                            break 'relay;
+                        }
+                    }
                     Owner::Domain(i) => {
                         let Some(d) = self.domains.get_mut(i) else {
                             continue;
@@ -4903,7 +4936,7 @@ impl Workload {
                     }
                     Owner::Memory => {
                         if let Some(m) = self.memory.as_ref() {
-                            m.relieve(&self.domains, |line| {
+                            m.relieve(&mut self.domains, |line| {
                                 let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
                                 to_host.extend(&[&run::header(kind::STDERR, len), line]);
                             });
@@ -5054,7 +5087,18 @@ impl Workload {
         if let Some(fd) = host {
             set_nonblocking(fd, false);
         }
-        (status.unwrap_or(NOT_RUN), reported, conn)
+        let result = match fatal {
+            Some(failure) => {
+                for d in &mut self.domains {
+                    let _ = d.lifecycle.stop();
+                }
+                // The run fails whole; independent joiners retain their existing owner.
+                kill_all_but_joiners(&[]);
+                Err(failure)
+            }
+            None => Ok(status.unwrap_or(NOT_RUN)),
+        };
+        (result, reported, conn)
     }
 }
 

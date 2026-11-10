@@ -544,6 +544,7 @@ pub struct Started {
     pub label: String,
     /// Its cgroup's directory.
     pub cgroup: String,
+    pub lifecycle: crate::managed::Owned,
     pub out: Option<OwnedFd>,
     /// What it wrote past its last whole line.
     pub partial: Vec<u8>,
@@ -939,7 +940,7 @@ impl Memory {
 
     /// After the watch says the domains' memory changed: ends the domain holding the most
     /// where they are past their share, and says so through `say`.
-    pub fn relieve(&self, domains: &[Started], mut say: impl FnMut(&[u8])) {
+    pub fn relieve(&self, domains: &mut [Started], mut say: impl FnMut(&[u8])) {
         let mut buf = [0u8; 4096];
         // SAFETY: read(2) into a buffer it owns, until the watch has nothing more.
         while unsafe { libc::read(self.events.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
@@ -991,7 +992,7 @@ impl Memory {
             .map(|(i, d)| (i, number(&format!("{}/memory.current", d.cgroup)).unwrap_or(0)))
             .max_by_key(|&(_, held)| held);
         let Some((i, held)) = most else { return };
-        let Some(d) = domains.get(i) else { return };
+        let Some(d) = domains.get_mut(i) else { return };
         // What it held, as its `memory.stat` counts it, read before it is ended.
         let stat = std::fs::read_to_string(format!("{}/memory.stat", d.cgroup)).unwrap_or_default();
         let of = |key: &str| {
@@ -1000,7 +1001,7 @@ impl Memory {
                 .map_or("?", |(_, v)| v.trim())
         };
         let (anon, file, shmem, kernel) = (of("anon"), of("file"), of("shmem"), of("kernel"));
-        if std::fs::write(format!("{}/cgroup.kill", d.cgroup), "1").is_ok() {
+        if d.lifecycle.stop().is_ok() {
             say(format!(
                 "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
                 d.label
@@ -1778,8 +1779,12 @@ pub fn start(
         }
         // SAFETY: both descriptors were just made, and are owned here alone.
         let (read_end, write_end) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let mut launch = crate::managed::Launch::new(last_cap, &cgroup)
+            .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
-            flags: (libc::CLONE_NEWNS
+            pidfd: (&raw mut launch.pidfd) as u64,
+            flags: (libc::CLONE_PIDFD
+                | libc::CLONE_NEWNS
                 | libc::CLONE_NEWPID
                 | libc::CLONE_NEWIPC
                 | libc::CLONE_NEWNET
@@ -1797,8 +1802,14 @@ pub fn start(
             return Err(format!("starting {}: {}", d.label, io::Error::last_os_error()));
         }
         if pid == 0 {
-            child(d, &prepared, write_end.as_raw_fd(), filter.0, &program);
+            let setup = launch.child();
+            child(d, &prepared, write_end.as_raw_fd(), setup, filter.0, &program);
         }
+        let pid = libc::pid_t::try_from(pid)
+            .map_err(|_| format!("{}: the kernel returned a PID out of range", d.label))?;
+        let mut lifecycle = launch
+            .parent(pid, cgroup)
+            .map_err(|e| format!("{}: retaining its owner: {e}", d.label))?;
         drop(write_end);
         drop(root);
         drop(copies);
@@ -1839,10 +1850,14 @@ pub fn start(
                 }
             }
         }
+        lifecycle
+            .launched()
+            .map_err(|e| format!("{}: its launch: {e}", d.label))?;
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
         started.push(Started {
             label: d.label.clone(),
             cgroup: group.clone(),
+            lifecycle,
             out: Some(read_end),
             partial: Vec::new(),
         });
@@ -2150,8 +2165,9 @@ impl Server {
 }
 
 /// Writes `shards-init: <what>: errno <n>` to `out` and exits 125, without allocating.
-fn fail(out: RawFd, what: &CStr) -> ! {
-    let errno = io::Error::last_os_error().raw_os_error().unwrap_or(0);
+fn fail(out: RawFd, setup: RawFd, step: crate::managed::Step, what: &CStr) -> ! {
+    let errno = io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO);
+    crate::managed::report_failure(setup, step, errno);
     let mut digits = [0u8; 12];
     let mut at = digits.len();
     let mut v = errno.unsigned_abs();
@@ -2181,7 +2197,8 @@ fn fail(out: RawFd, what: &CStr) -> ! {
 }
 
 /// A domain's first process, before its program.
-fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_fprog) -> ! {
+fn child(d: &Domain, p: &Prepared, out: RawFd, setup: RawFd, flags: u32, program: &libc::sock_fprog) -> ! {
+    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
     let null = std::ptr::null::<libc::c_char>();
     let nil = std::ptr::null::<libc::c_void>();
     let tmpfs = c"tmpfs".as_ptr();
@@ -2442,13 +2459,42 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
         }
         // Its stdio, and no other descriptor of init's.
         let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
-        if devnull < 0 || libc::dup2(devnull, 0) < 0 || libc::dup2(out, 1) < 0 || libc::dup2(out, 2) < 0 {
+        let status = libc::fcntl(setup, libc::F_DUPFD_CLOEXEC, libc::STDERR_FILENO + 2);
+        if devnull < 0
+            || status < 0
+            || libc::dup2(devnull, 0) < 0
+            || libc::dup2(out, 1) < 0
+            || libc::dup2(out, 2) < 0
+        {
             fail(out, c"giving it its stdio");
         }
-        if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
-            fail(2, c"closing init's descriptors");
+        if libc::dup3(status, libc::STDERR_FILENO + 1, libc::O_CLOEXEC) < 0 {
+            fail(2, c"retaining its launch status");
         }
-        let out = 2;
+        if libc::syscall(
+            libc::SYS_close_range,
+            (libc::STDERR_FILENO + 2) as u32,
+            u32::MAX,
+            0u32,
+        ) != 0
+        {
+            crate::domains::fail(
+                2,
+                libc::STDERR_FILENO + 1,
+                crate::managed::Step::Setup,
+                c"closing init's descriptors",
+            );
+        }
+        exec_child(d, p, flags, program)
+    }
+}
+
+fn exec_child(d: &Domain, p: &Prepared, flags: u32, program: &libc::sock_fprog) -> ! {
+    let setup = libc::STDERR_FILENO + 1;
+    let out = libc::STDERR_FILENO;
+    let fail = |out, what| -> ! { fail(out, setup, crate::managed::Step::Setup, what) };
+    // SAFETY: the actor's remaining confinement uses prepared buffers and system calls.
+    unsafe {
         if libc::chdir(d.workdir.as_ptr()) != 0 {
             fail(out, c"entering its working directory");
         }
@@ -2560,6 +2606,11 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             fail(out, c"entering its Landlock ruleset");
         }
         libc::close(ruleset as libc::c_int);
+        let mut signals: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut signals);
+        if libc::sigprocmask(libc::SIG_SETMASK, &raw const signals, std::ptr::null_mut()) != 0 {
+            fail(out, c"restoring its signals");
+        }
         // Its seccomp filter, last: what it refuses, nothing after may need.
         if libc::syscall(
             libc::SYS_seccomp,
@@ -2575,7 +2626,7 @@ fn child(d: &Domain, p: &Prepared, out: RawFd, flags: u32, program: &libc::sock_
             p.argv.as_ptr(),
             p.envp.as_ptr(),
         );
-        fail(out, c"running its command")
+        crate::domains::fail(out, setup, crate::managed::Step::Exec, c"running its command")
     }
 }
 

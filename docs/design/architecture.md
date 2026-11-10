@@ -20447,6 +20447,63 @@ in init; none of init's own threads outlives the call that spawns it. The childr
 Next: egress without init's NAT (the network process taking the agents' addresses), and
 ingress straight to an agent's address, so that init tracks no agent's flow either.
 
+### D59: owned native domain lifetime
+
+Implementation slice P2 of [the management plan](managed-runtime-plan.md) extends
+`domains::start`; actual VM, fault and cost acceptance gates remain open. The
+[repeatable fixture and evidence](../research/measurements/managed-lifecycle/README.md)
+record root's real baseline and the implementer's light checks separately.
+
+A domain's namespace init now fresh-execs the existing carried init binary as a
+private native reaper. The actor is its child. Before releasing the actor it holds
+only protocol pipes, has a separate empty/read-only mount root, locks securebits,
+drops all capability sets and its bounding set, sets no_new_privs/non-dumpable and
+installs a native-syscall allowlist. It retains trusted guest UID0, distinct from
+the actor's UID; this grants no host root. Only a valid sealed-helper word releases
+the actor; EOF, malformed words, helper exec/sealing failure refuse launch.
+
+`CLONE_PIDFD` captures identity at the existing clone3 birth, with the same held
+cgroup object. Cancellation's cgroup.kill and population event files are opened
+before birth. The outer init remains the sole reaper of namespace-init status;
+the native helper reaps its actor and adopted orphans. Actor exit ends namespace
+init and the kernel ends its remaining namespace tasks. Outer init ends the rest
+of the domain cgroup (including its server) and requires population emptiness.
+The existing D59 memory-victim and hard-cap policy is unchanged; helper resources
+are charged to that same scope, not added as an unexplained entitlement.
+
+Prepared launch, Starting, Running, Stopping, Draining, Ended and Faulted are
+explicit. Termination status and population emptiness are distinct observations.
+A read/control failure faults the run rather than supplying an exit status or
+polling a known failing descriptor indefinitely. Reported child setup/exec errno
+failures travel apart from an application's exit code. Error-pipe EOF alone does
+not establish actual exec against abrupt pre-exec death; that startup-confirmation
+limit remains explicit pending root's fault/contract review. Canonical output
+capture has its own implementation slice; this lifecycle does not confer precise
+subprocess provenance on shared output pipes.
+
+| Literal / field | Source or derivation |
+| --- | --- |
+| Actor PID2 | The second and sole actor process created inside this fresh PID namespace; Linux pid_namespaces(7). No actor runs before its reaper is sealed. |
+| Helper FDs3–7; past8 | Contiguous protocol endpoint slots after stdio0–2: owner, gate, mount-split, helper-ready, executable. The executable is CLOEXEC; every higher descriptor closes. Actor retains a CLOEXEC error endpoint at stdio's successor, then none on exec. |
+| READY1, SPLIT2; Step Helper1/Setup2/Exec3 | Explicit private protocol discriminants, not tunable capacities. Unknown words/steps fail. Failure errno0 is reserved for helper-ready success, never a decoded failure. |
+| Error/ready record5 bytes | One discriminant plus a big-endian i32 errno; `1 + size_of::<i32>()`. Cap input4 bytes is `size_of::<u32>()`. No untrusted-sized allocation. |
+| cgroup event scratch | The bytes of Linux6.18 cgroup.events' populated/frozen boolean records; no actor-supplied read length. Missing populated is a protocol fault. |
+| Securebits bits0–3 | Linux include/uapi/linux/securebits.h: NOROOT/NO_SETUID_FIXUP and both locks, set while capability authority remains. |
+| BPF0x20/0x15/0x06, offsets0/4; allow/kill returns | Linux include/uapi/linux/filter.h and seccomp.h. Native syscall number/arch are validated before the eight required loop syscalls. |
+| Native arch0xc000003e/0xc00000b7 | Linux include/uapi/linux/audit.h, amd64/arm64; foreign/x32 calls do not gain the native allowlist. |
+| ppoll sigset8 bytes | Kernel rt_sigset_t has64 signals on both supported 64-bit guest architectures; size_of::<u64>(), distinct from libc's larger userspace sigset_t. |
+| Failure125 and signaled128+signal | Existing run-protocol/Docker failure and signal exit encoding, D16; application failure is not relabelled launch errno. |
+| cgroup.kill pwrite offset0 | Linux6.18 fs/kernfs/file.c restores FMODE_PWRITE for writable controls; preheld descriptor makes stop require no new FD. |
+
+Mechanism sources: [clone3](https://man7.org/linux/man-pages/man2/clone.2.html),
+[PID namespace init](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html),
+[cgroup v2](https://docs.kernel.org/admin-guide/cgroup-v2.html),
+[kernfs6.18](https://raw.githubusercontent.com/torvalds/linux/v6.18/fs/kernfs/file.c),
+[runc1.3.3](https://raw.githubusercontent.com/opencontainers/runc/v1.3.3/libcontainer/process_linux.go),
+[tini0.19](https://raw.githubusercontent.com/krallin/tini/v0.19.0/src/tini.c).
+The original D59 evidence below predates this owned-reaper topology; its numeric
+PID1/one-process observation is historical, not a passing result for this slice.
+
 ### Agents run in their domains (D59, part one)
 
 When a microVM runs an image whose normalized Agentfile (`/.agentfile.json`) declares

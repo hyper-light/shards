@@ -1,0 +1,25 @@
+Native Linux light tests on runner8fadc1ec213332e16cb0d915a3fb913f; no VMs.
+Base c9d0a46f94fae14ed18a8ca537b05158b5740135 with the exact source hashes below.
+Policy SHA256 0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936
+471b1c04b881b8ead3677503a1687323e98d97d363891a24f709caf09edfd488 crates/init/src/managed.rs
+390bd8c20a5a58846f1778d6e46fbee12d0122a9462d5e1b629a38372d29a178 crates/init/src/domains.rs
+fbb36d83894d108081ffc97fb8435b436c23f8dd962e45ec949b8801f5996047 crates/init/src/run.rs
+540d35d8f1e067201fd67421468b441a5d9906cdd71718519a2812d6278dab1b crates/init/src/main.rs
+Command: CARGO_TARGET_DIR=$HOME/.cache/g121-managed-lifecycle-target cargo test -j4 -p shards-init --profile test-release managed::tests -- --nocapture
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/init)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 11.05s
+     Running unittests src/main.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/test-release/deps/shards_init-283e5c1ae3c0c939)
+
+running 7 tests
+test managed::tests::an_empty_population_cannot_supply_an_unobserved_exit_status ... ok
+test managed::tests::a_second_completion_cannot_replace_the_owned_status ... ok
+test managed::tests::a_real_population_read_error_faults_the_owner_and_stop_still_works ... ok
+test managed::tests::malformed_status_never_becomes_a_successful_launch ... ok
+test managed::tests::eof_or_an_unexpected_gate_word_never_releases_the_actor ... ok
+test managed::tests::only_a_complete_fresh_helper_ready_record_releases_startup ... ok
+test managed::tests::exec_closes_its_status_but_setup_and_exec_failures_stay_typed ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 80 filtered out; finished in 0.00s
+
+
+exit_code=0
