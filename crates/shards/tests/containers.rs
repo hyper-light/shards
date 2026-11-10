@@ -16126,7 +16126,7 @@ fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
     };
     let shards = |args: &[&str]| shards_in(&home, args);
     let mut sliced = start(&home, &image, &["--name", "sliced", "--cpus", "1"], &["sleep"]);
-    let pid: u32 = shards(&["inspect", "-f", "{{.State.Pid}}", "sliced"])
+    let pid: u32 = shards(&["inspect", "vm", "-f", "{{.State.Pid}}", "sliced"])
         .stdout
         .trim()
         .parse()
@@ -16192,7 +16192,7 @@ fn a_microvms_vcpus_and_governor_wake_at_the_shortest_slice() {
             "{name} on Linux {release}: {seen:?}"
         );
     }
-    assert_eq!(shards(&["rm", "-f", "sliced"]).status, Some(0));
+    assert_eq!(shards(&["remove", "vm", "-f", "sliced"]).status, Some(0));
     let _ = exit(&mut sliced, &home);
 }
 
