@@ -1,0 +1,68 @@
+{
+  "source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "source_base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "admission": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r23\",\n  \"why\": \"linux/x86_64 \u00b7 23 of 32 cores idle \u00b7 35 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r23",
+      "why": "linux/x86_64 \u00b7 23 of 32 cores idle \u00b7 35 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk"
+    },
+    "isError": false
+  },
+  "completed_run_receipt": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"    Finished `guest` profile [optimized] target(s) in 0.05s\\nmanaged-owner subscribe member=1 channel=1 outsider=false\\nmanaged-owner subscribe member=1 channel=2 outsider=false\\nmanaged-owner subscribe member=2 channel=1 outsider=false\\nmanaged-owner subscribe member=2 channel=2 outsider=false\\nmanaged-owner main exec\\nmanaged-owner main exec\\nmanaged-owner main exec\\nmanaged-owner owner stop\\nmanaged-owner observer_fds before=11 after=11\\nok\\n\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 1.65s\\n\\n{\\n  \\\"source\\\": \\\"0ea38a52aa534bf665516c239c4bf122149f8554\\\",\\n  \\\"source_base\\\": \\\"cbd39284937d024640c56db6f8d8ef2bd9b0ee24\\\",\\n  \\\"inherited\\\": 0,\\n  \\\"challenge_bytes\\\": 1,\\n  \\\"report_bytes\\\": 239,\\n  \\\"caller_and_guest_frozen_bytes_match_after\\\": true,\\n  \\\"observed\\\": {\\n    \\\"inherited\\\": {\\n      \\\"release\\\": {\\n        \\\"gate_peer_eof\\\": true,\\n        \\\"guest_port\\\": 37953,\\n        \\\"release_bytes\\\": [\\n          1\\n        ],\\n        \\\"state\\\": \\\"OwnerReleasedNeighborAfterGateEof\\\"\\n      },\\n      \\\"teardown\\\": {\\n        \\\"observer_fd_baseline\\\": 11,\\n        \\\"owner_stop_observer_join\\\": {\\n          \\\"complete\\\": true,\\n          \\\"error\\\": null\\n        },\\n        \\\"parent_child_waitstatus_and_full_population_return\\\": \\\"Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop\\\",\\n        \\\"protocol_complete\\\": true,\\n        \\\"run_removed\\\": true\\n      }\\n    }\\n  },\\n  \\\"full_population_kernel_return\\\": \\\"Unknown\\\"\\n}\\n\",\n  \"running\": false,\n  \"exit_code\": 0\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "    Finished `guest` profile [optimized] target(s) in 0.05s\nmanaged-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner main exec\nmanaged-owner main exec\nmanaged-owner main exec\nmanaged-owner owner stop\nmanaged-owner observer_fds before=11 after=11\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 1.65s\n\n{\n  \"source\": \"0ea38a52aa534bf665516c239c4bf122149f8554\",\n  \"source_base\": \"cbd39284937d024640c56db6f8d8ef2bd9b0ee24\",\n  \"inherited\": 0,\n  \"challenge_bytes\": 1,\n  \"report_bytes\": 239,\n  \"caller_and_guest_frozen_bytes_match_after\": true,\n  \"observed\": {\n    \"inherited\": {\n      \"release\": {\n        \"gate_peer_eof\": true,\n        \"guest_port\": 37953,\n        \"release_bytes\": [\n          1\n        ],\n        \"state\": \"OwnerReleasedNeighborAfterGateEof\"\n      },\n      \"teardown\": {\n        \"observer_fd_baseline\": 11,\n        \"owner_stop_observer_join\": {\n          \"complete\": true,\n          \"error\": null\n        },\n        \"parent_child_waitstatus_and_full_population_return\": \"Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop\",\n        \"protocol_complete\": true,\n        \"run_removed\": true\n      }\n    }\n  },\n  \"full_population_kernel_return\": \"Unknown\"\n}\n",
+      "running": false,
+      "exit_code": 0
+    },
+    "isError": false
+  },
+  "raw_packaging_headroom_refusal": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"\",\n  \"output\": \"\",\n  \"running\": false,\n  \"error\": \"no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "",
+      "output": "",
+      "running": false,
+      "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f"
+    },
+    "isError": true
+  },
+  "raw_remote_path": "~/managed-tenant-live-01a1c5d2-v1/records/caption-minimum-v13",
+  "local_transfer_verified": false,
+  "source_and_frozen_artifacts_preserved": true,
+  "raw_packaging_second_headroom_refusal": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"\",\n  \"output\": \"\",\n  \"running\": false,\n  \"error\": \"no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "",
+      "output": "",
+      "running": false,
+      "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f"
+    },
+    "isError": true
+  }
+}

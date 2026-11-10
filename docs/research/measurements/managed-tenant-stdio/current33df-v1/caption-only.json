@@ -1,0 +1,10 @@
+{
+  "before_source": "f4ee5f7c5ba7c263b2a8a2d84c3ff8f79d771852",
+  "after_source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "path": "crates/shards/tests/managed_output/tenant_exit.rs",
+  "changes": "one factual release caption only; no terminal/assertion/helper/product changes",
+  "original_bytes": 844,
+  "original_sha256": "8eb9007e293bbbbabbac469ae37a70ef33e520687442acf7c0a437fbb4536f5b",
+  "stored": "caption-only.patch.gz",
+  "stored_sha256": "4bea26f1556d3c47028016fd3208d2568640c03b1cafefdc04124c1b0a280ecc"
+}

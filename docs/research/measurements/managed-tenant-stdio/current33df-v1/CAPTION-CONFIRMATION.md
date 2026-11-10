@@ -76,7 +76,18 @@ no children/goals/main merge; ROOT review/audits/heavy integration/profiles rema
 R16: existing private source/target, lock/headroom admission, no local build/full
 worktree/cache deletion; all old/frozen/protected evidence preserved.
 
-Next finite caller-input boundary: unchanged A, minimum positive challenge1 with
-derived report239=227+2*(1+4+1), under the same resource/time/cleanup envelope.
-No helper mechanism changes. Current-main A task/caller seam remains separate
-and unapplied. Full managed-runtime plan and this continuing lane stay open.
+The next finite caller-input boundary continued after d88006340: unchanged A,
+minimum positive challenge1 with derived report239=227+2*(1+4+1), under the same
+resource/time/cleanup envelope. Actual r23 passed exactly1 test,0failed/ignored,
+20filtered. Caption/strict terminal assertions and protocol/remove/owner joins
+passed, FD11→11; caller/guest still match frozen bytes afterward. The admitted
+run/result is retained in [inherited-minimum-receipt.json](inherited-minimum-receipt.json).
+Raw records remain at the owned remote `records/caption-minimum-v13`; their local
+transfer is pending because Kiln refused packaging1CPU/1GiB/2GiB at0 idle CPUs.
+No headroom bypass, smaller request, helper mechanism or source change followed.
+
+[caption-only.json](caption-only.json) identifies the exact844-byte source patch,
+SHA256 `8eb9007e293bbbbabbac469ae37a70ef33e520687442acf7c0a437fbb4536f5b`,
+stored losslessly as `caption-only.patch.gz`. It contains only the approved caption.
+Current-main A task/caller seam remains separate and unapplied. Full
+managed-runtime plan and this continuing lane stay open.
