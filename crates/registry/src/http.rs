@@ -2443,7 +2443,7 @@ mod tests {
         for sample in 0..count {
             let cancel = Cancel::new();
             let asked_cancel = cancel.clone();
-            let mode = mode.clone();
+            let resolving = mode == "resolve";
             let (done_tx, done_rx) = mpsc::channel();
             let asked = std::thread::spawn(move || {
                 // SAFETY: getrusage initializes the entire rusage on success.
@@ -2453,7 +2453,7 @@ mod tests {
                     r
                 };
                 let before = usage();
-                let result = if mode == "resolve" {
+                let result = if resolving {
                     resolve(
                         &at("http", "shards-cancel.invalid", 9),
                         after(Duration::from_secs(3)),
