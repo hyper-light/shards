@@ -4252,11 +4252,11 @@ fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
 }
 
 fn apply_lifecycle(domain: &mut crate::domains::Started, update: crate::managed::Update) {
-    if let crate::managed::Update::Quarantined { errno } = update {
-        domain.abort_output(errno);
+    if let crate::managed::Update::Quarantined { cause } = update {
+        domain.abort_output(cause.errno());
         let _ = writeln!(
             io::stderr(),
-            "shards-init: {}: quarantined after population observation errno {errno}; emptiness unknown",
+            "shards-init: {}: quarantined after {cause}; emptiness unknown",
             domain.label
         );
     }

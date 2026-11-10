@@ -2188,12 +2188,14 @@ mod tests {
         let refusal = Refused::new(request, 7, Reason::Quarantined, 21).unwrap();
         let mut q = Quiescing::Idle;
         q.begin(request).unwrap();
-        assert!(q.begin(request).is_err());
+        assert!(matches!(q.begin(request), Err(QuiesceError::Busy)));
         q.refuse(Refused::new([0x5b; REQUEST_BYTES], 7, Reason::Quarantined, 21).unwrap());
         assert!(q.outcome().is_none());
         q.refuse(refusal);
+        let error = q.outcome().unwrap().unwrap_err();
+        assert!(matches!(&error, QuiesceError::Refused(found) if *found == refusal));
         assert_eq!(
-            q.outcome().unwrap().unwrap_err().to_string(),
+            error.to_string(),
             "its guest refused the save: tenant 7 is quarantined with unknown population; errno 21"
         );
         assert!(matches!(q, Quiescing::Idle));
@@ -2219,8 +2221,8 @@ mod tests {
         q = Quiescing::Ended { protocol: None };
         q.cancel(&request);
         q.quiet();
-        assert!(q.begin(request).is_err());
-        assert!(q.outcome().unwrap().is_err());
+        assert!(matches!(q.begin(request), Err(QuiesceError::Ended)));
+        assert!(matches!(q.outcome(), Some(Err(QuiesceError::Ended))));
         assert!(matches!(q, Quiescing::Ended { .. }));
     }
 

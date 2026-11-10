@@ -131,3 +131,7 @@ The separate [typed quiesce-refusal slice](quiesce-refusal.md) now implements th
 known-state refusal at the existing save seam. This does not complete P11's full
 freeze/revalidation or establish post-commit consistency; root's live/mutation
 gates and the remaining transfer/uncertainty work are explicit there.
+
+The [typed quarantine-cause follow-up](quarantine-cause.md) exposes the same held
+containment to capture and preserves its first actual cause. Standalone production
+lint awaits capture's real caller; no lint waiver or dummy use was added.

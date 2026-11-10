@@ -11097,6 +11097,11 @@ restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), and WHP (
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
+Lifecycle quarantine retains a typed first cause, PopulationObservation or Capture,
+with its actual errno. Capture reuses the same held cgroup/pidfd containment; it
+cannot relabel its allocation failure as a failed population read. Ended proof and
+prior shared-boundary faults remain terminal. [Consumer and composition evidence](../research/measurements/managed-lifecycle/quarantine-cause.md).
+
 A known unready managed tenant refuses the guest cut through typed run kind46,
 `QuiesceRefused`, correlated with the existing private restore tokens. The declared
 member, lifecycle reason and errno are checked; tokens never enter display/logs.

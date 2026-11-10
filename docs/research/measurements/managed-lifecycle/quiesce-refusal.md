@@ -57,6 +57,17 @@ connection. A stale refusal cannot complete a new request. Malformed refusal fai
 the existing relay, whose Ended state retains the typed decode cause for its waiter; no malformed success is
 invented. A complete known refusal reaches warm::save before the VMM snapshot call.
 
+Normal daemon save admission is serialized by the run's Inbox.saving under its
+mutex (daemon/snapshots.rs): it is set before SAVE and taken by snapshots::answered
+on SAVED. warm::save_request returns only after VMM save and, on error/Resume,
+resume_guest; its worker sends SAVED afterwards. workload::quiesce's Quiet→Idle
+therefore does not itself own exclusivity through host saving. warm::SAVING only
+blocks JOIN, not an independent raw SAVE. Hold intentionally sends SAVED while a
+Saved remains in HELD until MOVED; an additional move-phase admission guarantee
+against a second save has not been established here. Hold/concurrent direct-protocol
+quiesce is an explicit root live-reproduction/P11 risk, not claimed safe or blindly
+fixed in this slice.
+
 Stop, reap, memory control, host RESUME and output/control polling continue through
 Committing and Quiet. **Observation deferral is not freezing; this slice does not
 freeze actors or defer control.** A quarantine first observed after commitment
