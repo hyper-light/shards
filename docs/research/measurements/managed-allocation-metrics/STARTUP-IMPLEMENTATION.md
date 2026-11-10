@@ -87,3 +87,24 @@ campaigns. Source-specific f53f native gates precede this change and are not new
 startup passes. Protected root f53f/all five eaf0 artifacts remain untouched.
 The paired14 batch and22-line report proposal remain separate/unreviewed and
 unmodified. This checkpoint does not complete the sustained lane or parent goal.
+
+## Root runtime-record criteria — unrun here
+
+* On strict success, `allocation-startup.json` should contain Observed test-entry,
+  supplied-input and completed-input fields plus all three boundaries for each
+  of the five existing artifact roles. Each snapshot retains ConcurrentNonAtomic
+  and individual Known/Unknown counts; Observed is not exclusive attribution.
+* A prelude input/host/artifact panic outside the original unwind boundary should
+  leave this file absent. Neither NotReached nor a cleanup-success record is
+  substituted for that absence. Only root executes these failure cases.
+* Live/requested-lifetime peak remain absolute bookkeeping observations. Do not
+  assert coherent live/peak relationships from independent loads, subtract peaks,
+  equate native fault categories or infer setup cause from a large interval.
+* Original protocol/main progress, held identity/exit readiness, exact FD return,
+  owner/observer joins, deadlines and terminal checks remain required. This
+  record supplements those witnesses and does not prove full population/kernel
+  charge return or parent/foreign-C/daemon/VM allocation completeness.
+
+Read-only lineage verification confirms canonical native base `eb5654d6f` has
+the exact reviewed31df9e2b fixture, and source4bc adds exactly115/3 lines to it.
+No root working tree, index, cache, target or frozen artifact was changed.

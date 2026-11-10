@@ -1,0 +1,11 @@
+{
+  "scope": "read-only Git source-lineage verification; no root worktree/index/target/artifact mutation",
+  "canonical_native_base": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+  "base_fixture_sha256": "31df9e2bc83270fc4fee35caaa34b885b5e12dcae551bbee9238cbdbf6e232b7",
+  "tested_startup_source": "4bc28256ee1285715e5573e9f4ba6b02caf436aa",
+  "new_fixture_sha256": "874e8b38b46479d4199ac53940a84a8ac6c8f7199998a4edb591eacab81c515e",
+  "fixture_only_added": 115,
+  "fixture_only_deleted": 3,
+  "actual_new_source_caller_or_runtime_gate": "UNRUN by implementer; ROOTowned"
+}
