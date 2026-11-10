@@ -1,5 +1,14 @@
 # Harness adapter lane checkpoint
 
+Epoch owner now explicitly confirms that no real current admission closure/
+classification/access-check API exists yet: only signed Epoch DATA and parent
+Context schema. Do not treat the pending API as an implemented dependency or
+create a boolean ready/grant from DATA. ROOT7588 typed-unclassified proposal and
+7590 Registry choice remain held. Its peer-reported recovered r11 proves GNU
+ABI2/strict0 only; fullbin timed out598.046s before unit tests, total600.766 with
+cleanup overrun disclosed ROOT7734. No fullcaller/authority pass or retry implied.
+Adapter local fourteen-test evidence is separate. No job/source change triggered.
+
 Signed pushed current product codec590882ecce0f29ed2ee29c544e7b11865c636cf7;
 framingd2994e3a1b8f4c57d40b177c398619f432c04518; selector DATA candidate
 19b8a946282c99ca2a47c7e56f9c1c58d3359f95. Branch clean before this handoff edit.

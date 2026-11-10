@@ -66,6 +66,12 @@ attachment/release, independently of packet IDs, reported labels, argv0/basename
 or CLI permission flags. TTY/native half-close is unsupported absent its owner's
 documented contract. Ordinary launch remains unchanged.
 
+Epoch owner explicitly confirms the actual current admission closure/
+classification/access-check API does not yet exist. Signed Epoch DATA and the
+parent Context schema cannot substitute for it. ROOT7588's typed-unclassified
+proposal and7590 Registry choice remain held; no boolean ready/grant is invented
+by this lane. Native EOF/pause/initialization success is not a cut or reopening.
+
 Current init/domains creates separate stdout/stderr capture pipes; capture::read
 is the SOLE stdout reader, used by run::Owner::Domain. ROOT/native/input received
 the selected same-reader private-link proposal7601/7602/7604; native confirmed
