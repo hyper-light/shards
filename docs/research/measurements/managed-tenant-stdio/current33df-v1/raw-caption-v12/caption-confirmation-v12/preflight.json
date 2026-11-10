@@ -1,0 +1,16 @@
+{
+  "source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "source_base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "current_policy_read_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "caller_and_guest_frozen_bytes_match": true,
+  "other_six_original_artifacts_match": true,
+  "free_bytes": 1915271118848,
+  "ask": {
+    "cpu": 4,
+    "memory_gib": 8,
+    "disk_gib": 40
+  },
+  "source_changes": false,
+  "old_records_preserved": true
+}

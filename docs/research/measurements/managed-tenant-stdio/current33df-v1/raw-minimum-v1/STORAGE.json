@@ -1,0 +1,384 @@
+{
+  "source": "4d80f06048fbd11477032ae9b1bb95b02ae3171c",
+  "files": [
+    {
+      "original": "stdio-minimum-v1/artifact-verification.json",
+      "bytes": 99,
+      "sha256": "dab2f344978e76a019e9dad770a440f08140fe94015da681e53b60741ba6a83c",
+      "stored": "stdio-minimum-v1/artifact-verification.json",
+      "stored_bytes": 99,
+      "stored_sha256": "dab2f344978e76a019e9dad770a440f08140fe94015da681e53b60741ba6a83c"
+    },
+    {
+      "original": "stdio-minimum-v1/command",
+      "bytes": 242,
+      "sha256": "1b7eb2e71cf68f72543a096c017a97ed23c515ab10dffa5fb69370b5f0d4c37b",
+      "stored": "stdio-minimum-v1/command",
+      "stored_bytes": 242,
+      "stored_sha256": "1b7eb2e71cf68f72543a096c017a97ed23c515ab10dffa5fb69370b5f0d4c37b"
+    },
+    {
+      "original": "stdio-minimum-v1/environment.json",
+      "bytes": 1118,
+      "sha256": "1c5ea818fe656ebf10de4404bac6028809801ca1ce98dd20577fda20d6e1c968",
+      "stored": "stdio-minimum-v1/environment.json",
+      "stored_bytes": 1118,
+      "stored_sha256": "1c5ea818fe656ebf10de4404bac6028809801ca1ce98dd20577fda20d6e1c968"
+    },
+    {
+      "original": "stdio-minimum-v1/inputs.env",
+      "bytes": 126,
+      "sha256": "994835c8365498428ce4c9d355c5ae6054d3f34fd010456760b4c266eff5d0ca",
+      "stored": "stdio-minimum-v1/inputs.env",
+      "stored_bytes": 126,
+      "stored_sha256": "994835c8365498428ce4c9d355c5ae6054d3f34fd010456760b4c266eff5d0ca"
+    },
+    {
+      "original": "stdio-minimum-v1/records/Agentfile",
+      "bytes": 352,
+      "sha256": "7b8a27892666b15e93476efec4db600c519698058fd9511d096f9d44fe123903",
+      "stored": "stdio-minimum-v1/records/Agentfile",
+      "stored_bytes": 352,
+      "stored_sha256": "7b8a27892666b15e93476efec4db600c519698058fd9511d096f9d44fe123903"
+    },
+    {
+      "original": "stdio-minimum-v1/records/actor-control.json",
+      "bytes": 313,
+      "sha256": "e9d8275b7b4299971b1ac6350e081f78588d5fccea9dde6b4525b8290467a471",
+      "stored": "stdio-minimum-v1/records/actor-control.json",
+      "stored_bytes": 313,
+      "stored_sha256": "e9d8275b7b4299971b1ac6350e081f78588d5fccea9dde6b4525b8290467a471"
+    },
+    {
+      "original": "stdio-minimum-v1/records/actor-eof.json",
+      "bytes": 1045,
+      "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22",
+      "stored": "stdio-minimum-v1/records/actor-eof.json",
+      "stored_bytes": 1045,
+      "stored_sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+    },
+    {
+      "original": "stdio-minimum-v1/records/actor-live-after-eof.json",
+      "bytes": 888,
+      "sha256": "78c39ea822be70be5bbb7dfd9583aebbcb5cfec7158744ceb2f9842e47d022d1",
+      "stored": "stdio-minimum-v1/records/actor-live-after-eof.json",
+      "stored_bytes": 888,
+      "stored_sha256": "78c39ea822be70be5bbb7dfd9583aebbcb5cfec7158744ceb2f9842e47d022d1"
+    },
+    {
+      "original": "stdio-minimum-v1/records/actor-ports.json",
+      "bytes": 375,
+      "sha256": "d2920108d1779efc772eec065688e16d6b97d15340edf90d750302f51448ff46",
+      "stored": "stdio-minimum-v1/records/actor-ports.json",
+      "stored_bytes": 375,
+      "stored_sha256": "d2920108d1779efc772eec065688e16d6b97d15340edf90d750302f51448ff46"
+    },
+    {
+      "original": "stdio-minimum-v1/records/artifacts.json",
+      "bytes": 1151,
+      "sha256": "f38cc68452279f03ae29accb3ef7ac1457df74b49f088ac1009453522c6b0104",
+      "stored": "stdio-minimum-v1/records/artifacts.json",
+      "stored_bytes": 1151,
+      "stored_sha256": "f38cc68452279f03ae29accb3ef7ac1457df74b49f088ac1009453522c6b0104"
+    },
+    {
+      "original": "stdio-minimum-v1/records/inputs.json",
+      "bytes": 335,
+      "sha256": "fdb954a55691a5655e0367e2102e648c61fa21d59e7561932a7966d7e2d895ae",
+      "stored": "stdio-minimum-v1/records/inputs.json",
+      "stored_bytes": 335,
+      "stored_sha256": "fdb954a55691a5655e0367e2102e648c61fa21d59e7561932a7966d7e2d895ae"
+    },
+    {
+      "original": "stdio-minimum-v1/records/managed-output.actor-eof",
+      "bytes": 573,
+      "sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4",
+      "stored": "stdio-minimum-v1/records/managed-output.actor-eof",
+      "stored_bytes": 573,
+      "stored_sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4"
+    },
+    {
+      "original": "stdio-minimum-v1/records/managed-output.before-cleanup",
+      "bytes": 573,
+      "sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4",
+      "stored": "stdio-minimum-v1/records/managed-output.before-cleanup",
+      "stored_bytes": 573,
+      "stored_sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4"
+    },
+    {
+      "original": "stdio-minimum-v1/records/managed-output.before-stop",
+      "bytes": 573,
+      "sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4",
+      "stored": "stdio-minimum-v1/records/managed-output.before-stop",
+      "stored_bytes": 573,
+      "stored_sha256": "ebb6796607600a8021666f941df2ebe3c4d6e0621ae8cd2ad407d2995a13d5a4"
+    },
+    {
+      "original": "stdio-minimum-v1/records/managed-output.ready",
+      "bytes": 433,
+      "sha256": "d41e7b4da5692730797239550a8fd51f34b18d1f4904840de21c97133423c7fd",
+      "stored": "stdio-minimum-v1/records/managed-output.ready",
+      "stored_bytes": 433,
+      "stored_sha256": "d41e7b4da5692730797239550a8fd51f34b18d1f4904840de21c97133423c7fd"
+    },
+    {
+      "original": "stdio-minimum-v1/records/managed-output.stopped",
+      "bytes": 717,
+      "sha256": "22c66941f8d99acbd33bf8d2e371abf7c158677208ed2cc939ff18d1bf0d4a41",
+      "stored": "stdio-minimum-v1/records/managed-output.stopped",
+      "stored_bytes": 717,
+      "stored_sha256": "22c66941f8d99acbd33bf8d2e371abf7c158677208ed2cc939ff18d1bf0d4a41"
+    },
+    {
+      "original": "stdio-minimum-v1/records/ports.json",
+      "bytes": 375,
+      "sha256": "d2920108d1779efc772eec065688e16d6b97d15340edf90d750302f51448ff46",
+      "stored": "stdio-minimum-v1/records/ports.json",
+      "stored_bytes": 375,
+      "stored_sha256": "d2920108d1779efc772eec065688e16d6b97d15340edf90d750302f51448ff46"
+    },
+    {
+      "original": "stdio-minimum-v1/records/release.json",
+      "bytes": 138,
+      "sha256": "6c175189234df397078c1977aa8bffc9cc5a05f31ee3a9ac8bf4b86dc8425d1e",
+      "stored": "stdio-minimum-v1/records/release.json",
+      "stored_bytes": 138,
+      "stored_sha256": "6c175189234df397078c1977aa8bffc9cc5a05f31ee3a9ac8bf4b86dc8425d1e"
+    },
+    {
+      "original": "stdio-minimum-v1/records/remove.json",
+      "bytes": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc",
+      "stored": "stdio-minimum-v1/records/remove.json",
+      "stored_bytes": 123,
+      "stored_sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "original": "stdio-minimum-v1/records/run-cleanup.json",
+      "bytes": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3",
+      "stored": "stdio-minimum-v1/records/run-cleanup.json",
+      "stored_bytes": 161,
+      "stored_sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "original": "stdio-minimum-v1/records/stop.json",
+      "bytes": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa",
+      "stored": "stdio-minimum-v1/records/stop.json",
+      "stored_bytes": 140,
+      "stored_sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "original": "stdio-minimum-v1/records/stopped-state.json",
+      "bytes": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6",
+      "stored": "stdio-minimum-v1/records/stopped-state.json",
+      "stored_bytes": 170,
+      "stored_sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "original": "stdio-minimum-v1/records/subsequent-progress.json",
+      "bytes": 1285,
+      "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05",
+      "stored": "stdio-minimum-v1/records/subsequent-progress.json",
+      "stored_bytes": 1285,
+      "stored_sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+    },
+    {
+      "original": "stdio-minimum-v1/records/teardown.json",
+      "bytes": 267,
+      "sha256": "328409f7f395f6ed6c231a743b7d73058e37de548e802a6491eb6bb86b094b31",
+      "stored": "stdio-minimum-v1/records/teardown.json",
+      "stored_bytes": 267,
+      "stored_sha256": "328409f7f395f6ed6c231a743b7d73058e37de548e802a6491eb6bb86b094b31"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-1-0.bin",
+      "bytes": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6",
+      "stored": "stdio-minimum-v1/records/wire-1-1-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-1-28.bin",
+      "bytes": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a",
+      "stored": "stdio-minimum-v1/records/wire-1-1-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-1-58.bin",
+      "bytes": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce",
+      "stored": "stdio-minimum-v1/records/wire-1-1-58.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-1-86.bin",
+      "bytes": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525",
+      "stored": "stdio-minimum-v1/records/wire-1-1-86.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-2-0.bin",
+      "bytes": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3",
+      "stored": "stdio-minimum-v1/records/wire-1-2-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-2-28.bin",
+      "bytes": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23",
+      "stored": "stdio-minimum-v1/records/wire-1-2-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-2-58.bin",
+      "bytes": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a",
+      "stored": "stdio-minimum-v1/records/wire-1-2-58.bin",
+      "stored_bytes": 25,
+      "stored_sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-1-2-83.bin",
+      "bytes": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d",
+      "stored": "stdio-minimum-v1/records/wire-1-2-83.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-0.bin",
+      "bytes": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74",
+      "stored": "stdio-minimum-v1/records/wire-2-1-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-120.bin",
+      "bytes": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7",
+      "stored": "stdio-minimum-v1/records/wire-2-1-120.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-150.bin",
+      "bytes": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909",
+      "stored": "stdio-minimum-v1/records/wire-2-1-150.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-30.bin",
+      "bytes": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4",
+      "stored": "stdio-minimum-v1/records/wire-2-1-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-60.bin",
+      "bytes": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682",
+      "stored": "stdio-minimum-v1/records/wire-2-1-60.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-1-90.bin",
+      "bytes": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f",
+      "stored": "stdio-minimum-v1/records/wire-2-1-90.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-0.bin",
+      "bytes": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a",
+      "stored": "stdio-minimum-v1/records/wire-2-2-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-117.bin",
+      "bytes": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309",
+      "stored": "stdio-minimum-v1/records/wire-2-2-117.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-147.bin",
+      "bytes": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa",
+      "stored": "stdio-minimum-v1/records/wire-2-2-147.bin",
+      "stored_bytes": 24,
+      "stored_sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-30.bin",
+      "bytes": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1",
+      "stored": "stdio-minimum-v1/records/wire-2-2-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-60.bin",
+      "bytes": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0",
+      "stored": "stdio-minimum-v1/records/wire-2-2-60.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "original": "stdio-minimum-v1/records/wire-2-2-87.bin",
+      "bytes": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41",
+      "stored": "stdio-minimum-v1/records/wire-2-2-87.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "original": "stdio-minimum-v1/result.json",
+      "bytes": 846,
+      "sha256": "c52f23010eaab34a4c9eec43dbc95ab24e3445a14ab099af494ff270f62c199c",
+      "stored": "stdio-minimum-v1/result.json",
+      "stored_bytes": 846,
+      "stored_sha256": "c52f23010eaab34a4c9eec43dbc95ab24e3445a14ab099af494ff270f62c199c"
+    },
+    {
+      "original": "stdio-minimum-v1/test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored": "stdio-minimum-v1/test.exit",
+      "stored_bytes": 2,
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original": "stdio-minimum-v1/test.log",
+      "bytes": 2938,
+      "sha256": "4f1d51cf3159b031984d41ac39ebd741e0b73c727fc9ca49ca662c722743a57a",
+      "stored": "stdio-minimum-v1/test.log.gz",
+      "stored_bytes": 895,
+      "stored_sha256": "25b8f514358903d9f2ee91110e598d61e26e42f5a54440178c93c076e0ec3a15"
+    }
+  ],
+  "remote_only": [],
+  "binary_and_source_preservation": "private source/target/cache/frozen unchanged; full CargoJSONL retained remotely",
+  "unknown": "full population/kernel/parent resource return unverified"
+}

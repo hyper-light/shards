@@ -1,0 +1,1 @@
+/home/adalundhe/managed-tenant-live-01a1c5d2-v1/target/test-release/deps/managed_output-27c7f5b2529c465b tenant_exit::member_normal_exit_preserves_sibling_and_main_progress --exact --ignored --nocapture --test-threads=1

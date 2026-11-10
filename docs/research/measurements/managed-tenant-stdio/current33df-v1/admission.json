@@ -66,5 +66,59 @@
       11
     ],
     "full_population_kernel_return": "Unknown"
+  },
+  "minimum_admission": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r16\",\n  \"why\": \"linux/x86_64 \u00b7 17 of 32 cores idle \u00b7 49 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r16",
+      "why": "linux/x86_64 \u00b7 17 of 32 cores idle \u00b7 49 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk"
+    },
+    "isError": false
+  },
+  "minimum_result": {
+    "id": "r16",
+    "exit_code": 0,
+    "exact_tests_passed": 1,
+    "challenge_bytes": 1,
+    "report_bytes": 61,
+    "fd_before_after": [
+      11,
+      11
+    ],
+    "full_population_kernel_return": "Unknown"
+  },
+  "caption_confirmation_admission": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r18\",\n  \"why\": \"linux/x86_64 \u00b7 24 of 32 cores idle \u00b7 45 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r18",
+      "why": "linux/x86_64 \u00b7 24 of 32 cores idle \u00b7 45 GB free \u00b7 room for 4 CPUs, 8 GiB of memory, 40 GiB of disk"
+    },
+    "isError": false
+  },
+  "caption_confirmation_result": {
+    "id": "r18",
+    "source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+    "source_base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+    "exit_code": 0,
+    "normal_exact_tests_passed": 1,
+    "inherited_exact_tests_passed": 1,
+    "caller_guest_bytes_match_frozen_after": true,
+    "full_population_kernel_return": "Unknown"
   }
 }

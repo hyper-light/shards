@@ -62,6 +62,7 @@ the musl target. This closing evidence changes no source/test bytes.
 | r7 same-source resumed build | Full host/normal carried init/server/VM/net compile0, static testguest0, seven-artifact index/freeze0. `resume-build.command` replaces only the orchestration target-list check with Python; no source edit/rebase. |
 | r12 normal exit | Exactly1 test passed,0failed/ignored,20filtered. Both actor canonical End/ACK/transport EOF, later exact sibling fd1/fd2 and main progress; strict final metadata and cleanup passed. |
 | r12 actor stdio EOF | Exactly1 test passed,0failed/ignored,20filtered. Both channel EOFs precede the fresh16-byte challenge; actual21-byte request==reply plus peer EOF, visible non-zombie actor row, subsequent sibling/main bytes; strict metadata/cleanup passed. |
+| r16 actor stdio minimum positive challenge | Exactly1 test passed,0failed/ignored,20filtered; count1/report61. Actual6-byte request==reply after both canonical EOFs, later actor/sibling/main progress and strict metadata/cleanup passed. |
 
 Both final metadata files retain actor `ended/complete` at accepted==consumed
 102/99, and continuing sibling `aborted/unknown` at177/171 after owner stop.
@@ -81,9 +82,15 @@ normalized or waived. Source411,588KiB, target2,104,872KiB, frozen369,756KiB and
 cache19,620KiB are build-footprint observations, not resource admission proofs.
 Full artifact hashes are in [artifacts.json](raw-v1/artifacts.json).
 
-The next finite case uses this same frozen source/binary and existing fixture:
-minimum positive challenge count1 and derived report61 bytes. Its command is
-prepared, not counted as run at this checkpoint. A's exact existing composition
+The finite minimum-positive case continued after checkpoint805a37368 and passed
+at the same source/binary. Its [raw record](raw-minimum-v1/TRANSFER.json) verifies
+a10,018-byte archive, SHA256
+`529438112441f939f1665457e0d2c6ed376a3b5c22325ec9c045fa95454e2519`,
+48 safe regular members and all47 original file sizes/hashes. Both channels again
+remain ended/complete102/99, sibling aborted/unknown177/171; stop/remove/join
+complete and FD11→11. The separate caption-confirmation normal+A campaign is
+recorded in [CAPTION-CONFIRMATION.md](CAPTION-CONFIRMATION.md), with its older
+tested source base stated explicitly. A's exact existing current composition
 is retained as the lossless `inherited-current-proposed.patch.gz`, original
 SHA256 `7babf8cba357f001b41106ac26ebefd16845ea75a141e085ed8b36e966e2b777`.
 Apply-check0 covers the current33df source shape; it is unapplied and has no
