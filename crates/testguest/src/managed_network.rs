@@ -107,7 +107,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     words.try_reserve_exact(args.len()).map_err(io::Error::other)?;
     words.extend(args.iter().map(String::as_str));
     match words.as_slice() {
-        ["sock-addr-udp4" | "sock-addr-client4", ..] => {
+        ["sock-addr-udp4" | "sock-addr-client4" | "sock-addr-relay4", ..] => {
             Ok(Probe::SockAddr(intercept::sock_addr::Inputs::parse(&words)?))
         }
         ["capabilities"] => Ok(Probe::Capabilities(None)),
@@ -178,7 +178,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}, {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], sock-addr-udp4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer}, sock-addr-relay4 {connected|unconnected} DEADLINE_MS {destination-only|fixed-original-peer} BUFFER_BYTES, {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -708,8 +708,54 @@ fn udp_receive(
     Ok((arrival.copied, metadata.peer, metadata.original))
 }
 
+struct UdpReceived {
+    reported: usize,
+    flags: i32,
+    copied: usize,
+    metadata: Result<UdpMetadata, UdpMetadataError>,
+}
+struct UdpView<'a> {
+    reported: usize,
+    flags: i32,
+    copied: &'a [u8],
+    metadata: &'a Result<UdpMetadata, UdpMetadataError>,
+}
+impl UdpArrival {
+    fn view(&self) -> UdpView<'_> {
+        UdpView {
+            reported: self.reported,
+            flags: self.flags,
+            copied: &self.copied,
+            metadata: &self.metadata,
+        }
+    }
+}
+impl UdpReceived {
+    fn view<'a>(&'a self, bytes: &'a [u8]) -> io::Result<UdpView<'a>> {
+        Ok(UdpView {
+            reported: self.reported,
+            flags: self.flags,
+            copied: bytes
+                .get(..self.copied)
+                .ok_or_else(|| invalid("received extent exceeds supplied buffer"))?,
+            metadata: &self.metadata,
+        })
+    }
+}
 fn udp_arrival(socket: &UdpSocket, capacity: usize, deadline: &Deadline) -> io::Result<UdpArrival> {
     let mut got = buffer(capacity)?;
+    let received = udp_arrival_into(socket, &mut got, deadline)?;
+    got.truncate(received.copied);
+    Ok(UdpArrival {
+        reported: received.reported,
+        flags: received.flags,
+        copied: got,
+        metadata: received.metadata,
+    })
+}
+// Both owning native calls and the finite relay use this ONE recvmsg/cmsg decoder.
+// Borrowed initialized storage stays owned by the caller across readiness retries.
+fn udp_arrival_into(socket: &UdpSocket, got: &mut [u8], deadline: &Deadline) -> io::Result<UdpReceived> {
     // Linux CMSG_SPACE aligns both header and data to sizeof(size_t).
     const WORDS: usize = size_of::<libc::cmsghdr>().div_ceil(size_of::<usize>())
         + size_of::<libc::sockaddr_in6>().div_ceil(size_of::<usize>());
@@ -745,15 +791,12 @@ fn udp_arrival(socket: &UdpSocket, capacity: usize, deadline: &Deadline) -> io::
             Ok(n as usize)
         }
     })?;
-    got.truncate(n.min(got.len()));
-    // An Ok recvmsg consumed one datagram, even if payload/control validation fails.
-    // Keep that fact separate from decoding and strict native-probe validation.
-    let metadata = udp_metadata(&peer, &message);
-    Ok(UdpArrival {
+    // An Ok recvmsg consumed one datagram even when validation later fails.
+    Ok(UdpReceived {
         reported: n,
         flags: message.msg_flags,
-        copied: got,
-        metadata,
+        copied: n.min(got.len()),
+        metadata: udp_metadata(&peer, &message),
     })
 }
 
@@ -892,6 +935,22 @@ fn config_status<'a>(text: &'a str, name: &str) -> &'a str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn borrowed_receive_view_preserves_reported_extent_and_metadata_error() {
+        let received = UdpReceived {
+            reported: 4,
+            flags: libc::MSG_TRUNC,
+            copied: 2,
+            metadata: Err(UdpMetadataError::UnexpectedRecord),
+        };
+        let storage = [0, 255, 99];
+        let view = received.view(&storage).unwrap();
+        assert_eq!(view.reported, 4);
+        assert_eq!(view.copied, [0, 255]);
+        assert_eq!(view.flags, libc::MSG_TRUNC);
+        assert!(matches!(view.metadata, Err(UdpMetadataError::UnexpectedRecord)));
+        assert!(matches!(received.view(&[]), Err(error) if error.kind() == io::ErrorKind::InvalidInput));
+    }
     #[test]
     fn udp_interception_parser_has_explicit_origins() {
         let args = |words: &[&str]| words.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();

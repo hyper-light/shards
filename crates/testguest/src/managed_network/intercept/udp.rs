@@ -1,6 +1,8 @@
 //! Finite UDP compatibility experiment. No forwarding relay, cache, or product policy.
 use super::*;
 
+pub(super) mod forward;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Mode {
     Connected,
@@ -137,7 +139,7 @@ pub(super) fn arrival_record(
     step: Exchange,
     ordinal: usize,
     local: SocketAddr,
-    arrival: &UdpArrival,
+    arrival: UdpView<'_>,
 ) -> io::Result<()> {
     let mut out = io::stdout().lock();
     write!(
@@ -145,9 +147,9 @@ pub(super) fn arrival_record(
         "managed-intercept {{\"type\":\"UdpArrival\",\"role\":\"{role}\",\"step\":\"{step:?}\",\"ordinal\":{ordinal},\"local\":\"{local}\",\"reported\":{},\"flags\":{},\"copied_hex\":\"",
         arrival.reported, arrival.flags
     )?;
-    hex(&mut out, &arrival.copied)?;
+    hex(&mut out, arrival.copied)?;
     write!(out, "\",\"metadata\":\"")?;
-    match &arrival.metadata {
+    match arrival.metadata {
         Ok(metadata) => {
             write!(out, "Known\",\"peer\":\"{}\",\"original\":", metadata.peer)?;
             match metadata.original {
@@ -200,11 +202,33 @@ pub(super) enum Terminal {
     ScriptComplete,
     Cancelled,
 }
-pub(super) struct Completion {
+pub(super) struct ScriptedCompletion {
     pub(super) report: DatagramReport,
     stage: Stage,
     pub(super) result: Result<Terminal, Fault>,
 }
+pub(super) enum Completion {
+    Scripted(ScriptedCompletion),
+    Forwarded(forward::Completion),
+}
+impl Completion {
+    pub(super) fn scripted(self) -> io::Result<ScriptedCompletion> {
+        match self {
+            Self::Scripted(done) => Ok(done),
+            Self::Forwarded(_) => Err(invalid("expected scripted UDP completion")),
+        }
+    }
+}
+pub(super) enum Work {
+    Scripted {
+        receiver: UdpSocket,
+        sender: UdpSocket,
+        destination: SocketAddr,
+        role: Reply,
+    },
+    Forwarded(forward::Inputs),
+}
+
 pub(super) struct DatagramWorker {
     cancel: OwnedFd,
     state: WorkerState,
@@ -214,13 +238,7 @@ enum WorkerState {
     Joined,
 }
 impl DatagramWorker {
-    pub(super) fn start(
-        receiver: UdpSocket,
-        sender: UdpSocket,
-        destination: SocketAddr,
-        role: Reply,
-        deadline: &Deadline,
-    ) -> io::Result<Self> {
+    pub(super) fn start(work: Work, deadline: &Deadline) -> io::Result<Self> {
         // SAFETY: eventfd returns a new descriptor, owned immediately below.
         let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if fd < 0 {
@@ -233,61 +251,21 @@ impl DatagramWorker {
             at: deadline.at,
             cancel: Some(receiver_cancel.as_raw_fd()),
         };
-        let thread = std::thread::Builder::new().spawn(move || {
-            let mut report = DatagramReport::default();
-            let mut step = Exchange::Binary;
-            let mut stage = Stage::ReceiveDatagram;
-            let result = (|| loop {
-                stage = Stage::ReceiveDatagram;
-                let arrival = match udp_arrival(&receiver, SENT.len(), &deadline) {
-                    Ok(arrival) => arrival,
-                    Err(error) => {
-                        if error.kind() == io::ErrorKind::ConnectionAborted
-                            && cancellation_observed(&receiver_cancel)
-                        {
-                            return Ok(Terminal::Cancelled);
-                        }
-                        return Err(Fault::Io(error));
-                    }
-                };
-                // Count a consumed datagram before any payload/metadata/report failure.
-                report.consume(&arrival)?;
-                stage = Stage::Record;
-                arrival_record(
-                    match role {
-                        Reply::Backend => "Backend",
-                        Reply::Relay => "Relay",
-                    },
-                    step,
-                    report.arrivals,
-                    receiver.local_addr().map_err(Fault::Io)?,
-                    &arrival,
-                )
-                .map_err(Fault::Io)?;
-                stage = Stage::ValidateDatagram;
-                let metadata = validate(arrival, step.request(), destination, None)?;
-                report.matched = report.matched.checked_add(1).ok_or(Fault::CountOverflow)?;
-                stage = Stage::ReplySend;
-                let bytes = step.response(role);
-                let n = deadline
-                    .io(sender.as_raw_fd(), libc::POLLOUT, || {
-                        sender.send_to(bytes, metadata.peer)
-                    })
-                    .map_err(Fault::Io)?;
-                if n != bytes.len() {
-                    return Err(Fault::PartialSend);
-                }
-                match (step, role) {
-                    (Exchange::Binary, _) => step = Exchange::Empty,
-                    (Exchange::Empty, Reply::Backend) => step = Exchange::Binary,
-                    (Exchange::Empty, Reply::Relay) => return Ok(Terminal::ScriptComplete),
-                }
-            })();
-            Completion {
-                report,
-                stage,
-                result,
-            }
+        let thread = std::thread::Builder::new().spawn(move || match work {
+            Work::Scripted {
+                receiver,
+                sender,
+                destination,
+                role,
+            } => Completion::Scripted(scripted(
+                receiver,
+                sender,
+                destination,
+                role,
+                &deadline,
+                &receiver_cancel,
+            )),
+            Work::Forwarded(input) => Completion::Forwarded(forward::run(input, &deadline, &receiver_cancel)),
         })?;
         Ok(Self {
             cancel,
@@ -320,6 +298,68 @@ impl Drop for DatagramWorker {
         if matches!(self.state, WorkerState::Running(_)) {
             let _ = self.finish();
         }
+    }
+}
+fn scripted(
+    receiver: UdpSocket,
+    sender: UdpSocket,
+    destination: SocketAddr,
+    role: Reply,
+    deadline: &Deadline,
+    receiver_cancel: &OwnedFd,
+) -> ScriptedCompletion {
+    let mut report = DatagramReport::default();
+    let mut step = Exchange::Binary;
+    let mut stage = Stage::ReceiveDatagram;
+    let result = (|| loop {
+        stage = Stage::ReceiveDatagram;
+        let arrival = match udp_arrival(&receiver, SENT.len(), deadline) {
+            Ok(arrival) => arrival,
+            Err(error) => {
+                if error.kind() == io::ErrorKind::ConnectionAborted && cancellation_observed(receiver_cancel)
+                {
+                    return Ok(Terminal::Cancelled);
+                }
+                return Err(Fault::Io(error));
+            }
+        };
+        // Count a consumed datagram before any payload/metadata/report failure.
+        report.consume(&arrival)?;
+        stage = Stage::Record;
+        arrival_record(
+            match role {
+                Reply::Backend => "Backend",
+                Reply::Relay => "Relay",
+            },
+            step,
+            report.arrivals,
+            receiver.local_addr().map_err(Fault::Io)?,
+            arrival.view(),
+        )
+        .map_err(Fault::Io)?;
+        stage = Stage::ValidateDatagram;
+        let metadata = validate(arrival, step.request(), destination, None)?;
+        report.matched = report.matched.checked_add(1).ok_or(Fault::CountOverflow)?;
+        stage = Stage::ReplySend;
+        let bytes = step.response(role);
+        let n = deadline
+            .io(sender.as_raw_fd(), libc::POLLOUT, || {
+                sender.send_to(bytes, metadata.peer)
+            })
+            .map_err(Fault::Io)?;
+        if n != bytes.len() {
+            return Err(Fault::PartialSend);
+        }
+        match (step, role) {
+            (Exchange::Binary, _) => step = Exchange::Empty,
+            (Exchange::Empty, Reply::Backend) => step = Exchange::Binary,
+            (Exchange::Empty, Reply::Relay) => return Ok(Terminal::ScriptComplete),
+        }
+    })();
+    ScriptedCompletion {
+        report,
+        stage,
+        result,
     }
 }
 fn cancellation_observed(cancel: &OwnedFd) -> bool {
@@ -382,7 +422,7 @@ fn client(
                     step,
                     index + 1,
                     local,
-                    &arrival,
+                    arrival.view(),
                 )
                 .map_err(Fault::Io)?;
                 stage = Stage::ValidateDatagram;
@@ -413,7 +453,7 @@ fn client_result(role: &str, completion: &ClientCompletion) -> io::Result<()> {
 pub(super) fn worker_record(role: Reply, completed: &io::Result<Completion>) -> io::Result<()> {
     let mut out = io::stdout().lock();
     match completed {
-        Ok(completed) => {
+        Ok(Completion::Scripted(completed)) => {
             write!(
                 out,
                 "managed-intercept {{\"type\":\"UdpWorkerCompletion\",\"role\":\"{role:?}\",\"joined\":true,\"arrivals\":{},\"matched\":{},\"empty\":{},\"terminal\":\"",
@@ -425,6 +465,10 @@ pub(super) fn worker_record(role: Reply, completed: &io::Result<Completion>) -> 
             }
             writeln!(out, "\"}}")?;
         }
+        Ok(Completion::Forwarded(completed)) => {
+            drop(out);
+            return forward::record(completed);
+        }
         Err(_) => writeln!(
             out,
             "managed-intercept {{\"type\":\"UdpWorkerCompletion\",\"role\":\"{role:?}\",\"joined\":false,\"terminal\":\"JoinError\"}}"
@@ -432,7 +476,7 @@ pub(super) fn worker_record(role: Reply, completed: &io::Result<Completion>) -> 
     }
     out.flush()?;
     drop(out);
-    if let Ok(completed) = completed
+    if let Ok(Completion::Scripted(completed)) = completed
         && let Err(error) = &completed.result
     {
         fault_record(
@@ -526,10 +570,12 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     drop(out);
     let backend_sender = backend_socket.try_clone()?;
     let mut backend_worker = DatagramWorker::start(
-        backend_socket,
-        backend_sender,
-        destination,
-        Reply::Backend,
+        Work::Scripted {
+            receiver: backend_socket,
+            sender: backend_sender,
+            destination,
+            role: Reply::Backend,
+        },
         &deadline,
     )?;
     let mut relay_worker = None;
@@ -552,10 +598,12 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
             )
         })?;
         relay_worker = Some(DatagramWorker::start(
-            receiver,
-            sender,
-            destination,
-            Reply::Relay,
+            Work::Scripted {
+                receiver,
+                sender,
+                destination,
+                role: Reply::Relay,
+            },
             &deadline,
         )?);
         let intercepted = client(origin, source, destination, input.mode, Reply::Relay, &deadline)?;
@@ -571,8 +619,10 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
     }
     worker_record(Reply::Backend, &backend)?;
     result?;
-    let relay = relay.ok_or_else(|| invalid("UDP relay worker never started"))??;
-    let backend = backend?;
+    let relay = relay
+        .ok_or_else(|| invalid("UDP relay worker never started"))??
+        .scripted()?;
+    let backend = backend?.scripted()?;
     relay.result.map_err(Fault::into_io)?;
     backend.result.map_err(Fault::into_io)?;
     let expected = Exchange::SCRIPT.len();

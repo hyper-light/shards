@@ -43,6 +43,7 @@ commands=[
  ['cargo','+1.98.1','test','--offline','--manifest-path',str(proof/'Cargo.toml'),'--lib','--no-run','-j4'],
  ['cargo','+1.98.1','test','--offline','--manifest-path',str(proof/'Cargo.toml'),'--lib','socket_address_record_parser_keeps_actual_tuple_and_failed_verdict','--','--exact'],
  ['cargo','+1.98.1','test','--offline','--manifest-path',str(proof/'Cargo.toml'),'--lib','socket_address_presentation_profile_has_no_default','--','--exact'],
+ ['cargo','+1.98.1','test','--offline','--manifest-path',str(proof/'Cargo.toml'),'--lib','buffered_relay_source_witness_rejects_client_correct_direct_bypass','--','--exact'],
 ]
 results=[]
 for index,command in enumerate(commands):

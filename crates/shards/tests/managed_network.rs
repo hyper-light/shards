@@ -921,3 +921,323 @@ fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
         "destination rewrite alone is not compatibility success: {run}"
     );
 }
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackendSource {
+    OwnedUpstream,
+    OriginalClient,
+    Other,
+    Ambiguous,
+}
+fn backend_source(
+    actual: std::net::SocketAddr,
+    upstream: std::net::SocketAddr,
+    client: std::net::SocketAddr,
+) -> BackendSource {
+    if upstream == client {
+        BackendSource::Ambiguous
+    } else if actual == upstream {
+        BackendSource::OwnedUpstream
+    } else if actual == client {
+        BackendSource::OriginalClient
+    } else {
+        BackendSource::Other
+    }
+}
+#[test]
+fn buffered_relay_source_witness_rejects_client_correct_direct_bypass() {
+    let client = "127.0.0.1:41".parse().unwrap();
+    let upstream = "127.0.0.1:42".parse().unwrap();
+    assert_eq!(
+        backend_source(upstream, upstream, client),
+        BackendSource::OwnedUpstream
+    );
+    assert_eq!(
+        backend_source(client, upstream, client),
+        BackendSource::OriginalClient
+    );
+    assert_ne!(
+        backend_source(client, upstream, client),
+        BackendSource::OwnedUpstream
+    );
+    assert_eq!(backend_source(client, client, client), BackendSource::Ambiguous);
+}
+
+#[test]
+#[ignore = "coordinator alone executes real two-leg buffered guest comparison"]
+fn direct_guest_two_leg_udp4_records_buffers_and_backend_source_change() {
+    let input = Inputs::supplied();
+    let mode = required("SHARDS_SOCK_ADDR_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let presentation = SockAddrPresentation::parse(&required("SHARDS_SOCK_ADDR_PRESENTATION")).unwrap();
+    let budget = positive("SHARDS_SOCK_ADDR_BUFFER_BYTES");
+    let profile = presentation.argument();
+    let millis = input.case_ms.to_string();
+    let bytes = budget.to_string();
+    let name = format!("sock-addr-relay4-{mode}-{profile}");
+    std::fs::write(input.records.join(format!("{name}.payload-input.json")),serde_json::to_vec(&json!({"buffer_bytes":budget,"scope":"retained payload slots only; allocator/kernel/console not accounted"})).unwrap()).unwrap();
+    let run = input.boot(&name, &["sock-addr-relay4", &mode, &millis, profile, &bytes]);
+    let records = sock_addr_records(&run.stdout);
+    let one = |kind: &str| {
+        let found: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
+        assert_eq!(found.len(), 1, "{kind}: {run}");
+        found[0]
+    };
+    let at = |value: &serde_json::Value| -> std::net::SocketAddr { value.as_str().unwrap().parse().unwrap() };
+    let target = one("Target");
+    let flow = one("ForwardTarget");
+    let slots = one("PayloadSlots");
+    assert_eq!(target["operation"], "BufferedRelay");
+    assert_eq!(target["profile"], format!("{presentation:?}"));
+    assert_eq!(flow["backend"], target["backend"]);
+    assert_eq!(flow["ingress"], target["responder"]);
+    assert_eq!(flow["upstream_peer"], target["backend"]);
+    assert_eq!(slots["provided"], budget);
+    assert!(
+        slots["request_capacity"]
+            .as_u64()
+            .unwrap()
+            .checked_add(slots["reply_capacity"].as_u64().unwrap())
+            .unwrap()
+            <= budget
+    );
+    assert_eq!(slots["charge_scope"], "PayloadCapacityOnly");
+    assert_eq!(slots["allocator_kernel_console"], "Unaccounted");
+    let identity = |role: &str| {
+        let found: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "ClientIdentity" && r["role"] == role)
+            .collect();
+        assert_eq!(found.len(), 1, "client role {role}: {run}");
+        found[0]
+    };
+    let baseline = identity("BaselineBackend");
+    let client = identity("ForwardedBackend");
+    assert_ne!(baseline["pid"], client["pid"]);
+    for identity in [baseline, client] {
+        assert_eq!(identity["namespace"], target["namespace"]);
+        assert_eq!(identity["requested"], target["backend"]);
+        let cgroup = identity["cgroup_hex"].as_str().unwrap();
+        let bytes: Vec<_> = cgroup
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert!(String::from_utf8(bytes).unwrap().contains("/sock-addr-client\n"));
+        if mode == "connected" {
+            assert_eq!(
+                identity["peer"], target["backend"],
+                "client-visible original endpoint: {run}"
+            );
+        } else {
+            assert!(identity["peer"].is_null());
+            assert_eq!(identity["peer_error"], "NotConnected");
+        }
+    }
+    let upstream = at(&flow["upstream"]);
+    let actor = at(&client["local"]);
+    assert_ne!(upstream, actor, "held upstream must be a distinct actual socket");
+    let script = [
+        ("Binary", "5245515545535400ff", "4241434b454e4400ff"),
+        ("Empty", "", ""),
+    ];
+    let actual_arrivals = |role: &str| -> Vec<&serde_json::Value> {
+        records
+            .iter()
+            .filter(|r| r["type"] == "UdpArrival" && r["role"] == role)
+            .collect()
+    };
+    let check = |record: &serde_json::Value,
+                 step: &str,
+                 hex: &str,
+                 peer: &serde_json::Value,
+                 original: &serde_json::Value| {
+        assert_eq!(record["step"], step);
+        assert_eq!(record["copied_hex"], hex);
+        assert_eq!(record["reported"], hex.len() / 2);
+        assert_eq!(record["flags"].as_i64().unwrap() & 0x28, 0);
+        assert_eq!(record["metadata"], "Known");
+        assert_eq!(&record["peer"], peer);
+        assert_eq!(&record["original"], original);
+    };
+    for (role, owner) in [
+        ("SockAddrBaselineClient", baseline),
+        ("SockAddrForwardedClient", client),
+    ] {
+        let arrivals = actual_arrivals(role);
+        assert_eq!(arrivals.len(), script.len(), "both client datagrams: {run}");
+        for (record, (step, _, reply)) in arrivals.into_iter().zip(script) {
+            check(record, step, reply, &target["backend"], &owner["local"]);
+        }
+    }
+    for (role, peer, original, reply) in [
+        ("ForwardIngress", &client["local"], &flow["ingress"], false),
+        (
+            "ForwardUpstreamReply",
+            &target["backend"],
+            &flow["upstream"],
+            true,
+        ),
+    ] {
+        let arrivals = actual_arrivals(role);
+        assert_eq!(arrivals.len(), script.len(), "owned custody {role}: {run}");
+        for (record, (step, request, response)) in arrivals.into_iter().zip(script) {
+            check(
+                record,
+                step,
+                if reply { response } else { request },
+                peer,
+                original,
+            );
+        }
+    }
+    let backend = actual_arrivals("Backend");
+    let real_scripts = [baseline, client];
+    assert_eq!(
+        backend.len(),
+        script.len() * real_scripts.len(),
+        "baseline AND actual forwarded receipts: {run}"
+    );
+    for (phase, owner) in real_scripts.into_iter().enumerate() {
+        for (index, (step, request, _)) in script.into_iter().enumerate() {
+            let record = backend[phase * script.len() + index];
+            let peer = if phase == 0 {
+                &owner["local"]
+            } else {
+                &flow["upstream"]
+            };
+            check(record, step, request, peer, &target["backend"]);
+            if phase != 0 {
+                assert_eq!(
+                    backend_source(at(&record["peer"]), upstream, actor),
+                    BackendSource::OwnedUpstream,
+                    "client-correct direct backend bypass is NOT a relay: {run}"
+                );
+            }
+        }
+    }
+    let exchanges: Vec<_> = records
+        .iter()
+        .filter(|r| r["type"] == "ForwardExchange")
+        .collect();
+    assert_eq!(exchanges.len(), script.len());
+    for (record, (step, _, _)) in exchanges.into_iter().zip(script) {
+        assert_eq!(record["step"], step);
+        assert_eq!(record["client"], client["local"]);
+        assert_eq!(record["upstream"], flow["upstream"]);
+        assert_eq!(record["ingress"], flow["ingress"]);
+        assert_eq!(record["backend"], target["backend"]);
+        assert_eq!(record["source_preservation"], "Changed");
+        assert_eq!(record["stage"], "ExchangeComplete");
+    }
+    let completed = one("ForwardCompletion");
+    assert_eq!(completed["joined"], true);
+    assert_eq!(completed["terminal"], "ScriptComplete");
+    for field in [
+        "ingress_received",
+        "upstream_sent",
+        "upstream_received",
+        "client_sent",
+    ] {
+        assert_eq!(completed[field], script.len());
+    }
+    for field in ["empty_ingress", "empty_reply"] {
+        assert_eq!(
+            completed[field],
+            script.iter().filter(|(step, _, _)| *step == "Empty").count()
+        );
+    }
+    let backend_done: Vec<_> = records
+        .iter()
+        .filter(|r| r["type"] == "UdpWorkerCompletion" && r["role"] == "Backend")
+        .collect();
+    assert_eq!(backend_done.len(), 1);
+    assert_eq!(backend_done[0]["joined"], true);
+    assert_eq!(backend_done[0]["terminal"], "Cancelled");
+    assert_eq!(backend_done[0]["arrivals"], script.len() * real_scripts.len());
+    assert_eq!(backend_done[0]["matched"], script.len() * real_scripts.len());
+    assert_eq!(
+        backend_done[0]["empty"],
+        script.iter().filter(|(step, _, _)| *step == "Empty").count() * real_scripts.len()
+    );
+    for role in ["BaselineBackend", "ForwardedBackend"] {
+        let terminals: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "ClientCompletion" && r["role"] == role)
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0]["success"], true);
+        assert_eq!(terminals[0]["compatibility"], "Exact");
+        assert_eq!(terminals[0]["exchanges"], script.len());
+    }
+    for role in ["Backend", "ForwardedBackend"] {
+        let reaped: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "ChildReaped" && r["role"] == role)
+            .collect();
+        assert_eq!(reaped.len(), 1, "owned {role} reap: {run}");
+        assert_eq!(reaped[0]["reaped"], true);
+        assert_eq!(reaped[0]["success"], true);
+        assert_eq!(reaped[0]["code"], 0);
+    }
+    let hooks = presentation.hooks(&mode);
+    for hook in hooks {
+        for kind in ["Program", "LinkAttached", "LinkDetached"] {
+            assert_eq!(
+                records
+                    .iter()
+                    .filter(|r| r["type"] == kind && r["hook"] == *hook)
+                    .count(),
+                1,
+                "{kind}/{hook}: {run}"
+            );
+        }
+    }
+    for kind in ["Program", "LinkAttached", "LinkDetached"] {
+        assert_eq!(
+            records.iter().filter(|r| r["type"] == kind).count(),
+            hooks.len(),
+            "no extra {kind}: {run}"
+        );
+    }
+    for record in records.iter().filter(|r| r["type"] == "LinkDetached") {
+        assert_eq!(record["detached"], true);
+    }
+    for record in records.iter().filter(|r| r["type"] == "Program") {
+        let reverse = matches!(record["hook"].as_str(), Some("Recvmsg4" | "Getpeername4"));
+        assert_eq!(
+            record["from"],
+            target[if reverse { "responder" } else { "backend" }]
+        );
+        assert_eq!(
+            record["to"],
+            target[if reverse { "backend" } else { "responder" }]
+        );
+    }
+    let cleanup = records
+        .iter()
+        .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
+        .unwrap();
+    assert_eq!(cleanup["hook_setup"], "Ready");
+    assert_eq!(cleanup["links_acquired"], hooks.len());
+    assert_eq!(cleanup["links_required"], hooks.len());
+    for fact in [
+        "backend_joined",
+        "relay_joined",
+        "link_detached",
+        "cgroup_removed",
+    ] {
+        assert_eq!(cleanup[fact], true, "{fact}: {run}");
+    }
+    assert!(!records.iter().any(|r| matches!(
+        r["type"].as_str(),
+        Some("Error" | "HookError" | "ForwardError" | "UdpError" | "PayloadRefusal")
+    )));
+    assert_eq!(
+        run.status,
+        Some(0),
+        "finite transfer with OBSERVED upstream source change; not full native transparency: {run}"
+    );
+}
