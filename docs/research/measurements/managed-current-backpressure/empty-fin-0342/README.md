@@ -1,5 +1,9 @@
 # Actual empty-pending finish: owned native scope
 
+[RESULTS.md](RESULTS.md) records the passing native/light results, preserved
+headroom refusal and raw verification. Pending statements below identify the
+earlier source-freeze status.
+
 ROOT approved the exact EMPTY-FIN-NEXT-PROPOSAL.md from51a11f26. Its original
 bytes are retained in APPROVED-PROPOSAL.md (historical status text unchanged).
 This new scope starts current main0342b85d9c808e3ced041a6c3ef0e9bf70438272,

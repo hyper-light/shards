@@ -17,6 +17,7 @@ try:
  summary['actual_exit']=int((folder/'exit').read_text())
  assert summary['actual_exit']==0 and '1 passed; 0 failed; 0 ignored;' in (folder/'stdout').read_text()
  inputs=read(rec/'inputs.json');assert inputs['source']==revision and inputs['control']=='EmptyFinish' and inputs['channel']==1 and inputs['supplied_errno']==5 and inputs['fixture_sha256']=='sha256:'+fixture['sha256']
+ assert inputs['compiled_leaf_sha256']=='sha256:'+scope['owned']['crates/shards/tests/managed_output/current_controls/native_terminal.rs']
  canonical=read(rec/'canonical.json');assert canonical['actual_transport_end'] and canonical['canonical_state']=='Aborted { offset: 26, errno: 5 }'
  assert canonical['control']['state'].startswith('Finished(') and canonical['control']['accepted']==canonical['control']['consumed']==90
  assert (rec/'postterminal-control.bin').read_bytes()==b''

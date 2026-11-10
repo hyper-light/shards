@@ -1,8 +1,9 @@
 # What this FIN receipt can establish
 
-Scope: current0342 / frozen d8a2 owned fixture only. Native execution remains
-pending headroom; this note interprets source/primary contracts and claims no
-actual endpoint result. No code, actor or additional queue item is introduced.
+Scope: current0342 / frozen d8a2 owned fixture only. This note was prepared while
+native execution was pending headroom. The later actual result is in RESULTS.md;
+the source/primary interpretations here are distinct from that actual evidence.
+No code, actor or additional queue item is introduced by this note.
 
 The new receipt samples the existing Client.pending length after its real
 Io::finish call. Io::finish invokes the same QUIC send stream's finish method;
@@ -38,7 +39,7 @@ readback. No runtime literal or entitlement is selected from it.
 
 The absence of a positive Write receipt alone establishes none of the first two
 I/O facts. The actual successful Finish pending observation and typed peer event
-must both be retained. All actor witnesses above remain unrun until admitted.
+must both be retained. Actual actor witnesses are reported only in RESULTS.md.
 The original positive accountant and Writes::new(0) rejection stay unchanged;
 empty-FIN assertions apply only to the explicit new selection. ROOT owns broader
 combined/mutation/matrix/resource/durability validation.

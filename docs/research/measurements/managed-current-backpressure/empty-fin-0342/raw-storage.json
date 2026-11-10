@@ -1,0 +1,17 @@
+{
+  "archive": "evidence-empty-fin-v1.tar.gz",
+  "sha256": "342b61e079283207520ba388389fd838a206b656074304271b0c3d1bb301dd9c",
+  "bytes": 32428,
+  "original_payloads": 65,
+  "manifest_members": 1,
+  "total_members": 66,
+  "all_unique_safe_regular_paths": true,
+  "all_65_original_hashes_verified": true,
+  "source": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+  "actual_native_cases": 1,
+  "actual_case_retries": 0,
+  "pure": "7passed/0failed/4explicitignored",
+  "clippy_exit": 0,
+  "no_VM_or_mutation": true,
+  "originals_preserved": true
+}

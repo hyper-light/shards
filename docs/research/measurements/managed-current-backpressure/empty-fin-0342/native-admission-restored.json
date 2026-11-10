@@ -1,0 +1,133 @@
+{
+  "source": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+  "original_request_unchanged": true,
+  "availability_snapshot": {
+    "result": {
+      "me": "e30189ea29182644fe5a4b2e06c7dac2",
+      "want": "2 CPUs, 4 GiB of memory, 24 GiB of disk, os == linux, arch == x86_64",
+      "runners": [
+        {
+          "runner": {
+            "name": "8fadc1ec213332e16cb0d915a3fb913f",
+            "hostname": "fedora",
+            "label": "kiln-a094a12d.attlocal.net",
+            "was": [
+              "kiln-a094a12d.attlocal.net"
+            ],
+            "os": "linux",
+            "arch": "x86_64",
+            "labels": [
+              "baremetal",
+              "linux",
+              "x86_64"
+            ],
+            "connected": true,
+            "reach": true,
+            "fingerprint": "d0c169120ba887ed3b77f31b67c5b37419ce91be19fd760317c9b136daa2cd23",
+            "reach_version": 2,
+            "cpus": 32,
+            "cpu_pct": 27.886571884155273,
+            "load1": 17.43000030517578,
+            "mem_total": 67128664064,
+            "mem_used": 9014005760,
+            "slots": 8,
+            "busy": 0,
+            "draining": false,
+            "harnesses": [
+              "claude",
+              "codex",
+              "devin"
+            ],
+            "via": "",
+            "facts": null
+          },
+          "score": 37.12125015258789,
+          "why": "linux/x86_64 · 15 of 32 cores idle · 54 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk"
+        }
+      ],
+      "passed": [
+        [
+          "00aad8daff2fa3c9daa65d53c425d450",
+          "0 of 32 cores idle, under 2 CPUs"
+        ],
+        [
+          "2768d0d5d2974f1e21d348edadff9d1b",
+          "macos is not linux"
+        ],
+        [
+          "451397fcc585f7f7cb9aaf00e42064bb",
+          "0 of 32 cores idle, under 2 CPUs"
+        ],
+        [
+          "75694786916abd6207b67832b9b1e85e",
+          "macos is not linux"
+        ],
+        [
+          "b24c5c951260dcdfd0972f2aeaf3cf51",
+          "macos is not linux"
+        ],
+        [
+          "cec37f60f22c5a60d27f08f4d2e5daa8",
+          "macos is not linux"
+        ],
+        [
+          "d1323898b255a3ed435eb83fa0f7b0cf",
+          "macos is not linux"
+        ],
+        [
+          "e30189ea29182644fe5a4b2e06c7dac2",
+          "macos is not linux"
+        ],
+        [
+          "f3f618f29b31df31a1f52482b39578c2",
+          "macos is not linux"
+        ],
+        [
+          "f766f09294f2e17e3b8a631ffd4e6a4b",
+          "windows is not linux"
+        ],
+        [
+          "fedora.attlocal.net",
+          "it hasn't said how busy it is yet"
+        ]
+      ],
+      "labels": {
+        "00aad8daff2fa3c9daa65d53c425d450": "adacachy2",
+        "2768d0d5d2974f1e21d348edadff9d1b": "adas-mac-studio-3.local",
+        "451397fcc585f7f7cb9aaf00e42064bb": "adacachy",
+        "75694786916abd6207b67832b9b1e85e": "adalundhe-macbook-pro",
+        "8fadc1ec213332e16cb0d915a3fb913f": "kiln-a094a12d.attlocal.net",
+        "b24c5c951260dcdfd0972f2aeaf3cf51": "adas-mac-studio-2.local",
+        "cec37f60f22c5a60d27f08f4d2e5daa8": "adas-mac-studio.local",
+        "d1323898b255a3ed435eb83fa0f7b0cf": "adas-mac-studio.local-2",
+        "e30189ea29182644fe5a4b2e06c7dac2": "adas-macbook-pro-2.local",
+        "f3f618f29b31df31a1f52482b39578c2": "adas-macbook-pro.local",
+        "f766f09294f2e17e3b8a631ffd4e6a4b": "jupiter"
+      }
+    },
+    "calls": [
+      {
+        "name": "machines.list",
+        "ok": true
+      }
+    ]
+  },
+  "actual_native_receipt": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"selection\": \"empty-finish\", \"channel\": \"stdout\", \"supplied_errno\": 5, \"exit\": 0, \"stdout\": \"\\nrunning 1 test\\ntest tenant_exit::current_controls::native_terminal::canonical_aborted_empty_finish_preserves_errno_credit_and_owned_return ... ok\\n\\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.08s\\n\\n\", \"stderr\": \"\", \"canonical\": \"{\\n  \\\"actual_transport_end\\\": true,\\n  \\\"canonical_state\\\": \\\"Aborted { offset: 26, errno: 5 }\\\",\\n  \\\"control\\\": {\\n    \\\"accepted\\\": 90,\\n    \\\"consumed\\\": 90,\\n    \\\"state\\\": \\\"Finished(Progress { accepted: 90, consumed: 90 })\\\",\\n    \\\"transport_drained\\\": \\\"Unknown; local stop/join is a separate witness\\\"\\n  }\\n}\", \"observer_stop\": \"{\\n  \\\"error\\\": null,\\n  \\\"joined\\\": true,\\n  \\\"owner_control\\\": {\\n    \\\"accepted\\\": 90,\\n    \\\"consumed\\\": 90,\\n    \\\"state\\\": \\\"Finished(Progress { accepted: 90, consumed: 90 })\\\",\\n    \\\"transport_drained\\\": \\\"Unknown; local stop/join is a separate witness\\\"\\n  },\\n  \\\"post_join_records\\\": 0\\n}\", \"io_receipts\": \"{\\n  \\\"actual\\\": [\\n    {\\n      \\\"error\\\": null,\\n      \\\"kind\\\": \\\"Finish\\\",\\n      \\\"pending\\\": 0\\n    }\\n  ],\\n  \\\"driver_joined\\\": true,\\n  \\\"finish_requested\\\": true,\\n  \\\"meaning\\\": \\\"actual local acceptance/read/finish receipts; not peer ACK or daemon metadata; empty FIN is not an Io::write return0\\\",\\n  \\\"submitted_bytes\\\": 0\\n}\", \"teardown\": \"{\\n  \\\"cleanup_completed\\\": true,\\n  \\\"cleanup_errors\\\": [],\\n  \\\"cleanup_panic\\\": null,\\n  \\\"observer_fds\\\": {\\n    \\\"after\\\": 4,\\n    \\\"before\\\": 4\\n  },\\n  \\\"population_kernel_return\\\": \\\"Unknown; this fixture has no guest or daemon lifecycle\\\",\\n  \\\"protocol_complete\\\": true,\\n  \\\"protocol_failure\\\": null\\n}\"}\n",
+      "running": false,
+      "why": "linux/x86_64 · 15 of 32 cores idle · 54 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.start",
+        "ok": true
+      }
+    ]
+  },
+  "executed_native_cases": 1,
+  "actual_case_retries": 0,
+  "original_refusal_started_no_process_or_deadline": true
+}

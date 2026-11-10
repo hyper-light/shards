@@ -1,0 +1,74 @@
+{
+  "source_code_equals": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+        "--",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/APPROVED-PROPOSAL.md",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/FIN-RECEIPT-AUTHORITY.md",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/HANDOFF.md",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/README.md",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/RESULTS.md",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/cli.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/evidence-empty-fin-v1.member-hashes.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/fixture.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/format-recheck.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/headroom-snapshot.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/native-admission-held.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/native-admission-restored.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/preserved-assertions.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/raw-storage.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/source-scope.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/source-validation.json",
+        "docs/research/measurements/managed-current-backpressure/empty-fin-0342/validated-case.json"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "actual_native": "1passed/0failed/0ignored",
+  "pure": "7passed/0failed/4explicitignored",
+  "strict_clippy_exit": 0,
+  "no_code_changes_after_actual_checks": true,
+  "raw_original_payloads": 65,
+  "all_raw_member_hashes_verified": true,
+  "owned_jobs_active": [],
+  "local_target_cache": null,
+  "local_free_bytes": 185438789632
+}

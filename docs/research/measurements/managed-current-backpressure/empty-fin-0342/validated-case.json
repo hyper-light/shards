@@ -1,0 +1,94 @@
+{
+  "source": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+  "base": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "fixture": {
+    "path": "/home/adalundhe/managed-empty-fin-0342-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "frozen": "/home/adalundhe/managed-empty-fin-0342-v1/artifacts/managed_output",
+    "sha256": "add12067635b7cec14c09885c9222fdc581f6958a549fa0e307ac468ed0c7014",
+    "fresh": false,
+    "source": "d8a2bf8aa4469c8962a825cb8e2154b7c175f091",
+    "elapsed_s": 584.4506660280003
+  },
+  "actual_native_cases": 1,
+  "validation_errors": [],
+  "no_VM_or_mutation": true,
+  "population_parent_kernel_cost": "Unknown; no audit/profile/benchmark claim",
+  "records/build/full-caller-build-exit": "0",
+  "records/checks-v1/pure-exit": "0",
+  "records/checks-v1/clippy-exit": "0",
+  "actual_exit": 0,
+  "run": "fd67bd32-3210-4af8-9e56-d26d98fd1b4f",
+  "canonical": {
+    "actual_transport_end": true,
+    "canonical_state": "Aborted { offset: 26, errno: 5 }",
+    "control": {
+      "accepted": 90,
+      "consumed": 90,
+      "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+      "transport_drained": "Unknown; local stop/join is a separate witness"
+    }
+  },
+  "receipts": {
+    "actual": [
+      {
+        "error": null,
+        "kind": "Finish",
+        "pending": 0
+      }
+    ],
+    "driver_joined": true,
+    "finish_requested": true,
+    "meaning": "actual local acceptance/read/finish receipts; not peer ACK or daemon metadata; empty FIN is not an Io::write return0",
+    "submitted_bytes": 0
+  },
+  "refusal": {
+    "canonical_state": "Aborted { offset: 26, errno: 5 }",
+    "capacity_returned": 42,
+    "capacity_submitted": 42,
+    "control": {
+      "accepted": 90,
+      "consumed": 90,
+      "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+      "transport_drained": "Unknown; local stop/join is a separate witness"
+    },
+    "producer_capacity": 0,
+    "reason": "Closed",
+    "returned_payload_bytes": 42,
+    "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+    "same_allocation": true,
+    "selected_control": "EmptyFinish",
+    "submitted_bytes": 0
+  },
+  "observer": {
+    "error": null,
+    "joined": true,
+    "owner_control": {
+      "accepted": 90,
+      "consumed": 90,
+      "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+      "transport_drained": "Unknown; local stop/join is a separate witness"
+    },
+    "post_join_records": 0
+  },
+  "owner": {
+    "control": {
+      "accepted": 90,
+      "consumed": 90,
+      "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+      "transport_drained": "Unknown; local stop/join is a separate witness"
+    },
+    "finish_after_abort": "Err(Closed)"
+  },
+  "teardown": {
+    "cleanup_completed": true,
+    "cleanup_errors": [],
+    "cleanup_panic": null,
+    "observer_fds": {
+      "after": 4,
+      "before": 4
+    },
+    "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+    "protocol_complete": true,
+    "protocol_failure": null
+  }
+}
