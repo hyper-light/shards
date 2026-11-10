@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-otel-limits",
+  "exit_code": 0,
+  "script_sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac",
+  "policy_main": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "local_free_bytes": 190909906944
+}

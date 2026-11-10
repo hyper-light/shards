@@ -1,0 +1,7 @@
+{
+  "command": "python3 - <<'PY'\nimport pathlib,hashlib,json,base64\np=pathlib.Path.home()/'managed-otel-own-cgroup-c298-light-v1/attempt-v2/raw.tar.gz';b=p.read_bytes()\nprint(json.dumps({'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()}))\nPY",
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "sync": false,
+  "timeout_s": 600
+}

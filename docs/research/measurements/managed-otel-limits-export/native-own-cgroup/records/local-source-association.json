@@ -1,0 +1,58 @@
+{
+  "method": "Own current bytes compared against actual returned compiled/formatted hashes; frozen product/reference bytes checked against exact c298 Git blobs. BOTH source archives verified every safe unique relative regular member. Actual V2 raw archive/member verification remains pending headroom.",
+  "owned_compiled_inputs": {
+    "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/lib.rs": {
+      "bytes": 151,
+      "sha256": "c90842461595b8975b01886f0ae0affaee5c12d08dfa27f3c7a558e51e145813"
+    },
+    "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/fixture.rs": {
+      "bytes": 17160,
+      "sha256": "e51f39440f594aba5eee2d462ab70928f7ff8bc3a45b749036107d12fa3c66c4"
+    },
+    "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.toml": {
+      "bytes": 667,
+      "sha256": "adef3ebb7222fdac624a6f56a6e21127130e1ad39683fc82456316e74573885e"
+    },
+    "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.lock": {
+      "bytes": 13836,
+      "sha256": "97853431c88bbffb437042a27d93a3e6809af025e9d6fd926784b24cb190bdd5"
+    },
+    "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/run.py": {
+      "bytes": 8563,
+      "sha256": "ebc7a8a4f9a1072f84f6cd9ab8752d3d202a78696223eac671585a8c54988f43"
+    }
+  },
+  "unchanged_c298_inputs": {
+    "crates/init/src/metrics.rs": {
+      "bytes": 10201,
+      "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 22937,
+      "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "bytes": 11347,
+      "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+    }
+  },
+  "source_archives": {
+    "light-v1": {
+      "source_archive": {
+        "bytes": 44179,
+        "sha256": "54344a1577525d39b152b7456c93427aa5cfe617aaf4332d508b9c38df18a680"
+      },
+      "every_source_payload_verified": 16
+    },
+    "light-v2": {
+      "source_archive": {
+        "bytes": 44435,
+        "sha256": "e99653803a9c568e01e03b1b19980f2fb49002d711124bea42c2233741543779"
+      },
+      "every_source_payload_verified": 16
+    }
+  },
+  "private_generated_wrapper_not_in_actual_checkout": true,
+  "tracked_source_diff_empty": true,
+  "v2_raw_verification": "PENDING read-only admission; no source/test/native rerun requested"
+}

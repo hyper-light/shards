@@ -1,0 +1,31 @@
+[package]
+name = "shards-managed-otel-native-own-cgroup"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+name = "native_codec"
+path = "../../../../../crates/init/src/managed_otel_native_own_cgroup.rs"
+
+[[bin]]
+name = "fixture"
+path = "fixture.rs"
+
+[dependencies]
+libc = "=0.2.189"
+opentelemetry-proto = { version = "=0.33.1", default-features = false, features = ["gen-tonic-messages", "metrics", "with-serde"] }
+serde_json = "=1.0.151"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"

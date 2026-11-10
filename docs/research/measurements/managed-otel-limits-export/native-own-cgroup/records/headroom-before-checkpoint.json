@@ -1,0 +1,27 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": [\n    {\n      \"id\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n      \"why\": \"linux/x86_64 \u00b7 0 of 32 cores idle \u00b7 55 GB free\"\n    },\n    {\n      \"id\": \"451397fcc585f7f7cb9aaf00e42064bb\",\n      \"why\": \"linux/x86_64 \u00b7 0 of 32 cores idle \u00b7 93 GB free \u00b7 1 CI jobs \u00b7 overloaded (load 105)\"\n    }\n  ],\n  \"calls\": [\n    {\n      \"name\": \"machines.list\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": [
+      {
+        "id": "8fadc1ec213332e16cb0d915a3fb913f",
+        "why": "linux/x86_64 \u00b7 0 of 32 cores idle \u00b7 55 GB free"
+      },
+      {
+        "id": "451397fcc585f7f7cb9aaf00e42064bb",
+        "why": "linux/x86_64 \u00b7 0 of 32 cores idle \u00b7 93 GB free \u00b7 1 CI jobs \u00b7 overloaded (load 105)"
+      }
+    ],
+    "calls": [
+      {
+        "name": "machines.list",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

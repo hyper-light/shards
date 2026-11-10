@@ -1,0 +1,77 @@
+{
+  "branch_parent": "c298b3b5178690674ac62fb74ea3769bb497f7a4",
+  "policy_main": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "unchanged_c298_inputs": {
+    "Cargo.lock": {
+      "bytes": 45993,
+      "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+    },
+    "crates/init/src/metrics.rs": {
+      "bytes": 10201,
+      "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 22937,
+      "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "bytes": 11347,
+      "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/Cargo.lock": {
+      "bytes": 13936,
+      "sha256": "071f738b5e7aa3692743b907665aa6deff80404773d1d6eacd001b47e60b19a1"
+    }
+  },
+  "fixture_lock": {
+    "bytes": 13836,
+    "sha256": "97853431c88bbffb437042a27d93a3e6809af025e9d6fd926784b24cb190bdd5"
+  },
+  "lock_derivation": "Official reference lock retained for protobuf/serde/transitive graph; root package replaced, unused encoder package removed, libc entry replaced byte-for-byte from product Cargo.lock 0.2.189. Exact --locked build owed. No production dependency/lock edit.",
+  "official_proto": "0.33.1 / commit372ebbc74d4dba71bb9820732f57f7316b4e7a1e; generated subset compatibility unchanged from c298; gen-tonic-messages,metrics,with-serde",
+  "primary_sources": {
+    "Documentation/filesystems/proc.rst": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/Documentation/filesystems/proc.rst",
+      "revision": "v6.18",
+      "bytes": 105171,
+      "sha256": "7ac56d2456ae37e36a91d20ec0179cce01f76de67893d3717e2e4de40fbb860c"
+    },
+    "Documentation/admin-guide/cgroup-v2.rst": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/Documentation/admin-guide/cgroup-v2.rst",
+      "revision": "v6.18",
+      "bytes": 128488,
+      "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97"
+    },
+    "fs/proc_namespace.c": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/fs/proc_namespace.c",
+      "revision": "v6.18",
+      "bytes": 7957,
+      "sha256": "fd82c0db52055ae807ee0b46c7c9bc5d47a9239805eb8ca5c47d2ba81d695776"
+    },
+    "kernel/cgroup/cgroup.c": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/kernel/cgroup/cgroup.c",
+      "revision": "v6.18",
+      "bytes": 199222,
+      "sha256": "de44cafc76c19f8da3289ae23e4f12ed0ba43cbe7ceb6c5822e34ac570371616"
+    },
+    "include/uapi/linux/magic.h": {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/linux/magic.h",
+      "revision": "v6.18",
+      "bytes": 3946,
+      "sha256": "e9db5b4791371c03a4f9be955417bb7814987bfae032ad86bd27003d2df8796e"
+    }
+  },
+  "initial_local_read_diagnostics": [
+    {
+      "operation": "cat sparse-omitted reference Cargo.toml",
+      "reported_exit_code": 1,
+      "diagnostic": "No such file or directory; exact tracked bytes subsequently read with git show HEAD."
+    },
+    {
+      "operation": "local lock inspection using tomllib",
+      "reported_exit_code": 1,
+      "diagnostic": "ModuleNotFoundError: No module named tomllib; no package installed. Used exact text blocks from Git instead."
+    }
+  ]
+}

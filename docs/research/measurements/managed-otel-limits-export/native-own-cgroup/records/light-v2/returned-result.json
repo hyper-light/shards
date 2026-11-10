@@ -1,0 +1,375 @@
+{
+  "result": {
+    "commands": [
+      {
+        "name": "toolchains",
+        "argv": [
+          "rustup",
+          "toolchain",
+          "list"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "rustc-version",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustc",
+          "-Vv"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "cargo-version",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "-V"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "rustfmt-version",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--version"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "clippy-version",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "clippy",
+          "--version"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "installed-targets",
+        "argv": [
+          "rustup",
+          "target",
+          "list",
+          "--installed",
+          "--toolchain",
+          "1.98.1"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "format-owned-only",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--edition",
+          "2024",
+          "--config",
+          "skip_children=true",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/lib.rs",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/fixture.rs"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "format-check-owned-only",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--edition",
+          "2024",
+          "--config",
+          "skip_children=true",
+          "--check",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/lib.rs",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/fixture.rs"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "build",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "build",
+          "--locked",
+          "--manifest-path",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.toml",
+          "--bin",
+          "fixture",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j2"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "build-resolution-tests",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "test",
+          "--locked",
+          "--manifest-path",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.toml",
+          "--bin",
+          "fixture",
+          "--no-run",
+          "--message-format=json",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j2"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "resolution-tests",
+        "argv": [
+          "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/deps/fixture-f42bc60d99dc97c2",
+          "own_resolution_tests::",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "strict-clippy-bin",
+        "argv": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "clippy",
+          "--locked",
+          "--manifest-path",
+          "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.toml",
+          "--bin",
+          "fixture",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j2",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      },
+      {
+        "name": "native-once",
+        "argv": [
+          "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/fixture",
+          "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/out/native",
+          "0000000000000000000000000000000000000000000000000000000000000001",
+          "0000000000000000000000000000000000000000000000000000000000000002",
+          "0"
+        ],
+        "cwd": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/source",
+        "exit_code": 0
+      }
+    ],
+    "environment": [
+      "Linux",
+      "fedora-2",
+      "6.19.10-300.fc44.x86_64",
+      "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+      "x86_64",
+      ""
+    ],
+    "owned_root": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2",
+    "admission": {
+      "cpus": 2,
+      "memory_bytes": 2147483648,
+      "disk_bytes": 4294967296,
+      "timeout_seconds": 600,
+      "cargo_jobs": 2
+    },
+    "measurement": false,
+    "profiles_executed": false,
+    "native_invocations": 1,
+    "build_environment": {
+      "CARGO_HOME": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/cargo-home",
+      "CARGO_TARGET_DIR": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target",
+      "TMPDIR": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/tmp",
+      "CARGO_BUILD_JOBS": "2",
+      "CARGO_INCREMENTAL": "0",
+      "RUSTFLAGS": "-C debuginfo=0 -C codegen-units=1",
+      "RUSTUP_AUTO_INSTALL": "0"
+    },
+    "private_wrapper": {
+      "path": "crates/init/src/managed_otel_native_own_cgroup.rs",
+      "bytes": 151,
+      "sha256": "c90842461595b8975b01886f0ae0affaee5c12d08dfa27f3c7a558e51e145813"
+    },
+    "test_artifacts": [
+      {
+        "path": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/deps/fixture-f42bc60d99dc97c2",
+        "bytes": 9464104,
+        "sha256": "8eae2efb9f696e10f36b5f9e35879d4988ee2b53a09a28ce333173ee41eb99c1"
+      }
+    ],
+    "native_artifact_before": {
+      "path": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/fixture",
+      "bytes": 7494944,
+      "sha256": "a28c8e23ea6d9c7daccf5cf3af7c6d6d61bc6fe48d88aa55e90d063466c18c18"
+    },
+    "native_outcome": {
+      "fd_after": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "fd_before": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "fd_sets_equal": true,
+      "fd_sets_include_the_temporary_enumeration_fd": true,
+      "fixture_generation": 0,
+      "outcome": {
+        "atomic_snapshot_or_exclusive_process_accounting": false,
+        "cap_writes_or_cgroup_creation": false,
+        "full_official_typed_requests_equal": true,
+        "identity_inputs_are_synthetic_fixture_labels": true,
+        "limit_state_points": 6,
+        "memory_limit": {
+          "cause": {
+            "errno": 2,
+            "type": "Io"
+          },
+          "type": "Failure"
+        },
+        "task_limit": {
+          "cause": {
+            "errno": 2,
+            "type": "Io"
+          },
+          "type": "Failure"
+        },
+        "type": "Observed"
+      },
+      "run_label": "0000000000000000000000000000000000000000000000000000000000000001",
+      "vm_label": "0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    "native_artifact_after": {
+      "path": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/fixture",
+      "bytes": 7494944,
+      "sha256": "a28c8e23ea6d9c7daccf5cf3af7c6d6d61bc6fe48d88aa55e90d063466c18c18"
+    },
+    "test_artifacts_after": [
+      {
+        "path": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/target/x86_64-unknown-linux-gnu/debug/deps/fixture-f42bc60d99dc97c2",
+        "bytes": 9464104,
+        "sha256": "8eae2efb9f696e10f36b5f9e35879d4988ee2b53a09a28ce333173ee41eb99c1"
+      }
+    ],
+    "private_tmp_remaining_files": [],
+    "outcome": 0,
+    "source_files_after_format": {
+      ".cargo/config.toml": {
+        "bytes": 1094,
+        "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+      },
+      "AGENTS.md": {
+        "bytes": 1793,
+        "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+      },
+      "Cargo.lock": {
+        "bytes": 45993,
+        "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+      },
+      "clippy.toml": {
+        "bytes": 526,
+        "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+      },
+      "crates/init/src/managed_otel_native_own_cgroup.rs": {
+        "bytes": 151,
+        "sha256": "c90842461595b8975b01886f0ae0affaee5c12d08dfa27f3c7a558e51e145813"
+      },
+      "crates/init/src/metrics/otlp.rs": {
+        "bytes": 22937,
+        "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+      },
+      "crates/init/src/metrics.rs": {
+        "bytes": 10201,
+        "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+      },
+      "docs/development-evidence.md": {
+        "bytes": 3325,
+        "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+      },
+      "docs/development-rules.md": {
+        "bytes": 11604,
+        "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.lock": {
+        "bytes": 13836,
+        "sha256": "97853431c88bbffb437042a27d93a3e6809af025e9d6fd926784b24cb190bdd5"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/Cargo.toml": {
+        "bytes": 667,
+        "sha256": "adef3ebb7222fdac624a6f56a6e21127130e1ad39683fc82456316e74573885e"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/fixture.rs": {
+        "bytes": 17160,
+        "sha256": "e51f39440f594aba5eee2d462ab70928f7ff8bc3a45b749036107d12fa3c66c4"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/lib.rs": {
+        "bytes": 151,
+        "sha256": "c90842461595b8975b01886f0ae0affaee5c12d08dfa27f3c7a558e51e145813"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/records/source-provenance.json": {
+        "bytes": 3535,
+        "sha256": "e45d23f5aeb4a7a1dc23068ae94f3323e5ea4d6c41d0bbd512716a32383bea3d"
+      },
+      "docs/research/measurements/managed-otel-limits-export/native-own-cgroup/run.py": {
+        "bytes": 8563,
+        "sha256": "ebc7a8a4f9a1072f84f6cd9ab8752d3d202a78696223eac671585a8c54988f43"
+      },
+      "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+        "bytes": 11347,
+        "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+      },
+      "rustfmt.toml": {
+        "bytes": 16,
+        "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+      }
+    }
+  },
+  "archive": {
+    "path": "/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/attempt-v2/raw.tar.gz",
+    "bytes": 28609,
+    "sha256": "75766b677283916248de29e7aaac209236db41c6ee7ec034082c749fa9bf0e8d"
+  }
+}

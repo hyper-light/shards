@@ -1,0 +1,110 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded anyhow v1.0.104
+  Downloaded futures-macro v0.3.34
+  Downloaded futures-sink v0.3.34
+  Downloaded rand_xorshift v0.5.0
+  Downloaded cpufeatures v0.3.1
+  Downloaded unarray v0.1.4
+  Downloaded futures-core v0.3.34
+  Downloaded futures-task v0.3.34
+  Downloaded cfg-if v1.0.5
+  Downloaded cpufeatures v0.2.17
+  Downloaded futures-executor v0.3.34
+  Downloaded zmij v1.0.23
+  Downloaded itoa v1.0.19
+  Downloaded slab v0.4.12
+  Downloaded thiserror v2.0.21
+  Downloaded core_detect v1.0.0
+  Downloaded prost-derive v0.14.4
+  Downloaded autocfg v1.5.1
+  Downloaded quote v1.0.47
+  Downloaded thiserror-impl v2.0.21
+  Downloaded either v1.19.0
+  Downloaded pin-project-lite v0.2.17
+  Downloaded chacha20 v0.10.2
+  Downloaded futures-channel v0.3.34
+  Downloaded rand_core v0.10.1
+  Downloaded unicode-ident v1.0.27
+  Downloaded const-hex v1.19.3
+  Downloaded num-traits v0.2.19
+  Downloaded prost v0.14.4
+  Downloaded bitflags v2.13.2
+  Downloaded getrandom v0.4.3
+  Downloaded serde_derive v1.0.229
+  Downloaded base64 v0.22.1
+  Downloaded bytes v1.12.1
+  Downloaded serde_core v1.0.229
+  Downloaded opentelemetry v0.33.1
+  Downloaded proc-macro2 v1.0.107
+  Downloaded memchr v2.8.3
+  Downloaded opentelemetry-proto v0.33.1
+  Downloaded serde v1.0.229
+  Downloaded rand v0.10.3
+  Downloaded itertools v0.14.0
+  Downloaded futures-util v0.3.34
+  Downloaded serde_json v1.0.151
+  Downloaded proptest v1.12.0
+  Downloaded opentelemetry_sdk v0.33.1
+  Downloaded syn v3.0.10
+  Downloaded syn v2.0.119
+  Downloaded regex-syntax v0.8.11
+  Downloaded libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling anyhow v1.0.104
+   Compiling futures-core v0.3.34
+   Compiling serde_core v1.0.229
+   Compiling syn v3.0.10
+   Compiling slab v0.4.12
+   Compiling futures-task v0.3.34
+   Compiling thiserror v2.0.21
+   Compiling either v1.19.0
+   Compiling futures-sink v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling itertools v0.14.0
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-util v0.3.34
+   Compiling syn v2.0.119
+   Compiling serde v1.0.229
+   Compiling zmij v1.0.23
+   Compiling futures-executor v0.3.34
+   Compiling serde_derive v1.0.229
+   Compiling prost-derive v0.14.4
+   Compiling futures-channel v0.3.34
+   Compiling libc v0.2.189
+   Compiling bytes v1.12.1
+   Compiling opentelemetry v0.33.1
+   Compiling cpufeatures v0.2.17
+   Compiling serde_json v1.0.151
+   Compiling cfg-if v1.0.5
+   Compiling const-hex v1.19.3
+   Compiling opentelemetry_sdk v0.33.1
+   Compiling prost v0.14.4
+   Compiling base64 v0.22.1
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.19
+   Compiling opentelemetry-proto v0.33.1
+   Compiling shards-managed-otel-native-own-cgroup v0.0.0 (/home/adalundhe/managed-otel-own-cgroup-c298-light-v1/source/docs/research/measurements/managed-otel-limits-export/native-own-cgroup)
+error[E0583]: file not found for module `otlp`
+ --> ../../../../../crates/init/src/metrics.rs:7:1
+  |
+7 | pub mod otlp;
+  | ^^^^^^^^^^^^^
+  |
+  = help: to create the module `otlp`, create file "../../../../../crates/init/src/otlp.rs" or "../../../../../crates/init/src/otlp/mod.rs"
+  = note: if there is a `mod otlp` elsewhere in the crate already, import it with `use crate::...` instead
+
+warning: unused import: `metrics::otlp::*`
+ --> lib.rs:5:9
+  |
+5 | pub use metrics::otlp::*;
+  |         ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0583`.
+warning: `shards-managed-otel-native-own-cgroup` (lib) generated 1 warning
+error: could not compile `shards-managed-otel-native-own-cgroup` (lib) due to 1 previous error; 1 warning emitted
