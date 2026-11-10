@@ -650,7 +650,15 @@ impl Fixture {
         else {
             panic!("unexpected terminal metadata");
         };
-        (accepted.parse().unwrap(), consumed.parse().unwrap())
+        let cursors = (accepted.parse().unwrap(), consumed.parse().unwrap());
+        let _ = writeln!(
+            std::io::stdout(),
+            "managed-owner terminal member={member} channel={} accepted={} consumed={} tail=unknown",
+            channel as u8,
+            cursors.0,
+            cursors.1
+        );
+        cursors
     }
 }
 
