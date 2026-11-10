@@ -87,7 +87,8 @@ hard/minor/COW/pagein counts. Do not add overlapping child/process categories.
 
 ## Alternatives and root gates
 
-`getrusage` is a distinct self/waited-child interface and not a held arbitrary
+[POSIX getrusage](https://man7.org/linux/man-pages/man3/getrusage.3p.html)
+(IEEE1003.1-2017 reproduction) is a distinct self/waited-child interface and not a held arbitrary
 daemon/VM-process identity seam. It supplies no portable live process-tree or
 kernel-queue census. Perf/ETW/DTrace/BPF, system-wide fault collectors and native
 profiler frameworks add different privileges, scope and overhead; none is

@@ -1,0 +1,1 @@
+rustc +1.98.1 --edition 2024 --test -D warnings -C codegen-units=1 --target x86_64-unknown-linux-gnu /home/adalundhe/managed-allocation-metrics-source-0183cf0683515974250f84999ae5be7bb44b585e/managed_alloc.rs -o /home/adalundhe/managed-allocation-metrics-target-0183cf0683515974250f84999ae5be7bb44b585e/x86_64-unknown-linux-gnu-tests

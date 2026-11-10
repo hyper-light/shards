@@ -25,9 +25,17 @@ alternatives, actual fixture/HOST-EXIT and root f062/output-exit records read.
 Minimal PROPOSAL sent via stable key `managed-allocation-metrics-proposal-v1`;
 fixture hooks await root response. The authorized new counter source is now
 implemented, after the minimal proposal; no actual registration or fixture edit.
-The standalone light runner is prepared; no compile/test/profile/VM/socket/ns/
-BPF/campaign has executed yet. Fault proposal is complete in FAULT-PROPOSAL.md;
-platform source/API unchanged and measurements unrun.
+Final source0183cf0683515974250f84999ae5be7bb44b585e is tested: standalone
+GNU5/musl5 plus Clippy0 through Kiln Fedora admitted1CPU/1GiB/2GiB, new private
+source/target dirs only, no sync/root source/target write. Exact logs, source,
+commands, binary hashes and original Default-lint failure are retained under
+records/light-{1309b9864,0975a51c0,0183cf068}. Source SHA256
+7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc.
+No profile/VM/socket/ns/BPF/campaign executed. Fault proposal is complete in
+FAULT-PROPOSAL.md; platform source/API unchanged and measurements unrun.
+fixture-hooks.proposed.patch is concrete and UNAPPLIED, git apply --check0 on
+base. It needs approval plus root's central actual caller registration. No
+actual caller build/profile/matrix or integration success is claimed.
 
 R15 root owns every audit/profile/benchmark/heavy E2E/chaos/stress/sweep/mutation
 campaign/main merge. No children. Light compile only NEW private sources/targets
@@ -37,11 +45,10 @@ root ~/managed-capture-check or target/~/managed-capture-target, root Mac
 ~/managed-combined-seven-target-check or cache, frozen evidence/user data.
 No hostroot/admin/security/crypto/platform API/production optimization changes.
 
-Next: incorporate coordinator proposal response and approved phase hooks; run
-pure/light private tests, policy/format checks;
+Next: incorporate coordinator proposal response and approved phase hooks;
 retain exact commands/source/binary/log identities; signed named-path commits
 using /Users/adalundhe/.kiln-run/bin/gits plus required Claude Opus5.5 trailer;
 push only own branch. Return all actual/paired/interleaved/mutation/cleanup/matrix
-gates. Finish primary-source fault proposal through existing seams, no execution.
+gates. Primary-source fault proposal through existing seams is done, no execution.
 Immediately ask coordinator for next scoped batch when this one is ready;
 no fake keepalive or measurement substitutes. Keep this lane sustained.

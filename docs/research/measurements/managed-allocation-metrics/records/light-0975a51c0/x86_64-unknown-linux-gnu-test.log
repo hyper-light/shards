@@ -1,0 +1,10 @@
+
+running 5 tests
+test tests::failed_requests_do_not_become_live_or_successful_bytes ... ok
+test tests::realloc_growth_equal_size_and_shrink_count_one_event_each ... ok
+test tests::representation_exhaustion_and_underflow_are_sticky_unknown ... ok
+test tests::valid_system_alloc_and_zeroed_blocks_are_released ... ok
+test tests::valid_system_realloc_uses_only_returned_pointer_and_matching_layout ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

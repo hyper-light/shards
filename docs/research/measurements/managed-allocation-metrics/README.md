@@ -70,7 +70,7 @@ The selected narrow design extends the official System wrapper pattern rather
 than adopting a profiler dependency. It preserves the System contract instead
 of implementing an allocator. Host behavior and perturbation remain root-owed.
 
-## Proposed accounting contract (sent before source edits)
+## Counter contract (proposal sent before source edits)
 
 One `ManagedAlloc` forwards every method exactly once to System. After the
 backend result it records alloc/alloc_zeroed successes versus failures, realloc
@@ -109,6 +109,12 @@ whole process tree. Requested live bytes at a phase are not a leak proof.
 No profile, comparison, optimization or speedup claim is made by this lane.
 
 ## Coordinator wiring and proposed phase placements
+
+[Concrete fixture patch](fixture-hooks.proposed.patch) is **unapplied** pending
+coordinator approval. `git apply --check` passes on the base fixture. The actual
+fixture and `managed_output.rs` remain byte-identical to base; this lane has
+registered no allocator in the actual caller. The patch adds the following
+fixed phase holder/JSON record without changing any original assertion.
 
 Root owns these exact header additions to `crates/shards/tests/managed_output.rs`:
 
@@ -160,11 +166,68 @@ uncertainty and native host validation. No optimization follows before root
 collects and analyzes those actual data. This instrumentation closes no hard
 budget, full-population/kernel return or 4–5× performance requirement.
 
+## Actual light result and identities
+
+Final counter source **`0183cf0683515974250f84999ae5be7bb44b585e`**, SHA-256
+`7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc`.
+Fedora runner `8fadc1ec213332e16cb0d915a3fb913f`, Linux
+`6.19.10-300.fc44.x86_64`, Rust1.98.1 compiler commit
+`48a229ceaefd4985c50990b14116b6d856af0985`, LLVM22.1.8.
+
+Kiln admitted each invocation at **1 CPU / 1 GiB / 2 GiB**, `sync:false`.
+Only these two files were digest-checked and copied to new private source
+directories; no full checkout, root clone/target, carried helper or guest build.
+`run-light.sh` compiles standalone tests with `rustc +1.98.1 --edition 2024
+--test -D warnings -C codegen-units=1 --target <GNU-or-musl>`, then executes each
+with `--test-threads=1 --nocapture`. Direct clippy-driver uses `-D warnings` and
+`-D clippy::undocumented_unsafe_blocks`. Exact commands and original exits are
+retained in [final raw records](records/light-0183cf068).
+
+Final result: GNU **5 passed**, musl **5 passed**, neither ignored/failed;
+both compiles and Clippy exit0. Three tests use synthetic accounting events;
+two exercise small valid System wrapper blocks and cleanup. Failed-return and
+overflow coverage is synthetic, not induced native OOM. No global allocator is
+registered by these standalone tests; the actual cost caller is unbuilt/unrun.
+
+| Standalone test binary | SHA-256 |
+| --- | --- |
+| GNU | `2ff1d97f248165d8571a3d573ae16e5217c69a55cb21488a14376d47b277c94d` |
+| musl | `56a4b37cf5bbcf09d927ac0294b1716478d1b399746007c63e57b27ff8a73fdd` |
+
+Exact remote paths are in `*-binary.sha256`; the unexecuted clippy artifact has
+its own [identity](records/light-0183cf068/clippy-binary.json). Source/target/log
+directories are individually named `~/managed-allocation-metrics-{source,target,light}-<full-revision>`.
+They remain preserved; no active jobs or cleanup pending on this lane.
+
+Original [1309 light records](records/light-1309b9864) retain GNU5/musl5 passes
+and Clippy's missing-Default failure. The signed Default-only follow-up at
+0975 passed [all light checks](records/light-0975a51c0). The final 0183 change
+immediately marks peak Unknown when shrinking/removing live accounting becomes
+Unknown, with an added focused assertion; this is recorder implementation,
+not a reproduced product issue or a performance fix. Its light rerun above is
+the current-source result. No lint or safety condition was waived.
+
+Each transfer validates archive hash and regular relative paths and retains
+per-file hashes and original logs without normalization. Archive SHA-256s:
+1309 `93fbf97372043c6b3e32f32f1dd3df818e52d6b4ba7d2891dad90c258c26cb13`;
+0975 `5346936732b3c4939b9f6e2d03fc6e809ec7568fba82ac692239e692539ad287`;
+0183 `78fcfc69711f803de720ef6f0dd034debc71c580ec50789dfa3f594997d87333`.
+Original archives and binaries remain on the runner. The records contain no
+actual resource samples or comparative distributions. Local formatter, policy,
+shell syntax and unapplied patch checks are source-only checks.
+
+Staged whitespace checking flags blank EOF lines in seven original test/lint
+logs and literal blank context lines in the unapplied unified patch. They are
+retained byte-for-byte and classified in `records/WHITESPACE.json`; the source
+and other staged paths check clean. No raw log, global Git rule or lint is
+rewritten/relaxed to hide these artifact-format findings.
+
 R01/R04/R06/R07/R13: test-only checked accounting and explicit Unknown; root code
 review/actual checks pending. R02/R03/R05/R12: primary contracts, alternatives,
 one real caller, representation-derived bounds, no cache/probe/platform manager.
 R08/R14: all performance is unmeasured and root-owned. R09/R10: measurement gap
 motivates instrumentation, not a guessed product fix; durable light evidence is
-still pending. R11: seven targets and real hosts remain unverified here.
+linked above. R11: GNU/musl standalone checks only; other targets, actual caller
+and real supported VM hosts remain unverified here.
 R15/R16: signed named-path checkpoints, private admitted light scope, no children,
 main merge, heavy run, root-cache write or destructive cleanup.
