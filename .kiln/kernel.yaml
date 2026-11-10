@@ -1,0 +1,36 @@
+# Guest kernel build on kiln, from .github/workflows/kernel.yml: builds the shards guest kernel
+# (scripts/build-kernel.sh) and keeps it, its config and the toolchain record as artifacts.
+# The image is the GHA runner's Ubuntu 24.04, so the compiler is the one the published kernels
+# record. Not reproduced: the aarch64 leg (no arm64 agents) and `publish`, which creates a
+# GitHub release with the workflow's token.
+name: kernel
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - resources/kernel/**
+      - scripts/build-kernel.sh
+      - .kiln/kernel.yaml
+  manual: true
+jobs:
+  build:
+    name: build (x86_64)
+    runs-on: [k8s]
+    image: docker.io/library/ubuntu:24.04
+    resources: { cpu: "6", memory: 8Gi }
+    timeout-minutes: 60
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    artifacts: ["out/**"]
+    steps:
+      # GHA's list, plus what its runner image already carries (curl, xz) and the pod's does not.
+      - name: Toolchain
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential bc bison flex libelf-dev libssl-dev ca-certificates curl xz-utils
+          gcc --version | head -1 | tee out-toolchain.txt
+          ld --version | head -1 | tee -a out-toolchain.txt
+      - name: Build
+        run: scripts/build-kernel.sh x86_64 out
+      - name: Record the toolchain
+        run: mv out-toolchain.txt out/toolchain-x86_64.txt

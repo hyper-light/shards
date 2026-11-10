@@ -14,6 +14,12 @@ use shards_abi::run::{self, Size, Spec, kind};
 // `shards_ipc::Stream`s, which are Unix sockets too on Unix.
 use shards_vmm::platform::UnixStream;
 
+#[path = "workload/capture.rs"]
+pub mod capture;
+#[path = "workload/hellos.rs"]
+mod hellos;
+pub use hellos::exec_port;
+
 use crate::spec::{
     INDEX_LINE, INDEX_START, INDEX_STDERR, LOG_HEAD, LOG_STDERR, LOG_STDOUT, LogRetention, now,
 };
@@ -83,6 +89,7 @@ pub enum Request<'a> {
 /// output is kept, and what to call once the command runs.
 pub struct Asked<'a> {
     pub spec: Spec,
+    pub capture: Option<capture::Given>,
     pub interactive: bool,
     /// Its client does not stay: its stdin, if it reads one, is for `shards attach`.
     pub detached: bool,
@@ -134,60 +141,150 @@ pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
         return Err(format!("a resumed run's tokens are {} bytes", tokens.len()));
     };
     let signal: [u8; run::TOKEN] = rest.try_into().map_err(|_| "a resumed run's signals token")?;
-    let mut waiting = pending();
-    let mut wait = |token: [u8; run::TOKEN]| {
-        let (to, from) = std::sync::mpsc::channel();
-        let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        waiting.push(Waiting { token, id, to });
-        from
+    let wait = |token: [u8; run::TOKEN]| -> Result<_, String> {
+        let (to, from) = std::sync::mpsc::sync_channel(1);
+        register(token, Target::Resumed(to))?;
+        Ok(from)
     };
-    let (run, signals) = (wait(*run), wait(signal));
+    let run_token = run;
+    let run = wait(*run_token)?;
+    let signals = match wait(signal) {
+        Ok(signals) => signals,
+        Err(e) => {
+            pending().retain(|w| !same_token(&w.token, run_token));
+            return Err(e);
+        }
+    };
     Ok(Resumed { run, signals })
 }
 
-/// A save of the run, as its relay sees it (D176): the guest has said all it held, or the
-/// run's end came first.
-struct Quiescing {
-    quiet: bool,
-    ended: bool,
+#[derive(Debug)]
+pub enum QuiesceError {
+    InvalidRequest,
+    Ended,
+    Busy,
+    NotStarted,
+    Transport(io::Error),
+    Protocol(run::quiesce::DecodeError),
+    Refused(run::quiesce::Refused),
 }
 
-static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing {
-    quiet: false,
-    ended: false,
-});
+impl std::fmt::Display for QuiesceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest => f.write_str("a save's restore tokens have the wrong length"),
+            Self::Ended => f.write_str("its command has ended"),
+            Self::Busy => f.write_str("a save of its command is already pending"),
+            Self::NotStarted => f.write_str("its command has not started"),
+            Self::Transport(error) => write!(f, "asking its guest: {error}"),
+            Self::Protocol(error) => write!(f, "its guest sent an invalid save response: {error}"),
+            Self::Refused(refusal) => write!(f, "its guest refused the save: {refusal}"),
+        }
+    }
+}
+
+impl std::error::Error for QuiesceError {}
+
+/// The run relay's checkpoint request and its typed terminal reply (D176).
+enum Quiescing {
+    Idle,
+    Waiting([u8; run::quiesce::REQUEST_BYTES]),
+    Quiet,
+    Refused(run::quiesce::Refused),
+    Ended {
+        protocol: Option<run::quiesce::DecodeError>,
+    },
+}
+
+impl Quiescing {
+    fn begin(&mut self, request: [u8; run::quiesce::REQUEST_BYTES]) -> Result<(), QuiesceError> {
+        match self {
+            Self::Idle => {
+                *self = Self::Waiting(request);
+                Ok(())
+            }
+            Self::Ended { .. } => Err(QuiesceError::Ended),
+            _ => Err(QuiesceError::Busy),
+        }
+    }
+
+    fn cancel(&mut self, request: &[u8; run::quiesce::REQUEST_BYTES]) {
+        if matches!(self, Self::Waiting(held) if held == request) {
+            *self = Self::Idle;
+        }
+    }
+
+    fn quiet(&mut self) {
+        if matches!(self, Self::Waiting(_)) {
+            *self = Self::Quiet;
+        }
+    }
+
+    fn refuse(&mut self, refusal: run::quiesce::Refused) {
+        if matches!(self, Self::Waiting(request) if refusal.matches(request)) {
+            *self = Self::Refused(refusal);
+        }
+    }
+
+    fn end(&mut self) {
+        if !matches!(self, Self::Ended { .. }) {
+            *self = Self::Ended { protocol: None };
+        }
+    }
+
+    fn protocol_failed(&mut self, error: run::quiesce::DecodeError) {
+        *self = Self::Ended {
+            protocol: Some(error),
+        };
+    }
+
+    fn outcome(&mut self) -> Option<Result<(), QuiesceError>> {
+        match self {
+            Self::Idle | Self::Waiting(_) => None,
+            Self::Ended { protocol } => Some(Err(match *protocol {
+                Some(error) => QuiesceError::Protocol(error),
+                None => QuiesceError::Ended,
+            })),
+            Self::Quiet => {
+                *self = Self::Idle;
+                Some(Ok(()))
+            }
+            Self::Refused(refusal) => {
+                let error = QuiesceError::Refused(*refusal);
+                *self = Self::Idle;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing::Idle);
 static QUIET: std::sync::Condvar = std::sync::Condvar::new();
 
 fn quiescing() -> std::sync::MutexGuard<'static, Quiescing> {
     QUIESCING.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Has the guest go quiet for a save of the run (D176), `tokens` the two it dials the host
-/// again with in a microVM restored from it, and waits until it has: all it held said, and
-/// read here, so that none of it is on its way as the save is taken. What the host sends
-/// it meanwhile, its stdin and signals, comes after the save in a restored copy, where it
-/// is not. An error where its command has ended, or has yet to start.
-pub fn quiesce(tokens: &[u8]) -> Result<(), String> {
-    {
-        let mut q = quiescing();
-        if q.ended {
-            return Err("its command has ended".into());
-        }
-        q.quiet = false;
-    }
-    match lock_stdin().as_mut() {
-        Some(conn) => send(conn, kind::QUIESCE, tokens).map_err(|e| format!("asking its guest: {e}"))?,
-        None => return Err("its command has not started".into()),
+/// Waits for the guest's cut or a correlated refusal before the VMM saves it (D176).
+/// The two restore tokens remain private to this control path.
+pub fn quiesce(tokens: &[u8]) -> Result<(), QuiesceError> {
+    let request = tokens.try_into().map_err(|_| QuiesceError::InvalidRequest)?;
+    quiescing().begin(request)?;
+    let sent = match lock_stdin().as_mut() {
+        Some(conn) => send(conn, kind::QUIESCE, tokens).map_err(QuiesceError::Transport),
+        None => Err(QuiesceError::NotStarted),
+    };
+    if let Err(error) = sent {
+        quiescing().cancel(&request);
+        return Err(error);
     }
     let mut q = quiescing();
-    while !q.quiet && !q.ended {
+    loop {
+        if let Some(outcome) = q.outcome() {
+            return outcome;
+        }
         q = QUIET.wait(q).unwrap_or_else(PoisonError::into_inner);
     }
-    if !q.quiet {
-        return Err("its command ended first".into());
-    }
-    q.quiet = false;
-    Ok(())
 }
 
 /// Lets the guest go on after a save, taken or not (D176).
@@ -514,7 +611,8 @@ pub fn serve(
         })
         .transpose()?;
     let Asked {
-        spec,
+        mut spec,
+        capture,
         interactive,
         detached,
         log,
@@ -531,6 +629,7 @@ pub fn serve(
     } = match request {
         Request::Now { spec, interactive } => Asked {
             spec: *spec,
+            capture: None,
             interactive,
             detached: false,
             log: None,
@@ -573,6 +672,15 @@ pub fn serve(
             shards_abi::IDENTITY
         ));
     }
+    let capture_control = match capture {
+        Some(capture) => {
+            if resuming {
+                return Err("managed output restore generation is not admitted".into());
+            }
+            Some(capture::start(&mut spec, capture)?)
+        }
+        None => None,
+    };
     if !resuming {
         if let Some(layer) = layer_in {
             send_layer(&mut conn, layer).map_err(|e| format!("sending the container's files: {e}"))?;
@@ -599,6 +707,11 @@ pub fn serve(
         send(&mut conn, kind::STDIN, &[]).map_err(|e| format!("closing stdin: {e}"))?;
     }
     lock(to).running = true;
+    let boundary = capture_control
+        .as_ref()
+        .map(|_| conn.try_clone())
+        .transpose()
+        .map_err(|e| format!("managed control boundary: {e}"))?;
     std::thread::Builder::new()
         .name("signal-conn".into())
         .spawn(move || {
@@ -620,7 +733,26 @@ pub fn serve(
                 .iter()
                 .all(|(which, payload)| send(&mut c, *which, payload).is_ok())
             {
-                state.conn = Some(c);
+                if let Some(control) = capture_control {
+                    let reader = match c.try_clone() {
+                        Ok(reader) => reader,
+                        Err(_) => {
+                            if let Some(boundary) = boundary {
+                                end_guest(&boundary);
+                            }
+                            return;
+                        }
+                    };
+                    state.conn = Some(c);
+                    drop(state);
+                    if let Some(boundary) = boundary
+                        && let Err(e) = control.supervise(&reader, &boundary)
+                    {
+                        shards_vmm::debug!("managed control boundary ended: {e}");
+                    }
+                } else {
+                    state.conn = Some(c);
+                }
             }
         })
         .map_err(|e| format!("signal connection: {e}"))?;
@@ -630,7 +762,7 @@ pub fn serve(
     let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
     // A save waiting for the guest to go quiet waits no more: its command has ended.
-    quiescing().ended = true;
+    quiescing().end();
     QUIET.notify_all();
     if let Some(told) = told {
         told(&status);
@@ -699,7 +831,7 @@ pub fn serve(
     lock_attached().clear();
     // Execs still waiting for the guest will never start.
     if !joined {
-        pending().clear();
+        hellos::close();
     }
     // The guest powers off once the host closes the run connection: shutting it down
     // closes every copy.
@@ -791,7 +923,19 @@ fn relay_frames(
             kind::EXEC_FAILED => exec_failed(payload),
             // All the guest held is here, the save it was asked for waits on it (D176).
             kind::QUIESCED => {
-                quiescing().quiet = true;
+                quiescing().quiet();
+                QUIET.notify_all();
+            }
+            kind::QUIESCE_REFUSED => {
+                let refusal = match run::quiesce::Refused::decode(payload) {
+                    Ok(refusal) => refusal,
+                    Err(error) => {
+                        quiescing().protocol_failed(error);
+                        QUIET.notify_all();
+                        return Err("the guest sent a malformed quiesce refusal".into());
+                    }
+                };
+                quiescing().refuse(refusal);
                 QUIET.notify_all();
             }
             kind::OOM => oom = Some(payload.to_vec()),
@@ -1049,10 +1193,56 @@ fn send(conn: &mut UnixStream, which: u8, payload: &[u8]) -> io::Result<()> {
 
 /// An exec waiting for the guest's connection: its token, its id, and where its
 /// connection goes, or why there is none ([`kind::EXEC_FAILED`]).
+enum Target {
+    Exec {
+        id: u32,
+        to: std::sync::mpsc::SyncSender<Result<UnixStream, String>>,
+    },
+    Resumed(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
+    Capture(std::sync::mpsc::SyncSender<Result<UnixStream, String>>),
+}
+
+impl Target {
+    fn id(&self) -> Option<u32> {
+        match self {
+            Self::Exec { id, .. } => Some(*id),
+            _ => None,
+        }
+    }
+    fn deliver(self, result: Result<UnixStream, String>) {
+        let to = match self {
+            Self::Exec { to, .. } | Self::Resumed(to) | Self::Capture(to) => to,
+        };
+        let _ = to.try_send(result);
+    }
+}
+
 struct Waiting {
     token: [u8; run::TOKEN],
-    id: u32,
-    to: std::sync::mpsc::Sender<Result<UnixStream, String>>,
+    target: Target,
+    incoming: Option<UnixStream>,
+}
+
+fn register(token: [u8; run::TOKEN], target: Target) -> Result<(), String> {
+    if !hellos::admitting() {
+        return Err("owned HELLO listener is closed".into());
+    }
+    let mut waiting = pending();
+    if waiting.iter().any(|w| same_token(&w.token, &token)) {
+        return Err("a duplicate owned HELLO token".into());
+    }
+    waiting
+        .try_reserve(1)
+        .map_err(|e| format!("reserving an owned HELLO slot: {e}"))?;
+    if !hellos::admitting() {
+        return Err("owned HELLO listener is closed".into());
+    }
+    waiting.push(Waiting {
+        token,
+        target,
+        incoming: None,
+    });
+    Ok(())
 }
 
 /// The execs waiting for their connections. Emptied when the workload ends, which tells
@@ -1074,18 +1264,12 @@ fn exec_failed(payload: &[u8]) {
         let mut waiting = pending();
         waiting
             .iter()
-            .position(|w| w.id == id)
+            .position(|w| w.target.id() == Some(id))
             .map(|i| waiting.swap_remove(i))
     };
     if let Some(w) = waiting {
-        let _ = w.to.send(Err(String::from_utf8_lossy(why).into_owned()));
+        w.target.deliver(Err(String::from_utf8_lossy(why).into_owned()));
     }
-}
-
-/// Takes every guest connection to the exec port ([`run::EXEC_PORT`]): one whose
-/// [`kind::HELLO`] names a pending exec's token becomes that exec's; any other is closed.
-pub fn accept_execs(port: Port) {
-    accept_hellos(port, "exec-hellos", heard);
 }
 
 /// Takes every guest connection to `port`, each of which says a [`kind::HELLO`] first:
@@ -1135,7 +1319,7 @@ fn hellos(
     let mut unheard: Vec<Unheard> = Vec::new();
     let mut byte = [0u8; 64];
     loop {
-        let Ok(polled) = await_hellos(woken, &unheard) else {
+        let Ok(polled) = await_hellos(woken, unheard.iter().map(|u| &u.conn)) else {
             return;
         };
         let Some((&wake, rest)) = polled.split_first() else {
@@ -1200,36 +1384,20 @@ fn hellos(
 /// Waits until `woken` or one of `unheard`'s connections has something to read, or has
 /// ended: which have, `woken` first. poll(2) on Unix; WSAPoll on Windows, whose sockets
 /// they are (`shards_vmm::platform::wait_readable`).
-fn await_hellos(woken: &UnixStream, unheard: &[Unheard]) -> io::Result<Vec<bool>> {
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd as _;
-        let mut polled: Vec<libc::pollfd> = std::iter::once(woken.as_raw_fd())
-            .chain(unheard.iter().map(|u| u.conn.as_raw_fd()))
-            .map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            })
-            .collect();
-        let count = libc::nfds_t::try_from(polled.len()).unwrap_or(libc::nfds_t::MAX);
-        // SAFETY: poll(2) on pollfds of descriptors this thread holds open.
-        while unsafe { libc::poll(polled.as_mut_ptr(), count, -1) } < 0 {
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
-        Ok(polled.iter().map(|p| p.revents != 0).collect())
-    }
-    #[cfg(windows)]
-    {
-        use shards_vmm::platform::AsRawSocket as _;
-        let sockets: Vec<shards_vmm::platform::RawSocket> = std::iter::once(woken.raw_socket())
-            .chain(unheard.iter().map(|u| u.conn.raw_socket()))
-            .collect();
-        shards_vmm::platform::wait_readable(&sockets, None)
-    }
+fn await_hellos<'a>(
+    woken: &UnixStream,
+    connections: impl ExactSizeIterator<Item = &'a UnixStream>,
+) -> io::Result<Vec<bool>> {
+    use shards_vmm::platform::AsRawSocket as _;
+    let count = connections
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| io::Error::other("HELLO poll count overflow"))?;
+    let mut sockets = Vec::new();
+    sockets.try_reserve_exact(count).map_err(io::Error::other)?;
+    sockets.push(woken.raw_socket());
+    sockets.extend(connections.map(|c| c.raw_socket()));
+    shards_vmm::platform::wait_readable(&sockets, None)
 }
 
 /// Whether tokens `a` and `b` are the same, compared whole, in constant time: a workload
@@ -1246,12 +1414,12 @@ fn heard(conn: UnixStream, token: &[u8; run::TOKEN]) {
         waiting
             .iter()
             .position(|w| same_token(&w.token, token))
-            .map(|i| waiting.swap_remove(i).to)
+            .map(|i| waiting.swap_remove(i).target)
     };
     if let Some(to) = to
         && conn.set_nonblocking(false).is_ok()
     {
-        let _ = to.send(Ok(conn));
+        to.deliver(Ok(conn));
     }
 }
 
@@ -1338,8 +1506,8 @@ fn exec_session(to: &'static ToGuest, req: &mut ExecRequest) -> Result<u8, Strin
     shards_vmm::platform::fill_random(&mut token).map_err(|e| format!("an exec's token: {e}"))?;
     let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let payload = exec_frame(&token, id, &req.spec)?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    pending().push(Waiting { token, id, to: tx });
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    register(token, Target::Exec { id, to: tx })?;
     if !to_guest(to, kind::EXEC, &payload) {
         pending().retain(|w| w.token != token);
         return Err("the container is not running".into());
@@ -1671,8 +1839,8 @@ pub fn join(
     let id = NEXT_EXEC.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     on_id(id);
     let payload = exec_frame(&token, id, &spec)?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    pending().push(Waiting { token, id, to: tx });
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    register(token, Target::Exec { id, to: tx })?;
     if !to_guest(to, kind::EXEC, &payload) {
         pending().retain(|w| w.token != token);
         return Err("the container whose network it joins is not running".into());
@@ -2084,6 +2252,63 @@ mod tests {
 
     use super::*;
     use crate::segments::{log_segment, new_segment};
+    static HELLO_TESTS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn quiesce_replies_resolve_only_the_waiting_request() {
+        use run::quiesce::{REQUEST_BYTES, Reason, Refused};
+        let request = [0x5a; REQUEST_BYTES];
+        let refusal = Refused::new(request, 7, Reason::Quarantined, 21).unwrap();
+        let mut q = Quiescing::Idle;
+        q.begin(request).unwrap();
+        assert!(matches!(q.begin(request), Err(QuiesceError::Busy)));
+        q.refuse(Refused::new([0x5b; REQUEST_BYTES], 7, Reason::Quarantined, 21).unwrap());
+        assert!(q.outcome().is_none());
+        q.refuse(refusal);
+        let error = q.outcome().unwrap().unwrap_err();
+        assert!(matches!(&error, QuiesceError::Refused(found) if *found == refusal));
+        assert_eq!(
+            error.to_string(),
+            "its guest refused the save: tenant 7 is quarantined with unknown population; errno 21"
+        );
+        assert!(matches!(q, Quiescing::Idle));
+        q.quiet();
+        assert!(q.outcome().is_none());
+        q.begin(request).unwrap();
+        q.quiet();
+        assert!(q.outcome().unwrap().is_ok());
+        q.refuse(refusal);
+        assert!(q.outcome().is_none());
+    }
+
+    #[test]
+    fn quiesce_send_failure_and_command_end_keep_their_ownership() {
+        let request = [0; run::quiesce::REQUEST_BYTES];
+        let mut q = Quiescing::Idle;
+        q.begin(request).unwrap();
+        q.cancel(&[1; run::quiesce::REQUEST_BYTES]);
+        assert!(matches!(q, Quiescing::Waiting(_)));
+        q.cancel(&request);
+        assert!(matches!(q, Quiescing::Idle));
+        q.begin(request).unwrap();
+        q = Quiescing::Ended { protocol: None };
+        q.cancel(&request);
+        q.quiet();
+        assert!(matches!(q.begin(request), Err(QuiesceError::Ended)));
+        assert!(matches!(q.outcome(), Some(Err(QuiesceError::Ended))));
+        assert!(matches!(q, Quiescing::Ended { .. }));
+    }
+
+    #[test]
+    fn quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends() {
+        let mut q = Quiescing::Idle;
+        q.begin([0; run::quiesce::REQUEST_BYTES]).unwrap();
+        let error = run::quiesce::DecodeError::UnknownReason(u8::MAX);
+        q.protocol_failed(error);
+        q.end();
+        assert!(matches!(q.outcome(), Some(Err(QuiesceError::Protocol(found))) if found == error));
+        assert!(matches!(q, Quiescing::Ended { .. }));
+    }
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.
     fn temp(tag: &str) -> shards_testdir::TempDir {
@@ -2109,25 +2334,47 @@ mod tests {
     /// gets its own.
     #[test]
     fn exec_connections_go_only_to_the_exec_they_name() {
-        let (port, conns) = std::sync::mpsc::channel();
-        std::thread::spawn(move || accept_execs(conns));
+        let _serial = HELLO_TESTS.lock().unwrap();
+        let (port, acceptor) = exec_port().unwrap();
         let token = [7u8; run::TOKEN];
-        let (to, arrived) = std::sync::mpsc::channel();
-        pending().push(Waiting { token, id: 1, to });
-        // One that never says anything holds up none of the others.
-        let (_idle, idle) = UnixStream::pair().unwrap();
-        port.send(idle).unwrap();
+        let capture_token = [9u8; run::TOKEN];
+        let resumed_token = [10u8; run::TOKEN];
+        let (to, arrived) = std::sync::mpsc::sync_channel(1);
+        let (capture_to, capture_arrived) = std::sync::mpsc::sync_channel(1);
+        let (resumed_to, resumed_arrived) = std::sync::mpsc::sync_channel(1);
+        register(token, Target::Exec { id: 1, to }).unwrap();
+        register(capture_token, Target::Capture(capture_to)).unwrap();
+        register(resumed_token, Target::Resumed(resumed_to)).unwrap();
+        let mut idle_peers = Vec::new();
+        for _ in 0..3 {
+            let (peer, candidate) = UnixStream::pair().unwrap();
+            assert_eq!(port.accept(candidate), shards_vmm::vm::Admission::Accepted);
+            idle_peers.push(peer);
+        }
+        let (mut excess, candidate) = UnixStream::pair().unwrap();
+        assert_eq!(port.accept(candidate), shards_vmm::vm::Admission::Full);
+        assert!(matches!(excess.read(&mut [0]), Ok(0)));
+        let server = std::thread::spawn(move || acceptor.run());
         let hello = |token: &[u8]| {
-            let (mut guest, host) = UnixStream::pair().unwrap();
-            guest
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            guest
-                .write_all(&run::header(kind::HELLO, token.len() as u32))
-                .unwrap();
-            guest.write_all(token).unwrap();
-            port.send(host).unwrap();
-            guest
+            let started = std::time::Instant::now();
+            loop {
+                let (mut guest, host) = UnixStream::pair().unwrap();
+                guest
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                guest
+                    .write_all(&run::header(kind::HELLO, token.len() as u32))
+                    .unwrap();
+                guest.write_all(token).unwrap();
+                match port.accept(host) {
+                    shards_vmm::vm::Admission::Accepted => return guest,
+                    shards_vmm::vm::Admission::Full => {
+                        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+                        std::thread::yield_now();
+                    }
+                    shards_vmm::vm::Admission::Closed => panic!("owned listener closed"),
+                }
+            }
         };
         let mut wrong = [7u8; run::TOKEN];
         wrong[run::TOKEN - 1] = 8;
@@ -2146,6 +2393,24 @@ mod tests {
             arrived.try_recv().is_err(),
             "an exec took a connection not its own"
         );
+        let mut capture_guest = hello(&capture_token);
+        let mut capture_host = capture_arrived
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let mut duplicate = hello(&capture_token);
+        assert!(matches!(duplicate.read(&mut [0]), Ok(0) | Err(_)));
+        capture_guest.write_all(b"kept").unwrap();
+        let mut kept = [0; 4];
+        capture_host.read_exact(&mut kept).unwrap();
+        assert_eq!(&kept, b"kept");
+        let _resumed = hello(&resumed_token);
+        assert!(
+            resumed_arrived
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .is_ok()
+        );
         let _ours = hello(&token);
         assert!(matches!(
             arrived.recv_timeout(std::time::Duration::from_secs(5)),
@@ -2153,6 +2418,9 @@ mod tests {
         ));
         // Its own wait is over; the list is every test's, which others add to meanwhile.
         assert!(!pending().iter().any(|w| w.token == token));
+        hellos::close();
+        drop(port);
+        server.join().unwrap();
     }
 
     /// An exec's frame carries its token and id beside its spec, and is refused past what
@@ -2184,17 +2452,18 @@ mod tests {
     /// rather than wait for one (review 8.8); another exec waits on.
     #[test]
     fn an_exec_the_guest_cannot_connect_fails_with_why() {
-        let (to, failed) = std::sync::mpsc::channel();
-        let (other, waits) = std::sync::mpsc::channel();
+        let _serial = HELLO_TESTS.lock().unwrap();
+        let (to, failed) = std::sync::mpsc::sync_channel(1);
+        let (other, waits) = std::sync::mpsc::sync_channel(1);
         pending().push(Waiting {
             token: [3; run::TOKEN],
-            id: 41,
-            to,
+            target: Target::Exec { id: 41, to },
+            incoming: None,
         });
         pending().push(Waiting {
             token: [4; run::TOKEN],
-            id: 42,
-            to: other,
+            target: Target::Exec { id: 42, to: other },
+            incoming: None,
         });
         exec_failed(
             &[
@@ -2209,7 +2478,7 @@ mod tests {
         );
         assert!(waits.try_recv().is_err(), "another exec failed with it");
         exec_failed(&[0, 0]);
-        pending().retain(|w| w.id != 42);
+        pending().retain(|w| w.target.id() != Some(42));
     }
 
     /// A logger keeps each record whole and indexes it, with its stream and whether it

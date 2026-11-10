@@ -1525,13 +1525,18 @@ fn serve_workload(
             vsock.ports.push((shards_abi::run::PORT, run_port));
             vsock.ports.push((shards_abi::run::SIGNAL_PORT, signal_port));
         }
-        let (exec_port, execs) = std::sync::mpsc::channel();
+        let (exec_port, execs) = match workload::exec_port() {
+            Ok(port) => port,
+            Err(e) => return failed(e),
+        };
         vsock.every.push((shards_abi::run::EXEC_PORT, exec_port));
         // A warm VM's run may have its own engine (D181), its daemon's to serve: its port's
         // connections wait for the run, which takes them or lets the port go.
         let engines = matches!(command, Command::Warm(..)).then(|| {
             let (engine_port, engines) = std::sync::mpsc::channel();
-            vsock.every.push((shards_abi::run::ENGINE_PORT, engine_port));
+            vsock
+                .every
+                .push((shards_abi::run::ENGINE_PORT, engine_port.into()));
             engines
         });
         // A warm VM's signals come from its client. The command line's are this process's:
@@ -1548,10 +1553,9 @@ fn serve_workload(
                 return failed(e);
             }
         }
-        // After the signals are blocked, which it inherits.
         if let Err(e) = std::thread::Builder::new()
-            .name("execs".into())
-            .spawn(move || workload::accept_execs(execs))
+            .name("exec-hellos".into())
+            .spawn(move || execs.run())
         {
             return failed(format!("the exec port's thread: {e}"));
         }
@@ -1599,6 +1603,7 @@ fn serve_workload(
                                 told: None,
                                 saved: None,
                                 kept: None,
+                                capture: None,
                                 processes: None,
                                 host_net: None,
                                 resumed: None,
@@ -1789,6 +1794,7 @@ fn serve_workload(
                             let _ = client.set(request.client);
                             Ok(workload::Asked {
                                 spec,
+                                capture: request.capture,
                                 interactive: request.interactive,
                                 detached: request.detached,
                                 log: request.log,

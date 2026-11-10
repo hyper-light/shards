@@ -1,0 +1,13 @@
+0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936  docs/development-rules.md
+fbf91607337bed604d5727c9927411bbddf4c50a64799d46cc154c74fc0c1604  crates/shards/src/workload.rs
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-lifecycle/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/main.rs (/Users/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/shards_vm-9f74ba2411604028)
+
+running 3 tests
+test workload::tests::quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends ... ok
+test workload::tests::quiesce_send_failure_and_command_end_keep_their_ownership ... ok
+test workload::tests::quiesce_replies_resolve_only_the_waiting_request ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 22 filtered out; finished in 0.00s
+

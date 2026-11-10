@@ -1,0 +1,127 @@
+# shards CI on kiln, from .github/workflows/ci.yml. The platform matrix (docs/design/architecture.md
+# D13) keeps its Linux x86_64 lanes: lints in a pod, VM tests on the bare-metal KVM host, and the
+# static musl lane in Alpine under the host's docker.
+# Not reproduced: the macOS, Windows and arm64 lanes (aarch64/x86_64-apple-darwin,
+# aarch64-unknown-linux-gnu, x86_64/aarch64-pc-windows-msvc, aarch64-unknown-linux-musl): no such
+# agents. The `firecracker` job is .kiln/bench.yaml.
+name: ci
+on:
+  push: { branches: [main, dev] }
+  pull_request: {}
+  manual: true
+concurrency:
+  group: "ci-${{ branch }}"
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  TOOLCHAIN: "1.98.0" # keep in sync with rust-toolchain.toml
+  # Static musl builds run in this Alpine image on their native architecture. The digest pins
+  # the multi-arch index, so each host pulls its own architecture.
+  MUSL_IMAGE: rust:1.98.0-alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce
+jobs:
+  format:
+    runs-on: [k8s]
+    toolchain: rust
+    resources: { cpu: "1", memory: 2Gi }
+    timeout-minutes: 20
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "1"
+    steps:
+      - run: rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
+      - run: cargo fmt --all --check
+
+  # The vendored crates are what crates.io publishes, file for file (vendor/README.md).
+  vendor:
+    runs-on: [k8s]
+    image: docker.io/library/debian:bookworm
+    resources: { cpu: "1", memory: 1Gi }
+    timeout-minutes: 20
+    steps:
+      - name: curl and jq (preinstalled on GHA's runner)
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl jq >/dev/null
+      - run: scripts/vendor-crate --check
+
+  # GHA `native`, x86_64-unknown-linux-gnu lane, its lint half: every target is linted.
+  lint:
+    name: x86_64-unknown-linux-gnu lints
+    runs-on: [k8s]
+    toolchain: rust
+    resources: { cpu: "4", memory: 8Gi }
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - name: Install pinned Rust
+        # Guest binaries build for every architecture's musl target.
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
+            --target x86_64-unknown-linux-gnu --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: Lints (production code never panics; clippy.toml exempts tests)
+        run: cargo clippy --locked --workspace --all-targets --target x86_64-unknown-linux-gnu -- -D warnings
+
+  # GHA `native`, x86_64-unknown-linux-gnu lane, its test half: VM tests boot real guests, so
+  # they run where /dev/kvm is.
+  test:
+    name: x86_64-unknown-linux-gnu tests (KVM)
+    runs-on: [baremetal]
+    timeout-minutes: 60
+    steps:
+      - name: Install pinned Rust
+        run: |
+          rustup toolchain install "$TOOLCHAIN" --profile minimal --component clippy \
+            --target x86_64-unknown-linux-gnu --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl
+      - name: Host virtualization (what this host offers each backend)
+        run: ls -l /dev/kvm 2>&1 || true
+      # GHA runs `sudo chmod 666 /dev/kvm`; this host's /dev/kvm is already open to the agent.
+      - name: KVM access (Linux)
+        run: test -r /dev/kvm && test -w /dev/kvm
+      - name: Tests
+        timeout-minutes: 30
+        run: cargo test --locked --workspace --release --target x86_64-unknown-linux-gnu
+
+  musl:
+    name: x86_64-unknown-linux-musl
+    runs-on: [baremetal]
+    timeout-minutes: 60
+    env:
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - name: Host virtualization (what this host offers each backend)
+        run: ls -l /dev/kvm 2>&1 || true
+      - name: Lint, test and build on the native architecture, in Alpine
+        timeout-minutes: 45
+        run: |
+          # VM tests need the host's /dev/kvm inside the container, where they run as root.
+          kvm=""
+          if [ -e /dev/kvm ]; then kvm="--device /dev/kvm"; fi
+          # GHA builds in the bind-mounted checkout, then runs `sudo chown -R` on what root wrote.
+          # The agent has no sudo: the container builds its own copy of the checkout and hands
+          # back only the executable, into a directory the agent owns, so nothing it cannot
+          # delete is left behind, even when the run is cancelled (--init: the container then
+          # stops with its client).
+          mkdir -p musl-out
+          docker run --rm --init $kvm -v "$PWD:/src:ro" -v "$PWD/musl-out:/out" -e TARGET \
+            -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            -e CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=cc \
+            "$MUSL_IMAGE" sh -eu -c '
+              mkdir -p /work && cp -a /src/. /work/ && cd /work
+              apk add --no-cache build-base curl
+              rustup component add clippy
+              cargo clippy --locked --workspace --all-targets --target "$TARGET" -- -D warnings
+              cargo test --locked --workspace --release --target "$TARGET"
+              cargo build --locked --release -p shards --target "$TARGET"
+              cp "target/$TARGET/release/shards" /out/shards
+            '
+      - name: The executable is static
+        run: |
+          bin="musl-out/shards"
+          if readelf --program-headers "$bin" | grep -q INTERP; then
+            echo "$bin requests a program interpreter"; exit 1
+          fi
+          if readelf --dynamic "$bin" | grep -q NEEDED; then
+            echo "$bin needs shared libraries"; exit 1
+          fi

@@ -229,6 +229,19 @@ pub fn main(device: &str, template: bool) -> ! {
         ];
         let declared = declared.map_or_else(crate::domains::read, Ok);
         match declared.and_then(|(all, domains, pairs)| {
+            workload.capture = crate::capture::Capture::prepare(
+                &spec.setup,
+                domains.iter().map(|d| (d.id, d.label.as_str())),
+            )?;
+            if workload.capture.is_some() {
+                if signals.is_none() {
+                    return Err("managed output has no independent control connection".into());
+                }
+                let active = run::managed::active(&spec.setup)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("managed activation missing")?;
+                workload.capture_control = Some(crate::capture::ControlQueue::prepare(active.len())?);
+            }
             crate::domains::start(&all, &domains, &pairs, &filters, &spec.setup)
         }) {
             Ok(domains) if domains.is_empty() => {}
@@ -259,9 +272,13 @@ pub fn main(device: &str, template: bool) -> ! {
             let _ = send(&conn, kind::STARTED, &[]);
             workload.relay(conn, signals)
         }
+        Err(f) => (Err(f), false, conn),
+    };
+    let status = match status {
+        Ok(status) => status,
         Err(f) => {
             let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
-            (f.status, false, conn)
+            f.status
         }
     };
     // Said by the relay already where joiners of its network outlived it (D119).
@@ -2163,9 +2180,10 @@ struct Workload {
     stderr: Option<OwnedFd>,
     sigchld: OwnedFd,
     tty: bool,
-    /// The image's agents and harnesses, started before it (D59): their output is relayed
-    /// on its stderr, each line prefixed with the domain.
+    /// The image's agents and harnesses, with separately owned output capture.
     domains: Vec<crate::domains::Started>,
+    capture: Option<crate::capture::Capture>,
+    capture_control: Option<crate::capture::ControlQueue>,
     /// Their memory, watched, where there are any.
     memory: Option<crate::domains::Memory>,
     /// The process events connector, listened to for the run's record of processes (D123),
@@ -2825,6 +2843,8 @@ impl Standby {
             sigchld,
             tty: false,
             domains: Vec::new(),
+            capture: None,
+            capture_control: None,
             memory: None,
             procs: None,
             binds: None,
@@ -3006,6 +3026,8 @@ impl Standby {
                 sigchld,
                 tty: false,
                 domains: Vec::new(),
+                capture: None,
+                capture_control: None,
                 memory: None,
                 procs: None,
                 binds,
@@ -3026,6 +3048,8 @@ impl Standby {
             sigchld,
             tty: true,
             domains: Vec::new(),
+            capture: None,
+            capture_control: None,
             memory: None,
             procs: None,
             binds,
@@ -4247,6 +4271,17 @@ fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
     None
 }
 
+fn apply_lifecycle(domain: &mut crate::domains::Started, update: crate::managed::Update) {
+    if let crate::managed::Update::Quarantined { cause } = update {
+        domain.abort_output(cause.errno());
+        let _ = writeln!(
+            io::stderr(),
+            "shards-init: {}: quarantined after {cause}; emptiness unknown",
+            domain.label
+        );
+    }
+}
+
 /// Whose a polled descriptor is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -4259,7 +4294,9 @@ enum Owner {
     /// An exec's, by its index.
     Exec(usize, Part),
     /// A domain's output, by its index.
-    Domain(usize),
+    Domain(usize, shards_abi::run::managed::Channel),
+    Capture,
+    DomainLife(usize),
     /// The domains' memory.
     Memory,
     /// The process events connector (D123).
@@ -4311,7 +4348,7 @@ impl Workload {
     /// as the host asks, while the joiners go on. And the host's connection, which a save of
     /// the run may have it dial again (D176): the microVM saved goes quiet for the save, and
     /// a microVM restored from it dials the host anew, with the tokens the save gave.
-    fn relay(mut self, conn: File, mut signals: Option<File>) -> (u32, bool, File) {
+    fn relay(mut self, conn: File, mut signals: Option<File>) -> (Result<u32, Failure>, bool, File) {
         let mut conn = conn;
         let mut host = Some(conn.as_raw_fd());
         for fd in [host, self.stdin.as_ref().map(AsRawFd::as_raw_fd)]
@@ -4329,14 +4366,7 @@ impl Workload {
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
-        // A save of the run (D176): asked to QUIESCE, it sends the host all it holds and then
-        // QUIESCED (`flushing`), then nothing more (`quiet`) until the host says RESUME or, in
-        // a microVM restored from the save, until it has dialed the host again with the save's
-        // `tokens`; what comes meanwhile waits in `to_host`. A lineage's generation past
-        // `born` says its microVM was restored since (control::GENERATION); `lost`, that the
-        // host's connection was, in one.
-        let mut flushing: Option<Outbox> = None;
-        let mut quiet = false;
+        let mut cut = Cut::Open;
         // The host's end of its connection read: nothing more comes on it.
         let mut host_eof = false;
         let mut tokens: Option<Tokens> = None;
@@ -4358,8 +4388,75 @@ impl Workload {
         // the run's end spares, and which then finishes its relays' connections before the
         // run's end is said.
         let mut hosts_pid = self.hosts.as_ref().map(crate::hostbind::Supervisor::pid);
-        loop {
+        let mut fatal = None;
+        'relay: loop {
             let exited = status.is_some();
+            if exited {
+                for domain in &mut self.domains {
+                    domain.stdout.abort();
+                    domain.stderr.abort();
+                }
+                self.capture = None;
+                if let Some(control) = self.capture_control.as_mut()
+                    && let Err(e) = control.end()
+                {
+                    fatal = Some(setup_failed(format!("managed control end: {e}")));
+                    break 'relay;
+                }
+            }
+            if self
+                .capture
+                .as_ref()
+                .is_some_and(crate::capture::Capture::drained)
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal())
+            {
+                self.capture = None;
+            }
+            for domain in &mut self.domains {
+                if let crate::capture::OutputControl::Pending(errno) = domain.output_control {
+                    if exited {
+                        domain.output_control = crate::capture::OutputControl::Reported;
+                        continue;
+                    }
+                    let result = self
+                        .capture_control
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other("missing managed terminal reservation"))
+                        .and_then(|control| {
+                            control.push(run::managed::Abort {
+                                member: domain.member,
+                                errno,
+                            })
+                        });
+                    if let Err(e) = result {
+                        fatal = Some(setup_failed(format!("managed abort control: {e}")));
+                        break 'relay;
+                    }
+                    if let Some(capture) = self.capture.as_mut()
+                        && let Err(e) = capture.abort_member(domain.member)
+                    {
+                        fatal = Some(setup_failed(format!("managed abort credit: {e}")));
+                        break 'relay;
+                    }
+                    domain.output_control = crate::capture::OutputControl::Reported;
+                }
+            }
+            if let Some(capture) = self.capture.as_mut() {
+                for domain in &mut self.domains {
+                    for (channel, pipe) in [
+                        (run::managed::Channel::Stdout, &mut domain.stdout),
+                        (run::managed::Channel::Stderr, &mut domain.stderr),
+                    ] {
+                        if let Err(e) = capture.open(domain.member, channel, &domain.label, pipe) {
+                            fatal = Some(setup_failed(format!("managed output: {e}")));
+                            break 'relay;
+                        }
+                    }
+                }
+            }
             // The host gone, binds on its network are answered by no one: their process
             // ends, which fails what waits (D124).
             if host.is_none() {
@@ -4373,7 +4470,7 @@ impl Workload {
             // (flakes plan step 3, PM M328).
             if host.is_none() {
                 to_host.clear();
-                flushing = None;
+                cut = Cut::Open;
             }
             for e in &mut execs {
                 if e.conn.is_none() {
@@ -4398,7 +4495,10 @@ impl Workload {
                 && !reported
                 && self.stdout.is_none()
                 && self.stderr.is_none()
-                && self.domains.iter().all(|d| d.out.is_none())
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && d.lifecycle.settled())
             {
                 if oom_killed() {
                     let facts = oom_facts(WORKLOAD_CGROUP);
@@ -4431,8 +4531,11 @@ impl Workload {
             // or closed the connection, which the run's end after the loop does not
             // wait for again (D119).
             if exited
-                && flushing.is_none()
-                && !quiet
+                && self
+                    .capture_control
+                    .as_ref()
+                    .is_none_or(crate::capture::ControlQueue::ended)
+                && cut.open()
                 && self.stdout.is_none()
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
@@ -4440,7 +4543,10 @@ impl Workload {
                 && packing.is_none()
                 && (!reported || asked || host.is_none())
                 && (self.hosts.is_some() || hosts_pid.is_none())
-                && self.domains.iter().all(|d| d.out.is_none())
+                && self
+                    .domains
+                    .iter()
+                    .all(|d| d.stdout.terminal() && d.stderr.terminal() && d.lifecycle.settled())
                 && (host.is_none()
                     || self
                         .procs
@@ -4463,17 +4569,13 @@ impl Workload {
             };
             poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN, Owner::Sigchld);
             // Quiet for a save, it reads on: the host's RESUME, or a restore's reset (D176).
-            let sending = match &flushing {
-                Some(f) => !f.is_empty(),
-                None => !quiet && !to_host.is_empty(),
-            };
+            let sending = cut.sending(&to_host);
             // Read while the run goes on, its stdin closed or not: the host asks for a save
             // on it, and a restore resets it (D176). Its stdin waits while it holds enough.
             let host_events = if !host_eof
                 && ((!exited && (stdin_eof || to_stdin.len() < BUFFERED))
                     || (reported && !asked)
-                    || quiet
-                    || flushing.is_some())
+                    || !cut.open())
             {
                 libc::POLLIN
             } else {
@@ -4490,6 +4592,15 @@ impl Workload {
             );
             let signal_events = if signals_connected {
                 libc::POLLIN
+                    | if self
+                        .capture_control
+                        .as_ref()
+                        .is_some_and(crate::capture::ControlQueue::pending)
+                    {
+                        libc::POLLOUT
+                    } else {
+                        0
+                    }
             } else {
                 libc::POLLOUT
             };
@@ -4510,11 +4621,37 @@ impl Workload {
                 Owner::Stderr,
             );
             for (i, d) in self.domains.iter().enumerate() {
-                poll(
-                    d.out.as_ref().map(AsRawFd::as_raw_fd),
-                    out_events,
-                    Owner::Domain(i),
-                );
+                poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
+            }
+            if let Some(capture) = self.capture.as_ref() {
+                poll(Some(capture.fd()), capture.events(), Owner::Capture);
+                if capture.drained() && !self.domains.is_empty() {
+                    let start = (capture.next() / 2) % self.domains.len();
+                    let channels = if capture.next() % 2 == 0 {
+                        [run::managed::Channel::Stdout, run::managed::Channel::Stderr]
+                    } else {
+                        [run::managed::Channel::Stderr, run::managed::Channel::Stdout]
+                    };
+                    for (i, d) in self
+                        .domains
+                        .iter()
+                        .enumerate()
+                        .cycle()
+                        .skip(start)
+                        .take(self.domains.len())
+                    {
+                        for channel in channels {
+                            if !capture.ready(d.member, channel) {
+                                continue;
+                            }
+                            let pipe = match channel {
+                                run::managed::Channel::Stdout => &d.stdout,
+                                run::managed::Channel::Stderr => &d.stderr,
+                            };
+                            poll(pipe.fd(), libc::POLLIN, Owner::Domain(i, channel));
+                        }
+                    }
+                }
             }
             poll(
                 self.memory.as_ref().map(crate::domains::Memory::fd),
@@ -4591,6 +4728,19 @@ impl Workload {
                         keep_processes(&mut self.procs, &mut to_host);
                         let main = self.pid;
                         reap(&self.sigchld, |pid, code| {
+                            if let Some(d) =
+                                self.domains.iter_mut().find(|d| d.lifecycle.awaiting_status(pid))
+                            {
+                                match d.lifecycle.reaped(code) {
+                                    Ok(update) => apply_lifecycle(d, update),
+                                    Err(fault) => {
+                                        fatal = Some(setup_failed(format!(
+                                            "{}: shared boundary: {fault}",
+                                            d.label
+                                        )))
+                                    }
+                                }
+                            }
                             if Some(pid) == hosts_pid {
                                 hosts_pid = None;
                                 self.hosts = None;
@@ -4702,21 +4852,31 @@ impl Workload {
                             self.stdin = None;
                             to_stdin.clear();
                         }
+                        if fatal.is_some() {
+                            break 'relay;
+                        }
                     }
                     Owner::Host => {
                         if p.revents & libc::POLLOUT != 0 {
-                            let out = flushing.as_mut().unwrap_or(&mut to_host);
-                            match write(fd, out.pending()) {
-                                Ok(n) => out.written(n),
-                                // A connection a restore reset is dialed again, below
-                                // (D176).
+                            let refusal = match cut
+                                .request()
+                                .map(|request| checkpoint_refusal(request, &self.domains))
+                                .transpose()
+                            {
+                                Ok(refusal) => refusal.flatten(),
+                                Err(error) => {
+                                    fatal = Some(setup_failed(format!(
+                                        "invalid tenant checkpoint state: {error}"
+                                    )));
+                                    break 'relay;
+                                }
+                            };
+                            match cut.write(fd, &mut to_host, refusal) {
+                                Ok(Some(committed)) => tokens = Some(committed),
+                                Ok(None) => {}
+                                // A connection a restore reset is dialed again (D176).
                                 Err(_) if tokens.is_some() && generation() > born => lost = true,
                                 Err(_) => host = None,
-                            }
-                            // All it held is said, and QUIESCED after it: quiet from here.
-                            if flushing.as_ref().is_some_and(Outbox::is_empty) {
-                                flushing = None;
-                                quiet = true;
                             }
                         }
                         if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
@@ -4755,18 +4915,16 @@ impl Workload {
                                         asked = true;
                                         packing = send_workload_layer(&conn);
                                     }
-                                    // A save asked for (D176): what it holds goes, then
-                                    // QUIESCED, and nothing that comes after either.
-                                    if let Some(t) = quiesce
-                                        && flushing.is_none()
-                                        && !quiet
+                                    if let Some(request) = quiesce
+                                        && cut.open()
                                     {
-                                        tokens = Some(t);
-                                        to_host.extend(&[&run::header(kind::QUIESCED, 0)]);
-                                        flushing = Some(std::mem::take(&mut to_host));
+                                        cut = Cut::Draining {
+                                            pending: std::mem::take(&mut to_host),
+                                            request,
+                                        };
                                     }
                                     if resume {
-                                        quiet = false;
+                                        cut.resume();
                                     }
                                 }
                             }
@@ -4779,6 +4937,13 @@ impl Workload {
                                 Err(_) => signals = None,
                             }
                             continue;
+                        }
+                        if let Some(control) = self.capture_control.as_mut()
+                            && control.pending()
+                            && let Err(e) = control.write(fd)
+                        {
+                            fatal = Some(setup_failed(format!("managed control connection: {e}")));
+                            break 'relay;
                         }
                         match read(fd, &mut buf) {
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -4874,21 +5039,48 @@ impl Workload {
                     Owner::Stdin => feed(&mut self.stdin, &mut to_stdin),
                     Owner::Stdout => drain_into(&mut self.stdout, kind::STDOUT, &mut buf, &mut to_host),
                     Owner::Stderr => drain_into(&mut self.stderr, kind::STDERR, &mut buf, &mut to_host),
-                    Owner::Domain(i) => {
-                        let Some(d) = self.domains.get_mut(i) else {
+                    Owner::DomainLife(i) => {
+                        if let Some(d) = self.domains.get_mut(i) {
+                            match d.lifecycle.changed() {
+                                Ok(update) => apply_lifecycle(d, update),
+                                Err(fault) => {
+                                    fatal =
+                                        Some(setup_failed(format!("{}: shared boundary: {fault}", d.label)));
+                                    break 'relay;
+                                }
+                            }
+                        }
+                    }
+                    Owner::Capture => {
+                        if let Some(capture) = self.capture.as_mut()
+                            && let Err(e) = capture.progress()
+                            && !matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted)
+                        {
+                            fatal = Some(setup_failed(format!("managed output connection: {e}")));
+                            break 'relay;
+                        }
+                    }
+                    Owner::Domain(i, channel) => {
+                        let (Some(domain), Some(capture)) = (self.domains.get_mut(i), self.capture.as_mut())
+                        else {
                             continue;
                         };
-                        let (data, eof) = match read(fd, &mut buf) {
-                            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                            Ok(0) | Err(_) => (&[][..], true),
-                            Ok(n) => (buf.get(..n).unwrap_or_default(), false),
+                        if domain.lifecycle.quarantined() {
+                            continue;
+                        }
+                        let pipe = match channel {
+                            run::managed::Channel::Stdout => &mut domain.stdout,
+                            run::managed::Channel::Stderr => &mut domain.stderr,
                         };
-                        crate::frames::prefixed_lines(&d.label, &mut d.partial, data, eof, |line| {
-                            let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
-                            to_host.extend(&[&run::header(kind::STDERR, len), line]);
-                        });
-                        if eof {
-                            d.out = None;
+                        if let Err(e) = capture.read(domain.member, channel, pipe) {
+                            fatal = Some(setup_failed(format!("managed output read: {e}")));
+                            break 'relay;
+                        }
+                        if !capture.drained()
+                            && let Err(e) = capture.advance(i, channel)
+                        {
+                            fatal = Some(setup_failed(format!("managed scheduling: {e}")));
+                            break 'relay;
                         }
                     }
                     Owner::Procs => keep_processes(&mut self.procs, &mut to_host),
@@ -4902,11 +5094,14 @@ impl Workload {
                         }
                     }
                     Owner::Memory => {
-                        if let Some(m) = self.memory.as_ref() {
-                            m.relieve(&self.domains, |line| {
+                        if let Some(m) = self.memory.as_ref()
+                            && let Err(fault) = m.relieve(&mut self.domains, |line| {
                                 let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
                                 to_host.extend(&[&run::header(kind::STDERR, len), line]);
-                            });
+                            })
+                        {
+                            fatal = Some(setup_failed(format!("shared boundary: {fault}")));
+                            break 'relay;
                         }
                     }
                     Owner::Exec(i, part) => {
@@ -5000,7 +5195,7 @@ impl Workload {
                         signals = Some(signal);
                         signals_connected = true;
                         from_signals.clear();
-                        quiet = false;
+                        cut = Cut::Open;
                         born = generation();
                     }
                     failed => {
@@ -5011,7 +5206,7 @@ impl Workload {
                         host = None;
                         stdin_eof = true;
                         asked |= reported;
-                        quiet = false;
+                        cut = Cut::Open;
                     }
                 }
             }
@@ -5054,7 +5249,151 @@ impl Workload {
         if let Some(fd) = host {
             set_nonblocking(fd, false);
         }
-        (status.unwrap_or(NOT_RUN), reported, conn)
+        let result = match fatal {
+            Some(failure) => {
+                for d in &mut self.domains {
+                    let _ = d.lifecycle.stop();
+                }
+                // The run fails whole; independent joiners retain their existing owner.
+                kill_all_but_joiners(&[]);
+                Err(failure)
+            }
+            None => Ok(status.unwrap_or(NOT_RUN)),
+        };
+        (result, reported, conn)
+    }
+}
+
+fn checkpoint_refusal(
+    request: Tokens,
+    domains: &[crate::domains::Started],
+) -> io::Result<Option<run::quiesce::Refused>> {
+    for domain in domains {
+        if let Some((reason, errno)) = domain.lifecycle.checkpoint_block() {
+            return run::quiesce::Refused::new(request.bytes(), domain.member, reason, errno)
+                .map(Some)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EPROTO));
+        }
+    }
+    Ok(None)
+}
+
+/// The cut reply is separate from queued output, so no success byte precedes its
+/// final readiness check. Once a byte is written, the reply cannot change (D176).
+enum Cut {
+    Open,
+    Draining { pending: Outbox, request: Tokens },
+    Committing { reply: CutReply, at: usize },
+    Quiet,
+}
+
+enum CutReply {
+    Quiet(Tokens),
+    Refused(run::quiesce::Refused),
+}
+
+impl CutReply {
+    fn frame(&self) -> ([u8; run::HEADER + run::quiesce::Refused::LEN], usize) {
+        let mut bytes = [0; run::HEADER + run::quiesce::Refused::LEN];
+        match self {
+            Self::Quiet(_) => {
+                for (to, from) in bytes.iter_mut().zip(run::header(kind::QUIESCED, 0)) {
+                    *to = from;
+                }
+                (bytes, run::HEADER)
+            }
+            Self::Refused(refusal) => {
+                // The fixed refusal has fewer bytes than the u32 frame length can hold.
+                let header = run::header(kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32);
+                for (to, from) in bytes.iter_mut().zip(header.into_iter().chain(refusal.encode())) {
+                    *to = from;
+                }
+                (bytes, run::HEADER + run::quiesce::Refused::LEN)
+            }
+        }
+    }
+}
+
+impl Cut {
+    fn open(&self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    fn sending(&self, output: &Outbox) -> bool {
+        match self {
+            Self::Open => !output.is_empty(),
+            Self::Draining { .. } | Self::Committing { .. } => true,
+            Self::Quiet => false,
+        }
+    }
+
+    fn request(&self) -> Option<Tokens> {
+        match self {
+            Self::Draining { pending, request } if pending.is_empty() => Some(*request),
+            Self::Committing {
+                reply: CutReply::Quiet(request),
+                at: 0,
+            } => Some(*request),
+            _ => None,
+        }
+    }
+
+    fn resume(&mut self) {
+        if matches!(self, Self::Quiet) {
+            *self = Self::Open;
+        }
+    }
+
+    fn write(
+        &mut self,
+        fd: RawFd,
+        output: &mut Outbox,
+        refusal: Option<run::quiesce::Refused>,
+    ) -> io::Result<Option<Tokens>> {
+        if let Self::Draining { pending, request } = self
+            && pending.is_empty()
+        {
+            *self = Self::Committing {
+                reply: CutReply::Quiet(*request),
+                at: 0,
+            };
+        }
+        if let Self::Committing { reply, at: 0 } = self
+            && let Some(refusal) = refusal
+        {
+            *reply = CutReply::Refused(refusal);
+        }
+        match self {
+            Self::Open => {
+                output.written(write(fd, output.pending())?);
+                Ok(None)
+            }
+            Self::Draining { pending, .. } => {
+                pending.written(write(fd, pending.pending())?);
+                Ok(None)
+            }
+            Self::Quiet => Ok(None),
+            Self::Committing { reply, at } => {
+                let (bytes, len) = reply.frame();
+                let pending = bytes
+                    .get(..len)
+                    .and_then(|b| b.get(*at..))
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EPROTO))?;
+                let n = write(fd, pending)?;
+                let committed = match reply {
+                    CutReply::Quiet(request) if *at == 0 && n != 0 => Some(*request),
+                    _ => None,
+                };
+                *at = at.saturating_add(n).min(len);
+                if *at == len {
+                    *self = match reply {
+                        CutReply::Quiet(_) => Self::Quiet,
+                        CutReply::Refused(_) => Self::Open,
+                    };
+                }
+                Ok(committed)
+            }
+        }
     }
 }
 
@@ -5067,6 +5406,14 @@ struct Tokens {
 }
 
 impl Tokens {
+    fn bytes(self) -> [u8; run::quiesce::REQUEST_BYTES] {
+        let mut bytes = [0; run::quiesce::REQUEST_BYTES];
+        for (to, from) in bytes.iter_mut().zip(self.run.into_iter().chain(self.signal)) {
+            *to = from;
+        }
+        bytes
+    }
+
     /// The tokens a QUIESCE frame carries; none from one of another length.
     fn read(payload: &[u8]) -> Option<Tokens> {
         let (run, signal) = payload.split_first_chunk::<{ run::TOKEN }>()?;
@@ -5468,13 +5815,13 @@ pub(crate) fn set_nonblocking(fd: RawFd, on: bool) {
     }
 }
 
-fn read(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn read(fd: RawFd, buf: &mut [u8]) -> io::Result<usize> {
     // SAFETY: `buf` is valid for its length.
     let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
     usize::try_from(n).map_err(|_| io::Error::last_os_error())
 }
 
-fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
+pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
     // SAFETY: `buf` is valid for its length.
     let n = unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) };
     match usize::try_from(n) {
@@ -5487,5 +5834,162 @@ fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn request() -> Tokens {
+        Tokens::read(&[0x5a; run::quiesce::REQUEST_BYTES]).unwrap()
+    }
+
+    fn refused() -> run::quiesce::Refused {
+        run::quiesce::Refused::new(
+            request().bytes(),
+            7,
+            run::quiesce::Reason::Quarantined,
+            libc::EISDIR,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_refused_cut_drains_earlier_bytes_and_returns_open_without_tokens() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut pending = Outbox::default();
+        pending.extend(&[b"before"]);
+        let mut after = Outbox::default();
+        after.extend(&[b"after"]);
+        let mut cut = Cut::Draining {
+            pending,
+            request: request(),
+        };
+        assert!(cut.write(writer.as_raw_fd(), &mut after, None).unwrap().is_none());
+        let mut before = [0; b"before".len()];
+        reader.read_exact(&mut before).unwrap();
+        assert_eq!(&before, b"before");
+        assert!(cut.request().is_some());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut after, Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(cut.open());
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32))
+        );
+        let mut payload = [0; run::quiesce::Refused::LEN];
+        reader.read_exact(&mut payload).unwrap();
+        assert_eq!(run::quiesce::Refused::decode(&payload), Ok(refused()));
+        cut.write(writer.as_raw_fd(), &mut after, None).unwrap();
+        let mut tail = [0; b"after".len()];
+        reader.read_exact(&mut tail).unwrap();
+        assert_eq!(&tail, b"after");
+    }
+
+    #[test]
+    fn a_partial_success_header_cannot_become_a_refusal() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut cut = Cut::Committing {
+            reply: CutReply::Quiet(request()),
+            at: 1,
+        };
+        assert!(cut.request().is_none());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        let mut tail = [0; run::HEADER - 1];
+        reader.read_exact(&mut tail).unwrap();
+        assert_eq!(Some(tail.as_slice()), run::header(kind::QUIESCED, 0).get(1..));
+        assert!(matches!(cut, Cut::Quiet));
+        cut.resume();
+        assert!(cut.open());
+    }
+
+    #[test]
+    fn a_blocked_success_is_rechecked_before_any_byte_commits() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let bytes = [0; run::CHUNK];
+        let mut filled = 0usize;
+        loop {
+            match writer.write(&bytes) {
+                Ok(n) => {
+                    assert_ne!(n, 0);
+                    filled = filled.checked_add(n).unwrap();
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let mut cut = Cut::Draining {
+            pending: Outbox::default(),
+            request: request(),
+        };
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(cut.request().is_some());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            cut,
+            Cut::Committing {
+                reply: CutReply::Refused(_),
+                at: 0
+            }
+        ));
+        io::copy(
+            &mut Read::by_ref(&mut reader).take(filled as u64),
+            &mut io::sink(),
+        )
+        .unwrap();
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), None)
+                .unwrap()
+                .is_none()
+        );
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32))
+        );
+        let mut payload = [0; run::quiesce::Refused::LEN];
+        reader.read_exact(&mut payload).unwrap();
+        assert_eq!(run::quiesce::Refused::decode(&payload), Ok(refused()));
+        assert!(cut.open());
+    }
+
+    #[test]
+    fn a_success_commits_tokens_only_with_its_first_byte() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut cut = Cut::Draining {
+            pending: Outbox::default(),
+            request: request(),
+        };
+        let tokens = cut
+            .write(writer.as_raw_fd(), &mut Outbox::default(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tokens.bytes(), request().bytes());
+        assert!(matches!(cut, Cut::Quiet));
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(header, run::header(kind::QUIESCED, 0));
+        assert!(!cut.sending(&Outbox::default()));
     }
 }

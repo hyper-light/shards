@@ -9058,6 +9058,106 @@ fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
     assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
 }
 
+#[test]
+fn supplied_member_output_does_not_rewrite_the_main_protocol() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("capture-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let ctx = context("capture-context", &format!("FROM {image}\n"));
+    std::fs::create_dir(ctx.join("agent")).unwrap();
+    std::fs::copy(common::test_guest(), ctx.join("agent/member")).unwrap();
+    chmod(&ctx.join("agent/member"), 0o755);
+    std::fs::write(
+        ctx.join("agent/agent.json"),
+        r#"{"entrypoint":"member","options":["managed-capture","agent"]}"#,
+    )
+    .unwrap();
+    let binary = std::fs::read(common::test_guest()).unwrap();
+    let descriptor = br#"{"entrypoint":"member","options":["managed-capture","harness"]}"#;
+    std::fs::write(
+        ctx.join("harness.tar"),
+        common::tar(&[
+            ("bin", 0o755, 0, None),
+            ("bin/member", 0o755, 0, Some(&binary)),
+            ("harness.json", 0o644, 0, Some(descriptor)),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n"),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build", "image"],
+        &["-t", "capture-protocol:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "vm",
+            "--rm",
+            "--name",
+            "capture-protocol",
+            "capture-protocol:1",
+            "managed-capture-main",
+        ],
+        "capture-protocol",
+        ("capture-ready", 2),
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{ran}");
+    assert_eq!(ran.stdout, r#"{"jsonrpc":"2.0","id":1,"result":"main"}"#, "{ran}");
+    let timing = ran
+        .stderr
+        .strip_prefix("main-stderrshards-timing ")
+        .and_then(|s| s.strip_suffix('\n'))
+        .expect("only main stderr and one final host timing diagnostic");
+    assert!(!timing.contains('\n'), "{ran}");
+    let value: serde_json::Value = serde_json::from_str(timing).expect("host timing JSON");
+    let timing = value.as_object().expect("host timing object");
+    let numbers = [
+        "client_rss_kib",
+        "client_us",
+        "released_us",
+        "entry_us",
+        "exit_us",
+        "request_us",
+        "answered_us",
+        "prefetched",
+        "rss_kib",
+        "footprint_kib",
+        "peak_commit_kib",
+        "hotplug_held_kib",
+        "reported_kib",
+    ];
+    assert_eq!(timing.len(), numbers.len() + 1, "{ran}");
+    for name in numbers {
+        assert!(timing.get(name).is_some_and(serde_json::Value::is_u64), "{ran}");
+    }
+    let markers = timing
+        .get("markers")
+        .and_then(serde_json::Value::as_array)
+        .expect("timing markers");
+    assert!(
+        markers.iter().all(|m| m
+            .as_array()
+            .is_some_and(|p| p.len() == 2 && p.iter().all(serde_json::Value::is_u64))),
+        "{ran}"
+    );
+}
+
 /// An Agentfile's `AGENT`, `HARNESS`, `MCP` and `SKILL` lay out what they bring, each a
 /// layer of its own (D54): an agent's directory at `/agents/<name>`, a harness's archive
 /// unpacked at `/harness/<name>`, an MCP server over stdio at its grantee's

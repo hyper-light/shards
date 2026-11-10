@@ -1,0 +1,20 @@
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/abi)
+    Checking memchr v2.8.3
+    Checking libc v0.2.189
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vmm)
+    Checking aho-corasick v1.1.5
+    Checking num-traits v0.2.19
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/ipc)
+    Checking shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/netring)
+    Checking regex-automata v0.4.18
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/vm-process)
+    Checking num-bigint v0.4.8
+    Checking shards-template v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/template)
+    Checking regex v1.13.1
+    Checking shards-dns v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/dns)
+    Checking shards-net v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/net)
+    Checking shards-cmdline v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/cmdline)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture/crates/testdir)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.25s

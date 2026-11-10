@@ -228,6 +228,7 @@ pub fn inherited_socket(flag: &str, fd: RawFd) -> Result<UnixStream, String> {
 
 /// A request, as the daemon hands it over.
 pub struct Request {
+    pub capture: Option<workload::capture::Given>,
     /// None for a detached run.
     pub client: Option<UnixStream>,
     pub spec: Spec,
@@ -553,6 +554,22 @@ pub fn receive(
     } else {
         Some(stream(next()?)?)
     };
+    let capture = match shards_abi::run::managed::capacity(&spec.setup).map_err(|e| e.to_string())? {
+        Some(capacity) => {
+            let members = shards_abi::run::managed::members(&spec.setup)
+                .map_err(|e| e.to_string())?
+                .ok_or("managed capture has no admitted member count")?;
+            Some(workload::capture::Given {
+                stream: stream(next()?)?,
+                control: daemon
+                    .try_clone()
+                    .map_err(|e| format!("managed control connection: {e}"))?,
+                capacity,
+                members,
+            })
+        }
+        None => None,
+    };
     if fds.next().is_some() {
         return Err(format!("a request brings too many descriptors: {count}"));
     }
@@ -609,6 +626,7 @@ pub fn receive(
         client_relay.relay(signals, From::Client);
     }
     Ok(Request {
+        capture,
         client,
         plug,
         io,
@@ -1131,7 +1149,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
     // Nothing of the guest's on its way to the host as it is saved: what it held is in the
     // run's log, and what comes after waits in it, for the microVM saved or restored.
     let asked = shards_vmm::log::uptime_us();
-    crate::workload::quiesce(tokens)?;
+    crate::workload::quiesce(tokens).map_err(|error| error.to_string())?;
     let quiet = shards_vmm::log::uptime_us();
     let saved = crate::vm_run::save(shards_vmm::vm::Save {
         name,
@@ -2022,6 +2040,12 @@ fn close_input(old: windows_sys::Win32::Foundation::HANDLE) {
         });
     // Where no thread starts, it stays open until this process exits.
     drop(closing);
+}
+
+/// A trusted tenant abort; canonical bytes never use this control link.
+pub fn managed_abort(daemon: &UnixStream, payload: &[u8]) -> io::Result<()> {
+    shards_abi::run::managed::Abort::decode(payload).map_err(io::Error::other)?;
+    to_daemon(daemon, kind::MANAGED_ABORT, payload, &[])
 }
 
 #[cfg(test)]

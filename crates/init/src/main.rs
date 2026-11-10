@@ -7,6 +7,8 @@ mod build;
 #[cfg(target_os = "linux")]
 mod caches;
 #[cfg(target_os = "linux")]
+mod capture;
+#[cfg(target_os = "linux")]
 mod changes;
 #[cfg(target_os = "linux")]
 mod chooser;
@@ -45,6 +47,8 @@ mod links;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod managed;
+#[cfg(target_os = "linux")]
 mod members;
 #[cfg(target_os = "linux")]
 mod net;
@@ -76,6 +80,10 @@ mod terms;
 mod tree;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).is_some_and(|a| a == "managed-reaper") {
+        managed::reaper();
+    }
     // `shards-init processes`, as any process but PID 1: the guest's process dump
     // (procs.rs), for the tests of `top`.
     #[cfg(target_os = "linux")]

@@ -2207,7 +2207,55 @@ pub struct VsockHost {
     /// first (shards' exec sessions, which name a token the guest's init alone was sent).
     ///
     /// [`ports`]: VsockHost::ports
-    pub every: Vec<(u32, std::sync::mpsc::Sender<crate::platform::UnixStream>)>,
+    pub every: Vec<(u32, ServedPort)>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Admission {
+    Accepted,
+    Full,
+    Closed,
+}
+
+#[derive(Clone)]
+pub enum ServedPort {
+    Sender(std::sync::mpsc::Sender<crate::platform::UnixStream>),
+    Admitted(fn(crate::platform::UnixStream) -> Admission),
+}
+
+impl std::fmt::Debug for ServedPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Sender(_) => "Sender",
+            Self::Admitted(_) => "Admitted",
+        })
+    }
+}
+
+impl From<std::sync::mpsc::Sender<crate::platform::UnixStream>> for ServedPort {
+    fn from(sender: std::sync::mpsc::Sender<crate::platform::UnixStream>) -> Self {
+        Self::Sender(sender)
+    }
+}
+
+impl ServedPort {
+    pub fn accept(&self, stream: crate::platform::UnixStream) -> Admission {
+        match self {
+            Self::Sender(sender) => {
+                if sender.send(stream).is_ok() {
+                    Admission::Accepted
+                } else {
+                    Admission::Closed
+                }
+            }
+            Self::Admitted(accept) => {
+                if stream.set_nonblocking(true).is_err() {
+                    return Admission::Closed;
+                }
+                accept(stream)
+            }
+        }
+    }
 }
 
 impl VsockHost {
