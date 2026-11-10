@@ -1,0 +1,281 @@
+{
+  "archive_sha256": "4ee4e1a549824a77ab733896ac7113bcb64becc2841189059ee7972b1a072f28",
+  "records": {
+    "evidence/run-v1/result.json": {
+      "exit_code": 0,
+      "outer_timeout": false,
+      "signals": [],
+      "elapsed_seconds": 13.19183245100001,
+      "passed": true,
+      "cleanup_limit": "process-group bound only; private daemon/VM return requires native cleanup receipt; timeout leaves unknowns"
+    },
+    "evidence/run-v1/association.json": {
+      "base": "3b1967838b140466ff3367637541492a77be0459",
+      "leaf_sha256": "74d459d44f11f5bbe4dfe46611aa35c7e276c150001c7d6f198456b0adeabcaf",
+      "binary_sha256": "e22757b0dde1b05a41bb6a2b66e516fbabd07b350b965412e9a1a250ce7f4d1e",
+      "binary_bytes": 60434760,
+      "parent_sha256": "8e7a7abea22d25b56bd74e421de5b457d34e844c1234aead13b459e9c7c9f1ea",
+      "caller_sha256": "254948b2a7bc64187df978edefeb49935b5e8fd9a4be70f4e719934d677777fb",
+      "command": [
+        "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+        "broker_effects::native_program_results_have_private_capture_and_owned_worker_cleanup",
+        "--exact",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "inputs": {
+        "source": "/home/adalundhe/native-managed-broker-effects-3b-v1/source",
+        "revision": "3b1967838b140466ff3367637541492a77be0459",
+        "binary": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+        "records": "/home/adalundhe/native-managed-broker-effects-3b-v1/evidence/run-v1",
+        "guests": "/home/adalundhe/native-managed-broker-effects-3b-v1/guests",
+        "leaf_sha": "74d459d44f11f5bbe4dfe46611aa35c7e276c150001c7d6f198456b0adeabcaf",
+        "case_ms": 180000,
+        "call_ms": 120000,
+        "cleanup_ms": 15000,
+        "timeout_ms": 300,
+        "cancel_work_ms": 1500,
+        "capture_bytes": 65536,
+        "outer_ms": 240000,
+        "reap_ms": 15000
+      },
+      "limit": "source hashes associate recorded inputs; build logs must associate actual binary"
+    },
+    "evidence/run-v1/native/inputs.json": {
+      "call_ms": 120000,
+      "cancel_work_ms": 1500,
+      "capture_bytes_per_channel": 65536,
+      "case_count": 1,
+      "case_ms": 180000,
+      "cleanup": "same original case deadline, owner daemon stop and observer join",
+      "cleanup_reserved_ms": 15000,
+      "no_claim": "profiling, complete kernel return, durable audit and all P7 obligations remain open",
+      "timeout_ms": 300
+    },
+    "evidence/run-v1/native/helper-results.json": {
+      "abandon_receipt": "client dropped connection only; kernel snapshot below checks visible worker absence",
+      "cancel_helper_delay_ms": 300,
+      "state": "ActualCanonicalHelperResultsVerified",
+      "worker_modes": [
+        "success",
+        "throw",
+        "timeout",
+        "stranger-cancel-ineffective",
+        "own-cancel",
+        "session-abandon",
+        "success-after-abandon"
+      ]
+    },
+    "evidence/run-v1/native/recipient-witness.json": {
+      "cut": "host released hear after helper results and main exec",
+      "held_peer": "ATTACH helper FOR driver creates real bidirectional channel; send permission only driver to helper",
+      "limitations": "not a sender-only mutation proof; receiver independently filters unauthorized request kinds",
+      "state": "ActualRecipientInboxEmptyAfterDeniedHelperAttempt"
+    },
+    "evidence/run-v1/native/observation-cut.json": {
+      "channels": [
+        {
+          "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+          "channel": 1,
+          "generation": 1,
+          "member": 1,
+          "payload_received": 948,
+          "scope": "authenticated parent Observer subscription; raw wire retained",
+          "stream_state": "Open { offset: 948 }",
+          "terminal_observed": false,
+          "wire_ack_enqueued": 1296
+        },
+        {
+          "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+          "channel": 2,
+          "generation": 1,
+          "member": 1,
+          "payload_received": 0,
+          "scope": "authenticated parent Observer subscription; raw wire retained",
+          "stream_state": "Open { offset: 0 }",
+          "terminal_observed": false,
+          "wire_ack_enqueued": 28
+        },
+        {
+          "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+          "channel": 1,
+          "generation": 1,
+          "member": 2,
+          "payload_received": 488,
+          "scope": "authenticated parent Observer subscription; raw wire retained",
+          "stream_state": "Open { offset: 488 }",
+          "terminal_observed": false,
+          "wire_ack_enqueued": 758
+        },
+        {
+          "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+          "channel": 2,
+          "generation": 1,
+          "member": 2,
+          "payload_received": 0,
+          "scope": "authenticated parent Observer subscription; raw wire retained",
+          "stream_state": "Open { offset: 0 }",
+          "terminal_observed": false,
+          "wire_ack_enqueued": 30
+        }
+      ],
+      "full_kernel_resource_return": "Unverified; point process snapshot and later host FD check only",
+      "state": "ResultsAndNeighborMainProgressThenKernelProcessSnapshot",
+      "visible_ready": 2,
+      "visible_workers": 0
+    },
+    "evidence/run-v1/native/guest-processes.json": {
+      "args": [
+        "top",
+        "owner-output",
+        "-o",
+        "pid,ppid,uid,nlwp,stat,comm"
+      ],
+      "signal": null,
+      "status": 0,
+      "stderr": "",
+      "stdout": "PID                 PPID                UID                 NLWP                STAT                COMMAND\n911                 1                   1000                1                   Ss                  testguest\n914                 1                   4394304             1                   S                   shards-server\n919                 914                 4394304             1                   S                   shards-sandbox\n924                 921                 200001              1                   S                   confined-ready\n925                 1                   4394305             1                   S                   shards-server\n929                 925                 4394305             1                   S                   shards-sandbox\n935                 931                 200002              1                   S                   confined-ready\n"
+    },
+    "evidence/run-v1/native/main-after-helper.json": {
+      "args": [
+        "exec",
+        "owner-output",
+        "/bin/testguest",
+        "streams",
+        "main-progress",
+        "main-error"
+      ],
+      "signal": null,
+      "status": 0,
+      "stderr": "main-error\n",
+      "stdout": "main-progress\n"
+    },
+    "evidence/run-v1/native/main-after-recipient.json": {
+      "args": [
+        "exec",
+        "owner-output",
+        "/bin/testguest",
+        "streams",
+        "main-progress",
+        "main-error"
+      ],
+      "signal": null,
+      "status": 0,
+      "stderr": "main-error\n",
+      "stdout": "main-progress\n"
+    },
+    "evidence/run-v1/native/cleanup.json": {
+      "body_passed": true,
+      "listener": "kept through parent FD comparison then dropped; Drop close result unobserved",
+      "owner_stop_observer_join_and_parent_fd_check": {
+        "Ok": null
+      },
+      "uncertainty": "failed deadline/stop/join retains unknown resources; outer caller owns final process-group bound"
+    },
+    "evidence/post-case-host-processes.json": {
+      "matching_owned_scope_processes": [],
+      "limit": "single kernel process snapshot by owned cwd/exe/argv, not all kernel resources"
+    },
+    "evidence/runtime-cache-files.json": [
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/6ff1caa4e616b675cc382f55e3b0c44298fc/lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/6ff1caa4e616b675cc382f55e3b0c44298fc/shards-net",
+        "bytes": 7908816,
+        "sha256": "b675cc382f55dd41df39b3e91310a0eb3108258470bc4018d8c6ca31de79779f"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/6ff1caa4e616b675cc382f55e3b0c44298fc/shards-vm",
+        "bytes": 30934384,
+        "sha256": "6ff1caa4e6162f1cf63df1bf10058ea4ceda75ea38e207b41d982fd9988869e9"
+      },
+      {
+        "path": "evidence/run-v1/runtime-cache/shards/helpers/lock",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "evidence/artifacts.json": [
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/shards",
+        "bytes": 270558360,
+        "sha256": "d70b1c19ecc85b8255f81fae422a43eabbb33f1715d7e1d730eb76ac33a25823"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/guests/guest/shards-testguest",
+        "bytes": 3673888,
+        "sha256": "eb4e1c16c05f1822df73d12fabbc923f76505bf352dc760d6983e9657767bf3e"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/source/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+        "bytes": 27758808,
+        "sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+        "bytes": 60434760,
+        "sha256": "e22757b0dde1b05a41bb6a2b66e516fbabd07b350b965412e9a1a250ce7f4d1e"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+        "bytes": 2360944,
+        "sha256": "6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+        "bytes": 3276552,
+        "sha256": "d78ed707e8f64eb1a1156f7316efe3d111d28da53cb0d6926704cb3af762d973"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-2cb7a07bffb06345/out/shards-init",
+        "bytes": 2365808,
+        "sha256": "273a8338431973bc42f7a42dde17ad3f741cfd533e6c0982df18a170b23f16d9"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-2cb7a07bffb06345/out/shards-server",
+        "bytes": 3276488,
+        "sha256": "e8789a9e1cde0d8b866ff435551af8ceb91aeaf996282c25b434d29eb7b97675"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+        "bytes": 30934384,
+        "sha256": "6ff1caa4e6162f1cf63df1bf10058ea4ceda75ea38e207b41d982fd9988869e9"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+        "bytes": 7908816,
+        "sha256": "b675cc382f55dd41df39b3e91310a0eb3108258470bc4018d8c6ca31de79779f"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm-gpu",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-vm",
+        "bytes": 30644512,
+        "sha256": "dc71e9dd9e9eb680976eee826dd9440e5129a51f03e65b12c7ffe75ecef1a500"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-net",
+        "bytes": 7901136,
+        "sha256": "4fd4d7db93a021c55c1a16bfe6046f9c4023f8752a16f13285d0b434d40dd26d"
+      },
+      {
+        "path": "/home/adalundhe/native-managed-broker-effects-3b-v1/target/test-release/build/shards-2cb7a07bffb06345/out/helpers/shards-vm-gpu",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "evidence/interrupted-process-snapshot.json": {
+      "matching_owned_build_processes": [],
+      "old_guest_log_sha256": "2c79aee6132fe56800205f241ba271f30c0954dc7f862a63393a02bb55047501",
+      "old_guest_exit_file_exists": false,
+      "interpretation": "single process snapshot, not full kernel return; r74 runner-restart outcome Unknown"
+    }
+  }
+}
