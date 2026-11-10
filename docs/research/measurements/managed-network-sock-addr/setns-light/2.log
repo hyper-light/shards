@@ -1,0 +1,33 @@
+   Compiling libc v0.2.189
+   Compiling shards-devcgroup v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v7/devcgroup)
+   Compiling sock-addr-pure v0.0.0 (/home/adalundhe/managed-network-sock-addr-proof-v7/helper)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.14s
+     Running unittests lib.rs (/home/adalundhe/managed-network-sock-addr-proof-v7/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-83f26fa5c5d9854f)
+
+running 23 tests
+test managed_network::intercept::sock_addr::bpf::tests::exact_selectors_and_network_order_writes ... ok
+test managed_network::intercept::tests::absence_never_counts_success_or_unknown_errors_as_refusal ... ok
+test managed_network::intercept::sock_addr::tests::finite_parser_and_strict_original_port ... ok
+test managed_network::intercept::tests::deadline_verdict_requires_baseline_counts_and_known_terminal ... ok
+test managed_network::intercept::tests::ipv6_family_uses_the_same_finite_origins_and_input_authority ... ok
+test managed_network::intercept::tests::inputs_refuse_conflicting_or_out_of_width_routing_objects ... ok
+test managed_network::intercept::udp::tests::empty_is_a_consumed_datagram_and_truncation_or_unknown_metadata_never_matches ... ok
+test managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence ... ok
+test managed_network::intercept::wire::tests::acks_reject_wrong_identity_duplicate_truncation_and_errno ... ok
+test managed_network::intercept::wire::tests::ipv6_route_address_and_policy_fields_match_their_abi ... ok
+test managed_network::tests::a_zero_deadline_does_not_attempt_io ... ok
+test managed_network::tests::an_unrepresentable_deadline_is_refused ... ok
+test managed_network::intercept::wire::tests::route_and_selector_keep_exact_ipv4_and_tcp_port ... ok
+test managed_network::tests::hex_is_exact_and_rejects_malformed_inputs ... ok
+test managed_network::tests::config_evidence_does_not_treat_missing_symbols_as_enabled ... ok
+test managed_network::intercept::wire::tests::same_namespace_targets_keep_their_actual_destination_in_both_messages ... ok
+test managed_network::tests::interception_commands_keep_explicit_ip_families ... ok
+test managed_network::tests::probe_commands_are_explicit ... ok
+test managed_network::tests::udp_interception_parser_has_explicit_origins ... ok
+test managed_network::intercept::wire::tests::udp_selector_and_separate_drop_match_actual_family_destination_and_port ... ok
+test managed_network::intercept::wire::tests::fallback_is_a_separate_appended_exact_selector_drop ... ok
+test managed_network::intercept::wire::tests::ipv6_exact_selector_and_separate_drop_share_actual_family ... ok
+test managed_network::intercept::wire::tests::ipv4_encoding_matches_checked_baseline ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
