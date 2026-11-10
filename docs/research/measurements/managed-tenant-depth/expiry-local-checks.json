@@ -1,0 +1,40 @@
+{
+  "canonical_policy": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "checks": [
+    {
+      "command": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/shards/tests/managed_output/current_tenant_stdio.rs"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    }
+  ],
+  "local_free_bytes": 193113407488,
+  "compile_live": "Unrun at source checkpoint"
+}

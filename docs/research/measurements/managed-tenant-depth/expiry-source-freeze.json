@@ -1,0 +1,27 @@
+{
+  "canonical_policy": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "assigned adversarial/implementer",
+  "fixture_base": "d5a60d991df341e9ff8a2530bc3296a8f202d4a9",
+  "native_rust_source": "cba6d1c32c5d27ef34b5cd9b49f95834253d6448",
+  "files": {
+    "crates/shards/tests/managed_output/current_tenant_stdio.rs": "6dc79f09089d0c9cc3b66ff97a1291dfcb1d197756476615f2351b3c11a49c1b",
+    "crates/testguest/src/workload.rs": "a03ef0dde5769629bcc7da47c9548d24bcc1b17840985ebc96e6e63e3ad139c9",
+    "crates/shards/tests/common/managed_capture.rs": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+    "crates/shards/tests/managed_output.rs": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938"
+  },
+  "case": {
+    "depth": 2,
+    "tasks": 6,
+    "actor_ms": 120000,
+    "sibling_host_ms": 240000,
+    "cleanup_ms": 15000,
+    "hard_seconds": 255,
+    "challenge_bytes": 16,
+    "report_bytes": 269,
+    "actual_case_count": 1,
+    "retry_or_enlargement": false
+  },
+  "actual_compile_or_live": "Unrun at source checkpoint"
+}

@@ -41,6 +41,21 @@ struct InheritedInputs {
     depth: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InheritedFinish {
+    Challenge,
+    GuestExpiry { work_ms: u64 },
+}
+
+impl InheritedFinish {
+    fn actor_work_ms(self, sibling_work_ms: u64) -> u64 {
+        match self {
+            Self::Challenge => sibling_work_ms,
+            Self::GuestExpiry { work_ms } => work_ms,
+        }
+    }
+}
+
 fn inherited_report_bytes(challenge_bytes: usize) -> Option<usize> {
     let capture = ["agent", "agent-inherited-ready", "agent-inherited-after-release"]
         .into_iter()
@@ -166,11 +181,55 @@ fn exchange_inherited(fixture: &Fixture, input: &Supplied, until: Instant) {
     );
 }
 
-fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u32, Channel, Capture)> {
+fn finish_inherited_actor(
+    fixture: &mut Fixture,
+    shared: &Supplied,
+    channels: &mut [(u32, Channel, usize, Capture)],
+    finish: InheritedFinish,
+    until: Instant,
+) {
+    for (member, channel, index, capture) in channels {
+        if *member == 1 {
+            let expected = match finish {
+                InheritedFinish::Challenge => [
+                    payload("agent", *channel),
+                    payload("agent-inherited-ready", *channel),
+                    payload("agent-inherited-after-release", *channel),
+                ]
+                .concat(),
+                InheritedFinish::GuestExpiry { .. } => [
+                    payload("agent", *channel),
+                    payload("agent-inherited-ready", *channel),
+                ]
+                .concat(),
+            };
+            capture.receive(
+                &fixture.observers[*index],
+                &expected,
+                ReadGoal::CanonicalEnd,
+                until,
+            );
+            fixture.observers[*index]
+                .sender
+                .send(Command::Handler(Ask::Cancel))
+                .unwrap();
+            fixture.observers[*index].join(until).unwrap();
+        }
+    }
+    shared.base.write("actor-channel-ends.json", &json!({"completion":format!("{finish:?}"),"provenance":"canonical stream End/ACK/EOF only; not independent death/wait/population proof"}));
+}
+
+fn run(
+    fixture: &mut Fixture,
+    input: &InheritedInputs,
+    finish: InheritedFinish,
+    until: Instant,
+) -> Vec<(u32, Channel, Capture)> {
     let shared = &input.common;
     let actor = shared.actor.to_string();
     let sibling = shared.base.port.to_string();
     let work = shared.work_ms.to_string();
+    let actor_work = finish.actor_work_ms(shared.work_ms).to_string();
     let cleanup = shared.cleanup_ms.to_string();
     let count = shared.challenge.len().to_string();
     let report = shared.report_bytes.to_string();
@@ -183,7 +242,7 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
         "agent",
         "inherit-stdio",
         &actor,
-        &work,
+        &actor_work,
         &cleanup,
         &count,
         &report,
@@ -254,9 +313,45 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
             until,
         );
     }
+    if let InheritedFinish::GuestExpiry { work_ms } = finish {
+        for (member, channel, _, capture) in &channels {
+            if *member == 1 {
+                let expected = [
+                    payload("agent", *channel),
+                    payload("agent-inherited-ready", *channel),
+                ]
+                .concat();
+                assert_eq!(capture.bytes, expected, "exact initial inherited bytes");
+                assert_eq!(
+                    capture.state,
+                    StreamState::Open {
+                        offset: u64::try_from(expected.len()).unwrap()
+                    },
+                    "initial inherited output remains Open before waiting for expiry"
+                );
+            }
+        }
+        shared.base.write("expiry-control-withheld.json", &json!({"state":"NoLeafChallengeConnectionOrBytesSent","actor_work_ms":work_ms,"sibling_work_ms":shared.work_ms,"host_work_ms":shared.base.patience.as_millis(),"channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>() }));
+        finish_inherited_actor(fixture, shared, &mut channels, finish, until);
+        let host_start = until.checked_sub(shared.base.patience).unwrap();
+        let elapsed = Instant::now().saturating_duration_since(host_start);
+        shared.base.write("expiry-end-before-neighbor.json", &json!({"state":"BothActorCanonicalEndsAckAndTransportEofBeforeNeighborRelease","host_elapsed_ms":elapsed.as_millis(),"actor_work_ms":work_ms,"channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"direct_wait_population":"Unknown: stream End is not death or an independent wait receipt"}));
+        assert!(
+            elapsed >= Duration::from_millis(work_ms),
+            "no early-End pass before the caller's guest work duration; host elapsed is not serialized guest time"
+        );
+    }
     fixture.main_progress(remaining(until).unwrap());
     release_neighbor(fixture, &shared.base, until);
-    shared.base.write("release-causality.json", &json!({"gate_peer_eof":true,"actor_last_consumed_states":channels.iter().filter(|(m,_,_,_)|*m==1).map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"evidence":"shared release caption is not an actor End witness; exact child reply and later suffix/End remain required"}));
+    let release_evidence = match finish {
+        InheritedFinish::Challenge => {
+            "shared release caption is not an actor End witness; exact child reply and later suffix/End remain required"
+        }
+        InheritedFinish::GuestExpiry { .. } => {
+            "both canonical actor channel Ends/ACK/EOF observed before gate release; no challenge sent; End is not death"
+        }
+    };
+    shared.base.write("release-causality.json", &json!({"gate_peer_eof":true,"actor_last_consumed_states":channels.iter().filter(|(m,_,_,_)|*m==1).map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"evidence":release_evidence}));
     for (member, channel, index, capture) in &mut channels {
         if *member == 2 {
             let expected = [
@@ -274,28 +369,17 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
         }
     }
     fixture.main_progress(remaining(until).unwrap());
-    shared.base.write("sibling-before-child-release.json", &json!({"state":"NewSiblingFd1Fd2AndMainProgressAfterParentStdioClosureBeforeChildRelease","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>() }));
-    exchange_inherited(fixture, shared, until);
-    for (member, channel, index, capture) in &mut channels {
-        if *member == 1 {
-            let expected = [
-                payload("agent", *channel),
-                payload("agent-inherited-ready", *channel),
-                payload("agent-inherited-after-release", *channel),
-            ]
-            .concat();
-            capture.receive(
-                &fixture.observers[*index],
-                &expected,
-                ReadGoal::CanonicalEnd,
-                until,
-            );
-            fixture.observers[*index]
-                .sender
-                .send(Command::Handler(Ask::Cancel))
-                .unwrap();
-            fixture.observers[*index].join(until).unwrap();
+    match finish {
+        InheritedFinish::Challenge => {
+            shared.base.write("sibling-before-child-release.json", &json!({"state":"NewSiblingFd1Fd2AndMainProgressAfterParentStdioClosureBeforeChildRelease","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>() }));
+            exchange_inherited(fixture, shared, until);
+            finish_inherited_actor(fixture, shared, &mut channels, finish, until);
         }
+        InheritedFinish::GuestExpiry { .. } => {
+            shared.base.write("sibling-after-expiry-end.json", &json!({"state":"NewSiblingFd1Fd2AndMainProgressAfterBothActorChannelEnds","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>() }));
+        }
+    }
+    for (member, channel, _, capture) in &channels {
         fixture
             .observed
             .insert((*member, *channel as u8), (capture.wire, capture.wire));
@@ -307,7 +391,15 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
         &["top", "owner-output", "-o", "pid,ppid,uid,stat,comm"],
         until,
     );
-    shared.base.write("inherited-end.json", &json!({"state":"ExactInheritedChildSuffixThenCanonicalEndAckAndTransportEofOnBothChannels","channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"actual_parent_waitstatus":"not independently exported after parent stdio closure; ROOT held lifecycle witness owed","population_reaping":"Unverified; EOF is not whole population completion"}));
+    let state = match finish {
+        InheritedFinish::Challenge => {
+            "ExactInheritedChildSuffixThenCanonicalEndAckAndTransportEofOnBothChannels"
+        }
+        InheritedFinish::GuestExpiry { .. } => {
+            "InheritedGuestExpiryThenCanonicalEndAckAndTransportEofOnBothChannels"
+        }
+    };
+    shared.base.write("inherited-end.json", &json!({"state":state,"channels":channels.iter().map(|(m,c,_,capture)|capture.record(*m,*c)).collect::<Vec<_>>(),"actual_parent_waitstatus":"not independently exported after parent stdio closure; ROOT held lifecycle witness owed","population_reaping":"Unverified; EOF is not whole population completion"}));
     std::fs::copy(
         fixture.record.as_ref().unwrap(),
         shared.base.records.join("managed-output.before-stop"),
@@ -322,7 +414,7 @@ fn run(fixture: &mut Fixture, input: &InheritedInputs, until: Instant) -> Vec<(u
 #[test]
 #[ignore = "assigned bounded real VM; explicit tasks/two ports/challenge/work+cleanup/report envelope/evidence"]
 fn inherited_child_writers_survive_parent_stdio_closure() {
-    run_inherited_case(InheritedInputs::read(None));
+    run_inherited_case(InheritedInputs::read(None), InheritedFinish::Challenge);
 }
 
 #[test]
@@ -332,10 +424,35 @@ fn inherited_descendant_depth_preserves_neighbor_and_main() {
         .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_DEPTH"))
         .parse::<u32>()
         .unwrap();
-    run_inherited_case(InheritedInputs::read(Some(depth)));
+    run_inherited_case(InheritedInputs::read(Some(depth)), InheritedFinish::Challenge);
 }
 
-fn run_inherited_case(input: InheritedInputs) {
+#[test]
+#[ignore = "one assigned D2 guest expiry; explicit half host work/unchanged sibling/cleanup/resources/evidence"]
+fn inherited_d2_guest_expiry_preserves_subsequent_neighbor_and_main() {
+    let depth = std::env::var("SHARDS_TENANT_STDIO_DEPTH")
+        .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_DEPTH"))
+        .parse::<u32>()
+        .unwrap();
+    let input = InheritedInputs::read(Some(depth));
+    let work_ms = std::env::var("SHARDS_TENANT_STDIO_ACTOR_WORK_MS")
+        .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_ACTOR_WORK_MS"))
+        .parse::<u64>()
+        .unwrap();
+    let host_work = u64::try_from(input.common.base.patience.as_millis()).unwrap();
+    assert_eq!(depth, 2, "one explicitly approved D2 case");
+    assert_eq!(input.tasks, depth.checked_add(4).unwrap());
+    assert_eq!(input.common.work_ms, host_work, "unchanged sibling work budget");
+    assert!(work_ms > 0);
+    assert_eq!(
+        Some(work_ms),
+        host_work.checked_div(2),
+        "ROOT caller budget split, not a runtime default"
+    );
+    run_inherited_case(input, InheritedFinish::GuestExpiry { work_ms });
+}
+
+fn run_inherited_case(input: InheritedInputs, finish: InheritedFinish) {
     let shared = &input.common;
     assert!(!common::cannot_run_vms(), "requires a supported real VM host");
     let until = Instant::now().checked_add(shared.base.patience).unwrap();
@@ -344,9 +461,11 @@ fn run_inherited_case(input: InheritedInputs) {
         .unwrap();
     let artifact = |path: &std::path::Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
     shared.base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init())}));
-    shared.base.write("inputs.json", &json!({"actor_port":shared.actor,"sibling_port":shared.base.port,"agent_tasks":input.tasks,"descendant_depth":input.depth,"private_handoff_bytes":input.depth.unwrap_or(1),"work_ms":shared.work_ms,"host_work_ms":shared.base.patience.as_millis(),"cleanup_ms":shared.cleanup_ms,"report_bytes":shared.report_bytes,"challenge":shared.challenge,"source":option_env!("SHARDS_TENANT_STDIO_SOURCE_REVISION"),"lifetime_owner":"retained Fixture owner; each direct parent retains one private Child; observer/EOF is not owner","deadline_provenance":"depth mode: first actor creates one guest CLOCK_MONOTONIC expiry; unchanged across exec; cleanup derives from that expiry plus original duration; host deadline is independent"}));
+    shared.base.write("inputs.json", &json!({"actor_port":shared.actor,"sibling_port":shared.base.port,"agent_tasks":input.tasks,"descendant_depth":input.depth,"private_handoff_bytes":input.depth.unwrap_or(1),"completion":format!("{finish:?}"),"actor_work_ms":finish.actor_work_ms(shared.work_ms),"work_ms":shared.work_ms,"host_work_ms":shared.base.patience.as_millis(),"cleanup_ms":shared.cleanup_ms,"report_bytes":shared.report_bytes,"challenge":shared.challenge,"source":option_env!("SHARDS_TENANT_STDIO_SOURCE_REVISION"),"lifetime_owner":"retained Fixture owner; each direct parent retains one private Child; observer/EOF is not owner","deadline_provenance":"depth mode: first actor creates one guest CLOCK_MONOTONIC expiry; unchanged across exec; cleanup derives from that expiry plus original duration; host deadline is independent"}));
     let mut fixture = Fixture::new();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut fixture, &input, until)));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(&mut fixture, &input, finish, until)
+    }));
     if let Some(path) = &fixture.record {
         let _ = std::fs::copy(path, shared.base.records.join("managed-output.before-cleanup"));
         let history = (|| -> io::Result<Vec<String>> {
