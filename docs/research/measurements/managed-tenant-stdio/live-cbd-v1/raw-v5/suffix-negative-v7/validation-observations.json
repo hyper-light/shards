@@ -1,0 +1,22 @@
+{
+  "source": "2a9ade8302935fb7636bf01b3e1ba7e1d094b622",
+  "test_exit": 101,
+  "raw_stdout_bytes": 96,
+  "mismatch_offsets": [
+    86
+  ],
+  "actor_control_complete": true,
+  "sibling_before_child_release_record": true,
+  "teardown": {
+    "observer_fd_baseline": 11,
+    "owner_stop_observer_join": {
+      "complete": true,
+      "error": null
+    },
+    "parent_child_waitstatus_and_full_population_return": "Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop",
+    "protocol_complete": false,
+    "run_removed": true
+  },
+  "proof_scope": "fixture exact-byte validity only; no ownership guard proof",
+  "full_population_kernel_return": "Unknown"
+}

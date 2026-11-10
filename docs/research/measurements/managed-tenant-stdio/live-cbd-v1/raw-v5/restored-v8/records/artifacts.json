@@ -1,0 +1,22 @@
+{
+  "cli": {
+    "path": "/home/adalundhe/managed-tenant-live-01a1c5d2-v1/source/target/e2e/shards-3c3e9366ee910eab/shards",
+    "sha256": "sha256:3c3e9366ee910eabfa9a19c967cbfde1baedae8dba435be6cdbc10147ab8941d"
+  },
+  "fixture": {
+    "path": "/home/adalundhe/managed-tenant-live-01a1c5d2-v1/target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "sha256": "sha256:dd595a934a75012470aec7ece798f479b24e309afa018759bbddbaf889be0634"
+  },
+  "init": {
+    "path": "/home/adalundhe/managed-tenant-live-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "sha256": "sha256:6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09"
+  },
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "testguest": {
+    "path": "/home/adalundhe/managed-tenant-live-01a1c5d2-v1/source/target/guest/by-process/59997/shards-testguest",
+    "sha256": "sha256:c44182b51e682902f2afa5fff891d0f89f7d28b6165d1a7d4e6709a52ef3fd1a"
+  }
+}

@@ -1,0 +1,11 @@
+Warning: you are leaving 1 commit behind, not connected to
+any of your branches:
+
+  2a9ade8 test: mutate one owned inherited suffix byte for exact capture negative
+
+If you want to keep it by creating a new branch, this may be a good time
+to do so with:
+
+ git branch <new-branch-name> 2a9ade8
+
+HEAD is now at 0ea38a5 test: record live inherited writer pass and correct release caption

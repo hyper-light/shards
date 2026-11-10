@@ -286,6 +286,46 @@ population/kernel accounting, meaningful product guard mutations, ROOT audits,
 profiles/performance, integration/main review and full P0–P13/G01–G24 obligations
 remain open. The signed suffix-byte source2a9 is the next finite owned case.
 
+## Suffix-byte case and second exact restoration
+
+Resumed-session r7 ran exact mutation-only source
+`2a9ade8302935fb7636bf01b3e1ba7e1d094b622`, same private runner and full envelope.
+Matching static guest and caller builds returned0. One actual selected A test
+failed101 as expected,20 filtered. Before the strict byte assertion, the fixture
+retained96 stdout payload bytes; byte86 was uppercase T where the exact expected
+suffix requires lowercase t. This is the sole observed mismatch in the retained
+prefix. The raw-record verifier derives its header length from four tag bytes,
+encoded u32 member and encoded u64 offset, matching abi::managed::HEADER.
+
+The actual21-byte child challenge exchange completed with exact echo/peer EOF,
+and the separate sibling-before-child-release record exists. Prior sibling fd1/fd2
+and main progress therefore occurred before the wrong suffix. Owned stop/remove
+and owner/observer joins completed, FD11→11. The negative is fixture exact-byte
+validity only; it is not ownership guard proof or post-fault neighbor evidence.
+[Actual receipt](live-cbd-v1/raw-v5/suffix-negative-v7/result.json).
+
+Resumed-session r8 preserved the mutated final caller/testguest in
+`frozen/2a9ade830`, restored exact0ea38a52 source, and rebuilt real native guest
+and caller0. Both binary comparisons against frozen positive baselines returned
+true. A new UUID challenge and fresh fixture home then passed the strict A case0,
+one actual test/20 filtered, in1.12s, including exact suffix/End/ACK/transport EOF,
+strict final metadata and cleanup FD11→11.
+[Restoration receipt](live-cbd-v1/raw-v5/restored-v8/result.json).
+
+[Transfer manifest](live-cbd-v1/raw-v5/TRANSFER.json) preserves131 independently
+length/SHA256-verified files (61,039 bytes). Full Cargo JSONL and mutated/positive
+final binaries remain in the private Linux scope. R01–R16 limits above remain:
+no product fix, new helper mechanism, privilege/grant/profile change, host admin,
+ownership guard closure, complete population/kernel proof or performance claim.
+
+The next finite source is signed mutation-only
+`59672abe11b677c6fb0d48ce4d5c019d272d84a9` on
+`p/managed-tenant-child-control-negative-v1`. It changes only the existing owned
+child TCP challenge tag1 to0 in this host leaf. The existing native check refuses
+that input before echo; no helper or grant changes are selected. Actual refusal,
+phase/history, strict test failure and owned cleanup must be retained, followed
+by exact restoration. This is prepared source, not a run or production finding.
+
 ## R01–R16 at this checkpoint
 
 | Rule | Evidence and remaining limit |

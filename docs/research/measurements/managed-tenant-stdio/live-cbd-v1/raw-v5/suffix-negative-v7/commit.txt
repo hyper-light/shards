@@ -1,0 +1,11 @@
+commit 2a9ade8302935fb7636bf01b3e1ba7e1d094b622
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 09:34:09 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 09:34:09 2026 -0800
+
+    test: mutate one owned inherited suffix byte for exact capture negative
+    
+    Mutation-only candidate from0ea38a52 changes one same-width ASCII byte in the owned child suffix. Keep all bounds, private release, grants, challenge, parent wait and host strict byte/End assertions. Expected live failure occurs on the actual wrong suffix; do not merge this mutation as a correction.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,28 @@
+1794333478584782134	command	907	exec	/bin/testguest sleep
+1794333478585356443	agent helper	910	fork	1
+1794333478586459860	agent helper	910	exec	shards-server "agent helper" /proc/self/fd/6 200001 3 4 "" [] 7
+1794333478588975408	agent helper	915	fork	910
+1794333478589130411	agent helper	915	exec	shards-server sandbox
+1794333478589714505	agent helper	919	fork	1
+1794333478589826715	agent helper	921	fork	919
+1794333478589892522	agent helper	919	exec	shards-init managed-reaper
+1794333478599692005	agent helper	921	exec	/agents/helper/member managed-capture agent inherit-stdio 47065 300000 300000 16 269
+1794333478600141852	harness driver	1691	fork	1
+1794333478600453644	agent helper	1692	fork	921
+1794333478600654045	agent helper	1692	exec	/agents/helper/member managed-capture agent inherited-child 47065 300000 16 269
+1794333478601165517	harness driver	1691	exec	shards-server "harness driver" /proc/self/fd/6 200002 3 4 "" [] 7
+1794333478602345565	harness driver	1698	fork	1691
+1794333478602548681	harness driver	1698	exec	shards-server sandbox
+1794333478603187646	harness driver	1702	fork	1
+1794333478603297117	harness driver	1704	fork	1702
+1794333478603390335	harness driver	1702	exec	shards-init managed-reaper
+1794333478608339265	harness driver	1704	exec	/harness/driver/bin/member managed-capture harness step 46037 300000
+1794333478620864052	command	2221	fork	1
+1794333478621526958	command	2221	exec	/bin/testguest streams main-progress main-error
+1794333478621987700	command	2221	exit	code 0
+1794333478630772638	command	2228	fork	1
+1794333478631529605	command	2228	exec	/bin/testguest streams main-progress main-error
+1794333478631756873	command	2228	exit	code 0
+1794333478636418194	agent helper	1692	exit	code 0
+1794333478636887688	agent helper	921	exit	code 0
+1794333478637080474	agent helper	919	exit	code 0
