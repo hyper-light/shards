@@ -8,6 +8,11 @@ measurement, profile, comparison, mutation, audit or campaign is run by the agen
 The current 2N owner endpoint/listener/thread topology remains experimental and
 unadopted; this fixture supplies evidence for the coordinator's choice.
 
+The later, unadopted owned-host exit-watch extension from combined95e3b55e is
+documented in [HOST-EXIT.md](HOST-EXIT.md). Its changed caller and every live
+handle/FD/deadline proof remain coordinator-owed; earlier results below do not
+validate that extension.
+
 ## Explicit caller contract
 
 All three environment inputs are mandatory; there is no count/default/max choice:

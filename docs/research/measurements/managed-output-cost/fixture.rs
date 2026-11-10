@@ -193,7 +193,7 @@ fn start(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> (Ready, Vec<
     (ready, members)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum ObservationFailure {
     Io {
         kind: std::io::ErrorKind,
@@ -204,6 +204,18 @@ enum ObservationFailure {
         status: Option<i32>,
     },
     MalformedVmPid,
+    MissingExpectedStart,
+    MalformedPinnedStat,
+    DifferentIdentity {
+        expected: (u32, u64),
+        observed: (u32, u64),
+    },
+    FdMismatch {
+        expected: Option<usize>,
+        observed: usize,
+    },
+    CounterOverflow,
+    NotPrepared,
 }
 
 impl ObservationFailure {
@@ -221,6 +233,16 @@ impl ObservationFailure {
             Self::MalformedIdentityRecord => json!({"state":"MalformedIdentityRecord"}),
             Self::InspectFailed { status } => json!({"state":"InspectFailed","status":status}),
             Self::MalformedVmPid => json!({"state":"MalformedVmPid"}),
+            Self::MissingExpectedStart => json!({"state":"MissingExpectedStart"}),
+            Self::MalformedPinnedStat => json!({"state":"MalformedPinnedStat"}),
+            Self::DifferentIdentity { expected, observed } => {
+                json!({"state":"DifferentIdentity","expected":expected,"observed":observed})
+            }
+            Self::FdMismatch { expected, observed } => {
+                json!({"state":"FdMismatch","expected":expected,"observed":observed})
+            }
+            Self::CounterOverflow => json!({"state":"CounterOverflow"}),
+            Self::NotPrepared => json!({"state":"NotPrepared"}),
         }
     }
 }
@@ -391,10 +413,348 @@ fn snapshot(inputs: &Inputs, role: &str, identity: &Result<shards_ipc::Named, Ob
     json!({"pid":identity.pid,"expected_start":identity.start,"before_identity":before_identity,"after_identity":after_identity,"identity_state":state,"observations":fields,"atomic":false,"cgroup_kernel_attribution":"Unverified: proc membership only; no isolated per-member socket charge proof"})
 }
 
-fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Ready {
+fn fd_count() -> Result<usize, ObservationFailure> {
+    let entries = std::fs::read_dir("/proc/self/fd").map_err(ObservationFailure::io)?;
+    let mut count = 0usize;
+    for entry in entries {
+        entry.map_err(ObservationFailure::io)?;
+        count = count.checked_add(1).ok_or(ObservationFailure::CounterOverflow)?;
+    }
+    Ok(count)
+}
+
+struct ExitFds {
+    baseline: Result<usize, ObservationFailure>,
+    acquired: Result<usize, ObservationFailure>,
+    held: usize,
+}
+
+impl ExitFds {
+    fn returned(&self, released: &Result<usize, ObservationFailure>) -> bool {
+        matches!((&self.baseline,&self.acquired,released),(Ok(base),Ok(acquired),Ok(released))
+            if base.checked_add(self.held)==Some(*acquired) && base==released)
+    }
+
+    fn record(&self, released: &Result<usize, ObservationFailure>) -> Value {
+        let sample = |value: &Result<usize, ObservationFailure>| match value {
+            Ok(count) => json!({"state":"Observed","count":count}),
+            Err(error) => error.record(),
+        };
+        json!({"baseline":sample(&self.baseline),"with_exit_objects":sample(&self.acquired),"owned_observation_fds":self.held,"after_release":sample(released),"exact_delta_and_return":self.returned(released)})
+    }
+}
+
+struct PinnedProcess {
+    expected: shards_ipc::Named,
+    directory: std::fs::File,
+}
+
+impl PinnedProcess {
+    fn open(expected: shards_ipc::Named) -> Result<Self, ObservationFailure> {
+        if expected.start.is_none() {
+            return Err(ObservationFailure::MissingExpectedStart);
+        }
+        let directory =
+            std::fs::File::open(format!("/proc/{}", expected.pid)).map_err(ObservationFailure::io)?;
+        Ok(Self { expected, directory })
+    }
+
+    fn check(&self) -> Result<(), ObservationFailure> {
+        use std::os::fd::AsRawFd as _;
+        let bytes = std::fs::read(format!("/proc/self/fd/{}/stat", self.directory.as_raw_fd()))
+            .map_err(ObservationFailure::io)?;
+        let observed = parse::process(&bytes).ok_or(ObservationFailure::MalformedPinnedStat)?;
+        let expected = (
+            self.expected.pid,
+            self.expected
+                .start
+                .ok_or(ObservationFailure::MissingExpectedStart)?,
+        );
+        if observed != expected {
+            return Err(ObservationFailure::DifferentIdentity { expected, observed });
+        }
+        Ok(())
+    }
+}
+
+#[repr(u64)]
+enum HostRole {
+    Daemon = 1,
+    Vm = 2,
+}
+
+enum ReadinessIdentity {
+    Pending,
+    Matched,
+    Unverified(ObservationFailure),
+}
+
+enum HostExit {
+    Unavailable {
+        expected: Option<shards_ipc::Named>,
+        stage: &'static str,
+        failure: ObservationFailure,
+    },
+    Watching {
+        identity: PinnedProcess,
+        _watch: shards_vmm::platform::ExitWatch,
+        readiness: ReadinessIdentity,
+    },
+    ExitReady(shards_ipc::Named),
+    Deadline(shards_ipc::Named),
+}
+
+impl HostExit {
+    fn acquire(
+        poller: &shards_vmm::platform::Poller,
+        expected: &Result<shards_ipc::Named, ObservationFailure>,
+        role: HostRole,
+    ) -> Self {
+        let acquire = || {
+            let expected = expected.as_ref().map_err(|e| ("expected_identity", e.clone()))?;
+            let identity = PinnedProcess::open(*expected).map_err(|e| ("open_identity", e))?;
+            identity.check().map_err(|e| ("before_watch", e))?;
+            let watch = poller
+                .add_exit(expected.pid, role as u64)
+                .map_err(|e| ("add_exit", ObservationFailure::io(e)))?;
+            identity.check().map_err(|e| ("after_watch", e))?;
+            Ok((identity, watch))
+        };
+        match acquire() {
+            Ok((identity, watch)) => Self::Watching {
+                identity,
+                _watch: watch,
+                readiness: ReadinessIdentity::Pending,
+            },
+            Err((stage, failure)) => Self::Unavailable {
+                expected: expected.as_ref().ok().copied(),
+                stage,
+                failure,
+            },
+        }
+    }
+
+    fn retained_fds(&self) -> usize {
+        // Each actual Watching value owns one proc File and one unique Linux pidfd.
+        match self {
+            Self::Watching { .. } => 2,
+            _ => 0,
+        }
+    }
+
+    fn validate_readiness(&mut self) {
+        if let Self::Watching {
+            identity, readiness, ..
+        } = self
+        {
+            *readiness = match identity.check() {
+                Ok(()) => ReadinessIdentity::Matched,
+                Err(e) => ReadinessIdentity::Unverified(e),
+            };
+        }
+    }
+
+    fn before_wait(self) -> Self {
+        match self {
+            Self::Watching {
+                identity,
+                readiness: ReadinessIdentity::Pending,
+                ..
+            } => Self::Unavailable {
+                expected: Some(identity.expected),
+                stage: "final_readiness",
+                failure: ObservationFailure::NotPrepared,
+            },
+            Self::Watching {
+                identity,
+                readiness: ReadinessIdentity::Unverified(failure),
+                ..
+            } => Self::Unavailable {
+                expected: Some(identity.expected),
+                stage: "final_readiness",
+                failure,
+            },
+            state => state,
+        }
+    }
+
+    fn awaiting(&self) -> bool {
+        matches!(
+            self,
+            Self::Watching {
+                readiness: ReadinessIdentity::Matched,
+                ..
+            }
+        )
+    }
+
+    fn observed_exit(self) -> Self {
+        match self {
+            Self::Watching {
+                identity,
+                readiness: ReadinessIdentity::Matched,
+                ..
+            } => Self::ExitReady(identity.expected),
+            state => state,
+        }
+    }
+
+    fn deadline(self) -> Self {
+        match self {
+            Self::Watching { identity, .. } => Self::Deadline(identity.expected),
+            state => state,
+        }
+    }
+
+    fn wait_failed(self, failure: ObservationFailure) -> Self {
+        match self {
+            Self::Watching { identity, .. } => Self::Unavailable {
+                expected: Some(identity.expected),
+                stage: "wait_exit",
+                failure,
+            },
+            state => state,
+        }
+    }
+
+    fn record(&self) -> Value {
+        let named = |n: &shards_ipc::Named| json!({"pid":n.pid,"expected_started":n.start});
+        match self {
+            Self::Unavailable {
+                expected,
+                stage,
+                failure,
+            } => {
+                json!({"state":"Unavailable","expected_identity":expected.as_ref().map(named),"stage":stage,"failure":failure.record()})
+            }
+            Self::Watching {
+                identity, readiness, ..
+            } => {
+                json!({"state":"Watching","identity":named(&identity.expected),"readiness_identity":match readiness { ReadinessIdentity::Pending=>json!({"state":"Pending"}),ReadinessIdentity::Matched=>json!({"state":"Matched"}),ReadinessIdentity::Unverified(e)=>e.record() }})
+            }
+            Self::ExitReady(identity) => {
+                json!({"state":"ExitReadyObservedAfterOwnerStopWithinCleanupDeadline","identity":named(identity),"reaped":"Unverified"})
+            }
+            Self::Deadline(identity) => json!({"state":"Deadline","identity":named(identity)}),
+        }
+    }
+}
+
+struct ExitProof {
+    poller: Result<shards_vmm::platform::Poller, ObservationFailure>,
+    daemon: HostExit,
+    vm: HostExit,
+    fds: ExitFds,
+}
+
+impl ExitProof {
+    fn acquire(
+        fixture: &mut Fixture,
+        daemon: &Result<shards_ipc::Named, ObservationFailure>,
+        vm: &Result<shards_ipc::Named, ObservationFailure>,
+    ) -> Self {
+        let baseline = fd_count().and_then(|observed| {
+            if fixture.initial_fds == Some(observed) {
+                Ok(observed)
+            } else {
+                Err(ObservationFailure::FdMismatch {
+                    expected: fixture.initial_fds,
+                    observed,
+                })
+            }
+        });
+        let poller = shards_vmm::platform::Poller::new().map_err(ObservationFailure::io);
+        let (daemon, vm) = match &poller {
+            Ok(p) => (
+                HostExit::acquire(p, daemon, HostRole::Daemon),
+                HostExit::acquire(p, vm, HostRole::Vm),
+            ),
+            Err(e) => (
+                HostExit::Unavailable {
+                    expected: daemon.as_ref().ok().copied(),
+                    stage: "poller",
+                    failure: e.clone(),
+                },
+                HostExit::Unavailable {
+                    expected: vm.as_ref().ok().copied(),
+                    stage: "poller",
+                    failure: e.clone(),
+                },
+            ),
+        };
+        // Existing Linux Poller owns one epoll FD; count only actual held objects.
+        let held = usize::from(poller.is_ok()) + daemon.retained_fds() + vm.retained_fds();
+        let acquired = fd_count();
+        if let Ok(acquired) = acquired {
+            fixture.initial_fds = Some(acquired);
+        }
+        Self {
+            poller,
+            daemon,
+            vm,
+            fds: ExitFds {
+                baseline,
+                acquired,
+                held,
+            },
+        }
+    }
+
+    fn ready_record(&mut self) -> Value {
+        self.daemon.validate_readiness();
+        self.vm.validate_readiness();
+        json!({"daemon":self.daemon.record(),"vm":self.vm.record()})
+    }
+
+    fn finish(self, until: Instant) -> (Value, bool, ExitFds) {
+        let Self {
+            poller,
+            daemon,
+            vm,
+            fds,
+        } = self;
+        let mut hosts = (daemon.before_wait(), vm.before_wait());
+        if let Ok(poller) = &poller {
+            let mut ready = Vec::new();
+            while hosts.0.awaiting() || hosts.1.awaiting() {
+                let remaining = left(until);
+                if remaining.is_zero() {
+                    hosts = (hosts.0.deadline(), hosts.1.deadline());
+                    break;
+                }
+                if let Err(error) = poller.wait(&mut ready, Some(remaining)) {
+                    let failure = ObservationFailure::io(error);
+                    hosts = (hosts.0.wait_failed(failure.clone()), hosts.1.wait_failed(failure));
+                    break;
+                }
+                // Late observation is conservatively Deadline, not a guessed exit time.
+                if Instant::now() > until {
+                    hosts = (hosts.0.deadline(), hosts.1.deadline());
+                    break;
+                }
+                if ready.contains(&(HostRole::Daemon as u64)) {
+                    hosts = (hosts.0.observed_exit(), hosts.1);
+                }
+                if ready.contains(&(HostRole::Vm as u64)) {
+                    hosts = (hosts.0, hosts.1.observed_exit());
+                }
+                // Consumed watches close now, removing level-triggered readiness.
+                // Empty/EINTR results re-enter only this same deadline-bound event wait.
+            }
+        }
+        let passed = matches!(hosts.0, HostExit::ExitReady(_)) && matches!(hosts.1, HostExit::ExitReady(_));
+        let record = json!({"daemon":hosts.0.record(),"vm":hosts.1.record(),"both_valid_exit_events":passed,"semantics":"exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified"});
+        drop(hosts);
+        drop(poller);
+        (record, passed, fds)
+    }
+}
+
+fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant, exits: &mut Option<ExitProof>) -> Ready {
     let (ready, members) = start(fixture, inputs, until);
     let daemon = named(&fixture.home.join(shards_ipc::PID));
     let vm = vm(fixture, inputs, until);
+    *exits = Some(ExitProof::acquire(fixture, &daemon, &vm));
     let observer = shards_ipc::started(std::process::id())
         .map(|start| shards_ipc::Named {
             pid: std::process::id(),
@@ -426,6 +786,9 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Ready {
         }
     }
     fixture.main_progress(left(until));
+    if let Some(proof) = exits {
+        inputs.write("exit-watches.ready.json", &proof.ready_record());
+    }
     inputs.write("ready.json", &ready.record());
     let sampled = json!({"checkpoint":ready.record(),"daemon":snapshot(inputs,"daemon",&daemon),"vm":snapshot(inputs,"vm",&vm),"observer_parent":snapshot(inputs,"observer",&observer),"measurement_cost":"one-shot proc reads/serialization and observer drivers are fixture costs; samples are not atomic"});
     inputs.write("snapshots.json", &sampled);
@@ -458,11 +821,35 @@ fn owner_output_resources_at_explicit_member_count() {
         |path: &Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
     inputs.write("inputs.json", &json!({"members":inputs.members,"phase_deadline_ms":inputs.patience.as_millis(),"source":option_env!("SHARDS_OUTPUT_COST_SOURCE_REVISION"),"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"topology":"EXPERIMENTAL2N; unadopted","root_cost_comparison":"not executed by implementer"}));
     let mut fixture = Fixture::new();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut fixture, &inputs, until)));
+    // None means acquisition was not reached. Some owns all observation resources
+    // outside the protocol unwind boundary, including partial acquisition failures.
+    let mut exits = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run(&mut fixture, &inputs, until, &mut exits)
+    }));
     // Cleanup is a separate explicitly recorded finite phase, using caller patience.
     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
     let stopped = fixture.shutdown(cleanup_until);
-    inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit_and_kernel_resource_return":"Unverified; stop result and observer FD equality are narrower facts"}));
+    let (exit_record, exit_passed, fds) = match exits {
+        Some(proof) => {
+            let (record, passed, fds) = proof.finish(cleanup_until);
+            (record, passed, Some(fds))
+        }
+        None => (ObservationFailure::NotPrepared.record(), false, None),
+    };
+    // Every watch, identity directory and poller is dropped before total FD sampling.
+    let released = fd_count();
+    let fd_returned = fds.as_ref().is_some_and(|fds| fds.returned(&released));
+    let fd_record = fds
+        .as_ref()
+        .map(|fds| fds.record(&released))
+        .unwrap_or_else(|| ObservationFailure::NotPrepared.record());
+    inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit":exit_record,"exit_observation_fds":fd_record,"host_process_exit_and_kernel_resource_return":"See held exit readiness proof; kernel/full-population return remain Unverified"}));
+    assert!(fd_returned, "exit observation exact FD delta/return: {fd_record}");
+    assert!(
+        exit_passed,
+        "both validated owned exit watches must report readiness before cleanup deadline: {exit_record}"
+    );
     if let Err(error) = result {
         std::panic::resume_unwind(error);
     }
