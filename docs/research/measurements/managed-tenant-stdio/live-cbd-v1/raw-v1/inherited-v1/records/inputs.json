@@ -1,0 +1,29 @@
+{
+  "actor_port": 47065,
+  "agent_tasks": 4,
+  "challenge": [
+    191,
+    65,
+    225,
+    246,
+    175,
+    61,
+    67,
+    80,
+    143,
+    218,
+    58,
+    70,
+    8,
+    66,
+    133,
+    165
+  ],
+  "cleanup_ms": 300000,
+  "host_work_ms": 300000,
+  "lifetime_owner": "retained Fixture owner; one private owned Child; observer/EOF is not owner",
+  "report_bytes": 269,
+  "sibling_port": 46037,
+  "source": "446211e57d302729832ece92e55cfa13713b7d7a",
+  "work_ms": 300000
+}

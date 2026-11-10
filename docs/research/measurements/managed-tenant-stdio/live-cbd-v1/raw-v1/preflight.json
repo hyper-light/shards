@@ -1,0 +1,19 @@
+{
+  "uname": {
+    "system": "Linux",
+    "node": "fedora.attlocal.net",
+    "release": "6.19.10-300.fc44.x86_64",
+    "version": "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "machine": "x86_64",
+    "processor": ""
+  },
+  "uid": 1000,
+  "free_bytes": 1928494473216,
+  "kvm_api": 12,
+  "ask": {
+    "cpus": 4,
+    "memory_bytes": 8589934592,
+    "disk_bytes": 42949672960
+  },
+  "local_build": false
+}

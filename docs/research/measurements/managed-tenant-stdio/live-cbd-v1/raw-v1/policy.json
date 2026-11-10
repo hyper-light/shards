@@ -1,0 +1,6 @@
+{
+  "main": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "assigned adversarial",
+  "owned": "inherited-writer Case A + required fixture task registration"
+}

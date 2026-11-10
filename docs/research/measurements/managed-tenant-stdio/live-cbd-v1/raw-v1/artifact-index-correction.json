@@ -1,0 +1,10 @@
+{
+  "initial_run": "r43",
+  "host_compile_exit": 0,
+  "testguest_compile_exit": 0,
+  "initial_index_exit": 1,
+  "cause": "index used wrong Cargo package-id predicate and carried/ instead of actual helpers/ path",
+  "fix": "read SHARDS_HELPERS_CARRIED build-script packet and actual helpers paths",
+  "source_changed": false,
+  "rebuilt": false
+}

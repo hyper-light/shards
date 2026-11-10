@@ -1,0 +1,11 @@
+commit 446211e57d302729832ece92e55cfa13713b7d7a
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 09:10:36 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 09:10:36 2026 -0800
+
+    test: compose owned inherited-writer live candidate on current main
+    
+    Select daaed7e, c3815e and 9a802ae onto cbd39284. Preserve current production and parent observer code; carry only the approved fixture task input and Case A source/evidence. Current adversarial policy authorizes the pending bounded private KVM campaign.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

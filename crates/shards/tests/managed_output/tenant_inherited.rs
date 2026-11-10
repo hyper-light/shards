@@ -281,6 +281,40 @@ fn inherited_child_writers_survive_parent_stdio_closure() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut fixture, &input, until)));
     if let Some(path) = &fixture.record {
         let _ = std::fs::copy(path, shared.base.records.join("managed-output.before-cleanup"));
+        let history = (|| -> io::Result<Vec<String>> {
+            let parent = path.parent().ok_or(io::ErrorKind::NotFound)?;
+            let destination = shared.base.records.join("history-before-cleanup");
+            std::fs::create_dir(&destination)?;
+            let mut names = Vec::new();
+            for entry in std::fs::read_dir(parent)? {
+                let entry = entry?;
+                let name = entry.file_name();
+                if name
+                    .to_str()
+                    .and_then(|n| n.strip_prefix("processes."))
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some()
+                {
+                    if !entry.file_type()?.is_file() {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    std::fs::copy(entry.path(), destination.join(&name))?;
+                    names.push(name.to_string_lossy().into_owned());
+                }
+            }
+            Ok(names)
+        })();
+        let processes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            fixture.command(
+                &["read", "processes", "owner-output"],
+                cleanup_until.saturating_duration_since(Instant::now()),
+            )
+        }));
+        let read = match processes {
+            Ok(run) => json!({"status":run.status,"stdout":run.stdout,"stderr":run.stderr}),
+            Err(_) => json!({"state":"Unknown","cause":"read-processes helper panicked"}),
+        };
+        shared.base.write("history-before-cleanup.json", &json!({"read":read,"segments":history.as_ref().ok(),"copy_error":history.as_ref().err().map(ToString::to_string),"completeness":"Unknown: asynchronous/lost/rotated records and omitted threads remain possible; namespace PIDs are not VM PIDs"}));
     }
     let removed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         remove_run(&fixture, &shared.base, cleanup_until)

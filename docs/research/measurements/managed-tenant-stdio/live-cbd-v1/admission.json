@@ -1,0 +1,9 @@
+{
+  "candidate": "446211e57d302729832ece92e55cfa13713b7d7a",
+  "request": {"cpus": 4, "memory_gib": 8, "disk_gib": 40},
+  "includes": "private source, native CLI and carried init/server/VM/network, static testguest and retained logs",
+  "results": [
+    {"runner": "8fadc1ec213332e16cb0d915a3fb913f", "state": "Refused", "reason": "0 of 32 cores idle, under 4 CPUs", "effects": "No command executed; no private directory created"},
+    {"runner": "451397fcc585f7f7cb9aaf00e42064bb", "state": "Refused", "reason": "0 of 32 cores idle, under 4 CPUs", "effects": "No command executed; no preflight or build ran"}
+  ]
+}
