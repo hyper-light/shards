@@ -275,13 +275,32 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
             outcome["stage"], "ConnectCall",
             "setup failure is inconclusive: {run}"
         );
-        assert_eq!(
-            outcome["outcome"], "Refused",
-            "only an actual refusal is eligible; success/deadline/error is not a containment pass: {run}"
-        );
-        assert_eq!(outcome["kind"], "ConnectionRefused");
-        assert_eq!(joined["backend_terminal"], "Stopped");
-        assert_eq!(one("AbsenceVerdict")["verdict"], "ContainedRefusal");
+        let verdict = one("AbsenceVerdict")["verdict"].as_str().unwrap();
+        let worker_errors: Vec<_> = records.iter().filter(|r| r["type"] == "WorkerError").collect();
+        let window = match verdict {
+            "ContainedRefusal" => {
+                assert_eq!(outcome["outcome"], "Refused");
+                assert_eq!(outcome["kind"], "ConnectionRefused");
+                assert_eq!(joined["backend_terminal"], "Stopped");
+                assert!(worker_errors.is_empty());
+                "AttemptUntilJoin"
+            }
+            "NoNewBackendEffectBeforeDeadline" => {
+                assert_eq!(outcome["outcome"], "Deadline");
+                assert_eq!(outcome["kind"], "TimedOut");
+                match joined["backend_terminal"].as_str().unwrap() {
+                    "Stopped" => assert!(worker_errors.is_empty()),
+                    "Deadline" => {
+                        assert_eq!(worker_errors.len(), 1);
+                        assert_eq!(worker_errors[0]["worker"], "Backend");
+                        assert_eq!(worker_errors[0]["kind"], "TimedOut");
+                    }
+                    other => panic!("unknown/failed backend completion {other}: {run}"),
+                }
+                "OriginalAbsoluteDeadline"
+            }
+            other => panic!("absence has no checked verdict ({other}): {run}"),
+        };
         let backends: Vec<_> = records
             .iter()
             .filter(|r| r["type"] == "ServerObservation" && r["role"] == "Backend")
@@ -295,12 +314,17 @@ fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() 
         assert_eq!(clients[0]["reply"], "Backend");
         assert_eq!(clients[0]["hex"], "4241434b454e4400ff");
         assert_eq!(backends[0]["peer"], clients[0]["local"]);
+        assert_eq!(backends[0]["local"], baseline["destination"]);
         assert!(
             records
                 .iter()
                 .all(|r| r["type"] != "ServerObservation" || r["role"] != "Relay")
         );
-        one("RelayAbsentChecked");
+        let checked = one("RelayAbsentChecked");
+        assert_eq!(checked["verdict"], verdict);
+        assert_eq!(checked["window"], window);
+        assert_eq!(checked["after_window"], "Unverified");
+        assert_eq!(checked["no_second_backend_accept_or_receipt"], true);
         assert_eq!(run.status, Some(0), "{run}");
         assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
         return;
