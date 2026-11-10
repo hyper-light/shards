@@ -1,0 +1,123 @@
+{
+  "source_revision": "24dfe5d7b265d1af6d16c8b4017b497ddd75d233",
+  "base": "9df26e1f141379fc6207aa0500b911bb06613fc7",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "archive": {
+    "path": "protocol-seam-light-raw.tar.gz",
+    "bytes": 3245,
+    "sha256": "9f17d021bb7523ad8dbae911570f5b11d23ce78a3f60d1506aafa6071829cbe3",
+    "files": [
+      {
+        "path": "Cargo.lock",
+        "bytes": 387,
+        "sha256": "db8ecb98f74ecebc2d8331349ce995c512bce6d587469a960595e656ebdb7107"
+      },
+      {
+        "path": "artifact-sha256.txt",
+        "bytes": 547,
+        "sha256": "90c529c7670b9e42623dbeb20926058588edc1817f406e0badc3c3375eb485ab"
+      },
+      {
+        "path": "frozen-binary.json",
+        "bytes": 228,
+        "sha256": "888c535bc5ba7f2f320d1c98db19c0965f733ff273eea03e8cd2c77a9180c643"
+      },
+      {
+        "path": "gnu-clippy.command",
+        "bytes": 175,
+        "sha256": "388f39c157e69f83f2e86b65028552773f0ea05c2ec758d1f9a1698a43e8e057"
+      },
+      {
+        "path": "gnu-clippy.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "gnu-clippy.log",
+        "bytes": 202,
+        "sha256": "e7664e0cead3cfe34693dac4ea1d9f124e671407d8472bb843e8d331946e4344"
+      },
+      {
+        "path": "gnu-pure.command",
+        "bytes": 202,
+        "sha256": "43f56d7b9b5ec49218ac90ee670ee0793e8f98d7e9123af4212ff650e24ab897"
+      },
+      {
+        "path": "gnu-pure.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "gnu-pure.log",
+        "bytes": 2244,
+        "sha256": "4f96e77feec94bb77ae8150510cbbfd5cec8dc4a76ceab83af2517e2f35725ab"
+      },
+      {
+        "path": "identity.txt",
+        "bytes": 1669,
+        "sha256": "b94d30c2ace86629f439da09e1eb11b9c193c50fea7da66f6113f81abeee56bf"
+      },
+      {
+        "path": "musl-clippy.command",
+        "bytes": 176,
+        "sha256": "ad6a6d35f9a1187d378ca02696805ff040fc75d343b5698a5ce2239006c57236"
+      },
+      {
+        "path": "musl-clippy.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "musl-clippy.log",
+        "bytes": 202,
+        "sha256": "2db6259b26e378773202968bb3e2518bd991799455fd6d58529855bac4566370"
+      },
+      {
+        "path": "tcp-parser.command",
+        "bytes": 253,
+        "sha256": "8d3c2f22cb16b092dcd40325f9913047367e475ddc2d0ec1880e73a010fad167"
+      },
+      {
+        "path": "tcp-parser.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "tcp-parser.log",
+        "bytes": 426,
+        "sha256": "b3608564c81b289497a365553d1e01f34933eecfdd869912cb6874ce2776a3e0"
+      },
+      {
+        "path": "udp-parser.command",
+        "bytes": 255,
+        "sha256": "dbc830e086642b6fbcc293deffaa7671563cfa6f90afbf7aac140d8de7f03474"
+      },
+      {
+        "path": "udp-parser.exit",
+        "bytes": 2,
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      {
+        "path": "udp-parser.log",
+        "bytes": 428,
+        "sha256": "49e36202e45325ef52b0116237ecdd0c857b979ebba2590e0369e8600d69129c"
+      }
+    ]
+  },
+  "sources": [
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "1285427f2b8c8c8efefd080591667e1c61ead331c165d712e05752c726899d77"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+      "sha256": "8bedf02c24b9d3ef838f5b66eb56035da5cf0b028fce31873afffbc7feb42431"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+      "sha256": "05461b491ba32ee357b353beeb383438c8ba1aec8c27bbeacb6e1c51b36b9b93"
+    }
+  ]
+}
