@@ -33,6 +33,14 @@ attribution mutation/restoration and scoped encoding profiles. This adds
 existing supervision. Whole-system/process/management accounting, production
 HTTP delivery, full resource admission and reset/restore coverage remain open.
 
+The [joined-run/current tenant closing record](../research/measurements/managed-combined-0ae/README.md)
+adds actual same-VM/distinct-run identity RED/green and guard-removal proof,
+25 ordinary managed-output passes, selected inherited-writer/header-FIN/terminal
+cases, seven-target gates and current official decoder/Collector acceptance at
+`0ae895290`. Its encoding comparison misses4× against the compact reference
+(2.933× pooled p50); raw misses and harness failures are retained. These results
+close this identity defect and validate the selected fixtures, not P0–P13.
+
 Main now contains partial lifecycle/capture work and an experimental owner-output
 endpoint. These pieces have not closed P0–P13. The
 [receive-cancellation closing record](../research/measurements/managed-coordinator-receive-cancel/README.md)

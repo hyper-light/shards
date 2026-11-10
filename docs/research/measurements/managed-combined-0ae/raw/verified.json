@@ -1,0 +1,24 @@
+[
+  {
+    "archive": "linux-originals.tar.gz",
+    "bytes": 148146,
+    "sha256": "9e7feeb7cbc2a6284193e4fa8331f5d57f4dab49264a58fe86a5415c98730036",
+    "verified_payload_files": 509,
+    "members_including_manifest": 510
+  },
+  {
+    "archive": "mac-originals.tar.gz",
+    "bytes": 10110,
+    "sha256": "eef25b105289b58b3e20f7c9f13daeb52190e4f66394c19d55c8bfd0bb4180b5",
+    "verified_payload_files": 28,
+    "members_including_manifest": 29
+  },
+  {
+    "archive": "identity-originals.tar.gz",
+    "bytes": 134918,
+    "sha256": "6c0316377f5631d68beb62e8cab755c005f63cfb59fc88646ba5b3a06c1b21e7",
+    "verified_payload_files": 279,
+    "members_including_manifest": 280,
+    "official_reference_receipts_equal": true
+  }
+]

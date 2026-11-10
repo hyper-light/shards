@@ -1,6 +1,8 @@
 # Separate run and shared microVM identity
 
-Status: actual defect reproduced; correction implemented, closing gates pending.
+Status: actual defect reproduced; correction passes the source-specific combined
+KVM/seven-target, official consumer and mutation/restoration gates in the
+[closing record](../../managed-combined-0ae/README.md). Full management work remains open.
 Main a920's ordinary provider case and initial conformance remain historical
 passing evidence. They did not test a joined run and do not close this correction.
 

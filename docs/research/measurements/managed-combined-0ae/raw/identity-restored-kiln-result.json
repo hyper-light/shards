@@ -1,0 +1,15 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"restored-normal-build {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 88.61069195300115}\\nrestored-kvm {\\\"exit_code\\\": 0, \\\"timeout\\\": false, \\\"elapsed_seconds\\\": 12.306189221999375}\\nCOMPLETE 0ae89529036e4e30dba639169844f1bcb5ba84da /home/adalundhe/root-managed-identity-restored-0ae-v1\\n\",\n  \"running\": false,\n  \"exit_code\": 0\n}"
+    }
+  ],
+  "structuredContent": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "restored-normal-build {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 88.61069195300115}\nrestored-kvm {\"exit_code\": 0, \"timeout\": false, \"elapsed_seconds\": 12.306189221999375}\nCOMPLETE 0ae89529036e4e30dba639169844f1bcb5ba84da /home/adalundhe/root-managed-identity-restored-0ae-v1\n",
+    "running": false,
+    "exit_code": 0
+  },
+  "isError": false
+}
