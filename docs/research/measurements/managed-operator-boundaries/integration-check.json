@@ -1,0 +1,32 @@
+{
+  "initialMechanicalCheck": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"base\": \"/home/adalundhe/managed-operator-patch-light-d6f2-v1\", \"argv\": [\"git\", \"apply\", \"--check\", \"--unsafe-paths\", \"/home/adalundhe/managed-operator-patch-light-d6f2-v1/integration.patch\"], \"exit_code\": 0, \"output\": \"\", \"patch_sha256\": \"b603595b868bfab5361a3beed732e29278ee850d509631df8f112c0a498c880d\", \"scope\": \"mechanical apply check only; no patch applied/no compile/native operations\"}\n",
+      "running": false,
+      "why": "linux/x86_64 · 27 of 32 cores idle · 48 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "ordinaryCheck": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"base\": \"/home/adalundhe/managed-operator-patch-light-d6f2-v1\", \"argv\": [\"git\", \"apply\", \"--check\", \"/home/adalundhe/managed-operator-patch-light-d6f2-v1/integration.patch\"], \"exit_code\": 0, \"output\": \"\", \"scope\": \"ordinary relative-path apply check; no patch applied/no compile/native operations\"}\n",
+      "running": false,
+      "why": "linux/x86_64 · 27 of 32 cores idle · 48 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  }
+}

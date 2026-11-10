@@ -230,6 +230,18 @@ wake fix, but the fixture's missing TCP gate entry prevents final metadata and
 causally later sibling checks. Header-only intermediate metadata is not a closed
 whole-case result or authority to implement e1cb.
 
+[integration.patch](integration.patch) makes the exact five prepared bodies
+directly reviewable against signed wake-fix d6f2. It inserts only a private child
+module of the existing cfg(test) module and imports its real helper; it changes
+no production line. [integration-identity.json](integration-identity.json) pins
+the base/prepared source and patch hashes. This is a proposed patch, not an
+applied repository source change. Its d6f2-combined compilation and ROOT adoption
+remain unrun/pending; the actual previous private five-case result is on096c.
+An ordinary `git apply --check` passed in a new admitted tiny private source
+directory against the exact d6f2 file; no patch was applied or compiler invoked.
+[integration-check.json](integration-check.json) retains the actual command and
+the earlier mechanical check as well. This proves patch applicability only.
+
 ## Policy and owed evidence
 
 R01/R04/R06/R07/R13: prepared test assertions only, typed parser/state outcomes;

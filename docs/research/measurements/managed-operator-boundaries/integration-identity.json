@@ -1,0 +1,12 @@
+{
+  "base_commit": "d6f2e4e63cc6e155a041da63a3e42cc61fdd8185",
+  "base_source_sha256": "5782d2f9d9c83cf2db6d4d1baf3152cd1f3daf5aef9856ebce788bdcbf098bab",
+  "prepared_source_sha256": "35372fe6f1b0702a4bd6eb180f0e788519a2218c6c47d67c5b23df927c1d65f0",
+  "patch_sha256": "b603595b868bfab5361a3beed732e29278ee850d509631df8f112c0a498c880d",
+  "scope": "test-only private child module; proposed patch, repository module not modified; all five exact case bodies previously passed in real096c private test module",
+  "combined_d6_plus_patch_validation": "UNRUN; coordinator adoption/combined gates pending",
+  "case_hashes": {
+    "parser-cases.rs": "7b31d68a74c6eb9f1ccc3b0957133afe072f116f84c71fa63d329bb43f33adcf",
+    "state-cases.rs": "051286d38757ab862c71fc4d14634dccbeee9413448a4f9aec0b3467addffd1f"
+  }
+}

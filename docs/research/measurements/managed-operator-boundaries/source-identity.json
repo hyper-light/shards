@@ -7,7 +7,10 @@
   "actual_results": "r10 parser3/3; r12 actual private full remote test module pure cases5/5 + scoped Clippy0; no socket/VM",
   "unrun": "actual protocol/transport/mutations/combined target matrix and ROOT integration",
   "files": {
-    "PROPOSAL.md": "d480374519de470778456933750276844bb617b38236d6fbf617276ffd1b1b0c",
+    "PROPOSAL.md": "393a75d1d108ea127870148cfb983e32a31bc106d874c172c1298390c8b7612e",
+    "integration-check.json": "c01311bfb0901ca32de876bda71f221c44d30a896880ed85d8548f073b95ca35",
+    "integration-identity.json": "b566505ae86388787e7c3fa5d398ef74186661bf201ad655fbb329f161973bf2",
+    "integration.patch": "b603595b868bfab5361a3beed732e29278ee850d509631df8f112c0a498c880d",
     "light-check.py": "b34f8ad66b6c791d9c881831183532c85317c8ada11b61692e50a1b7f471f5e2",
     "light-result.json": "8c97b18e245c1d42e4144005b95e727018edcece472387d2069381965cf57c98",
     "parser-cases.rs": "7b31d68a74c6eb9f1ccc3b0957133afe072f116f84c71fa63d329bb43f33adcf",
