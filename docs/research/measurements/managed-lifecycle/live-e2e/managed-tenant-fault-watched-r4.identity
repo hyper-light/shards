@@ -1,0 +1,8 @@
+02d60fc0d39d70db26d32e23967533d88865dbab
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)
+uid=1000(adalundhe) gid=1000(adalundhe) groups=1000(adalundhe),10(wheel),965(docker) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+ crates/init/src/domains.rs  | 2 +-
+ crates/init/src/managed.rs  | 4 ++--
+ crates/shards/src/vm_run.rs | 4 ++--
+ 3 files changed, 5 insertions(+), 5 deletions(-)

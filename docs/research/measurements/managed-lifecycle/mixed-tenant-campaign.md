@@ -1,0 +1,157 @@
+# Mixed-tenant observation-fault campaign
+
+Coordinator `/root`, R01–R16 policy SHA-256
+`0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936`.
+Source base:68391c398. This is a repeatable test, not a passing result.
+
+Current recurring lane: `/root/multitenant_live_e2e`, role=implementer, owned host/
+guest lifecycle fixtures and this measurement directory. POLICY_READ revision
+`c921a0b12b06d495b354907162e991376edffd41`, rules SHA-256
+`1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`.
+Ada explicitly authorized the recurring multi-tenant live E2E/adversarial lane;
+the coordinator retains final combined gates, review and merges. This supersedes
+historical root-only campaign assignments below, without expanding source ownership.
+
+One VM contains an exiting AGENT and a live HARNESS, plus its main workload.
+Each has distinct private volume grants. The retained source patch substitutes
+only agent-faulty's cgroup.events handle with a duplicate of its held directory.
+The real pread therefore returns EISDIR. It does not simulate a kernel cgroup
+failure or install a product fault flag; cgroup.kill and the pidfd remain real.
+Apply that patch only in an isolated validation checkout and restore it afterward.
+
+```sh
+git apply docs/research/measurements/managed-lifecycle/tenant-events-directory.patch
+git apply docs/research/measurements/managed-lifecycle/tenant-console-observation.patch
+cargo test -j 4 -p shards --profile test-release --test managed_lifecycle \
+  a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive \
+  -- --ignored --exact --nocapture
+```
+
+After the trusted quarantine diagnostic, the host executes a fresh command in the
+main namespace and sends a new128-bit challenge to the HARNESS's explicitly granted
+TCP listener. The host publishes only loopback ingress, with the guest service port
+selected by the OS and the published host port assigned by Shards. NETWORK ingress,
+EXPOSE --harnesses=healthy and CONNECT declarations name that exact fixture service.
+The helper accepts one challenge, syncs its private answer.pending file, renames it
+to answer, then echoes the exact bytes. A host FileWatch observes helper readiness;
+there is no periodic file probe or sleep. The host also
+reads the surviving main/HARNESS processes, then explicitly stops the VM. The
+120-second guard is the existing supplied-startup test guard; no product timeout
+or entitlement changes. Challenge bytes establish ordering, not authentication.
+
+The independent tenant-observation-fatal-mutation.patch restores whole-boundary
+failure for that same pread error. The same test must then observe actual refusal
+of post-fault main execution, rather than merely miss an alert. This mutation
+does not corrupt the control handles or manufacture a different I/O error.
+
+For subsequent isolated Linux runs, use the retained script with a **new** absolute
+evidence prefix and a private `DOCKER_CONFIG`, after kiln admits this lane's four
+CPU/eight-GiB-memory/twenty-GiB-disk envelope:
+
+```sh
+bash docs/research/measurements/managed-lifecycle/run-tenant-observation.sh \
+  green "$HOME/managed-tenant-fault-UNIQUE-green"
+bash docs/research/measurements/managed-lifecycle/run-tenant-observation.sh \
+  fatal "$HOME/managed-tenant-fault-UNIQUE-fatal"
+```
+
+The script requires a clean checkout, refuses existing output files, records the
+exact source patch and environment, and restores only the three injected source
+files. A fatal run should return the test's nonzero status; assess its actual main
+execution refusal in the log rather than treating every failure as decisive.
+
+First KVM attempt e6558222b/r68 failed0/1 after145.24s: the test waited for a
+diagnostic which is written to init's console, while warm VMs deliberately discard
+that console and keep main stdout/stderr private. This is an observation-seam
+failure, not evidence that quarantine failed. The separate retained console patch
+enables warm boot/restore console only in this isolated campaign. It is not a
+production output-policy change and cannot be used as raw-output independence
+evidence. Production typed control/metadata observation is separate capture work.
+
+The second attempt55a70c84/r76 failed0/1 after120.90s, but its daemon.log
+contains the exact trusted EISDIR quarantine diagnostic. The UART writer retains
+the daemon's original output destination across client stdio handover. The fixture
+therefore now observes that actual file with the existing cross-platform FileWatch
+and an event wait, then performs the live sibling challenge. It does not add a
+periodic log reread or change production routing to accommodate the test.
+
+Recurring-lane KVM run r4 at `02d60fc0` failed 0/1 in 2.69s, exit101. The real
+EISDIR quarantine diagnostic was present, but two fixture seams were wrong: the
+watcher returned the unterminated log tail before `21` arrived, and post-fault exec
+requested bare `report` instead of `/bin/testguest report`. Exec accepted the new
+request and returned127 for its missing executable. This is a fixture failure;
+it is not a reproduced whole-VM failure. The correction only accepts newline-
+terminated diagnostic lines and names the actual executable for fresh exec.
+Raw logs/exit/environment are retained on Fedora as
+`~/managed-tenant-fault-watched-r4.{log,exit,identity}`. This first recurring run
+reused the old watched-green filename before copying it to its unique prefix;
+the prior r81 raw file was overwritten. Its earlier Kiln transcript remains,
+and this evidence-loss error is explicitly reported to the coordinator. The new
+no-clobber script prevents that reuse on subsequent attempts.
+
+Run r7 at `80b46c1d` failed 0/1 in126.15s, exit101. Complete EISDIR quarantine and
+fresh main execution succeeded; the healthy helper did not answer a host-origin
+shared-volume rename. At observation time its private directory contained ready
+(5bytes) and go(16bytes), without answer. The guest's blocking inotify read was an
+incorrect fixture dependency: [inotify(7)](https://www.man7.org/linux/man-pages/man7/inotify.7.html)
+documents that it does not catch remote filesystem events. This result does not
+establish a dead healthy tenant. Raw artifacts remain uniquely named
+`~/managed-tenant-fault-complete-line-mainexec-v1-green.{log,exit,identity,source.patch}`.
+
+The TCP replacement uses existing documented
+[EXPOSE ingress semantics](../../../architecture/AGENTFILE_ARCH.md) and the actual
+`agents_answer_what_their_networks_let_in` fixture in tests/build.rs as its local
+implementation reference. Retrying host filesystem probes, picked sleep intervals
+and implicit ingress were rejected. This is fixture plumbing, not a new production
+transport or an interception/authorization claim. The reduced reliability campaign
+also records only the exiting actor's PID; the separate protected-reaper access
+fixture is not invoked by this filtered run.
+
+Run r12 at `075421d7` failed 0/1 in26.87s, exit101. Quarantine, fresh main execution,
+the exact16byte TCP answer and identical private synced answer all succeeded before
+the process-list assertion. Its `top -o comm` omitted the PID field required by the
+existing process-list adapter; the fixture now requests `pid,comm`. This is another
+fixture failure, not a failed healthy response. Unique artifacts remain
+`~/managed-tenant-fault-granted-tcp-v1-green.{log,exit,identity,source.patch}`.
+
+Native light checks, actual KVM/HVF/WHP runs, mutation outcomes and resource counts
+must be appended by the coordinator after running. This campaign does not prove
+full pressure fairness, checkpoint consistency, all syscall tamper routes,
+leak freedom, comparative performance or the seven-target matrix. The production
+quarantine retains unknown population, held handles and charges until reconciliation
+or disposal. Guest/root resource and per-tenant channel guarantees remain separate
+requirements in the management plan.
+
+## Coordinator recovery and completed live result
+
+Coordinator POLICY_READ c921a0b1, SHA256
+`1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`.
+The lane's turn was twice rejected automatically as “possible cybersecurity risk”; nobody
+stopped it. These provider rejections are not Shards lifecycle failures and prove
+nothing about actor control. The remaining security campaign is unverified. The
+coordinator recovered the already completed synthetic reliability run directly.
+
+At `dcedefaad3bd4ea284a7597f9c5db27024ba770e`, r15 passed1/1 in2.10s,
+exit0. The exact post-quarantine main exec returned0 and reported its namespace;
+the healthy HARNESS echoed the newly supplied16byte challenge after syncing the
+same bytes to its private answer. Remaining process rows included main testguest,
+server/sandbox and lifecycle-ready. Explicit VM stop succeeded. Full raw log,
+exit, environment and applied source patch are retained in live-e2e under
+`managed-tenant-fault-granted-tcp-pid-v1-green.*`. Earlier files whose names end
+“green” but whose .exit is101 remain failed fixture attempts, not passing results.
+
+R01/R03/R04: only fixtures and test-only source patches are added; no production
+fault switch, runtime constant or alternate state machine. R02/R05/R12: actual
+FileWatch completion events and existing explicit ingress grants replace the
+incorrect cross-filesystem inotify assumption; prior sources and alternatives
+are recorded above. R06/R07/R13: one focused mixed workload and shared observation
+helpers, no new generic process manager. R08/R14: no throughput, leak freedom,
+allocation/fault accounting or comparative claim; all remain owed. R09/R10:
+each actual failure and correction is retained, and r15 is real KVM evidence;
+the fatal-scope independent mutation remains pending. R11: GNU/Linux x86_64 KVM
+only; seven-target and other VM hosts remain unverified. R15: root recovered and
+reviewed outputs, owns combined validation/main merge. R16: source/evidence
+preserved, no unrelated data cleanup or credential use. This proves this
+synthetic failure's scope, not full hostile cross-tenant isolation, resource
+exhaustion, deep descendant control, telemetry completeness or repeated-crash
+recovery.

@@ -1,0 +1,11 @@
+--- a/crates/init/src/managed.rs
++++ b/crates/init/src/managed.rs
+@@ -428,7 +428,7 @@
+             Ok(true) => self.state = self.state.empty(),
+             Ok(false) => {}
+             Err(e) => {
+-                return self.quarantine(e.raw_os_error().unwrap_or(libc::EIO));
++                return Err(BoundaryFault::PopulationControl { errno: e.raw_os_error().unwrap_or(libc::EIO) });
+             }
+         }
+         Ok(Update::Observed)

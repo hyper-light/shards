@@ -10,6 +10,53 @@ pub fn probe(path: &str) -> i32 {
     }
 }
 
+pub fn exit_after_report(path: &str) -> i32 {
+    let saved = (|| {
+        let mut file = std::fs::File::create(path)?;
+        writeln!(file, "actor_pid={}", std::process::id())?;
+        file.sync_all()
+    })();
+    match saved {
+        Ok(()) => 0,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "managed lifecycle exit probe: {e}");
+            1
+        }
+    }
+}
+
+pub fn challenge(directory: &str, port: &str) -> i32 {
+    match answer(directory, port) {
+        Ok(()) => hold(),
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "managed lifecycle challenge: {e}");
+            1
+        }
+    }
+}
+
+fn answer(directory: &str, port: &str) -> io::Result<()> {
+    use std::io::Read as _;
+    let root = std::path::Path::new(directory);
+    let port = port.parse::<u16>().map_err(io::Error::other)?;
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+    std::fs::write(root.join("ready"), b"ready")?;
+    let (mut input, _) = listener.accept()?;
+    let mut challenge = [0u8; size_of::<u128>()];
+    input.read_exact(&mut challenge)?;
+    let mut extra = [0u8; 1];
+    if input.read(&mut extra)? != 0 {
+        return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
+    }
+    let pending = root.join("answer.pending");
+    let mut result = std::fs::File::create(&pending)?;
+    result.write_all(&challenge)?;
+    result.sync_all()?;
+    std::fs::rename(pending, root.join("answer"))?;
+    input.write_all(&challenge)?;
+    Ok(())
+}
+
 fn report(path: &str) -> io::Result<()> {
     let mut file = std::fs::File::create(path)?;
     // SAFETY: stat(2) initializes this output and kill(2) with signal zero only checks access.

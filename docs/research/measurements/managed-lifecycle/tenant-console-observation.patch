@@ -1,0 +1,20 @@
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -1447,7 +1447,7 @@
+             return ExitCode::FAILURE;
+         }
+     };
+-    cfg.console = Console::Discard;
++    cfg.console = Console::Stdout;
+     serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
+         cfg.vsock = Some(vsock);
+         restore_vm(cfg)
+@@ -1465,7 +1465,7 @@
+     };
+     let template = cfg.snapshot.is_some();
+     boot_into(&mut cfg, rootfs, template);
+-    cfg.console = Console::Discard;
++    cfg.console = Console::Stdout;
+     crate::warm::HOST_DEVICES.store(!cfg.vfio.is_empty(), std::sync::atomic::Ordering::Relaxed);
+     serve_workload(None, Source::Warm(daemon, false), move |vsock| {
+         cfg.vsock = Some(vsock);
