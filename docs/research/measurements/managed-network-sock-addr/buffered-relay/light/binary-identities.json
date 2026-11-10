@@ -1,0 +1,37 @@
+[
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-proof-v2/target/debug/deps/sock_addr_pure-7c5bfa2490777f50",
+    "bytes": 10428608,
+    "sha256": "9ef2a858ceeb0980c7989ce81ca6b5b78f97bf91c952b7f5fde41e01e3a08713"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-proof-v2/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-cf7b5244cca1cf3c",
+    "bytes": 10543816,
+    "sha256": "de1c139c4f81a54e8a7a8cb57ff2b065b7f22dd5a5beaec22d5faecce549f797"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-proof-v3/target/debug/deps/sock_addr_pure-e5049e469ccbf6d9",
+    "bytes": 10478840,
+    "sha256": "45edda4fdad548ee6a201867a9343d5367c5338e3c83bf66c16c34adc93ee892"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-proof-v4/target/debug/deps/sock_addr_pure-222f8f863ffd609e",
+    "bytes": 10478360,
+    "sha256": "51f0e8c8510f9dc4c3594d3833fb91ed530919fc1d96d34d5b7da48588a7b369"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-proof-v4/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-7c8fa502ffc08394",
+    "bytes": 10588736,
+    "sha256": "34300ee446925c60e2e4a7618c80bf9d5be26d777f949273465837b7baaa8295"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-host-v1/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11160848,
+    "sha256": "fa38b75d52d418511d36dbc7a780a44697b10e0c013cf8af9161b974c3432f06"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-buffered-relay-host-v3/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11254896,
+    "sha256": "e8356f02878aa2506735e9ca017173ef4606cbcef78c363c0fab103220c58389"
+  }
+]

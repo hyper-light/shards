@@ -1,0 +1,12 @@
+{
+  "source": "7ee6c4bcf90796c6a1540ed748a5ef89940825e1",
+  "base": "ebbda9b3b7b3de9a9143f4d383f60769ec7803b7",
+  "files": {
+    "crates/testguest/src/managed_network.rs": "57a5cd2c7eacb0d995a08e7e1d8ba4e4bf257105ed2d582ae2ef0087385cc067",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "8d62cda8d6abd4d1ff1a5ddf8242cf4c6814b2687a85314b5624f65dd0a1d27c",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "a044d1d16ef3de0094c9f73e5338042317d2d835ec8fd674cec66c2947f5d31e",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "3fd2abe3355735d3d3c7ed79246b153dc85ac9e07cdf4118d371436e3b20d759",
+    "crates/shards/tests/managed_network.rs": "1cc862553b4e51880db6ef2e7a1758c946de14d3c35fa76f68d3fb3b50720db3",
+    "docs/research/measurements/managed-network-sock-addr/light-host.py": "41a95d09e808a050171793eb3031fc0649b86729d680629be6941066b0bbce33"
+  }
+}
