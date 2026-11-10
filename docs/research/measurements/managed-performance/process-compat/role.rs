@@ -75,14 +75,13 @@ fn snapshot(phase: &str) -> Result<()> {
     }
     let mut inodes = std::collections::BTreeSet::new();
     for fd in std::fs::read_dir("/proc/self/fd")? {
-        if let Ok(target) = std::fs::read_link(fd?.path()) {
-            if let Some(inode) = target
+        if let Ok(target) = std::fs::read_link(fd?.path())
+            && let Some(inode) = target
                 .to_str()
                 .and_then(|s| s.strip_prefix("socket:["))
                 .and_then(|s| s.strip_suffix(']'))
-            {
-                inodes.insert(inode.to_owned());
-            }
+        {
+            inodes.insert(inode.to_owned());
         }
     }
     for table in ["/proc/net/udp", "/proc/net/udp6"] {
