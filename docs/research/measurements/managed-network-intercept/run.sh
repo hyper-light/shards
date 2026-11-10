@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# COORDINATOR ONLY: boots one real guest for the supplied finite IPv4 TCP origin case.
+# COORDINATOR ONLY: boots one real guest for the supplied finite IPv4/IPv6 TCP origin case.
 set -euo pipefail
 : "${CARGO_TARGET_DIR:?coordinator private target}"
 : "${SHARDS_KERNEL:?absolute experimental kernel, never production-pin fallback}"
@@ -14,6 +14,13 @@ set -euo pipefail
 : "${SHARDS_INTERCEPT_MARK:?decimal nonzero32-bit fixture mark}"
 : "${SHARDS_INTERCEPT_TABLE:?decimal32-bit fixture table, excluding reserved IDs}"
 : "${SHARDS_INTERCEPT_RULE_PRIORITY:?decimal priority before main and after local}"
+# Existing callers keep explicit tcp4 behavior; tcp6 is a distinct opt-in entry.
+export SHARDS_INTERCEPT_PROTOCOL="${SHARDS_INTERCEPT_PROTOCOL:-intercept-tcp4}"
+case "$SHARDS_INTERCEPT_PROTOCOL" in
+    intercept-tcp4) filter=experimental_tcp4_interception_has_distinct_backend_and_relay_observations ;;
+    intercept-tcp6) filter=experimental_tcp6_interception_has_distinct_backend_and_relay_observations ;;
+    *) exit 2 ;;
+esac
 export CARGO_BUILD_JOBS=4
 export SHARDS_NETWORK_SOURCE_REVISION=$(git rev-parse HEAD)
 python3 - <<'PY'
@@ -35,13 +42,13 @@ git rev-parse HEAD > "$SHARDS_NETWORK_RECORDS/source.txt"
 # Force actual guest rebuild after kiln synchronization even if source mtimes are old.
 touch crates/testguest/src/{main.rs,linux.rs,managed_network.rs} crates/testguest/src/managed_network/{intercept.rs,intercept/wire.rs} crates/shards/tests/managed_network.rs
 set +e
-cargo test --locked -j4 --profile test-release -p shards --test managed_network experimental_tcp4_interception_has_distinct_backend_and_relay_observations -- --ignored --exact --nocapture --test-threads=1 > "$SHARDS_NETWORK_RECORDS/campaign.log" 2>&1
+cargo test --locked -j4 --profile test-release -p shards --test managed_network "$filter" -- --ignored --exact --nocapture --test-threads=1 > "$SHARDS_NETWORK_RECORDS/campaign.log" 2>&1
 status=$?
 if [ "$status" -eq 0 ]; then
     # A zero-test cargo success creates no actual guest observation file.
     python3 - <<'PY'
 import json,os,pathlib
-p=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])/('intercept-tcp4-'+os.environ['SHARDS_INTERCEPT_ORIGIN']+'.stdout')
+p=pathlib.Path(os.environ['SHARDS_NETWORK_RECORDS'])/(os.environ['SHARDS_INTERCEPT_PROTOCOL']+'-'+os.environ['SHARDS_INTERCEPT_ORIGIN']+'.stdout')
 records=[json.loads(line.removeprefix('managed-intercept ')) for line in p.read_text().splitlines() if line.startswith('managed-intercept ')]
 expected='RelayAbsentChecked' if os.environ['SHARDS_INTERCEPT_ORIGIN']=='forward-relay-absent' else 'Intercepted'
 assert sum(r.get('type')==expected for r in records)==1, 'actual guest experiment observation required'

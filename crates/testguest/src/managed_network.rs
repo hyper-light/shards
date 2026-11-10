@@ -107,9 +107,23 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     match words.as_slice() {
         ["capabilities"] => Ok(Probe::Capabilities(None)),
         ["capabilities", path] => Ok(Probe::Capabilities(Some(path))),
-        ["intercept-tcp4", origin, millis, mark, table, priority] => Ok(Probe::Intercept(
-            intercept::Inputs::parse(origin, millis, mark, table, priority)?,
-        )),
+        [
+            protocol @ ("intercept-tcp4" | "intercept-tcp6"),
+            origin,
+            millis,
+            mark,
+            table,
+            priority,
+        ] => {
+            let family = match *protocol {
+                "intercept-tcp4" => intercept::Family::Ipv4,
+                "intercept-tcp6" => intercept::Family::Ipv6,
+                _ => return Err(invalid("unsupported interception family")),
+            };
+            Ok(Probe::Intercept(intercept::Inputs::parse(
+                family, origin, millis, mark, table, priority,
+            )?))
+        }
         [role, transport, address, sent, received, millis, mode] => {
             let transport = match *transport {
                 "tcp" => Transport::Tcp,
@@ -141,7 +155,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], intercept-tcp4 {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -858,5 +872,21 @@ mod tests {
             Deadline::new(Duration::MAX).err().unwrap().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+
+    #[test]
+    fn interception_commands_keep_explicit_ip_families() {
+        for protocol in ["intercept-tcp4", "intercept-tcp6"] {
+            let args: Vec<_> = [protocol, "forward-relay-absent", "1000", "1", "1000", "100"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+            assert!(matches!(parse(&args).unwrap(), Probe::Intercept(_)));
+        }
+        let args: Vec<_> = ["intercept-tcp5", "local", "1000", "1", "1000", "100"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert!(parse(&args).is_err());
     }
 }

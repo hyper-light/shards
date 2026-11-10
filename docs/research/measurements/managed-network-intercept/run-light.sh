@@ -30,6 +30,7 @@ run() {
     return "$status"
 }
 run gnu-pure cargo test -p shards-testguest --bin shards-testguest --target x86_64-unknown-linux-gnu -j4 managed_network::intercept:: -- --nocapture
+run parent-parser cargo test -p shards-testguest --bin shards-testguest --target x86_64-unknown-linux-gnu -j4 managed_network::tests::interception_commands_keep_explicit_ip_families -- --exact --nocapture
 run gnu-clippy cargo clippy -p shards-testguest --bin shards-testguest --tests --target x86_64-unknown-linux-gnu -j4 -- -D warnings
 run musl-check cargo clippy -p shards-testguest --bin shards-testguest --tests --target x86_64-unknown-linux-musl -j4 -- -D warnings
 python3 - "$CARGO_TARGET_DIR" "$RECORDS" <<'PY'

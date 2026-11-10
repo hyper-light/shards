@@ -1,0 +1,45 @@
+{
+  "base": "e27cd2aa85e43e66eca53f0eda18d50233bf9736",
+  "signed_source": "2a173a2ea805a1f64c7dd85e0b217fc97365fd4f",
+  "policy": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "wire_identical_to_eb0": true,
+  "files": [
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "bytes": 32750,
+      "sha256": "50dfcfa6a07283757ac57e9565db56de2d8fdcebc5845f7611b718c306bff9dd",
+      "identical_to_base": false
+    },
+    {
+      "path": "crates/shards/tests/managed_network.rs",
+      "bytes": 18678,
+      "sha256": "e14c7bc52e3e56f74a8618ef87ad8c94594462db9cd9d6c73197da634dcf0040",
+      "identical_to_base": false
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+      "bytes": 23424,
+      "sha256": "d3153a5fcbdecbd990b5ff6c2d3fb5e6dbefc4b6ba8a87d7b372e16514609d1c",
+      "identical_to_base": true
+    },
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "bytes": 31448,
+      "sha256": "ae6308f814b3daf96581721413771d9c8fb2cd0bd4e2cece9f19ebbe54d6b389",
+      "identical_to_base": true
+    },
+    {
+      "path": "docs/research/measurements/managed-network-intercept/run.sh",
+      "bytes": 3981,
+      "sha256": "0c1fbdf2b3aa9cc0858066ef0bafb7c9194f0890120464b7e9f91828f04ddddb",
+      "identical_to_base": true
+    },
+    {
+      "path": "docs/research/measurements/managed-network-intercept/run-light.sh",
+      "bytes": 2015,
+      "sha256": "d27a854fb3ace8d1835b696eb42d1000b4681f1ab9bc23fa1e3c5fbc7658ad45",
+      "identical_to_base": true
+    }
+  ]
+}
