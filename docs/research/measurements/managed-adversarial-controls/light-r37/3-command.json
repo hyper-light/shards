@@ -1,0 +1,1 @@
+["rustc", "+1.98.1", "--edition=2024", "--crate-name", "shards_abi", "--crate-type", "rlib", "/home/adalundhe/managed-adversarial-controls-v1/source/crates/abi/src/lib.rs", "-o", "/home/adalundhe/managed-adversarial-controls-v1/target/libshards_abi.rlib"]

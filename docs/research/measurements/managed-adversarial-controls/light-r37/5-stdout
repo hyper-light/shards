@@ -1,0 +1,8 @@
+
+running 3 tests
+test tests::application_ack_uses_encoded_record_end_not_canonical_payload_offset ... ok
+test tests::cleanup_and_outer_bounds_share_the_original_start ... ok
+test tests::three_wrong_acks_are_derived_from_the_observed_interval ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

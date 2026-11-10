@@ -1,0 +1,1 @@
+["rustc", "+1.98.1", "--edition=2024", "--test", "/home/adalundhe/managed-adversarial-controls-v1/source/crates/shards/tests/managed_output/adversarial_controls/contract.rs", "--extern", "shards_abi=/home/adalundhe/managed-adversarial-controls-v1/target/libshards_abi.rlib", "-o", "/home/adalundhe/managed-adversarial-controls-v1/target/contract-tests"]

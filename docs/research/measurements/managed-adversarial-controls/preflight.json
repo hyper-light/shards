@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"base\": \"/home/adalundhe/managed-adversarial-controls-v1\", \"exists\": false, \"platform\": \"Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43\", \"machine\": \"x86_64\", \"disk_free\": 1927715160064, \"kvm_exists\": true, \"kvm_rw\": true}\n{\"command\": [\"rustc\", \"--version\", \"--verbose\"], \"exit\": 0, \"stdout\": \"rustc 1.99.1 (58cf8f9c3 2026-10-13)\\nbinary: rustc\\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\\ncommit-date: 2026-10-13\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.99.1\\nLLVM version: 23.1.1\\n\", \"stderr\": \"\"}\n{\"command\": [\"cargo\", \"--version\"], \"exit\": 0, \"stdout\": \"cargo 1.99.1 (5f94df478 2026-08-27)\\n\", \"stderr\": \"\"}\n{\"command\": [\"git\", \"--version\"], \"exit\": 0, \"stdout\": \"git version 2.55.0\\n\", \"stderr\": \"\"}\n",
+    "running": false,
+    "why": "linux/x86_64 \u00b7 20 of 32 cores idle \u00b7 14 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk \u00b7 2 CI jobs",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

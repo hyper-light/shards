@@ -1,0 +1,1 @@
+["rustc", "+1.98.1", "--edition=2024", "/home/adalundhe/managed-adversarial-controls-v1/source/crates/abi/build.rs", "-o", "/home/adalundhe/managed-adversarial-controls-v1/target/abi-build"]

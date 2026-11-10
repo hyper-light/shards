@@ -1,0 +1,18 @@
+{
+  "/home/adalundhe/managed-adversarial-controls-v1/target/abi-build": {
+    "sha256": "f790d1580f9ab248ab79ce06b5ffb42502ecac6a79b2b487b3719862042b0e10",
+    "bytes": 4637000
+  },
+  "/home/adalundhe/managed-adversarial-controls-v1/target/contract-tests": {
+    "sha256": "f4b811dbbda555122175ff4568de50e79a268a0af9b2b4f3826433b46e432c66",
+    "bytes": 7222760
+  },
+  "/home/adalundhe/managed-adversarial-controls-v1/target/libshards_abi.rlib": {
+    "sha256": "749bc1ef943d568f59dff1085303ebd1e63b91940de5a6cc0a8c2cb617d707d0",
+    "bytes": 1689078
+  },
+  "/home/adalundhe/managed-adversarial-controls-v1/target/out/identity.rs": {
+    "sha256": "8691b92bff542832354e0db3dfb16cd5b482ce97806223e1126855bfab2dd539",
+    "bytes": 208
+  }
+}

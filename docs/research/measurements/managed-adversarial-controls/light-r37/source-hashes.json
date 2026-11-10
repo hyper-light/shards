@@ -1,0 +1,12 @@
+{
+  "crates/abi/build.rs": "5daeaceeb36e04c1962ed90ffb3d7216cc12aebbaf8e6158eaffa5d7edb6b168",
+  "crates/abi/src/bounds.rs": "e8297213757dae9f93bd562fa6f25c215a63d8476c8ec9ca94db2ecffd90108f",
+  "crates/abi/src/build.rs": "a90290611ae47693edbfe5bef0484253f95f2df4eb8b86ecc9aefc25862df7bf",
+  "crates/abi/src/changes.rs": "e3036a8559371fe2c39e25e93bb13622847669ac48488b5987d3e0f453609baa",
+  "crates/abi/src/emulate.rs": "9bc88f80176e0c96fb6571161f36fb49e37a8493df88d2cca931276c0f87677d",
+  "crates/abi/src/lib.rs": "d72676c26cf34b2b3d9623826ec31281523cb98048f2b1e32a50df9b5c1d0bfb",
+  "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+  "crates/abi/src/run/quiesce.rs": "dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092",
+  "crates/abi/src/run.rs": "e3f41125fb25e760a5d8089aa0ef86353bf7f62ba12098a87f2a150c3c8777e8",
+  "crates/shards/tests/managed_output/adversarial_controls/contract.rs": "0f176d095faa44acec28bde01626f68ac990175a96e5dbd525de87c81ef855bb"
+}
