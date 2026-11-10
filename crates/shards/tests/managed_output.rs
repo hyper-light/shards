@@ -306,15 +306,18 @@ impl Observer {
         if self.thread.is_none() {
             return Ok(());
         }
-        self.ended
-            .recv_timeout(WITHIN)
-            .map_err(|e| format!("observer completion: {e}"))?
-            .map_err(|e| e.to_string())?;
-        self.thread
+        let result = match self.ended.recv_timeout(WITHIN) {
+            Ok(result) => result.map_err(|e| e.to_string()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err("observer completion disconnected".into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => return Err("observer completion deadline".into()),
+        };
+        let joined = self
+            .thread
             .take()
             .unwrap()
             .join()
-            .map_err(|_| "observer worker panicked".to_string())
+            .map_err(|_| "observer worker panicked".to_string());
+        joined.and(result)
     }
 }
 
@@ -563,13 +566,14 @@ impl Fixture {
 
     fn shutdown(&mut self) -> Result<(), String> {
         let _ = writeln!(std::io::stdout(), "managed-owner owner stop");
-        let stopped = self.command(&["stop", "daemon"]);
         let mut errors = Vec::new();
-        if stopped.status != Some(0) {
-            errors.push(format!("owner stop: {stopped}"));
-        }
         for observer in &self.observers {
             observer.sender.request_stop();
+        }
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.command(&["stop", "daemon"]))) {
+            Ok(stopped) if stopped.status != Some(0) => errors.push(format!("owner stop: {stopped}")),
+            Err(_) => errors.push("owner-stop CLI helper panicked".into()),
+            _ => {}
         }
         for observer in &mut self.observers {
             if let Err(error) = observer.join() {
