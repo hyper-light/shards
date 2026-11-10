@@ -1,0 +1,33 @@
+{
+  "scope": "/tmp/shards-helper-libc-probe-v1",
+  "free_before_bytes": 34968608768,
+  "checks": {
+    "x86_64-unknown-linux-musl": {
+      "command": [
+        "cargo",
+        "check",
+        "--offline",
+        "-j1",
+        "--target",
+        "x86_64-unknown-linux-musl"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "output": "     Locking 1 package to latest Rust 1.98.1 compatible version\n   Compiling libc v0.2.189 (/private/tmp/shards-helper-libc-probe-v1/libc-0.2.189)\n    Checking helper-libc-uapi-probe v0.1.0 (/private/tmp/shards-helper-libc-probe-v1)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.37s\n"
+    },
+    "aarch64-unknown-linux-musl": {
+      "command": [
+        "cargo",
+        "check",
+        "--offline",
+        "-j1",
+        "--target",
+        "aarch64-unknown-linux-musl"
+      ],
+      "exit": 0,
+      "timeout": false,
+      "output": "   Compiling libc v0.2.189 (/private/tmp/shards-helper-libc-probe-v1/libc-0.2.189)\n    Checking helper-libc-uapi-probe v0.1.0 (/private/tmp/shards-helper-libc-probe-v1)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s\n"
+    }
+  },
+  "free_after_bytes": 34957201408
+}

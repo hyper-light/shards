@@ -284,8 +284,8 @@ fn worker_calls() -> Vec<libc::c_long> {
 }
 
 /// What the helper may call besides a worker's: its control socket's messages and their
-/// descriptors, polling, forking (`clone` on arm64, `fork` on x86_64, as musl's `_Fork`
-/// makes one), each worker's pidfd, to kill it and reap it, and what a worker calls to
+/// descriptors, polling, atomic worker/pidfd creation, killing and reaping, and parent
+/// identity/death setup before the worker's stricter filter, and what a worker calls to
 /// confine itself further before it reads its program (`prctl`, `seccomp`), which its
 /// own filter then refuses.
 fn helper_calls() -> Vec<libc::c_long> {
@@ -294,8 +294,9 @@ fn helper_calls() -> Vec<libc::c_long> {
         libc::SYS_recvmsg,
         libc::SYS_sendmsg,
         libc::SYS_ppoll,
-        libc::SYS_clone,
-        libc::SYS_pidfd_open,
+        libc::SYS_clone3,
+        libc::SYS_getpid,
+        libc::SYS_getppid,
         libc::SYS_pidfd_send_signal,
         libc::SYS_waitid,
         libc::SYS_fcntl,
@@ -303,7 +304,7 @@ fn helper_calls() -> Vec<libc::c_long> {
         libc::SYS_seccomp,
     ]);
     #[cfg(target_arch = "x86_64")]
-    calls.extend([libc::SYS_poll, libc::SYS_fork]);
+    calls.push(libc::SYS_poll);
     calls
 }
 
@@ -393,152 +394,317 @@ pub fn helper() -> std::process::ExitCode {
     }
 }
 
-/// A worker the helper forked: its program's ID, and its pidfd.
+/// The worker remains owned by its pidfd until waitid actually reaps it.
 struct Worker {
     id: u64,
     pidfd: OwnedFd,
+    phase: WorkerPhase,
 }
 
-fn serve_helper() -> Result<(), String> {
-    // Named as what it is, apart from the instance it serves (`shards top`, D123).
-    // SAFETY: prctl(2) naming this thread, with a NUL-terminated name of 15 bytes or fewer.
+#[derive(Clone, Copy)]
+enum WorkerPhase {
+    Running,
+    Stopping,
+    SignalUnknown(io::ErrorKind, Option<i32>),
+}
+
+#[derive(Debug)]
+enum HelperCause {
+    Setup(String),
+    Io(&'static str, io::ErrorKind, Option<i32>),
+    Control,
+    Closing,
+}
+
+impl HelperCause {
+    fn io(operation: &'static str, error: io::Error) -> Self {
+        Self::Io(operation, error.kind(), error.raw_os_error())
+    }
+}
+
+#[derive(Debug)]
+struct CleanupUnknown {
+    count: usize,
+    first_id: u64,
+    cause: HelperCause,
+}
+
+#[derive(Debug)]
+struct HelperFailure {
+    cause: HelperCause,
+    cleanup: Option<CleanupUnknown>,
+}
+
+impl From<HelperCause> for HelperFailure {
+    fn from(cause: HelperCause) -> Self {
+        Self { cause, cleanup: None }
+    }
+}
+
+impl std::fmt::Display for HelperCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Setup(why) => f.write_str(why),
+            Self::Io(operation, kind, code) => write!(f, "{operation}: {kind:?}, OS {code:?}"),
+            Self::Control => f.write_str("a control message it does not know"),
+            Self::Closing => f.write_str("ending its owned workers"),
+        }
+    }
+}
+
+impl std::fmt::Display for HelperFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.cause)?;
+        if let Some(unknown) = &self.cleanup {
+            write!(
+                f,
+                "; {} workers not known reaped, first {}: {}",
+                unknown.count, unknown.first_id, unknown.cause
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl Worker {
+    fn stop(&mut self) {
+        if !matches!(self.phase, WorkerPhase::Running) {
+            return;
+        }
+        // SAFETY: this owned pidfd names only this worker, even after its PID is reused.
+        if unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                0,
+                0,
+            )
+        } == 0
+        {
+            self.phase = WorkerPhase::Stopping;
+            return;
+        }
+        let error = io::Error::last_os_error();
+        self.phase = if error.raw_os_error() == Some(libc::ESRCH) {
+            WorkerPhase::Stopping
+        } else {
+            WorkerPhase::SignalUnknown(error.kind(), error.raw_os_error())
+        };
+    }
+
+    fn reap(&self, options: i32) -> io::Result<Option<(i32, i32)>> {
+        // SAFETY: zero is a valid initial siginfo_t for waitid to fill.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waitid writes through this live siginfo_t and names our owned child.
+        if unsafe {
+            libc::waitid(
+                libc::P_PIDFD,
+                self.pidfd.as_raw_fd() as libc::id_t,
+                &raw mut info,
+                libc::WEXITED | options,
+            )
+        } != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: these child-status fields were filled by the successful waitid.
+        let (pid, status) = unsafe { (info.si_pid(), info.si_status()) };
+        if pid == 0 {
+            return Ok(None);
+        }
+        Ok(Some((info.si_code, status)))
+    }
+
+    fn said(control: RawFd, id: u64, code: i32, status: i32) -> Result<(), HelperCause> {
+        use io::Write as _;
+        // Existing ENDED wire: kind, u64 ID, i32 wait code, i32 status.
+        let mut bytes = [0; size_of::<u8>() + size_of::<u64>() + 2 * size_of::<i32>()];
+        let mut out = bytes.as_mut_slice();
+        for part in [
+            [ENDED].as_slice(),
+            id.to_be_bytes().as_slice(),
+            code.to_be_bytes().as_slice(),
+            status.to_be_bytes().as_slice(),
+        ] {
+            out.write_all(part)
+                .map_err(|e| HelperCause::io("encoding a worker's end", e))?;
+        }
+        send_control(control, &bytes, None).map_err(|e| HelperCause::io("saying a worker ended", e))
+    }
+}
+
+fn serve_helper() -> Result<(), HelperFailure> {
+    // SAFETY: a constant NUL-terminated thread name of fewer than 16 bytes.
     unsafe { libc::prctl(libc::PR_SET_NAME, c"shards-sandbox".as_ptr()) };
-    confine(&allowlist(&helper_calls())?)?;
+    confine(&allowlist(&helper_calls()).map_err(HelperCause::Setup)?).map_err(HelperCause::Setup)?;
     let control = CONTROL_FD;
     let mut workers: Vec<Worker> = Vec::new();
-    loop {
-        let mut set: Vec<libc::pollfd> = std::iter::once(control)
-            .chain(workers.iter().map(|w| w.pidfd.as_raw_fd()))
-            .map(|fd| libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            })
-            .collect();
-        // SAFETY: poll(2) of pollfds of ours.
-        if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
+    let mut set: Vec<libc::pollfd> = Vec::new();
+    set.try_reserve(1)
+        .map_err(|_| HelperCause::Io("its control poll slot", io::ErrorKind::OutOfMemory, None))?;
+    let result = (|| -> Result<(), HelperCause> {
+        loop {
+            // Every birth reserves its next poll slot before clone3. Rebuilding this
+            // derived readiness view therefore allocates nothing after a birth.
+            set.clear();
+            for fd in std::iter::once(control).chain(workers.iter().map(|w| w.pidfd.as_raw_fd())) {
+                set.push(libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                });
             }
-            return Err(os_err("polling"));
-        }
-        // Workers that ended: reaped, and said.
-        let ended: Vec<usize> = set
-            .iter()
-            .skip(1)
-            .enumerate()
-            .filter(|(_, p)| p.revents != 0)
-            .map(|(i, _)| i)
-            .collect();
-        for i in ended.into_iter().rev() {
-            let w = workers.swap_remove(i);
-            // SAFETY: an all-zero siginfo_t is valid for waitid to fill.
-            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: waitid(2) of the worker's pidfd, into a siginfo_t of ours.
-            let reaped = unsafe {
-                libc::waitid(
-                    libc::P_PIDFD,
-                    w.pidfd.as_raw_fd() as libc::id_t,
-                    &raw mut info,
-                    libc::WEXITED,
-                )
-            };
-            let status = if reaped == 0 {
-                // SAFETY: si_status of a siginfo_t waitid filled for a child that ended.
-                unsafe { info.si_status() }
-            } else {
-                -1
-            };
-            let code = if reaped == 0 { info.si_code } else { -1 };
-            let mut said = vec![ENDED];
-            said.extend_from_slice(&w.id.to_be_bytes());
-            said.extend_from_slice(&code.to_be_bytes());
-            said.extend_from_slice(&status.to_be_bytes());
-            send_control(control, &said, None).map_err(|e| format!("saying a worker ended: {e}"))?;
-        }
-        if set.first().is_some_and(|p| p.revents == 0) {
-            continue;
-        }
-        let Some((msg, fd)) = recv_control(control).map_err(|e| format!("its control socket: {e}"))? else {
-            // The instance is gone: so are its programs.
-            for w in &workers {
-                // SAFETY: pidfd_send_signal(2) of SIGKILL to a worker's pidfd.
-                unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        w.pidfd.as_raw_fd(),
-                        libc::SIGKILL,
-                        0,
-                        0,
-                    )
-                };
-            }
-            return Ok(());
-        };
-        let id = msg
-            .get(1..9)
-            .and_then(|b| b.try_into().ok())
-            .map(u64::from_be_bytes)
-            .unwrap_or(0);
-        match (msg.first(), fd) {
-            (Some(&RUN), Some(program)) => {
-                // SAFETY: fork(2) of this single-threaded process; the child runs the
-                // program and exits, touching nothing of the parent's but what it holds.
-                let pid = unsafe { libc::fork() };
-                if pid < 0 {
-                    let mut said = vec![ENDED];
-                    said.extend_from_slice(&id.to_be_bytes());
-                    said.extend_from_slice(&(-1i32).to_be_bytes());
-                    said.extend_from_slice(&(-1i32).to_be_bytes());
-                    send_control(control, &said, None).map_err(|e| format!("saying a worker ended: {e}"))?;
+            // SAFETY: poll of this process's initialized pollfd array.
+            if unsafe { libc::poll(set.as_mut_ptr(), set.len() as libc::nfds_t, -1) } < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                if pid == 0 {
-                    // The worker: the program's socket alone, and named as what it runs.
-                    // SAFETY: closing descriptors this child holds and does not use again,
-                    // and prctl(2) naming this thread, with a NUL-terminated name of 15
-                    // bytes or fewer.
-                    unsafe {
-                        libc::close(control);
-                        libc::prctl(libc::PR_SET_NAME, c"shards-program".as_ptr());
-                    }
-                    for w in &workers {
-                        // SAFETY: as above.
-                        unsafe { libc::close(w.pidfd.as_raw_fd()) };
-                    }
-                    let code = worker(program);
-                    // SAFETY: _exit(2) of the worker, which flushes nothing of the parent's.
-                    unsafe { libc::_exit(code) };
-                }
-                drop(program);
-                // SAFETY: pidfd_open(2) of the child just forked.
-                let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-                let Ok(pidfd) = RawFd::try_from(pidfd) else {
-                    return Err(os_err("a worker's pidfd"));
-                };
-                if pidfd < 0 {
-                    return Err(os_err("a worker's pidfd"));
-                }
-                // SAFETY: a descriptor pidfd_open just gave this process.
-                let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
-                workers.push(Worker { id, pidfd });
+                return Err(HelperCause::io("polling", error));
             }
-            (Some(&STOP), _) => {
-                if let Some(w) = workers.iter().find(|w| w.id == id) {
-                    // SAFETY: pidfd_send_signal(2) of SIGKILL to a worker's pidfd.
-                    unsafe {
-                        libc::syscall(
-                            libc::SYS_pidfd_send_signal,
-                            w.pidfd.as_raw_fd(),
-                            libc::SIGKILL,
-                            0,
-                            0,
-                        )
+            // Reverse removal preserves the remaining indices in this readiness view.
+            for (i, ready) in set.iter().skip(1).enumerate().rev() {
+                if ready.revents == 0 {
+                    continue;
+                }
+                let w = workers.get(i).ok_or(HelperCause::Control)?;
+                let (code, status) = w
+                    .reap(0)
+                    .map_err(|e| HelperCause::io("reaping a worker", e))?
+                    .ok_or(HelperCause::Control)?;
+                // get(i) above checked this index; no mutation intervened.
+                let w = workers.swap_remove(i);
+                Worker::said(control, w.id, code, status)?;
+            }
+            if set.first().is_some_and(|p| p.revents == 0) {
+                continue;
+            }
+            let Some((msg, fd)) =
+                recv_control(control).map_err(|e| HelperCause::io("its control socket", e))?
+            else {
+                return Ok(());
+            };
+            let id = msg
+                .get(1..9)
+                .and_then(|b| b.try_into().ok())
+                .map(u64::from_be_bytes)
+                .unwrap_or(0);
+            match (msg.first(), fd) {
+                (Some(&RUN), Some(program)) => {
+                    // At most one RUN is consumed in this iteration; set still holds
+                    // at least the current population plus control. Admit both arrays
+                    // before the kernel can create another worker.
+                    if workers.try_reserve(1).and_then(|()| set.try_reserve(1)).is_err() {
+                        Worker::said(control, id, -1, -1)?;
+                        continue;
+                    }
+                    let mut pidfd = -1;
+                    // SAFETY: getpid identifies this freshly exec'd, single-threaded helper.
+                    let parent = unsafe { libc::getpid() };
+                    let mut args = libc::clone_args {
+                        flags: libc::CLONE_PIDFD as u64,
+                        pidfd: (&raw mut pidfd) as u64,
+                        child_tid: 0,
+                        parent_tid: 0,
+                        exit_signal: libc::SIGCHLD as u64,
+                        stack: 0,
+                        stack_size: 0,
+                        tls: 0,
+                        set_tid: 0,
+                        set_tid_size: 0,
+                        cgroup: 0,
                     };
+                    // SAFETY: fork-like clone3 from the fresh single-threaded helper.
+                    // CLONE_PIDFD reserves/stores the parent handle before publishing
+                    // a child (Linux 6.18.48 kernel/fork.c, copy_process).
+                    let pid = unsafe {
+                        libc::syscall(libc::SYS_clone3, &raw mut args, size_of::<libc::clone_args>())
+                    };
+                    if pid < 0 {
+                        Worker::said(control, id, -1, -1)?;
+                        continue;
+                    }
+                    if pid == 0 {
+                        // SAFETY: raw setup precedes all worker allocation/instructions.
+                        // Arming then checking the pre-birth parent closes the already-
+                        // dead-parent race; the worker's filter forbids resetting it.
+                        unsafe {
+                            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
+                                || libc::getppid() != parent
+                            {
+                                libc::_exit(1);
+                            }
+                            libc::close(control);
+                            libc::prctl(libc::PR_SET_NAME, c"shards-program".as_ptr());
+                        }
+                        for w in &workers {
+                            // SAFETY: these inherited copies are not used by this child.
+                            unsafe { libc::close(w.pidfd.as_raw_fd()) };
+                        }
+                        let code = worker(program);
+                        // SAFETY: bypass inherited parent destructors on this child branch.
+                        unsafe { libc::_exit(code) };
+                    }
+                    drop(program);
+                    // SAFETY: successful CLONE_PIDFD gave this parent a valid owned fd.
+                    let pidfd = unsafe { OwnedFd::from_raw_fd(pidfd) };
+                    workers.push(Worker {
+                        id,
+                        pidfd,
+                        phase: WorkerPhase::Running,
+                    });
                 }
+                (Some(&STOP), _) => {
+                    if let Some(w) = workers.iter_mut().find(|w| w.id == id) {
+                        w.stop();
+                        if let WorkerPhase::SignalUnknown(kind, code) = w.phase {
+                            return Err(HelperCause::Io("stopping a worker", kind, code));
+                        }
+                    }
+                }
+                _ => return Err(HelperCause::Control),
             }
-            _ => return Err("a control message it does not know".into()),
         }
+    })();
+    // Close every worker's execution before waiting for any one worker. A signal
+    // failure never leads to an indefinite wait for that still-running worker.
+    for w in &mut workers {
+        w.stop();
+    }
+    let mut cleanup: Option<CleanupUnknown> = None;
+    for w in &workers {
+        let options = if matches!(w.phase, WorkerPhase::SignalUnknown(..)) {
+            libc::WNOHANG
+        } else {
+            0
+        };
+        let failure = match w.reap(options) {
+            Ok(Some(_)) => continue,
+            Ok(None) => match w.phase {
+                WorkerPhase::SignalUnknown(kind, code) => HelperCause::Io("signalling a worker", kind, code),
+                _ => HelperCause::Closing,
+            },
+            Err(e) => HelperCause::io("reaping a worker", e),
+        };
+        if let Some(unknown) = &mut cleanup {
+            // At most workers.len() entries contribute; saturation cannot hide uncertainty.
+            unknown.count = unknown.count.saturating_add(1);
+        } else {
+            cleanup = Some(CleanupUnknown {
+                count: 1,
+                first_id: w.id,
+                cause: failure,
+            });
+        }
+    }
+    match (result, cleanup) {
+        (Ok(()), None) => Ok(()),
+        (Err(cause), cleanup) => Err(HelperFailure { cause, cleanup }),
+        (Ok(()), cleanup) => Err(HelperFailure {
+            cause: HelperCause::Closing,
+            cleanup,
+        }),
     }
 }
 

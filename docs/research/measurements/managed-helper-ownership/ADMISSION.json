@@ -1,0 +1,10 @@
+{
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "role": "implementer",
+  "recorded_utc": "2026-11-10T17:22:00.917854+00:00",
+  "actual_admission_result": "{\"error\":\"no runner suits 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-3.local: macos is not linux; adacachy: 0 of 32 cores idle, under 1 CPU; adalundhe-macbook-pro: macos is not linux; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: macos is not linux; adas-mac-studio.local: macos is not linux; adas-mac-studio.local-2: macos is not linux; adas-macbook-pro-2.local: macos is not linux; adas-macbook-pro.local: macos is not linux; jupiter: windows is not linux; fedora.attlocal.net: it hasn't said how busy it is yet\\n    at __kiln_settle (eval_script:20:40)\\n    at <eval> (eval_script:1:1)\\n\",\"code\":\"program\",\"calls\":[{\"name\":\"machines.run\",\"ok\":false}]}",
+  "actors_launched": false,
+  "production_changed": false,
+  "limits": "1CPU/1GiB/2GiB; actual live before data pending; no bypass",
+  "local_packaging": "v1 rejected ambiguous getrandom package names before build; v2 preserves exact version-qualified dependency records; no production symptom claimed"
+}

@@ -1,0 +1,90 @@
+{
+  "source": "https://static.crates.io/crates/libc/libc-0.2.189.crate",
+  "archive": "/tmp/shards-helper-libc-0189-primary.crate",
+  "bytes": 851502,
+  "sha256": "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2",
+  "all_struct_declarations": [
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/gnu/b64/aarch64/mod.rs",
+      "lines": [
+        {
+          "line": 230,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/gnu/b64/loongarch64/mod.rs",
+      "lines": [
+        {
+          "line": 225,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/gnu/b64/powerpc64/mod.rs",
+      "lines": [
+        {
+          "line": 199,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/gnu/b64/riscv64/mod.rs",
+      "lines": [
+        {
+          "line": 235,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/gnu/b64/x86_64/mod.rs",
+      "lines": [
+        {
+          "line": 277,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/musl/b64/aarch64/mod.rs",
+      "lines": [
+        {
+          "line": 88,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/musl/b64/loongarch64/mod.rs",
+      "lines": [
+        {
+          "line": 79,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/musl/b64/riscv64/mod.rs",
+      "lines": [
+        {
+          "line": 51,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    },
+    {
+      "path": "libc-0.2.189/src/unix/linux_like/linux/musl/b64/x86_64/mod.rs",
+      "lines": [
+        {
+          "line": 123,
+          "text": "    pub struct clone_args {"
+        }
+      ]
+    }
+  ],
+  "limit": "Complete source search; no compile claim."
+}

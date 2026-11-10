@@ -1,0 +1,56 @@
+{
+  "baseline": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "build {\"exit\": 0, \"timed_out\": false, \"budget\": 600}\ndeath {\"exit\": 1, \"timed_out\": false, \"budget\": 40}\ncontrol-error {\"exit\": 1, \"timed_out\": false, \"budget\": 40}\n{\"source_files\": 313, \"disk_before\": 1922906943488, \"commands\": {\"build\": {\"exit\": 0, \"timed_out\": false, \"budget\": 600}, \"death\": {\"exit\": 1, \"timed_out\": false, \"budget\": 40}, \"control-error\": {\"exit\": 1, \"timed_out\": false, \"budget\": 40}}, \"binary\": {\"path\": \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/target/x86_64-unknown-linux-musl/release/managed-helper-ownership\", \"bytes\": 1822184, \"sha256\": \"084275916228cf4038a91dd9eace1ce61bc57f5724612753ffe8d257103ab8b2\"}, \"disk_after\": 1919414345728}\n\n{\"binary\": \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/target/x86_64-unknown-linux-musl/release/managed-helper-ownership\", \"mode\": \"death\", \"notification_budget_seconds\": 3, \"effects\": {\"ready\": {\"helper\": 1226310, \"worker\": 1226311, \"tasks\": 1, \"call\": {\"name\": \"receive\", \"args\": {}}, \"worker_pidfd_initial\": []}, \"helper_exit\": -9, \"worker_death_notification\": [], \"after_helper_exit\": {\"kind\": \"D\", \"body\": \"\\\"completed after helper exit\\\"\"}}, \"cleanup\": {\"worker_waitpid\": {\"pid\": 1226311, \"status\": 0}, \"late_owned_children\": [], \"fd_before\": 5, \"fd_after\": 5, \"limit\": \"Held-helper/worker waits and own FDs only; no cgroup/kernel cost proof.\"}, \"passed\": false}\nTraceback (most recent call last):\n  File \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/observe.py\", line 150, in <module>\n    assert record[\"passed\"], \"ready worker executed after its helper exited\"\n           ~~~~~~^^^^^^^^^^\nAssertionError: ready worker executed after its helper exited\n\n{\"binary\": \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/target/x86_64-unknown-linux-musl/release/managed-helper-ownership\", \"mode\": \"control-error\", \"notification_budget_seconds\": 3, \"effects\": {\"ready\": {\"helper\": 1230562, \"worker\": 1230565, \"tasks\": 1, \"call\": {\"name\": \"receive\", \"args\": {}}, \"worker_pidfd_initial\": []}, \"helper_exit\": -31, \"worker_death_notification\": [], \"after_helper_exit\": {\"kind\": \"D\", \"body\": \"\\\"completed after helper exit\\\"\"}}, \"cleanup\": {\"worker_waitpid\": {\"pid\": 1230565, \"status\": 0}, \"late_owned_children\": [], \"fd_before\": 5, \"fd_after\": 5, \"limit\": \"Held-helper/worker waits and own FDs only; no cgroup/kernel cost proof.\"}, \"passed\": false}\nTraceback (most recent call last):\n  File \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/before-musl-v4/observe.py\", line 150, in <module>\n    assert record[\"passed\"], \"ready worker executed after its helper exited\"\n           ~~~~~~^^^^^^^^^^\nAssertionError: ready worker executed after its helper exited\n\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 13 of 32 cores idle \u00b7 47 GB free \u00b7 room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "mutation": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "build {\"exit\": 0, \"timed_out\": false, \"budget\": 600}\ndeath {\"exit\": 1, \"timed_out\": false, \"budget\": 40}\ncontrol-error {\"exit\": 0, \"timed_out\": false, \"budget\": 40}\nstrict-lib-clippy {\"exit\": 0, \"timed_out\": false, \"budget\": 600}\n{\"source_files\": 315, \"disk_before\": 1927154401280, \"commands\": {\"build\": {\"exit\": 0, \"timed_out\": false, \"budget\": 600}, \"death\": {\"exit\": 1, \"timed_out\": false, \"budget\": 40}, \"control-error\": {\"exit\": 0, \"timed_out\": false, \"budget\": 40}, \"strict-lib-clippy\": {\"exit\": 0, \"timed_out\": false, \"budget\": 600}}, \"binary\": {\"path\": \"/home/adalundhe/managed-helper-ownership-cbd-before-v1/mutation-death-v1/target/x86_64-unknown-linux-musl/release/managed-helper-ownership\", \"bytes\": 1821952, \"sha256\": \"2e7c4b41d24448bae0efbffdb216a6acd0c9f75e6f5b27e7d22831c0d830ff3d\"}, \"disk_after\": 1927828705280}\n",
+      "running": false,
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.output",
+        "ok": true
+      }
+    ]
+  },
+  "last_read_refusal": {
+    "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 1 CPU, 1 GiB of memory, 2 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 1 CPU; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\n    at __kiln_settle (eval_script:20:40)\n    at <eval> (eval_script:1:1)\n",
+    "code": "program",
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": false
+      }
+    ]
+  },
+  "after_observed": {
+    "job": "r342",
+    "source_sha256": "3d4acf45f97e023f0d789f4dd8492f2c140ffd6c11e81f8045e32ff45b19ba2e",
+    "build_exit": 0,
+    "death_exit": 0,
+    "control_error_exit": 0,
+    "strict_lib_clippy_exit": 0,
+    "no_timeouts": true,
+    "binary_bytes": 1821952,
+    "binary_sha256": "13438cc87ef8d5e5b2ab4f1b383e6464a818d1ec822432e25425fcfe28e237b5",
+    "provenance": "Counts/hash transcribed from actual Kiln machines.output r342 receipt; original per-command logs remain in remote owned scope pending archive retrieval."
+  },
+  "restore": {
+    "state": "pending admission; canonical repository source always retained armed guard, private mutation only"
+  }
+}

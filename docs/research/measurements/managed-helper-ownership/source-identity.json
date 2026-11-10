@@ -1,0 +1,16 @@
+{
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "role": "implementer",
+  "source_sha256": "3d4acf45f97e023f0d789f4dd8492f2c140ffd6c11e81f8045e32ff45b19ba2e",
+  "base_sha256": "365eed67b1433b694caa40132fbd9958b40a30193dabbfcb3a270491d6e235a3",
+  "changed_tracked_paths": [
+    "crates/server/src/sandbox.rs"
+  ],
+  "unchanged_exact_regions": [
+    "all source before helper_calls rationale (including frame/read_frame/worker_calls)",
+    "recv_control/send_control/helper()",
+    "worker()/run()/ask()/all original tests"
+  ],
+  "source_scope": "helper_calls plus Worker/serve_helper region only; no ABI/Cargo/init/server dispatcher or Programs change",
+  "root_final_acceptance": "pending"
+}
