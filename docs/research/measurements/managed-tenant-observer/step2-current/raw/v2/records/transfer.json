@@ -1,0 +1,8 @@
+{
+  "source_copy": "/home/adalundhe/managed-tenant-reconnect-step2-light-01a1c5d2-v1/source",
+  "all_file_hashes_verified": true,
+  "accepted_source": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source_unchanged": true,
+  "prior_failure": "v1 GNU selected rust-lld without native system-library search; no test ran"
+}

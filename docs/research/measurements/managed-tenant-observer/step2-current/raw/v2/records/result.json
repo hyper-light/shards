@@ -1,0 +1,31 @@
+{
+  "accepted_source": "54188c747f2a64db7e1de564cd70df0bd16ca5af",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "results": {
+    "x86_64-unknown-linux-gnu": {
+      "compile": 0,
+      "clippy": 0,
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "log_sha256": "ac7a958b188a5d3a5c74c3b895845ff45bfd37273a8972df1f047fa6e0728c67",
+      "test_binary_sha256": "2a145765f85dde111eb950e63c0ffd324719c6a67d9029d5c5519970cc9a318e"
+    },
+    "x86_64-unknown-linux-musl": {
+      "compile": 0,
+      "clippy": 0,
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "log_sha256": "7fd1e4b2416a1e6872b0257ae8c20ac5da8632bb7a215dbbed021157d6afb15c",
+      "test_binary_sha256": "5f551f0bef57d3a3a653765f65b7b8f5479beadd7052944bc70b10d9564c1f59"
+    }
+  },
+  "live_observer_endpoint_helpers_vm_executed": false,
+  "full_host_body_compiled": false,
+  "abi_equal_to_current_main": true,
+  "free_bytes": 1927163285504
+}

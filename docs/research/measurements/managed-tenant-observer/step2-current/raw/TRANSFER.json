@@ -1,0 +1,305 @@
+{
+  "source_root": "/home/adalundhe/managed-tenant-reconnect-step2-light-01a1c5d2-v2",
+  "files": [
+    {
+      "path": "v1/records/clippy.txt",
+      "bytes": 38,
+      "sha256": "514f4171a1bed07e7d27a872fc29ebb3e32360eb297e28acf00ab796f80e1038",
+      "raw_bytes": 38,
+      "raw_sha256": "514f4171a1bed07e7d27a872fc29ebb3e32360eb297e28acf00ab796f80e1038",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v1/records/clippy.txt"
+    },
+    {
+      "path": "v1/records/policy.log.gz",
+      "bytes": 91,
+      "sha256": "498a6df7247205685a23c434b7b10481358ddc3ec2c648ee460329396d9a79de",
+      "raw_bytes": 81,
+      "raw_sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v1/records/policy.log"
+    },
+    {
+      "path": "v1/records/rustc.txt",
+      "bytes": 196,
+      "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369",
+      "raw_bytes": 196,
+      "raw_sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v1/records/rustc.txt"
+    },
+    {
+      "path": "v1/records/rustfmt.log.gz",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v1/records/rustfmt.log"
+    },
+    {
+      "path": "v1/records/transfer.json",
+      "bytes": 170,
+      "sha256": "46e79046703f43ffccfe7ce597f254aee1dbf7cd1685540701bb6f8a5ced0800",
+      "raw_bytes": 170,
+      "raw_sha256": "46e79046703f43ffccfe7ce597f254aee1dbf7cd1685540701bb6f8a5ced0800",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v1/records/transfer.json"
+    },
+    {
+      "path": "v1/records/uname.txt",
+      "bytes": 108,
+      "sha256": "d4fef6bee948947760f8d4ee9911af69ce049f9d8550828adf165b3bfbfb653b",
+      "raw_bytes": 108,
+      "raw_sha256": "d4fef6bee948947760f8d4ee9911af69ce049f9d8550828adf165b3bfbfb653b",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v1/records/uname.txt"
+    },
+    {
+      "path": "v1/records/x86_64-unknown-linux-gnu.build.log.gz",
+      "bytes": 679,
+      "sha256": "246d9e192408e16ac50e2611bd7627648f784a41858ddf269df9af7aeddcf68c",
+      "raw_bytes": 1912,
+      "raw_sha256": "a4a52c700b41093665e5ab86e8a528f3232c95e62de0b75701e0c8050a04b439",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v1/records/x86_64-unknown-linux-gnu.build.log"
+    },
+    {
+      "path": "v2/records/clippy.txt",
+      "bytes": 38,
+      "sha256": "514f4171a1bed07e7d27a872fc29ebb3e32360eb297e28acf00ab796f80e1038",
+      "raw_bytes": 38,
+      "raw_sha256": "514f4171a1bed07e7d27a872fc29ebb3e32360eb297e28acf00ab796f80e1038",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/clippy.txt"
+    },
+    {
+      "path": "v2/records/footprint-kib.txt",
+      "bytes": 35,
+      "sha256": "fe7940129ed6334bffa5a61e9d598e4b3d633444a050263df1fe3d8aacb7088f",
+      "raw_bytes": 35,
+      "raw_sha256": "fe7940129ed6334bffa5a61e9d598e4b3d633444a050263df1fe3d8aacb7088f",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/footprint-kib.txt"
+    },
+    {
+      "path": "v2/records/policy.log.gz",
+      "bytes": 91,
+      "sha256": "498a6df7247205685a23c434b7b10481358ddc3ec2c648ee460329396d9a79de",
+      "raw_bytes": 81,
+      "raw_sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/policy.log"
+    },
+    {
+      "path": "v2/records/result.json",
+      "bytes": 1082,
+      "sha256": "dfb2f57f55bf7b25c561208b74c0ee61f00cca26f1732c791b755784e0cff7a7",
+      "raw_bytes": 1082,
+      "raw_sha256": "dfb2f57f55bf7b25c561208b74c0ee61f00cca26f1732c791b755784e0cff7a7",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/result.json"
+    },
+    {
+      "path": "v2/records/rustc.txt",
+      "bytes": 196,
+      "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369",
+      "raw_bytes": 196,
+      "raw_sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/rustc.txt"
+    },
+    {
+      "path": "v2/records/rustfmt.log.gz",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/rustfmt.log"
+    },
+    {
+      "path": "v2/records/transfer.json",
+      "bytes": 407,
+      "sha256": "69069921a63f9afb26b4bd9937b889cd08ca0510972340f80216619fa3c60c77",
+      "raw_bytes": 407,
+      "raw_sha256": "69069921a63f9afb26b4bd9937b889cd08ca0510972340f80216619fa3c60c77",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/transfer.json"
+    },
+    {
+      "path": "v2/records/uname.txt",
+      "bytes": 108,
+      "sha256": "d4fef6bee948947760f8d4ee9911af69ce049f9d8550828adf165b3bfbfb653b",
+      "raw_bytes": 108,
+      "raw_sha256": "d4fef6bee948947760f8d4ee9911af69ce049f9d8550828adf165b3bfbfb653b",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/uname.txt"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.build.log.gz",
+      "bytes": 76,
+      "sha256": "e6b576a822e5d9009f4183e77a9a12b42b4e1c3a34ffe01c5d3f36f928db6c77",
+      "raw_bytes": 76,
+      "raw_sha256": "6c189b799b59d740d59dcd69da1644eb5e04ae327a58aa8a6764c6157235f208",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.build.log"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.clippy.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.clippy.log.gz",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.clippy.log"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.compile.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.compile.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.pure.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.pure.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-gnu.pure.log.gz",
+      "bytes": 553,
+      "sha256": "85b263ae0fb8e4fcd3ef6c3375633c3f80d7b5180ae2e4840f0ba3a756951ebe",
+      "raw_bytes": 553,
+      "raw_sha256": "85b263ae0fb8e4fcd3ef6c3375633c3f80d7b5180ae2e4840f0ba3a756951ebe",
+      "gzip": true,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-gnu.pure.log.gz"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.build.log.gz",
+      "bytes": 76,
+      "sha256": "e6b576a822e5d9009f4183e77a9a12b42b4e1c3a34ffe01c5d3f36f928db6c77",
+      "raw_bytes": 76,
+      "raw_sha256": "6c189b799b59d740d59dcd69da1644eb5e04ae327a58aa8a6764c6157235f208",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.build.log"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.clippy.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.clippy.log.gz",
+      "bytes": 20,
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "raw_bytes": 0,
+      "raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "gzip": true,
+      "compressed_for_transfer": true,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.clippy.log"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.compile.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.compile.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.pure.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "raw_bytes": 2,
+      "raw_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.pure.exit"
+    },
+    {
+      "path": "v2/records/x86_64-unknown-linux-musl.pure.log.gz",
+      "bytes": 553,
+      "sha256": "628914edd2d9f925598d51235df7d3967ccc9d0ccdb1c4bfb99991b96e917a41",
+      "raw_bytes": 553,
+      "raw_sha256": "628914edd2d9f925598d51235df7d3967ccc9d0ccdb1c4bfb99991b96e917a41",
+      "gzip": true,
+      "compressed_for_transfer": false,
+      "source_path": "v2/records/x86_64-unknown-linux-musl.pure.log.gz"
+    },
+    {
+      "path": "v2/source/approved-composition.md",
+      "bytes": 1875,
+      "sha256": "5f58631b1bdc00d13a358f244e5c590dd35b70bfd5badb85ef2b0bac1be70252",
+      "raw_bytes": 1875,
+      "raw_sha256": "5f58631b1bdc00d13a358f244e5c590dd35b70bfd5badb85ef2b0bac1be70252",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/source/approved-composition.md"
+    },
+    {
+      "path": "v2/source/region-hashes.json",
+      "bytes": 410,
+      "sha256": "33a76265867206e8add261e5da72b086a93c3c77140b51785fafed61f7df64da",
+      "raw_bytes": 410,
+      "raw_sha256": "33a76265867206e8add261e5da72b086a93c3c77140b51785fafed61f7df64da",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/source/region-hashes.json"
+    },
+    {
+      "path": "v2/source/source-manifest.json",
+      "bytes": 3098,
+      "sha256": "fac23c16ffb644172c301a5345250b666600e82635d2326fb88a303b8ca747e5",
+      "raw_bytes": 3098,
+      "raw_sha256": "fac23c16ffb644172c301a5345250b666600e82635d2326fb88a303b8ca747e5",
+      "gzip": false,
+      "compressed_for_transfer": false,
+      "source_path": "v2/source/source-manifest.json"
+    }
+  ]
+}
