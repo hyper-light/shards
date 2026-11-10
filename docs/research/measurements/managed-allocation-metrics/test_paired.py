@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -156,6 +157,22 @@ class PurePairedTests(unittest.TestCase):
                 data['native-fault-phases'] = {'start_to_ready': {'vm': valid | {field: bad}}}
                 actual = p.allocation_metrics(data)['native_faults.vm.start_to_ready']
                 self.assertEqual(actual['state'], 'Unknown')
+
+    def test_native_width_and_identity_require_exact_json_integer_types(self):
+        m = manifest()
+        for bits, named, expected_start in [(64.0, [300, 301], 301), (64, [300.0, 301], 301), (64, [300, 301.0], 301), (64, [300, True], 1)]:
+            with self.subTest(bits=bits, named=named):
+                data = synthetic_case(m)
+                sample = data['snapshots']['vm']
+                sample['expected_start'] = expected_start
+                sample['before_identity'][1] = expected_start
+                sample['after_identity'][1] = expected_start
+                data['exit-watches.ready']['vm']['identity']['expected_started'] = expected_start
+                data['teardown']['host_process_exit']['vm']['identity']['expected_started'] = expected_start
+                data['native-fault-phases'] = {'start_to_ready': {'vm': {'state': 'ConditionalDifference', 'value': 0, 'source': 'LinuxMinfltPlusMajfltViaPlatformUsage', 'native_bits': bits, 'identity': named}}}
+                data = json.loads(json.dumps(data))
+                p.validate_case(m, 1, 123, data)
+                self.assertEqual(p.allocation_metrics(data)['native_faults.vm.start_to_ready']['state'], 'Unknown')
 
     def test_empirical_quantiles_and_signed_paired_differences(self):
         samples = [{'state': 'Known', 'value': n} for n in range(1, 101)]
