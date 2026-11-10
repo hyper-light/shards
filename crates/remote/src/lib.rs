@@ -6,6 +6,7 @@ pub mod client;
 pub mod frame;
 pub mod identity;
 pub mod invite;
+pub mod managed;
 pub mod net;
 pub mod server;
 pub mod tls;

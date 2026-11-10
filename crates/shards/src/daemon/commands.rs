@@ -1371,6 +1371,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 Some([format!("{}/{}", p.private, p.proto), at.to_string(), reaches])
             })
             .collect();
+        rows.extend(self.managed.published(&id));
         rows.sort_by(|[a, at_a, _], [b, at_b, _]| {
             shards_cmdline::ports::natural_compare(a, b).then_with(|| at_a.cmp(at_b))
         });

@@ -1482,8 +1482,10 @@ dependencies = [
  "hyper-quic",
  "libc",
  "sha2",
+ "shards-abi",
  "shards-ipc",
  "shards-testdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -6,6 +6,8 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +21,7 @@ use crate::Error;
 
 /// The largest datagram taken off the socket: QUIC's are at most 65,527 bytes of UDP payload
 /// (RFC 9000 §18.2, max_udp_payload_size), and an IPv6 jumbogram is no UDP datagram std reads.
-const DATAGRAM: usize = 65_527;
+pub(crate) const DATAGRAM: usize = 65_527;
 
 /// A connection, by the number the driver gave it, which it gives no other: what a thread
 /// sends for a connection that has ended reaches none that came after it.
@@ -36,9 +38,25 @@ pub enum Command<C> {
 
 /// Where another thread sends the driver [`Command`]s, waking it.
 pub struct Sender<C> {
-    commands: mpsc::Sender<Command<C>>,
+    commands: Commands<C>,
+    stopping: Arc<AtomicBool>,
     waker: UdpSocket,
     to: SocketAddr,
+}
+
+enum Commands<C> {
+    Unbounded(mpsc::Sender<Command<C>>),
+    Bounded(mpsc::SyncSender<Command<C>>),
+}
+
+/// Resources already admitted by a bounded endpoint's owner. These limits do not
+/// reserve host/kernel memory or grant it: the caller retains that reservation.
+#[derive(Debug, Clone, Copy)]
+pub struct DriverLimits {
+    pub connections: usize,
+    pub command_slots: usize,
+    pub queued_datagram_bytes: usize,
+    pub handshake_patience: Duration,
 }
 
 impl<C> std::fmt::Debug for Sender<C> {
@@ -50,23 +68,111 @@ impl<C> std::fmt::Debug for Sender<C> {
 }
 
 impl<C> Sender<C> {
+    pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        socket_buffers(&self.waker)
+    }
+
     /// Sends `command` and wakes the driver; an error once the driver has ended.
     pub fn send(&self, command: Command<C>) -> Result<(), Error> {
-        self.commands
-            .send(command)
-            .map_err(|_| Error::new("the connection's driver has ended"))?;
-        // A lost wake is made up by the driver's next read, which ends by its next timer
-        // at the latest.
+        self.try_send(command).map_err(|e| match e {
+            mpsc::TrySendError::Full(_) => Error::new("the driver's admitted command slots are full"),
+            mpsc::TrySendError::Disconnected(_) => Error::new("the connection's driver has ended"),
+        })
+    }
+
+    /// A full handoff returns ownership without blocking its caller.
+    pub fn try_send(&self, command: Command<C>) -> Result<(), mpsc::TrySendError<Command<C>>> {
+        match &self.commands {
+            Commands::Unbounded(to) => to
+                .send(command)
+                .map_err(|e| mpsc::TrySendError::Disconnected(e.0))?,
+            Commands::Bounded(to) => to.try_send(command)?,
+        }
         let _ = self.waker.send_to(&[0], self.to);
         Ok(())
     }
+
+    /// Idempotent owner revocation does not wait behind queued data.
+    pub fn request_stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = self.waker.send_to(&[0], self.to);
+    }
+}
+
+// Queue sizes are cost facts for an owner's reservation, never admission authority.
+// Linux socket(7) reports its doubled bookkeeping-inclusive SO_*BUF values.
+fn socket_buffers(socket: &UdpSocket) -> Result<u64, Error> {
+    #[cfg(unix)]
+    fn get(socket: &UdpSocket, option: i32) -> std::io::Result<u64> {
+        use std::os::fd::AsRawFd as _;
+        let mut bytes: libc::c_int = 0;
+        let mut len = std::mem::size_of_val(&bytes) as libc::socklen_t;
+        // SAFETY: the owned socket and a correctly sized integer output.
+        let rc = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                (&raw mut bytes).cast(),
+                &raw mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if len as usize != std::mem::size_of_val(&bytes) || bytes <= 0 {
+            return Err(std::io::Error::other("unknown UDP queue size"));
+        }
+        u64::try_from(bytes).map_err(std::io::Error::other)
+    }
+    #[cfg(windows)]
+    fn get(socket: &UdpSocket, option: i32) -> std::io::Result<u64> {
+        use std::os::windows::io::AsRawSocket as _;
+        use windows_sys::Win32::Networking::WinSock::{SOL_SOCKET, WSAGetLastError, getsockopt};
+        let mut bytes: i32 = 0;
+        let mut len = std::mem::size_of_val(&bytes) as i32;
+        // SAFETY: the owned socket and a correctly sized integer output.
+        let rc = unsafe {
+            getsockopt(
+                socket.as_raw_socket() as usize,
+                SOL_SOCKET,
+                option,
+                (&raw mut bytes).cast(),
+                &raw mut len,
+            )
+        };
+        if rc != 0 {
+            // SAFETY: retrieves this thread's Winsock failure.
+            return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        }
+        if len as usize != std::mem::size_of_val(&bytes) || bytes <= 0 {
+            return Err(std::io::Error::other("unknown UDP queue size"));
+        }
+        u64::try_from(bytes).map_err(std::io::Error::other)
+    }
+    #[cfg(unix)]
+    use libc::{SO_RCVBUF, SO_SNDBUF};
+    #[cfg(windows)]
+    use windows_sys::Win32::Networking::WinSock::{SO_RCVBUF, SO_SNDBUF};
+    get(socket, SO_RCVBUF)
+        .and_then(|rx| {
+            get(socket, SO_SNDBUF).and_then(|tx| {
+                rx.checked_add(tx)
+                    .ok_or_else(|| std::io::Error::other("UDP queue size overflow"))
+            })
+        })
+        .map_err(|e| Error::new(format!("the driver's kernel queues: {e}")))
 }
 
 impl<C> Sender<C> {
     /// Another sender to the same driver, for another thread.
     pub fn try_clone(&self) -> Result<Sender<C>, Error> {
         Ok(Sender {
-            commands: self.commands.clone(),
+            commands: match &self.commands {
+                Commands::Unbounded(to) => Commands::Unbounded(to.clone()),
+                Commands::Bounded(to) => Commands::Bounded(to.clone()),
+            },
+            stopping: Arc::clone(&self.stopping),
             waker: self
                 .waker
                 .try_clone()
@@ -299,19 +405,32 @@ impl Io<'_> {
 
     /// What `stream` has to read now.
     pub fn read(&mut self, conn: ConnKey, stream: StreamId) -> Read {
+        self.read_within(conn, stream, usize::MAX).unwrap_or(Read::Reset)
+    }
+
+    /// Takes no more than `limit` bytes; a bounded protocol can inspect its header
+    /// before admitting the payload. Buffer growth is fallible.
+    pub fn read_within(&mut self, conn: ConnKey, stream: StreamId, limit: usize) -> Result<Read, Error> {
+        if limit == 0 {
+            return Ok(Read::Blocked);
+        }
         let Ok(conn) = self.conn(conn) else {
-            return Read::Reset;
+            return Ok(Read::Reset);
         };
         let mut recv = conn.quic.recv_stream(stream);
         let mut chunks = match recv.read(true) {
             Ok(chunks) => chunks,
-            Err(_) => return Read::Reset,
+            Err(_) => return Ok(Read::Reset),
         };
         let mut got = Vec::new();
         let mut ended = false;
-        loop {
-            match chunks.next(usize::MAX) {
-                Ok(Some(chunk)) => got.extend_from_slice(&chunk.bytes),
+        while got.len() < limit {
+            match chunks.next(limit.saturating_sub(got.len())) {
+                Ok(Some(chunk)) => {
+                    got.try_reserve_exact(chunk.bytes.len())
+                        .map_err(|_| Error::new("no admitted memory for received stream bytes"))?;
+                    got.extend_from_slice(&chunk.bytes);
+                }
                 Ok(None) => {
                     ended = true;
                     break;
@@ -319,16 +438,16 @@ impl Io<'_> {
                 Err(hyper_quic::ReadError::Blocked) => break,
                 Err(hyper_quic::ReadError::Reset(_)) => {
                     let _ = chunks.finalize();
-                    return Read::Reset;
+                    return Ok(Read::Reset);
                 }
             }
         }
         let _ = chunks.finalize();
-        match (got.is_empty(), ended) {
+        Ok(match (got.is_empty(), ended) {
             (_, true) => Read::End(got),
             (false, false) => Read::Bytes(got),
             (true, false) => Read::Blocked,
-        }
+        })
     }
 
     /// Reads no more of `stream`: its peer is asked to stop sending it (STOP_SENDING), and
@@ -404,6 +523,8 @@ pub struct Driver<H: Handler> {
     commands: mpsc::Receiver<Command<H::Command>>,
     handler: H,
     stopping: bool,
+    stop_requested: Arc<AtomicBool>,
+    limits: Option<DriverLimits>,
     out: VecDeque<(SocketAddr, Vec<u8>)>,
 }
 
@@ -414,6 +535,30 @@ impl<H: Handler> Driver<H> {
         at: SocketAddr,
         server: Option<ServerConfig>,
         handler: H,
+    ) -> Result<(Self, Sender<H::Command>), Error> {
+        Self::bind_with_limits(at, server, handler, None)
+    }
+
+    /// Uses only the command/connection/datagram capacity the caller admitted.
+    pub fn bind_bounded(
+        at: SocketAddr,
+        server: Option<ServerConfig>,
+        handler: H,
+        limits: DriverLimits,
+    ) -> Result<(Self, Sender<H::Command>), Error> {
+        if limits.connections == 0 || limits.command_slots == 0 || limits.queued_datagram_bytes < DATAGRAM {
+            return Err(Error::new(
+                "endpoint capacity cannot hold its protocol state and one datagram",
+            ));
+        }
+        Self::bind_with_limits(at, server, handler, Some(limits))
+    }
+
+    fn bind_with_limits(
+        at: SocketAddr,
+        server: Option<ServerConfig>,
+        handler: H,
+        limits: Option<DriverLimits>,
     ) -> Result<(Self, Sender<H::Command>), Error> {
         let socket = UdpSocket::bind(at).map_err(|e| Error::new(format!("{at}: {e}")))?;
         let local = socket
@@ -431,7 +576,17 @@ impl<H: Handler> Driver<H> {
         }
         let endpoint = Endpoint::new(EndpointConfig::default(), server, true, None)
             .map_err(|_| Error::new("no random bytes for QUIC"))?;
-        let (commands_tx, commands) = mpsc::channel();
+        let (commands_tx, commands) = match limits {
+            Some(limits) => {
+                let (tx, rx) = mpsc::sync_channel(limits.command_slots);
+                (Commands::Bounded(tx), rx)
+            }
+            None => {
+                let (tx, rx) = mpsc::channel();
+                (Commands::Unbounded(tx), rx)
+            }
+        };
+        let stop_requested = Arc::new(AtomicBool::new(false));
         Ok((
             Driver {
                 socket,
@@ -444,10 +599,13 @@ impl<H: Handler> Driver<H> {
                 commands,
                 handler,
                 stopping: false,
+                stop_requested: Arc::clone(&stop_requested),
+                limits,
                 out: VecDeque::new(),
             },
             Sender {
                 commands: commands_tx,
+                stopping: stop_requested,
                 waker,
                 to,
             },
@@ -459,6 +617,10 @@ impl<H: Handler> Driver<H> {
         self.socket
             .local_addr()
             .map_err(|e| Error::new(format!("the driver's socket: {e}")))
+    }
+
+    pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        socket_buffers(&self.socket)
     }
 
     /// The handler, once the driver has ended.
@@ -474,7 +636,11 @@ impl<H: Handler> Driver<H> {
     /// Runs until [`Command::Stop`] comes, or the handler is done, and what it holds is
     /// sent.
     pub fn run(&mut self) -> Result<(), Error> {
-        let mut datagram = vec![0u8; DATAGRAM];
+        let mut datagram = Vec::new();
+        datagram
+            .try_reserve_exact(DATAGRAM)
+            .map_err(|_| Error::new("no memory for the endpoint datagram"))?;
+        datagram.resize(DATAGRAM, 0);
         loop {
             let now = Instant::now();
             self.commands_now(now);
@@ -485,7 +651,22 @@ impl<H: Handler> Driver<H> {
             }
             self.timers(now);
             self.expire(now);
-            self.transmit(now)?;
+            if self.limits.is_some() {
+                self.socket
+                    .set_nonblocking(true)
+                    .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
+                let sent = self.transmit(now);
+                self.socket
+                    .set_nonblocking(false)
+                    .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
+                sent?;
+                if self.stopping {
+                    self.out.clear();
+                    return Ok(());
+                }
+            } else {
+                self.transmit(now)?;
+            }
             if (self.stopping || self.handler.done()) && self.out.is_empty() {
                 return Ok(());
             }
@@ -495,8 +676,12 @@ impl<H: Handler> Driver<H> {
             };
             let wait = next
                 .map(|at| at.saturating_duration_since(Instant::now()))
-                .unwrap_or(crate::tls::IDLE)
-                .max(Duration::from_micros(100));
+                .unwrap_or_else(|| self.limits.map_or(crate::tls::IDLE, |l| l.handshake_patience))
+                .max(if self.limits.is_some() {
+                    Duration::from_nanos(1)
+                } else {
+                    Duration::from_micros(100)
+                });
             self.socket
                 .set_read_timeout(Some(wait))
                 .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
@@ -507,15 +692,21 @@ impl<H: Handler> Driver<H> {
                     }
                     let now = Instant::now();
                     let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
-                    self.receive(now, from, bytes);
+                    self.receive(now, from, bytes)?;
                     // Whatever else came meanwhile, before a turn sends anything.
                     self.socket
                         .set_nonblocking(true)
                         .map_err(|e| Error::new(format!("the driver's socket: {e}")))?;
-                    while let Ok((n, from)) = self.socket.recv_from(&mut datagram) {
+                    let turns = self
+                        .limits
+                        .map_or(usize::MAX, |l| l.queued_datagram_bytes / DATAGRAM);
+                    for _ in 1..turns {
+                        let Ok((n, from)) = self.socket.recv_from(&mut datagram) else {
+                            break;
+                        };
                         if from != self.waker {
                             let bytes = BytesMut::from(datagram.get(..n).unwrap_or_default());
-                            self.receive(now, from, bytes);
+                            self.receive(now, from, bytes)?;
                         }
                     }
                     self.socket
@@ -552,6 +743,19 @@ impl<H: Handler> Driver<H> {
     }
 
     fn commands_now(&mut self, now: Instant) {
+        if self.stop_requested.swap(false, Ordering::AcqRel) {
+            self.stopping = true;
+            if self.limits.is_some() {
+                self.out.clear();
+            }
+            for conn in self.conns.values_mut() {
+                conn.quic.close(
+                    now,
+                    VarInt::from_u32(0),
+                    bytes::Bytes::from_static(b"the daemon stopped"),
+                );
+            }
+        }
         while let Ok(command) = self.commands.try_recv() {
             match command {
                 Command::Stop => {
@@ -574,18 +778,18 @@ impl<H: Handler> Driver<H> {
         }
     }
 
-    fn receive(&mut self, now: Instant, from: SocketAddr, bytes: BytesMut) {
+    fn receive(&mut self, now: Instant, from: SocketAddr, bytes: BytesMut) -> Result<(), Error> {
         let mut response = Vec::new();
         match self.endpoint.handle(now, from, None, None, bytes, &mut response) {
             Some(DatagramEvent::NewConnection(incoming)) => {
-                if self.stopping {
+                if self.stopping || self.limits.is_some_and(|l| self.conns.len() >= l.connections) {
                     if let Some(transmit) = self.endpoint.refuse(incoming, &mut response) {
-                        self.out.push_back((
+                        self.queue_datagram(
                             transmit.destination,
-                            response.get(..transmit.size).unwrap_or_default().to_vec(),
-                        ));
+                            response.get(..transmit.size).unwrap_or_default(),
+                        )?;
                     }
-                    return;
+                    return Ok(());
                 }
                 match self.endpoint.accept(incoming, now, &mut response, None, None) {
                     Ok((handle, quic)) => {
@@ -605,10 +809,10 @@ impl<H: Handler> Driver<H> {
                     }
                     Err(e) => {
                         if let Some(transmit) = e.response {
-                            self.out.push_back((
+                            self.queue_datagram(
                                 transmit.destination,
-                                response.get(..transmit.size).unwrap_or_default().to_vec(),
-                            ));
+                                response.get(..transmit.size).unwrap_or_default(),
+                            )?;
                         }
                     }
                 }
@@ -623,13 +827,14 @@ impl<H: Handler> Driver<H> {
                 }
             }
             Some(DatagramEvent::Response(transmit)) => {
-                self.out.push_back((
+                self.queue_datagram(
                     transmit.destination,
-                    response.get(..transmit.size).unwrap_or_default().to_vec(),
-                ));
+                    response.get(..transmit.size).unwrap_or_default(),
+                )?;
             }
             None => {}
         }
+        Ok(())
     }
 
     fn key_of(&self, handle: ConnectionHandle) -> Option<ConnKey> {
@@ -754,7 +959,15 @@ impl<H: Handler> Driver<H> {
     fn expire(&mut self, now: Instant) {
         self.keys.clear();
         for (key, conn) in &self.conns {
-            if !conn.quic.is_closed() && conn.liveness.due().is_some_and(|at| at <= now) {
+            let due = self.limits.map_or_else(
+                || conn.liveness.due(),
+                |l| {
+                    (!conn.connected)
+                        .then(|| conn.liveness.began.checked_add(l.handshake_patience))
+                        .flatten()
+                },
+            );
+            if !conn.quic.is_closed() && due.is_some_and(|at| at <= now) {
                 self.keys.push(*key);
             }
         }
@@ -770,10 +983,20 @@ impl<H: Handler> Driver<H> {
     }
 
     fn next_timer(&mut self) -> Option<Instant> {
+        let limits = self.limits;
         self.conns
             .values_mut()
             .filter_map(|c| {
-                let handshake = c.liveness.due().filter(|_| !c.quic.is_closed());
+                let handshake = limits
+                    .map_or_else(
+                        || c.liveness.due(),
+                        |l| {
+                            (!c.connected)
+                                .then(|| c.liveness.began.checked_add(l.handshake_patience))
+                                .flatten()
+                        },
+                    )
+                    .filter(|_| !c.quic.is_closed());
                 match (c.quic.poll_timeout(), handshake) {
                     (Some(a), Some(b)) => Some(a.min(b)),
                     (a, b) => a.or(b),
@@ -782,7 +1005,62 @@ impl<H: Handler> Driver<H> {
             .min()
     }
 
+    fn queue_datagram(&mut self, to: SocketAddr, bytes: &[u8]) -> Result<(), Error> {
+        let held = if self.limits.is_some() {
+            self.out
+                .iter()
+                .try_fold(0usize, |n, (_, b)| n.checked_add(b.capacity()))
+                .ok_or_else(|| Error::new("endpoint datagram accounting overflow"))?
+        } else {
+            0
+        };
+        if self
+            .limits
+            .is_some_and(|l| bytes.len() > l.queued_datagram_bytes.saturating_sub(held))
+        {
+            return Err(Error::new("the endpoint's admitted datagram storage is full"));
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(bytes.len())
+            .map_err(|_| Error::new("no memory for an endpoint datagram"))?;
+        if self
+            .limits
+            .is_some_and(|l| owned.capacity() > l.queued_datagram_bytes.saturating_sub(held))
+        {
+            return Err(Error::new("the datagram allocation exceeds its admitted storage"));
+        }
+        owned.extend_from_slice(bytes);
+        self.out
+            .try_reserve(1)
+            .map_err(|_| Error::new("no memory for an endpoint datagram entry"))?;
+        self.out.push_back((to, owned));
+        Ok(())
+    }
+
+    fn flush_datagrams(&mut self) {
+        while let Some((to, bytes)) = self.out.front() {
+            match self.socket.send_to(bytes, *to) {
+                Ok(_) => {
+                    self.out.pop_front();
+                }
+                // The socket's buffer is full: the rest goes on the next turn.
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                // A datagram refused as it was sent goes as a lost one would.
+                Err(_) => {
+                    self.out.pop_front();
+                }
+            }
+        }
+    }
+
     fn transmit(&mut self, now: Instant) -> Result<(), Error> {
+        if self.limits.is_some() {
+            self.flush_datagrams();
+            if !self.out.is_empty() {
+                return Ok(());
+            }
+        }
         let mut buffer = Vec::new();
         self.keys.clear();
         self.keys.extend(self.conns.keys());
@@ -801,26 +1079,20 @@ impl<H: Handler> Driver<H> {
                 else {
                     break;
                 };
-                self.out.push_back((
+                self.queue_datagram(
                     transmit.destination,
-                    buffer.get(..transmit.size).unwrap_or_default().to_vec(),
-                ));
+                    buffer.get(..transmit.size).unwrap_or_default(),
+                )?;
+                if self.limits.is_some() {
+                    self.flush_datagrams();
+                    if !self.out.is_empty() {
+                        break;
+                    }
+                }
                 self.pump(now, key);
             }
         }
-        while let Some((to, bytes)) = self.out.front() {
-            match self.socket.send_to(bytes, *to) {
-                Ok(_) => {
-                    self.out.pop_front();
-                }
-                // The socket's buffer is full: the rest goes on the next turn.
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                // A datagram refused as it was sent goes as a lost one would.
-                Err(_) => {
-                    self.out.pop_front();
-                }
-            }
-        }
+        self.flush_datagrams();
         Ok(())
     }
 }

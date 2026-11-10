@@ -69,6 +69,7 @@ mod inspect_doc;
 mod layers;
 mod load;
 mod logs;
+mod managed;
 mod moves;
 mod network;
 mod networks;
@@ -1357,6 +1358,7 @@ struct Daemon<D: Disk = Real> {
     watching: reclaim::Watching,
     /// The microVMs held to a budget, told what it leaves them (D188).
     budgets: budget::Budgets,
+    managed: managed::Outputs,
     /// The groups shards keeps for `--cgroup-parent` (D183, slice 3), held by their thread.
     #[cfg(any(target_os = "macos", windows))]
     groups: groups::Groups,
@@ -2133,6 +2135,7 @@ impl<D: Disk> Daemon<D> {
             parents: parents::Parents::default(),
             watching: reclaim::Watching::default(),
             budgets: budget::Budgets::default(),
+            managed: managed::Outputs::default(),
             #[cfg(any(target_os = "macos", windows))]
             groups: groups::Groups::default(),
             checks: health::Checks::default(),
@@ -2702,6 +2705,7 @@ impl<D: Disk> Daemon<D> {
     /// kernel would close it on exit, but in no order this could rely on (XNU closes a
     /// process's descriptors from the highest down, kern_descrip.c fdt_invalidate).
     fn finish(&self) {
+        self.managed.close();
         let _ = std::fs::remove_file(self.home.join(shards_ipc::PID));
         let _ = std::fs::remove_file(self.home.join(shards_ipc::STOPPING));
         let state = lock(&self.state);
@@ -3999,6 +4003,34 @@ impl<D: Disk> Daemon<D> {
         if let Some(link) = link_fd {
             fds.push(link);
         }
+        let capture = match prepared
+            .agentfile
+            .as_ref()
+            .filter(|a| !a.active_members.is_empty())
+        {
+            Some(_) if resuming.is_some() || joining => {
+                fails("managed output scopes cannot yet be restored or joined");
+                return None;
+            }
+            Some(agentfile) => match self.managed_capture(
+                threads,
+                &id,
+                &run.client,
+                &agentfile.managed_labels,
+                &agentfile.active_members,
+                &mut prepared.spec.setup,
+            ) {
+                Ok(stream) => Some(stream),
+                Err(e) => {
+                    fails(&format!("{id}: {e}"));
+                    return None;
+                }
+            },
+            None => None,
+        };
+        if let Some(capture) = &capture {
+            fds.push(capture.as_fd());
+        }
         // Each share's stream on Windows, sent after the request (`hand_over`).
         #[cfg(windows)]
         let ends: Vec<BorrowedFd<'_>> = shares.iter().flatten().map(|e| e.as_fd()).collect();
@@ -4271,6 +4303,7 @@ impl<D: Disk> Daemon<D> {
     /// then free, as libnetwork's endpoint goes with a start that fails (moby
     /// daemon/start.go, Cleanup); and a joiner's volumes in its microVM's join share (D119).
     fn let_go(&self, id: &str) {
+        self.managed.end(id);
         self.free_ports(Some(id), None);
         self.leave_network(id);
         lock(&self.joiner_links).remove(id);
@@ -5645,6 +5678,11 @@ impl<D: Disk> Daemon<D> {
                 kind::OOM => self.oom_killed(id, &m.payload),
                 kind::PIDS => self.pids_refused(id, &m.payload),
                 kind::PROCESS => self.keep_processes(id, &m.payload),
+                kind::MANAGED_ABORT => {
+                    if let Err(e) = self.managed.abort_member(id, &m.payload) {
+                        log(format!("container {id}: invalid managed abort: {e}"));
+                    }
+                }
                 // A file its share's DAX window maps, watched for another process cutting
                 // it short, and one it maps no more (D189, PM M273).
                 #[cfg(target_os = "linux")]
@@ -6223,6 +6261,7 @@ impl<D: Disk> Daemon<D> {
 
     /// Run `id` ended: `done` is its DONE, or `None` for a VM that ended without one.
     fn run_ended(&self, id: &str, inbox: &mut Inbox, done: Option<&[u8]>) {
+        self.managed.end(id);
         // Its pool has one run fewer going, and is idle from the last to end (demand.rs).
         if let Some(key) = inbox.pool.take()
             && let Some(pool) = lock(&self.state).pools.get_mut(&key)

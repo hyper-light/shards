@@ -1,0 +1,31 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-cache-proof-target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-cache-proof-target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-cache-proof-target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-cache-proof-target/debug/build/aws-lc-sys-b5404ecd6b6eb353/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cache-free-d8585d98dd/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.63s
+     Running unittests src/main.rs (/home/adalundhe/managed-cache-proof-target/debug/deps/shards-c920b71846f27e2a)
+
+running 1 test
+
+thread 'agentfile::tests::runnable_members_are_read_again_when_the_image_at_a_path_changes' (409347) panicked at crates/shards/src/agentfile.rs:542:9:
+assertion failed: agentfile(&path, &expected).unwrap().active_members.is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test agentfile::tests::runnable_members_are_read_again_when_the_image_at_a_path_changes ... FAILED
+
+failures:
+
+failures:
+    agentfile::tests::runnable_members_are_read_again_when_the_image_at_a_path_changes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 677 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
