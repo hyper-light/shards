@@ -1,5 +1,12 @@
 # Linux borrowed identity and raw process-name bytes
 
+Current production-source candidate `f26bbd00` passes the targeted actual-reader
+OOM cases, the real non-UTF8 borrowed connection, GNU54 unit/14 integration tests
+and strict clippy. The pre-fix comm rejection, direct-std32-byte abort and
+independent infallible-growth abort are preserved below. Adoption, cost review
+and remaining platform/combined gates belong to root; the Mac owned-Guest OOM
+abort remains open.
+
 Implementer resource_performance, coordinator root. New isolated branch
 `p/managed-borrowed-comm` from `f7604be6`; owns taken.rs, focused Linux borrowed
 fixture and this evidence only. Policy full-read receipt: canonical g121-main
@@ -128,22 +135,94 @@ Raw commands/logs/manifests/build JSON/restoration/patch/admission are retained:
 | [proc-comm-restored](proc-comm-restored/) | `d85c77057f29e57b6d9cc6184db0476dc72485194067baf0841d15497d959e42` |
 | [proc-comm-followup](proc-comm-followup/) | `72c12cca336e163b7920316dab2526b7c8616953fbccb86faf1ee26fedd0eecb` |
 
-Owed: reviewed returning-allocation solution for the actual initial-probe abort,
+At the eee checkpoint, owed: reviewed returning-allocation solution for the actual initial-probe abort,
 then reached path/valid-parser OOM assertions and whole ordinary GNU/musl corpus,
 Linux arm64 libc checks, coordinator combined/matrix/VM review. The reproduction
 and allocation controls do not validate every process-name/host/version/resource
 case, and no general allocation-free/leak-free assertion is made.
 
+## Approved private reader followup
+
+After retaining/pushing the actual eee abort, root approved exactly one private
+File::read loop and one fallibly grown Vec at the existing Linux seam. The
+alternatives were std read/read_to_end (actual initial-probe abort), preallocating
+its32-byte probe (couples correctness to a std implementation detail), fixed
+caps/page guesses (not a justified input bound), a general reader/dependency
+framework (unnecessary scope), and upstream std/toolchain work (broader consumer
+change). No32-byte workaround, cache, custom allocator or OS duplicate was added.
+
+One byte of additional capacity is the minimum needed for another read/EOF
+observation, not a chosen read-chunk size or input limit. Successful try_reserve
+provides owned capacity; the loop zero-initializes only up to that current
+capacity and reads into a checked slice after the existing length. The u8
+initialization cannot invoke arbitrary Clone behavior. Pinned
+[Vec resize/extend_with](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/alloc/src/vec/mod.rs)
+reserves the difference, already covered here; the
+[RawVec reserve predicate](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/alloc/src/raw_vec/mod.rs)
+does not allocate when existing capacity suffices. There is no subsequent
+unrelated infallible allocation. New read counts use checked length arithmetic
+and must fit initialized capacity; Interrupted retries the same owned buffer;
+EOF truncates to actual bytes and returns; I/O and capacity failure return the
+existing typed io::Error, with nonallocating OutOfMemory conversion. The process
+path, held identity, field selection and borrowed deadline contract stay shared.
+
+Normal unignored tests now hit that actual reader at both0 and1 successful
+allocations before refusal, then the actual started path and valid field parse
+under refusal. Historical direct-std code remains an explicitly ignored repro
+case with its exact first expression and the immutable eee source/raw. This is
+not skipping the production OOM guard: replacing the new reader's fallible
+growth with reserve causes the ordinary actual-reader test to abort.
+
+Native r208 at exact `f26bbd00a100ebc282e57f9d41ca2a42b4f0b0dd`, same Fedora/
+Rust1.98.1/private target, accepted once4CPU/8GiB/20GiB (30/32 idle):
+
+- Actual reader/field tests4 passed; historical std repro1 ignored.
+  Initial and later capacity refusal both returned OutOfMemory. Path OOM and
+  valid parse under refused allocations were now reached and passed. Exact
+  binary content, empty EOF and EISDIR return cases passed.
+- Real own-child invalid-UTF8/space/right-paren comm case1 passed: actualCONNECT,
+  exact payload, restored own name, same start, held liveness, child0/all joins.
+- Independent try_reserve→reserve removal of the returning-growth guard:
+  actual `memory allocation of 8 bytes failed`, SIGABRT/134. Byte-exact source
+  restoration/recompile then passed the ordinary typed-return OOM test1/0.
+- Full ordinary GNU API54 passed/0 failed/11 ignored; simulator14/0/2 ignored.
+  Real-VM case remains ignored/unrun. Strict GNU API/afunix all-target clippy0.
+  Existing bounded borrowed success FD/task observation was (9,2)→(9,2).
+  No historical six-fault campaign was rerun.
+
+Exact invocation:
+`bash docs/research/measurements/managed-borrowed/run-proc-reader-light.sh`.
+Freshly compiled fixed/restored API binary SHA256
+`46f12ca6302d9389259cac9c8d9f6376b82961f18afd8bf15cd2bbdcd63c9ba1`;
+infallible-growth mutation SHA256
+`fa3cb786a78ef94c28f1c719a3852d3a3830a13ac5c3df445f5b85791bad59e2`.
+All three compiler artifacts `fresh:false`; immutable copies remain in
+`~/managed-borrowed-evidence/proc-reader-v1/{fixed,infallible-growth,restored}.bin`.
+[proc-reader-v1](proc-reader-v1/) retains commands/source/binary manifests,
+raw build/test/clippy output, mutation and byte-exact restoration. Archive SHA256
+`6061c76eb5f3ac1081115ed89b053ac30806dd0cb43fcb0d8a8e20ce3d7c0d83`.
+
+Owed root work: review this exact production delta and combined integration;
+Linux musl/arm64 and full seven-target/real-VM gates as applicable; independent
+EINTR exercise (source handling present, no injected EINTR claimed); allocation/
+reallocation/syscall/CPU/fault/retention comparison of this loop before adoption.
+Initializing spare capacity and additional small reads may cost more than std's
+read path; costs are unmeasured, with no speed/zero-allocation/leak-free claim.
+The old direct-std abort is retained as reproduced, not relabelled resolved
+upstream. No production Mutex/lifecycle path changed, and Mac whole-library RED
+is unaffected.
+
 ## R01–R16 account
 
-R01: actual initial-probe allocation abort blocks completion; no hidden fallback
-formatting. R02/R03:
+R01: new actual-reader initial/later/path allocation and field errors returned;
+independent infallible-growth removal aborted and restoration passed. Full Mac
+owned OOM remains open; no whole-library proof. R02/R03:
 primary raw-comm/decimal-field semantics; existing field22/19 index unchanged.
 R04/R05: existing held identity/error phases and original finite deadline remain;
 no new production wait/cache/state owner. R06/R07/R13: one private field helper,
 byte iteration and rationale comment. R08/R14: no performance claim or agent
 profiling. R09/R10: actual pre-fix red and fixed/mutation/raw above. R11/R12:
-Linux-only procfs adapter; GNU/musl/arm64 and combined matrix owed. R15: scoped
+Linux-only procfs adapter; targeted/ordinary GNU above, musl/arm64 and combined matrix owed. R15: scoped
 light units only, root review/integration and heavy validation owed. R16: new
 private worktree/target/evidence, historical artifacts untouched. The earlier
 GNU timing red and full Mac library OOM abort remain preserved at their named

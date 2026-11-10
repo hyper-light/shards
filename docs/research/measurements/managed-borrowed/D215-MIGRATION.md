@@ -41,5 +41,7 @@ actual marker-removal red/restored results are in [HELD-OUTPUT](HELD-OUTPUT.md).
 The subsequent [non-UTF8 comm case](PROC-COMM.md) is now reproduced: legal raw
 comm bytes incorrectly caused a typed Start/InvalidData before dial. Its isolated
 byte-reader candidate preserves numeric/held-process/deadline semantics and
-public types, but remains unadopted because a distinct actual std read32-byte OOM
-abort blocks R01. No lifecycle/Mutex remedy or whole-library passing gate follows.
+public types. A distinct actual std read32-byte OOM abort required a subsequent
+approved private File::read/one-Vec loop; its targeted initial/later/path OOM
+returns and ordinary GNU corpus now pass, with cost/matrix/adoption still owed.
+No lifecycle/Mutex remedy or whole-library passing gate follows.

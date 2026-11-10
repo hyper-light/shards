@@ -1,0 +1,15 @@
+diff --git a/crates/api/src/taken.rs b/crates/api/src/taken.rs
+index f8561614..297fea55 100644
+--- a/crates/api/src/taken.rs
++++ b/crates/api/src/taken.rs
+@@ -107,9 +107,7 @@ mod linux {
+         loop {
+             // One further byte is required to observe data or EOF; no protocol cap or
+             // guessed read size. Unlike std's small probe, growth is always fallible.
+-            bytes
+-                .try_reserve(1)
+-                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
++            bytes.reserve(1);
+             let used = bytes.len();
+             // capacity is already owned; initializing up to it cannot grow the Vec.
+             bytes.resize(bytes.capacity(), 0);

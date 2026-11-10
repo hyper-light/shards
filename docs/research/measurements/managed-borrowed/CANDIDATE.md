@@ -2,7 +2,9 @@
 
 This record describes the original535 candidate. A subsequent isolated Linux
 comm-encoding candidate and its newly confirmed std read OOM blocker are in
-[PROC-COMM.md](PROC-COMM.md); that followup remains incomplete and unadopted.
+[PROC-COMM.md](PROC-COMM.md). Its approved private-reader followup now passes
+focused actual-reader OOM and ordinary GNU checks, while cost/matrix/adoption
+and the separate Mac OOM remain pending.
 
 Current production-source checkpoint: signed
 `53535ab61225905acfa98f12dabdabb75138c808`, branch `p/managed-borrowed`, isolated
@@ -95,8 +97,9 @@ and [read growth](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/librar
 The earlier unqualified fallibility conclusion was incomplete: the subsequent
 [raw-comm/OOM investigation](PROC-COMM.md) reproduced a32-byte initial-probe abort
 on procfs under allocation refusal. Its byte-reader candidate fixes legal comm
-encoding but does not yet close this allocation path. No reader framework remedy
-is adopted. Unix reuses held pidfd/kqueue machinery. Windows uses
+encoding; its subsequent approved private File::read/one-Vec loop now returns
+the targeted allocation failures in actual unit checks. Costs/matrix/adoption
+remain pending; no reader framework is introduced. Unix reuses held pidfd/kqueue machinery. Windows uses
 [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
 with query-limited+synchronize access, shared GetProcessTimes creation extraction,
 zero-time held state checks and OwnedHandle close. The narrow afunix adapter

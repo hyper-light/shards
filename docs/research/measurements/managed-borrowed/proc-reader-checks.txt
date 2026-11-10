@@ -1,0 +1,14 @@
+Native tested source f26bbd00a100ebc282e57f9d41ca2a42b4f0b0dd.
+Evidence-only followup does not change compiled Rust or launcher bytes.
+
+rustfmt +1.98.1 --edition 2024 --check crates/api/src/taken.rs crates/api/src/borrowed.rs docs/research/measurements/managed-borrowed/proc-comm.rs docs/research/measurements/managed-borrowed/proc-stat.rs
+exit0
+
+bash -n docs/research/measurements/managed-borrowed/run-proc-reader-light.sh
+exit0
+
+git diff --check
+exit0
+
+Current f5 development-policy checker check(Path.cwd()) applied to this worktree:
+exit0; evidence/coordinator review still required.

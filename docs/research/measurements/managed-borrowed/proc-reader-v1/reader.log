@@ -1,0 +1,13 @@
+
+running 5 tests
+test taken::linux::tests::missing_or_invalid_start_field_is_nonallocating_invalid_data ... ok
+test taken::linux::tests::proc_reader_and_start_path_return_allocation_failure ... actual_proc_reader_successful_allocations_before_refusal=0 returned_OutOfMemory=true
+actual_proc_reader_successful_allocations_before_refusal=1 returned_OutOfMemory=true
+actual_proc_reader_oom_returned=true start_path_oom_returned=true field_parse_under_refused_allocations=true
+ok
+test taken::linux::tests::proc_reader_preserves_bytes_and_empty_eof_and_io_error ... ok
+test taken::linux::tests::start_field_ignores_comm_encoding_and_embedded_parens ... ok
+test taken::linux::tests::std_proc_read_oom_repro ... ignored, historical direct-std probe: actual32-byte abort retained at eee20469; not the production reader
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 60 filtered out; finished in 0.00s
+
