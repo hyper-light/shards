@@ -1,0 +1,50 @@
+{
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer / scoped ordinary native tester",
+  "failed_native_source": "79276d1923811bde0b275dda7afa98f587737f3f",
+  "corrected_observer_sha256": "69daba674bd8be3f32e37d131f1780791f11f61d4e5c234beb71997091f7f07b",
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/r598/verify.py",
+        "--out",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/r598/verification.json"
+      ],
+      "exit": 0,
+      "scope": "raw archive/source identity/error/correction integrity only"
+    },
+    {
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/observer.rs"
+      ],
+      "exit": 0,
+      "scope": "parse/format only"
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0
+    }
+  ],
+  "corrected_source_rust_build_typecheck_lint_native": "UNRUN",
+  "no_native_retry": true,
+  "no_native_pass_fail_ignore_counts": true
+}

@@ -54,7 +54,7 @@ impl Watch {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct SharedWitness(OnceLock<Sender<Event>>);
 
 impl SharedWitness {

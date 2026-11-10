@@ -1,0 +1,32 @@
+{
+  "run": "r598",
+  "archive_sha256": "d8070a3ca76835cbc82066bc1c98855ad85e954e72a26209823485e49563258d",
+  "raw_payloads_verified": 14,
+  "raw_members_including_manifest": 15,
+  "source_snapshot_files_verified": 46,
+  "source_revision": "79276d1923811bde0b275dda7afa98f587737f3f",
+  "production_strict_lint": 0,
+  "lib_test_compile": 101,
+  "native_case_attempts": 0,
+  "native_pass_fail_ignore_counts": null,
+  "corrected_observer_sha256": "69daba674bd8be3f32e37d131f1780791f11f61d4e5c234beb71997091f7f07b",
+  "correction_rust_compile_lint_native": "UNRUN",
+  "full_archive": {
+    "root": "/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24",
+    "run": "r598",
+    "path": "/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24/r598-source-and-raw.tar.gz",
+    "bytes": 616913,
+    "sha256": "6b8d6edbf391e0a9573e1e409877f2208d968e0f138160d2f348e0b3ecb3d47e",
+    "payloads": 67,
+    "members": 68,
+    "production_lint": 0,
+    "lib_test_compile": 101,
+    "native_case_attempts": 0,
+    "test_lint": "UNRUN",
+    "native_outcome": "UNRUN",
+    "post_run_all_source_hashes_match": true
+  },
+  "full_archive_compressed_bytes_locally_verified": false,
+  "full_archive_partial_prefix_only": 24001,
+  "no_source_or_raw_deletion": true
+}

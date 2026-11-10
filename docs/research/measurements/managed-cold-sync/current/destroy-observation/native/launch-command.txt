@@ -1,0 +1,44 @@
+python3 - <<'PY'
+from pathlib import Path
+import base64, gzip, hashlib, json, platform, shutil, subprocess, time
+root=Path('/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24')
+packed=base64.b64decode(''.join((root/f'inputs/part-{i}.b64').read_text() for i in range(5)),validate=True)
+if hashlib.sha256(packed).hexdigest()!='fa8e3dfa0f2a5463029f5ead19b79d3e8be96ddb0d039440d8c7e2732a8a6bd3':
+    raise ValueError('packed snapshot checksum mismatch')
+bundle=json.loads(gzip.decompress(packed))
+if bundle['remote_root']!=str(root) or bundle['source_revision']!='79276d1923811bde0b275dda7afa98f587737f3f':
+    raise ValueError('private root/source mismatch')
+if shutil.disk_usage(root).free < (30+4)*1024**3:
+    raise RuntimeError('floor plus admitted envelope unavailable')
+for name in ['source','target','cargo-home','raw','frozen']:
+    (root/name).mkdir(mode=0o700)
+def write_new(path,body):
+    path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    with path.open('xb') as f:
+        f.write(body)
+write_new(root/'inputs/bundle.json',(json.dumps(bundle,separators=(',',':'))+'\n').encode())
+for name,rec in bundle['version']['files'].items():
+    path=Path(name)
+    if path.is_absolute() or '..' in path.parts:
+        raise ValueError('unsafe source path')
+    body=rec['text'].encode()
+    if len(body)!=rec['bytes'] or hashlib.sha256(body).hexdigest()!=rec['sha256']:
+        raise ValueError('source identity mismatch: '+name)
+    write_new(root/'source'/path,body)
+for key,name in [('driver','run.py'),('helper','held_exit.py')]:
+    rec=bundle[key]; body=rec['text'].encode()
+    if hashlib.sha256(body).hexdigest()!=rec['sha256'] or len(body)!=rec['bytes']:
+        raise ValueError('launcher checksum mismatch')
+    write_new(root/name,body)
+snapshot={'source_revision':bundle['source_revision'],'policy_revision':bundle['policy_revision'],'rules_sha256':bundle['rules_sha256'],'packed_sha256':hashlib.sha256(packed).hexdigest(),'files':{name:{k:v for k,v in rec.items() if k!='text'} for name,rec in bundle['version']['files'].items()},'driver':{k:v for k,v in bundle['driver'].items() if k!='text'},'helper':{k:v for k,v in bundle['helper'].items() if k!='text'},'native_cases_started':0,'free_bytes':shutil.disk_usage(root).free}
+write_new(root/'inputs/source-snapshot.json',(json.dumps(snapshot,indent=2)+'\n').encode())
+argv=['/usr/bin/lockf','-t','0','/tmp/g121-mac.lock','python3',str(root/'run.py'),'--root',str(root)]
+write_new(root/'inputs/launch.json',(json.dumps({'argv':argv,'runner':'d1323898b255a3ed435eb83fa0f7b0cf','timeout_seconds':600,'source_snapshot_written_before_build':True},indent=2)+'\n').encode())
+print(json.dumps({'root':str(root),'snapshot_files':len(snapshot['files']),'snapshot_written_before_build':True,'driver_sha256':snapshot['driver']['sha256'],'helper_sha256':snapshot['helper']['sha256']}),flush=True)
+start=time.monotonic()
+with (root/'raw/driver.stdout').open('xb') as out,(root/'raw/driver.stderr').open('xb') as err:
+    result=subprocess.run(argv,stdin=subprocess.DEVNULL,stdout=out,stderr=err,timeout=570)
+write_new(root/'raw/outer.json',(json.dumps({'argv':argv,'exit':result.returncode,'elapsed_seconds':time.monotonic()-start,'driver_stdout_sha256':hashlib.sha256((root/'raw/driver.stdout').read_bytes()).hexdigest(),'driver_stderr_sha256':hashlib.sha256((root/'raw/driver.stderr').read_bytes()).hexdigest()},indent=2)+'\n').encode())
+print(json.dumps({'exit':result.returncode,'root':str(root)}),flush=True)
+raise SystemExit(result.returncode)
+PY

@@ -1,0 +1,115 @@
+{
+  "transfer0": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"source_revision\\\": \\\"79276d1923811bde0b275dda7afa98f587737f3f\\\", \\\"launcher_revision\\\": \\\"c08ac67227c56e868bb214b339a2a218204757ab\\\", \\\"policy_revision\\\": \\\"0342b85d9c808e3ced041a6c3ef0e9bf70438272\\\", \\\"rules_sha256\\\": \\\"df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\\\", \\\"free_bytes\\\": 2401288118272, \\\"created_monotonic\\\": 0.033081333, \\\"native_cases_started\\\": 0, \\\"envelope\\\": \\\"2CPU/2GiB/4GiB/j2/compile180/case15/outer600\\\", \\\"owner\\\": \\\"01a1c5bda0bf766683384c0705c0a9bc\\\"}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\",\n  \"exit_code\": 0\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "{\"source_revision\": \"79276d1923811bde0b275dda7afa98f587737f3f\", \"launcher_revision\": \"c08ac67227c56e868bb214b339a2a218204757ab\", \"policy_revision\": \"0342b85d9c808e3ced041a6c3ef0e9bf70438272\", \"rules_sha256\": \"df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3\", \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\", \"free_bytes\": 2401288118272, \"created_monotonic\": 0.033081333, \"native_cases_started\": 0, \"envelope\": \"2CPU/2GiB/4GiB/j2/compile180/case15/outer600\", \"owner\": \"01a1c5bda0bf766683384c0705c0a9bc\"}\n",
+      "running": false,
+      "why": "macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs",
+      "exit_code": 0
+    },
+    "isError": false
+  },
+  "transferRest": [
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 1, \\\"bytes\\\": 64000, \\\"sha256\\\": \\\"b91e2f2f0a9ef9ce2762d503130164fc30da6bb68e649ea5c8bc2e8391265461\\\"}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\",\n  \"exit_code\": 0\n}"
+        }
+      ],
+      "structuredContent": {
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "output": "{\"part\": 1, \"bytes\": 64000, \"sha256\": \"b91e2f2f0a9ef9ce2762d503130164fc30da6bb68e649ea5c8bc2e8391265461\"}\n",
+        "running": false,
+        "why": "macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs",
+        "exit_code": 0
+      },
+      "isError": false
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 2, \\\"bytes\\\": 64000, \\\"sha256\\\": \\\"866e6c74eeff8b90a6fc81920a312c101382acc571ae99fc30d969830d5f6c32\\\"}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\",\n  \"exit_code\": 0\n}"
+        }
+      ],
+      "structuredContent": {
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "output": "{\"part\": 2, \"bytes\": 64000, \"sha256\": \"866e6c74eeff8b90a6fc81920a312c101382acc571ae99fc30d969830d5f6c32\"}\n",
+        "running": false,
+        "why": "macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs",
+        "exit_code": 0
+      },
+      "isError": false
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 3, \\\"bytes\\\": 64000, \\\"sha256\\\": \\\"910991e12cc5dfc2302bb5d2d3d89c49d1086e6ad260bcd72048c73e77696ba6\\\"}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\",\n  \"exit_code\": 0\n}"
+        }
+      ],
+      "structuredContent": {
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "output": "{\"part\": 3, \"bytes\": 64000, \"sha256\": \"910991e12cc5dfc2302bb5d2d3d89c49d1086e6ad260bcd72048c73e77696ba6\"}\n",
+        "running": false,
+        "why": "macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs",
+        "exit_code": 0
+      },
+      "isError": false
+    },
+    {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"part\\\": 4, \\\"bytes\\\": 11452, \\\"sha256\\\": \\\"d8388c622b7bc8565a32951ee3bc7ef29d0844eebd62bf8ebf5ccfbd2006a313\\\"}\\n\",\n  \"running\": false,\n  \"why\": \"macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\",\n  \"exit_code\": 0\n}"
+        }
+      ],
+      "structuredContent": {
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "output": "{\"part\": 4, \"bytes\": 11452, \"sha256\": \"d8388c622b7bc8565a32951ee3bc7ef29d0844eebd62bf8ebf5ccfbd2006a313\"}\n",
+        "running": false,
+        "why": "macos/aarch64 · 20 of 32 cores idle · 48 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs",
+        "exit_code": 0
+      },
+      "isError": false
+    }
+  ],
+  "launch": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\\\", \\\"snapshot_files\\\": 46, \\\"snapshot_written_before_build\\\": true, \\\"driver_sha256\\\": \\\"9087e24ff4a8af9664b57ee398cbfc2f1f95c2f11de687e3422717169ec73c3e\\\", \\\"helper_sha256\\\": \\\"ef7fbf13f92bce72c7f39202556e3da7a946b08e3f857a4622dc70f4c471872e\\\"}\\n\",\n  \"running\": true,\n  \"id\": \"r598\",\n  \"why\": \"macos/aarch64 · 22 of 32 cores idle · 53 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "{\"root\": \"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\", \"snapshot_files\": 46, \"snapshot_written_before_build\": true, \"driver_sha256\": \"9087e24ff4a8af9664b57ee398cbfc2f1f95c2f11de687e3422717169ec73c3e\", \"helper_sha256\": \"ef7fbf13f92bce72c7f39202556e3da7a946b08e3f857a4622dc70f4c471872e\"}\n",
+      "running": true,
+      "id": "r598",
+      "why": "macos/aarch64 · 22 of 32 cores idle · 53 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 3 CI jobs"
+    },
+    "isError": false
+  },
+  "firstOutput": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n  \"output\": \"{\\\"exit\\\": 1, \\\"root\\\": \\\"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\\\"}\\n\",\n  \"running\": false,\n  \"exit_code\": 1\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "{\"exit\": 1, \"root\": \"/Users/adalundhe/managed-cold-sync-destroy-792-v1-d025a65bc8ca441aab79b1f9815e3c24\"}\n",
+      "running": false,
+      "exit_code": 1
+    },
+    "isError": false
+  }
+}
