@@ -1,0 +1,1 @@
+CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=~/.cache/managed-combined-seven-target-b8fe lockf /tmp/g121-mac.lock cargo test --locked -j4 -p shards-remote --lib --target aarch64-apple-darwin managed::tests -- --test-threads=1

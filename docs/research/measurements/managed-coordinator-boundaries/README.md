@@ -3,8 +3,62 @@
 POLICY_READ coordinator main3ea2164dd98878426936c880f0e8d542ef67d98f;
 rules SHA256 d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242.
 Root owns the builds, real KVM executions, diagnosis, evidence review, subsequent
-mutations and combined gates. These are retained red results, not passing
-managed-runtime coverage.
+mutations and combined gates. These records retain the original reds and subsequent narrow corrections; they do
+not establish completion of the managed-runtime plan.
+
+## Narrow corrections and exact closing gates
+
+Pending probe IO correction cd5d7212cc61e9196b5afe7a3e2891ba60a74529 and private
+finish notification correction d6f2e4e63cc6e155a041da63a3e42cc61fdd8185 are
+composed with the landed allocator instrumentation at candidate
+15330d9bd34cde2649e0a36f8e44f76fee520c2c. No diagnostic daemon logging or the
+unfinished normal-tenant fixture is part of that candidate.
+
+Rootr626 on probe2b7db81c ran ten strict positive KVM cases0 and one expected
+guard-removal case101. [Exact driver and results](pending2b7d/results.json):
+corrected precommit connected/unconnected both retained ingress1 and ended
+Cancelled at UpstreamSend/NotAttempted, no upstream sends and exactly the two
+actual baseline backend receipts. Removing ONLY the new pre-attempt check
+produced an actual third backend Binary receipt and KernelAccepted send.
+Finally restored bytes/hash and empty git diff are retained, followed by fresh
+both-mode precommit, receive-cancel, ordinary two-leg and scripted-responder0.
+Every case records joined workers, acquired-link detach and scoped cgroup removal.
+The trusted barrier and all strict worker/host predicates were unchanged.
+
+Rootr632 on f31f58f4 confirms the finish wake correction in a real VM:
+both member1 channels retained canonical End, successfully enqueued final ACKs
+and observed actual transport EOF. There was no finish-Full diagnostic.
+The complete strict tenant test still returned101 at its next step: the fixture
+had not requested host TCP publication, so read ports listed only four managed
+UDP endpoints. The [original record](normalf31f/normal-tenant-exit/records/ports.json)
+and canonical EOF proof remain retained. Main progress before release succeeded;
+causally later sibling progress, explicit run removal and final terminal metadata
+were not reached. A separate publication-only fixture correction is in progress;
+no product routing bug or final metadata pass is inferred.
+
+Exact candidate1533 rootr644 normal source-matching host/helpers compiled0:
+connected/unconnected strict precommit0, both receive-cancel0, and ordinary
+managed_output11passed/0failed/2ignored. [Driver/results](fedora1533/results.json)
+retain raw guest identities, native bytes, cleanup and full caller logs.
+Rootr634 at the same candidate ran full seven-target scripts/lint0 and actual
+macOS-arm64 managed unit tests12/12. Raw commands/logs are in [mac1533](mac1533/).
+Toolchain files labelled post are later observations, not a claimed immutable
+compiler pin or pre-run environment capture.
+
+Rootr653 independently removed ONLY finish wake coalescing on that Mac:
+the two full-handoff native endpoint cases failed with the original Full transport
+error; the disconnected-driver control still passed (1pass/2fail, exit101).
+These tests construct native bound endpoints/real handoffs without running the
+driver loop; they do not constitute another QUIC/VM completion claim.
+Exact source restoration/hash plus empty diff preceded a fresh managed12/12 pass.
+The [mutation, artifacts and restored logs](finishguard1533/) are retained.
+
+These are functional corrections and source-specific compilation/native/VM
+results. Pending-before-check priority does not make cancellation atomic against
+a later syscall race. Logical terminal publication, all route classes, hard
+budgets, loss/failure campaigns, remaining native hardware and comparative cost
+remain open. Windows native execution is an additional pending gate, not claimed
+from cross-compilation. The paused Windows ARM VM remains untouched.
 
 ## Pending cancellation did not precede the next send
 
@@ -39,7 +93,7 @@ effect was substituted. Correction was delegated only after this live red:
 check already-pending cancellation at the existing IO attempt boundary, preserving
 native failure and original deadline semantics. A check does not establish an
 atomic cancellation/commit boundary against cancellation that arrives afterward.
-Fixed/mutation/restored results are still owed.
+The closing section above now records the fixed/mutation/restored results.
 
 ## Normal member End was followed by premature connection close
 
@@ -69,8 +123,8 @@ one-slot handoff. Full is converted to Error and Output calls abort. Root approv
 a narrow fix for that wake at Control::finish, with queued notifications coalesced
 and disconnected-driver failure preserved. Increasing the queue, changing generic
 typed-command ownership or altering another unproven submit path is not approved.
-Native light full/disconnected cases and root actual before/after/mutation gates
-remain required.
+The closing section above records native full/disconnected cases and root
+actual transport and mutation results; later logical metadata remains open.
 
 Each failed tenant run still completed owner stop and observer joins; r601/r604/
 r606 logged exact observer FD7→7. Explicit private run removal and sibling/main
@@ -105,8 +159,7 @@ only source/light checks; root owns campaigns and source compositions, preserves
 all red/cleanup records and protected targets. Raw whitespace remains unchanged,
 classified in WHITESPACE.json. No safety or rule weakening closes these failures.
 
-Next actual gates: pending-cancel correction in both modes, independent guard
-removal/restoration and receive/ordinary regressions; normal finish wake correction,
-withheld ACK/disconnect/full handoff/owner stop and sibling progress, then actual
-terminal metadata if transport succeeds. Full hard budgets, mandatory routes,
+Remaining actual gates include notification/worker/readiness failures, concurrent
+revocation and expiry; normal-tenant publication, causally later sibling progress
+and final terminal metadata; other native hardware and comparable cost. Full hard budgets, mandatory routes,
 effect broker, native harness adapters/credentials and generations remain open.

@@ -1,0 +1,787 @@
+[
+  {
+    "world": "corrected",
+    "case": "precommit-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamSend",
+        "upstream_progress": "NotAttempted",
+        "ingress_received": 1,
+        "upstream_sent": 0,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:51062",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:47312",
+        "original": "127.0.0.1:51062"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:51062",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:47312",
+        "original": "127.0.0.1:51062"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "corrected",
+    "case": "precommit-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamSend",
+        "upstream_progress": "NotAttempted",
+        "ingress_received": 1,
+        "upstream_sent": 0,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:33249",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:52444",
+        "original": "127.0.0.1:33249"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:33249",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:52444",
+        "original": "127.0.0.1:33249"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "precheck-removed",
+    "case": "precommit-connected",
+    "mode": "connected",
+    "actual_exit": 101,
+    "expected_exit": 101,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamReceive",
+        "upstream_progress": "KernelAccepted",
+        "ingress_received": 1,
+        "upstream_sent": 1,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:60629",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:50488",
+        "original": "127.0.0.1:60629"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:60629",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:50488",
+        "original": "127.0.0.1:60629"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:60629",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:40130",
+        "original": "127.0.0.1:60629"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "precommit-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamSend",
+        "upstream_progress": "NotAttempted",
+        "ingress_received": 1,
+        "upstream_sent": 0,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:38376",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:42084",
+        "original": "127.0.0.1:38376"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:38376",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:42084",
+        "original": "127.0.0.1:38376"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "precommit-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamSend",
+        "upstream_progress": "NotAttempted",
+        "ingress_received": 1,
+        "upstream_sent": 0,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:44713",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:58682",
+        "original": "127.0.0.1:44713"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:44713",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:58682",
+        "original": "127.0.0.1:44713"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "receive-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamReceive",
+        "upstream_progress": "KernelAccepted",
+        "ingress_received": 1,
+        "upstream_sent": 1,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:55289",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:40893",
+        "original": "127.0.0.1:55289"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:55289",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:40893",
+        "original": "127.0.0.1:55289"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:55289",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:37750",
+        "original": "127.0.0.1:55289"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "receive-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Binary",
+        "stage": "UpstreamReceive",
+        "upstream_progress": "KernelAccepted",
+        "ingress_received": 1,
+        "upstream_sent": 1,
+        "upstream_received": 0,
+        "client_sent": 0,
+        "empty_ingress": 0,
+        "empty_reply": 0,
+        "terminal": "Cancelled",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:42696",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:60913",
+        "original": "127.0.0.1:42696"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:42696",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:60913",
+        "original": "127.0.0.1:42696"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:42696",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:51586",
+        "original": "127.0.0.1:42696"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "forward-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Empty",
+        "stage": "ExchangeComplete",
+        "upstream_progress": "ReplyValidated",
+        "ingress_received": 2,
+        "upstream_sent": 2,
+        "upstream_received": 2,
+        "client_sent": 2,
+        "empty_ingress": 1,
+        "empty_reply": 1,
+        "terminal": "ScriptComplete",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:43756",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:44446",
+        "original": "127.0.0.1:43756"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:43756",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:44446",
+        "original": "127.0.0.1:43756"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:43756",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:52163",
+        "original": "127.0.0.1:43756"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 4,
+        "local": "127.0.0.1:43756",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:52163",
+        "original": "127.0.0.1:43756"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "forward-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [
+      {
+        "type": "ForwardCompletion",
+        "joined": true,
+        "step": "Empty",
+        "stage": "ExchangeComplete",
+        "upstream_progress": "ReplyValidated",
+        "ingress_received": 2,
+        "upstream_sent": 2,
+        "upstream_received": 2,
+        "client_sent": 2,
+        "empty_ingress": 1,
+        "empty_reply": 1,
+        "terminal": "ScriptComplete",
+        "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+      }
+    ],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:56746",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:37192",
+        "original": "127.0.0.1:56746"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:56746",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:37192",
+        "original": "127.0.0.1:56746"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 3,
+        "local": "127.0.0.1:56746",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:38614",
+        "original": "127.0.0.1:56746"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 4,
+        "local": "127.0.0.1:56746",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:38614",
+        "original": "127.0.0.1:56746"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "scripted-connected",
+    "mode": "connected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:53363",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:44165",
+        "original": "127.0.0.1:53363"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:53363",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:44165",
+        "original": "127.0.0.1:53363"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 3,
+        "links_acquired": 3,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  },
+  {
+    "world": "restored",
+    "case": "scripted-unconnected",
+    "mode": "unconnected",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "forward": [],
+    "backend": [
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Binary",
+        "ordinal": 1,
+        "local": "127.0.0.1:47108",
+        "reported": 9,
+        "flags": 0,
+        "copied_hex": "5245515545535400ff",
+        "metadata": "Known",
+        "peer": "127.0.0.1:41955",
+        "original": "127.0.0.1:47108"
+      },
+      {
+        "type": "UdpArrival",
+        "role": "Backend",
+        "step": "Empty",
+        "ordinal": 2,
+        "local": "127.0.0.1:47108",
+        "reported": 0,
+        "flags": 0,
+        "copied_hex": "",
+        "metadata": "Known",
+        "peer": "127.0.0.1:41955",
+        "original": "127.0.0.1:47108"
+      }
+    ],
+    "cleanup": [
+      {
+        "type": "Cleanup",
+        "state": "Observed",
+        "backend_joined": true,
+        "relay_joined": true,
+        "hook_setup": "Ready",
+        "links_required": 2,
+        "links_acquired": 2,
+        "link_detached": true,
+        "cgroup_removed": true,
+        "after_window": "Unverified"
+      }
+    ]
+  }
+]

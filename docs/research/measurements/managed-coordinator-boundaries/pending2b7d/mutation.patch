@@ -1,0 +1,30 @@
+--- crates/testguest/src/managed_network.rs
++++ crates/testguest/src/managed_network.rs
+@@ -239,27 +239,6 @@
+     fn io<T>(&self, fd: RawFd, events: i16, mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+         loop {
+             self.left()?;
+-            if let Some(cancel) = self.cancel {
+-                if cancel < 0 {
+-                    return Err(io::ErrorKind::InvalidInput.into());
+-                }
+-                let mut ready = libc::pollfd {
+-                    fd: cancel,
+-                    events: libc::POLLIN,
+-                    revents: 0,
+-                };
+-                // SAFETY: one initialized pollfd, checked without consuming its
+-                // event. Admission covers pending cancel, not a later check/I/O race.
+-                if unsafe { libc::poll(&raw mut ready, 1, 0) } < 0 {
+-                    let error = io::Error::last_os_error();
+-                    if error.kind() == io::ErrorKind::Interrupted {
+-                        continue;
+-                    }
+-                    return Err(error);
+-                }
+-                self.left()?;
+-                Self::cancellation_event(ready.revents)?;
+-            }
+             match operation() {
+                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}

@@ -1,0 +1,10 @@
+{
+  "host_exit_reaping_kernel_return": "Unverified; coordinator held-watches/independent cleanup campaign owed",
+  "observer_fd_baseline": 7,
+  "owner_stop_and_observer_join": {
+    "completed": true,
+    "error": null
+  },
+  "private_run_cleanup_completed": false,
+  "protocol_completed": false
+}

@@ -1,0 +1,277 @@
+[
+  {
+    "path": "cargo-rustc-info.post.json",
+    "bytes": 1273,
+    "sha256": "a7100554ee22611d992696d82c634ccfbf3e58e901de8a569e3b278cf764a1c7"
+  },
+  {
+    "path": "compile.command.json",
+    "bytes": 176,
+    "sha256": "4dbe7ba6a71ccfea50eb9be11af50f7c0695b8b264aceef4aa3600b94ca08b7d"
+  },
+  {
+    "path": "compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "compile.jsonl",
+    "bytes": 261373,
+    "sha256": "0ad113b5f36e41f721406319aa5b974a64bd04711d13bd94073555d6606c3f7f"
+  },
+  {
+    "path": "compile.log",
+    "bytes": 1860,
+    "sha256": "74f32865db3437a6f4744261e15827ed18ee9e9ca81ce89057669de36744c948"
+  },
+  {
+    "path": "driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "driver.py",
+    "bytes": 4224,
+    "sha256": "d5fc86ebcd0f08a17d1742a3fcd16ec55a07a99204875f01eaccc7f3ce4ad282"
+  },
+  {
+    "path": "ordinary-output/command.json",
+    "bytes": 134,
+    "sha256": "22f17158e7e20dec5c4c10c6a8f76610373e552bff2de13d7c73ad66e3e3e7e7"
+  },
+  {
+    "path": "ordinary-output/environment.json",
+    "bytes": 816,
+    "sha256": "a89eeb1318e062fc0e7dab7e6d3890b3c1836abd447f96e6d151372d44f54ffe"
+  },
+  {
+    "path": "ordinary-output/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "ordinary-output/test.log",
+    "bytes": 5072,
+    "sha256": "da32094a90c3a0275c0fef32aeef90951c3dad1f30e08e10dd590df8655c2991"
+  },
+  {
+    "path": "precommit-connected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "precommit-connected/environment.json",
+    "bytes": 820,
+    "sha256": "18ad7036be7a451da3de5ce4f2da225e6d8cfae5c56b496ce917b97f546812f0"
+  },
+  {
+    "path": "precommit-connected/observed.json",
+    "bytes": 6849,
+    "sha256": "3fca794a3791d3ee7314554f2522a090d41c8d0a64950fa5ab75688991ad1f7b"
+  },
+  {
+    "path": "precommit-connected/sock-addr-precommit4-connected.cmdline",
+    "bytes": 115,
+    "sha256": "94d096f71015cf3fd18c7efd983d8c61e7679b2cf7f8fa49963eb9a0809c0b68"
+  },
+  {
+    "path": "precommit-connected/sock-addr-precommit4-connected.identity.json",
+    "bytes": 2066,
+    "sha256": "c4bf470255b7752461a430ad780d332f939403b50d552b4f780c2fe2167b8ddd"
+  },
+  {
+    "path": "precommit-connected/sock-addr-precommit4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "precommit-connected/sock-addr-precommit4-connected.stderr",
+    "bytes": 227,
+    "sha256": "d51ce05708fa8fe1b3ed4ea9fe0ae732cb0b69025a63c3268064fe525fdd670b"
+  },
+  {
+    "path": "precommit-connected/sock-addr-precommit4-connected.stdout",
+    "bytes": 6236,
+    "sha256": "156078ddce0d8802103bc7362a270686a54c129865dc6d209714d8080d42c53b"
+  },
+  {
+    "path": "precommit-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "precommit-connected/test.log",
+    "bytes": 4100,
+    "sha256": "9ef73f51716994f6dcf1d091e627c61c197ece159775fc98620bc77a580aafa5"
+  },
+  {
+    "path": "precommit-unconnected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "precommit-unconnected/environment.json",
+    "bytes": 824,
+    "sha256": "be55a11bfa0d86cbdcd41f5f6a5546f20079261b718c100bb658f9e045b2d86b"
+  },
+  {
+    "path": "precommit-unconnected/observed.json",
+    "bytes": 6296,
+    "sha256": "fd84cdbe82c6fd647a897ded0a2696c90461d0a62e9630df25c2f3ea1975b30f"
+  },
+  {
+    "path": "precommit-unconnected/sock-addr-precommit4-unconnected.cmdline",
+    "bytes": 117,
+    "sha256": "53f56ae6dba14ec7891cabbf72644a0c9937f15336c1edb38e0495f133efa54e"
+  },
+  {
+    "path": "precommit-unconnected/sock-addr-precommit4-unconnected.identity.json",
+    "bytes": 2068,
+    "sha256": "9900ac15f56d95b738465cd9017db33f597d1eec635e3d906e75a9a56ce51c2a"
+  },
+  {
+    "path": "precommit-unconnected/sock-addr-precommit4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "precommit-unconnected/sock-addr-precommit4-unconnected.stderr",
+    "bytes": 225,
+    "sha256": "17e31921dbb4fbbab98dfc9a2636b2c6979bee9ec52f3bb9312ea121a5a350c6"
+  },
+  {
+    "path": "precommit-unconnected/sock-addr-precommit4-unconnected.stdout",
+    "bytes": 5712,
+    "sha256": "3cff7af48c92f25ea7c285ea9d363107dbcbf116774c70d3ee9e08e2d539edd6"
+  },
+  {
+    "path": "precommit-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "precommit-unconnected/test.log",
+    "bytes": 4006,
+    "sha256": "f435c9ef647b87146eb2cc11841524ad840b3c97a723f5677aee12008b070602"
+  },
+  {
+    "path": "receive-connected/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "receive-connected/environment.json",
+    "bytes": 818,
+    "sha256": "f1e17d05ab78abed933eef1e14afa76b8e1939538b697134f79896c366bf89e9"
+  },
+  {
+    "path": "receive-connected/observed.json",
+    "bytes": 7218,
+    "sha256": "a583593c9e9a7f54f851d701537b2c960ce940293077c2b5d18b156785058ca9"
+  },
+  {
+    "path": "receive-connected/sock-addr-cancel4-connected.cmdline",
+    "bytes": 112,
+    "sha256": "02f305c264ab7a05f5bd2f37ec2e297c351b807f3e510a345e089f8649d17b5a"
+  },
+  {
+    "path": "receive-connected/sock-addr-cancel4-connected.identity.json",
+    "bytes": 2063,
+    "sha256": "72a721adc8dbe1ac2e36557ea47ee1852eb5b90775190b82145255adc257b009"
+  },
+  {
+    "path": "receive-connected/sock-addr-cancel4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "receive-connected/sock-addr-cancel4-connected.stderr",
+    "bytes": 227,
+    "sha256": "4c5824b4dbfe7900db137edb76d7d4452a207221352c4ce94ca84c644baefa84"
+  },
+  {
+    "path": "receive-connected/sock-addr-cancel4-connected.stdout",
+    "bytes": 6531,
+    "sha256": "c363c5c8c6f8e993d5553e5c5a554d75c4a25b214df696262e1c9f187dc3b8b4"
+  },
+  {
+    "path": "receive-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "receive-connected/test.log",
+    "bytes": 4008,
+    "sha256": "d2e9805f5382fe518504e78b57e157d1e1912dc0b1fbb839d9fc551e3718a17d"
+  },
+  {
+    "path": "receive-unconnected/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "receive-unconnected/environment.json",
+    "bytes": 822,
+    "sha256": "220f7f6e40de97c1c9206e9093164c45b43c985ae6eaf85b75ef949539491944"
+  },
+  {
+    "path": "receive-unconnected/observed.json",
+    "bytes": 6665,
+    "sha256": "897cfbd6d2a7305db2d4b59f049a956fc643eff04ac6bcc189fa1d202b8b8c45"
+  },
+  {
+    "path": "receive-unconnected/sock-addr-cancel4-unconnected.cmdline",
+    "bytes": 114,
+    "sha256": "8a9dfdd3b8897fca75d8b5501f787762594d4610acd503119e8833bb7f81eec6"
+  },
+  {
+    "path": "receive-unconnected/sock-addr-cancel4-unconnected.identity.json",
+    "bytes": 2065,
+    "sha256": "407f71b3959c68e1a82c87864b30d80fdb817f70cfefcbd33507b4bcacc4cb0e"
+  },
+  {
+    "path": "receive-unconnected/sock-addr-cancel4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "receive-unconnected/sock-addr-cancel4-unconnected.stderr",
+    "bytes": 225,
+    "sha256": "8f7ae935e76dc545fb88fb8373471a07ef5f205819c08fad99ead1f297c380d1"
+  },
+  {
+    "path": "receive-unconnected/sock-addr-cancel4-unconnected.stdout",
+    "bytes": 6007,
+    "sha256": "ba919389f5334d902403c0d95fcfd8c35b5d20e0132a12c2fc11732a988ecef8"
+  },
+  {
+    "path": "receive-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "receive-unconnected/test.log",
+    "bytes": 4010,
+    "sha256": "087d739371e379872073d783a6bd8096ddfc4c1c98aee7279f7044a585a0f39b"
+  },
+  {
+    "path": "results.json",
+    "bytes": 13518,
+    "sha256": "cf7e691f4822c0120f1a69f155e2341c70e7ccda8c8c5656f6e9ed5df6a14a8c"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "0158d460f7e805347d4f0dfe41d4bc0dbe61596f0b43370d73d1e04b6bc7701d"
+  },
+  {
+    "path": "test-artifacts.json",
+    "bytes": 441,
+    "sha256": "d891847ee9870c8bf0129363f67e65dc9c761b91265b4c7cbce2cbe47b04c2ae"
+  },
+  {
+    "path": "toolchain.post.txt",
+    "bytes": 315,
+    "sha256": "e1396a9dbe9c1b4769e1318131a26ab9d88f8c104d6430da734879dec2993df7"
+  }
+]

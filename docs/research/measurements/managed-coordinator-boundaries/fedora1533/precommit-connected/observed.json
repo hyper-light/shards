@@ -1,0 +1,280 @@
+[
+  {
+    "type": "PayloadSlots",
+    "provided": 18,
+    "request_len": 9,
+    "reply_len": 9,
+    "request_capacity": 9,
+    "reply_capacity": 9,
+    "charge_scope": "PayloadCapacityOnly",
+    "allocator_kernel_console": "Unaccounted"
+  },
+  {
+    "type": "Target",
+    "mode": "Connected",
+    "namespace": 4026532020,
+    "cgroup_inode": 21,
+    "backend": "127.0.0.1:42893",
+    "responder": "127.0.0.1:38662",
+    "profile": "FixedOriginalPeer",
+    "operation": "CancelBeforeUpstreamSend"
+  },
+  {
+    "type": "ForwardTarget",
+    "ingress": "127.0.0.1:38662",
+    "upstream": "127.0.0.1:49362",
+    "backend": "127.0.0.1:42893",
+    "upstream_peer": "127.0.0.1:42893",
+    "source_preservation": "MustObserveBackend"
+  },
+  {
+    "type": "Child",
+    "pid": 544,
+    "role": "Backend",
+    "state": "ExecReturned"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Backend",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:42893",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "5245515545535400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:59042",
+    "original": "127.0.0.1:42893"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "Backend",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:42893",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:59042",
+    "original": "127.0.0.1:42893"
+  },
+  {
+    "type": "ClientIdentity",
+    "pid": 544,
+    "namespace": 4026532020,
+    "requested": "127.0.0.1:42893",
+    "local": "127.0.0.1:59042",
+    "mode": "Connected",
+    "role": "BaselineBackend",
+    "peer": "127.0.0.1:42893",
+    "peer_error": null,
+    "cgroup_hex": "303a3a2f736f636b2d616464722d636c69656e740a"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrBaselineClient",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:59042",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "4241434b454e4400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:42893",
+    "original": "127.0.0.1:59042"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "SockAddrBaselineClient",
+    "step": "Empty",
+    "ordinal": 2,
+    "local": "127.0.0.1:59042",
+    "reported": 0,
+    "flags": 0,
+    "copied_hex": "",
+    "metadata": "Known",
+    "peer": "127.0.0.1:42893",
+    "original": "127.0.0.1:59042"
+  },
+  {
+    "type": "ClientCompletion",
+    "role": "BaselineBackend",
+    "expected": "Backend",
+    "stage": "Compatibility",
+    "exchanges": 2,
+    "compatibility": "Exact",
+    "script": "Complete",
+    "success": true
+  },
+  {
+    "type": "ChildReaped",
+    "role": "Backend",
+    "reaped": true,
+    "success": true,
+    "code": 0,
+    "signal": null
+  },
+  {
+    "type": "Program",
+    "hook": "Connect4",
+    "from": "127.0.0.1:42893",
+    "to": "127.0.0.1:38662",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200a78d0000620104007f0000016201180097060000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Connect4"
+  },
+  {
+    "type": "Program",
+    "hook": "Recvmsg4",
+    "from": "127.0.0.1:38662",
+    "to": "127.0.0.1:42893",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f00000161121800000000005602020097060000620104007f00000162011800a78d0000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Recvmsg4"
+  },
+  {
+    "type": "Program",
+    "hook": "Getpeername4",
+    "from": "127.0.0.1:38662",
+    "to": "127.0.0.1:42893",
+    "bytecode_hex": "611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f00000161121800000000005602020097060000620104007f00000162011800a78d0000b7000000010000009500000000000000",
+    "verifier_log": "NotRequested"
+  },
+  {
+    "type": "LinkAttached",
+    "hook": "Getpeername4"
+  },
+  {
+    "type": "UdpArrival",
+    "role": "ForwardIngress",
+    "step": "Binary",
+    "ordinal": 1,
+    "local": "127.0.0.1:38662",
+    "reported": 9,
+    "flags": 0,
+    "copied_hex": "5245515545535400ff",
+    "metadata": "Known",
+    "peer": "127.0.0.1:47673",
+    "original": "127.0.0.1:38662"
+  },
+  {
+    "type": "IngressValidated",
+    "stage": "BeforeUpstreamSend",
+    "step": "Binary",
+    "upstream_progress": "NotAttempted",
+    "ingress_received": 1
+  },
+  {
+    "type": "Child",
+    "pid": 546,
+    "role": "ForwardedBackend",
+    "state": "ExecReturned"
+  },
+  {
+    "type": "CancelBoundary",
+    "state": "Requested",
+    "stage": "BeforeUpstreamSend",
+    "receipt": "ValidatedOwnedIngress",
+    "work_remaining_ns": 29943033456,
+    "kernel_sleep": "Unobserved"
+  },
+  {
+    "type": "PreSendRelease",
+    "state": "ReleasedAfterCancelRequest"
+  },
+  {
+    "type": "ChildCancellation",
+    "role": "ForwardedBackend",
+    "requested": true
+  },
+  {
+    "type": "ClientIdentity",
+    "pid": 546,
+    "namespace": 4026532020,
+    "requested": "127.0.0.1:42893",
+    "local": "127.0.0.1:47673",
+    "mode": "Connected",
+    "role": "ForwardedBackend",
+    "peer": "127.0.0.1:42893",
+    "peer_error": null,
+    "cgroup_hex": "303a3a2f736f636b2d616464722d636c69656e740a"
+  },
+  {
+    "type": "ChildReaped",
+    "role": "ForwardedBackend",
+    "reaped": true,
+    "success": false,
+    "code": null,
+    "signal": 9
+  },
+  {
+    "type": "Cleanup",
+    "state": "Pending",
+    "stage": "JoinWorkers"
+  },
+  {
+    "type": "CancelBoundary",
+    "state": "JoinedWithinWorkDeadline",
+    "work_remaining_ns": 29936577086
+  },
+  {
+    "type": "UdpWorkerCompletion",
+    "role": "Backend",
+    "joined": true,
+    "stage": "ReceiveDatagram",
+    "arrivals": 2,
+    "matched": 2,
+    "empty": 1,
+    "replies_sent": 2,
+    "terminal": "Cancelled"
+  },
+  {
+    "type": "ForwardCompletion",
+    "joined": true,
+    "step": "Binary",
+    "stage": "UpstreamSend",
+    "upstream_progress": "NotAttempted",
+    "ingress_received": 1,
+    "upstream_sent": 0,
+    "upstream_received": 0,
+    "client_sent": 0,
+    "empty_ingress": 0,
+    "empty_reply": 0,
+    "terminal": "Cancelled",
+    "external_commit": "UnverifiedBeyondIndependentBackendReceipts"
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Connect4",
+    "detached": true
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Recvmsg4",
+    "detached": true
+  },
+  {
+    "type": "LinkDetached",
+    "hook": "Getpeername4",
+    "detached": true
+  },
+  {
+    "type": "Cleanup",
+    "state": "Observed",
+    "backend_joined": true,
+    "relay_joined": true,
+    "hook_setup": "Ready",
+    "links_required": 3,
+    "links_acquired": 3,
+    "link_detached": true,
+    "cgroup_removed": true,
+    "after_window": "Unverified"
+  }
+]

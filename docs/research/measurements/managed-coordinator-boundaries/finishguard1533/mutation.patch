@@ -1,0 +1,16 @@
+--- crates/remote/src/managed.rs
++++ crates/remote/src/managed.rs
+@@ -462,12 +462,7 @@
+         self.shared.notify();
+         // Shared owns finishing; a queued unit wake will flush that state too.
+         // Only this endpoint's producer/control enqueue these unit notifications.
+-        match self.sender.try_send(Command::Handler(())) {
+-            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(()),
+-            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(Error::Transport(crate::Error::new(
+-                "the connection's driver has ended",
+-            ))),
+-        }
++        self.sender.send(Command::Handler(())).map_err(Error::Transport)
+     }
+ 
+     /// Revocation uses the driver's separate stop flag, even with a full handoff.

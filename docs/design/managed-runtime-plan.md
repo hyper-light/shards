@@ -21,7 +21,8 @@ endpoint. These pieces have not closed P0–P13. The
 names the actual KVM and seven-target gates; the
 [boundary failure record](../research/measurements/managed-coordinator-boundaries/README.md)
 retains the actual pending-cancel backend effect and normal-finish wake failure,
-which remain under correction. The
+their narrow corrections, meaningful guard removals/restored passes and exact
+combined gates. Further tenant publication/terminal work remains open. The
 [allocation instrumentation record](../research/measurements/managed-coordinator-allocation/README.md)
 contains normal caller and N0/N1/N2 functional pilots, not comparative performance. [Central real-VM records](../research/measurements/managed-central-vm/README.md)
 retain separate-channel/neighbor cases, repeated orphan reaping, thirteen native

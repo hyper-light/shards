@@ -1,0 +1,42 @@
+[    0.011115] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-relay4", "connected", "30000", "fixed-original-peer", "18"]
+managed-sock-addr {"type":"PayloadSlots","provided":18,"request_len":9,"reply_len":9,"request_capacity":9,"reply_capacity":9,"charge_scope":"PayloadCapacityOnly","allocator_kernel_console":"Unaccounted"}
+managed-sock-addr {"type":"Target","mode":"Connected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:43756","responder":"127.0.0.1:36100","profile":"FixedOriginalPeer","operation":"BufferedRelay"}
+managed-sock-addr {"type":"ForwardTarget","ingress":"127.0.0.1:36100","upstream":"127.0.0.1:52163","backend":"127.0.0.1:43756","upstream_peer":"127.0.0.1:43756","source_preservation":"MustObserveBackend"}
+managed-sock-addr {"type":"Child","pid":544,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:43756","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:44446","original":"127.0.0.1:43756"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:43756","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:44446","original":"127.0.0.1:43756"}
+managed-sock-addr {"type":"ClientIdentity","pid":544,"namespace":4026532020,"requested":"127.0.0.1:43756","local":"127.0.0.1:44446","mode":"Connected","role":"BaselineBackend","peer":"127.0.0.1:43756","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:44446","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:44446"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:44446","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:44446"}
+managed-sock-addr {"type":"ClientCompletion","role":"BaselineBackend","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0,"signal":null}
+managed-sock-addr {"type":"Program","hook":"Connect4","from":"127.0.0.1:43756","to":"127.0.0.1:36100","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200aaec0000620104007f000001620118008d040000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Connect4"}
+managed-sock-addr {"type":"Program","hook":"Recvmsg4","from":"127.0.0.1:36100","to":"127.0.0.1:43756","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f0000016112180000000000560202008d040000620104007f00000162011800aaec0000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Recvmsg4"}
+managed-sock-addr {"type":"Program","hook":"Getpeername4","from":"127.0.0.1:36100","to":"127.0.0.1:43756","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f0000016112180000000000560202008d040000620104007f00000162011800aaec0000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Getpeername4"}
+managed-sock-addr {"type":"Child","pid":546,"role":"ForwardedBackend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"ForwardIngress","step":"Binary","ordinal":1,"local":"127.0.0.1:36100","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:44729","original":"127.0.0.1:36100"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":3,"local":"127.0.0.1:43756","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:52163","original":"127.0.0.1:43756"}
+managed-intercept {"type":"UdpArrival","role":"ForwardUpstreamReply","step":"Binary","ordinal":1,"local":"127.0.0.1:52163","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:52163"}
+managed-intercept {"type":"ForwardExchange","step":"Binary","client":"127.0.0.1:44729","ingress":"127.0.0.1:36100","upstream":"127.0.0.1:52163","backend":"127.0.0.1:43756","progress":"ReplyValidated","source_preservation":"Changed","stage":"ExchangeComplete"}
+managed-intercept {"type":"UdpArrival","role":"ForwardIngress","step":"Empty","ordinal":2,"local":"127.0.0.1:36100","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:44729","original":"127.0.0.1:36100"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":4,"local":"127.0.0.1:43756","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:52163","original":"127.0.0.1:43756"}
+managed-intercept {"type":"UdpArrival","role":"ForwardUpstreamReply","step":"Empty","ordinal":2,"local":"127.0.0.1:52163","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:52163"}
+managed-sock-addr {"type":"ClientIdentity","pid":546,"namespace":4026532020,"requested":"127.0.0.1:43756","local":"127.0.0.1:44729","mode":"Connected","role":"ForwardedBackend","peer":"127.0.0.1:43756","peer_error":null,"cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrForwardedClient","step":"Binary","ordinal":1,"local":"127.0.0.1:44729","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:44729"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrForwardedClient","step":"Empty","ordinal":2,"local":"127.0.0.1:44729","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:43756","original":"127.0.0.1:44729"}
+managed-sock-addr {"type":"ClientCompletion","role":"ForwardedBackend","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"ForwardedBackend","reaped":true,"success":true,"code":0,"signal":null}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"ForwardExchange","step":"Empty","client":"127.0.0.1:44729","ingress":"127.0.0.1:36100","upstream":"127.0.0.1:52163","backend":"127.0.0.1:43756","progress":"ReplyValidated","source_preservation":"Changed","stage":"ExchangeComplete"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"stage":"ReceiveDatagram","arrivals":4,"matched":4,"empty":2,"replies_sent":4,"terminal":"Cancelled"}
+managed-intercept {"type":"ForwardCompletion","joined":true,"step":"Empty","stage":"ExchangeComplete","upstream_progress":"ReplyValidated","ingress_received":2,"upstream_sent":2,"upstream_received":2,"client_sent":2,"empty_ingress":1,"empty_reply":1,"terminal":"ScriptComplete","external_commit":"UnverifiedBeyondIndependentBackendReceipts"}
+managed-sock-addr {"type":"LinkDetached","hook":"Connect4","detached":true}
+managed-sock-addr {"type":"LinkDetached","hook":"Recvmsg4","detached":true}
+managed-sock-addr {"type":"LinkDetached","hook":"Getpeername4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":3,"links_acquired":3,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+SHARDS-TEST PASS
+[    0.132868] reboot: Power down

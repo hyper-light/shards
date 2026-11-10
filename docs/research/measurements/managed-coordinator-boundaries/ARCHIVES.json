@@ -4,27 +4,74 @@
     "bytes": 32106,
     "hash": "a0b6eef9aa5686c25d2efeaae73e7f63a860e771e41528ac20277549c3e1b1b6",
     "files": 38,
-    "key": "boundary0456"
+    "key": "boundary0456",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
   },
   {
     "name": "root-managed-normal-0765-v1.tar.gz",
     "bytes": 21955,
     "hash": "3e4b72c3a6fb21eaa9500c2695c5f9f060afa7c3ada1f0c1e718f87150164532",
     "files": 18,
-    "key": "normal0765"
+    "key": "normal0765",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
   },
   {
     "name": "root-managed-normal-84e6-v1.tar.gz",
     "bytes": 21964,
     "hash": "5a641fd7cab19b01409767551fcf10a9327531549955fcda242d748aef026a7b",
     "files": 18,
-    "key": "normal84e6"
+    "key": "normal84e6",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
   },
   {
     "name": "root-managed-normal-fc7b-v1.tar.gz",
     "bytes": 22495,
     "hash": "1ccad0a1131ff4ffb007fa624c259ce93f65dd51eca6e0d19809c596d7be6ddc",
     "files": 19,
-    "key": "normalfc7b"
+    "key": "normalfc7b",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
+  },
+  {
+    "name": "root-managed-pending-2b7d-v1.tar.gz",
+    "bytes": 103107,
+    "hash": "6f5f6e39455d96096a7f30a356d90a8f31e3503f4a6e9db77cd4d725b0275aee",
+    "files": 136,
+    "key": "pending2b7d",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f"
+  },
+  {
+    "name": "root-managed-normal-f31f-v1.tar.gz",
+    "bytes": 23918,
+    "hash": "0fcb9ddb4229f73dc77948ddb215bd2b456d3986bb22c911028cd2cc81142b0a",
+    "files": 23,
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "key": "normalf31f",
+    "local_name": "normalf31f-root-managed-normal-f31f-v1.tar.gz"
+  },
+  {
+    "name": "root-managed-closing-1533-v1.tar.gz",
+    "bytes": 39913,
+    "hash": "1b5c1a4449916cbf229888e14c9684149147e8094559bd37ba352b4318f9dda3",
+    "files": 56,
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "key": "fedora1533",
+    "local_name": "fedora1533-root-managed-closing-1533-v1.tar.gz"
+  },
+  {
+    "name": "root-managed-closing-1533-v1.tar.gz",
+    "bytes": 6163,
+    "hash": "b1a850a4b673ae8ab7cbab2d1867e8cc0c3e54b667cb41d1caaa297b3becc454",
+    "files": 13,
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "key": "mac1533",
+    "local_name": "mac1533-root-managed-closing-1533-v1.tar.gz"
+  },
+  {
+    "name": "root-managed-finish-guard-1533-v1.tar.gz",
+    "bytes": 5086,
+    "hash": "ac4854bd641c6efe1c5fa679efe389e43a44cf817747d6a5308f23912e54edfa",
+    "files": 17,
+    "key": "finishguard1533",
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51"
   }
 ]

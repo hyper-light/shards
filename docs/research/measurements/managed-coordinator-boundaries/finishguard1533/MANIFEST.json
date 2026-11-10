@@ -1,0 +1,82 @@
+[
+  {
+    "path": ".DS_Store",
+    "bytes": 6148,
+    "sha256": "0900c5bf0caaaa0e2a37ecc8f307c5f5466f815e3d4ffe39407da6322539c83a"
+  },
+  {
+    "path": "coalescing-removed/command.json",
+    "bytes": 189,
+    "sha256": "90c41fdf78ee804ad5097cac64c51dd1a32983345cc3137ed015f231b75ced43"
+  },
+  {
+    "path": "coalescing-removed/test-artifact.json",
+    "bytes": 218,
+    "sha256": "98f55c25a6fff22caa0959d5e2686a1856c94d48bebeb5760fb5f95ce6b51e03"
+  },
+  {
+    "path": "coalescing-removed/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "coalescing-removed/test.log",
+    "bytes": 3394,
+    "sha256": "0f5cd9b67555406740a3315775a2b0530807312e3cdd7e94ed13d344652064ed"
+  },
+  {
+    "path": "driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "driver.py",
+    "bytes": 2512,
+    "sha256": "dcb4a9832202c64ab34c10557ed5ea70bb202ccbdb1128cf5532e61cc8a28753"
+  },
+  {
+    "path": "mutation.patch",
+    "bytes": 778,
+    "sha256": "0e1af9889b9061f8c99dfdcc8a681e4734d56f2d92c30ef0652b167189d51c56"
+  },
+  {
+    "path": "original.sha256",
+    "bytes": 65,
+    "sha256": "7cb0c5b0c4935af2d9dc7e528adea751dacc7bb5cfd9bc86cc08fa3007d0d47a"
+  },
+  {
+    "path": "restored/command.json",
+    "bytes": 180,
+    "sha256": "0dab5cac50f7e9b23de92cebee42be4f98e045b06ff827829c755f8ed4ef8956"
+  },
+  {
+    "path": "restored/test-artifact.json",
+    "bytes": 218,
+    "sha256": "f323f18081ad27f682995284fc98f1c388740fa27d928f1dd51a55f2cbba44c0"
+  },
+  {
+    "path": "restored/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/test.log",
+    "bytes": 3124,
+    "sha256": "1942b42aba46bd99e0965f2b6456992f20fc28baa13da7815c7d203c13b2794b"
+  },
+  {
+    "path": "restored.diff",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "restored.sha256",
+    "bytes": 65,
+    "sha256": "7cb0c5b0c4935af2d9dc7e528adea751dacc7bb5cfd9bc86cc08fa3007d0d47a"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "0158d460f7e805347d4f0dfe41d4bc0dbe61596f0b43370d73d1e04b6bc7701d"
+  }
+]

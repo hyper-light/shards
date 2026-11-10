@@ -1,0 +1,1 @@
+["lockf", "/tmp/g121-mac.lock", "cargo", "test", "--locked", "-j4", "-p", "shards-remote", "--lib", "--target", "aarch64-apple-darwin", "managed::tests", "--", "--test-threads=1"]

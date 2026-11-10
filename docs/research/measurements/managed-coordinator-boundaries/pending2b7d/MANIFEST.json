@@ -1,0 +1,677 @@
+[
+  {
+    "path": "corrected/compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "corrected/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "corrected/compile.jsonl",
+    "bytes": 260588,
+    "sha256": "71d9205d8fa14b71870bb71f54d50e20b2c6a783d348738bc091da0d33b21606"
+  },
+  {
+    "path": "corrected/compile.log",
+    "bytes": 1860,
+    "sha256": "48f5395af331bd25a434c486e0490101a8ff399eb95d2cc5418d200f65e6bdb5"
+  },
+  {
+    "path": "corrected/precommit-connected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "corrected/precommit-connected/environment.json",
+    "bytes": 830,
+    "sha256": "5e7864ab936ec51f0059c52e3803ecb0d893fe50f348e85edaf95e37490443d4"
+  },
+  {
+    "path": "corrected/precommit-connected/observed.json",
+    "bytes": 6849,
+    "sha256": "1117b49738402391307c51a6727e3c7ab6bc935eb14c485bee90a79a198dcb9c"
+  },
+  {
+    "path": "corrected/precommit-connected/sock-addr-precommit4-connected.cmdline",
+    "bytes": 115,
+    "sha256": "94d096f71015cf3fd18c7efd983d8c61e7679b2cf7f8fa49963eb9a0809c0b68"
+  },
+  {
+    "path": "corrected/precommit-connected/sock-addr-precommit4-connected.identity.json",
+    "bytes": 2065,
+    "sha256": "97bf457018a249fe389d4e9bc75391e1338886f0c4624d53d447797c66e5925f"
+  },
+  {
+    "path": "corrected/precommit-connected/sock-addr-precommit4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "corrected/precommit-connected/sock-addr-precommit4-connected.stderr",
+    "bytes": 225,
+    "sha256": "c29908bce3f24be16b2601ce29f21a641ffb1980f9ae1953c38ab7ea114154ce"
+  },
+  {
+    "path": "corrected/precommit-connected/sock-addr-precommit4-connected.stdout",
+    "bytes": 6236,
+    "sha256": "13f4bce89f63bbe0fe28799e0544f465fed32724fc7d57136e0b6aa3b606c735"
+  },
+  {
+    "path": "corrected/precommit-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "corrected/precommit-connected/test.log",
+    "bytes": 4099,
+    "sha256": "0dd940b8cbdf91d5a9a530446652298986b6f035f3e7a374df9ebed01ae18271"
+  },
+  {
+    "path": "corrected/precommit-unconnected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "corrected/precommit-unconnected/environment.json",
+    "bytes": 834,
+    "sha256": "87008df4a7f580710a9aa2a2044c35ad5bec129ce78c79fc547840c1398c46ad"
+  },
+  {
+    "path": "corrected/precommit-unconnected/observed.json",
+    "bytes": 6296,
+    "sha256": "944a7db3fbc4bd98f65664da206df24e7036dafaeeb012fa896df00f3e38b332"
+  },
+  {
+    "path": "corrected/precommit-unconnected/sock-addr-precommit4-unconnected.cmdline",
+    "bytes": 117,
+    "sha256": "53f56ae6dba14ec7891cabbf72644a0c9937f15336c1edb38e0495f133efa54e"
+  },
+  {
+    "path": "corrected/precommit-unconnected/sock-addr-precommit4-unconnected.identity.json",
+    "bytes": 2067,
+    "sha256": "3b34506a28783599de4cff9edd982f7566d461c960b592210f9fa8684d4d6819"
+  },
+  {
+    "path": "corrected/precommit-unconnected/sock-addr-precommit4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "corrected/precommit-unconnected/sock-addr-precommit4-unconnected.stderr",
+    "bytes": 225,
+    "sha256": "221a46dd32219a0863f23d1a670bd5f2f1f0903eef4b392bc60214c1fc8d6d18"
+  },
+  {
+    "path": "corrected/precommit-unconnected/sock-addr-precommit4-unconnected.stdout",
+    "bytes": 5712,
+    "sha256": "f59f31dee58795a47e6fd4da1d40a82626e47009112c939401edc75620d08acc"
+  },
+  {
+    "path": "corrected/precommit-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "corrected/precommit-unconnected/test.log",
+    "bytes": 4005,
+    "sha256": "04dcd109091bef18b7ed0f203dfe120ac4fb7131fc50c656d54afe7a2b6fd505"
+  },
+  {
+    "path": "corrected/test-artifact.json",
+    "bytes": 292,
+    "sha256": "58d524c67e3fe8d5a0d3b9d9d4f12824762640b808d8e350bb7421b9c2eaf208"
+  },
+  {
+    "path": "driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "driver.py",
+    "bytes": 5547,
+    "sha256": "abe613a1f42fd153e3baac1a389794a0514d4b58637edd72ef10ca01ce82bc95"
+  },
+  {
+    "path": "mutation.patch",
+    "bytes": 1384,
+    "sha256": "460837f9a2d72ceb47f5ad449d7cf5231c8f7e7e77b2cbee8c761d291551f523"
+  },
+  {
+    "path": "original-source.sha256",
+    "bytes": 65,
+    "sha256": "e869a969f1c00c4fe24c1a5340308dace50844786b44918ffb105c1ef1b35448"
+  },
+  {
+    "path": "precheck-removed/compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "precheck-removed/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "precheck-removed/compile.jsonl",
+    "bytes": 260587,
+    "sha256": "f89d365d97ad799e8b56c0c0a06541cf8581164a7c427a8780a6164b0dd06dcb"
+  },
+  {
+    "path": "precheck-removed/compile.log",
+    "bytes": 1859,
+    "sha256": "6961a5482c4386e6f7f91834555febd0e6a436b66756663dbb3b2eb6b1e479c2"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/environment.json",
+    "bytes": 837,
+    "sha256": "37fbd973090526f7d5fad730c9cdafd7a812f4fb033bade438d872c8368bf720"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/observed.json",
+    "bytes": 7293,
+    "sha256": "d5eae9c088cfbeb84bccfbc608177c0522d89175d095cc5afeaa5db8af4ead07"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/sock-addr-precommit4-connected.cmdline",
+    "bytes": 115,
+    "sha256": "94d096f71015cf3fd18c7efd983d8c61e7679b2cf7f8fa49963eb9a0809c0b68"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/sock-addr-precommit4-connected.identity.json",
+    "bytes": 2090,
+    "sha256": "f81fc10c2c0086a1ac48da15973ed9c6a9a774bbcef4f4af9062864d26bd9f47"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/sock-addr-precommit4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/sock-addr-precommit4-connected.stderr",
+    "bytes": 227,
+    "sha256": "8a58fbe27e720d81d7fab26e5073cff942a63c7ecd42050237c14c30cc2c1ba3"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/sock-addr-precommit4-connected.stdout",
+    "bytes": 6753,
+    "sha256": "9e24ef4eb44d501fa77b5b4fe4f13cbcbab2257fb4c247cb9464f393e311f157"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "precheck-removed/precommit-connected/test.log",
+    "bytes": 11599,
+    "sha256": "79d7cb4695282b1b649393419668ea7692767bd62a963cd9d15331908a0db655"
+  },
+  {
+    "path": "precheck-removed/test-artifact.json",
+    "bytes": 292,
+    "sha256": "dd8449513a507bde2b1a0a33c4f65d21c8513b18bbba2287a0ecac693cd49f5d"
+  },
+  {
+    "path": "restored/compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "restored/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/compile.jsonl",
+    "bytes": 260587,
+    "sha256": "9c4305a87e2d976fae00202eab6db3f5d15c4c98dc076107b4fdcf24719228d2"
+  },
+  {
+    "path": "restored/compile.log",
+    "bytes": 1859,
+    "sha256": "e01701540040298b70d5973fb83f8801031360482a640138d8ef6b756e41d48e"
+  },
+  {
+    "path": "restored/forward-connected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "restored/forward-connected/environment.json",
+    "bytes": 827,
+    "sha256": "ecf16871c109888804d34d861eef20bd666dcd97febca39b3c226a8f3db699ac"
+  },
+  {
+    "path": "restored/forward-connected/observed.json",
+    "bytes": 9060,
+    "sha256": "55a2ecb65c2f2388c7777f1185b95925ce8320475c33a19a19cd409f54310129"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2082,
+    "sha256": "3fa53d56fc7402fdecffde4998d933652302dd670fc271fbbfef637de8bebc1e"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "5f55b6ce363be7eeca7d80d9f0d36425582bd7ff52440d661022deed051b3449"
+  },
+  {
+    "path": "restored/forward-connected/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 8027,
+    "sha256": "fdc4eec446127583963bf0ee8d479227f74ad605ee25fb5126cd2146fd1ff15f"
+  },
+  {
+    "path": "restored/forward-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/forward-connected/test.log",
+    "bytes": 4018,
+    "sha256": "cf0b71367a01d544854768437c403ee826e2222c7462f2e0108f3b119206d18d"
+  },
+  {
+    "path": "restored/forward-unconnected/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "restored/forward-unconnected/environment.json",
+    "bytes": 831,
+    "sha256": "0f00d484d93888a77d41687e8c84281447bb5a1b5d51c50e6a14453e7dda9a71"
+  },
+  {
+    "path": "restored/forward-unconnected/observed.json",
+    "bytes": 8507,
+    "sha256": "682cceadfad55f704c7151084ffe63ec9f6606797862734d183d277907fc022c"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2084,
+    "sha256": "3f9faca2ba5732999e55972e67df5424126a935db4f4ca3337f6c9d62ccfd30e"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "57525abac5314d754006f19d012167763977a3f1dc7b7edc18e8625e804a489b"
+  },
+  {
+    "path": "restored/forward-unconnected/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7503,
+    "sha256": "c46fb0489a6e910f84ec9d96dd2b1a2f45de2cd539774fb12e0c179e450c62c7"
+  },
+  {
+    "path": "restored/forward-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/forward-unconnected/test.log",
+    "bytes": 4020,
+    "sha256": "7582429e9ce5aef3701575e3d0aa772e2ec49ec30e2e26141400e226b31fb3e0"
+  },
+  {
+    "path": "restored/precommit-connected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "restored/precommit-connected/environment.json",
+    "bytes": 829,
+    "sha256": "c865f66c7ea9ef12e9815d67e7ab4064b35faab19a840f2b120dd62d8a1a8034"
+  },
+  {
+    "path": "restored/precommit-connected/observed.json",
+    "bytes": 6849,
+    "sha256": "e14a274d6e4f6011737eee46b9b882f051f6e03508b6976fec73132122c1b1d4"
+  },
+  {
+    "path": "restored/precommit-connected/sock-addr-precommit4-connected.cmdline",
+    "bytes": 115,
+    "sha256": "94d096f71015cf3fd18c7efd983d8c61e7679b2cf7f8fa49963eb9a0809c0b68"
+  },
+  {
+    "path": "restored/precommit-connected/sock-addr-precommit4-connected.identity.json",
+    "bytes": 2066,
+    "sha256": "a207af36c842e69fdd309fc18212c97c49037ab6f70578695709d5879689f96a"
+  },
+  {
+    "path": "restored/precommit-connected/sock-addr-precommit4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/precommit-connected/sock-addr-precommit4-connected.stderr",
+    "bytes": 225,
+    "sha256": "f40ae3e1e87787df8584361f5b5489a673ebe94ac94cf0734e679af4090d9910"
+  },
+  {
+    "path": "restored/precommit-connected/sock-addr-precommit4-connected.stdout",
+    "bytes": 6236,
+    "sha256": "d2cabe678b94d1e1559d40b619b4ae4f4ea969b26c89a135af54699cfff11855"
+  },
+  {
+    "path": "restored/precommit-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/precommit-connected/test.log",
+    "bytes": 4100,
+    "sha256": "869c7d25c2c85c5e6621de37a3dd9dad2495d2a82fc999719f37f81d5bfe962e"
+  },
+  {
+    "path": "restored/precommit-unconnected/command.json",
+    "bytes": 232,
+    "sha256": "1f023a6d09ac4e775ec340ad94cc8334d20e6e1f279709b92dbdd9d56f01a901"
+  },
+  {
+    "path": "restored/precommit-unconnected/environment.json",
+    "bytes": 833,
+    "sha256": "d00429a949f7e652e21197be585dfa0f7d260c7975037165ad2e94b4fae857db"
+  },
+  {
+    "path": "restored/precommit-unconnected/observed.json",
+    "bytes": 6296,
+    "sha256": "457abbbf2f3d951fc051bb92a2fe9aecff5992feaf0c64a65bbcdc5636d81b6a"
+  },
+  {
+    "path": "restored/precommit-unconnected/sock-addr-precommit4-unconnected.cmdline",
+    "bytes": 117,
+    "sha256": "53f56ae6dba14ec7891cabbf72644a0c9937f15336c1edb38e0495f133efa54e"
+  },
+  {
+    "path": "restored/precommit-unconnected/sock-addr-precommit4-unconnected.identity.json",
+    "bytes": 2068,
+    "sha256": "7dbc2fc1fcfddd1af7816bdad6a4f6475a5c8260470871d2d53b12567448b1aa"
+  },
+  {
+    "path": "restored/precommit-unconnected/sock-addr-precommit4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/precommit-unconnected/sock-addr-precommit4-unconnected.stderr",
+    "bytes": 225,
+    "sha256": "a4deac138e997435b2587cf6f008c6f31147e42fdfed3006cf511db7b9cf24dd"
+  },
+  {
+    "path": "restored/precommit-unconnected/sock-addr-precommit4-unconnected.stdout",
+    "bytes": 5712,
+    "sha256": "79ab1286c98d7f4cbedc3bdacdf860ac58799b1ad4e9086e640d159d9a00c2e7"
+  },
+  {
+    "path": "restored/precommit-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/precommit-unconnected/test.log",
+    "bytes": 4006,
+    "sha256": "13209c6e53ea0ea0252cf1935a17284cde08546abd64016b79f35a56705641f3"
+  },
+  {
+    "path": "restored/receive-connected/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "restored/receive-connected/environment.json",
+    "bytes": 827,
+    "sha256": "4829458931ed750f82ce4a8d8b7410bac12b8d1565d7927287e61e7e1a536f29"
+  },
+  {
+    "path": "restored/receive-connected/observed.json",
+    "bytes": 7218,
+    "sha256": "f31141d764eda6fce9db35f24cc5ac5f326ac657edc0941161aa79f3a2c265bf"
+  },
+  {
+    "path": "restored/receive-connected/sock-addr-cancel4-connected.cmdline",
+    "bytes": 112,
+    "sha256": "02f305c264ab7a05f5bd2f37ec2e297c351b807f3e510a345e089f8649d17b5a"
+  },
+  {
+    "path": "restored/receive-connected/sock-addr-cancel4-connected.identity.json",
+    "bytes": 2063,
+    "sha256": "faee265937f2e95f28ea6b777cb7364b3ffdbcd106df3f243e3cf0dcb61fefbf"
+  },
+  {
+    "path": "restored/receive-connected/sock-addr-cancel4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/receive-connected/sock-addr-cancel4-connected.stderr",
+    "bytes": 227,
+    "sha256": "d5e8604c1111d1921a86d3dc3613796c9a5655763179ad6297c63b8a8700e798"
+  },
+  {
+    "path": "restored/receive-connected/sock-addr-cancel4-connected.stdout",
+    "bytes": 6531,
+    "sha256": "02008485ee98520af29b32bf9d891ecebae10c25d2afb4bee6a469cbfa703664"
+  },
+  {
+    "path": "restored/receive-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/receive-connected/test.log",
+    "bytes": 4008,
+    "sha256": "2acc49122efd0ce26d4f042df358f0d1f50f42eff1f586eedbeae47dc72aeb54"
+  },
+  {
+    "path": "restored/receive-unconnected/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "restored/receive-unconnected/environment.json",
+    "bytes": 831,
+    "sha256": "c785572c5bd34c354f0d50794a08c27c7eac1739fd776db7bb0aaf9e1666ff5b"
+  },
+  {
+    "path": "restored/receive-unconnected/observed.json",
+    "bytes": 6665,
+    "sha256": "4f956d7c8f45cb940b6e283d159b40efd5020887539cce8c4a192c5076023917"
+  },
+  {
+    "path": "restored/receive-unconnected/sock-addr-cancel4-unconnected.cmdline",
+    "bytes": 114,
+    "sha256": "8a9dfdd3b8897fca75d8b5501f787762594d4610acd503119e8833bb7f81eec6"
+  },
+  {
+    "path": "restored/receive-unconnected/sock-addr-cancel4-unconnected.identity.json",
+    "bytes": 2065,
+    "sha256": "d7804f1d920e37b356734623048eb77c0fe98245109248242afb7a448bea9b76"
+  },
+  {
+    "path": "restored/receive-unconnected/sock-addr-cancel4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/receive-unconnected/sock-addr-cancel4-unconnected.stderr",
+    "bytes": 225,
+    "sha256": "d7bba50aa8772b8c5fc05513ca71d05796fbbc81fb7d5edc52a99a4dd1cd1809"
+  },
+  {
+    "path": "restored/receive-unconnected/sock-addr-cancel4-unconnected.stdout",
+    "bytes": 6007,
+    "sha256": "274f9248460e59ae0adcc89af6eced741cbbe23fbb81df6cb1812e6adb7a3a49"
+  },
+  {
+    "path": "restored/receive-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/receive-unconnected/test.log",
+    "bytes": 4010,
+    "sha256": "4709be15fd28c2505b5bcff4de3c9775d4992126dc8b23cea7e207a42155d287"
+  },
+  {
+    "path": "restored/scripted-connected/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "restored/scripted-connected/environment.json",
+    "bytes": 828,
+    "sha256": "7c2cf94494d84702d1ced9ffa90ef84924091cf22cf732df9b40608dfed30b05"
+  },
+  {
+    "path": "restored/scripted-connected/observed.json",
+    "bytes": 6582,
+    "sha256": "234a7d7df89782cc60cd3199dc4899df6466ece794e0c722820f2021d9ec8843"
+  },
+  {
+    "path": "restored/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.cmdline",
+    "bytes": 126,
+    "sha256": "5a110cc3d60729729bce2294fd856f152f2d70ce14766d105979a8d5380e4946"
+  },
+  {
+    "path": "restored/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.identity.json",
+    "bytes": 2080,
+    "sha256": "48bf0ac64eeaa10487e55af612bdf618984e3bb83364b0ed40f38abd42622ca2"
+  },
+  {
+    "path": "restored/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "3b5472c318fa494a1e74e9762eeed5dcad3d5615ea9119c6be9e5c40762cfe46"
+  },
+  {
+    "path": "restored/scripted-connected/sock-addr-udp4-connected-fixed-original-peer.stdout",
+    "bytes": 5917,
+    "sha256": "73ac39eaefb1203fec48868286371dc8a29c62053c029b967a4cd3dffaa75b28"
+  },
+  {
+    "path": "restored/scripted-connected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/scripted-connected/test.log",
+    "bytes": 4012,
+    "sha256": "6d21b6017c69e95d29fcf355a4effa50292bf712f12a575c137125f984d31469"
+  },
+  {
+    "path": "restored/scripted-unconnected/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "restored/scripted-unconnected/environment.json",
+    "bytes": 832,
+    "sha256": "c980503f49ddf65b28c9e345341bbc9a3d9edf1d1f007f98a5619f12de2f8679"
+  },
+  {
+    "path": "restored/scripted-unconnected/observed.json",
+    "bytes": 6029,
+    "sha256": "b91ffc806d64f7b1ee8601343885818ed55967fa504a12ec2b1e6394219430fb"
+  },
+  {
+    "path": "restored/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 128,
+    "sha256": "c3d615e38f66f9ec80ff5dfb0c57f04e618ace3b224f17caec4bb10549a8ae86"
+  },
+  {
+    "path": "restored/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2082,
+    "sha256": "652819c796d16935d0dada2ccdc1a02cf3d733d5e7777827ffca3fd10017f16c"
+  },
+  {
+    "path": "restored/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "restored/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "038d9439ea8497222ec04c4b31feafb7a5b48c842100fcb0a917169f917561e9"
+  },
+  {
+    "path": "restored/scripted-unconnected/sock-addr-udp4-unconnected-fixed-original-peer.stdout",
+    "bytes": 5393,
+    "sha256": "ccbc51a2f293a73d9b9d5be524fcb0c034156c5c90cd16d2a028123632950638"
+  },
+  {
+    "path": "restored/scripted-unconnected/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "restored/scripted-unconnected/test.log",
+    "bytes": 4014,
+    "sha256": "24bf5023917ce944cbba11ab07d0450a86d7b9a20ed25c373f11236dee110f41"
+  },
+  {
+    "path": "restored/test-artifact.json",
+    "bytes": 292,
+    "sha256": "58d524c67e3fe8d5a0d3b9d9d4f12824762640b808d8e350bb7421b9c2eaf208"
+  },
+  {
+    "path": "restored-source.sha256",
+    "bytes": 65,
+    "sha256": "e869a969f1c00c4fe24c1a5340308dace50844786b44918ffb105c1ef1b35448"
+  },
+  {
+    "path": "restored.diff",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "results.json",
+    "bytes": 19844,
+    "sha256": "fdad2d5b4d714566fc8634e6786fe49a3478548f1715583a777227277e8e8e3b"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "c1ccb9ee3e96dd4e3ac838676d3afb6301339ad0ecb78c5c359d4c22e1331c47"
+  }
+]
