@@ -1,0 +1,10 @@
+{
+  "args": [
+    "remove",
+    "vm",
+    "owner-output"
+  ],
+  "status": 0,
+  "stderr": "",
+  "stdout": "owner-output\n"
+}

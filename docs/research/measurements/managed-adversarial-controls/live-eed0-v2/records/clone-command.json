@@ -1,0 +1,1 @@
+["git", "clone", "--depth=1", "--single-branch", "--branch", "p/managed-adversarial-controls-v1", "--filter=blob:none", "git@github.com:hyper-light/shards.git", "/home/adalundhe/managed-adversarial-controls-live-v1/source"]

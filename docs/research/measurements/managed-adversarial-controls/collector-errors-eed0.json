@@ -1,0 +1,44 @@
+{
+  "source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+  "failed_glob": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 14, in <module>\nAssertionError\n",
+      "running": false,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 45 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+      "exit_code": 1
+    },
+    "correction": "Numeric trace-prefix glob excludes the new positive main-after-refusal record."
+  },
+  "incomplete_archive": {
+    "receipt": {
+      "archive": "/home/adalundhe/managed-adversarial-controls-live-v1/evidence-eed0-v1.tar.gz",
+      "bytes": 185271,
+      "sha256": "e6d7979e4141da3cb4b79dbf1f62e0b0dcd431807a903c6640c3faa96ae0238c",
+      "regular_members": 1311,
+      "cases": 24,
+      "unique_runs": 24,
+      "full_build_exit": 0,
+      "clippy_exit": 0,
+      "source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+      "originals_preserved": true
+    },
+    "local_preserved_as": "collector-incomplete-eed0-v1.tar.gz",
+    "error": "Old include-directory list omitted current build/native/Clippy/wave records; rejected during local verification.",
+    "remote_receipt_note": "The first collector wrote collection-v1/archive-receipt.json; old57a8 committed archive/receipt remain preserved locally. Corrected collector writes only new collection-eed0-v2."
+  },
+  "accepted_archive": {
+    "archive": "/home/adalundhe/managed-adversarial-controls-live-v1/evidence-eed0-v2.tar.gz",
+    "bytes": 198384,
+    "sha256": "a0353887cdfa47cef00bacfda942d7737f540b5556d8b1a884d653340e7da37e",
+    "regular_members": 1387,
+    "cases": 24,
+    "unique_runs": 24,
+    "full_build_exit": 0,
+    "clippy_exit": 0,
+    "source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+    "originals_preserved": true
+  },
+  "actual_tests_rerun_during_collection": false,
+  "fixture_or_expectation_changed": false
+}

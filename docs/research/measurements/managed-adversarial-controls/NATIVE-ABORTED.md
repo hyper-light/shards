@@ -1,5 +1,9 @@
 # Next owned source batch: canonical-Aborted wire boundary
 
+Actual follow-up: [eed0 full caller and live record](LIVE-EED0.md) passed all4
+selected native cases,24 VM retention reruns and scoped Clippy0. The source-stage
+description below preserves the original pending-gate chronology.
+
 This batch is separate from the frozen57a8 campaign. It uses the actual public
 Endpoint/Producer/Control and existing authenticated Observer/Client, with one
 fresh native owner/scope/endpoint. Three checked ABI records (Open, controlled

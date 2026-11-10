@@ -1,0 +1,20 @@
+{
+  "metadata_copy": {
+    "complete": true,
+    "error": null
+  },
+  "observer_fds": {
+    "after": 7,
+    "before": 7,
+    "error": null
+  },
+  "owner_stop_observer_join": {
+    "complete": true,
+    "error": null
+  },
+  "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+  "protocol_complete": true,
+  "protocol_failure": null,
+  "remove_failure": null,
+  "run_removed": true
+}

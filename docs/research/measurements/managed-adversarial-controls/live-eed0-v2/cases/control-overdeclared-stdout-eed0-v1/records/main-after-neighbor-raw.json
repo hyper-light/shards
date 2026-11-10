@@ -1,0 +1,13 @@
+{
+  "args": [
+    "exec",
+    "owner-output",
+    "/bin/testguest",
+    "streams",
+    "main-progress",
+    "main-error"
+  ],
+  "status": 0,
+  "stderr": "main-error\n",
+  "stdout": "main-progress\n"
+}

@@ -1,0 +1,13 @@
+{
+  "address": "127.0.0.1:58582",
+  "capacity": 42,
+  "control": {
+    "accepted": 0,
+    "consumed": 0,
+    "state": "Pending(Progress { accepted: 0, consumed: 0 })",
+    "transport_drained": "Unknown; local stop/join is a separate witness"
+  },
+  "handshake_bytes": 16777219,
+  "metadata_provenance": "constructed from this actual Endpoint; no daemon append",
+  "transport_bytes": 55
+}

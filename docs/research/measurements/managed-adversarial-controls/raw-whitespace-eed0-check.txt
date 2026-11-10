@@ -1,0 +1,35 @@
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-forward-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-forward-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-partial-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-partial-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-replay-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/ack-replay-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-ack-length-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-ack-length-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-overdeclared-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-overdeclared-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-short-ack-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-short-ack-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-short-header-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-short-header-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-unknown-tag-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-unknown-tag-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-wrong-tag-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/control-wrong-tag-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-duplicate-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-duplicate-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-finish-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-finish-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-forward-stderr-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/cases/terminal-end-forward-stdout-eed0-v1/actual-case-stdout:12: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-build-eed0-v1/actual-parent.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-build-eed0-v1/actual-parent.diff:28: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-build-eed0-v1/actual-parent.diff:122: trailing whitespace.
++ 
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-cases-eed0-v1/stderr-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-cases-eed0-v1/stderr-5/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-cases-eed0-v1/stdout-2147483647/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/native-cases-eed0-v1/stdout-5/stdout:6: new blank line at EOF.
+docs/research/measurements/managed-adversarial-controls/live-eed0-v2/prepare-first-v1/full-caller-owned-pure-stdout:13: new blank line at EOF.

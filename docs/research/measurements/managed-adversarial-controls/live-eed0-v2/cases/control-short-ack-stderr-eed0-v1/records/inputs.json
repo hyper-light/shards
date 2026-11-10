@@ -1,0 +1,12 @@
+{
+  "caller_declared_source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+  "case": "Control(ShortAck)",
+  "channel": 2,
+  "cleanup_ms": 120000,
+  "outer_enforcement": "admitted caller enforces supplied OUTER_MS on the fixture process",
+  "outer_ms": 480000,
+  "owner": "fresh retained Fixture; one target subscription; no endpoint reuse",
+  "phase_ms": 300000,
+  "port": 32197,
+  "work_ms": 240000
+}

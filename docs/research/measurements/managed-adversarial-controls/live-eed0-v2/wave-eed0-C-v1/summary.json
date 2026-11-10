@@ -1,0 +1,92 @@
+[
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stdout",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.27s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Duplicate)\",\n  \"channel\": 1,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 102 }\",\n  \"finish\": false,\n  \"last_valid_ack\": 102,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 102,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver 4ccf7f53c5f38b3c5e0397740c437ee825b23f14f1753de209760ed074167900\nowner 4ccf7f53c5f38b3c5e0397740c437ee825b23f14f1753de209760ed074167900\nrun 8a2c56359286dcdea5e628d3fa1dd16e34f610333ff797a1111fc56018f8409f\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:59631\nmember 1 channel 2 address 127.0.0.1:47128\nmember 2 channel 1 address 127.0.0.1:47377\nmember 2 channel 2 address 127.0.0.1:55939\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": "{\n  \"code\": 1,\n  \"kind\": \"Lost\",\n  \"reason\": \"Protocol\"\n}"
+    }
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stdout",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.26s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Forward)\",\n  \"channel\": 1,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 102 }\",\n  \"finish\": false,\n  \"last_valid_ack\": 102,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 102,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver c783d0371f5f2b09f7f017c90a08d1062575736dafb1d1a760b5c05b9324f610\nowner c783d0371f5f2b09f7f017c90a08d1062575736dafb1d1a760b5c05b9324f610\nrun 78c5a7314c5b7314e5fbc7cd7f91c7950e60eba7300d7f61968f72c8f368abee\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:40885\nmember 1 channel 2 address 127.0.0.1:51146\nmember 2 channel 1 address 127.0.0.1:34870\nmember 2 channel 2 address 127.0.0.1:46763\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": "{\n  \"code\": 1,\n  \"kind\": \"Lost\",\n  \"reason\": \"Protocol\"\n}"
+    }
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stdout",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.27s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Finish)\",\n  \"channel\": 1,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 102 }\",\n  \"finish\": true,\n  \"last_valid_ack\": 102,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 102,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver 2f680adc5652c96857973c45a377da142b4850b9d8e7900215e3bf2004070e05\nowner 2f680adc5652c96857973c45a377da142b4850b9d8e7900215e3bf2004070e05\nrun 42e7f5a5c77f801baf0d3a797e9a8fa1c841ad40b07230704a4d3a8dc5d6b327\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:47737\nmember 1 channel 2 address 127.0.0.1:48574\nmember 2 channel 1 address 127.0.0.1:55915\nmember 2 channel 2 address 127.0.0.1:38269\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": "{\n  \"code\": 1,\n  \"kind\": \"Lost\",\n  \"reason\": \"Protocol\"\n}"
+    }
+  },
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stderr",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.29s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Duplicate)\",\n  \"channel\": 2,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 99 }\",\n  \"finish\": false,\n  \"last_valid_ack\": 99,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 99,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver 83e91c6bded0f8da783204934cbfbea44a548b2616c09bc8e92501f67a334136\nowner 83e91c6bded0f8da783204934cbfbea44a548b2616c09bc8e92501f67a334136\nrun 21913852b7005a96958b946b31d2803c2b0d50c49cc0edc63c824f78381827d7\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:39064\nmember 1 channel 2 address 127.0.0.1:47944\nmember 2 channel 1 address 127.0.0.1:52927\nmember 2 channel 2 address 127.0.0.1:36878\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": null
+    }
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stderr",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.25s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Forward)\",\n  \"channel\": 2,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 99 }\",\n  \"finish\": false,\n  \"last_valid_ack\": 99,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 99,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver 57000779abcfb083f96506b4ca959ba6de4daeb6c5cb08a6cc7a84bb143c7aa6\nowner 57000779abcfb083f96506b4ca959ba6de4daeb6c5cb08a6cc7a84bb143c7aa6\nrun c270fbfd7cfe0b622be29a99512399b556cef4c510bbf6276d62a7645c4fb061\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:54820\nmember 1 channel 2 address 127.0.0.1:42411\nmember 2 channel 1 address 127.0.0.1:33561\nmember 2 channel 2 address 127.0.0.1:36534\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": null
+    }
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stderr",
+    "exit": 0,
+    "stdout": "\nrunning 1 test\ntest tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=2 outsider=false\nmanaged-owner subscribe member=1 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=1 outsider=false\nmanaged-owner subscribe member=2 channel=2 outsider=false\nmanaged-owner owner stop\nmanaged-owner observer_fds before=7 after=7\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.27s\n\n",
+    "stderr": "",
+    "actual": {
+      "attempt.json": "{\n  \"authentication\": \"existing owner; actual record already observed\",\n  \"case\": \"Terminal(Finish)\",\n  \"channel\": 2,\n  \"control_bytes\": 13,\n  \"endpoint_reuse\": false,\n  \"expected_reason\": \"Protocol\",\n  \"expected_target\": \"Ended { wire: 99 }\",\n  \"finish\": true,\n  \"last_valid_ack\": 99,\n  \"member\": 1,\n  \"observed_cursor_before_attempt\": 99,\n  \"observed_wire_end\": 28,\n  \"observed_wire_start\": 0\n}",
+      "refusal.json": "{\n  \"assertion_failure\": null,\n  \"borrowed_driver_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"matched_expected_refusal\": true,\n  \"post_join_records\": 0,\n  \"remote_connection_drained\": \"Unknown; endpoint is never reused\"\n}",
+      "teardown.json": "{\n  \"metadata_copy\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"observer_fds\": {\n    \"after\": 7,\n    \"before\": 7,\n    \"error\": null\n  },\n  \"owner_stop_observer_join\": {\n    \"complete\": true,\n    \"error\": null\n  },\n  \"population_reaping_kernel_return\": \"Unknown; stop/PID0/FD return do not prove full return\",\n  \"protocol_complete\": true,\n  \"protocol_failure\": null,\n  \"remove_failure\": null,\n  \"run_removed\": true\n}",
+      "managed-output.stopped": "shards managed output 1\nserver d145bee6ff766cd18bb8f222f00bb8ef59afd3df397982ada6c993e0bbae5fe9\nowner d145bee6ff766cd18bb8f222f00bb8ef59afd3df397982ada6c993e0bbae5fe9\nrun 6420251fb59705235252359b3b79d3d7f6fe22ffb58c281e25983c7664e0baf4\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:39465\nmember 1 channel 2 address 127.0.0.1:51330\nmember 2 channel 1 address 127.0.0.1:42245\nmember 2 channel 2 address 127.0.0.1:56453\nmember 1 channel 2 state ended accepted 99 consumed 99 tail complete\nmember 1 channel 1 state ended accepted 102 consumed 102 tail complete\nmember 2 channel 1 state aborted accepted 177 consumed 177 tail unknown\nmember 2 channel 2 state aborted accepted 171 consumed 171 tail unknown\n",
+      "io-receipts.json": null,
+      "1-refusal-1-1.json": null
+    }
+  }
+]

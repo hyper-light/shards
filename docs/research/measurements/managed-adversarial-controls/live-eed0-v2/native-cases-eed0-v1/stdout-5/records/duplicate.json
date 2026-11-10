@@ -1,0 +1,12 @@
+{
+  "canonical_state": "Aborted { offset: 26, errno: 5 }",
+  "control": {
+    "accepted": 90,
+    "consumed": 90,
+    "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+    "transport_drained": "Unknown; local stop/join is a separate witness"
+  },
+  "reason": "Protocol",
+  "returned_payload_bytes": 42,
+  "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8"
+}

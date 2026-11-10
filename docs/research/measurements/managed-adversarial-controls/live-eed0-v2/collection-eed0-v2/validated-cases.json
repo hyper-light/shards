@@ -1,0 +1,498 @@
+[
+  {
+    "case": "ack-partial",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "2d794ec9e35354f77c815c38876dcfde2555e160f943f7b1ac58932278674def",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-partial",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "f5c3686c8d8e190d3e44767430913556e76dc62778a7aa2b2c07a8a5ebd8f24b",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-replay",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 58 consumed 28 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "8bea62a2e8b664ff5eb2f40848eb2feb3635bbf4fa18aaf4102795ab7335102b",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-replay",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 58 consumed 28 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "1e7d8288674c8483fa4b910a844911bf4527fb85200d6e8ec8c879c39ad48f6e",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-forward",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "44e2cf79f47965db7ed494c2d48e992cfbae6d9b14176b82b14162bef1e6d659",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-forward",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "633cda9651ef73707dadfb0352b39bf2da81fea4695b68fec757343a825efaa6",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "control-unknown-tag",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "7d873fd6e2b99eb93c636299d9789396490b5dc7800b46087252f3fe2f9fec94",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-unknown-tag",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "34f767b5189cbb8a78ca5e1de230a57ebcbbaf32d4b63c2aa63a16b3f2f1aba8",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-wrong-tag",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "0e099353d6a3c8089d8b919438520ae0130eb068fa604bb3188275c89bce0e10",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-wrong-tag",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "a5815d5d26bce91dcf08a8da67901bdf953f614005846b2f52cffe040241b22e",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-overdeclared",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "88dde3555b6875c34185a563390dbf05f988cf57e1bdb1e262b97534767deba2",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-overdeclared",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "2e77b75666b87f08f80fe6e7939fa5012ced6c07a49fde156cd424d3cea28f7c",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-ack-length",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "54eee094428cf8ff64e12e7506fdf4c3cff4aff0288d80faa72cafc64df5e09f",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-ack-length",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "50e4a302094d38bbbb08ac1dcd7a0642f4b9f7505e580e5a39801f6e0b3be066",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-short-header",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "5e3741f04f1e781fb98b944a58c783f878c84c92d5b7661b0060e0cee7421ee2",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 4,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 4
+    }
+  },
+  {
+    "case": "control-short-header",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "b31deb0e4267b6de415fe51d3a3ed73a865c6ea60d8a127823185d0c73935e3f",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 4,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 4
+    }
+  },
+  {
+    "case": "control-short-ack",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "1521ff04838550a81a72ce4238a891f6e1c9302914f178cbbaafe3dfb711bd0c",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-short-ack",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "49901a7a20e27b5b726c0906b7ee4a36619a221cc994eadf1e6af5b0b3e3a88b",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "8a2c56359286dcdea5e628d3fa1dd16e34f610333ff797a1111fc56018f8409f",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "21913852b7005a96958b946b31d2803c2b0d50c49cc0edc63c824f78381827d7",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "78c5a7314c5b7314e5fbc7cd7f91c7950e60eba7300d7f61968f72c8f368abee",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "c270fbfd7cfe0b622be29a99512399b556cef4c510bbf6276d62a7645c4fb061",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "42e7f5a5c77f801baf0d3a797e9a8fa1c841ad40b07230704a4d3a8dc5d6b327",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "6420251fb59705235252359b3b79d3d7f6fe22ffb58c281e25983c7664e0baf4",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "actual positive stdout/stderr retained before and after neighbor release",
+    "io_receipts": null
+  }
+]

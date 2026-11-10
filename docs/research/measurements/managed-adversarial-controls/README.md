@@ -1,13 +1,14 @@
 # Authenticated adversarial application controls
 
-Latest actual result: [frozen57a8 campaign](LIVE-57A8.md) compiled the full normal
-caller/helpers and passed24 actual selected KVM cases plus scoped Clippy. Its
-raw archive and all1166 regular member hashes were verified locally. The source
-checkpoints below preserve their original limited scope; newer native-Aborted
-work is separate and does not inherit these passing gates.
+Latest actual result: [frozen eed0 campaign](LIVE-EED0.md) passed24 selected KVM
+cases and4 native canonical-Aborted cases, with a fresh full caller build and
+scoped Clippy0. Its1387-member raw archive was verified locally. Successful main
+stdout/stderr are now retained. The [earlier57a8 campaign](LIVE-57A8.md) remains
+associated with its original source, binary and raw record.
 
-This is an implementation checkpoint, not a passing live campaign or managed-plan
-closure. Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`, assigned adversarial
+The following source-stage sections retain the initial implementation and its
+then-pending gates; the linked revision-specific records give actual results.
+No managed-plan closure is claimed. Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`, assigned adversarial
 implementer Kiln `01a1c5d2ee5871a2a9a9cdc9f56793f0`, coordinator
 `01a148884a4770fdaf0111f3f792a248`. Current rules SHA-256
 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.

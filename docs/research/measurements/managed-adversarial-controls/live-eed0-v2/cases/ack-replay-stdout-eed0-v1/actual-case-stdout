@@ -1,0 +1,12 @@
+
+running 1 test
+test tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main ... managed-owner subscribe member=1 channel=1 outsider=false
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner subscribe member=2 channel=2 outsider=false
+managed-owner owner stop
+managed-owner observer_fds before=7 after=7
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 28 filtered out; finished in 1.96s
+

@@ -1,0 +1,15 @@
+{
+  "channel": 1,
+  "cleanup_ms": 30000,
+  "compiled_leaf_sha256": "sha256:62efa0bd3f84083b59177bd3117eb98ca24f2034db1c2a1c0317c3d266c7e6e9",
+  "fixture_sha256": "sha256:ddd45ceabb393b11e3853938a2900d8a2b447af83ee38037c961febac5bfee26",
+  "generation": 1,
+  "outer_enforcement": "direct caller required",
+  "outer_ms": 100000,
+  "phase_ms": 60000,
+  "run": "f6d0fb15-00a7-4e82-8ef9-f7f599dd0759",
+  "scope": "actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error",
+  "source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+  "supplied_errno": 5,
+  "work": "three canonical records; one duplicate control; one returned postterminal payload"
+}

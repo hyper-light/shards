@@ -1,0 +1,12 @@
+{
+  "source": "eed0dddf2abcf739e577b42a2f065d84512811de",
+  "archive": "live-eed0-v2.tar.gz",
+  "bytes": 198384,
+  "sha256": "a0353887cdfa47cef00bacfda942d7737f540b5556d8b1a884d653340e7da37e",
+  "regular_members": 1387,
+  "safe_paths": true,
+  "unique_paths": true,
+  "all_member_hashes_verified": true,
+  "required_current_build_native_clippy_and_case_records_present": true,
+  "remote_originals_preserved": true
+}

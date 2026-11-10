@@ -1,0 +1,1 @@
+["timeout", "--signal=TERM", "--kill-after=10s", "100s", "/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/deps/managed_output-27c7f5b2529c465b", "--ignored", "--exact", "tenant_exit::adversarial_controls::native_terminal::canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit", "--nocapture", "--test-threads=1"]

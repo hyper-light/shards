@@ -1,0 +1,15 @@
+{
+  "authentication": "existing owner; actual record already observed",
+  "case": "Terminal(Duplicate)",
+  "channel": 2,
+  "control_bytes": 13,
+  "endpoint_reuse": false,
+  "expected_reason": "Protocol",
+  "expected_target": "Ended { wire: 99 }",
+  "finish": false,
+  "last_valid_ack": 99,
+  "member": 1,
+  "observed_cursor_before_attempt": 99,
+  "observed_wire_end": 28,
+  "observed_wire_start": 0
+}

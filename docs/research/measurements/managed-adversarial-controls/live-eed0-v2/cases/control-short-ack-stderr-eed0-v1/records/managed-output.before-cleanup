@@ -1,0 +1,11 @@
+shards managed output 1
+server ad77258b258f553a01fc20864e775ed1973dea36dc21542afc11199e3306b7c3
+owner ad77258b258f553a01fc20864e775ed1973dea36dc21542afc11199e3306b7c3
+run 49901a7a20e27b5b726c0906b7ee4a36619a221cc994eadf1e6af5b0b3e3a88b
+generation 1
+capacity 30
+member 1 channel 1 address 127.0.0.1:60941
+member 1 channel 2 address 127.0.0.1:51859
+member 2 channel 1 address 127.0.0.1:47347
+member 2 channel 2 address 127.0.0.1:53997
+member 1 channel 1 state ended accepted 102 consumed 102 tail complete

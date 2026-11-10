@@ -1,0 +1,34 @@
+{
+  "channels": [
+    {
+      "channel": 1,
+      "member": 1,
+      "payload_hex": "6167656e74007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 26,
+      "state": "Ended { offset: 26 }",
+      "wire_consumed": 102
+    },
+    {
+      "channel": 1,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646f75740aff1b5b324a6f75742d7461696c6861726e6573732d61667465722d65786974007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 67,
+      "state": "Open { offset: 67 }",
+      "wire_consumed": 177
+    },
+    {
+      "channel": 2,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646572720a80fe6572722d7461696c6861726e6573732d61667465722d65786974007374646572720a80fe6572722d7461696c",
+      "payload_offset": 61,
+      "state": "Open { offset: 61 }",
+      "wire_consumed": 171
+    }
+  ],
+  "population_kernel_cost": "Unknown; no ownership inference from observer or metadata",
+  "state": "ExactNewNeighborFd1Fd2AfterTypedRefusalAndGatePlusIndependentMain",
+  "target": {
+    "accepted_must_equal": 28,
+    "consumed_must_equal": 0
+  }
+}
