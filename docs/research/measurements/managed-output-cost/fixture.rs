@@ -6,6 +6,74 @@ use std::path::Path;
 
 mod parse;
 
+struct AllocationPhases {
+    before_fixture: managed_alloc::Snapshot,
+    after_start_and_watch_acquisition: Option<managed_alloc::Snapshot>,
+    owner_ready_before_recording: Option<managed_alloc::Snapshot>,
+    after_proc_recording: Option<managed_alloc::Snapshot>,
+    after_observer_completion: Option<managed_alloc::Snapshot>,
+    after_shutdown_watch_release_and_fd_sample: Option<managed_alloc::Snapshot>,
+}
+
+impl AllocationPhases {
+    fn new() -> Self {
+        Self {
+            before_fixture: MANAGED_ALLOC.snapshot(),
+            after_start_and_watch_acquisition: None,
+            owner_ready_before_recording: None,
+            after_proc_recording: None,
+            after_observer_completion: None,
+            after_shutdown_watch_release_and_fd_sample: None,
+        }
+    }
+
+    fn record(&self) -> Value {
+        json!({
+            "scope":"observer/test parent only; all threads using this Rust global wrapper; includes fixture and instrumentation costs",
+            "excludes":"daemon/VM/guest, direct System/native/C-library allocations, usable sizes/RSS/kernel/process-tree completeness",
+            "semantics":"ConcurrentNonAtomic; no quiescence or coherent event boundary; process-lifetime bookkeeping peak, not phase/native transient peak",
+            "before_fixture":allocation_snapshot_record(Some(self.before_fixture)),
+            "after_start_and_watch_acquisition":allocation_snapshot_record(self.after_start_and_watch_acquisition),
+            "owner_ready_before_recording":allocation_snapshot_record(self.owner_ready_before_recording),
+            "after_proc_recording":allocation_snapshot_record(self.after_proc_recording),
+            "after_observer_completion":allocation_snapshot_record(self.after_observer_completion),
+            "after_shutdown_watch_release_and_fd_sample":allocation_snapshot_record(self.after_shutdown_watch_release_and_fd_sample),
+            "retention_scope":"Fixture and protocol-result values remain owned at the last phase; successful final fixture-drop snapshot is separate"
+        })
+    }
+}
+
+fn allocation_snapshot_record(snapshot: Option<managed_alloc::Snapshot>) -> Value {
+    let Some(s) = snapshot else {
+        return json!({"state":"NotReached"});
+    };
+    let count = |value| match value {
+        managed_alloc::Count::Known(value) => json!({"state":"Known","value":value}),
+        managed_alloc::Count::Unknown => {
+            json!({"state":"Unknown","reason":"counter representation exhausted (including reserved MAX) or arithmetic underflow; sticky"})
+        }
+    };
+    json!({
+        "state":"Observed",
+        "semantics":match s.semantics { managed_alloc::SnapshotSemantics::ConcurrentNonAtomic=>"ConcurrentNonAtomic" },
+        "alloc_successes":count(s.alloc_successes),
+        "alloc_failures":count(s.alloc_failures),
+        "zeroed_successes":count(s.zeroed_successes),
+        "zeroed_failures":count(s.zeroed_failures),
+        "realloc_successes":count(s.realloc_successes),
+        "realloc_failures":count(s.realloc_failures),
+        "dealloc_calls":count(s.dealloc_calls),
+        "allocation_requested_bytes":count(s.allocation_requested_bytes),
+        "allocation_success_bytes":count(s.allocation_success_bytes),
+        "realloc_requested_bytes":count(s.realloc_requested_bytes),
+        "realloc_grown_bytes":count(s.realloc_grown_bytes),
+        "realloc_shrunk_bytes":count(s.realloc_shrunk_bytes),
+        "deallocated_bytes":count(s.deallocated_bytes),
+        "live_requested_bytes":count(s.live_requested_bytes),
+        "peak_recorded_live_requested_bytes":count(s.peak_recorded_live_requested_bytes)
+    })
+}
+
 struct Inputs {
     members: u32,
     records: PathBuf,
@@ -750,11 +818,18 @@ impl ExitProof {
     }
 }
 
-fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant, exits: &mut Option<ExitProof>) -> Ready {
+fn run(
+    fixture: &mut Fixture,
+    inputs: &Inputs,
+    until: Instant,
+    exits: &mut Option<ExitProof>,
+    allocations: &mut AllocationPhases,
+) -> Ready {
     let (ready, members) = start(fixture, inputs, until);
     let daemon = named(&fixture.home.join(shards_ipc::PID));
     let vm = vm(fixture, inputs, until);
     *exits = Some(ExitProof::acquire(fixture, &daemon, &vm));
+    allocations.after_start_and_watch_acquisition = Some(MANAGED_ALLOC.snapshot());
     let observer = shards_ipc::started(std::process::id())
         .map(|start| shards_ipc::Named {
             pid: std::process::id(),
@@ -786,12 +861,14 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant, exits: &mut Optio
         }
     }
     fixture.main_progress(left(until));
+    allocations.owner_ready_before_recording = Some(MANAGED_ALLOC.snapshot());
     if let Some(proof) = exits {
         inputs.write("exit-watches.ready.json", &proof.ready_record());
     }
     inputs.write("ready.json", &ready.record());
     let sampled = json!({"checkpoint":ready.record(),"daemon":snapshot(inputs,"daemon",&daemon),"vm":snapshot(inputs,"vm",&vm),"observer_parent":snapshot(inputs,"observer",&observer),"measurement_cost":"one-shot proc reads/serialization and observer drivers are fixture costs; samples are not atomic"});
     inputs.write("snapshots.json", &sampled);
+    allocations.after_proc_recording = Some(MANAGED_ALLOC.snapshot());
     for (member, index, channel) in &channels {
         let observer = &mut fixture.observers[*index];
         if member.id == 1 && *channel == Channel::Stdout {
@@ -804,6 +881,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant, exits: &mut Optio
         }
     }
     fixture.main_progress(left(until));
+    allocations.after_observer_completion = Some(MANAGED_ALLOC.snapshot());
     inputs.write("control.json", &json!({"state":"MainProgressAfterObserverCancel","stalled_member":if inputs.members>0 { Some(1) } else { None },"members":inputs.members,"exact_payload_channels":channels.len(),"terminal_consumption":"verified after owner stop; before this point non-held ACKs were sent"}));
     ready
 }
@@ -820,12 +898,13 @@ fn owner_output_resources_at_explicit_member_count() {
     let artifact =
         |path: &Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
     inputs.write("inputs.json", &json!({"members":inputs.members,"phase_deadline_ms":inputs.patience.as_millis(),"source":option_env!("SHARDS_OUTPUT_COST_SOURCE_REVISION"),"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"topology":"EXPERIMENTAL2N; unadopted","root_cost_comparison":"not executed by implementer"}));
+    let mut allocations = AllocationPhases::new();
     let mut fixture = Fixture::new();
     // None means acquisition was not reached. Some owns all observation resources
     // outside the protocol unwind boundary, including partial acquisition failures.
     let mut exits = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run(&mut fixture, &inputs, until, &mut exits)
+        run(&mut fixture, &inputs, until, &mut exits, &mut allocations)
     }));
     // Cleanup is a separate explicitly recorded finite phase, using caller patience.
     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
@@ -839,12 +918,14 @@ fn owner_output_resources_at_explicit_member_count() {
     };
     // Every watch, identity directory and poller is dropped before total FD sampling.
     let released = fd_count();
+    allocations.after_shutdown_watch_release_and_fd_sample = Some(MANAGED_ALLOC.snapshot());
     let fd_returned = fds.as_ref().is_some_and(|fds| fds.returned(&released));
     let fd_record = fds
         .as_ref()
         .map(|fds| fds.record(&released))
         .unwrap_or_else(|| ObservationFailure::NotPrepared.record());
     inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit":exit_record,"exit_observation_fds":fd_record,"host_process_exit_and_kernel_resource_return":"See held exit readiness proof; kernel/full-population return remain Unverified"}));
+    inputs.write("allocation-phases.json", &allocations.record());
     assert!(fd_returned, "exit observation exact FD delta/return: {fd_record}");
     assert!(
         exit_passed,
@@ -871,4 +952,7 @@ fn owner_output_resources_at_explicit_member_count() {
             &json!({"state":"NoManagedMembers","managed_channels":0}),
         );
     }
+    drop(fixture);
+    let final_snapshot = MANAGED_ALLOC.snapshot();
+    inputs.write("allocation-final.json", &json!({"phase":"after_terminal_records_and_fixture_drop","scope":"observer/test parent only; other libtest/fixture/input/result values can remain live; includes all prior record serialization","snapshot":allocation_snapshot_record(Some(final_snapshot))}));
 }

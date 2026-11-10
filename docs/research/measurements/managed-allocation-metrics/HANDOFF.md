@@ -20,11 +20,13 @@ managed-output-cost/fixture.rs fields/hooks and this evidence directory. NEVER
 edit managed_output.rs header/module/allocator registration, normal tenant
 fixtures or other lanes' source. Root wires the only actual caller centrally.
 
-Status: official pinned Rust1.98.1 contracts, stats_alloc0.1.10/dhat0.3.3
+Status: versioned Rust1.98.1 contracts, stats_alloc0.1.10/dhat0.3.3
 alternatives, actual fixture/HOST-EXIT and root f062/output-exit records read.
 Minimal PROPOSAL sent via stable key `managed-allocation-metrics-proposal-v1`;
-fixture hooks await root response. The authorized new counter source is now
-implemented, after the minimal proposal; no actual registration or fixture edit.
+ROOT APPROVED counter and narrow allocation phase hooks. The historical patch
+is now applied to fixture.rs; root global/module registration remains reserved.
+Cargo rust-version1.98.1 is MSRV, not an enforced choice of compiler/formatter;
+explicit light commands used Rust1.98.1 and actual versions are retained.
 Final source0183cf0683515974250f84999ae5be7bb44b585e is tested: standalone
 GNU5/musl5 plus Clippy0 through Kiln Fedora admitted1CPU/1GiB/2GiB, new private
 source/target dirs only, no sync/root source/target write. Exact logs, source,
@@ -33,8 +35,7 @@ records/light-{1309b9864,0975a51c0,0183cf068}. Source SHA256
 7f59e4732260b41b0f9a4e47f3c1a94f73d579f9c52fbb71e4fbbb0db26c2abc.
 No profile/VM/socket/ns/BPF/campaign executed. Fault proposal is complete in
 FAULT-PROPOSAL.md; platform source/API unchanged and measurements unrun.
-fixture-hooks.proposed.patch is concrete and UNAPPLIED, git apply --check0 on
-base. It needs approval plus root's central actual caller registration. No
+fixture-hooks.proposed.patch is the preserved APPROVED/APPLIED proposal. No
 actual caller build/profile/matrix or integration success is claimed.
 
 R15 root owns every audit/profile/benchmark/heavy E2E/chaos/stress/sweep/mutation
@@ -45,10 +46,21 @@ root ~/managed-capture-check or target/~/managed-capture-target, root Mac
 ~/managed-combined-seven-target-check or cache, frozen evidence/user data.
 No hostroot/admin/security/crypto/platform API/production optimization changes.
 
-Next: incorporate coordinator proposal response and approved phase hooks;
-retain exact commands/source/binary/log identities; signed named-path commits
+APPROVED CONTINUOUS QUEUE: native fault phase snapshots via existing platform
+seams with native labels/widths/Unknown invalid deltas (code proposal v2 sent),
+then implement-only caller-supplied-n paired/interleaved runner with two exact
+source/artifact manifests, same-N workload, serial valid identity/cleanup,
+raw samples and n/p50/p90/p99/max. No actual profiles or performance claims.
+Keep signed checkpoints and continue the next approved item without final-idle.
+Persistent lane goal/plan01a1c5cfb1457788825ed52ecb517527 remains active until
+coordinator closure; never mark it done for one checkpoint. Re-read current
+policy/handoff on compaction/resume. Root owns all real execution.
+
+Next: implement pure fault state model and root-approved hooks, continue paired
+runner implementation; retain exact source/command/binary/log identities;
+signed named-path commits
 using /Users/adalundhe/.kiln-run/bin/gits plus required Claude Opus5.5 trailer;
 push only own branch. Return all actual/paired/interleaved/mutation/cleanup/matrix
 gates. Primary-source fault proposal through existing seams is done, no execution.
-Immediately ask coordinator for next scoped batch when this one is ready;
-no fake keepalive or measurement substitutes. Keep this lane sustained.
+Send checkpoints through agents_send stable keys and CONTINUE the queue;
+no final-idle, fake keepalive or measurement substitutes. Keep this lane sustained.

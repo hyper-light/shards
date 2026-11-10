@@ -36,8 +36,12 @@ exact fixture FD return remain separate witnesses, not memory-completeness proof
 
 ## Primary sources and alternatives
 
-Sources inspected 2026-11-10. Rust is pinned to repository toolchain **1.98.1**;
-current unversioned web docs report a newer release and are not the contract pin.
+Sources inspected 2026-11-10. Research and these standalone checks explicitly
+select Rust **1.98.1**. Cargo.toml's `rust-version` is the MSRV, not a command that
+selects/enforces the compiler or formatter ([Cargo contract](https://doc.rust-lang.org/cargo/reference/rust-version.html)).
+Actual command/tool versions are recorded separately; these checks do not stand
+for root's different closing formatter or combined matrix. Versioned source
+links pin the researched contract; unversioned docs may describe a newer release.
 
 * [Rust 1.98.1 GlobalAlloc](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/core/src/alloc/global.rs):
   unwinding is forbidden; methods require valid nonzero requests and matching
@@ -110,11 +114,12 @@ No profile, comparison, optimization or speedup claim is made by this lane.
 
 ## Coordinator wiring and proposed phase placements
 
-[Concrete fixture patch](fixture-hooks.proposed.patch) is **unapplied** pending
-coordinator approval. `git apply --check` passes on the base fixture. The actual
-fixture and `managed_output.rs` remain byte-identical to base; this lane has
-registered no allocator in the actual caller. The patch adds the following
-fixed phase holder/JSON record without changing any original assertion.
+[Concrete fixture patch](fixture-hooks.proposed.patch) was approved by root and
+is now applied to `managed-output-cost/fixture.rs`. The historical proposal is
+preserved. `managed_output.rs` remains byte-identical to base; central module/
+allocator registration is exclusively root-owned and still unrun here. The
+patch adds the following fixed phase holder/JSON record without changing any
+original assertion. Actual normal-helper caller compilation remains root-owed.
 
 Root owns these exact header additions to `crates/shards/tests/managed_output.rs`:
 
