@@ -1,0 +1,22 @@
+{
+  "actor_last_consumed_states": [
+    {
+      "channel": 1,
+      "member": 1,
+      "payload_hex": "6167656e74007374646f75740aff1b5b324a6f75742d7461696c6167656e742d696e686572697465642d7265616479007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 68,
+      "state": "Open { offset: 68 }",
+      "wire_consumed": 176
+    },
+    {
+      "channel": 2,
+      "member": 1,
+      "payload_hex": "6167656e74007374646572720a80fe6572722d7461696c6167656e742d696e686572697465642d7265616479007374646572720a80fe6572722d7461696c",
+      "payload_offset": 62,
+      "state": "Open { offset: 62 }",
+      "wire_consumed": 170
+    }
+  ],
+  "evidence": "shared release caption is not an actor End witness; exact child reply and later suffix/End remain required",
+  "gate_peer_eof": true
+}

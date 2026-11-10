@@ -1,0 +1,1 @@
+timeout --signal=KILL 255s /home/adalundhe/managed-current-tenant-28e-01a1c5d2-v1/target/test-release/deps/managed_output-87d4844abdafeb5c tenant_exit::stdio::current_tenant_stdio::inherited_child_writers_survive_parent_stdio_closure --exact --ignored --nocapture --test-threads=1

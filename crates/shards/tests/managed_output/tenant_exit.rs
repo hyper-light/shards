@@ -174,7 +174,7 @@ fn release_neighbor(fixture: &Fixture, inputs: &Inputs, until: Instant) {
         0,
         "guest releases its gate connection"
     );
-    inputs.write("release.json", &json!({"state":"OwnerReleasedNeighborAfterBothMember1Eofs","guest_port":inputs.port,"release_bytes":[1],"gate_peer_eof":true}));
+    inputs.write("release.json", &json!({"state":"OwnerReleasedNeighborAfterGateEof","guest_port":inputs.port,"release_bytes":[1],"gate_peer_eof":true}));
 }
 
 fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Channel, Capture)> {
@@ -188,6 +188,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         &["managed-capture", "agent", "exit"],
         &["managed-capture", "harness", "step", &port, &deadline],
         &directives,
+        None,
         Some(&[inputs.port]),
         until,
     );

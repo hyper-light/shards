@@ -1,0 +1,25 @@
+{
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "candidate": "417be8ab77a6bf3d9517fd2912fa48ef8e4f0f56",
+  "changed_paths": [
+    "crates/shards/tests/managed_output.rs",
+    "crates/shards/tests/managed_output/broker_effects.rs",
+    "crates/shards/tests/managed_output/current_tenant_stdio.rs",
+    "crates/shards/tests/managed_output/tenant_exit.rs",
+    "crates/shards/tests/managed_output/tenant_stdio.rs",
+    "crates/testguest/src/workload.rs",
+    "docs/research/measurements/managed-current-tenant-stdio/README.md",
+    "docs/research/measurements/managed-current-tenant-stdio/adapter-apply-check.txt",
+    "docs/research/measurements/managed-current-tenant-stdio/base-admission.json",
+    "docs/research/measurements/managed-current-tenant-stdio/compose-build.command",
+    "docs/research/measurements/managed-current-tenant-stdio/live.command",
+    "docs/research/measurements/managed-current-tenant-stdio/prebuild-base.command",
+    "docs/research/measurements/managed-current-tenant-stdio/required-adapter.json",
+    "docs/research/measurements/managed-current-tenant-stdio/required-adapter.patch.gz",
+    "docs/research/measurements/managed-current-tenant-stdio/source-freeze-v1.json",
+    "docs/research/measurements/managed-current-tenant-stdio/source-pre-adapter.json"
+  ],
+  "shared_capture_unchanged": true,
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "workload_sha256": "b548fbee772ae87a822e0603fa0588d326f0829039057235c3460944b06a2315"
+}

@@ -1,0 +1,27 @@
+{
+  "source": "0691b8ce103f08f016a188fa1b44863febeeb824",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "archive_bytes": 57415,
+  "archive_sha256": "ec64692ea31423fffcbaaf0cb538cd9946d6888853fca301fa6e5f9b9cf83550",
+  "chunks": 5,
+  "chunk_bytes_max": 12000,
+  "all_safe_regular_members": 231,
+  "all_original_size_sha256_verified": 230,
+  "remote_only": [
+    {
+      "original": "candidate-v1/compile.jsonl",
+      "bytes": 277122,
+      "sha256": "8db710659a1697075aec0d1f56923bc17a92dab6904ac544f9eb5cbf983f8f90"
+    },
+    {
+      "original": "candidate-v2/compile.jsonl",
+      "bytes": 277122,
+      "sha256": "d2b797bca522b7b8e29f369ea9e8dccc1e38af2ae563832c40e217b671d5c115"
+    },
+    {
+      "original": "compile.jsonl",
+      "bytes": 277424,
+      "sha256": "18853c958580f7dda13f6a07bec5d4e26d76acf64423de24f9d9c7d1a07b0eda"
+    }
+  ]
+}

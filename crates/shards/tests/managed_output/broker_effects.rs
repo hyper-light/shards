@@ -280,6 +280,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, gate: &TcpListener, until: Instan
         ],
         &directives,
         None,
+        None,
         startup_until,
     );
     std::fs::copy(

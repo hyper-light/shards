@@ -1,0 +1,33 @@
+1794340272708177569	command	930	exec	/bin/testguest sleep
+1794340272709811545	agent helper	932	fork	1
+1794340272711263643	agent helper	932	exec	shards-server "agent helper" /proc/self/fd/6 200001 3 4 "" [] 7
+1794340272714912616	agent helper	937	fork	932
+1794340272715211579	agent helper	937	exec	shards-server sandbox
+1794340272715983974	agent helper	941	fork	1
+1794340272716191925	agent helper	943	fork	941
+1794340272716420966	agent helper	941	exec	shards-init managed-reaper
+1794340272853016992	agent helper	943	exec	/agents/helper/member managed-capture agent inherit-stdio 59243 240000 15000 16 269
+1794340272853994876	agent helper	1710	fork	943
+1794340272854250136	agent helper	1710	exec	/agents/helper/member managed-capture agent inherited-child 59243 240000 16 269
+1794340272854559565	harness driver	1711	fork	1
+1794340272856034723	harness driver	1711	exec	shards-server "harness driver" /proc/self/fd/6 200002 3 4 "" [] 7
+1794340272857818197	harness driver	1716	fork	1711
+1794340272858322416	harness driver	1716	exec	shards-server sandbox
+1794340272859310946	harness driver	1719	fork	1
+1794340272859405419	harness driver	1721	fork	1719
+1794340272859541643	harness driver	1719	exec	shards-init managed-reaper
+1794340272891961069	harness driver	1721	exec	/harness/driver/bin/member managed-capture harness step 47401 240000
+1794340272912510772	command	2232	fork	1
+1794340272914855686	command	2232	exec	/bin/testguest streams main-progress main-error
+1794340272915438027	command	2232	exit	code 0
+1794340272931805382	command	2234	fork	1
+1794340272933084263	command	2234	exec	/bin/testguest streams main-progress main-error
+1794340272933396030	command	2234	exit	code 0
+1794340272940859252	agent helper	1710	exit	code 0
+1794340272941403199	agent helper	943	exit	code 0
+1794340272941663114	agent helper	941	exit	code 0
+1794340272941809344	agent helper	932	exit	signal 9
+1794340272941843597	agent helper	937	exit	signal 9
+1794340272948304003	command	2239	fork	1
+1794340272949431664	command	2239	exec	/bin/testguest streams main-progress main-error
+1794340272949774438	command	2239	exit	code 0

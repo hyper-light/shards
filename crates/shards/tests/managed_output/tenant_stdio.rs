@@ -2,6 +2,9 @@
 use super::*;
 use std::io;
 
+#[path = "current_tenant_stdio.rs"]
+mod current_tenant_stdio;
+
 struct Supplied {
     base: Inputs,
     actor: u16,
@@ -206,6 +209,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Vec<(u32, Cha
         ],
         &["managed-capture", "harness", "step", &port, &work],
         &directives,
+        None,
         Some(&[input.actor, input.base.port]),
         until,
     );

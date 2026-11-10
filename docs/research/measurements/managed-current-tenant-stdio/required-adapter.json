@@ -1,0 +1,20 @@
+{
+  "candidate_base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "native_source": "0ea38a52aa534bf665516c239c4bf122149f8554",
+  "native_changes": "exact old0ea additions only; dispatcher two arms and owned inherited helper; no existing helper rewrite",
+  "parent_changes": "existing approved optional positive-u32 agent task argument/AGENTline; all existing current callers pass None; no extra entrypoint/wrapper",
+  "source_paths": [
+    "crates/testguest/src/workload.rs",
+    "crates/shards/tests/managed_output.rs",
+    "crates/shards/tests/managed_output/tenant_exit.rs",
+    "crates/shards/tests/managed_output/tenant_stdio.rs",
+    "crates/shards/tests/managed_output/broker_effects.rs"
+  ],
+  "original_bytes": 18675,
+  "original_sha256": "59847ec0795ba10ce1b303f3dc62f7679bc9c8910de88fd082a21a88d44f862b",
+  "stored_sha256": "9157c03da3a91d05e97f2832d16dc04397e09bc05d2c918b4326e7a5400d5dd6",
+  "applied": true,
+  "actual_campaign_executed": false,
+  "authority": "ROOT explicit exact adapter approval after source1d190 review"
+}

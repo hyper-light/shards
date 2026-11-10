@@ -1,0 +1,529 @@
+{
+  "source": "0691b8ce103f08f016a188fa1b44863febeeb824",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "files": [
+    {
+      "original": "live-minimum-v3/artifact-verification.json",
+      "bytes": 99,
+      "sha256": "5fb72a512f2ec99492a1a7aafb406ecd0b71487c8023d554f7ee79155eb37152",
+      "stored": "live-minimum-v3/artifact-verification.json",
+      "stored_bytes": 99,
+      "stored_sha256": "5fb72a512f2ec99492a1a7aafb406ecd0b71487c8023d554f7ee79155eb37152"
+    },
+    {
+      "original": "live-minimum-v3/environment.json",
+      "bytes": 1643,
+      "sha256": "e14e9b7121ae1b010f887f05f5dd8967509da7ec959f36a392943dce97e78b7b",
+      "stored": "live-minimum-v3/environment.json",
+      "stored_bytes": 1643,
+      "stored_sha256": "e14e9b7121ae1b010f887f05f5dd8967509da7ec959f36a392943dce97e78b7b"
+    },
+    {
+      "original": "live-minimum-v3/inherited/command",
+      "bytes": 281,
+      "sha256": "4358263bae0e7a821d45add494be8cdfd302a9f951a3dae117b754459e73cb8e",
+      "stored": "live-minimum-v3/inherited/command",
+      "stored_bytes": 281,
+      "stored_sha256": "4358263bae0e7a821d45add494be8cdfd302a9f951a3dae117b754459e73cb8e"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/Agentfile",
+      "bytes": 366,
+      "sha256": "08bfccbff982f65a29789439f46bcbcd88052fc7ffd06e5638d352ecfe128d6e",
+      "stored": "live-minimum-v3/inherited/records/Agentfile",
+      "stored_bytes": 366,
+      "stored_sha256": "08bfccbff982f65a29789439f46bcbcd88052fc7ffd06e5638d352ecfe128d6e"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/actor-control.json",
+      "bytes": 331,
+      "sha256": "b4921bc00c1e010fa1a385e3858c82b31278369f140ac7dbfe77fcd039bac9a4",
+      "stored": "live-minimum-v3/inherited/records/actor-control.json",
+      "stored_bytes": 331,
+      "stored_sha256": "b4921bc00c1e010fa1a385e3858c82b31278369f140ac7dbfe77fcd039bac9a4"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/actor-ports.json",
+      "bytes": 499,
+      "sha256": "ad1f89cef18aecb6ff91c6c90f4ba71bd6bccffa0606a6c65f0edabb0b8661ac",
+      "stored": "live-minimum-v3/inherited/records/actor-ports.json",
+      "stored_bytes": 499,
+      "stored_sha256": "ad1f89cef18aecb6ff91c6c90f4ba71bd6bccffa0606a6c65f0edabb0b8661ac"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/artifacts.json",
+      "bytes": 1147,
+      "sha256": "5f328ee8cc57f906c82b1515dda98286b2c489ddc09a39f36e6e6aa3613d4d6b",
+      "stored": "live-minimum-v3/inherited/records/artifacts.json",
+      "stored_bytes": 1147,
+      "stored_sha256": "5f328ee8cc57f906c82b1515dda98286b2c489ddc09a39f36e6e6aa3613d4d6b"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/history-before-cleanup/processes.0",
+      "bytes": 2092,
+      "sha256": "0499f6e05e51c26281c6673508b9a226cfb608fde87a7323ae38701f1766d739",
+      "stored": "live-minimum-v3/inherited/records/history-before-cleanup/processes.0",
+      "stored_bytes": 2092,
+      "stored_sha256": "0499f6e05e51c26281c6673508b9a226cfb608fde87a7323ae38701f1766d739"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/history-before-cleanup.json",
+      "bytes": 3185,
+      "sha256": "2f6e15e973da9e5bf2013c38b35299ec2140bce43df6bac48fabd94c87ea6940",
+      "stored": "live-minimum-v3/inherited/records/history-before-cleanup.json",
+      "stored_bytes": 3185,
+      "stored_sha256": "2f6e15e973da9e5bf2013c38b35299ec2140bce43df6bac48fabd94c87ea6940"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/inherited-end.json",
+      "bytes": 1705,
+      "sha256": "ddc387529222f014ef11a031d042c9cd5092d8d3c8d7bfe3763820cc603e414c",
+      "stored": "live-minimum-v3/inherited/records/inherited-end.json",
+      "stored_bytes": 1705,
+      "stored_sha256": "ddc387529222f014ef11a031d042c9cd5092d8d3c8d7bfe3763820cc603e414c"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/inherited-ready.json",
+      "bytes": 1238,
+      "sha256": "3bdd5115ff026f93973c4fe426e91fee0dde269a1283378caf36c3bf176569d1",
+      "stored": "live-minimum-v3/inherited/records/inherited-ready.json",
+      "stored_bytes": 1238,
+      "stored_sha256": "3bdd5115ff026f93973c4fe426e91fee0dde269a1283378caf36c3bf176569d1"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/inputs.json",
+      "bytes": 347,
+      "sha256": "eb248027a8bc4ea6b9b41d3099743000c09f5e1fbb11922ebfaf6d6892e5dd38",
+      "stored": "live-minimum-v3/inherited/records/inputs.json",
+      "stored_bytes": 347,
+      "stored_sha256": "eb248027a8bc4ea6b9b41d3099743000c09f5e1fbb11922ebfaf6d6892e5dd38"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/managed-output.before-cleanup",
+      "bytes": 575,
+      "sha256": "23cf415fc90e3ff014eb26f2ad2d1e74e59421a189e78cc5281d8caa4e563759",
+      "stored": "live-minimum-v3/inherited/records/managed-output.before-cleanup",
+      "stored_bytes": 575,
+      "stored_sha256": "23cf415fc90e3ff014eb26f2ad2d1e74e59421a189e78cc5281d8caa4e563759"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/managed-output.before-stop",
+      "bytes": 575,
+      "sha256": "23cf415fc90e3ff014eb26f2ad2d1e74e59421a189e78cc5281d8caa4e563759",
+      "stored": "live-minimum-v3/inherited/records/managed-output.before-stop",
+      "stored_bytes": 575,
+      "stored_sha256": "23cf415fc90e3ff014eb26f2ad2d1e74e59421a189e78cc5281d8caa4e563759"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/managed-output.ready",
+      "bytes": 433,
+      "sha256": "1c43abba21e7a6365d71467855938a08aa798f9ae4db850a33b2377f88112fb7",
+      "stored": "live-minimum-v3/inherited/records/managed-output.ready",
+      "stored_bytes": 433,
+      "stored_sha256": "1c43abba21e7a6365d71467855938a08aa798f9ae4db850a33b2377f88112fb7"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/managed-output.stopped",
+      "bytes": 719,
+      "sha256": "3a4e1cebb0c5ee732fe8674cd8241a0dc941cc62c20339db4ba2a7f8e6a53592",
+      "stored": "live-minimum-v3/inherited/records/managed-output.stopped",
+      "stored_bytes": 719,
+      "stored_sha256": "3a4e1cebb0c5ee732fe8674cd8241a0dc941cc62c20339db4ba2a7f8e6a53592"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/ports.json",
+      "bytes": 499,
+      "sha256": "ad1f89cef18aecb6ff91c6c90f4ba71bd6bccffa0606a6c65f0edabb0b8661ac",
+      "stored": "live-minimum-v3/inherited/records/ports.json",
+      "stored_bytes": 499,
+      "stored_sha256": "ad1f89cef18aecb6ff91c6c90f4ba71bd6bccffa0606a6c65f0edabb0b8661ac"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/processes-after-inherited-eof.json",
+      "bytes": 602,
+      "sha256": "36d2fa67180a2ddb5215610a6cacd903ba8868d79e71bc91b12154d2c11287d6",
+      "stored": "live-minimum-v3/inherited/records/processes-after-inherited-eof.json",
+      "stored_bytes": 602,
+      "stored_sha256": "36d2fa67180a2ddb5215610a6cacd903ba8868d79e71bc91b12154d2c11287d6"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/release-causality.json",
+      "bytes": 789,
+      "sha256": "7a329cbeb852360145be42bcbf06f548c91557cd7e82e7a9b11aa35f8e6b5c47",
+      "stored": "live-minimum-v3/inherited/records/release-causality.json",
+      "stored_bytes": 789,
+      "stored_sha256": "7a329cbeb852360145be42bcbf06f548c91557cd7e82e7a9b11aa35f8e6b5c47"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/release.json",
+      "bytes": 138,
+      "sha256": "8900286ab148d431dee85cfac5002ca7ec883d889f72bd6526bd80ea3e3ff537",
+      "stored": "live-minimum-v3/inherited/records/release.json",
+      "stored_bytes": 138,
+      "stored_sha256": "8900286ab148d431dee85cfac5002ca7ec883d889f72bd6526bd80ea3e3ff537"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/remove.json",
+      "bytes": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc",
+      "stored": "live-minimum-v3/inherited/records/remove.json",
+      "stored_bytes": 123,
+      "stored_sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/run-cleanup.json",
+      "bytes": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3",
+      "stored": "live-minimum-v3/inherited/records/run-cleanup.json",
+      "stored_bytes": 161,
+      "stored_sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/sibling-before-child-release.json",
+      "bytes": 1305,
+      "sha256": "f68db3b2d439aa88d97cf6e2ee7a7bf5c81d38349a1cb9399a0660d754e71ab0",
+      "stored": "live-minimum-v3/inherited/records/sibling-before-child-release.json",
+      "stored_bytes": 1305,
+      "stored_sha256": "f68db3b2d439aa88d97cf6e2ee7a7bf5c81d38349a1cb9399a0660d754e71ab0"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/stop.json",
+      "bytes": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa",
+      "stored": "live-minimum-v3/inherited/records/stop.json",
+      "stored_bytes": 140,
+      "stored_sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/stopped-state.json",
+      "bytes": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6",
+      "stored": "live-minimum-v3/inherited/records/stopped-state.json",
+      "stored_bytes": 170,
+      "stored_sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/teardown.json",
+      "bytes": 309,
+      "sha256": "5e8e024ff723a24a63570949805af255b9b16de48e82a2524086702a0e8d341d",
+      "stored": "live-minimum-v3/inherited/records/teardown.json",
+      "stored_bytes": 309,
+      "stored_sha256": "5e8e024ff723a24a63570949805af255b9b16de48e82a2524086702a0e8d341d"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-0.bin",
+      "bytes": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-118.bin",
+      "bytes": 30,
+      "sha256": "17e3dd03ed153742d6623b07642fbfebc41f7dc1d0b08601d50335ac4777f888",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-118.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "17e3dd03ed153742d6623b07642fbfebc41f7dc1d0b08601d50335ac4777f888"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-148.bin",
+      "bytes": 28,
+      "sha256": "a59af60e1d432a7de36ce8e92c3e2035b73fbedefa66ef5d1c911957658e347d",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-148.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "a59af60e1d432a7de36ce8e92c3e2035b73fbedefa66ef5d1c911957658e347d"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-176.bin",
+      "bytes": 30,
+      "sha256": "02c475c7d4212e92b07f8164ed8a159ffda122f151e129479828cf0982f1e3df",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-176.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "02c475c7d4212e92b07f8164ed8a159ffda122f151e129479828cf0982f1e3df"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-206.bin",
+      "bytes": 30,
+      "sha256": "2e8c30acb984702606bfcc120772a540fe01fe66d59419bf75597ae18e340849",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-206.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2e8c30acb984702606bfcc120772a540fe01fe66d59419bf75597ae18e340849"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-236.bin",
+      "bytes": 30,
+      "sha256": "55e5f5e636641defe158c9f012a81aa8414bb42d871e98189ea50a4014c532fc",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-236.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "55e5f5e636641defe158c9f012a81aa8414bb42d871e98189ea50a4014c532fc"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-266.bin",
+      "bytes": 24,
+      "sha256": "0d2a0c18a575ea34a2d8a09624728973f992211a470022236727f14a87af3de1",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-266.bin",
+      "stored_bytes": 24,
+      "stored_sha256": "0d2a0c18a575ea34a2d8a09624728973f992211a470022236727f14a87af3de1"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-28.bin",
+      "bytes": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-290.bin",
+      "bytes": 16,
+      "sha256": "5691433a9d5466a2a57cd0cf78ffdf23acf1b1c1c01225b4050b0bd170d5d0f0",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-290.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "5691433a9d5466a2a57cd0cf78ffdf23acf1b1c1c01225b4050b0bd170d5d0f0"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-58.bin",
+      "bytes": 30,
+      "sha256": "08d3c97096e83b975dd7cecb70aeb98988c39f8793ef1039cb67ca4bff1c17b3",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-58.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "08d3c97096e83b975dd7cecb70aeb98988c39f8793ef1039cb67ca4bff1c17b3"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-1-88.bin",
+      "bytes": 30,
+      "sha256": "e1e514cd6290d39b3c1b1ddb3233144e1a9f7ae069735389fb76785175097809",
+      "stored": "live-minimum-v3/inherited/records/wire-1-1-88.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "e1e514cd6290d39b3c1b1ddb3233144e1a9f7ae069735389fb76785175097809"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-0.bin",
+      "bytes": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-0.bin",
+      "stored_bytes": 28,
+      "stored_sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-118.bin",
+      "bytes": 30,
+      "sha256": "01b9910269bc17c83d752bf9d3d003141da3ee6533ae98200e65e021c4bbe6dd",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-118.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "01b9910269bc17c83d752bf9d3d003141da3ee6533ae98200e65e021c4bbe6dd"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-148.bin",
+      "bytes": 22,
+      "sha256": "7e5549bd3a0a729ddec304eb10fafdde5c926499a525aa0025058215e7f4ea9a",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-148.bin",
+      "stored_bytes": 22,
+      "stored_sha256": "7e5549bd3a0a729ddec304eb10fafdde5c926499a525aa0025058215e7f4ea9a"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-170.bin",
+      "bytes": 30,
+      "sha256": "9d129d0a40414a9eaac4902321d40c0e89981280ff3286e8829f4713877f27cf",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-170.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "9d129d0a40414a9eaac4902321d40c0e89981280ff3286e8829f4713877f27cf"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-200.bin",
+      "bytes": 30,
+      "sha256": "a03399dc4e74fff81adcd165d69e1b40c58a4ece1922aa5a61f8b07c8e6ad10b",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-200.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "a03399dc4e74fff81adcd165d69e1b40c58a4ece1922aa5a61f8b07c8e6ad10b"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-230.bin",
+      "bytes": 30,
+      "sha256": "82a3458d03052799d53e44cb695556d405b04096676ebd3fe259702c1cdc7255",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-230.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "82a3458d03052799d53e44cb695556d405b04096676ebd3fe259702c1cdc7255"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-260.bin",
+      "bytes": 21,
+      "sha256": "e30704b9f6774a01cbb8eeb7c1fa530143d1d63e0652355ca1d24f7cdb2f56be",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-260.bin",
+      "stored_bytes": 21,
+      "stored_sha256": "e30704b9f6774a01cbb8eeb7c1fa530143d1d63e0652355ca1d24f7cdb2f56be"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-28.bin",
+      "bytes": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-28.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-281.bin",
+      "bytes": 16,
+      "sha256": "2cee6c401c1692bdb49cf1d852e8f3532cb32be4434880121ba8c85bbae20239",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-281.bin",
+      "stored_bytes": 16,
+      "stored_sha256": "2cee6c401c1692bdb49cf1d852e8f3532cb32be4434880121ba8c85bbae20239"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-58.bin",
+      "bytes": 30,
+      "sha256": "5521c11ca3f787153175e98e9ee64eb9bf36db9411788ec6caaa5dc6f53cc382",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-58.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "5521c11ca3f787153175e98e9ee64eb9bf36db9411788ec6caaa5dc6f53cc382"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-1-2-88.bin",
+      "bytes": 30,
+      "sha256": "8705f0c3c99bf3a0c0b66d8756f4c7c934dc5456c2c61dd8961dd8f23ea6a99e",
+      "stored": "live-minimum-v3/inherited/records/wire-1-2-88.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "8705f0c3c99bf3a0c0b66d8756f4c7c934dc5456c2c61dd8961dd8f23ea6a99e"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-0.bin",
+      "bytes": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-120.bin",
+      "bytes": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-120.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-150.bin",
+      "bytes": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-150.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-30.bin",
+      "bytes": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-60.bin",
+      "bytes": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-60.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-1-90.bin",
+      "bytes": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f",
+      "stored": "live-minimum-v3/inherited/records/wire-2-1-90.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-0.bin",
+      "bytes": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-0.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-117.bin",
+      "bytes": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-117.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-147.bin",
+      "bytes": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-147.bin",
+      "stored_bytes": 24,
+      "stored_sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-30.bin",
+      "bytes": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-30.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-60.bin",
+      "bytes": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-60.bin",
+      "stored_bytes": 27,
+      "stored_sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "original": "live-minimum-v3/inherited/records/wire-2-2-87.bin",
+      "bytes": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41",
+      "stored": "live-minimum-v3/inherited/records/wire-2-2-87.bin",
+      "stored_bytes": 30,
+      "stored_sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "original": "live-minimum-v3/inherited/result.json",
+      "bytes": 509,
+      "sha256": "f5993d838d87c0296e85d1c45ca60b418b65565bb00fe77dea0136fe0664029f",
+      "stored": "live-minimum-v3/inherited/result.json",
+      "stored_bytes": 509,
+      "stored_sha256": "f5993d838d87c0296e85d1c45ca60b418b65565bb00fe77dea0136fe0664029f"
+    },
+    {
+      "original": "live-minimum-v3/inherited/test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "stored": "live-minimum-v3/inherited/test.exit",
+      "stored_bytes": 2,
+      "stored_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "original": "live-minimum-v3/inherited/test.log",
+      "bytes": 2944,
+      "sha256": "46a2d211b593b54c94c692a7bb1a8531089073fe4df959252224b94d80f01354",
+      "stored": "live-minimum-v3/inherited/test.log.gz",
+      "stored_bytes": 897,
+      "stored_sha256": "e02560fbe5407801c3a95f1380bb715d622fa53113c89d869698897135e38239"
+    },
+    {
+      "original": "live-minimum-v3/inputs.env",
+      "bytes": 163,
+      "sha256": "ea310a1dd13eeb9c6eb6af878444d4a133cf7891b6e881e0cd8a48dc14955699",
+      "stored": "live-minimum-v3/inputs.env",
+      "stored_bytes": 163,
+      "stored_sha256": "ea310a1dd13eeb9c6eb6af878444d4a133cf7891b6e881e0cd8a48dc14955699"
+    },
+    {
+      "original": "live-minimum-v3/result.json",
+      "bytes": 716,
+      "sha256": "0a4c92014861ca8aaa756f334e843aca41be8a00ad587a8d56f390d7e8acfe1e",
+      "stored": "live-minimum-v3/result.json",
+      "stored_bytes": 716,
+      "stored_sha256": "0a4c92014861ca8aaa756f334e843aca41be8a00ad587a8d56f390d7e8acfe1e"
+    }
+  ],
+  "remote_only": [],
+  "binary_and_source_preservation": "private source/target/cache/frozen unchanged; full CargoJSONL retained remotely",
+  "unknown": "full population/kernel/parent resource return unverified"
+}

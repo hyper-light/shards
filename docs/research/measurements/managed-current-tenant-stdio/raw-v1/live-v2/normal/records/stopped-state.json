@@ -1,0 +1,12 @@
+{
+  "args": [
+    "inspect",
+    "vm",
+    "-f",
+    "{{.State.Running}} {{.State.Pid}}",
+    "owner-output"
+  ],
+  "status": 0,
+  "stderr": "",
+  "stdout": "false 0\n"
+}
