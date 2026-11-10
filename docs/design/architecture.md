@@ -5889,6 +5889,24 @@ cleanup, all other targets and allocation/kernel accounting remain coordinator g
 
 ### D181. `--use-api-socket`: a run's command reaches its own microVM's engine (slices 1 to 3 built)
 
+The [current guest stream pump closing record](../research/measurements/managed-engine-relay-root/README.md)
+compares the original and shared implementations over actual carried KVM VSOCK:
+both close orders preserve exact response/end/late-write behavior, then the
+ordinary managed-output/code-mode and seven-target gates pass at4fa823919.
+The guest engine now uses one shared readiness/retained-tail pump; its existing
+connection worker remains, while the extra scoped upload thread is removed.
+Engine peer EOF closes the client's two halves before EOF publication. The
+historical first-candidate late-write regression, guard removal/restoration,
+current pressure-witness miss and initial test-helper lint failure remain retained.
+No new networking authority or production interception route is installed.
+
+New engine buffer literals are derived: two buffers are the actual directions;
+one `sysconf(_SC_PAGESIZE)` private mapping per direction is the minimum mapping
+unit, with no growth/cache; HELLO is `HEADER + TOKEN`. Native poll uses its signed
+millisecond ABI range and -1 event-wait sentinel. These bounds do not establish
+parent/kernel admission, optimal throughput or a measured performance win;
+those management obligations stay open.
+
 The need: a CI job, a test suite with testcontainers, or an agent's tool runs `docker run`
 from inside its workload, as on a host with Docker. The user's call (2026-10-16): what it
 reaches is the microVM's own engine. Docker's flag (docker/cli v29.8.1

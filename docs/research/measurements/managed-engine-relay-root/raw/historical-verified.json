@@ -1,0 +1,23 @@
+{
+  "archive": "historical-native-37ee.tar.gz",
+  "bytes": 160125,
+  "sha256": "47c034b8e6f240c0ba9beeb74d5b3de0c5046762724c9f71faeff4495ce71411",
+  "original_git_blobs": 18,
+  "members_including_provenance": 19,
+  "nested": [
+    {
+      "archive": "raw-linux.tar.gz",
+      "bytes": 85013,
+      "sha256": "43d9f44a8b7f5227cd2fbe853c4715f093de784e63fd9a1bc9ebcee28e8e0829",
+      "verified_indexed_members": 151,
+      "total_safe_regular_members": 152
+    },
+    {
+      "archive": "raw-final-linux.tar.gz",
+      "bytes": 42224,
+      "sha256": "b7b7fca1a625317d60acdad3fbbb756ad426ea650b19710387c89e95ed123cad",
+      "verified_indexed_members": 119,
+      "total_safe_regular_members": 120
+    }
+  ]
+}

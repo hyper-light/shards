@@ -1,0 +1,16 @@
+[
+  {
+    "archive": "linux-originals.tar.gz",
+    "bytes": 189566,
+    "sha256": "1889a2c8e9993ae55f5968a996015228a3ff18f1456a144c439cc2f7433d1b58",
+    "payload_files": 223,
+    "members_including_manifest": 224
+  },
+  {
+    "archive": "mac-originals.tar.gz",
+    "bytes": 7166,
+    "sha256": "b027d53eeb0285f8e1c49a6523e31436eb525cd4618320fb4536453123d297b6",
+    "payload_files": 25,
+    "members_including_manifest": 26
+  }
+]
