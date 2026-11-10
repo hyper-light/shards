@@ -1,0 +1,7 @@
+{
+  "stage": "local source-package generation only, not Rust compilation",
+  "first_attempt": "AssertionError before a v2 remote invocation existed: assert 'vendor/' not in filtered manifest also matched an unchanged documentation comment",
+  "correction": "Assert absent patch assignment keys, rather than rejecting documentation text; production Cargo/lock/provider unchanged",
+  "outcome": "v2 source package generated, exact inventory retained in remote source.json",
+  "no_remote_job_from_failed_generation": true
+}

@@ -1,0 +1,19 @@
+{
+  "admission": "1CPU/1GiB RAM/2GiB disk; serial sync:false; new private paths",
+  "source": "/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2",
+  "target": "/home/adalundhe/managed-resource-admission-target-5f131376e-caller-v2",
+  "records": "/home/adalundhe/managed-resource-admission-light-5f131376e-caller-v2",
+  "compiled": "real shards-init binary target, cargo check only",
+  "unrun": "link/installed binary, helper build, init execution, kernel/controller/VM/profile/guarantee or comparative gate",
+  "source_adaptation": "workspace member/default-member list only, omit unrelated unused vendor patch declarations; all production Cargo/source/dependencies unchanged",
+  "environment": {
+    "CARGO_HOME": "/home/adalundhe/managed-resource-admission-target-5f131376e-caller-v2/cargo-home",
+    "CARGO_TARGET_DIR": "/home/adalundhe/managed-resource-admission-target-5f131376e-caller-v2/target",
+    "CARGO_BUILD_JOBS": "1",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTFLAGS": "-C debuginfo=0 -C codegen-units=1",
+    "RUSTC": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+    "TMPDIR": "/home/adalundhe/managed-resource-admission-target-5f131376e-caller-v2/tmp"
+  },
+  "rustc_sha256": "859254978c0a0402c32f949f6de0d99aee73be8d15f45aac00ae1448aac51e74"
+}

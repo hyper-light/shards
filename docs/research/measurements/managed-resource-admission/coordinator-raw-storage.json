@@ -1,0 +1,33 @@
+{
+  "reason": "actual combined staged diff-check rejects original upstream trailing spaces/raw libtest EOF; retain exact bytes compressed, never normalize sources/logs",
+  "files": [
+    {
+      "path": "records/caps-v2/units.log",
+      "original_sha256": "6fd4097b155262605a8449f87923ee17efb3cb30011f672f38c10cfdb36e6997",
+      "compressed_path": "records/caps-v2/units.log.gz",
+      "compressed_sha256": "91931fe709f3461d88da727f031eb8c3f07be59f3717a3b7060f5e7c9e260985",
+      "round_trip_equal": true
+    },
+    {
+      "path": "records/caps-v3/units.log",
+      "original_sha256": "e89221fee2a6ffad4454c2ef1d2cd48b669c100d6ba902ca0c716ab30adee6bb",
+      "compressed_path": "records/caps-v3/units.log.gz",
+      "compressed_sha256": "8f07772f2be2d8a1c4b095e96fcee9f412f941548ea028fa796a1d6598efb599",
+      "round_trip_equal": true
+    },
+    {
+      "path": "records/caps-v4/units.log",
+      "original_sha256": "77f71f64fb1ca1b9f2ac69f0f8b97d051ba3ed99afd44bfba48ae756366df5ea",
+      "compressed_path": "records/caps-v4/units.log.gz",
+      "compressed_sha256": "71148a3f0f659341cdcb58a08161c17d0f35bc56ed4ba57ce88d35a472a6323f",
+      "round_trip_equal": true
+    },
+    {
+      "path": "research/linux-v6.18-cgroup-v2.rst",
+      "original_sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97",
+      "compressed_path": "research/linux-v6.18-cgroup-v2.rst.gz",
+      "compressed_sha256": "45099d97254c336464e595038caee8f8689d502c6293a14058419900386485ab",
+      "round_trip_equal": true
+    }
+  ]
+}

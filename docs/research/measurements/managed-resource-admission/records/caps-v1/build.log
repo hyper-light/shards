@@ -1,0 +1,10 @@
+error: failed to load source for dependency `aws-lc-rs`
+
+Caused by:
+  unable to update /home/adalundhe/managed-resource-admission-source-cbd392849-caps-v1/vendor/aws-lc-rs
+
+Caused by:
+  failed to read `/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v1/vendor/aws-lc-rs/Cargo.toml`
+
+Caused by:
+  No such file or directory (os error 2)

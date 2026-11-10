@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "/home/adalundhe/.cargo/bin/cargo",
+    "+1.98.1",
+    "clippy",
+    "--all-targets",
+    "-j",
+    "1",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v2",
+  "timeout_seconds": 180
+}

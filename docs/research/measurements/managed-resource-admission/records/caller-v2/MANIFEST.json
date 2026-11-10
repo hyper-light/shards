@@ -1,0 +1,42 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 9684,
+    "sha256": "4d2d101f9586f9b810fefa140e0d18cc5a7a91423f3a495c4e553745e659a975"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "check.command.json",
+    "bytes": 275,
+    "sha256": "0a5d5a914b863d655b6748b563aff6af4ea01ca035f3f55d8f106b430edb4599"
+  },
+  {
+    "path": "check.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "check.log",
+    "bytes": 2133,
+    "sha256": "a83e522f5adb0f34759d62de2d31c0ddb0a4e1c89ea41b674dc5809e99c6a424"
+  },
+  {
+    "path": "input.json",
+    "bytes": 27864,
+    "sha256": "c8b2159d2a09826cd6d746a96b92c31f0a436f984ab51286ea9b01961968d966"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "scope.json",
+    "bytes": 1311,
+    "sha256": "2b555db62cce10ea8d0d1ad86bb65894efd3b22dcab80b96f9d0afd37a1fe22a"
+  }
+]

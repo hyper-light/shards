@@ -1,0 +1,7 @@
+{
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+  "sync": false,
+  "command": "python3 -c 'import hashlib,io,json,pathlib,tarfile\nhome=pathlib.Path.home()\nresult=[]\nfor version in (1,2,3):\n root=home/(\"managed-resource-admission-light-cbd392849-caps-v\"+str(version))\n manifest=json.loads((root/\"MANIFEST.json\").read_text())\n for e in manifest:\n  b=(root/e[\"path\"]).read_bytes()\n  assert len(b)==e[\"bytes\"] and hashlib.sha256(b).hexdigest()==e[\"sha256\"]\n binary=None\n if (root/\"binary.json\").exists():\n  binary=json.loads((root/\"binary.json\").read_text())\n  b=pathlib.Path(binary[\"path\"]).read_bytes()\n  assert len(b)==binary[\"bytes\"] and hashlib.sha256(b).hexdigest()==binary[\"sha256\"]\n archive=home/(root.name+\".tar.gz\")\n assert not archive.exists()\n with tarfile.open(archive,\"w:gz\") as t:\n  for p in sorted(root.iterdir()):\n   assert p.is_file() and not p.is_symlink()\n   t.add(p,arcname=p.name,recursive=False)\n data=archive.read_bytes()\n result.append({\"version\":version,\"records\":str(root),\"archive\":str(archive),\"bytes\":len(data),\"sha256\":hashlib.sha256(data).hexdigest(),\"members\":len(manifest)+1,\"outcomes\":json.loads((root/\"outcomes.json\").read_text()),\"binary\":binary,\"units_log\":None if not (root/\"units.log\").exists() else (root/\"units.log\").read_text(),\"rustc\":(root/\"rustc.txt\").read_text(),\"cargo\":(root/\"cargo.txt\").read_text()})\nprint(json.dumps(result))\n'",
+  "timeout_s": 90
+}

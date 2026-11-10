@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"check_exit\": 0, \"records\": \"/home/adalundhe/managed-resource-admission-light-5f131376e-caller-v2\", \"binary\": null, \"target\": \"real shards-init binary check only\", \"raw_files\": 9}\n    Updating crates.io index\n Downloading crates ...\n  Downloaded num-bigint v0.4.8\n  Downloaded num-integer v0.1.47\n  Downloaded autocfg v1.5.1\n  Downloaded num-traits v0.2.19\n  Downloaded memchr v2.8.3\n  Downloaded regex v1.13.1\n  Downloaded aho-corasick v1.1.5\n  Downloaded regex-syntax v0.8.11\n  Downloaded regex-automata v0.4.18\n  Downloaded libc v0.2.189\n   Compiling autocfg v1.5.1\n   Compiling num-traits v0.2.19\n    Checking memchr v2.8.3\n    Checking aho-corasick v1.1.5\n   Compiling libc v0.2.189\n    Checking regex-syntax v0.8.11\n    Checking regex-automata v0.4.18\n    Checking num-integer v0.1.47\n   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/abi)\n    Checking num-bigint v0.4.8\n    Checking regex v1.13.1\n    Checking shards-template v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/template)\n    Checking shards-cmdline v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/cmdline)\n    Checking shards-archive v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/archive)\n    Checking shards-devcgroup v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/devcgroup)\n    Checking shards-erofs v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/erofs)\n    Checking shards-user v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/user)\n    Checking shards-dns v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/dns)\n    Checking shards-init v0.1.0 (/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2/crates/init)\nwarning: function `workload_headroom` is never used\n    --> crates/init/src/run.rs:1009:8\n     |\n1009 | pub fn workload_headroom() -> u64 {\n     |        ^^^^^^^^^^^^^^^^^\n     |\n     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `shards-init` (bin \"shards-init\") generated 1 warning\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.66s\n\n",
+    "running": false,
+    "why": "linux/x86_64 · 14 of 32 cores idle · 35 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk · 1 CI jobs",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

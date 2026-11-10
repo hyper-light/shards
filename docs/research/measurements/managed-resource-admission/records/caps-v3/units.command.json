@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v3/target/debug/deps/managed_resource_admission_light-af49216697ca4c33",
+    "admission::tests::",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v3",
+  "timeout_seconds": 180
+}

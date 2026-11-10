@@ -1004,20 +1004,6 @@ pub fn joiner_path(id: impl std::fmt::Display) -> String {
 }
 const WORKLOAD_CGROUP: &str = "/sys/fs/cgroup/run/workload";
 
-/// What the workload's memory limit allows it beyond what it holds, in bytes: none where
-/// it has no limit.
-pub fn workload_headroom() -> u64 {
-    let read = |f: &str| {
-        std::fs::read_to_string(format!("{WORKLOAD_CGROUP}/{f}"))
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-    };
-    match (read("memory.max"), read("memory.current")) {
-        (Some(max), Some(current)) => max.saturating_sub(current),
-        _ => 0,
-    }
-}
-
 /// The cgroup v2 hierarchy (Linux Documentation/admin-guide/cgroup-v2.rst), (D156), as runc gives
 /// a container its own: mounted with `nsdelegate`, so that a cgroup namespace bounds what
 /// its processes may change; the controllers runc sets limits through enabled below the

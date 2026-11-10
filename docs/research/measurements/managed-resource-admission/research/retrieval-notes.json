@@ -1,0 +1,25 @@
+{
+  "observed_failures": [
+    {
+      "url": "https://raw.githubusercontent.com/opencontainers/runc/v1.3.3/libcontainer/cgroups/fs2/pids.go",
+      "outcome": "HTTP404: inspect pinned go.mod and external cgroups v0.0.4 instead"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/opencontainers/runc/v1.3.3/libcontainer/cgroups/fs2/memory.go",
+      "outcome": "HTTP404"
+    },
+    {
+      "url": "https://www.freedesktop.org/software/systemd/man/258/systemd.resource-control.html",
+      "outcome": "web timeout: pinned v258 XML retrieved instead"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/Documentation/admin-guide/cgroup-v2.rst",
+      "outcome": "web content read; subsequent find calls timed out; direct fetch429; refs/tags/v6.18 URL bytes later retrieved and hashed"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/torvalds/linux/v6.18/include/linux/page_counter.h",
+      "outcome": "web content read; direct fetches429, not a retained-file success"
+    }
+  ],
+  "root_state": "No guest/kernel measurement executed by implementer."
+}

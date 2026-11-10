@@ -1,0 +1,10 @@
+{
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "admission": "1 CPU/1 GiB RAM/2 GiB disk; serial; sync:false",
+  "source": "/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v1",
+  "target": "/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v1",
+  "records": "/home/adalundhe/managed-resource-admission-light-cbd392849-caps-v1",
+  "executed": "actual module's eight pure/private ordinary-file unit tests only",
+  "unrun": "actual run_group/Parent admission, kernel controllers/cgroups, full init caller, helper/VM/resource attribution/profile/benchmark/mutation/matrix",
+  "harness_allowance": "dead_code only for unused production entrypoints in the isolated import; production panic/unsafe lints remain enabled"
+}
