@@ -22,5 +22,8 @@ shards-ipc = { path = "../ipc" }
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc.workspace = true
+
 [lints]
 workspace = true
