@@ -125,6 +125,23 @@ seccomp/grant/profile widening may turn those refusals into success. Reconnect
 initial-offset parent approval and the full managed-runtime plan remain separate
 open obligations.
 
+### Source-only trace limitation for the first actual A gate
+
+At c3815e730, tenant_inherited.rs calls release_neighbor at line204, then
+exchange_inherited at223, and only afterward reads member1 canonical End at235.
+The shared tenant_exit.rs helper currently writes release.json at174 with the
+normal/B caption OwnerReleasedNeighborAfterBothMember1Eofs. A has not observed
+those EOFs at that call site. Its independent state record is instead
+sibling-before-child-release.json, followed later by inherited-end.json and raw
+canonical records. The shared caption is not an A EOF witness.
+
+This is a source observation about an unexecuted fixture, not a reproduced live
+A failure. No code fix, assertion waiver or product correction accompanies it.
+ROOT should retain and inspect the actual release/child-reply/suffix/End chronology
+in its first A run before selecting a correction. Any early EOF still must fail
+the exact inherited suffix and canonical-tail assertions. Neither the arithmetic
+passes here nor ROOT's separate normal/B passes close this A trace limitation.
+
 ## R01–R16 accounting
 
 | Rule | Scoped result and remaining gap |
