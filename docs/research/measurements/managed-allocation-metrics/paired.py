@@ -413,9 +413,9 @@ def main(argv=None):
             os.fsync(stream.fileno())
             if verdict["status"] == "Validated":
                 samples.append({"pair": pair, "variant": variant, "metrics": verdict["metrics"]})
-            summary = summarize(samples, args.n)
-            write_json(args.records / f"summary-after-{pair}-{position}.json", summary)
+            write_json(args.records / f"progress-after-{pair}-{position}.json", {"pair": pair, "position": position, "variant": variant, "status": verdict["status"], "validated_samples": len(samples), "samples_requested": 2 * args.n})
             if verdict["status"] != "Validated":
+                summary = summarize(samples, args.n)
                 write_json(args.records / "stopped.json", {"state": "Stopped; no next case", "pair": pair, "variant": variant, "reason": verdict.get("reason"), "cleanup": verdict.get("cleanup"), "partial_summary": summary})
                 return 1
     write_json(args.records / "summary.json", summarize(samples, args.n))

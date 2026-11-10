@@ -89,10 +89,12 @@ sample, blind retry or process-discovery cleanup hides that uncertainty.
 
 Original manifests, selected commands/environment, stdout/stderr, all fixture
 records and a per-case hash list are retained. Each JSONL outcome is flushed
-before another sample, with an immutable partial summary; failure preserves a
+before another sample, with an immutable progress record; failure preserves a
 stopped record. No automatic resume/record overwrite is supported. Source/file
 preflight failure, malformed records and uncertain identity/cleanup stop further
-cases. Out-of-space/uninterruptible host I/O still requires root reconciliation;
+cases. Full quantiles/paired summaries are computed at stop/completion, retaining
+raw values throughout instead of repeatedly summarizing the growing history.
+Out-of-space/uninterruptible host I/O still requires root reconciliation;
 this harness does not promise durable recording through every host failure.
 
 ## Metrics and uncertainty
