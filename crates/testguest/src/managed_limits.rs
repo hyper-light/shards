@@ -198,7 +198,19 @@ impl Child {
             }
             return Err(e.into());
         }
-        let raw = i32::try_from(raw).map_err(|_| Failure::Protocol)?;
+        let raw = match i32::try_from(raw) {
+            Ok(fd) => fd,
+            Err(_) => {
+                // Linux pidfd_open returns an int; retain owned-child cleanup even if
+                // an unexpected syscall result violates that ABI invariant.
+                // SAFETY: the child is held live, unreaped and was created just above.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, std::ptr::null_mut(), 0);
+                }
+                return Err(Failure::Protocol);
+            }
+        };
         // SAFETY: this is a fresh descriptor, owned here alone.
         let pidfd = unsafe { OwnedFd::from_raw_fd(raw) };
         let mut owned = Self {

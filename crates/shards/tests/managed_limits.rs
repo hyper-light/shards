@@ -342,7 +342,12 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     let refused = report(&actor, "refused", Phase::Refused, budget, until);
     assert_eq!(
         (refused.held, refused.reaped, refused.cause, refused.errno),
-        (budget.children, 0, Cause::ForkRefused, libc::EAGAIN)
+        (
+            budget.children,
+            0,
+            Cause::ForkRefused,
+            shards_testguest::limits::LINUX_EAGAIN
+        )
     );
     assert_eq!(
         Report::decode(&receive::<{ Report::BYTES }>(&mut actor_control, until)).unwrap(),

@@ -1,5 +1,9 @@
 //! Fixed test-fixture records shared by the guest actor and its host observer.
 
+/// Linux6.18 include/uapi/asm-generic/errno-base.h, used by both guest architectures.
+/// The host's libc errno can differ (Darwin EAGAIN is not Linux EAGAIN).
+pub const LINUX_EAGAIN: i32 = 11;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     pub tasks: u32,
