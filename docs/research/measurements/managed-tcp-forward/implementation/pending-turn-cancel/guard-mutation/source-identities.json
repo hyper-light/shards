@@ -1,0 +1,157 @@
+{
+  "status": "PROPOSAL_ONLY_NOT_EXECUTED",
+  "frozen_tested_source": "8de7fb74d3e062ca73bc587c8d6328e253f00365",
+  "frozen_evidence": "a9fbc9d153aed2b8edd09b90b84d605fc7f4e0fb",
+  "base_main": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "readback_seq": 7041,
+  "role": "implementer + assigned adversarial relay tester",
+  "owned_paths": [
+    "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/guard-mutation/PROPOSAL.md",
+    "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/guard-mutation/observe-complete-suffix.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/guard-mutation/remove-one-admission-guard.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/guard-mutation/source-identities.json"
+  ],
+  "patches": [
+    {
+      "patch": "observe-complete-suffix.patch",
+      "bytes": 2382,
+      "sha256": "e3ad3c14258df4d7d4c9fb29a404f54a08c09c454f5020113373edb4132b239d",
+      "source_path": "crates/init/src/relay/turn_native.rs",
+      "preimage_sha256": "28f4004ac35b3a00941a9aeb49993fcb53cd3250f6fbd213c9b572d5e9640f6a",
+      "proposed_postimage_sha256": "8b3ab148bbf22686abbead9d849032dcecdcc54e5169caefb37d07a1a4dcfc6c",
+      "applied_to_checkout": false
+    },
+    {
+      "patch": "remove-one-admission-guard.patch",
+      "bytes": 613,
+      "sha256": "e30307fef8a03e89fa4adf05939a07b5654e7b6224444b7255faece789629031",
+      "source_path": "crates/init/src/relay.rs",
+      "preimage_sha256": "94bf80f0e463ca6dde91ba4551a067aa7b4cd550751889ad46420bc938f1e576",
+      "proposed_postimage_sha256": "161bfd91a895ce9ff3bbd850063929195920b54280dc95d02aec3e7d3691e836",
+      "applied_to_checkout": false
+    }
+  ],
+  "driver_unchanged": {
+    "path": "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/native_case.py",
+    "bytes": 11469,
+    "sha256": "e8c06dd2aa035ce829b1b30964781a628ef3cfe315750a9d993150fa5d7b1bf0"
+  },
+  "baseline_source_closure": [
+    {
+      "path": "crates/init/src/engine.rs",
+      "bytes": 6484,
+      "sha256": "050266736a4d86632a094e9f738ca92a4d2815b0d3b919de34146fdaedebcf8d"
+    },
+    {
+      "path": "crates/init/src/relay.rs",
+      "bytes": 22893,
+      "sha256": "94bf80f0e463ca6dde91ba4551a067aa7b4cd550751889ad46420bc938f1e576"
+    },
+    {
+      "path": "crates/testguest/src/managed_network.rs",
+      "bytes": 39798,
+      "sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "bytes": 36683,
+      "sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "bytes": 83468,
+      "sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa"
+    },
+    {
+      "path": "crates/shards/tests/managed_network/tcp_forward.rs",
+      "bytes": 9354,
+      "sha256": "9ce3ca4d1d20a4f47c777daeca792c09536b743d738ad76cacc55eab830a97e6"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/engine-native/original_body.rs",
+      "bytes": 897,
+      "sha256": "f5d78a8638d209c1ccacda3f0b2bd17f7df8ba992a08d2265b2d45af245961a5"
+    },
+    {
+      "path": "crates/init/src/relay/turn_native.rs",
+      "bytes": 17327,
+      "sha256": "28f4004ac35b3a00941a9aeb49993fcb53cd3250f6fbd213c9b572d5e9640f6a"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/native_case.py",
+      "bytes": 11469,
+      "sha256": "e8c06dd2aa035ce829b1b30964781a628ef3cfe315750a9d993150fa5d7b1bf0"
+    },
+    {
+      "path": "Cargo.toml",
+      "bytes": 3885,
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+    },
+    {
+      "path": "Cargo.lock",
+      "bytes": 45993,
+      "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+    },
+    {
+      "path": "clippy.toml",
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    {
+      "path": ".cargo/config.toml",
+      "bytes": 1094,
+      "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+    },
+    {
+      "path": "rustfmt.toml",
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    }
+  ],
+  "prospective_runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "prospective_root": "/home/adalundhe/relay-turn-pending-cancel-guard-0342-v1",
+  "prospective_paths": [
+    "source",
+    "check",
+    "target",
+    "cargo-home",
+    "record",
+    "artifacts",
+    "cases"
+  ],
+  "prospective_root_created": false,
+  "prospective_bounds": {
+    "cpu": 2,
+    "memory_bytes": 2147483648,
+    "disk_bytes": 4294967296,
+    "outer_seconds": 600,
+    "cargo_jobs": 2,
+    "case_ms": 30000,
+    "parent_ms": 45000,
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "approval_required_before_compile_or_actors": true,
+  "mutation_run": false,
+  "native_run": false,
+  "compile_run": false,
+  "vm_run": false,
+  "physical_kernel_caps": "Unverified",
+  "population_kernel_return": "Unknown",
+  "preparation_checks": {
+    "git_apply_check_both_unapplied_patches": 0,
+    "mechanical_development_policy": 0,
+    "native_compile_or_mutation": false,
+    "actual_local_free_kib": 179558420,
+    "source_lookup_miss": {
+      "command": "cat docs/research/measurements/managed-tcp-forward/implementation/turn-pressure/NEXT.md",
+      "status": 1,
+      "reason": "historical file intentionally absent from current selected checkout; original df7 Git blob subsequently read0",
+      "native_test_outcome": false
+    },
+    "frozen_source_closure_14_unchanged": true,
+    "both_patch_identities_unchanged": true,
+    "staged_diff_check": 0,
+    "unapplied_patches_only": true
+  }
+}

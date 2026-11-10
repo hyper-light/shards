@@ -1,0 +1,44 @@
+--- a/crates/init/src/relay/turn_native.rs
++++ b/crates/init/src/relay/turn_native.rs
+@@ -305,16 +305,37 @@
+             progress.partial_writes,
+         );
+         drop(output);
+         let mut probe = [0u8; 1];
+         // This independent trusted observer retains the SAME original at.
+         // Forwarding still used the real pending cancel FD; it was not consumed.
+-        let observed = original.io(backend.as_raw_fd(), libc::POLLIN, || backend.read(&mut probe));
+-        if let Ok(n) = observed.as_ref() {
+-            bytes_record("CancelledBackendProbe", probe.get(..*n).unwrap());
+-        }
++        let probe_calls = retained.pending.checked_add(probe.len()).unwrap();
++        if probe_calls > received.len() {
++            return Err(Failure::Check(
++                "pending suffix plus terminal probe exceeds existing receipt storage",
++            ));
++        }
++        let mut probe_bytes = 0usize;
++        let mut observed = None;
++        // Reuse the already recorded prefill storage. Each continuation retains
++        // an actual byte; the final extra read must witness EOF, not infer it.
++        for _ in 0..probe_calls {
++            let result = original.io(backend.as_raw_fd(), libc::POLLIN, || backend.read(&mut probe));
++            if let Ok(n) = result.as_ref() {
++                let end = probe_bytes.checked_add(*n).unwrap();
++                received.get_mut(probe_bytes..end).unwrap().copy_from_slice(probe.get(..*n).unwrap());
++                probe_bytes = end;
++            }
++            let stop = !matches!(&result, Ok(n) if *n > 0);
++            observed = Some(result);
++            if stop {
++                break;
++            }
++        }
++        let observed = observed.ok_or(Failure::Check("no actual backend observation"))?;
++        bytes_record("CancelledBackendProbe", received.get(..probe_bytes).unwrap());
+         let eof = match &observed {
+             Ok(n) => n.to_string(),
+             Err(_) => "null".to_owned(),
+         };
+         println!(
+             "managed-tcp-forward {{\"type\":\"NativeTurnCancelTerminal\",\"eof_read\":{eof},\"eof_error_kind\":\"{:?}\",\"prefill_bytes\":{accepted},\"source_accepted\":{},\"read\":{},\"written\":{},\"pending\":{},\"sent\":{},\"extra_consumed\":{},\"half\":\"{:?}\",\"would_block\":{},\"write_would_block\":{},\"partial_writes\":{},\"typed_cancelled\":{}}}",
