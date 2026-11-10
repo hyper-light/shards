@@ -134,12 +134,71 @@ fn run(args: &[OsString]) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+struct NativeIo {
+    kind: io::ErrorKind,
+    code: Option<i32>,
+}
+
+impl From<io::Error> for NativeIo {
+    fn from(error: io::Error) -> Self {
+        Self {
+            kind: error.kind(),
+            code: error.raw_os_error(),
+        }
+    }
+}
+
+impl std::fmt::Display for NativeIo {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(out, "{:?} (OS {:?})", self.kind, self.code)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HelperOperation {
+    Executable,
+    Channel,
+    Fork,
+    ReadFlags,
+    SetNonblocking,
+    Receive,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HelperFailure {
+    Io {
+        operation: HelperOperation,
+        cause: NativeIo,
+    },
+    Ended,
+}
+
+impl HelperFailure {
+    fn io(operation: HelperOperation, error: io::Error) -> Self {
+        Self::Io {
+            operation,
+            cause: error.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for HelperFailure {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { operation, cause } => write!(out, "helper {operation:?}: {cause}"),
+            Self::Ended => out.write_str("the helper ended"),
+        }
+    }
+}
+
 /// Starts code mode's helper (D136): this binary again, `shards-server sandbox`, its control
 /// socket the one end of a pair at [`sandbox::CONTROL_FD`], and no other descriptor, no
 /// variable of the environment and none of this process's memory; the other end, this
 /// process's.
-fn spawn_helper() -> Result<OwnedFd, String> {
-    let exe = std::fs::File::open("/proc/self/exe").map_err(|e| format!("its own binary: {e}"))?;
+fn spawn_helper() -> Result<OwnedFd, HelperFailure> {
+    let exe = std::fs::File::open("/proc/self/exe")
+        .map_err(|error| HelperFailure::io(HelperOperation::Executable, error))?;
     let mut fds = [0 as RawFd; 2];
     // SAFETY: socketpair(2) into a two-element array.
     if unsafe {
@@ -151,7 +210,10 @@ fn spawn_helper() -> Result<OwnedFd, String> {
         )
     } != 0
     {
-        return Err(format!("its helper's socket: {}", io::Error::last_os_error()));
+        return Err(HelperFailure::io(
+            HelperOperation::Channel,
+            io::Error::last_os_error(),
+        ));
     }
     // SAFETY: both were just made, and are owned here alone.
     let (ours, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
@@ -160,7 +222,10 @@ fn spawn_helper() -> Result<OwnedFd, String> {
     // SAFETY: fork(2) of this process, which runs no other thread yet; the child calls only
     // async-signal-safe functions before it execs or exits.
     match unsafe { libc::fork() } {
-        -1 => Err(format!("its helper: {}", io::Error::last_os_error())),
+        -1 => Err(HelperFailure::io(
+            HelperOperation::Fork,
+            io::Error::last_os_error(),
+        )),
         0 => {
             // SAFETY: the child moves its two descriptors past every other's, then to 3
             // and 4 (dup2 clears CLOEXEC), closes the rest, and execs its binary.
@@ -195,7 +260,7 @@ fn spawn_helper() -> Result<OwnedFd, String> {
 /// Code mode's programs (D136): the helper's control socket, or why there is none; and each
 /// program running, awaited by the connection that asked for it.
 pub struct Programs {
-    control: Result<OwnedFd, String>,
+    control: Result<OwnedFd, HelperFailure>,
     next: u64,
     running: Vec<Program>,
     /// Programs let go of, by their connection and request ID, whose connections are yet to
@@ -221,20 +286,20 @@ struct Program {
 
 #[derive(Debug)]
 enum ProgramAdmission {
-    Unavailable,
+    Unavailable(HelperFailure),
     IdentityExhausted,
     Deadline,
     Expired,
     Capacity,
     Frame(sandbox::FrameFailure),
-    Socket(io::Error),
-    Release(io::Error),
+    Socket(NativeIo),
+    Release(NativeIo),
 }
 
 impl std::fmt::Display for ProgramAdmission {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unavailable => out.write_str("code mode is not available here"),
+            Self::Unavailable(cause) => write!(out, "code mode is not available here: {cause}"),
             Self::IdentityExhausted => out.write_str("code mode's execution identities are exhausted"),
             Self::Deadline => out.write_str("the program's deadline is not representable"),
             Self::Expired => out.write_str("the program's deadline expired before worker release"),
@@ -252,11 +317,25 @@ struct PreparedProgram {
 }
 
 impl Programs {
-    pub fn new(control: Result<OwnedFd, String>) -> Programs {
-        if let Ok(c) = &control {
-            // SAFETY: fcntl(2) of a descriptor of ours.
-            unsafe { libc::fcntl(c.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
-        }
+    fn new(control: Result<OwnedFd, HelperFailure>) -> Programs {
+        let control = control.and_then(|control| {
+            // SAFETY: the descriptor remains owned throughout native flag setup.
+            let flags = unsafe { libc::fcntl(control.as_raw_fd(), libc::F_GETFL) };
+            if flags < 0 {
+                return Err(HelperFailure::io(
+                    HelperOperation::ReadFlags,
+                    io::Error::last_os_error(),
+                ));
+            }
+            // SAFETY: preserve native status flags while enabling readiness-based control.
+            if unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+                return Err(HelperFailure::io(
+                    HelperOperation::SetNonblocking,
+                    io::Error::last_os_error(),
+                ));
+            }
+            Ok(control)
+        });
         Programs {
             control,
             next: 0,
@@ -312,8 +391,10 @@ impl Programs {
             .transpose()?;
         let write =
             sandbox::prepare_frame(sandbox::PROGRAM, code.as_bytes()).map_err(ProgramAdmission::Frame)?;
-        let (socket, peer) = UnixStream::pair().map_err(ProgramAdmission::Socket)?;
-        socket.set_nonblocking(true).map_err(ProgramAdmission::Socket)?;
+        let (socket, peer) = UnixStream::pair().map_err(|error| ProgramAdmission::Socket(error.into()))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|error| ProgramAdmission::Socket(error.into()))?;
         Ok(PreparedProgram {
             program: Program {
                 id,
@@ -343,7 +424,7 @@ impl Programs {
         let control = self
             .control
             .as_ref()
-            .map_err(|_| ProgramAdmission::Unavailable)?
+            .map_err(|cause| ProgramAdmission::Unavailable(*cause))?
             .as_raw_fd();
         let prepared = self.prepare(code, timeout, conn, session, rpc_id, modern)?;
         if prepared
@@ -364,7 +445,7 @@ impl Programs {
             *slot = byte;
         }
         sandbox::send_control(control, &run, Some(prepared.peer.as_raw_fd()))
-            .map_err(ProgramAdmission::Release)?;
+            .map_err(|error| ProgramAdmission::Release(error.into()))?;
         // prepare reserved this slot, with no intervening mutation of the owned vector.
         self.running.push(prepared.program);
         Ok(id)
@@ -948,12 +1029,12 @@ fn run_programs(
                     }
                 }
                 Ok(None) => {
-                    programs.control = Err("its helper ended".into());
+                    programs.control = Err(HelperFailure::Ended);
                     break;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => {
-                    programs.control = Err(format!("its helper's socket: {e}"));
+                    programs.control = Err(HelperFailure::io(HelperOperation::Receive, e));
                     break;
                 }
             }
@@ -1946,13 +2027,7 @@ mod tests {
             .collect();
         for (dir, label) in dirs.iter().zip(["agent x", "agent y"]) {
             let p = prepare(dir, label, gid).unwrap();
-            std::thread::spawn(move || {
-                serve(
-                    &p,
-                    &mut Vec::new(),
-                    Programs::new(Err("none in this test".into())),
-                )
-            });
+            std::thread::spawn(move || serve(&p, &mut Vec::new(), Programs::new(Err(HelperFailure::Ended))));
         }
         let ask = |socket: &str, creds: Option<&str>| -> Result<String, String> {
             let ca = CertificateDer::from_pem_file(format!("{socket}/ca.pem")).map_err(|e| e.to_string())?;
@@ -2215,7 +2290,7 @@ mod tests {
     }
 
     fn no_programs() -> Programs {
-        Programs::new(Err("none in this test".into()))
+        Programs::new(Err(HelperFailure::Ended))
     }
 
     /// A request's answer, which comes now, its head and body.
@@ -2493,7 +2568,7 @@ mod tests {
 
     #[test]
     fn a_typed_program_refusal_formats_without_requesting_storage() {
-        let failure = ProgramAdmission::Socket(io::Error::from_raw_os_error(libc::EMFILE));
+        let failure = ProgramAdmission::Socket(io::Error::from_raw_os_error(libc::EMFILE).into());
         let mut storage = [0u8; 512]; // Caller-owned fixture display space, not a runtime bound.
         let mut out = io::Cursor::new(storage.as_mut_slice());
         let (result, allocations) =
