@@ -5835,8 +5835,8 @@ fn managed_capture_inherit_stdio(
                 }
             },
             ManagedInheritedParent::HeldPidfd(child, fd) => {
-                // SAFETY: close only this parent's own stdout; child inherited its writer at spawn.
-                if unsafe { libc::close(libc::STDOUT_FILENO) } != 0 {
+                // Mutation: omit own close; retain the closed-slot guard before release.
+                if false {
                     return managed_capture_inherited_cleanup(
                         ManagedInheritedStage::CloseStdout,
                         io::Error::last_os_error(),
