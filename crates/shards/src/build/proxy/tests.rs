@@ -222,7 +222,7 @@ fn exchange(socket: &Path, raw: &[u8], until: Option<&[u8]>) -> Vec<u8> {
 #[test]
 #[ignore = "native wait-cost measurement: docs/research/measurements/proxy-capacity/run.sh"]
 fn proxy_capacity_wait_costs() {
-    fn usage(tid: libc::pid_t) -> (u64, u64, u64, u64) {
+    fn usage(tid: libc::pid_t) -> (u64, u64, u64, u64, Option<u64>) {
         let status = std::fs::read_to_string(format!("/proc/self/task/{tid}/status")).unwrap();
         let switches = status
             .lines()
@@ -231,8 +231,18 @@ fn proxy_capacity_wait_costs() {
         let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat")).unwrap();
         let fields: Vec<_> = stat.rsplit_once(')').unwrap().1.split_whitespace().collect();
         let ticks = fields[11].parse::<u64>().unwrap() + fields[12].parse::<u64>().unwrap();
-        (switches, ticks, fields[7].parse().unwrap(), fields[9].parse().unwrap())
+        let cpu = std::fs::read_to_string(format!("/proc/self/task/{tid}/schedstat"))
+            .ok()
+            .and_then(|line| line.split_whitespace().next()?.parse().ok());
+        (
+            switches,
+            ticks,
+            fields[7].parse().unwrap(),
+            fields[9].parse().unwrap(),
+            cpu,
+        )
     }
+    let descriptors = || std::fs::read_dir("/proc/self/fd").unwrap().count();
     let n = std::env::var("SHARDS_PROXY_SAMPLES")
         .map(|n| n.parse::<usize>().unwrap())
         .unwrap_or(20);
@@ -243,6 +253,7 @@ fn proxy_capacity_wait_costs() {
     );
     let require_idle = std::env::var_os("SHARDS_PROXY_REQUIRE_IDLE").is_some();
     for iteration in 0..n {
+        let before_fds = descriptors();
         let dir = scratch("capacity");
         let mut proxy = Proxy::new(
             crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
@@ -250,11 +261,13 @@ fn proxy_capacity_wait_costs() {
         )
         .unwrap();
         proxy.connections = 1;
-        let (session, questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
+        let (session, questions) =
+            Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
         let (stop, stopped) = UnixStream::pair().unwrap();
         let (identity, identified) = mpsc::channel();
         let (ended, end) = mpsc::channel();
         let mut wakeups = 0;
+        let mut cpu_ticks = 0;
         std::thread::scope(|scope| {
             let (session, stopped) = (&session, &stopped);
             std::thread::Builder::new()
@@ -280,8 +293,13 @@ fn proxy_capacity_wait_costs() {
                 std::thread::sleep(sample);
                 let after = usage(tid);
                 let elapsed = began.elapsed();
+                let waiting = std::fs::read_to_string(format!("/proc/self/task/{tid}/wchan")).unwrap();
                 wakeups = after.0 - before.0;
-                assert!(matches!(questions.asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                cpu_ticks = after.1 - before.1;
+                assert!(matches!(
+                    questions.asks.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
                 assert_eq!(session.live.lock().unwrap().1.len(), proxy.connections);
                 let released = Instant::now();
                 first_question.answer(false);
@@ -294,28 +312,46 @@ fn proxy_capacity_wait_costs() {
                 drop(stop);
                 end.recv_timeout(Duration::from_secs(5)).unwrap();
                 let stop_time = stopped_at.elapsed();
-                assert!(matches!(questions.asks.try_recv(), Err(mpsc::TryRecvError::Empty)));
+                assert!(matches!(
+                    questions.asks.try_recv(),
+                    Err(mpsc::TryRecvError::Empty)
+                ));
                 second_question.answer(false);
                 drop(queued);
                 drop(next);
-                println!("PROXY_CAPACITY_SAMPLE {}", serde_json::json!({
-                    "iteration": iteration,
-                    "sample_ns": elapsed.as_nanos(),
-                    "voluntary_switches": wakeups,
-                    "cpu_ticks": after.1 - before.1,
-                    "minor_faults": after.2 - before.2,
-                    "major_faults": after.3 - before.3,
-                    "refill_ns": refill.as_nanos(),
-                    "stop_ns": stop_time.as_nanos(),
-                }));
+                println!(
+                    "PROXY_CAPACITY_SAMPLE {}",
+                    serde_json::json!({
+                        "iteration": iteration,
+                        "sample_ns": elapsed.as_nanos(),
+                        "waiting": waiting.trim(),
+                        "voluntary_switches": wakeups,
+                        "cpu_ticks": cpu_ticks,
+                        "cpu_ns": after.4.zip(before.4).map(|(after, before)| after - before),
+                        "minor_faults": after.2 - before.2,
+                        "major_faults": after.3 - before.3,
+                        "fds_before": before_fds,
+                        "fds_live": descriptors(),
+                        "refill_ns": refill.as_nanos(),
+                        "stop_ns": stop_time.as_nanos(),
+                    })
+                );
             }));
             session.end();
             drop(questions);
             result.unwrap_or_else(|p| std::panic::resume_unwind(p));
         });
         assert!(session.live.lock().unwrap().1.is_empty());
+        drop(session);
+        drop(stopped);
+        drop(proxy);
+        assert_eq!(descriptors(), before_fds, "a proxy session retained descriptors");
         if require_idle {
-            assert_eq!(wakeups, 0, "a full proxy repeatedly woke without completion or stop");
+            assert_eq!(
+                wakeups, 0,
+                "a full proxy repeatedly woke without completion or stop"
+            );
+            assert_eq!(cpu_ticks, 0, "a full proxy spent CPU without completion or stop");
         }
     }
 }
