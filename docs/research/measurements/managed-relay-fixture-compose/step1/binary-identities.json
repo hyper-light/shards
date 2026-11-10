@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/home/adalundhe/managed-relay-compose-pending-light-v1/guest/target/debug/deps/sock_addr_pure-999c57c849ce9536",
+    "bytes": 10699512,
+    "sha256": "4810b633f49914462152c6fb3976eccb600573054cc6e3f870d0267b007738fd"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-compose-pending-light-v1/guest/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-fbe4e6f526c684d9",
+    "bytes": 10810888,
+    "sha256": "b8d0dbe7b37e36e94f4078fca10499de6c044e708d14c378f1e3d52757a0fdf1"
+  }
+]

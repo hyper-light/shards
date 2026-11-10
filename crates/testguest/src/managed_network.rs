@@ -241,6 +241,27 @@ impl Deadline {
     fn io<T>(&self, fd: RawFd, events: i16, mut operation: impl FnMut() -> io::Result<T>) -> io::Result<T> {
         loop {
             self.left()?;
+            if let Some(cancel) = self.cancel {
+                if cancel < 0 {
+                    return Err(io::ErrorKind::InvalidInput.into());
+                }
+                let mut ready = libc::pollfd {
+                    fd: cancel,
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: one initialized pollfd, checked without consuming its
+                // event. Admission covers pending cancel, not a later check/I/O race.
+                if unsafe { libc::poll(&raw mut ready, 1, 0) } < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                self.left()?;
+                Self::cancellation_event(ready.revents)?;
+            }
             match operation() {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -263,16 +284,35 @@ impl Deadline {
             ];
             // SAFETY: poll reads/fills this array; negative descriptors are ignored.
             let result = unsafe { libc::poll(poll.as_mut_ptr(), poll.len() as _, timeout) };
-            if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return Err(io::Error::last_os_error());
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
             }
-            if poll.last().is_some_and(|p| p.revents != 0) {
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "paired peer failed",
-                ));
-            }
+            // Original expiry wins if time and cancellation are both observed.
+            self.left()?;
+            Self::cancellation_event(poll.last().map_or(0, |p| p.revents))?;
         }
+    }
+
+    fn cancellation_event(revents: i16) -> io::Result<()> {
+        if revents == 0 {
+            return Ok(());
+        }
+        let kind = if revents & libc::POLLNVAL != 0 {
+            io::ErrorKind::InvalidInput
+        } else if revents & libc::POLLERR != 0 {
+            io::ErrorKind::Other
+        } else if revents & libc::POLLHUP != 0 {
+            io::ErrorKind::BrokenPipe
+        } else if revents & !libc::POLLIN == 0 {
+            io::ErrorKind::ConnectionAborted
+        } else {
+            io::ErrorKind::Other
+        };
+        Err(kind.into())
     }
 }
 
@@ -941,6 +981,64 @@ fn config_status<'a>(text: &'a str, name: &str) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_readiness_failures_never_admit_an_operation_or_mask_as_cancel() {
+        assert!(Deadline::cancellation_event(0).is_ok());
+        for (flags, kind) in [
+            (libc::POLLIN, io::ErrorKind::ConnectionAborted),
+            (libc::POLLNVAL, io::ErrorKind::InvalidInput),
+            (libc::POLLHUP, io::ErrorKind::BrokenPipe),
+            (libc::POLLERR, io::ErrorKind::Other),
+            (libc::POLLNVAL | libc::POLLIN, io::ErrorKind::InvalidInput),
+            (libc::POLLHUP | libc::POLLIN, io::ErrorKind::BrokenPipe),
+            (libc::POLLERR | libc::POLLIN, io::ErrorKind::Other),
+            (libc::POLLOUT, io::ErrorKind::Other),
+            (libc::POLLOUT | libc::POLLIN, io::ErrorKind::Other),
+        ] {
+            assert_eq!(Deadline::cancellation_event(flags).unwrap_err().kind(), kind);
+        }
+    }
+
+    #[test]
+    fn original_expiry_precedes_cancel_validation_and_invalid_cancel_stops_before_io() {
+        let expired = Deadline {
+            at: Instant::now(),
+            cancel: Some(-1),
+        };
+        let mut attempts = 0;
+        let result: io::Result<()> = expired.io(-1, libc::POLLIN, || {
+            attempts += 1;
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(attempts, 0);
+        let mut valid = Deadline::new(Duration::from_secs(1)).unwrap();
+        valid.cancel = Some(-1);
+        let result: io::Result<()> = valid.io(-1, libc::POLLIN, || {
+            attempts += 1;
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(attempts, 0);
+    }
+
+    #[test]
+    fn interrupted_operation_retries_under_the_same_original_deadline() {
+        let deadline = Deadline::new(Duration::from_secs(1)).unwrap();
+        let original = deadline.at;
+        let mut attempts = 0;
+        let result = deadline.io(-1, libc::POLLIN, || {
+            attempts += 1;
+            if attempts == 1 {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                Ok(attempts)
+            }
+        });
+        assert_eq!(result.unwrap(), 2);
+        assert_eq!(deadline.at, original);
+    }
 
     #[test]
     fn borrowed_receive_view_preserves_reported_extent_and_metadata_error() {

@@ -1,0 +1,14 @@
+{
+  "parents": [
+    "a343f772d35520ede462dd45e69c3460127146ca",
+    "cd5d7212cc61e9196b5afe7a3e2891ba60a74529"
+  ],
+  "conflict": "parser command list only; preserve backend-end/extra commands and correctedDeadline",
+  "proof": "Fedora ~/managed-relay-compose-pending-light-v1",
+  "admission": "Kiln1CPU1GiB2GiB; not hardbudget",
+  "scope": "policy/format0,41GNU+41muslpure0,bothscopedlints0; noevent/socket/VM/profile",
+  "Deadline_identical_to_cd5_sha256": "bf265cb4b5d2bf0de097644c75935d932684aeb67d980641d4e87e94a2ca4c43",
+  "transport_sha256": "f40253bcd6030f9dffdbd9a84e493ddb822756531a1fefe6851c74febbc4ad08",
+  "transport_bytes": 9795,
+  "all_members_verified": true
+}
