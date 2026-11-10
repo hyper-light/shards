@@ -1,0 +1,11 @@
+{
+  "stage": "bootstrap was rejected before creation/upload/compilation",
+  "tag": "bc381c013-caller-v1",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "envelope": "1CPU/1GiB RAM/2GiB disk",
+  "result": "machines.run ok:false, zero of32 cores idle, under1CPU",
+  "actual_job_handle": null,
+  "created_caller_paths": [],
+  "source_input_preserved": "caller-v1-input.json and caller-v1-input.tar.gz",
+  "limits": "Not a compile/kernel refusal or verified live wait; no source/target deletion, no restart on observation timeout"
+}

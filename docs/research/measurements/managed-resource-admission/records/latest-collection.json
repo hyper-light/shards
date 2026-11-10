@@ -1,0 +1,34 @@
+[
+  {
+    "key": "caps-v4",
+    "records": "/home/adalundhe/managed-resource-admission-light-cbd392849-caps-v4",
+    "archive": "/home/adalundhe/managed-resource-admission-light-cbd392849-caps-v4.tar.gz",
+    "bytes": 5615,
+    "sha256": "a6c6adcd6d25f932af41cc0eb0da0d4b5a520b1f41a15b7d422b493288df0f23",
+    "members": 19,
+    "binary": {
+      "path": "/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v4/target/debug/deps/managed_resource_admission_light-af49216697ca4c33",
+      "bytes": 7442688,
+      "sha256": "5ed8301e84def8b1df5dfafc17a25fac31b912b2dac1552f26a38d86a6f3bcc8"
+    },
+    "units": "\nrunning 9 tests\ntest admission::tests::controller_words_are_exact_and_io_failure_is_not_availability ... ok\ntest admission::tests::diagnostic_fragments_never_grow_the_reserved_string ... ok\ntest admission::tests::memory_readback_uses_kernel_page_rounding_and_max_sentinel ... ok\ntest admission::tests::missing_malformed_and_mismatched_controls_are_refusals ... ok\ntest admission::tests::names_never_resolve_outside_the_held_parent ... ok\ntest admission::tests::prepared_commit_holds_objects_and_transfer_preserves_ownership ... ok\ntest admission::tests::pressure_arithmetic_does_not_invent_a_reservation ... ok\ntest admission::tests::scalar_values_preserve_zero_max_and_overflow ... ok\ntest admission::tests::unused_new_groups_roll_back_without_removing_existing_or_nonempty_objects ... ok\n\ntest result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+    "outcomes": {
+      "build": 0,
+      "units": 0,
+      "clippy": 0
+    },
+    "check_exit": null
+  },
+  {
+    "key": "caller-v2",
+    "records": "/home/adalundhe/managed-resource-admission-light-5f131376e-caller-v2",
+    "archive": "/home/adalundhe/managed-resource-admission-light-5f131376e-caller-v2.tar.gz",
+    "bytes": 14816,
+    "sha256": "2c28c08afdd9322913544920bd90c8b890ed8791e7ff09534086a8fedd8a87a6",
+    "members": 9,
+    "binary": null,
+    "units": null,
+    "outcomes": null,
+    "check_exit": "0\n"
+  }
+]

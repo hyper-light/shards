@@ -1,0 +1,32 @@
+{
+  "kind": "source-contract facts, not runtime samples or admitted reservations",
+  "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "role": "implementer",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "public_contract": [
+    {"path": "docs/architecture/AGENTFILE_ARCH.md", "lines": [885, 889], "meaning": "process cap/default VM cap until measured default; no reserved task guarantee"},
+    {"path": "docs/architecture/AGENTFILE_ARCH.md", "lines": [921, 923], "meaning": "artifact memory self-limit includes scratch under aggregate D59; no owner min grant"}
+  ],
+  "actual_fields": {
+    "Domain.pids": "Option<u64> existing cap; None and Some(0) remain distinct",
+    "Domain.memory": "Option<u64> existing self-cap; None and Some(0) remain distinct",
+    "Resources.memory": "workload max, or high under existing oom-kill-disable semantics",
+    "Resources.memory_reservation": "existing memory.low best-effort protection",
+    "Spec.cgroup": "existing controller FILE=VALUE settings, not a typed guaranteed owner claim",
+    "builtin.ROOM": "signed reclaim/hold headroom, not a reservation grant",
+    "D59.workload_remainder": "separate checked cap/current observation for unchanged pressure calculation"
+  },
+  "typed_guaranteed_owner_producer": "Absent: explicitly confirmed by ROOT; ROOT owns new P0 checked owner-policy producer design",
+  "strict_guarantee_status": "Unsupported until checked authority and required hard support exist; no public flag/manifest/hook/unused ledger added",
+  "runtime_data": {
+    "parent_hard_caps": null,
+    "parent_min_low": null,
+    "guaranteed_available": null,
+    "reserved": null,
+    "control_charge": null,
+    "induced_parent_kernel_charge": null
+  },
+  "runtime_data_semantics": "Unmeasured/unavailable, never numeric zero or grant success",
+  "actor_release_or_actual_guarantee_witness": null,
+  "scope_ownership": "Own new init domains/admission.rs and narrow domains.rs cgroup resource sites. ROOT owns run/Programs/RUN/SCM_RIGHTS, P0 normalization, actual guest/kernel gates and all profiles/benchmarks."
+}

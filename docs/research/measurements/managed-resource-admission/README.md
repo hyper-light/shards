@@ -15,6 +15,22 @@ global handoff. This lane remains implementation/light only; no children/goals.
 
 ## Actual production path
 
+Latest follow-up source `5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7` adds a
+checked diagnostic writer: every fragment fits actual remaining String capacity
+before push; formatting failure discards partial output. Build0, nine pure/private
+units0 and isolated Clippy0, plus actual full init binary-target cargo check0.
+The latter emits one obsolete `run::workload_headroom` warning; ROOT owns that
+unassigned site, so actual full-caller Clippy is not claimed. No linking/helper/
+init/controller/VM execution follows from this typecheck. Exact source, commands,
+capacity-fault unit and original archives are in `records/caps-v4/`,
+`records/caller-v2/` and `records/formatter-proof.json`.
+
+[P0 authority trace](AUTHORITY.md) includes the exact public cap/self-limit
+contract at AGENTFILE_ARCH.md:885–889 and921–923, the real run/workload/ROOM
+producers, concrete capability prototype and explicit absence of a checked
+guaranteed-claim producer. ROOT owns that producer/normalization decision; this
+checkpoint adds no guarantee hook, flag or ledger.
+
 `domains::start` now calls the new `domains/admission.rs`: hold the existing run
 directory, verify cgroup2 and required controllers, enable/read back the domain
 subtree, then apply/read back the existing aggregate pressure and swap settings.

@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"outcomes\": {\"build\": 0, \"units\": 0, \"clippy\": 0}, \"records\": \"/home/adalundhe/managed-resource-admission-light-cbd392849-caps-v4\", \"source\": \"/home/adalundhe/managed-resource-admission-source-cbd392849-caps-v4\", \"binary\": {\"path\": \"/home/adalundhe/managed-resource-admission-target-cbd392849-caps-v4/target/debug/deps/managed_resource_admission_light-af49216697ca4c33\", \"bytes\": 7442688, \"sha256\": \"5ed8301e84def8b1df5dfafc17a25fac31b912b2dac1552f26a38d86a6f3bcc8\"}, \"raw_files\": 19}\n",
+    "running": false,
+    "why": "linux/x86_64 · 4 of 32 cores idle · 34 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk · 1 CI jobs",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

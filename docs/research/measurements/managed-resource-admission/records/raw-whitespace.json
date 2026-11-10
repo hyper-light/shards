@@ -10,7 +10,8 @@
   "later_exit_code": 2,
   "later_original_libtest_files": [
     {"path": "records/caps-v2/units.log", "line": 13, "classification": "original libtest final blank line"},
-    {"path": "records/caps-v3/units.log", "line": 13, "classification": "original libtest final blank line"}
+    {"path": "records/caps-v3/units.log", "line": 13, "classification": "original libtest final blank line"},
+    {"path": "records/caps-v4/units.log", "line": 14, "classification": "original libtest final blank line"}
   ],
   "source_and_other_evidence_check": "Recorded separately with exactly this raw source excluded; no production scope exception."
 }

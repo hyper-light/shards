@@ -1,5 +1,64 @@
 # Resource admission implementation handoff
 
+LATEST VERIFIED SOURCE: signed/pushed5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7,
+moduleSHA6d478025241a340b2eb4bcf4ef420c192ea64c5089c512b911ffdcd74fc2421f;
+domainsSHA1e61unchanged. Actual private GNU build0/NINEunits0fail0filtered/
+Clippy0 on newowncaps-v4. Exact capacity-fault test verifies refused excess fmt
+fragment without String len/cap growth, plusUTF8 label. NOT allocator-OOM injection.
+Binary7,442,688B SHA5ed8301e84def8b1df5dfafc17a25fac31b912b2dac1552f26a38d86a6f3bcc8
+at own-target-cbd392849-caps-v4/.../managed_resource_admission_light-af49216697ca4c33.
+
+REAL INIT binary-target cargoCHECK0 on same5f131 source, NEW own5f131376e-caller-v2
+source/target/log; no linking/init/controller/VM execution. It emits one actual
+warning: run.rs::workload_headroom1009 nowunused (sole olddomaincaller replaced).
+ROOT was asked to remove17-line obsolete helper orassignexact site; DO NOT edit
+unownedrun.rs or insert suppression/dummy reads. FullactualcallerClippy UNRUN,
+notgreen. Exact19unit+9caller rawmembers andoriginalarchives verified in
+records/caps-v4 andcaller-v2. Callerarchive2c28c08afdd9322913544920bd90c8b890ed8791e7ff09534086a8fedd8a87a6;
+v4archivea6c6adcd6d25f932af41cc0eb0da0d4b5a520b1f41a15b7d422b493288df0f23.
+First25part-base64 PRIVATEdriver failed1 beforedirs/compile (joined paddedparts);
+corrected todecodeeachpart thenjoinbytes. Failedinvocation/resultpreserved;
+no productionchange. Previous firstcaller0CPUprestart hold also preserved.
+Allownjobs COMPLETE, ownprivate sources/Cargo caches/binaries/records preserved.
+
+ROOT confirms reviewing40875d828, NO MAINADOPTIONyet. RootactualLinuxmutations
+heldheadroom/offline and localMacbelow30GiB, no LOCALbuild. ZEROactiveLOCAL
+targets/caches; no newruntime campaigns. First8testedsource/evidencealready
+signed/pushed40875d82826bf9fd99b566ac67822d665091f191; don'twaithigher-scope.
+Latest9/caller evidence commitpending; production5f131 fixed/frozenforreview.
+AUTHORITY.md+records/authority-source-facts.json nowretainexactpubliccontract
+AGENTFILE_ARCH885–889/921–923: processes cap/defaultVM untilmeasureddefault,
+memory artifactselflimit scratchincluded, NO ownerreservedmin. Minimalcapability
+prototype is documented only, notunusedproductionhook/flag/ledger. ROOTP0owns
+missingcheckedownerproducer; strictguaranteesunsupporteduntilcontractexists.
+No fabricated actualclaimdata: runtimeparent/available/reserved/controlcharges
+null/unmeasured. Continue ROOTselectedrealresource/authority queue afterreturn.
+
+CURRENT NEXT SOURCE5f131376e: ROOT explicitly required diagnostic writer's each
+fragment check actualcapacity-len, not normal String::fmt::Write after reserve.
+Implemented private Reserved writer, checked capacity, fmtError/empty Err diagnostic
+on fragment failure; new ninth unit fills exact actualcapacity/refuses growth and
+checks UTF8 label. New source/light rerun pending -caps-v4, previous8greenbc381
+does not validate this newsource. Source commit5f131376e is signed, push pending.
+Driver now enforces caller expected_unit_count when supplied; no zero-filter pass.
+
+ROOT ANSWER: NO established typed guaranteed owner producer currently exists.
+Do not convert ROOM/reclaimheadroom/asks to guarantee, add unused guaranteeledger,
+publicflag or manifestfield. ROOT owns P0 normalization/ownerpolicy. Continue
+minimal parent capability prototype tied to actual run allocation and existing
+primaryworkload policy; strict absent-guarantee support must typedUnsupported/
+Unadmitted before release. Return exact missingproducer and prototype/actualclaim
+data. Root owns server/RUN handoff. No actor released on invented guarantees.
+
+Actual init caller typecheck was prepared as167 source/manifest files,3,922,874B
+source,998,205B compressed, SHA7385c0164cb46ab24742ee22d079a0818eca5e595297c77897722fa86ae4339b;
+source snapshotbc381, records/caller-v1-input.* preserve it. First upload bootstrap
+was rejected BEFORESTART by fresh0CPU8f guard, no caller source/target/log dirs
+created. Do NOT restart same handle (noneexists) or infer compile from package.
+New source5f131 will need new input snapshot before actualcaller check. Same
+1CPU1GiB2GiB/newprivate/serial/noRootcache/noLOCALbuild envelope. No actualguest
+campaign assigned; root owes all actual kernel/VM and guarantee acceptance.
+
 LATEST: sourcebc381c013d4a53bebb94efe4df2289c34acc6380 actual private GNU
 build0/eightunitsPASS0fail0filtered/Clippy0 on Fedora8f1CPU1GiB2GiB serial
 NEW own-caps-v3 paths. ModuleSHA0949b25d3369b8fa01dff07770e6275d4e39514f39717ac0821c7a5b4a0aa870;

@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "Traceback (most recent call last):\n  File \"<string>\", line 87, in <module>\n    main()\n    ~~~~^^\n  File \"<string>\", line 17, in main\n    packed = base64.b64decode(\"\".join(os.environ[\"ADMISSION_INPUT_PART_\" + str(i)] for i in range(count)), validate=True)\n  File \"/usr/lib64/python3.14/base64.py\", line 85, in b64decode\n    return binascii.a2b_base64(s, strict_mode=validate)\n           ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^\nbinascii.Error: Excess data after padding\n",
+    "running": false,
+    "why": "linux/x86_64 · 6 of 32 cores idle · 42 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk · 1 CI jobs",
+    "exit_code": 1
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

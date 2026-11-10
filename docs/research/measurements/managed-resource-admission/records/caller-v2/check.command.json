@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "/home/adalundhe/.cargo/bin/cargo",
+    "+1.98.1",
+    "check",
+    "-p",
+    "shards-init",
+    "--bin",
+    "shards-init",
+    "-j",
+    "1"
+  ],
+  "cwd": "/home/adalundhe/managed-resource-admission-source-5f131376e-caller-v2",
+  "timeout_seconds": 240
+}
