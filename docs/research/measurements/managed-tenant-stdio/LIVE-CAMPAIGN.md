@@ -65,13 +65,17 @@ It is a fixture content bound, excluding canonical headers and parent/kernel
 resource charges. Guest ports are distinct positive OS-selected test inputs;
 actual host loopback publication remains independently assigned and inspected.
 
-The explicit AGENT process cap is four: current native namespace reaper, domain
+The initial AGENT process cap was four: current native namespace reaper, domain
 server, actor parent and exactly one owned child. `init::managed::Launch::child`
 creates the first two actor-side processes; `domains::Server::start` joins its
 single-threaded server to the same domain cgroup. No broker tool worker is used.
 This source-derived cap is an input to exercise the current kernel limit, not a
 promise about aggregate accounting. An unexpected task/privilege refusal is a
 retained failure; it does not authorize raising a limit or changing a profile.
+That initial count was incomplete: actual r53 below establishes a separate server
+sandbox worker. The subsequent explicit five-task sample accounts for that real
+worker; the four-task refusal remains retained. No fixture default or profile is
+changed, and this revision-specific count promises no future task footprint.
 
 Host/native work and cleanup inputs are each 300000ms, explicitly reusing ROOT's
 finite patient case configuration, not selecting production timeouts. Each live
@@ -138,7 +142,62 @@ uncertainty. It changes no helper, assertions, deadlines, grants, Observer/Clien
 API or production source. It is intended to obtain the missing actual native exit
 cause on a fresh rerun; its build/live result is pending at this checkpoint.
 The first A run did not reach the previously noted release-caption discrepancy.
-No caption fix or guessed product/native compatibility fix is included.
+No guessed product/native compatibility fix was included in f4ee5f7c5.
+
+## Actual task refusal, positive A and caption correction
+
+Signed diagnostic source `f4ee5f7c5ba7c263b2a8a2d84c3ff8f79d771852` was pushed.
+r51 stopped before compile/VM because depth1 fetching into the old tracking ref
+was rejected as non-fast-forward. Its log is retained; the command was corrected
+to fetch the exact signed SHA without updating that tracking ref or forcing it.
+All seven initial final binaries were copied and hash-verified into the private
+Linux `frozen/446211e57` directory before rebuilding the caller.
+
+r53, admitted at the full 4 CPU / 8 GiB / 40 GiB envelope, built the actual caller0
+and reproduced the same A early-End failure101 with tasks4. Actual process history
+records the actor exiting code3 (the native Spawn stage), and the reaper also3.
+It records server910, server sandbox916, reaper919 and actor922 before that exit.
+This invalidates my initial four-task input calculation: the sandbox worker was
+omitted. The raw spawn errno is not independently exported; EAGAIN is not claimed
+as observed. Missing child events alone are not complete-history proof.
+
+r54 used the same exact f4 source/caller/helper artifacts with an explicit tasks5
+input (those four existing tasks plus the one owned child), a fresh UUID16 challenge
+and a new private fixture home. No source, production privilege or grant changed.
+One actual selected test passed0 in 3.54s, 20 filtered. It verified:
+
+- parent prefix plus inherited-ready on both separate channels;
+- new sibling stdout/stderr and two independent main executions before child
+  challenge/release;
+- exact 21-byte tagged challenge/echo and actual peer EOF;
+- exact inherited suffixes, canonical End at payload118/109, ACK and transport EOF;
+- main progress after those Ends, strict stopped metadata ended/complete at
+  wire306/297, sibling aborted/unknown177/171;
+- stop false0, private run removal, owner/observer joins and FD11→11.
+
+Actual history includes one child1705 forked from actor938, exec of inherited-child,
+then child0, parent0 and reaper0. It is separately labeled observed history, not
+an independently exported raw parent wait status, complete population or kernel
+return proof. Existing source holds the child's pidfd before release and waits it;
+the reached native Ready/suffix states exercise that controlled fixture path.
+
+The first successful A run also reproduces the historical evidence-caption defect:
+release.json says OwnerReleasedNeighborAfterBothMember1Eofs while the causally
+later sibling-before-child-release record still has both actor channels Open at
+payload68/62. The actual Ends occur only later at118/109. The one-line fixture
+correction changes only that shared helper's caption to
+OwnerReleasedNeighborAfterGateEof, the event it actually observes. All normal/A/B
+exact-byte, causal ordering, End/metadata and cleanup assertions are unchanged.
+No wrapper, new mechanism or production correction is introduced. Fresh actual
+normal/A validation of this caption revision and owned-close mutation/restoration
+remain next in the finite queue.
+
+[Raw diagnostic/refusal/positive records](live-cbd-v1/raw-v2/TRANSFER.json) retain
+92 SHA256/length-verified files (44,446 bytes), including the failed fetch and
+actual process segments. Full Cargo JSONL and frozen binaries remain on Linux.
+R01–R16 accounting above now adds actual A positive/refusal witnesses; it still
+does not claim mutation closure, full population/kernel return, the seven-target
+matrix, profiling/performance or the full managed-runtime plan.
 
 ## R01–R16 at this checkpoint
 

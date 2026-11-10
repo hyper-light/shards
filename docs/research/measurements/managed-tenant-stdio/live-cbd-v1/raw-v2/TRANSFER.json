@@ -1,0 +1,468 @@
+{
+  "root": "/home/adalundhe/managed-tenant-live-01a1c5d2-v1/records",
+  "remote_only": [
+    "inherited-v2-live/compile.jsonl"
+  ],
+  "files": [
+    {
+      "path": "inherited-v2/fetch.log",
+      "bytes": 137,
+      "sha256": "ebd9792e48975b1165ad32bc35776ee93c510eca67c2d5b8bfe167c5c31ff083"
+    },
+    {
+      "path": "inherited-v2-live/checkout.log",
+      "bytes": 90,
+      "sha256": "c8b15f7a2a694658d434fd2076d3dbf1399add63f97b65db047ba9c154d39ad1"
+    },
+    {
+      "path": "inherited-v2-live/command",
+      "bytes": 236,
+      "sha256": "26c4788c237c1840f7614fd2a367429177f7cfd4994fc3a93fcf0e3c0a3782d3"
+    },
+    {
+      "path": "inherited-v2-live/compile.command",
+      "bytes": 110,
+      "sha256": "16df8be0f63056389512e04de464b17ffcefb592b2907879be7a8e4623277425"
+    },
+    {
+      "path": "inherited-v2-live/compile.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "inherited-v2-live/compile.log",
+      "bytes": 1950,
+      "sha256": "a949f197f4c5429919d11fc30c3420a6376436256b936d72b88838f8f3cc4262"
+    },
+    {
+      "path": "inherited-v2-live/environment.json",
+      "bytes": 1147,
+      "sha256": "e533eaf82701c2b3dd779e1bca0bcfcb19bd4a2a4c04f35870f6ddf342ce808e"
+    },
+    {
+      "path": "inherited-v2-live/fetch.log",
+      "bytes": 111,
+      "sha256": "e4e88fa77213c3cccbb0e71cb28501284095c121a7a33ad998c420727cf3a178"
+    },
+    {
+      "path": "inherited-v2-live/footprint-kib.txt",
+      "bytes": 307,
+      "sha256": "009283443f3e87b7607059e5a9d3cb654099b0bfe14e5e7e438e741b93f80774"
+    },
+    {
+      "path": "inherited-v2-live/records/Agentfile",
+      "bytes": 366,
+      "sha256": "f558f17fb585389e5886725764265cdb56198fde0d5267498053840a33df92cb"
+    },
+    {
+      "path": "inherited-v2-live/records/artifacts.json",
+      "bytes": 1118,
+      "sha256": "c4cb89046fb1872082604b7889c1b2a7b1e0158508fad021b7a69760de55d18a"
+    },
+    {
+      "path": "inherited-v2-live/records/history-before-cleanup/processes.0",
+      "bytes": 1362,
+      "sha256": "e71c8a94e3a69cba1d560055daea388178b8aabaeb075b74d64aab5d3d6120e5"
+    },
+    {
+      "path": "inherited-v2-live/records/history-before-cleanup.json",
+      "bytes": 2162,
+      "sha256": "351eaeafc4db1d52a4147d03743fcb54f93ae33f9d2f3803d7caf8486f104d21"
+    },
+    {
+      "path": "inherited-v2-live/records/inputs.json",
+      "bytes": 474,
+      "sha256": "0db770abc0eded558c3608c4867d5f07d66b1af0464ecc5827f01862dcfdeb95"
+    },
+    {
+      "path": "inherited-v2-live/records/managed-output.before-cleanup",
+      "bytes": 433,
+      "sha256": "01b3dc83aed2e185701e663cf9422eddc5deac93459a654061be35507bfea810"
+    },
+    {
+      "path": "inherited-v2-live/records/managed-output.ready",
+      "bytes": 433,
+      "sha256": "01b3dc83aed2e185701e663cf9422eddc5deac93459a654061be35507bfea810"
+    },
+    {
+      "path": "inherited-v2-live/records/managed-output.stopped",
+      "bytes": 711,
+      "sha256": "647ef792acd6c9f097b4ec24486813e14c082ee492b73044fe5aab3163b8312d"
+    },
+    {
+      "path": "inherited-v2-live/records/remove.json",
+      "bytes": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "inherited-v2-live/records/run-cleanup.json",
+      "bytes": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "inherited-v2-live/records/stop.json",
+      "bytes": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "inherited-v2-live/records/stopped-state.json",
+      "bytes": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "inherited-v2-live/records/teardown.json",
+      "bytes": 310,
+      "sha256": "1f98092888d11912c5087996d9280511f36fe4a0be7b29e50660e050ab02b22a"
+    },
+    {
+      "path": "inherited-v2-live/records/wire-1-1-0.bin",
+      "bytes": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "inherited-v2-live/records/wire-1-1-28.bin",
+      "bytes": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "inherited-v2-live/records/wire-1-1-58.bin",
+      "bytes": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "inherited-v2-live/records/wire-1-1-86.bin",
+      "bytes": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "inherited-v2-live/source.txt",
+      "bytes": 41,
+      "sha256": "9bff2bbdcc110033eb506f24a64e676c4f9345c33d560c989c9898e71647dfe3"
+    },
+    {
+      "path": "inherited-v2-live/test-binary.txt",
+      "bytes": 105,
+      "sha256": "5c10b28f211ce7ff568659a4dcdbdcffeca82ce3631bcd8456fcc7f9949fa623"
+    },
+    {
+      "path": "inherited-v2-live/test.exit",
+      "bytes": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "inherited-v2-live/test.log",
+      "bytes": 9280,
+      "sha256": "70a933121e12c0d753d9b7fdd5237b3ffdd4049001e5110b9d44831a5466ca7d"
+    },
+    {
+      "path": "inherited-v3-tasks5/binary-hashes.txt",
+      "bytes": 299,
+      "sha256": "c2fde96be3b3336cfc707012e8ffe3129d34f7167c3c8009b714d5659756d57c"
+    },
+    {
+      "path": "inherited-v3-tasks5/command",
+      "bytes": 236,
+      "sha256": "26c4788c237c1840f7614fd2a367429177f7cfd4994fc3a93fcf0e3c0a3782d3"
+    },
+    {
+      "path": "inherited-v3-tasks5/environment.json",
+      "bytes": 1149,
+      "sha256": "ffaa9847fc5d052877cfbe382e51ff0acd34c5bf8fbcbd3980f590282b77fc99"
+    },
+    {
+      "path": "inherited-v3-tasks5/footprint-kib.txt",
+      "bytes": 308,
+      "sha256": "6f012eec91d37f067833868158c0379100837e0628982460a12507f288d30f13"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/Agentfile",
+      "bytes": 366,
+      "sha256": "1b2867d641bf7e3e35e99ebbe4482cc899617453a302505d05f7dbb960fecff4"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/actor-control.json",
+      "bytes": 595,
+      "sha256": "eb52d9f2cc037c73eea3958738be4d5db7f8da6adc9c00cd18e03c275a040e1f"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/actor-ports.json",
+      "bytes": 499,
+      "sha256": "34757620845856dc2d1e55b5fc6342c8239a8ef9681b417d0916671fe8d08b7a"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/artifacts.json",
+      "bytes": 1118,
+      "sha256": "b82d271ee72a83dc9b00c53aefefe0c02391aa0544056010dddc09a0f88a6eba"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/history-before-cleanup/processes.0",
+      "bytes": 2095,
+      "sha256": "6b2e1f392f1f09ae646c40b14da78d4b4d2403a7819bd5349ecd935c14c57a63"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/history-before-cleanup.json",
+      "bytes": 3188,
+      "sha256": "a8c4f3addc2174919a4e01b0a698bb720db33c12ee0d60ce3861449668dc5099"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/inherited-end.json",
+      "bytes": 1705,
+      "sha256": "ddc387529222f014ef11a031d042c9cd5092d8d3c8d7bfe3763820cc603e414c"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/inherited-ready.json",
+      "bytes": 1238,
+      "sha256": "3bdd5115ff026f93973c4fe426e91fee0dde269a1283378caf36c3bf176569d1"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/inputs.json",
+      "bytes": 479,
+      "sha256": "da4aa8590f88bb77d2603124b854e9992ea5ae2e758d12cf8169e92e3559b9d8"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/managed-output.before-cleanup",
+      "bytes": 575,
+      "sha256": "796808119077909351267ee9b95db603192b47d665c17f96e339f96bdaf21c66"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/managed-output.before-stop",
+      "bytes": 575,
+      "sha256": "796808119077909351267ee9b95db603192b47d665c17f96e339f96bdaf21c66"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/managed-output.ready",
+      "bytes": 433,
+      "sha256": "9c0ac4798ae79e019bcec81d72399fe7a8ed2cc810da3c769450bcd961728072"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/managed-output.stopped",
+      "bytes": 719,
+      "sha256": "5d548211effeb76fee3a9df6c998f87bfa4dc3ab646d94939b45bc7ce1e98e74"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/ports.json",
+      "bytes": 499,
+      "sha256": "34757620845856dc2d1e55b5fc6342c8239a8ef9681b417d0916671fe8d08b7a"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/processes-after-inherited-eof.json",
+      "bytes": 602,
+      "sha256": "830d9e9c82d5cb2c32f5cfc142dda8dfd3e1852e5fa2bc1c62ec443ed6ac7bf9"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/release.json",
+      "bytes": 138,
+      "sha256": "9bcee159e57515fa5b9ce69d8c03583c807d56eb7d406a0f721889a9bb3a1640"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/remove.json",
+      "bytes": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/run-cleanup.json",
+      "bytes": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/sibling-before-child-release.json",
+      "bytes": 1305,
+      "sha256": "f68db3b2d439aa88d97cf6e2ee7a7bf5c81d38349a1cb9399a0660d754e71ab0"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/stop.json",
+      "bytes": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/stopped-state.json",
+      "bytes": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/teardown.json",
+      "bytes": 309,
+      "sha256": "5e8e024ff723a24a63570949805af255b9b16de48e82a2524086702a0e8d341d"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-0.bin",
+      "bytes": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-118.bin",
+      "bytes": 30,
+      "sha256": "17e3dd03ed153742d6623b07642fbfebc41f7dc1d0b08601d50335ac4777f888"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-148.bin",
+      "bytes": 28,
+      "sha256": "a59af60e1d432a7de36ce8e92c3e2035b73fbedefa66ef5d1c911957658e347d"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-176.bin",
+      "bytes": 30,
+      "sha256": "02c475c7d4212e92b07f8164ed8a159ffda122f151e129479828cf0982f1e3df"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-206.bin",
+      "bytes": 30,
+      "sha256": "2e8c30acb984702606bfcc120772a540fe01fe66d59419bf75597ae18e340849"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-236.bin",
+      "bytes": 30,
+      "sha256": "55e5f5e636641defe158c9f012a81aa8414bb42d871e98189ea50a4014c532fc"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-266.bin",
+      "bytes": 24,
+      "sha256": "0d2a0c18a575ea34a2d8a09624728973f992211a470022236727f14a87af3de1"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-28.bin",
+      "bytes": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-290.bin",
+      "bytes": 16,
+      "sha256": "5691433a9d5466a2a57cd0cf78ffdf23acf1b1c1c01225b4050b0bd170d5d0f0"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-58.bin",
+      "bytes": 30,
+      "sha256": "08d3c97096e83b975dd7cecb70aeb98988c39f8793ef1039cb67ca4bff1c17b3"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-1-88.bin",
+      "bytes": 30,
+      "sha256": "e1e514cd6290d39b3c1b1ddb3233144e1a9f7ae069735389fb76785175097809"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-0.bin",
+      "bytes": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-118.bin",
+      "bytes": 30,
+      "sha256": "01b9910269bc17c83d752bf9d3d003141da3ee6533ae98200e65e021c4bbe6dd"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-148.bin",
+      "bytes": 22,
+      "sha256": "7e5549bd3a0a729ddec304eb10fafdde5c926499a525aa0025058215e7f4ea9a"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-170.bin",
+      "bytes": 30,
+      "sha256": "9d129d0a40414a9eaac4902321d40c0e89981280ff3286e8829f4713877f27cf"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-200.bin",
+      "bytes": 30,
+      "sha256": "a03399dc4e74fff81adcd165d69e1b40c58a4ece1922aa5a61f8b07c8e6ad10b"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-230.bin",
+      "bytes": 30,
+      "sha256": "82a3458d03052799d53e44cb695556d405b04096676ebd3fe259702c1cdc7255"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-260.bin",
+      "bytes": 21,
+      "sha256": "e30704b9f6774a01cbb8eeb7c1fa530143d1d63e0652355ca1d24f7cdb2f56be"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-28.bin",
+      "bytes": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-281.bin",
+      "bytes": 16,
+      "sha256": "2cee6c401c1692bdb49cf1d852e8f3532cb32be4434880121ba8c85bbae20239"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-58.bin",
+      "bytes": 30,
+      "sha256": "5521c11ca3f787153175e98e9ee64eb9bf36db9411788ec6caaa5dc6f53cc382"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-1-2-88.bin",
+      "bytes": 30,
+      "sha256": "8705f0c3c99bf3a0c0b66d8756f4c7c934dc5456c2c61dd8961dd8f23ea6a99e"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-0.bin",
+      "bytes": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-120.bin",
+      "bytes": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-150.bin",
+      "bytes": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-30.bin",
+      "bytes": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-60.bin",
+      "bytes": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-1-90.bin",
+      "bytes": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-0.bin",
+      "bytes": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-117.bin",
+      "bytes": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-147.bin",
+      "bytes": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-30.bin",
+      "bytes": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-60.bin",
+      "bytes": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "inherited-v3-tasks5/records/wire-2-2-87.bin",
+      "bytes": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "path": "inherited-v3-tasks5/test.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "inherited-v3-tasks5/test.log",
+      "bytes": 2884,
+      "sha256": "ec2d1163e62a9198105fcdb0383d4be444b5ef2da1872cb56e6421a8cdf35b50"
+    }
+  ]
+}

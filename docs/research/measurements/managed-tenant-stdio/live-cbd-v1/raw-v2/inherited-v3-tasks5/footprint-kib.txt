@@ -1,0 +1,5 @@
+667856	/home/adalundhe/managed-tenant-live-01a1c5d2-v1/source
+2103528	/home/adalundhe/managed-tenant-live-01a1c5d2-v1/target
+37928	/home/adalundhe/managed-tenant-live-01a1c5d2-v1/cache
+369544	/home/adalundhe/managed-tenant-live-01a1c5d2-v1/frozen
+1176	/home/adalundhe/managed-tenant-live-01a1c5d2-v1/records

@@ -1,0 +1,12 @@
+{
+  "completeness": "Unknown: asynchronous/lost/rotated records and omitted threads remain possible; namespace PIDs are not VM PIDs",
+  "copy_error": null,
+  "read": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "TIME                            MEMBER           PID  EVENT  WHAT\n2026-11-10T17:26:56.613823278Z  command          908  exec   /bin/testguest sleep\n2026-11-10T17:26:56.614464897Z  agent helper     910  fork   from 1\n2026-11-10T17:26:56.615761925Z  agent helper     910  exec   shards-server \"agent helper\" /proc/self/fd/6 200001 3 4 \"\" [] 7\n2026-11-10T17:26:56.618385309Z  agent helper     916  fork   from 910\n2026-11-10T17:26:56.618639968Z  agent helper     916  exec   shards-server sandbox\n2026-11-10T17:26:56.619235598Z  agent helper     919  fork   from 1\n2026-11-10T17:26:56.619440465Z  agent helper     922  fork   from 919\n2026-11-10T17:26:56.619523171Z  agent helper     919  exec   shards-init managed-reaper\n2026-11-10T17:26:56.743661217Z  agent helper     922  exec   /agents/helper/member managed-capture agent inherit-stdio 47065 300000 300000 16 269\n2026-11-10T17:26:56.744404566Z  harness driver  1703  fork   from 1\n2026-11-10T17:26:56.745080806Z  agent helper     922  exit   code 3\n2026-11-10T17:26:56.745351849Z  agent helper     919  exit   code 3\n2026-11-10T17:26:56.745706268Z  harness driver  1703  exec   shards-server \"harness driver\" /proc/self/fd/6 200002 3 4 \"\" [] 7\n2026-11-10T17:26:56.747955755Z  harness driver  1712  fork   from 1703\n2026-11-10T17:26:56.748261562Z  harness driver  1712  exec   shards-server sandbox\n2026-11-10T17:26:56.750156005Z  harness driver  1716  fork   from 1\n2026-11-10T17:26:56.750322808Z  harness driver  1718  fork   from 1716\n2026-11-10T17:26:56.750482970Z  harness driver  1716  exec   shards-init managed-reaper\n2026-11-10T17:26:56.782203484Z  harness driver  1718  exec   /harness/driver/bin/member managed-capture harness step 46037 300000\n2026-11-10T17:26:56.788588608Z  agent helper     916  exit   signal 9 (SIGKILL)\n2026-11-10T17:26:56.788678389Z  agent helper     910  exit   signal 9 (SIGKILL)\n"
+  },
+  "segments": [
+    "processes.0"
+  ]
+}

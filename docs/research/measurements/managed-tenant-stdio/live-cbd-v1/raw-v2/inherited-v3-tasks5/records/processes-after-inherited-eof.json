@@ -1,0 +1,11 @@
+{
+  "args": [
+    "top",
+    "owner-output",
+    "-o",
+    "pid,ppid,uid,stat,comm"
+  ],
+  "status": 0,
+  "stderr": "",
+  "stdout": "PID                 PPID                UID                 STAT                COMMAND\n925                 1                   1000                Ss                  testguest\n1704                1                   4394305             S                   shards-server\n1710                1704                4394305             S                   shards-sandbox\n1839                1714                200002              S                   capture-ready\n"
+}
