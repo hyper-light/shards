@@ -63,6 +63,7 @@ fn allocated(bytes: usize) {
 // optional observation uses only atomics, allocates nothing and never dereferences.
 unsafe impl GlobalAlloc for Count {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: GlobalAlloc's caller provides a valid allocation layout.
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             allocated(layout.size());
@@ -70,6 +71,7 @@ unsafe impl GlobalAlloc for Count {
         ptr
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: forwards the valid caller layout to the underlying allocator.
         let ptr = unsafe { System.alloc_zeroed(layout) };
         if !ptr.is_null() {
             allocated(layout.size());
@@ -79,9 +81,11 @@ unsafe impl GlobalAlloc for Count {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         FREES.fetch_add(1, Relaxed);
         LIVE.fetch_sub(layout.size() as u64, Relaxed);
+        // SAFETY: forwards the original allocation pointer and layout unchanged.
         unsafe { System.dealloc(ptr, layout) };
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        // SAFETY: GlobalAlloc's reallocation contract supplies pointer/layout/size.
         let next = unsafe { System.realloc(ptr, layout, size) };
         if !next.is_null() {
             REALLOCS.fetch_add(1, Relaxed);
@@ -182,6 +186,7 @@ fn phase(name: &str, before: Counts, elapsed: Duration) -> Result<()> {
     if rc != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
+    // SAFETY: successful getrusage initialized this output immediately above.
     let usage = unsafe { usage.assume_init() };
     println!(
         "phase\t{name}\twall_ns={}\talloc={}\trealloc={}\tfree={}\tallocated_bytes={}\tlive_bytes={}\tlive_delta={}\tpeak_bytes={}\tminor_faults={}\tmajor_faults={}\tuser_us={}\tsystem_us={}",
@@ -553,7 +558,7 @@ impl Live {
 }
 
 #[cfg(test)]
-pub(super) fn certificate_probe() -> Result<()> {
+pub(crate) fn certificate_probe() -> Result<()> {
     use hyper_quic::rustls::compress::{BROTLI_COMPRESSOR, CompressionLevel, ZLIB_COMPRESSOR};
     let identity = Identity::generate()?;
     let case = std::env::var("MANAGED_CERTIFICATE_CASE")?;
@@ -711,7 +716,7 @@ fn worker(
     Ok(samples)
 }
 
-pub(super) fn run_with(args: Vec<String>) -> Result<()> {
+pub(crate) fn run_with(args: Vec<String>) -> Result<()> {
     if let Ok(threshold) = std::env::var("MANAGED_TRACE_ALLOC_MIN") {
         TRACE_MIN.store(threshold.parse()?, Relaxed);
     }

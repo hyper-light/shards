@@ -1,0 +1,517 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-performance-1496391d6e/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-performance-1496391d6e/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.09s
+     Running unittests src/lib.rs (/home/adalundhe/managed-performance-target/release/deps/shards_remote-7bf651ecd2ac984e)
+diagnostic_allocation	bytes=33554432
+   0: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:45:21
+   1: try_with<core::cell::Cell<bool>, shards_remote::managed::performance::measurement::trace_allocation::{closure_env#0}, ()>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/local.rs:463:12
+   2: trace_allocation
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:41:21
+   3: allocated
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:59:5
+   4: alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:75:13
+   5: __rust_alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:109:19
+   6: alloc_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:198:9
+   7: alloc_impl_runtime
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:210:43
+   8: alloc_impl
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:332:9
+   9: allocate_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:455:14
+  10: try_allocate_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:468:40
+  11: with_capacity_zeroed_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:591:15
+  12: with_capacity_zeroed_in<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:221:20
+  13: from_elem<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/spec_from_elem.rs:24:31
+  14: from_elem<u32>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/mod.rs:3718:5
+  15: alloc_cell<u32>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-stdlib-0.2.4/src/std_alloc.rs:9:8
+  16: initialize_h10<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::backward_references::hash_to_binary_tree::H10Buckets<alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:187:21
+  17: InitializeH10<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:148:5
+  18: BrotliMakeHasher<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1111:33
+  19: hasher_setup<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1145:19
+  20: InitOrStitchToPreviousBlock<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1312:5
+  21: encode_data<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2417:9
+  22: compress_stream<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2973:26
+  23: flush_or_close<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:195:34
+  24: into_inner<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:245:20
+  25: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:57:16
+  26: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:106:16
+  27: compress
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:228:27
+  28: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:372:37
+  29: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:311:43
+  30: emit_compressed_certificate_tls13
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:901:31
+  31: emit_server_authentication
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:588:13
+  32: handle_client_hello
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:215:25
+  33: with_certified_key
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/hs.rs:475:14
+  34: handle
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/hs.rs:632:14
+  35: process_main_protocol<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/common_state.rs:247:19
+  36: process_msg<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:1149:27
+  37: process_new_packets<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:882:24
+  38: read_hs<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/quic.rs:412:23
+  39: read_handshake
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/crypto/rustls.rs:121:25
+  40: read_crypto
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:2978:28
+  41: process_early_payload
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3809:26
+  42: process_initial_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3744:14
+  43: process_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3455:24
+  44: on_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3424:19
+  45: packet_result
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3298:22
+  46: handle_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3264:33
+  47: handle_decode
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3138:18
+  48: handle_event
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:1623:22
+  49: receive<shards_remote::managed::Service>
+             at ./src/net.rs:824:35
+  50: run<shards_remote::managed::Service>
+             at ./src/net.rs:695:26
+  51: run
+             at ./src/managed.rs:626:34
+  52: {closure#4}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:641:30
+  53: __rust_begin_short_backtrace<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/backtrace.rs:166:18
+  54: {closure#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:70:13
+  55: call_once<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/panic/unwind_safe.rs:275:9
+  56: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:576:43
+  57: catch_unwind<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:544:19
+  58: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panic.rs:359:14
+  59: {closure#1}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:68:26
+  60: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs:2319:9
+  61: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/thread/unix.rs:123:17
+  62: start_thread
+  63: __clone3
+
+diagnostic_allocation	bytes=33554432
+   0: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:45:21
+   1: try_with<core::cell::Cell<bool>, shards_remote::managed::performance::measurement::trace_allocation::{closure_env#0}, ()>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/local.rs:463:12
+   2: trace_allocation
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:41:21
+   3: allocated
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:59:5
+   4: alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:75:13
+   5: __rust_alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:109:19
+   6: alloc_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:198:9
+   7: alloc_impl_runtime
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:210:43
+   8: alloc_impl
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:332:9
+   9: allocate_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:455:14
+  10: try_allocate_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:468:40
+  11: with_capacity_zeroed_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:591:15
+  12: with_capacity_zeroed_in<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:221:20
+  13: from_elem<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/spec_from_elem.rs:24:31
+  14: from_elem<u32>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/mod.rs:3718:5
+  15: alloc_cell<u32>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-stdlib-0.2.4/src/std_alloc.rs:9:8
+  16: initialize_h10<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::backward_references::hash_to_binary_tree::H10Buckets<alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:187:21
+  17: InitializeH10<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:148:5
+  18: BrotliMakeHasher<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1111:33
+  19: hasher_setup<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1145:19
+  20: InitOrStitchToPreviousBlock<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1312:5
+  21: encode_data<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2417:9
+  22: compress_stream<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2973:26
+  23: flush_or_close<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:195:34
+  24: into_inner<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:245:20
+  25: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:57:16
+  26: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:106:16
+  27: compress
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:228:27
+  28: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:372:37
+  29: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:311:43
+  30: emit_compressed_certificate_tls13
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:901:31
+  31: emit_server_authentication
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:588:13
+  32: handle_client_hello
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/tls13.rs:215:25
+  33: with_certified_key
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/hs.rs:475:14
+  34: handle
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/server/hs.rs:632:14
+  35: process_main_protocol<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/common_state.rs:247:19
+  36: process_msg<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:1149:27
+  37: process_new_packets<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:882:24
+  38: read_hs<hyper_tls::server::server_conn::ServerConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/quic.rs:412:23
+  39: read_handshake
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/crypto/rustls.rs:121:25
+  40: read_crypto
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:2978:28
+  41: process_early_payload
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3809:26
+  42: process_initial_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3744:14
+  43: process_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3455:24
+  44: on_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3424:19
+  45: packet_result
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3298:22
+  46: handle_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3264:33
+  47: handle_decode
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3138:18
+  48: handle_event
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:1623:22
+  49: receive<shards_remote::managed::Service>
+             at ./src/net.rs:824:35
+  50: run<shards_remote::managed::Service>
+             at ./src/net.rs:695:26
+  51: run
+             at ./src/managed.rs:626:34
+  52: {closure#4}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:641:30
+  53: __rust_begin_short_backtrace<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/backtrace.rs:166:18
+  54: {closure#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:70:13
+  55: call_once<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/panic/unwind_safe.rs:275:9
+  56: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:576:43
+  57: catch_unwind<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:544:19
+  58: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panic.rs:359:14
+  59: {closure#1}<shards_remote::managed::performance::measurement::run_with::{closure_env#4}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:68:26
+  60: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs:2319:9
+  61: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/thread/unix.rs:123:17
+  62: start_thread
+  63: __clone3
+
+diagnostic_allocation	bytes=33554432
+   0: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:45:21
+   1: try_with<core::cell::Cell<bool>, shards_remote::managed::performance::measurement::trace_allocation::{closure_env#0}, ()>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/local.rs:463:12
+   2: trace_allocation
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:41:21
+   3: allocated
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:59:5
+   4: alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:75:13
+   5: __rust_alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:109:19
+   6: alloc_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:198:9
+   7: alloc_impl_runtime
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:210:43
+   8: alloc_impl
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:332:9
+   9: allocate_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:455:14
+  10: try_allocate_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:468:40
+  11: with_capacity_zeroed_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:591:15
+  12: with_capacity_zeroed_in<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:221:20
+  13: from_elem<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/spec_from_elem.rs:24:31
+  14: from_elem<u32>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/mod.rs:3718:5
+  15: alloc_cell<u32>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-stdlib-0.2.4/src/std_alloc.rs:9:8
+  16: initialize_h10<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::backward_references::hash_to_binary_tree::H10Buckets<alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:187:21
+  17: InitializeH10<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:148:5
+  18: BrotliMakeHasher<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1111:33
+  19: hasher_setup<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1145:19
+  20: InitOrStitchToPreviousBlock<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1312:5
+  21: encode_data<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2417:9
+  22: compress_stream<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2973:26
+  23: flush_or_close<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:195:34
+  24: into_inner<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:245:20
+  25: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:57:16
+  26: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:106:16
+  27: compress
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:228:27
+  28: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:372:37
+  29: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:311:43
+  30: emit_compressed_certificate_tls13
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/client/tls13.rs:1183:32
+  31: handle
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/client/tls13.rs:1324:25
+  32: process_main_protocol<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/common_state.rs:247:19
+  33: process_msg<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:1149:27
+  34: process_new_packets<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:882:24
+  35: read_hs<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/quic.rs:412:23
+  36: read_handshake
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/crypto/rustls.rs:114:25
+  37: read_crypto
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:2978:28
+  38: process_early_payload
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3809:26
+  39: process_handshake_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3633:14
+  40: process_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3452:23
+  41: on_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3424:19
+  42: packet_result
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3298:22
+  43: handle_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3264:33
+  44: handle_decode
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3138:18
+  45: handle_coalesced
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3107:26
+  46: handle_event
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:1633:26
+  47: receive<shards_remote::managed::performance::measurement::Client>
+             at ./src/net.rs:824:35
+  48: run<shards_remote::managed::performance::measurement::Client>
+             at ./src/net.rs:695:26
+  49: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:496:28
+  50: __rust_begin_short_backtrace<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/backtrace.rs:166:18
+  51: {closure#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:70:13
+  52: call_once<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/panic/unwind_safe.rs:275:9
+  53: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:576:43
+  54: catch_unwind<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:544:19
+  55: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panic.rs:359:14
+  56: {closure#1}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:68:26
+  57: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs:2319:9
+  58: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/thread/unix.rs:123:17
+  59: start_thread
+  60: __clone3
+
+diagnostic_allocation	bytes=33554432
+   0: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:45:21
+   1: try_with<core::cell::Cell<bool>, shards_remote::managed::performance::measurement::trace_allocation::{closure_env#0}, ()>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/local.rs:463:12
+   2: trace_allocation
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:41:21
+   3: allocated
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:59:5
+   4: alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:75:13
+   5: __rust_alloc_zeroed
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:109:19
+   6: alloc_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:198:9
+   7: alloc_impl_runtime
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:210:43
+   8: alloc_impl
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:332:9
+   9: allocate_zeroed
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/alloc.rs:455:14
+  10: try_allocate_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:468:40
+  11: with_capacity_zeroed_in<alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:591:15
+  12: with_capacity_zeroed_in<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/raw_vec/mod.rs:221:20
+  13: from_elem<u32, alloc::alloc::Global>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/spec_from_elem.rs:24:31
+  14: from_elem<u32>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/vec/mod.rs:3718:5
+  15: alloc_cell<u32>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alloc-stdlib-0.2.4/src/std_alloc.rs:9:8
+  16: initialize_h10<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::backward_references::hash_to_binary_tree::H10Buckets<alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:187:21
+  17: InitializeH10<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/backward_references/hash_to_binary_tree.rs:148:5
+  18: BrotliMakeHasher<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1111:33
+  19: hasher_setup<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1145:19
+  20: InitOrStitchToPreviousBlock<alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:1312:5
+  21: encode_data<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2417:9
+  22: compress_stream<alloc_stdlib::std_alloc::StandardAlloc, brotli::enc::writer::{impl#4}::flush_or_close::{closure_env#0}<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/encode.rs:2973:26
+  23: flush_or_close<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:195:34
+  24: into_inner<core::io::error::Error, brotli_decompressor::io_wrappers::IntoIoWriter<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:245:20
+  25: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>, alloc_stdlib::heap_alloc::WrapBox<u8>, alloc_stdlib::std_alloc::StandardAlloc>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:57:16
+  26: into_inner<core::io::cursor::Cursor<alloc::vec::Vec<u8, alloc::alloc::Global>>>
+             at /home/adalundhe/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/brotli-8.0.4/src/enc/writer.rs:106:16
+  27: compress
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:228:27
+  28: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:372:37
+  29: compression_for
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/compress.rs:311:43
+  30: emit_compressed_certificate_tls13
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/client/tls13.rs:1183:32
+  31: handle
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/client/tls13.rs:1324:25
+  32: process_main_protocol<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/common_state.rs:247:19
+  33: process_msg<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:1149:27
+  34: process_new_packets<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/conn.rs:882:24
+  35: read_hs<hyper_tls::client::client_conn::ClientConnectionData>
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-tls/src/quic.rs:412:23
+  36: read_handshake
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/crypto/rustls.rs:114:25
+  37: read_crypto
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:2978:28
+  38: process_early_payload
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3809:26
+  39: process_handshake_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3633:14
+  40: process_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3452:23
+  41: on_decrypted_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3424:19
+  42: packet_result
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3298:22
+  43: handle_packet
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3264:33
+  44: handle_decode
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3138:18
+  45: handle_coalesced
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:3107:26
+  46: handle_event
+             at /home/adalundhe/.cargo/git/checkouts/hyper-raft-ba05ae47ea9f57d5/f116ac2/crates/hyper-quic/src/connection/mod.rs:1633:26
+  47: receive<shards_remote::managed::performance::measurement::Client>
+             at ./src/net.rs:824:35
+  48: run<shards_remote::managed::performance::measurement::Client>
+             at ./src/net.rs:695:26
+  49: {closure#0}
+             at ./src/../../../docs/research/measurements/managed-performance/src/main.rs:496:28
+  50: __rust_begin_short_backtrace<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/backtrace.rs:166:18
+  51: {closure#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:70:13
+  52: call_once<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/panic/unwind_safe.rs:275:9
+  53: do_call<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:576:43
+  54: catch_unwind<core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>, core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panicking.rs:544:19
+  55: catch_unwind<core::panic::unwind_safe::AssertUnwindSafe<std::thread::lifecycle::spawn_unchecked::{closure#1}::{closure_env#0}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>>, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/panic.rs:359:14
+  56: {closure#1}<shards_remote::managed::performance::measurement::{impl#6}::client::{closure_env#0}, core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync), alloc::alloc::Global>>>
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/lifecycle.rs:68:26
+  57: <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs:2319:9
+  58: <std::sys::thread::unix::Thread>::new::thread_start
+             at /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/thread/unix.rs:123:17
+  59: start_thread
+  60: __clone3
+

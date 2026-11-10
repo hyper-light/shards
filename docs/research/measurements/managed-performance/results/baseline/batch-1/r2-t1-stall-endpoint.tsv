@@ -1,0 +1,667 @@
+
+running 1 test
+test managed::performance::native_authenticated_comparison ... config	tenants=1	channels=2	records=128	bytes=1024	mode=stall	variant=endpoint	count_alloc=true
+phase	initial	wall_ns=0	alloc=0	realloc=0	free=0	allocated_bytes=0	live_bytes=4238	live_delta=0	peak_bytes=12945	minor_faults=170	major_faults=0	user_us=0	system_us=722
+resource	initial	/proc/self/status	Name:	shards_remote-7
+resource	initial	/proc/self/status	Umask:	0022
+resource	initial	/proc/self/status	State:	S (sleeping)
+resource	initial	/proc/self/status	Tgid:	200243
+resource	initial	/proc/self/status	Ngid:	0
+resource	initial	/proc/self/status	Pid:	200243
+resource	initial	/proc/self/status	PPid:	200242
+resource	initial	/proc/self/status	TracerPid:	0
+resource	initial	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	initial	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	initial	/proc/self/status	FDSize:	64
+resource	initial	/proc/self/status	Groups:	10 965 1000 
+resource	initial	/proc/self/status	NStgid:	200243
+resource	initial	/proc/self/status	NSpid:	200243
+resource	initial	/proc/self/status	NSpgid:	200242
+resource	initial	/proc/self/status	NSsid:	1945
+resource	initial	/proc/self/status	Kthread:	0
+resource	initial	/proc/self/status	VmPeak:	  143596 kB
+resource	initial	/proc/self/status	VmSize:	   78072 kB
+resource	initial	/proc/self/status	VmLck:	       0 kB
+resource	initial	/proc/self/status	VmPin:	       0 kB
+resource	initial	/proc/self/status	VmHWM:	    4304 kB
+resource	initial	/proc/self/status	VmRSS:	    4304 kB
+resource	initial	/proc/self/status	RssAnon:	     304 kB
+resource	initial	/proc/self/status	RssFile:	    4000 kB
+resource	initial	/proc/self/status	RssShmem:	       0 kB
+resource	initial	/proc/self/status	VmData:	    2424 kB
+resource	initial	/proc/self/status	VmStk:	     132 kB
+resource	initial	/proc/self/status	VmExe:	    4708 kB
+resource	initial	/proc/self/status	VmLib:	    2376 kB
+resource	initial	/proc/self/status	VmPTE:	      64 kB
+resource	initial	/proc/self/status	VmSwap:	       0 kB
+resource	initial	/proc/self/status	HugetlbPages:	       0 kB
+resource	initial	/proc/self/status	CoreDumping:	0
+resource	initial	/proc/self/status	THP_enabled:	1
+resource	initial	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	initial	/proc/self/status	Threads:	2
+resource	initial	/proc/self/status	SigQ:	1/255424
+resource	initial	/proc/self/status	SigPnd:	0000000000000000
+resource	initial	/proc/self/status	ShdPnd:	0000000000000000
+resource	initial	/proc/self/status	SigBlk:	0000000000000000
+resource	initial	/proc/self/status	SigIgn:	0000000000001000
+resource	initial	/proc/self/status	SigCgt:	0000000100000440
+resource	initial	/proc/self/status	CapInh:	0000000800000000
+resource	initial	/proc/self/status	CapPrm:	0000000000000000
+resource	initial	/proc/self/status	CapEff:	0000000000000000
+resource	initial	/proc/self/status	CapBnd:	000001ffffffffff
+resource	initial	/proc/self/status	CapAmb:	0000000000000000
+resource	initial	/proc/self/status	NoNewPrivs:	0
+resource	initial	/proc/self/status	Seccomp:	0
+resource	initial	/proc/self/status	Seccomp_filters:	0
+resource	initial	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	initial	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	initial	/proc/self/status	Cpus_allowed:	ffffffff
+resource	initial	/proc/self/status	Cpus_allowed_list:	0-31
+resource	initial	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	initial	/proc/self/status	Mems_allowed_list:	0
+resource	initial	/proc/self/status	voluntary_ctxt_switches:	1
+resource	initial	/proc/self/status	nonvoluntary_ctxt_switches:	0
+resource	initial	/proc/self/status	x86_Thread_features:	
+resource	initial	/proc/self/status	x86_Thread_features_locked:	
+resource	initial	/proc/self/smaps_rollup	55f30a47e000-7ffc2f4c0000 ---p 00000000 00:00 0                          [rollup]
+resource	initial	/proc/self/smaps_rollup	Rss:                4308 kB
+resource	initial	/proc/self/smaps_rollup	Pss:                1221 kB
+resource	initial	/proc/self/smaps_rollup	Pss_Dirty:          1190 kB
+resource	initial	/proc/self/smaps_rollup	Pss_Anon:            308 kB
+resource	initial	/proc/self/smaps_rollup	Pss_File:            913 kB
+resource	initial	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	initial	/proc/self/smaps_rollup	Shared_Clean:       2236 kB
+resource	initial	/proc/self/smaps_rollup	Shared_Dirty:       1764 kB
+resource	initial	/proc/self/smaps_rollup	Private_Clean:         0 kB
+resource	initial	/proc/self/smaps_rollup	Private_Dirty:       308 kB
+resource	initial	/proc/self/smaps_rollup	Referenced:         4308 kB
+resource	initial	/proc/self/smaps_rollup	Anonymous:           308 kB
+resource	initial	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	initial	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	initial	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	initial	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	initial	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	initial	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	initial	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	initial	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	initial	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	initial	/proc/self/smaps_rollup	Locked:                0 kB
+resource	initial	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c429ec8b76dcafce67a2bdc4f864
+resource	initial	/proc/self/net/sockstat	sockets: used 905
+resource	initial	/proc/self/net/sockstat	TCP: inuse 34 orphan 0 tw 441 alloc 765 mem 3688
+resource	initial	/proc/self/net/sockstat	UDP: inuse 20 mem 453
+resource	initial	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	initial	/proc/self/net/sockstat	RAW: inuse 0
+resource	initial	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	initial	/proc/loadavg	17.90 21.34 22.68 19/3228 200244
+resource	initial	/proc/pressure/cpu	some avg10=2.42 avg60=1.25 avg300=3.96 total=7424817331
+resource	initial	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	initial	fds	9
+resource	initial	tasks	2
+cgroup	initial	cpu.stat	usage_usec 36252997
+cgroup	initial	cpu.stat	user_usec 34899514
+cgroup	initial	cpu.stat	system_usec 1353483
+cgroup	initial	cpu.stat	nice_usec 0
+cgroup	initial	cpu.stat	core_sched.force_idle_usec 0
+server_socket_allowance	channel=0	bytes=851968
+server_socket_allowance	channel=1	bytes=851968
+phase	servers_bound	wall_ns=286304	alloc=88	realloc=4	free=14	allocated_bytes=76222	live_bytes=79564	live_delta=75326	peak_bytes=79564	minor_faults=211	major_faults=0	user_us=0	system_us=1331
+resource	servers_bound	/proc/self/status	Name:	shards_remote-7
+resource	servers_bound	/proc/self/status	Umask:	0022
+resource	servers_bound	/proc/self/status	State:	S (sleeping)
+resource	servers_bound	/proc/self/status	Tgid:	200243
+resource	servers_bound	/proc/self/status	Ngid:	0
+resource	servers_bound	/proc/self/status	Pid:	200243
+resource	servers_bound	/proc/self/status	PPid:	200242
+resource	servers_bound	/proc/self/status	TracerPid:	0
+resource	servers_bound	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	servers_bound	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	servers_bound	/proc/self/status	FDSize:	64
+resource	servers_bound	/proc/self/status	Groups:	10 965 1000 
+resource	servers_bound	/proc/self/status	NStgid:	200243
+resource	servers_bound	/proc/self/status	NSpid:	200243
+resource	servers_bound	/proc/self/status	NSpgid:	200242
+resource	servers_bound	/proc/self/status	NSsid:	1945
+resource	servers_bound	/proc/self/status	Kthread:	0
+resource	servers_bound	/proc/self/status	VmPeak:	  143596 kB
+resource	servers_bound	/proc/self/status	VmSize:	   82188 kB
+resource	servers_bound	/proc/self/status	VmLck:	       0 kB
+resource	servers_bound	/proc/self/status	VmPin:	       0 kB
+resource	servers_bound	/proc/self/status	VmHWM:	    5476 kB
+resource	servers_bound	/proc/self/status	VmRSS:	    5476 kB
+resource	servers_bound	/proc/self/status	RssAnon:	     380 kB
+resource	servers_bound	/proc/self/status	RssFile:	    5096 kB
+resource	servers_bound	/proc/self/status	RssShmem:	       0 kB
+resource	servers_bound	/proc/self/status	VmData:	    6540 kB
+resource	servers_bound	/proc/self/status	VmStk:	     132 kB
+resource	servers_bound	/proc/self/status	VmExe:	    4708 kB
+resource	servers_bound	/proc/self/status	VmLib:	    2376 kB
+resource	servers_bound	/proc/self/status	VmPTE:	      72 kB
+resource	servers_bound	/proc/self/status	VmSwap:	       0 kB
+resource	servers_bound	/proc/self/status	HugetlbPages:	       0 kB
+resource	servers_bound	/proc/self/status	CoreDumping:	0
+resource	servers_bound	/proc/self/status	THP_enabled:	1
+resource	servers_bound	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	servers_bound	/proc/self/status	Threads:	4
+resource	servers_bound	/proc/self/status	SigQ:	1/255424
+resource	servers_bound	/proc/self/status	SigPnd:	0000000000000000
+resource	servers_bound	/proc/self/status	ShdPnd:	0000000000000000
+resource	servers_bound	/proc/self/status	SigBlk:	0000000000000000
+resource	servers_bound	/proc/self/status	SigIgn:	0000000000001000
+resource	servers_bound	/proc/self/status	SigCgt:	0000000100000440
+resource	servers_bound	/proc/self/status	CapInh:	0000000800000000
+resource	servers_bound	/proc/self/status	CapPrm:	0000000000000000
+resource	servers_bound	/proc/self/status	CapEff:	0000000000000000
+resource	servers_bound	/proc/self/status	CapBnd:	000001ffffffffff
+resource	servers_bound	/proc/self/status	CapAmb:	0000000000000000
+resource	servers_bound	/proc/self/status	NoNewPrivs:	0
+resource	servers_bound	/proc/self/status	Seccomp:	0
+resource	servers_bound	/proc/self/status	Seccomp_filters:	0
+resource	servers_bound	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	servers_bound	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	servers_bound	/proc/self/status	Cpus_allowed:	ffffffff
+resource	servers_bound	/proc/self/status	Cpus_allowed_list:	0-31
+resource	servers_bound	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	servers_bound	/proc/self/status	Mems_allowed_list:	0
+resource	servers_bound	/proc/self/status	voluntary_ctxt_switches:	1
+resource	servers_bound	/proc/self/status	nonvoluntary_ctxt_switches:	0
+resource	servers_bound	/proc/self/status	x86_Thread_features:	
+resource	servers_bound	/proc/self/status	x86_Thread_features_locked:	
+resource	servers_bound	/proc/self/smaps_rollup	55f30a47e000-7ffc2f4c0000 ---p 00000000 00:00 0                          [rollup]
+resource	servers_bound	/proc/self/smaps_rollup	Rss:                5648 kB
+resource	servers_bound	/proc/self/smaps_rollup	Pss:                2013 kB
+resource	servers_bound	/proc/self/smaps_rollup	Pss_Dirty:          1982 kB
+resource	servers_bound	/proc/self/smaps_rollup	Pss_Anon:            552 kB
+resource	servers_bound	/proc/self/smaps_rollup	Pss_File:           1461 kB
+resource	servers_bound	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Shared_Clean:       2236 kB
+resource	servers_bound	/proc/self/smaps_rollup	Shared_Dirty:       2860 kB
+resource	servers_bound	/proc/self/smaps_rollup	Private_Clean:         0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Private_Dirty:       552 kB
+resource	servers_bound	/proc/self/smaps_rollup	Referenced:         5648 kB
+resource	servers_bound	/proc/self/smaps_rollup	Anonymous:           552 kB
+resource	servers_bound	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	servers_bound	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	servers_bound	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	servers_bound	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	servers_bound	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	servers_bound	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	servers_bound	/proc/self/smaps_rollup	Locked:                0 kB
+resource	servers_bound	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c429ec8b76dcafce67a2bdc4f864
+resource	servers_bound	/proc/self/net/sockstat	sockets: used 909
+resource	servers_bound	/proc/self/net/sockstat	TCP: inuse 34 orphan 0 tw 441 alloc 765 mem 3688
+resource	servers_bound	/proc/self/net/sockstat	UDP: inuse 24 mem 453
+resource	servers_bound	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	servers_bound	/proc/self/net/sockstat	RAW: inuse 0
+resource	servers_bound	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	servers_bound	/proc/loadavg	17.90 21.34 22.68 23/3230 200246
+resource	servers_bound	/proc/pressure/cpu	some avg10=2.42 avg60=1.25 avg300=3.96 total=7424817331
+resource	servers_bound	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	servers_bound	fds	15
+resource	servers_bound	tasks	4
+socket_memory	servers_bound	socket:[104552477]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	servers_bound	socket:[104552478]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	servers_bound	socket:[104552479]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	servers_bound	socket:[104552480]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+cgroup	servers_bound	cpu.stat	usage_usec 36254071
+cgroup	servers_bound	cpu.stat	user_usec 34899607
+cgroup	servers_bound	cpu.stat	system_usec 1354464
+cgroup	servers_bound	cpu.stat	nice_usec 0
+cgroup	servers_bound	cpu.stat	core_sched.force_idle_usec 0
+phase	tls_subscribed	wall_ns=6179711	alloc=2523	realloc=128	free=2138	allocated_bytes=138981500	live_bytes=606201	live_delta=395601	peak_bytes=69135504	minor_faults=1158	major_faults=0	user_us=9730	system_us=3060
+resource	tls_subscribed	/proc/self/status	Name:	shards_remote-7
+resource	tls_subscribed	/proc/self/status	Umask:	0022
+resource	tls_subscribed	/proc/self/status	State:	S (sleeping)
+resource	tls_subscribed	/proc/self/status	Tgid:	200243
+resource	tls_subscribed	/proc/self/status	Ngid:	0
+resource	tls_subscribed	/proc/self/status	Pid:	200243
+resource	tls_subscribed	/proc/self/status	PPid:	200242
+resource	tls_subscribed	/proc/self/status	TracerPid:	0
+resource	tls_subscribed	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	tls_subscribed	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	tls_subscribed	/proc/self/status	FDSize:	64
+resource	tls_subscribed	/proc/self/status	Groups:	10 965 1000 
+resource	tls_subscribed	/proc/self/status	NStgid:	200243
+resource	tls_subscribed	/proc/self/status	NSpid:	200243
+resource	tls_subscribed	/proc/self/status	NSpgid:	200242
+resource	tls_subscribed	/proc/self/status	NSsid:	1945
+resource	tls_subscribed	/proc/self/status	Kthread:	0
+resource	tls_subscribed	/proc/self/status	VmPeak:	  415060 kB
+resource	tls_subscribed	/proc/self/status	VmSize:	  348484 kB
+resource	tls_subscribed	/proc/self/status	VmLck:	       0 kB
+resource	tls_subscribed	/proc/self/status	VmPin:	       0 kB
+resource	tls_subscribed	/proc/self/status	VmHWM:	   10212 kB
+resource	tls_subscribed	/proc/self/status	VmRSS:	   10212 kB
+resource	tls_subscribed	/proc/self/status	RssAnon:	    2940 kB
+resource	tls_subscribed	/proc/self/status	RssFile:	    7272 kB
+resource	tls_subscribed	/proc/self/status	RssShmem:	       0 kB
+resource	tls_subscribed	/proc/self/status	VmData:	   12968 kB
+resource	tls_subscribed	/proc/self/status	VmStk:	     132 kB
+resource	tls_subscribed	/proc/self/status	VmExe:	    4708 kB
+resource	tls_subscribed	/proc/self/status	VmLib:	    2376 kB
+resource	tls_subscribed	/proc/self/status	VmPTE:	      96 kB
+resource	tls_subscribed	/proc/self/status	VmSwap:	       0 kB
+resource	tls_subscribed	/proc/self/status	HugetlbPages:	       0 kB
+resource	tls_subscribed	/proc/self/status	CoreDumping:	0
+resource	tls_subscribed	/proc/self/status	THP_enabled:	1
+resource	tls_subscribed	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	tls_subscribed	/proc/self/status	Threads:	6
+resource	tls_subscribed	/proc/self/status	SigQ:	1/255424
+resource	tls_subscribed	/proc/self/status	SigPnd:	0000000000000000
+resource	tls_subscribed	/proc/self/status	ShdPnd:	0000000000000000
+resource	tls_subscribed	/proc/self/status	SigBlk:	0000000000000000
+resource	tls_subscribed	/proc/self/status	SigIgn:	0000000000001000
+resource	tls_subscribed	/proc/self/status	SigCgt:	0000000100000440
+resource	tls_subscribed	/proc/self/status	CapInh:	0000000800000000
+resource	tls_subscribed	/proc/self/status	CapPrm:	0000000000000000
+resource	tls_subscribed	/proc/self/status	CapEff:	0000000000000000
+resource	tls_subscribed	/proc/self/status	CapBnd:	000001ffffffffff
+resource	tls_subscribed	/proc/self/status	CapAmb:	0000000000000000
+resource	tls_subscribed	/proc/self/status	NoNewPrivs:	0
+resource	tls_subscribed	/proc/self/status	Seccomp:	0
+resource	tls_subscribed	/proc/self/status	Seccomp_filters:	0
+resource	tls_subscribed	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	tls_subscribed	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	tls_subscribed	/proc/self/status	Cpus_allowed:	ffffffff
+resource	tls_subscribed	/proc/self/status	Cpus_allowed_list:	0-31
+resource	tls_subscribed	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	tls_subscribed	/proc/self/status	Mems_allowed_list:	0
+resource	tls_subscribed	/proc/self/status	voluntary_ctxt_switches:	1
+resource	tls_subscribed	/proc/self/status	nonvoluntary_ctxt_switches:	0
+resource	tls_subscribed	/proc/self/status	x86_Thread_features:	
+resource	tls_subscribed	/proc/self/status	x86_Thread_features_locked:	
+resource	tls_subscribed	/proc/self/smaps_rollup	55f30a47e000-7ffc2f4c0000 ---p 00000000 00:00 0                          [rollup]
+resource	tls_subscribed	/proc/self/smaps_rollup	Rss:               10212 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Pss:                5512 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Pss_Dirty:          5458 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Pss_Anon:           2940 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Pss_File:           2572 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Shared_Clean:       2364 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Shared_Dirty:       4780 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Private_Clean:         0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Private_Dirty:      3068 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Referenced:        10212 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Anonymous:          2940 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	tls_subscribed	/proc/self/smaps_rollup	Locked:                0 kB
+resource	tls_subscribed	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c429ec8b76dcafce67a2bdc4f864
+resource	tls_subscribed	/proc/self/net/sockstat	sockets: used 917
+resource	tls_subscribed	/proc/self/net/sockstat	TCP: inuse 37 orphan 0 tw 441 alloc 769 mem 3688
+resource	tls_subscribed	/proc/self/net/sockstat	UDP: inuse 28 mem 453
+resource	tls_subscribed	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	tls_subscribed	/proc/self/net/sockstat	RAW: inuse 0
+resource	tls_subscribed	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	tls_subscribed	/proc/loadavg	17.90 21.34 22.68 21/3231 200249
+resource	tls_subscribed	/proc/pressure/cpu	some avg10=2.42 avg60=1.25 avg300=3.96 total=7424817337
+resource	tls_subscribed	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	tls_subscribed	fds	19
+resource	tls_subscribed	tasks	6
+socket_memory	tls_subscribed	socket:[104552477]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552478]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552479]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552480]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552489]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552490]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552491]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	tls_subscribed	socket:[104552492]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+cgroup	tls_subscribed	cpu.stat	usage_usec 36266640
+cgroup	tls_subscribed	cpu.stat	user_usec 34910196
+cgroup	tls_subscribed	cpu.stat	system_usec 1356443
+cgroup	tls_subscribed	cpu.stat	nice_usec 0
+cgroup	tls_subscribed	cpu.stat	core_sched.force_idle_usec 0
+cancel	waiter_ns=30735	accepted=1024	consumed=0	neighbor_records_before=1	neighbor_records_after=127
+phase	workload	wall_ns=8455827	alloc=3527	realloc=4	free=3721	allocated_bytes=1592332	live_bytes=300480	live_delta=-294334	peak_bytes=69135504	minor_faults=1174	major_faults=0	user_us=15114	system_us=9103
+resource	workload	/proc/self/status	Name:	shards_remote-7
+resource	workload	/proc/self/status	Umask:	0022
+resource	workload	/proc/self/status	State:	S (sleeping)
+resource	workload	/proc/self/status	Tgid:	200243
+resource	workload	/proc/self/status	Ngid:	0
+resource	workload	/proc/self/status	Pid:	200243
+resource	workload	/proc/self/status	PPid:	200242
+resource	workload	/proc/self/status	TracerPid:	0
+resource	workload	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	workload	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	workload	/proc/self/status	FDSize:	64
+resource	workload	/proc/self/status	Groups:	10 965 1000 
+resource	workload	/proc/self/status	NStgid:	200243
+resource	workload	/proc/self/status	NSpid:	200243
+resource	workload	/proc/self/status	NSpgid:	200242
+resource	workload	/proc/self/status	NSsid:	1945
+resource	workload	/proc/self/status	Kthread:	0
+resource	workload	/proc/self/status	VmPeak:	  483684 kB
+resource	workload	/proc/self/status	VmSize:	  483636 kB
+resource	workload	/proc/self/status	VmLck:	       0 kB
+resource	workload	/proc/self/status	VmPin:	       0 kB
+resource	workload	/proc/self/status	VmHWM:	   10328 kB
+resource	workload	/proc/self/status	VmRSS:	   10328 kB
+resource	workload	/proc/self/status	RssAnon:	    2864 kB
+resource	workload	/proc/self/status	RssFile:	    7464 kB
+resource	workload	/proc/self/status	RssShmem:	       0 kB
+resource	workload	/proc/self/status	VmData:	   17352 kB
+resource	workload	/proc/self/status	VmStk:	     132 kB
+resource	workload	/proc/self/status	VmExe:	    4708 kB
+resource	workload	/proc/self/status	VmLib:	    2376 kB
+resource	workload	/proc/self/status	VmPTE:	     116 kB
+resource	workload	/proc/self/status	VmSwap:	       0 kB
+resource	workload	/proc/self/status	HugetlbPages:	       0 kB
+resource	workload	/proc/self/status	CoreDumping:	0
+resource	workload	/proc/self/status	THP_enabled:	1
+resource	workload	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	workload	/proc/self/status	Threads:	4
+resource	workload	/proc/self/status	SigQ:	1/255424
+resource	workload	/proc/self/status	SigPnd:	0000000000000000
+resource	workload	/proc/self/status	ShdPnd:	0000000000000000
+resource	workload	/proc/self/status	SigBlk:	0000000000000000
+resource	workload	/proc/self/status	SigIgn:	0000000000001000
+resource	workload	/proc/self/status	SigCgt:	0000000100000440
+resource	workload	/proc/self/status	CapInh:	0000000800000000
+resource	workload	/proc/self/status	CapPrm:	0000000000000000
+resource	workload	/proc/self/status	CapEff:	0000000000000000
+resource	workload	/proc/self/status	CapBnd:	000001ffffffffff
+resource	workload	/proc/self/status	CapAmb:	0000000000000000
+resource	workload	/proc/self/status	NoNewPrivs:	0
+resource	workload	/proc/self/status	Seccomp:	0
+resource	workload	/proc/self/status	Seccomp_filters:	0
+resource	workload	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	workload	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	workload	/proc/self/status	Cpus_allowed:	ffffffff
+resource	workload	/proc/self/status	Cpus_allowed_list:	0-31
+resource	workload	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	workload	/proc/self/status	Mems_allowed_list:	0
+resource	workload	/proc/self/status	voluntary_ctxt_switches:	1
+resource	workload	/proc/self/status	nonvoluntary_ctxt_switches:	0
+resource	workload	/proc/self/status	x86_Thread_features:	
+resource	workload	/proc/self/status	x86_Thread_features_locked:	
+resource	workload	/proc/self/smaps_rollup	55f30a47e000-7ffc2f4c0000 ---p 00000000 00:00 0                          [rollup]
+resource	workload	/proc/self/smaps_rollup	Rss:               10328 kB
+resource	workload	/proc/self/smaps_rollup	Pss:                7838 kB
+resource	workload	/proc/self/smaps_rollup	Pss_Dirty:          7772 kB
+resource	workload	/proc/self/smaps_rollup	Pss_Anon:           2864 kB
+resource	workload	/proc/self/smaps_rollup	Pss_File:           4974 kB
+resource	workload	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	workload	/proc/self/smaps_rollup	Shared_Clean:       2556 kB
+resource	workload	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	workload	/proc/self/smaps_rollup	Private_Clean:         0 kB
+resource	workload	/proc/self/smaps_rollup	Private_Dirty:      7772 kB
+resource	workload	/proc/self/smaps_rollup	Referenced:        10328 kB
+resource	workload	/proc/self/smaps_rollup	Anonymous:          2864 kB
+resource	workload	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	workload	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	workload	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	workload	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	workload	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	workload	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	workload	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	workload	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	workload	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	workload	/proc/self/smaps_rollup	Locked:                0 kB
+resource	workload	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c429ec8b76dcafce67a2bdc4f864
+resource	workload	/proc/self/net/sockstat	sockets: used 911
+resource	workload	/proc/self/net/sockstat	TCP: inuse 34 orphan 0 tw 442 alloc 765 mem 3688
+resource	workload	/proc/self/net/sockstat	UDP: inuse 26 mem 453
+resource	workload	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	workload	/proc/self/net/sockstat	RAW: inuse 0
+resource	workload	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	workload	/proc/loadavg	17.90 21.34 22.68 20/3230 200256
+resource	workload	/proc/pressure/cpu	some avg10=2.42 avg60=1.25 avg300=3.96 total=7424817375
+resource	workload	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	workload	fds	15
+resource	workload	tasks	4
+socket_memory	workload	socket:[104552478]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	workload	socket:[104552479]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	workload	socket:[104552480]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	workload	socket:[104552490]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+socket_memory	workload	socket:[104552491]	len=36	[0, 212992, 0, 212992, 4096, 0, 0, 0, 0]
+socket_memory	workload	socket:[104552492]	len=36	[0, 212992, 0, 212992, 0, 0, 0, 0, 0]
+cgroup	workload	cpu.stat	usage_usec 36276891
+cgroup	workload	cpu.stat	user_usec 34915007
+cgroup	workload	cpu.stat	system_usec 1361883
+cgroup	workload	cpu.stat	nice_usec 0
+cgroup	workload	cpu.stat	core_sched.force_idle_usec 0
+sample	channel=1	record=0	receive_ns=71885	app_ack_ns=108911
+sample	channel=1	record=1	receive_ns=32377	app_ack_ns=61095
+sample	channel=1	record=2	receive_ns=30566	app_ack_ns=48638
+sample	channel=1	record=3	receive_ns=49982	app_ack_ns=85549
+sample	channel=1	record=4	receive_ns=40990	app_ack_ns=78784
+sample	channel=1	record=5	receive_ns=19803	app_ack_ns=35475
+sample	channel=1	record=6	receive_ns=36994	app_ack_ns=50558
+sample	channel=1	record=7	receive_ns=37263	app_ack_ns=111449
+sample	channel=1	record=8	receive_ns=28148	app_ack_ns=48630
+sample	channel=1	record=9	receive_ns=18080	app_ack_ns=33956
+sample	channel=1	record=10	receive_ns=37713	app_ack_ns=66766
+sample	channel=1	record=11	receive_ns=41115	app_ack_ns=82470
+sample	channel=1	record=12	receive_ns=26728	app_ack_ns=51053
+sample	channel=1	record=13	receive_ns=38022	app_ack_ns=57500
+sample	channel=1	record=14	receive_ns=50111	app_ack_ns=84077
+sample	channel=1	record=15	receive_ns=33947	app_ack_ns=62210
+sample	channel=1	record=16	receive_ns=34498	app_ack_ns=61204
+sample	channel=1	record=17	receive_ns=32518	app_ack_ns=59345
+sample	channel=1	record=18	receive_ns=30154	app_ack_ns=56380
+sample	channel=1	record=19	receive_ns=34371	app_ack_ns=60705
+sample	channel=1	record=20	receive_ns=32676	app_ack_ns=59085
+sample	channel=1	record=21	receive_ns=31687	app_ack_ns=57624
+sample	channel=1	record=22	receive_ns=31716	app_ack_ns=57408
+sample	channel=1	record=23	receive_ns=40983	app_ack_ns=69925
+sample	channel=1	record=24	receive_ns=32630	app_ack_ns=58994
+sample	channel=1	record=25	receive_ns=31576	app_ack_ns=58376
+sample	channel=1	record=26	receive_ns=32055	app_ack_ns=58589
+sample	channel=1	record=27	receive_ns=31733	app_ack_ns=57368
+sample	channel=1	record=28	receive_ns=32571	app_ack_ns=58490
+sample	channel=1	record=29	receive_ns=33953	app_ack_ns=60544
+sample	channel=1	record=30	receive_ns=32937	app_ack_ns=59150
+sample	channel=1	record=31	receive_ns=32204	app_ack_ns=58627
+sample	channel=1	record=32	receive_ns=33900	app_ack_ns=60252
+sample	channel=1	record=33	receive_ns=31910	app_ack_ns=58721
+sample	channel=1	record=34	receive_ns=32991	app_ack_ns=59102
+sample	channel=1	record=35	receive_ns=31735	app_ack_ns=57435
+sample	channel=1	record=36	receive_ns=33359	app_ack_ns=59601
+sample	channel=1	record=37	receive_ns=32038	app_ack_ns=58252
+sample	channel=1	record=38	receive_ns=31739	app_ack_ns=58544
+sample	channel=1	record=39	receive_ns=33198	app_ack_ns=60913
+sample	channel=1	record=40	receive_ns=40503	app_ack_ns=69631
+sample	channel=1	record=41	receive_ns=33445	app_ack_ns=60184
+sample	channel=1	record=42	receive_ns=32079	app_ack_ns=58800
+sample	channel=1	record=43	receive_ns=32436	app_ack_ns=60033
+sample	channel=1	record=44	receive_ns=32172	app_ack_ns=59484
+sample	channel=1	record=45	receive_ns=33028	app_ack_ns=59795
+sample	channel=1	record=46	receive_ns=33155	app_ack_ns=59134
+sample	channel=1	record=47	receive_ns=32868	app_ack_ns=58776
+sample	channel=1	record=48	receive_ns=32473	app_ack_ns=58901
+sample	channel=1	record=49	receive_ns=31362	app_ack_ns=58148
+sample	channel=1	record=50	receive_ns=32585	app_ack_ns=60018
+sample	channel=1	record=51	receive_ns=32656	app_ack_ns=59136
+sample	channel=1	record=52	receive_ns=32170	app_ack_ns=59322
+sample	channel=1	record=53	receive_ns=32933	app_ack_ns=60931
+sample	channel=1	record=54	receive_ns=33662	app_ack_ns=61138
+sample	channel=1	record=55	receive_ns=31798	app_ack_ns=57899
+sample	channel=1	record=56	receive_ns=32648	app_ack_ns=73078
+sample	channel=1	record=57	receive_ns=34216	app_ack_ns=60639
+sample	channel=1	record=58	receive_ns=32796	app_ack_ns=59013
+sample	channel=1	record=59	receive_ns=31421	app_ack_ns=58191
+sample	channel=1	record=60	receive_ns=32462	app_ack_ns=57215
+sample	channel=1	record=61	receive_ns=26517	app_ack_ns=41210
+sample	channel=1	record=62	receive_ns=35765	app_ack_ns=62889
+sample	channel=1	record=63	receive_ns=31580	app_ack_ns=57970
+sample	channel=1	record=64	receive_ns=31130	app_ack_ns=56237
+sample	channel=1	record=65	receive_ns=31065	app_ack_ns=57044
+sample	channel=1	record=66	receive_ns=31166	app_ack_ns=55904
+sample	channel=1	record=67	receive_ns=31115	app_ack_ns=57298
+sample	channel=1	record=68	receive_ns=30944	app_ack_ns=56170
+sample	channel=1	record=69	receive_ns=31187	app_ack_ns=55743
+sample	channel=1	record=70	receive_ns=31038	app_ack_ns=56192
+sample	channel=1	record=71	receive_ns=31178	app_ack_ns=56335
+sample	channel=1	record=72	receive_ns=31333	app_ack_ns=56869
+sample	channel=1	record=73	receive_ns=31181	app_ack_ns=56617
+sample	channel=1	record=74	receive_ns=40293	app_ack_ns=66745
+sample	channel=1	record=75	receive_ns=31983	app_ack_ns=57678
+sample	channel=1	record=76	receive_ns=31403	app_ack_ns=56799
+sample	channel=1	record=77	receive_ns=32241	app_ack_ns=57714
+sample	channel=1	record=78	receive_ns=31163	app_ack_ns=56241
+sample	channel=1	record=79	receive_ns=30947	app_ack_ns=56827
+sample	channel=1	record=80	receive_ns=31726	app_ack_ns=57672
+sample	channel=1	record=81	receive_ns=32719	app_ack_ns=59763
+sample	channel=1	record=82	receive_ns=32682	app_ack_ns=58701
+sample	channel=1	record=83	receive_ns=32311	app_ack_ns=58487
+sample	channel=1	record=84	receive_ns=37619	app_ack_ns=75087
+sample	channel=1	record=85	receive_ns=20157	app_ack_ns=34506
+sample	channel=1	record=86	receive_ns=36293	app_ack_ns=65776
+sample	channel=1	record=87	receive_ns=33442	app_ack_ns=60305
+sample	channel=1	record=88	receive_ns=33602	app_ack_ns=60993
+sample	channel=1	record=89	receive_ns=34422	app_ack_ns=63438
+sample	channel=1	record=90	receive_ns=33832	app_ack_ns=70774
+sample	channel=1	record=91	receive_ns=32552	app_ack_ns=61310
+sample	channel=1	record=92	receive_ns=33770	app_ack_ns=61819
+sample	channel=1	record=93	receive_ns=31838	app_ack_ns=59031
+sample	channel=1	record=94	receive_ns=32107	app_ack_ns=57944
+sample	channel=1	record=95	receive_ns=31577	app_ack_ns=57962
+sample	channel=1	record=96	receive_ns=31918	app_ack_ns=58787
+sample	channel=1	record=97	receive_ns=32831	app_ack_ns=59965
+sample	channel=1	record=98	receive_ns=32931	app_ack_ns=59731
+sample	channel=1	record=99	receive_ns=33008	app_ack_ns=59618
+sample	channel=1	record=100	receive_ns=33007	app_ack_ns=59971
+sample	channel=1	record=101	receive_ns=32242	app_ack_ns=59836
+sample	channel=1	record=102	receive_ns=33425	app_ack_ns=60870
+sample	channel=1	record=103	receive_ns=41826	app_ack_ns=96436
+sample	channel=1	record=104	receive_ns=40310	app_ack_ns=55727
+sample	channel=1	record=105	receive_ns=18894	app_ack_ns=32029
+sample	channel=1	record=106	receive_ns=34874	app_ack_ns=61254
+sample	channel=1	record=107	receive_ns=36313	app_ack_ns=63410
+sample	channel=1	record=108	receive_ns=31261	app_ack_ns=57312
+sample	channel=1	record=109	receive_ns=30899	app_ack_ns=56448
+sample	channel=1	record=110	receive_ns=30947	app_ack_ns=56171
+sample	channel=1	record=111	receive_ns=30931	app_ack_ns=55858
+sample	channel=1	record=112	receive_ns=31041	app_ack_ns=56224
+sample	channel=1	record=113	receive_ns=31080	app_ack_ns=55919
+sample	channel=1	record=114	receive_ns=30982	app_ack_ns=56857
+sample	channel=1	record=115	receive_ns=30930	app_ack_ns=55892
+sample	channel=1	record=116	receive_ns=31125	app_ack_ns=55805
+sample	channel=1	record=117	receive_ns=32056	app_ack_ns=57665
+sample	channel=1	record=118	receive_ns=57179	app_ack_ns=105235
+sample	channel=1	record=119	receive_ns=54166	app_ack_ns=78160
+sample	channel=1	record=120	receive_ns=46154	app_ack_ns=78314
+sample	channel=1	record=121	receive_ns=33167	app_ack_ns=63717
+sample	channel=1	record=122	receive_ns=41823	app_ack_ns=108644
+sample	channel=1	record=123	receive_ns=42269	app_ack_ns=73368
+sample	channel=1	record=124	receive_ns=33118	app_ack_ns=64057
+sample	channel=1	record=125	receive_ns=89433	app_ack_ns=131035
+sample	channel=1	record=126	receive_ns=36770	app_ack_ns=102696
+sample	channel=1	record=127	receive_ns=128000	app_ack_ns=171248
+phase	closed	wall_ns=224501	alloc=4	realloc=0	free=239	allocated_bytes=3012	live_bytes=4702	live_delta=-291650	peak_bytes=69135504	minor_faults=1176	major_faults=0	user_us=15199	system_us=10198
+resource	closed	/proc/self/status	Name:	shards_remote-7
+resource	closed	/proc/self/status	Umask:	0022
+resource	closed	/proc/self/status	State:	S (sleeping)
+resource	closed	/proc/self/status	Tgid:	200243
+resource	closed	/proc/self/status	Ngid:	0
+resource	closed	/proc/self/status	Pid:	200243
+resource	closed	/proc/self/status	PPid:	200242
+resource	closed	/proc/self/status	TracerPid:	0
+resource	closed	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	closed	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	closed	/proc/self/status	FDSize:	64
+resource	closed	/proc/self/status	Groups:	10 965 1000 
+resource	closed	/proc/self/status	NStgid:	200243
+resource	closed	/proc/self/status	NSpid:	200243
+resource	closed	/proc/self/status	NSpgid:	200242
+resource	closed	/proc/self/status	NSsid:	1945
+resource	closed	/proc/self/status	Kthread:	0
+resource	closed	/proc/self/status	VmPeak:	  483684 kB
+resource	closed	/proc/self/status	VmSize:	  483612 kB
+resource	closed	/proc/self/status	VmLck:	       0 kB
+resource	closed	/proc/self/status	VmPin:	       0 kB
+resource	closed	/proc/self/status	VmHWM:	   10208 kB
+resource	closed	/proc/self/status	VmRSS:	   10208 kB
+resource	closed	/proc/self/status	RssAnon:	    2744 kB
+resource	closed	/proc/self/status	RssFile:	    7464 kB
+resource	closed	/proc/self/status	RssShmem:	       0 kB
+resource	closed	/proc/self/status	VmData:	   17368 kB
+resource	closed	/proc/self/status	VmStk:	     132 kB
+resource	closed	/proc/self/status	VmExe:	    4708 kB
+resource	closed	/proc/self/status	VmLib:	    2376 kB
+resource	closed	/proc/self/status	VmPTE:	     116 kB
+resource	closed	/proc/self/status	VmSwap:	       0 kB
+resource	closed	/proc/self/status	HugetlbPages:	       0 kB
+resource	closed	/proc/self/status	CoreDumping:	0
+resource	closed	/proc/self/status	THP_enabled:	1
+resource	closed	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	closed	/proc/self/status	Threads:	2
+resource	closed	/proc/self/status	SigQ:	1/255424
+resource	closed	/proc/self/status	SigPnd:	0000000000000000
+resource	closed	/proc/self/status	ShdPnd:	0000000000000000
+resource	closed	/proc/self/status	SigBlk:	0000000000000000
+resource	closed	/proc/self/status	SigIgn:	0000000000001000
+resource	closed	/proc/self/status	SigCgt:	0000000100000440
+resource	closed	/proc/self/status	CapInh:	0000000800000000
+resource	closed	/proc/self/status	CapPrm:	0000000000000000
+resource	closed	/proc/self/status	CapEff:	0000000000000000
+resource	closed	/proc/self/status	CapBnd:	000001ffffffffff
+resource	closed	/proc/self/status	CapAmb:	0000000000000000
+resource	closed	/proc/self/status	NoNewPrivs:	0
+resource	closed	/proc/self/status	Seccomp:	0
+resource	closed	/proc/self/status	Seccomp_filters:	0
+resource	closed	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	closed	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	closed	/proc/self/status	Cpus_allowed:	ffffffff
+resource	closed	/proc/self/status	Cpus_allowed_list:	0-31
+resource	closed	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	closed	/proc/self/status	Mems_allowed_list:	0
+resource	closed	/proc/self/status	voluntary_ctxt_switches:	1
+resource	closed	/proc/self/status	nonvoluntary_ctxt_switches:	0
+resource	closed	/proc/self/status	x86_Thread_features:	
+resource	closed	/proc/self/status	x86_Thread_features_locked:	
+resource	closed	/proc/self/smaps_rollup	55f30a47e000-7ffc2f4c0000 ---p 00000000 00:00 0                          [rollup]
+resource	closed	/proc/self/smaps_rollup	Rss:               10208 kB
+resource	closed	/proc/self/smaps_rollup	Pss:                7717 kB
+resource	closed	/proc/self/smaps_rollup	Pss_Dirty:          7652 kB
+resource	closed	/proc/self/smaps_rollup	Pss_Anon:           2744 kB
+resource	closed	/proc/self/smaps_rollup	Pss_File:           4973 kB
+resource	closed	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	closed	/proc/self/smaps_rollup	Shared_Clean:       2556 kB
+resource	closed	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	closed	/proc/self/smaps_rollup	Private_Clean:         0 kB
+resource	closed	/proc/self/smaps_rollup	Private_Dirty:      7652 kB
+resource	closed	/proc/self/smaps_rollup	Referenced:        10208 kB
+resource	closed	/proc/self/smaps_rollup	Anonymous:          2744 kB
+resource	closed	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	closed	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	closed	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	closed	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	closed	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	closed	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	closed	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	closed	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	closed	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	closed	/proc/self/smaps_rollup	Locked:                0 kB
+resource	closed	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c429ec8b76dcafce67a2bdc4f864
+resource	closed	/proc/self/net/sockstat	sockets: used 905
+resource	closed	/proc/self/net/sockstat	TCP: inuse 34 orphan 0 tw 442 alloc 765 mem 3688
+resource	closed	/proc/self/net/sockstat	UDP: inuse 20 mem 453
+resource	closed	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	closed	/proc/self/net/sockstat	RAW: inuse 0
+resource	closed	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	closed	/proc/loadavg	17.90 21.34 22.68 21/3229 200257
+resource	closed	/proc/pressure/cpu	some avg10=2.42 avg60=1.25 avg300=3.96 total=7424817375
+resource	closed	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	closed	fds	9
+resource	closed	tasks	2
+cgroup	closed	cpu.stat	usage_usec 36277905
+cgroup	closed	cpu.stat	user_usec 34915091
+cgroup	closed	cpu.stat	system_usec 1362814
+cgroup	closed	cpu.stat	nice_usec 0
+cgroup	closed	cpu.stat	core_sched.force_idle_usec 0
+result	pass
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.02s
+
