@@ -28,9 +28,13 @@ cargo test -j 4 -p shards --profile test-release --test managed_lifecycle \
 ```
 
 After the trusted quarantine diagnostic, the host executes a fresh command in the
-main namespace, atomically publishes a new128-bit challenge to the HARNESS's
-private volume, and verifies its exact synced response. An inotify watch installed
-before checking the file avoids sleeps and lost publication wakes. The host also
+main namespace and sends a new128-bit challenge to the HARNESS's explicitly granted
+TCP listener. The host publishes only loopback ingress, with the guest service port
+selected by the OS and the published host port assigned by Shards. NETWORK ingress,
+EXPOSE --harnesses=healthy and CONNECT declarations name that exact fixture service.
+The helper accepts one challenge, syncs its private answer.pending file, renames it
+to answer, then echoes the exact bytes. A host FileWatch observes helper readiness;
+there is no periodic file probe or sleep. The host also
 reads the surviving main/HARNESS processes, then explicitly stops the VM. The
 120-second guard is the existing supplied-startup test guard; no product timeout
 or entitlement changes. Challenge bytes establish ordering, not authentication.
@@ -84,6 +88,24 @@ reused the old watched-green filename before copying it to its unique prefix;
 the prior r81 raw file was overwritten. Its earlier Kiln transcript remains,
 and this evidence-loss error is explicitly reported to the coordinator. The new
 no-clobber script prevents that reuse on subsequent attempts.
+
+Run r7 at `80b46c1d` failed 0/1 in126.15s, exit101. Complete EISDIR quarantine and
+fresh main execution succeeded; the healthy helper did not answer a host-origin
+shared-volume rename. At observation time its private directory contained ready
+(5bytes) and go(16bytes), without answer. The guest's blocking inotify read was an
+incorrect fixture dependency: [inotify(7)](https://www.man7.org/linux/man-pages/man7/inotify.7.html)
+documents that it does not catch remote filesystem events. This result does not
+establish a dead healthy tenant. Raw artifacts remain uniquely named
+`~/managed-tenant-fault-complete-line-mainexec-v1-green.{log,exit,identity,source.patch}`.
+
+The TCP replacement uses existing documented
+[EXPOSE ingress semantics](../../../architecture/AGENTFILE_ARCH.md) and the actual
+`agents_answer_what_their_networks_let_in` fixture in tests/build.rs as its local
+implementation reference. Retrying host filesystem probes, picked sleep intervals
+and implicit ingress were rejected. This is fixture plumbing, not a new production
+transport or an interception/authorization claim. The reduced reliability campaign
+also records only the exiting actor's PID; the separate protected-reaper access
+fixture is not invoked by this filtered run.
 
 Native light checks, actual KVM/HVF/WHP runs, mutation outcomes and resource counts
 must be appended by the coordinator after running. This campaign does not prove

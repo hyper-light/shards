@@ -12,6 +12,7 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 #[test]
 #[ignore = "requires the retained tenant-events-directory source patch"]
 fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
+    use std::io::{Read as _, Write as _};
     if cannot_run_vms() {
         return;
     }
@@ -20,6 +21,11 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     let reports = TempDir::new("tenant-fault-report");
     let faulty = TempDir::new("tenant-fault-bad");
     let ctx = TempDir::new("tenant-fault-context");
+    let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let env = [
         ("SHARDS_HOME", home.as_os_str()),
         ("SHARDS_KERNEL", kernel().as_os_str()),
@@ -36,14 +42,19 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         } else {
             "/probe"
         };
+        let socket = if directory == "healthy" {
+            format!(r#","{port}""#)
+        } else {
+            String::new()
+        };
         std::fs::write(
             ctx.join(directory).join(format!("{kind}.json")),
-            format!(r#"{{"entrypoint":"probe","options":["{mode}","{path}"]}}"#),
+            format!(r#"{{"entrypoint":"probe","options":["{mode}","{path}"{socket}]}}"#),
         )
         .unwrap();
     }
     std::fs::write(ctx.join("Agentfile"), format!(
-        "FROM {image}\nAGENT faulty FROM ./faulty\nHARNESS healthy FROM ./healthy\nVOLUME --chown=faulty /bad FOR faulty\nVOLUME --chown=healthy /probe FOR healthy\n"
+        "FROM {image}\nAGENT faulty FROM ./faulty\nHARNESS healthy FROM ./healthy\nVOLUME --chown=faulty /bad FOR faulty\nVOLUME --chown=healthy /probe FOR healthy\nNETWORK --ingress={port} challenge\nEXPOSE --harnesses=healthy {port} AS ingress FOR challenge\nCONNECT healthy WITH healthy ON challenge\n"
     )).unwrap();
     let built = run_shards_env(
         &["build", "image"],
@@ -54,6 +65,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     assert_eq!(built.status, Some(0), "{built}");
     let report_bind = format!("{}:/probe", reports.display());
     let faulty_bind = format!("{}:/bad", faulty.display());
+    let publish = format!("127.0.0.1::{port}");
     let env_text = [
         ("SHARDS_HOME", home.to_str().unwrap()),
         ("SHARDS_KERNEL", kernel().to_str().unwrap()),
@@ -70,6 +82,8 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
             &report_bind,
             "-v",
             &faulty_bind,
+            "-p",
+            &publish,
             "tenant-fault:1",
             "sleep",
         ],
@@ -98,9 +112,26 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         .unwrap()
         .as_nanos()
         .to_be_bytes();
-    std::fs::write(reports.join("go.pending"), challenge).unwrap();
-    std::fs::rename(reports.join("go.pending"), reports.join("go")).unwrap();
-    vm.wait_for("tenant challenge answered", TIMEOUT);
+    assert_eq!(published(&reports, "ready"), b"ready");
+    let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], &env, TIMEOUT);
+    assert_eq!(ports.status, Some(0), "{ports}");
+    let host_port: u16 = ports
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&format!("{port}/tcp")))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|address| address.rsplit(':').next())
+        .and_then(|port| port.parse().ok())
+        .unwrap_or_else(|| panic!("no published challenge port: {ports}"));
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
+    let mut socket = std::net::TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
+    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+    socket.set_write_timeout(Some(TIMEOUT)).unwrap();
+    socket.write_all(&challenge).unwrap();
+    socket.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = [0u8; size_of::<u128>()];
+    socket.read_exact(&mut reply).unwrap();
+    assert_eq!(reply, challenge);
     assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
     assert!(faulty.join("result").exists(), "faulty actor never ran");
     let top = run_shards_env(&["top"], &["tenant-fault", "-o", "comm"], &env, TIMEOUT);
@@ -116,6 +147,23 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     vm.wait_exit_following(TIMEOUT);
+}
+
+fn published(directory: &std::path::Path, name: &str) -> Vec<u8> {
+    let root = shards_vmm::platform::open_dir(directory).unwrap();
+    let mut changed = shards_vmm::platform::FileWatch::new(&root).unwrap();
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    loop {
+        changed.clear();
+        match std::fs::read(directory.join(name)) {
+            Ok(bytes) => return bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("reading {name}: {error}"),
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        assert!(!left.is_zero(), "no publication of {name}");
+        wait_changed(&changed, left);
+    }
 }
 
 fn fault_observed(home: &std::path::Path) -> String {
@@ -151,18 +199,22 @@ fn fault_observed(home: &std::path::Path) -> String {
             !left.is_zero(),
             "no tenant fault observation in daemon console log:\n{observed}"
         );
-        #[cfg(unix)]
-        shards_ipc::await_any_within(&[changed.fd()], Some(left)).unwrap();
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle as _;
-            use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
-            use windows_sys::Win32::System::Threading::WaitForSingleObject;
-            let millis = u32::try_from(left.as_millis().max(1)).unwrap();
-            // SAFETY: the borrowed event stays owned by this live FileWatch.
-            let status = unsafe { WaitForSingleObject(changed.fd().as_raw_handle(), millis) };
-            assert!(matches!(status, WAIT_OBJECT_0 | WAIT_TIMEOUT));
-        }
+        wait_changed(&changed, left);
+    }
+}
+
+fn wait_changed(changed: &shards_vmm::platform::FileWatch, left: Duration) {
+    #[cfg(unix)]
+    shards_ipc::await_any_within(&[changed.fd()], Some(left)).unwrap();
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let millis = u32::try_from(left.as_millis().max(1)).unwrap();
+        // SAFETY: the borrowed event stays owned by this live FileWatch.
+        let status = unsafe { WaitForSingleObject(changed.fd().as_raw_handle(), millis) };
+        assert!(matches!(status, WAIT_OBJECT_0 | WAIT_TIMEOUT));
     }
 }
 
