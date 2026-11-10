@@ -1,0 +1,18 @@
+{
+  "result": {
+    "admitted": true,
+    "result": {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"requested_runner\": \"451397fcc585f7f7cb9aaf00e42064bb\", \"hostname\": \"adacachy\", \"platform\": \"Linux-7.2.9-2-cachyos-x86_64-with-glibc2.44\", \"libc\": [\"glibc\", \"2.44\"], \"machine\": \"x86_64\", \"disk_free_bytes\": 412753522688, \"source\": \"9764144d5a7170c1ba6607ecd0222a0015db12de\", \"original_build_deadline_epoch_s\": 1794353589.118, \"original_remaining_s\": 3199.245161294937, \"resources\": \"2CPU/4GiB/24GiB j4\", \"previous_preflight\": \"r171 records/build/zig-stdout0.17 unchanged; no prior Rust compilation/case\"}\n{\"phase\": \"download-private-pinned-zig\", \"started\": true, \"original_outer_remaining_s\": 3199.2055138869327}\n",
+      "running": true,
+      "id": "r172",
+      "why": "linux/x86_64 · 4 of 32 cores idle · 84 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk · 5 CI jobs"
+    }
+  },
+  "calls": [
+    {
+      "name": "machines.start",
+      "ok": true
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+python3 - <<'PY'
+from pathlib import Path,PurePosixPath
+import subprocess,json,hashlib,tarfile,io,re,platform
+base=Path.home()/'managed-after-open-fin-4a-v1';assert str(base)=='/home/adalundhe/managed-after-open-fin-4a-v1';source=base/'source';records=base/'records/collection-v1';records.mkdir()
+revision='9764144d5a7170c1ba6607ecd0222a0015db12de'
+read=lambda path:json.loads(path.read_text())
+summary={'expected_source':revision,'actual_source':subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip(),'tracked_status':subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True),'source_errors':[],'native_case':{},'unknowns':'No population/parent/kernel/durability/performance/VM or later Capturing-integration claim'}
+scope=read(source/'docs/research/measurements/managed-current-backpressure/after-open-fin-4a/source-scope.json')
+for name,digest in (scope['owned_source']|scope['unchanged']).items():
+ if hashlib.sha256((source/name).read_bytes()).hexdigest()!=digest:summary['source_errors'].append(name)
+if summary['actual_source']!=revision or summary['tracked_status']:summary['source_errors'].append('Git source identity/status')
+for phase in ('build','build-pinned-zig-v1','checks-v1'):
+ folder=base/'records'/phase
+ summary[phase]={path.name:path.read_text() for path in folder.glob('*-exit')}
+fixture_path=base/'records/build-pinned-zig-v1/fixture.json'
+if fixture_path.exists():
+ fixture=read(fixture_path);summary['fixture']=fixture
+ summary['frozen_fixture_hash_matches']=hashlib.sha256(Path(fixture['frozen']).read_bytes()).hexdigest()==fixture['sha256']
+ summary['target_fixture_hash_matches']=hashlib.sha256(Path(fixture['path']).read_bytes()).hexdigest()==fixture['sha256']
+folder=base/'records/native-after-open-v1';record=folder/'records'
+if (folder/'exit').exists():
+ stdout=(folder/'stdout').read_text(errors='replace');summary['native_case']['exit']=int((folder/'exit').read_text())
+ summary['native_case']['actual_running_counts']=[int(n) for n in re.findall('running ([0-9]+) test',stdout)]
+ summary['native_case']['actual_test_summaries']=[line for line in stdout.splitlines() if line.startswith('test result: ')]
+ summary['native_case']['records']={path.name:read(path) for path in sorted(record.glob('*.json'))}
+ summary['native_case']['byte_files']={path.name:{'bytes':path.stat().st_size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(record.glob('*.bin'))}
+ summary['native_case']['actual_running_counts']=[int(n) for n in re.findall('running ([0-9]+) test',stdout)]
+ summary['native_case']['coverage_note']='Present files retain actual partial witnesses; absence is not no-effect, write0, credit or connection-retirement proof. A strict101 stays failure and is never relabelled as a whole-case pass.'
+else:summary['native_case']={'actual_running_counts':[],'state':'UNRUN; no native exit record','strict_pass':False}
+(records/'source-and-case.json').write_text(json.dumps(summary,indent=2)+'\n')
+files=[]
+for path in sorted((base/'records').rglob('*')):
+ if path.is_symlink():raise ValueError('unexpected raw-record symlink '+str(path))
+ if path.is_file():files.append(path)
+manifest={}
+for path in files:
+ name=str(path.relative_to(base));parts=PurePosixPath(name);assert not parts.is_absolute() and '..' not in parts.parts and name not in manifest
+ data=path.read_bytes();manifest[name]={'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+archive=base/'evidence-after-open-v1.tar.gz';outside=base/'evidence-after-open-v1.member-hashes.json';assert not archive.exists() and not outside.exists()
+content=json.dumps(manifest,indent=2).encode();outside.write_bytes(content)
+with tarfile.open(archive,'w:gz') as package:
+ for name in manifest:package.add(base/name,arcname=name,recursive=False)
+ member=tarfile.TarInfo('member-hashes.json');member.size=len(content);package.addfile(member,io.BytesIO(content))
+receipt={'archive':str(archive),'archive_bytes':archive.stat().st_size,'archive_sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'outside_manifest':str(outside),'manifest_sha256':hashlib.sha256(content).hexdigest(),'payloads':len(manifest),'embedded_manifest':1,'total_members':len(manifest)+1,'source':revision,'actual_native_running_counts':summary['native_case']['actual_running_counts'],'strict_native_pass':summary['native_case']['strict_pass'],'source_errors':summary['source_errors'],'originals_preserved':True,'excluded':'source/target/Cargo/Zig/runtime/compiler/archive/artifacts remain on owned runner; record snapshot only; outside receipt is generated after archive'}
+(base/'evidence-after-open-v1.receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');print(json.dumps(receipt),flush=True)
+PY

@@ -1,0 +1,49 @@
+python3 - <<'PY'
+from pathlib import Path
+import os,subprocess,json,hashlib,time,uuid,re
+revision='9764144d5a7170c1ba6607ecd0222a0015db12de'
+base=Path.home()/'managed-after-open-fin-4a-v1';source=base/'source';records=base/'records/native-after-open-v1';records.mkdir()
+assert str(base)=='/home/adalundhe/managed-after-open-fin-4a-v1'
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+assert not subprocess.check_output(['git','status','--porcelain'],cwd=source,text=True)
+identity=json.loads((base/'records/build-pinned-zig-v1/fixture.json').read_text());binary=Path(identity['frozen'])
+assert identity['source']==revision and not identity['fresh']
+assert hashlib.sha256(binary.read_bytes()).hexdigest()==identity['sha256']
+assert hashlib.sha256(Path(identity['path']).read_bytes()).hexdigest()==identity['sha256']
+scope=json.loads((base/'records/build-pinned-zig-v1/source-scope.json').read_text())
+for name,digest in (scope['owned_source']|scope['unchanged']).items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+for name in ('pure','clippy'):assert (base/'records/checks-v1'/(name+'-exit')).read_text().strip()=='0'
+pure=(base/'records/checks-v1/pure-stdout').read_text();assert '7 passed; 0 failed; 5 ignored;' in pure
+assert (base/'records/build-pinned-zig-v1/full-caller-build-exit').read_text().strip()=='0'
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_'):env.pop(key,None)
+env.update({'XDG_CACHE_HOME':str(base/'runtime-cache'),'ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache')})
+runenv=env|{'SHARDS_ADVERSARIAL_NATIVE_CHANNEL':'stdout','SHARDS_ADVERSARIAL_NATIVE_RUN':str(uuid.uuid4()),'SHARDS_ADVERSARIAL_NATIVE_GENERATION':'1','SHARDS_ADVERSARIAL_NATIVE_PHASE_MS':'240000','SHARDS_ADVERSARIAL_NATIVE_CLEANUP_MS':'15000','SHARDS_ADVERSARIAL_NATIVE_OUTER_MS':'255000','SHARDS_ADVERSARIAL_NATIVE_SOURCE_REVISION':revision,'SHARDS_ADVERSARIAL_NATIVE_RECORDS':str(records/'records')}
+assert 'SHARDS_ADVERSARIAL_NATIVE_ERRNO' not in runenv
+(records/'environment.json').write_text(json.dumps({k:v for k,v in runenv.items() if k.startswith('SHARDS_')},indent=2)+'\n')
+args=['timeout','--signal=KILL','255s',str(binary),'--ignored','--exact','tenant_exit::current_controls::native_terminal::canonical_open_empty_finish_retains_unacked_record_until_authorized_replay','--nocapture','--test-threads=1']
+(records/'command.json').write_text(json.dumps(args)+'\n')
+(records/'source-and-binary.json').write_text(json.dumps({'source':revision,'fixture':identity,'source_scope':scope,'one_case_only':True,'retry_count':0,'admission_dependency':'peer Closed/local join are not server connection retirement; one replay only, exact failure retained without workaround'},indent=2)+'\n')
+began=time.monotonic()
+with (records/'stdout').open('wb') as out,(records/'stderr').open('wb') as err:
+ result=subprocess.run(args,cwd=source,env=runenv,stdout=out,stderr=err,timeout=270)
+(records/'exit').write_text(str(result.returncode)+'\n')
+stdout=(records/'stdout').read_text(errors='replace');stderr=(records/'stderr').read_text(errors='replace')
+actual={}
+for path in sorted((records/'records').glob('*')):
+ if path.is_file():
+  data=path.read_bytes();item={'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}
+  if path.suffix=='.json':item['actual']=json.loads(data)
+  actual[path.name]=item
+summary={'source':revision,'fixture_sha256':identity['sha256'],'exit':result.returncode,'elapsed_s':time.monotonic()-began,'running_one_test':'running 1 test' in stdout,'actual_test_summary':re.findall(r'test result: [^\n]+',stdout),'actual_records':actual,'replay_ack_evidence':{'replay_recorded':'replay-before-ack.json' in actual,'ack_credit_recorded':'actual-ack-credit.json' in actual},'limits':'Absence of a file is not a write0 or connection-retirement receipt; actual first FIN/event/state/cleanup records decide reached coverage.'}
+(records/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
+assert hashlib.sha256(binary.read_bytes()).hexdigest()==identity['sha256']
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+for name,digest in (scope['owned_source']|scope['unchanged']).items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+print(json.dumps({'source':revision,'exit':result.returncode,'stdout':stdout,'stderr':stderr,'actual':summary},indent=2),flush=True)
+if result.returncode:raise SystemExit(result.returncode)
+assert 'running 1 test' in stdout and '1 passed; 0 failed; 0 ignored;' in stdout
+teardown=actual['teardown.json']['actual'];assert teardown['protocol_complete'] and teardown['cleanup_completed'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']
+assert summary['replay_ack_evidence']=={'replay_recorded':True,'ack_credit_recorded':True}
+PY

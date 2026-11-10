@@ -1,0 +1,22 @@
+{
+  "kind": "local static command/source/policy readback ONLY; no caller compile or test",
+  "source": "9764144d5a7170c1ba6607ecd0222a0015db12de",
+  "all_existing_source_hashes_equal": true,
+  "command_bodies_ast_parsed": 7,
+  "new_private_toolchain_not_global": true,
+  "native_cases_started": 0,
+  "active_build_job": "r172",
+  "mac_free_bytes": 159671156736,
+  "policy_command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "policy_exit": 0,
+  "policy_stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "policy_stderr": "",
+  "collector_sha256": "47c7eea3b7eef26ca5a097b1c63003b1e7e529a7146f2888aecb93bacf87baa9"
+}

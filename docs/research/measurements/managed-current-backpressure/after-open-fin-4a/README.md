@@ -18,3 +18,13 @@ The immutable historical2c continuation archive/index paths and Git blobs are
 in [continuation-locators.json](continuation-locators.json). ROOT verification is
 pending; the original1513 payloads+manifest1514 total members were not regenerated
 or adopted into this candidate.
+
+ROOT subsequently approved ONE exact case: [GO-RECEIPT.md](GO-RECEIPT.md).
+Execution source stays9764144d5a7170c1ba6607ecd0222a0015db12de. The initial
+r171 preflight stopped on host Zig0.17 before compilation; its failure remains
+retained. Normally admitted r172 selects private pinned0.16 and starts the first
+fullcaller build within the original build deadline. No pure/Clippy/native result
+or native job exists at this progress snapshot. See [RUN-HANDOFF.md](RUN-HANDOFF.md),
+[PINNED-TOOLCHAIN.md](PINNED-TOOLCHAIN.md) and [execution-source.json](execution-source.json).
+ROOT's later Capturing integration failure is separate, as recorded in
+[INTEGRATION-NOTE.md](INTEGRATION-NOTE.md); the active campaign is not rebased.

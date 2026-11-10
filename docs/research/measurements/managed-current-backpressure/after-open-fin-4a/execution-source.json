@@ -1,0 +1,65 @@
+{
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source_revision": "9764144d5a7170c1ba6607ecd0222a0015db12de",
+  "source_tree": "2b86b43a2b988281f19d7b9a724c1eef7ae26347",
+  "source_parent": "4a6c4321686fdcdf1db86a9b18325ec1427436bd",
+  "owned_source": {
+    "crates/shards/tests/managed_output/current_controls/native_terminal.rs": "cd3c763c303dfcff0f08b5b94d84a9d9dc1c2ed69ba3515e04b23b98c7a13ccb"
+  },
+  "unchanged": {
+    "crates/shards/tests/common/managed_capture.rs": "6add609e120defa2a2d3969d51a5f22f025f90f6b61ace696f8d6a84b0dd3d72",
+    "crates/shards/tests/managed_output/current_controls.rs": "f6e8091a6f25a7f368af96bea1c6641bcfde9bf7359fd6db30bc875dfbb99fd8",
+    "crates/shards/tests/managed_output/current_controls/write_receipts.rs": "c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa",
+    "crates/shards/tests/managed_output/current_controls/contract.rs": "daf9a45b516ecf1fe5fc2a049d1c82aeafffd189d1274735228c702b8968d06b",
+    "crates/shards/tests/managed_output/current_controls/control_inputs.rs": "7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+    "crates/shards/tests/managed_output.rs": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938",
+    "crates/remote/src/managed.rs": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+    "crates/remote/src/net.rs": "e3cf92dbff95d0302b96199d170ade037361585bf425a766a226ce09d8f0c678",
+    "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01"
+  },
+  "execution_approval": "ROOT GO exact ONE stdout AfterOpenEmptyFinish case, current user message after976 source review",
+  "hardware_state": "Original ask normally admitted r172:4idle/84GB free/2CPU4GiB24GiB, remaining original build deadline3199s; private pinnedZig0.16 acquisition/first compile underway. r171 preflight1 preserved.",
+  "case_started": false,
+  "build_started": true,
+  "native_job_id": null,
+  "command_text_ast_parse": "3/3 syntax only; not caller compilation/pure/Clippy/native execution",
+  "resources": "Linux GNU2CPU4GiB24GiB/j4 unchanged",
+  "build_outer_s": 3600,
+  "native_phase_ms": 240000,
+  "native_cleanup_ms": 15000,
+  "native_hard_outer_s": 255,
+  "prospective_private_base": "/home/adalundhe/managed-after-open-fin-4a-v1",
+  "commands": {
+    "approved-build.command.txt": "10200e5fe47b824630d36d9f80192903e4005c205d0ff30f0b100edcc6933edb",
+    "approved-checks.command.txt": "88e70bf429c5b1263ecacc24dba8859c4c8ca551e3f3dac5170dc29a90730f2d",
+    "approved-native.command.txt": "c93463c29f60342cf501cac6cb00b900bff812023c7436b8fd741f4a850d260d",
+    "pinned-build.command.txt": "13b2e15fd0e47d8ee5d33aaee3aa26a9c3df6ad4d89086548e3ecb27b8d43250",
+    "pinned-checks.command.txt": "f35b200e4bf3445f77c97291690da40f0baaa79397a80735d5c8594768dd7d15",
+    "pinned-native.command.txt": "4df09bcfd6dffbc657ec371b8286467150424984e1a16f54f507b71afe6b29af",
+    "collect.command.txt": "47c7eea3b7eef26ca5a097b1c63003b1e7e529a7146f2888aecb93bacf87baa9"
+  },
+  "root_gates_owed": "Evidence review/integration/matrix; all new actual compilation/pure/Clippy/native gates currently unrun. No VM/mutation/profile authorized.",
+  "build_job_id": "r172",
+  "actual_build_runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "actual_private_base": "/home/adalundhe/managed-after-open-fin-4a-v1",
+  "actual_build_host_preflight": {
+    "platform": "Linux-7.2.9-2-cachyos-x86_64-with-glibc2.44",
+    "libc": [
+      "glibc",
+      "2.44"
+    ],
+    "machine": "x86_64",
+    "disk_free_bytes": 424985124864
+  },
+  "original_build_deadline_epoch_s": 1794353589.118,
+  "private_pinned_toolchain": "runtime-cache/toolchain/zig-x86_64-linux-0.16.0, official archive70e496... source scripts/install-zig; private process PATH only",
+  "previous_preflight_job": {
+    "id": "r171",
+    "exit": 1,
+    "rust_compilation_started": false,
+    "native_cases_started": 0,
+    "cause": "PATH Zig0.17 versus repository0.16, kept strict"
+  }
+}

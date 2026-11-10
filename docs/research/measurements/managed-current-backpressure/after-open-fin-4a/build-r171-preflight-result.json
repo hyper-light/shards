@@ -1,0 +1,14 @@
+{
+  "result": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "{\"phase\": \"policy\", \"started\": true, \"original_outer_remaining_s\": 3496.873472038016}\n{\"phase\": \"policy\", \"exit\": 0, \"stdout_tail\": \"Development policy checks passed; evidence/coordinator review is still required.\\n\", \"stderr_tail\": \"\"}\n{\"phase\": \"installed-toolchains\", \"started\": true, \"original_outer_remaining_s\": 3496.8576551189763}\n{\"phase\": \"installed-toolchains\", \"exit\": 0, \"stdout_tail\": \"stable-x86_64-unknown-linux-gnu (default)\\n1.88-x86_64-unknown-linux-gnu\\n1.88.0-x86_64-unknown-linux-gnu\\n1.94.1-x86_64-unknown-linux-gnu\\n1.98.0-x86_64-unknown-linux-gnu\\n1.98.1-x86_64-unknown-linux-gnu (active)\\n1.99.0-x86_64-unknown-linux-gnu\\n1.99.1-x86_64-unknown-linux-gnu\\n\", \"stderr_tail\": \"\"}\n{\"phase\": \"rustc\", \"started\": true, \"original_outer_remaining_s\": 3496.088764832006}\n{\"phase\": \"rustc\", \"exit\": 0, \"stdout_tail\": \"rustc 1.98.1 (48a229cea 2026-09-01)\\nbinary: rustc\\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\\ncommit-date: 2026-09-01\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.98.1\\nLLVM version: 22.1.8\\n\", \"stderr_tail\": \"\"}\n{\"phase\": \"cargo\", \"started\": true, \"original_outer_remaining_s\": 3496.0729237290216}\n{\"phase\": \"cargo\", \"exit\": 0, \"stdout_tail\": \"cargo 1.98.1 (797e8a9bc 2026-08-05)\\n\", \"stderr_tail\": \"\"}\n{\"phase\": \"zig\", \"started\": true, \"original_outer_remaining_s\": 3496.0410385139985}\n{\"phase\": \"zig\", \"exit\": 0, \"stdout_tail\": \"0.17.0\\n\", \"stderr_tail\": \"\"}\nTraceback (most recent call last):\n  File \"<stdin>\", line 35, in <module>\nAssertionError: use the repository pinned existing toolchain, no fallback\n",
+    "running": false,
+    "exit_code": 1
+  },
+  "calls": [
+    {
+      "name": "machines.output",
+      "ok": true
+    }
+  ]
+}
