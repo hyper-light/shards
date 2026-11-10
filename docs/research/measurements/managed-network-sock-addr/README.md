@@ -103,9 +103,30 @@ Actual r123: GNU pure units0, musl pure units0, GNU clippy `-D warnings`0,
 musl clippy `-D warnings`0. Earlier r120/r121 retain helper module/include path
 and source type-inference reds; r122 had both unit suites0 then clippy101 for
 private visibility/collapsible-if, corrected in r123. These are compiler/fixture
-results, never actual routing or BPF verifier results. Raw packaging follows
-separately. Full crate/host-fixture build, workspace panic lint gate, seven-target
-matrix and all runtime behavior are unrun at this initial source checkpoint.
+results, never actual routing or BPF verifier results. The subsequent final source-linked r128 has both pure unit suites0 and GNU/musl
+clippy0 with the workspace panic-lint subset, unsafe-op and undocumented-unsafe
+checks explicitly denied (see raw commands). Its only guest-source change is one
+adjacent SAFETY comment after actual r127 lint101. Full workspace lints, actual
+host common implementation, seven-target matrix and all runtime behavior remain
+unrun in this lane.
+
+Host extraction r124 actually failed on a missing assertion separator (a Linux ABI
+comment swallowed the comma); signed a3296a665 corrects only that syntax. Actual
+r125 then failed E0308 on integer0 versus common::Run status Option<i32>; signed
+f35e1d48f corrects only Some(0). Actual r126 host extraction compile0 and exactly
+one pure record-parser test0. `light-host.py` copies the actual host caller but
+uses explicitly inert, type-matching common stubs; it does not compile or run real
+VM helpers and cannot replace coordinator full host compilation.
+
+A source concern about the new mount cleanup thread using setns with shared
+CLONE_FS is **unverified**. Root requires actual runtime reproduction before any
+remedy under R09. No CLONE_FS change or draft exists in this checkpoint. Root owns
+that reproduction; source suspicion is not a confirmed failure.
+
+Raw compiler logs/commands/source snapshots/hashes and test-binary identities are
+retained in `light/`; no executable binary bytes are in the archive. Initial failed
+helper setups and before-correction source snapshots are preserved. `pack-light.py`
+replays the safe artifact packaging. No source/evidence/compiler cache was deleted.
 
 Coordinator invocation, with caller-supplied absolute experimental kernel/config
 and prebuilt source-matching CLI/helpers/testguest (never production pin fallback):
@@ -132,13 +153,13 @@ reports failure. Current source does not predict or claim observed runtime statu
 
 |Rule|This scoped checkpoint; remaining proof|
 |---|---|
-|R01|New encoding reserves derived capacity, checked arithmetic/widths/slices, no explicit panic outside unit assertions. Standard Command/path/file/report and thread runtime allocations are not fault-injected or proven panic-free. Full workspace lints/fault behavior owed.|
+|R01|Scoped GNU/musl panic-lint subset and unsafe-comment checks0 (not full workspace/fault proof). New encoding reserves derived capacity, checked arithmetic/widths/slices, no explicit panic outside unit assertions. Standard Command/path/file/report and thread runtime allocations are not fault-injected or proven panic-free. Full workspace lints/fault behavior owed.|
 |R02|Pinned primary mechanisms/alternatives above; actual UDP-local red linked. New comparison has no live outcome yet; root selects after real evidence.|
 |R03|UAPI/protocol field widths and finite Binary/Empty semantic script; actual OS ports; caller deadline. No arbitrary replacement cap/default timeout.|
 |R04|Controller/client roles, typed stages, Exact/Mismatch, Running/Reaped, mount lifecycle, shared worker states. Actual error/reap/join/detach paths owed.|
 |R05|One existing UDP worker implementation, actual readiness/pidfd/eventfd/joins; no periodic probes/cache/maps/generic loader. Current work versus outer VM deadline distinction explicit.|
 |R06|Private fixed ABI adapter, two real hook callers, finite straight-line emitter; coordinator source review pending.|
-|R07|Comments identify unsafe/pre-exec/ABI/ownership obligations; citations above.|
+|R07|Comments identify unsafe/pre-exec/ABI/ownership obligations; citations above. Actual r127 missing-adjacent-comment red retained, r128 corrected green.|
 |R08|No speed/resource claim;4–5x target not measured/achieved.|
 |R09|Prior local original-tuple reservation failure is actual coordinator evidence. This alternative has no live reproduction/remedy claim.|
 |R10|Runnable source/light driver and exact owed guest invocation; raw compiler packaging separate; coordinator runtime/mutation logs owed.|

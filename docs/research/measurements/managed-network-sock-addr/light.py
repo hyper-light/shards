@@ -44,12 +44,15 @@ dev = proof / 'devcgroup'
 dev.mkdir()
 (dev / 'Cargo.toml').write_text('[package]\nname="shards-devcgroup"\nversion="0.0.0"\nedition="2024"\n[lib]\npath='+json.dumps(str(source/'crates/devcgroup/src/lib.rs'))+'\n')
 env = dict(os.environ, CARGO_TARGET_DIR=str(proof/'target'))
+lint_flags = ['-D', 'warnings', '-D', 'unsafe_op_in_unsafe_fn']
+for lint in ['unwrap_used','expect_used','panic','panic_in_result_fn','todo','unimplemented','unreachable','indexing_slicing','string_slice','print_stdout','print_stderr','undocumented_unsafe_blocks']:
+    lint_flags += ['-D', 'clippy::'+lint]
 commands = [
     ['rustup','run','1.98.1','rustc','--version','--verbose'],
     ['cargo','+1.98.1','test','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','-j4'],
     ['cargo','+1.98.1','test','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','--target','x86_64-unknown-linux-musl','-j4'],
-    ['cargo','+1.98.1','clippy','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','--target','x86_64-unknown-linux-gnu','-j4','--','-D','warnings'],
-    ['cargo','+1.98.1','clippy','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','--target','x86_64-unknown-linux-musl','-j4','--','-D','warnings'],
+    ['cargo','+1.98.1','clippy','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','--target','x86_64-unknown-linux-gnu','-j4','--']+lint_flags,
+    ['cargo','+1.98.1','clippy','--offline','--manifest-path',str(helper/'Cargo.toml'),'--lib','--target','x86_64-unknown-linux-musl','-j4','--']+lint_flags,
 ]
 results=[]
 for index, command in enumerate(commands):

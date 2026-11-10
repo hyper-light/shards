@@ -538,6 +538,7 @@ impl Cgroup {
             {
                 return Err(io::Error::last_os_error());
             }
+            // SAFETY: cgroup2 target is the fresh fixture path in this NEW mount namespace.
             if unsafe {
                 libc::mount(
                     c"none".as_ptr(),
