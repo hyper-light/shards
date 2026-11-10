@@ -14,7 +14,8 @@ bytes = "1"
 # quinn-proto 0.11.18 and rustls 0.23.45 (D180). Without its qlog traces, whose crate turns on
 # serde_json's `preserve_order` for the whole build: shards' JSON is Docker's, its maps sorted
 # (hyper-quic's VENDORED.md §20).
-hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac276d2d53296de24c2a43837baf66ed1cbd", default-features = false }
+# EXPERIMENTAL private RPK type-policy measurement; not an adopted production pin.
+hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "233b7fcef7a363327c5439b191724a38065062cd", default-features = false }
 sha2 = "0.11"
 # A file of its user's alone wherever it is: an identity's, an invitation's.
 shards-ipc = { path = "../ipc" }
