@@ -4028,6 +4028,19 @@ impl<D: Disk> Daemon<D> {
             },
             None => None,
         };
+        #[cfg(windows)]
+        let capture = match capture.map(|stream| stream.share()).transpose() {
+            Ok(handle) => handle,
+            Err(error) => {
+                log(format_args!(
+                    "{id}: sharing managed capture: {:?}, OS code {:?}",
+                    error.kind(),
+                    error.raw_os_error()
+                ));
+                fails("managed capture handle could not be shared");
+                return None;
+            }
+        };
         if let Some(capture) = &capture {
             fds.push(capture.as_fd());
         }

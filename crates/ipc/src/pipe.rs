@@ -2376,6 +2376,28 @@ mod tests {
         });
     }
 
+    #[test]
+    fn a_shared_plain_handle_survives_the_original_stream_and_keeps_half_close() {
+        let (parent, original) = Stream::plain_pair().unwrap();
+        let handle = original.share().unwrap();
+        drop(original);
+        let child = Stream::given(handle).unwrap();
+        for stream in [&parent, &child] {
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(10))).unwrap();
+        }
+        (&child).write_all(b"capture\0\xff").unwrap();
+        child.shutdown(Shutdown::Write).unwrap();
+        let mut captured = Vec::new();
+        (&parent).read_to_end(&mut captured).unwrap();
+        assert_eq!(captured, b"capture\0\xff");
+        (&parent).write_all(b"credit\0\x80").unwrap();
+        parent.shutdown(Shutdown::Write).unwrap();
+        let mut credit = Vec::new();
+        (&child).read_to_end(&mut credit).unwrap();
+        assert_eq!(credit, b"credit\0\x80");
+    }
+
     /// Messages are taken as each comes whole, waiting for nothing, as Unix's `Incoming`
     /// takes a socket's: none come is partial; one with handles comes with them; one cut
     /// short after its header is kept until its rest comes; and the peer's end is the end.
