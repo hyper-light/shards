@@ -17512,6 +17512,9 @@ completeness; `--network=none` and `host` steps.
   an untrusted HTTPS host's 502, nothing past the proxy, the step's log lines byte for
   byte, the provenance, the step from the cache with its requests asked again, run again
   under a policy refusing one, and run with the network open once no cap is asked for.
+  Its six proxy addresses are checked against the guest's own default route, read from
+  `/proc/net/route`: the builder retains the bridge it elected at startup, whereas a
+  second election on the host after the build may see changed routes.
   Mutation-checked, 68 guards, each mutant killed: the network process's one flow (4); the
   CA's PEM reading, markers, bound, regular file, mode and cleanup (11); the proxy's
   questions, URLs, Go's head checks and bounds, keep-alive and discards, the reach,
