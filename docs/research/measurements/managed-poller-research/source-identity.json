@@ -1,0 +1,611 @@
+{
+  "schema": "managed-poller-source-identity-v1",
+  "scope": "Two scoped literals: Unix Poller capacity and guest Memory::relieve inotify read storage; no runtime measurement",
+  "base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "policy_rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "projects": [
+    {
+      "id": "linux",
+      "repository": "https://github.com/torvalds/linux",
+      "ref": "v6.18",
+      "commit": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "commit_date": "2025-11-30T22:42:10Z",
+      "ref_resolution": {
+        "url": "https://api.github.com/repos/torvalds/linux/commits/v6.18",
+        "resolved_url": "https://api.github.com/repos/torvalds/linux/commits/v6.18",
+        "status": 200,
+        "retrieved_utc": "2026-11-10T14:00:49.223112+00:00",
+        "bytes": 3907,
+        "sha256": "e56b9c643d85850d78c5238724a9e21ac7a98ea9838a7dd8e296603836c0af54",
+        "etag": "W/\"e56b9c643d85850d78c5238724a9e21ac7a98ea9838a7dd8e296603836c0af54\"",
+        "last_modified": "Sun, 30 Nov 2025 22:42:10 GMT"
+      }
+    },
+    {
+      "id": "xnu",
+      "repository": "https://github.com/apple-oss-distributions/xnu",
+      "ref": "xnu-11417.101.15",
+      "commit": "e3723e1f17661b24996789d8afc084c0c3303b26",
+      "commit_date": "2025-05-01T23:13:55Z",
+      "ref_resolution": {
+        "url": "https://api.github.com/repos/apple-oss-distributions/xnu/commits/xnu-11417.101.15",
+        "resolved_url": "https://api.github.com/repos/apple-oss-distributions/xnu/commits/xnu-11417.101.15",
+        "status": 200,
+        "retrieved_utc": "2026-11-10T14:00:49.657053+00:00",
+        "bytes": 883114,
+        "sha256": "1279bc4cfec30da45d3953d53c51c17e84c3247868e90e02be5f212acf17cce4",
+        "etag": "W/\"1279bc4cfec30da45d3953d53c51c17e84c3247868e90e02be5f212acf17cce4\"",
+        "last_modified": "Thu, 01 May 2025 23:13:55 GMT"
+      }
+    },
+    {
+      "id": "libevent",
+      "repository": "https://github.com/libevent/libevent",
+      "ref": "release-2.1.12-stable",
+      "commit": "5df3037d10556bfcb675bc73e516978b75fc7bc7",
+      "commit_date": "2020-07-05T12:02:46Z",
+      "ref_resolution": {
+        "url": "https://api.github.com/repos/libevent/libevent/commits/release-2.1.12-stable",
+        "resolved_url": "https://api.github.com/repos/libevent/libevent/commits/release-2.1.12-stable",
+        "status": 200,
+        "retrieved_utc": "2026-11-10T14:00:50.122566+00:00",
+        "bytes": 410932,
+        "sha256": "76389cd682367653903d51a80de8cbbea5ae5c232606b5dd0c8c795fdf14d333",
+        "etag": "W/\"76389cd682367653903d51a80de8cbbea5ae5c232606b5dd0c8c795fdf14d333\"",
+        "last_modified": "Sun, 05 Jul 2020 12:02:46 GMT"
+      }
+    },
+    {
+      "id": "mio",
+      "repository": "https://github.com/tokio-rs/mio",
+      "ref": "v1.1.0",
+      "commit": "3a1b47180161fe191a8f8a8cc0e1cc572678aab2",
+      "commit_date": "2025-10-17T12:38:43Z",
+      "ref_resolution": {
+        "url": "https://api.github.com/repos/tokio-rs/mio/commits/v1.1.0",
+        "resolved_url": "https://api.github.com/repos/tokio-rs/mio/commits/v1.1.0",
+        "status": 200,
+        "retrieved_utc": "2026-11-10T14:00:50.394718+00:00",
+        "bytes": 6539,
+        "sha256": "0f7cc4e27047da11cdb7d53fd80e428c54db759f5fe799e1afd6021941bc59c7",
+        "etag": "W/\"0f7cc4e27047da11cdb7d53fd80e428c54db759f5fe799e1afd6021941bc59c7\"",
+        "last_modified": "Fri, 17 Oct 2025 12:38:43 GMT"
+      }
+    },
+    {
+      "id": "rust",
+      "repository": "https://github.com/rust-lang/rust",
+      "ref": "1.91.0",
+      "commit": "f8297e351a40c1439a467bbbb6879088047f50b3",
+      "commit_date": "2025-10-28T16:34:16Z",
+      "ref_resolution": {
+        "url": "https://api.github.com/repos/rust-lang/rust/commits/1.91.0",
+        "resolved_url": "https://api.github.com/repos/rust-lang/rust/commits/1.91.0",
+        "status": 200,
+        "retrieved_utc": "2026-11-10T14:00:50.846298+00:00",
+        "bytes": 5990,
+        "sha256": "b7ddecc84403cde29089e0a2860e030a306b2370d66f37016f2292ab23f28679",
+        "etag": "W/\"b7ddecc84403cde29089e0a2860e030a306b2370d66f37016f2292ab23f28679\"",
+        "last_modified": "Tue, 28 Oct 2025 16:34:16 GMT"
+      }
+    }
+  ],
+  "sources": [
+    {
+      "id": "linux:fs/eventpoll.c",
+      "project": "linux",
+      "path": "fs/eventpoll.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "lines": 2630,
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/eventpoll.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:50.952355+00:00",
+      "bytes": 70850,
+      "sha256": "7ee6ef3a3f6a9ecf63a1731caafb29b4977796198962e13acee4dc88c1e7386c",
+      "etag": "\"222f2c507474722d3bd51418c6e608f474a9e34ba1b5b3cf31f0adb52d0a0ac2\"",
+      "last_modified": null
+    },
+    {
+      "id": "linux:include/uapi/linux/eventpoll.h",
+      "project": "linux",
+      "path": "include/uapi/linux/eventpoll.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+      "lines": 101,
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/eventpoll.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/eventpoll.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:50.925423+00:00",
+      "bytes": 3063,
+      "sha256": "5550fcd320468d703a56172a35ab6f46dd6b1ca858bf5832df74af693ebd78fd",
+      "etag": "\"c09fa715827a7af5eade00d075822b6141f3434311edee9455095ea511185916\"",
+      "last_modified": null
+    },
+    {
+      "id": "xnu:bsd/kern/kern_event.c",
+      "project": "xnu",
+      "path": "bsd/kern/kern_event.c",
+      "revision": "e3723e1f17661b24996789d8afc084c0c3303b26",
+      "lines": 9811,
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/kern/kern_event.c",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/kern/kern_event.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:50.976121+00:00",
+      "bytes": 265703,
+      "sha256": "31883075b6945969546451f2b979087d9e42dadf4aac19b3410b26551f36cd29",
+      "etag": "\"a8e6850f309d8084aa8962785ad793d55cb8fc0f17070b6a743a427839783173\"",
+      "last_modified": null
+    },
+    {
+      "id": "xnu:bsd/sys/event.h",
+      "project": "xnu",
+      "path": "bsd/sys/event.h",
+      "revision": "e3723e1f17661b24996789d8afc084c0c3303b26",
+      "lines": 400,
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/sys/event.h",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/e3723e1f17661b24996789d8afc084c0c3303b26/bsd/sys/event.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:50.934170+00:00",
+      "bytes": 18152,
+      "sha256": "a172b971272e10ced09ea58b2d74aea333901b8a7ed27864a261df79adc4714c",
+      "etag": "\"ab9103589a692ec4d84cb1744b1a8c963fd0dd85dec0cb0c4ba9784783afdf05\"",
+      "last_modified": null
+    },
+    {
+      "id": "libevent:epoll.c",
+      "project": "libevent",
+      "path": "epoll.c",
+      "revision": "5df3037d10556bfcb675bc73e516978b75fc7bc7",
+      "lines": 545,
+      "url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/epoll.c",
+      "resolved_url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/epoll.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.005359+00:00",
+      "bytes": 14881,
+      "sha256": "5c100a8e563f8158c3200025b9ed09e239215428b96b83c310f05ea0b380b4d3",
+      "etag": "\"5d2a14a681a56fea682ff82292f3964d2e00447ceb952a134b212c8fcec35e23\"",
+      "last_modified": null
+    },
+    {
+      "id": "libevent:kqueue.c",
+      "project": "libevent",
+      "path": "kqueue.c",
+      "revision": "5df3037d10556bfcb675bc73e516978b75fc7bc7",
+      "lines": 580,
+      "url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/kqueue.c",
+      "resolved_url": "https://raw.githubusercontent.com/libevent/libevent/5df3037d10556bfcb675bc73e516978b75fc7bc7/kqueue.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.010813+00:00",
+      "bytes": 15128,
+      "sha256": "437959d1e702ebb86c634986882f844b62bea963375d7d59095feedb1d6b6a49",
+      "etag": "\"f58e24d43851591345dc9fdcfc9b4f140ab94871c1e0e159ec3594e28362178c\"",
+      "last_modified": null
+    },
+    {
+      "id": "mio:src/sys/unix/selector/epoll.rs",
+      "project": "mio",
+      "path": "src/sys/unix/selector/epoll.rs",
+      "revision": "3a1b47180161fe191a8f8a8cc0e1cc572678aab2",
+      "lines": 237,
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/epoll.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.025439+00:00",
+      "bytes": 6883,
+      "sha256": "689ade2c72f85caa204edada855790b7a617f78bc759487304be24c6ec4efb2d",
+      "etag": "\"bc23ddb1ebad7c444a5443e866e4212380c3ea5d991554764ca77e0506fcea88\"",
+      "last_modified": null
+    },
+    {
+      "id": "mio:src/sys/unix/selector/kqueue.rs",
+      "project": "mio",
+      "path": "src/sys/unix/selector/kqueue.rs",
+      "revision": "3a1b47180161fe191a8f8a8cc0e1cc572678aab2",
+      "lines": 921,
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/kqueue.rs",
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/sys/unix/selector/kqueue.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.057974+00:00",
+      "bytes": 29311,
+      "sha256": "b5b1825f45925e6913a1b5130766b99623fd70d479b56e6e1ac9979002db4295",
+      "etag": "\"12e118980ab4487ae5e6728f216b9c5f7884350165e42847564e29f4460ab799\"",
+      "last_modified": null
+    },
+    {
+      "id": "mio:src/event/events.rs",
+      "project": "mio",
+      "path": "src/event/events.rs",
+      "revision": "3a1b47180161fe191a8f8a8cc0e1cc572678aab2",
+      "lines": 230,
+      "url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/event/events.rs",
+      "resolved_url": "https://raw.githubusercontent.com/tokio-rs/mio/3a1b47180161fe191a8f8a8cc0e1cc572678aab2/src/event/events.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.083410+00:00",
+      "bytes": 5792,
+      "sha256": "5cad85e0d0c9e619b6017f868c681ed0dc023e7aae8c0c5c0c7337b2fa96a8a6",
+      "etag": "\"03240b7d9f73ec2b239b9ba0c2dfe4db6a85682bb077e6618309d127c027afee\"",
+      "last_modified": null
+    },
+    {
+      "id": "rust:library/alloc/src/vec/mod.rs",
+      "project": "rust",
+      "path": "library/alloc/src/vec/mod.rs",
+      "revision": "f8297e351a40c1439a467bbbb6879088047f50b3",
+      "lines": 4315,
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/vec/mod.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.274717+00:00",
+      "bytes": 158242,
+      "sha256": "d4684df2b3c53ed24632b5450cb272e9eeb19987cb305cacf506358f4f489ca2",
+      "etag": "\"46b9f765b630bf93faf34bc4d74130ece85927fc98e49680771dd210741c50a1\"",
+      "last_modified": null
+    },
+    {
+      "id": "rust:library/alloc/src/raw_vec/mod.rs",
+      "project": "rust",
+      "path": "library/alloc/src/raw_vec/mod.rs",
+      "revision": "f8297e351a40c1439a467bbbb6879088047f50b3",
+      "lines": 799,
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/f8297e351a40c1439a467bbbb6879088047f50b3/library/alloc/src/raw_vec/mod.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:51.278710+00:00",
+      "bytes": 29400,
+      "sha256": "5c51411a79a9c48ce17940080603d7129a7426dec86ae43d1d8924f7bfa8198a",
+      "etag": "\"980a329d273fb9111a7aaae5633cdbfc6fd64c35ea6e223cef2c8985310dfd64\"",
+      "last_modified": null
+    },
+    {
+      "id": "man7-epoll-wait",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision",
+      "url": "https://man7.org/linux/man-pages/man2/epoll_wait.2.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man2/epoll_wait.2.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:52.097047+00:00",
+      "bytes": 16916,
+      "sha256": "9a9df66b116c6234fd2b587c23ac4bcb43c1b0be8ab200fdfc281b565b0997a2",
+      "etag": "\"4214-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT"
+    },
+    {
+      "id": "man7-epoll",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision",
+      "url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man7/epoll.7.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:52.941239+00:00",
+      "bytes": 29690,
+      "sha256": "bbc1eb5e9e5fe34342d6836ee6283f510cceedbf4ba55fc9b8d0557d52f9f14e",
+      "etag": "\"73fa-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT"
+    },
+    {
+      "id": "apple-kqueue-archive",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision",
+      "url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html",
+      "resolved_url": "https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:00:53.246140+00:00",
+      "bytes": 29556,
+      "sha256": "89581e15d32ad4f9303241a39d5d8e63fd0fd88e4ea446a0d630c958d65c73ef",
+      "etag": null,
+      "last_modified": "Fri, 30 Jan 2026 23:12:48 GMT"
+    },
+    {
+      "id": "linux:include/uapi/linux/inotify.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/uapi/linux/inotify.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.202144+00:00",
+      "bytes": 3304,
+      "sha256": "48c09a53335353490f94cd465c96f092d0b3a9736b42aae8691e41b9c6390370",
+      "etag": "\"aeb79b4b705e64eedb3a229d6c833f0ebd5f7421275dc0993c341c28e64e7717\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "include/uapi/linux/inotify.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_user.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_user.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.196207+00:00",
+      "bytes": 22108,
+      "sha256": "9a98d8a927c6b2ffa2d403cc52bb1cf45a65f30048143be3dc1178d8e6c1cf3e",
+      "etag": "\"3da8f63efcd371107b4887768c6c5b485c3c3c0c082600c4bebef7412144a4e2\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/inotify/inotify_user.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/inotify/inotify_fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/inotify/inotify_fsnotify.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.205902+00:00",
+      "bytes": 5998,
+      "sha256": "ac62662f1843eb4d899d8adb419fe3393d1f4f0ab29d2123aa1abcaaf1203096",
+      "etag": "\"2bbda79433ddb4a3f5df6a2d41760b534010c239e08fdf0b81d5bee66322e371\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/inotify/inotify_fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/fsnotify.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/fsnotify.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.196554+00:00",
+      "bytes": 23595,
+      "sha256": "a29dc638b23cee7f5334746f9d36ff65529f90539534ca632b00d10c264cf8e1",
+      "etag": "\"9b595cf1c0121beca045791494aacdfa559abdc1acdfc5702e5aae0ec33fc335\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/fsnotify.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/notify/notification.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/notify/notification.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.269628+00:00",
+      "bytes": 5797,
+      "sha256": "3a756d5c49b822aa8d88c198866d6ab74aac7252c7f2f632cddbecf9d646f981",
+      "etag": "\"c49c1d693713d59a5b9f2ce258bd298c099c74171e0d3e8ac850f94898fb58aa\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/notify/notification.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:fs/kernfs/file.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/kernfs/file.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.279682+00:00",
+      "bytes": 28107,
+      "sha256": "32d8998ea0ffac621b535748f6a327c6e1f126e0f75f4a54b98319b475599cb7",
+      "etag": "\"8e53e1c410b1d02a09d6ae5417ae9510f38c8a8acffc2b514a092dd7fe449134\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "fs/kernfs/file.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:Documentation/admin-guide/cgroup-v2.rst",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/Documentation/admin-guide/cgroup-v2.rst",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.326429+00:00",
+      "bytes": 128488,
+      "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97",
+      "etag": "\"de3193f04492af1410cd60e7e65248cf037f026be6c911bd9bd157bc91b22003\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "Documentation/admin-guide/cgroup-v2.rst",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:mm/memcontrol.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/mm/memcontrol.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.329504+00:00",
+      "bytes": 147656,
+      "sha256": "537b9bdde4a0adade97279051fbce43590a18390293dd1119af15ea08267cbba",
+      "etag": "\"59fe916019182714f2ac68190eb45a3fdfbc02747f5cf48f9d902cbc689a97fb\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "mm/memcontrol.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:include/linux/memcontrol.h",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/include/linux/memcontrol.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.361114+00:00",
+      "bytes": 48700,
+      "sha256": "e82eed5049eec3c0cf080095814d0582baf95408366350e2057dd04f2467585f",
+      "etag": "\"69d37b312da0c01f8fbd0e36f60e63add3237d2231786019bb7c359c6e3de4db\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "include/linux/memcontrol.h",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "linux:kernel/cgroup/cgroup.c",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/kernel/cgroup/cgroup.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:57.406518+00:00",
+      "bytes": 199222,
+      "sha256": "de44cafc76c19f8da3289ae23e4f12ed0ba43cbe7ceb6c5822e34ac570371616",
+      "etag": "\"0e8ca5e29b8187c5ba81d417b0c8c859cacad0b413ad8e92b7e60330393bae82\"",
+      "last_modified": null,
+      "project": "linux",
+      "path": "kernel/cgroup/cgroup.c",
+      "revision": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449"
+    },
+    {
+      "id": "man7-inotify",
+      "url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man7/inotify.7.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:58.152288+00:00",
+      "bytes": 44066,
+      "sha256": "79f5ab18e2fc423631cf4949ef82ca1384844353ea11a4dba42e1a77e8fdd8fd",
+      "etag": "\"ac22-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision"
+    },
+    {
+      "id": "man7-inotify-rm-watch",
+      "url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man2/inotify_rm_watch.2.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T14:05:58.008989+00:00",
+      "bytes": 8967,
+      "sha256": "33c801472a97eec100dde587e3265fcd74fa15e3297fbd5d67563d30e01f7b91",
+      "etag": "\"2307-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT",
+      "identity_kind": "retrieved mutable documentation bytes; no Git revision"
+    }
+  ],
+  "libev": {
+    "id": "libev",
+    "version": "4.33",
+    "identity_kind": "official maintainer release archive; content hash, not Git commit",
+    "url": "https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz",
+    "resolved_url": "https://dist.schmorp.de/libev/Attic/libev-4.33.tar.gz",
+    "status": 200,
+    "retrieved_utc": "2026-11-10T14:00:54.755705+00:00",
+    "bytes": 569527,
+    "sha256": "507eb7b8d1015fbec5b935f34ebed15bf346bed04a11ab82b8eee848c4205aea",
+    "etag": "\"8b0b7-5a1202daa5f63\"",
+    "last_modified": "Wed, 18 Mar 2020 12:27:40 GMT",
+    "members": [
+      {
+        "path": "libev-4.33/ev_epoll.c",
+        "bytes": 10365,
+        "lines": 298,
+        "sha256": "3f2460e781366fd56d17b65aa4f165cbc43166d825655e3accab417ebdcade8d"
+      },
+      {
+        "path": "libev-4.33/ev_kqueue.c",
+        "bytes": 7088,
+        "lines": 224,
+        "sha256": "8f970d10f10d31c99cdd21d9f1470692b08364d22e926ae141c16d830ac6b758"
+      },
+      {
+        "path": "libev-4.33/ev.c",
+        "bytes": 151725,
+        "lines": 5627,
+        "sha256": "a8b0092b8a552c72e255b0d96b59edbad622a3355ad2cef7355572e968eed0d6"
+      }
+    ]
+  },
+  "local_git_blobs": [
+    {
+      "path": "AGENTS.md",
+      "git_blob": "cfc3019c09da85d8e48b752f80667d89685d9d0b",
+      "bytes": 1757,
+      "sha256": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28"
+    },
+    {
+      "path": "docs/development-rules.md",
+      "git_blob": "813288bad9c1f8ecd269a89d35ba35e37dc393a1",
+      "bytes": 10874,
+      "sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242"
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "git_blob": "a25586c29d1564bc97b90c291fcee74153e25282",
+      "bytes": 3207,
+      "sha256": "a84c60f20e3a06a294bd5b091c1f43cfd5cc4b33ef1bd22a50cd94cea07bb97b"
+    },
+    {
+      "path": "CLAUDE.md",
+      "git_blob": "83720166eb8802f9e2dc916e94a996561f72c4aa",
+      "bytes": 16962,
+      "sha256": "54c3ad93162608248419fe54c42d14bd00ed3cf6aebaf99b78a1c4d83acd28a1"
+    },
+    {
+      "path": "docs/design/managed-runtime-plan.md",
+      "git_blob": "3b3bcc2ca73ce313e12c85dde91c514df17292d2",
+      "bytes": 47017,
+      "sha256": "02fcd0ea47748160787abd78301df1ac62ec54335d09568df295e2da98853a2c"
+    },
+    {
+      "path": "scripts/check-development-policy",
+      "git_blob": "4df3e1b3f4e731109250f94a0917e72acd5f0f3b",
+      "bytes": 3326,
+      "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac"
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "git_blob": "c35d79ead0da29547b9cb730b4abf3c98861b6e9",
+      "bytes": 137180,
+      "sha256": "4b801f582cf76ddac4bec248bd3dba9ddb91a9b3b130c6b55bab98a95f89978f"
+    },
+    {
+      "path": "crates/vmm/src/platform/mod.rs",
+      "git_blob": "f5cf5cfcbd6a0d2025f952272b731138b78699d2",
+      "bytes": 34302,
+      "sha256": "d79f60f4cd68133e68775ba5ee5d026ed4c4db1ef0005a1343ddbb0ff063ee47"
+    },
+    {
+      "path": "crates/shards/src/daemon/follow.rs",
+      "git_blob": "3b2edb6f8419326bd97f0e54c20b2e6b4831c1f0",
+      "bytes": 24276,
+      "sha256": "51dcf3eb6c39f7eae169cf52ba4c07400b953adeff4db72d013216ab5ecc803c"
+    },
+    {
+      "path": "crates/shards/src/daemon/commands.rs",
+      "git_blob": "a1a50163ce9d811ba3d2263ed573f920ba152215",
+      "bytes": 161936,
+      "sha256": "8eb26275f014225a0f53d377563ff57f838a90f726d7057203caf3761e3aab70"
+    },
+    {
+      "path": "crates/shards/src/netproc.rs",
+      "git_blob": "f0ac9b7a78b39a31c908397d86102e2d99a43a5b",
+      "bytes": 31671,
+      "sha256": "1c5eee533a3283ef79a7da48eb3c0fe7ae2fba45746838490ce3a17fa91a879a"
+    },
+    {
+      "path": "crates/shards/tests/managed_cleanup.rs",
+      "git_blob": "2f4a8a1c3521a8fe248e123cea4aab22181b7eed",
+      "bytes": 23418,
+      "sha256": "60c22e7e52a1035b77c22edf202e686504a67972674f6671e682c0d3093d7d1b"
+    },
+    {
+      "path": "docs/research/measurements/managed-output-cost/HOST-EXIT.md",
+      "git_blob": "4596d7cc050d7f4acdb124400db2dabf1d6f3821",
+      "bytes": 10253,
+      "sha256": "f107dcb8bedcca6a6639b8c8bfaffdb0817a015b622f89a43d93fa9e8be3f2e2"
+    },
+    {
+      "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+      "git_blob": "4e7ab20b5f6d242b8378dc23c0d8d5efff1d0a8e",
+      "bytes": 34043,
+      "sha256": "a0ed1cd19511ff27be24d8bff1acd70d0b5070c682a1fe462e09681439a655c3"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-output-exit/README.md",
+      "git_blob": "5ab5970ef29be8b6ae7f8f40457f763d2ae0c442",
+      "bytes": 6961,
+      "sha256": "e4d17f1ee5e0e9223a34597f6952a187f8b312ca60633a1a25b2515907e7c506"
+    },
+    {
+      "path": "crates/init/src/domains.rs",
+      "git_blob": "cf79e05e1fcbb3ea98f0352dd93cd3990c81bddb",
+      "bytes": 114588,
+      "sha256": "4d961f3ad04b3fcb93680900bbfc28955fef308c8cadd846790abc217e5efa70"
+    },
+    {
+      "path": "crates/init/src/run.rs",
+      "git_blob": "3adc4bbe5e4b7e03f941cdee5eb2065b59224458",
+      "bytes": 264811,
+      "sha256": "7ba4a1b4014b213c160cc7303a75faf5af75414ff7783664fcbbec7103fe9555"
+    }
+  ],
+  "handoff": {
+    "path": "/Users/adalundhe/g121-handoff.md",
+    "sha256": "5f1417ed0427f720f369de9a1cb0b5abf912e89a282064784d1ff330ab789f0e"
+  },
+  "limitations": [
+    "Fetched in memory; only identities retained, no upstream source copied into repo.",
+    "URLs with Git commits are pinned; tag resolution and archive hashes recorded.",
+    "Versions intentionally named; no latest-release or exact running-kernel equivalence claimed.",
+    "Raw-byte hashes differ from browser-rendered line numbering; use raw source line numbers.",
+    "libev official archive fetched successfully using HTTPS Python urllib; browser tool could not open archive/CVS.",
+    "Historical libevent/libev releases establish alternatives, not a selected current performance baseline.",
+    "inotify source chain includes only the selected file-watch framing, cgroup notification, queue/read/overflow semantics and direct-poll alternative. No repository/kernel audit.",
+    "libev ev.c identity already records the same bytes inspected for infy_cb/infy_wd/EV_INOTIFY_BUFSIZE in the second batch."
+  ]
+}
