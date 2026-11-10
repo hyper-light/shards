@@ -1,0 +1,11 @@
+{
+  "role": "ROOT coordinator",
+  "source": "f53f7750eb6c74ce6f7de290f6977c08a401f774",
+  "scripts": "Exact submitted tool payloads copied after execution; native-wrapper wrote and executed nativef53/driver.py before its run; matrix wrappers were submitted as inline tool payloads.",
+  "matrix_attempt_1": {
+    "actual_exit": 1,
+    "stage": "preflight tracked/untracked cleanliness, before fetch/checkout/build",
+    "actual_tool_output": "Traceback (most recent call last):\n  File \"<stdin>\", line 5, in <module>\nAssertionError\n",
+    "subsequent_inspection": "Tracked diff empty at15330d9b; only four .DS_Store paths, recorded unchanged rather than removed."
+  }
+}

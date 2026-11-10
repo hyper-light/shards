@@ -1,0 +1,57 @@
+[
+  {
+    "path": "cargo.txt",
+    "bytes": 36,
+    "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6"
+  },
+  {
+    "path": "checkout.log",
+    "bytes": 177,
+    "sha256": "bce74276fbbd9c79c50b056ba55e7931dbe9a1796f3175eb23c8d4331458d953"
+  },
+  {
+    "path": "command.json",
+    "bytes": 54,
+    "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+  },
+  {
+    "path": "fetch.log",
+    "bytes": 108,
+    "sha256": "5f1af46ed4b4f0d28705e67f37e5bac62fe764295f41179d0e724bcc73d17a66"
+  },
+  {
+    "path": "free.post.json",
+    "bytes": 28,
+    "sha256": "c3044d6c3451694b22275072478416e30b49fb7ddd64995d38fda238880b6467"
+  },
+  {
+    "path": "lint.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "lint.log",
+    "bytes": 27907,
+    "sha256": "54d9771d6e1ba1548eefb6d526ccd969d1068df73ab5da883788aab0eb1161c6"
+  },
+  {
+    "path": "policy.txt",
+    "bytes": 90,
+    "sha256": "f6fa7ceb37be163293cc07c8ed11bc84d65932ae6e16c8bf8501f7817b2ba9cb"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 192,
+    "sha256": "e003fd3d385fcd0de16bc6b049124efb20207831dd810fd4ab39ff079bbb12a5"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "236faf9eaf699eaf0bdae6f85eddf2f53a30e58be14a31f95040b190697188f6"
+  },
+  {
+    "path": "untracked-preserved.json",
+    "bytes": 809,
+    "sha256": "0d34f4e1f8567195f115e74feda09d9bf7f8742b651044bb31783760a52ba163"
+  }
+]

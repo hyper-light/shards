@@ -30,8 +30,61 @@ scripts/lint at the same source033c under lockf /tmp/g121-mac.lock, jobs4.
 Format, all seven supported targets and GPU checks returned0. The managed_output
 caller is Linux-only, so this does not falsely claim a native Windows/macOS
 recorder run or that its Linux-gated body was compiled there.
-The pure native-fault model is retained source/research; it is not yet connected
-to native sampling and gains no OS-counter validation from this gate.
+At033c the pure native-fault model was retained source/research; it was not yet
+connected to native sampling and gained no OS-counter validation from that gate.
+
+## Native phase hooks: exact f53f gates
+
+ROOT composed only the reviewed existing-seam native hooks4fffe0f70 at
+candidatef53f7750eb6c74ce6f7de290f6977c08a401f774. The pure fault interpretation
+remained byte-identical to f78, SHA256
+3946267e81571fcfd1c0853b1033bf170ef45632a7d9d99d747bef9ffd710513.
+No paired runner, startup-allocation patch or new production OS adapter was
+adopted. New native samples use the existing held identity checks before/after
+platform::process_usage; probes are synchronous fixture costs, not free or atomic.
+
+Actual Fedora rootr680 compiled the source-matching normal caller and carried
+helpers0. The ordinary managed_output suite passed16/16 with2 ignored, including
+the five pure fault-model tests now included by the fixture. ROOT then explicitly
+ran one strict N1 owner-output functional pilot, exit0. [All original records](nativef53/)
+include exact source/artifacts, toolchain, command/environment, allocation phases,
+native phases, protocol/cleanup and the [executed driver](nativef53/driver.py).
+This is n1 functional coverage, not a paired/distribution or comparative result.
+
+The native N1 phases actually observed observer-parent, held daemon and held VM
+counters with matched identities before/after each query. They are labelled
+LinuxMinfltPlusMajfltViaPlatformUsage,64bits, ObservedBestEffort/non-atomic;
+start-to-ready differences remain ConditionalDifference with wrap/reset/parser-
+fallback caveats. After cleanup, daemon/VM are Unknown/ProcessExitedOrHandleReleased,
+never an invented zero. Source/native category and uncertainty remain explicit.
+Existing Linux Usage defaults malformed/missing fields to0 and saturates its sum;
+these limitations are recorded, not repaired or hidden by the hooks.
+
+Protocol/main progress, owner stop and observer joins passed. Both held host
+exit objects reported readiness after stop, with exact observation FD7→12→7.
+Those witnesses do not establish wait status, reaping, exit causality, full
+population or kernel charge return. Before reusing the old cache, ROOT separately
+froze and hash-verified all five available eaf0 red artifacts; f53f fixture/CLI/
+init/testguest are likewise frozen. [Artifact manifests](nativef53/frozen-artifacts.json)
+and [prior red manifest](nativef53/red-frozen-artifacts.json) retain those paths.
+No executable is committed here.
+
+Actual macOS-arm64 rootr683 ran full scripts/lint at the same f53f candidate:
+format, all seven supported targets and GPU checks returned0. [Raw matrix records](matrixf53/)
+retain command/source/tool identities and post free-space95,515,779,072B.
+This still does not execute the Linux-only caller on Windows/macOS or validate
+native counters there. The first preflight stopped before fetch/build because
+four untracked Finder .DS_Store files were present. They were retained and hashed,
+then the next strict preflight allowed only those exact metadata paths while
+requiring both tracked/index cleanliness; no source/data was discarded or broad
+ignore was added. [Exact submitted wrappers](f53-drivers/) were copied after
+execution; they are not claimed run as remote files.
+
+All new archives and every regular member size/hash were independently verified
+following private transfer. Actual error/race/native guard-removal/restoration,
+more member counts, source-specific native-host proof and equivalent paired
+profiles/distributions remain ROOT work. No performance optimization, budget
+entitlement, leak-free or4–5× claim follows from these gates.
 
 ## What the records mean
 
@@ -59,8 +112,8 @@ root work. No observed number is a runtime constant or overhead allowance.
 
 ## Provenance and policy
 
-[ARCHIVES.json](ARCHIVES.json) indexes both privately transferred text archives:
-54058B/131regular members and3482B/8members. Every member's size/hash was verified.
+[ARCHIVES.json](ARCHIVES.json) indexes the original033c and laterf53f privately
+transferred text archives. Every regular member's size/hash was verified.
 Originals/source/artifacts remain on their runners; local originals are under
 /Users/adalundhe/g121-retained-archives. No executable/credential was committed.
 Raw logs are byte-identical; whitespace classification is separate.
@@ -81,7 +134,7 @@ Windows ARM remains paused. R15/R16 root owns all heavy gates/review/main landin
 agents supply scoped code/pure/light tests and ongoing independent queue work.
 Protected targets/evidence are preserved and the local30GiB floor remains binding.
 
-Next: source-matching paired/interleaved runner and native fault hooks need root
-review/actual execution, overhead isolation and n/p50/p90/p99/max at equivalent
-member counts. Hard aggregate/parent/kernel accounting, final topology,4–5×,
+Next: the separate source-matching paired/interleaved runner needs full root
+review/execution; native hooks still need error/guard/native-host coverage,
+overhead isolation and n/p50/p90/p99/max at equivalent member counts. Hard aggregate/parent/kernel accounting, final topology,4–5×,
 allocation-free and leak-free results are not established by these pilots.

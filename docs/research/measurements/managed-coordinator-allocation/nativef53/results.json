@@ -1,0 +1,12 @@
+[
+  {
+    "case": "ordinary",
+    "members": null,
+    "exit": 0
+  },
+  {
+    "case": "members-1",
+    "members": 1,
+    "exit": 0
+  }
+]

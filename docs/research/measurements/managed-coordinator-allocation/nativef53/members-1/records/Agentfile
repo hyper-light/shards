@@ -1,0 +1,3 @@
+FROM 127.0.0.1:46183/test/image:v1
+AGENT assets FROM ./files
+AGENT member1 FROM ./member1

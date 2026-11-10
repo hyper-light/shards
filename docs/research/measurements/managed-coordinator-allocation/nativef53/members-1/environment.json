@@ -1,0 +1,5 @@
+{
+  "SHARDS_OUTPUT_COST_MEMBERS": "1",
+  "SHARDS_OUTPUT_COST_DEADLINE_MS": "300000",
+  "SHARDS_OUTPUT_COST_RECORDS": "/home/adalundhe/root-managed-native-f53f-v1/members-1/records"
+}

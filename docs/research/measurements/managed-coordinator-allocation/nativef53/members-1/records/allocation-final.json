@@ -1,0 +1,68 @@
+{
+  "phase": "after_terminal_records_and_fixture_drop",
+  "scope": "observer/test parent only; other libtest/fixture/input/result values can remain live; includes all prior record serialization",
+  "snapshot": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 16164
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 655382964
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 655382964
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 16121
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 658990425
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 6603997
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 10250888
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13895124
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 39430
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 1798
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 44
+    }
+  }
+}

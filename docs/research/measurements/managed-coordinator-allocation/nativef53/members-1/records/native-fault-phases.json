@@ -1,0 +1,296 @@
+{
+  "after_cleanup": {
+    "daemon": {
+      "atomic": false,
+      "expected_identity": null,
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "reason": "ProcessExitedOrHandleReleased",
+        "state": "Unknown"
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "observer_parent": {
+      "atomic": false,
+      "expected_identity": [
+        864831,
+        12014549
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 159024
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "vm": {
+      "atomic": false,
+      "expected_identity": null,
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "reason": "ProcessExitedOrHandleReleased",
+        "state": "Unknown"
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    }
+  },
+  "after_observer_completion": {
+    "daemon": {
+      "atomic": false,
+      "expected_identity": [
+        867017,
+        12014633
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 9216
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "observer_parent": {
+      "atomic": false,
+      "expected_identity": [
+        864831,
+        12014549
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 159015
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "vm": {
+      "atomic": false,
+      "expected_identity": [
+        867290,
+        12014638
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 25657
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    }
+  },
+  "after_proc_recording": {
+    "daemon": {
+      "atomic": false,
+      "expected_identity": [
+        867017,
+        12014633
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 9209
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "observer_parent": {
+      "atomic": false,
+      "expected_identity": [
+        864831,
+        12014549
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 159013
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "vm": {
+      "atomic": false,
+      "expected_identity": [
+        867290,
+        12014638
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 25574
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    }
+  },
+  "after_start_and_watch_acquisition": {
+    "daemon": {
+      "atomic": false,
+      "expected_identity": [
+        867017,
+        12014633
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 9111
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "observer_parent": {
+      "atomic": false,
+      "expected_identity": [
+        864831,
+        12014549
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 158890
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "vm": {
+      "atomic": false,
+      "expected_identity": [
+        867290,
+        12014638
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 25432
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    }
+  },
+  "owner_ready_before_recording": {
+    "daemon": {
+      "atomic": false,
+      "expected_identity": [
+        867017,
+        12014633
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 9209
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "observer_parent": {
+      "atomic": false,
+      "expected_identity": [
+        864831,
+        12014549
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 159013
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    },
+    "vm": {
+      "atomic": false,
+      "expected_identity": [
+        867290,
+        12014638
+      ],
+      "failure": null,
+      "native_bits": 64,
+      "native_caveat": "existing Usage sums minor+major, defaults malformed/missing fields to0, saturates sum; no separate categories or complete process-tree/kernel accounting",
+      "observation": {
+        "identity_validation": "matched before and after existing platform query; not a coherent snapshot or quiescence proof",
+        "state": "ObservedBestEffort",
+        "value": 25574
+      },
+      "query_failure": null,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage"
+    }
+  },
+  "scope": "native per-process counters through existing platform::process_usage; observer, owned daemon, VM host separately; no guest/kernel/process-tree completeness",
+  "semantics": "non-atomic, synchronous platform probes allocate/read as fixture costs; native categories and widths remain distinct; no quiescence; differences conditional on absent wrap/reset/lossy fallback",
+  "start_to_ready": {
+    "daemon": {
+      "caveat": "no established absence of native wrap/reset or existing platform parser/conversion fallback; conditional difference, never an exact universal fault count",
+      "identity": [
+        867017,
+        12014633
+      ],
+      "native_bits": 64,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage",
+      "state": "ConditionalDifference",
+      "value": 98
+    },
+    "observer_parent": {
+      "caveat": "no established absence of native wrap/reset or existing platform parser/conversion fallback; conditional difference, never an exact universal fault count",
+      "identity": [
+        864831,
+        12014549
+      ],
+      "native_bits": 64,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage",
+      "state": "ConditionalDifference",
+      "value": 123
+    },
+    "vm": {
+      "caveat": "no established absence of native wrap/reset or existing platform parser/conversion fallback; conditional difference, never an exact universal fault count",
+      "identity": [
+        867290,
+        12014638
+      ],
+      "native_bits": 64,
+      "source": "LinuxMinfltPlusMajfltViaPlatformUsage",
+      "state": "ConditionalDifference",
+      "value": 142
+    }
+  }
+}

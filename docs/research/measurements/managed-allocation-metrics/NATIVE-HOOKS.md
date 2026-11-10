@@ -1,4 +1,6 @@
-# Native fault phase hooks — root execution owed
+# Native fault phase hooks — implementer checkpoint
+
+The later [coordinator f53f record](../managed-coordinator-allocation/README.md#native-phase-hooks-exact-f53f-gates) adds actual normal-caller/strict N1 and seven-target gates. Remaining error, native-platform, mutation and comparative work below is still owed.
 
 The coordinator approved the existing-seam native-fault queue after the v2 code
 proposal. `managed-output-cost/fixture.rs` now includes the pure `native_faults`

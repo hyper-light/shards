@@ -1,0 +1,44 @@
+{
+  "classification": "Original native/matrix raw logs retained byte-identically; no source/global whitespace exception",
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "actual_exit": 2,
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/matrixf53/lint.log",
+      "sha256": "54d9771d6e1ba1548eefb6d526ccd969d1068df73ab5da883788aab0eb1161c6"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/records/daemon.status",
+      "sha256": "a5a5f65167d61af57a036288c03099f2d99ac9b24c05aefc2593e965f34c0b6e"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/records/daemon.udp-owned",
+      "sha256": "20763211d4e67fdb1213690ecbe912b2aef1421b14412f7393a6c4d070d4a9e3"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/records/observer.status",
+      "sha256": "44872cbd3d70b5755c51ec39f10013e3fcc1764d2118ea204b47f9f8ff0e9bac"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/records/observer.udp-owned",
+      "sha256": "c40893a5d6d7a2053d9f644fdf6a31a33a3e358029b32b61ff72eb9c8bcb1335"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/records/vm.status",
+      "sha256": "747fe42175f77e8e0fea6c786b2a20cd514b2fbe19f6dc367432dacea4e2eeae"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/members-1/test.log",
+      "sha256": "7b431ac896c8a89accdbe4601c8bdbc6605c1a61dd2595d3400422ea18685e9e"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-allocation/nativef53/ordinary/test.log",
+      "sha256": "5e58438c8e3658fd4fe6a44708fcc3b2e0d156a1af713ee69268ca93054f9200"
+    }
+  ]
+}

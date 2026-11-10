@@ -1,0 +1,30 @@
+[
+  {
+    "role": "fixture",
+    "source": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "path": "/home/adalundhe/root-managed-native-f53f-artifacts-v1/fixture",
+    "sha256": "175fc6a3612035b4e00e2104b1d7bf27c309e0a7b4f6b8b95ba630d1c19277fa",
+    "state": "Frozen"
+  },
+  {
+    "role": "cli",
+    "source": "/home/adalundhe/managed-capture-check/target/e2e/shards-4ac5f98964b57031/shards",
+    "path": "/home/adalundhe/root-managed-native-f53f-artifacts-v1/cli",
+    "sha256": "4ac5f98964b570311c2e3c1ca20c83d66e30f78bbd6c88c12ebdbcc8f641b233",
+    "state": "Frozen"
+  },
+  {
+    "role": "init",
+    "source": "/home/adalundhe/managed-capture-check/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "path": "/home/adalundhe/root-managed-native-f53f-artifacts-v1/init",
+    "sha256": "6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09",
+    "state": "Frozen"
+  },
+  {
+    "role": "testguest",
+    "source": "/home/adalundhe/managed-capture-check/target/guest/by-process/864831/shards-testguest",
+    "path": "/home/adalundhe/root-managed-native-f53f-artifacts-v1/testguest",
+    "sha256": "21b601281b2482515852e186c9394ed46791835bd22e34e1c9ce59f896633d94",
+    "state": "Frozen"
+  }
+]

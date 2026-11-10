@@ -1,0 +1,22 @@
+[
+  {
+    "path": ".DS_Store",
+    "sha256": "b7e23caaf5b5f1d5ff41b0be6906d330c31ec253e3365184fdf77bf43ab3fa38",
+    "classification": "Finder metadata preserved, not source or build receipt"
+  },
+  {
+    "path": "crates/.DS_Store",
+    "sha256": "8de0046e8309a3918c9f99aeb931ea9fd4634eb714718b35a1889c1d5bd50104",
+    "classification": "Finder metadata preserved, not source or build receipt"
+  },
+  {
+    "path": "docs/.DS_Store",
+    "sha256": "073020432d90e90910a75726d444d013509c634d79dfaf5940a82318e0f08e4a",
+    "classification": "Finder metadata preserved, not source or build receipt"
+  },
+  {
+    "path": "docs/research/.DS_Store",
+    "sha256": "0fa42fa13fcc6bb67e1a400c03c7ceba901496c5e0cbe75f02c8c95b826521ef",
+    "classification": "Finder metadata preserved, not source or build receipt"
+  }
+]

@@ -1,0 +1,7 @@
+{
+  "exact_payload_channels": 2,
+  "members": 1,
+  "stalled_member": 1,
+  "state": "MainProgressAfterObserverCancel",
+  "terminal_consumption": "verified after owner stop; before this point non-held ACKs were sent"
+}

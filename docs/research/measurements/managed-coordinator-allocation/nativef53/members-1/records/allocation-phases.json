@@ -1,0 +1,390 @@
+{
+  "after_observer_completion": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 11628
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 654837162
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 654837162
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 10242
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 658158940
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 6761571
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 10122779
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13640950
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 39430
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 1569
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 42
+    }
+  },
+  "after_proc_recording": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 11358
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 654682525
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 654682525
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 9733
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 657687753
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 7055623
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 10100281
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13598016
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 39430
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 1412
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 36
+    }
+  },
+  "after_shutdown_watch_release_and_fd_sample": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 13526
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 655052807
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 655052807
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 13492
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 658625786
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 6603291
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 10215700
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13824748
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 39430
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 1772
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 44
+    }
+  },
+  "after_start_and_watch_acquisition": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 2101
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 652589937
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 652589937
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 2060
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 655937454
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 6598594
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 9946273
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13289054
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 162
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 566
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 10
+    }
+  },
+  "before_fixture": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 713
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 632310727
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 632310727
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 683
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 632321924
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 4621
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 15980
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 29883
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 162
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 148
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 0
+    }
+  },
+  "excludes": "daemon/VM/guest, direct System/native/C-library allocations, usable sizes/RSS/kernel/process-tree completeness",
+  "owner_ready_before_recording": {
+    "alloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "alloc_successes": {
+      "state": "Known",
+      "value": 4092
+    },
+    "allocation_requested_bytes": {
+      "state": "Known",
+      "value": 653915764
+    },
+    "allocation_success_bytes": {
+      "state": "Known",
+      "value": 653915764
+    },
+    "dealloc_calls": {
+      "state": "Known",
+      "value": 3818
+    },
+    "deallocated_bytes": {
+      "state": "Known",
+      "value": 657006399
+    },
+    "live_requested_bytes": {
+      "state": "Known",
+      "value": 6902501
+    },
+    "peak_recorded_live_requested_bytes": {
+      "state": "Known",
+      "value": 269848805
+    },
+    "realloc_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "realloc_grown_bytes": {
+      "state": "Known",
+      "value": 9993298
+    },
+    "realloc_requested_bytes": {
+      "state": "Known",
+      "value": 13378276
+    },
+    "realloc_shrunk_bytes": {
+      "state": "Known",
+      "value": 162
+    },
+    "realloc_successes": {
+      "state": "Known",
+      "value": 765
+    },
+    "semantics": "ConcurrentNonAtomic",
+    "state": "Observed",
+    "zeroed_failures": {
+      "state": "Known",
+      "value": 0
+    },
+    "zeroed_successes": {
+      "state": "Known",
+      "value": 36
+    }
+  },
+  "retention_scope": "Fixture and protocol-result values remain owned at the last phase; successful final fixture-drop snapshot is separate",
+  "scope": "observer/test parent only; all threads using this Rust global wrapper; includes fixture and instrumentation costs",
+  "semantics": "ConcurrentNonAtomic; no quiescence or coherent event boundary; process-lifetime bookkeeping peak, not phase/native transient peak"
+}
