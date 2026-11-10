@@ -1,0 +1,35 @@
+{
+  "base": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "commands": [
+    {
+      "command": "rustfmt --edition 2024 --config skip_children=true crates/init/src/domains/admission.rs",
+      "result": 0,
+      "scope": "source formatting only, no local compilation"
+    },
+    {
+      "command": "rustfmt --edition 2024 --config skip_children=true --check crates/init/src/domains.rs",
+      "result": 0
+    },
+    {
+      "command": "git diff --check",
+      "result": 0
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/check-development-policy",
+      "result": 0
+    }
+  ],
+  "formatter": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)",
+  "local_tools": {
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "1.98.1 (797e8a9bc 2026-08-05)"
+  },
+  "local_free_bytes": 30225924096,
+  "local_target_cache_paths": [],
+  "remote_job": "NOT STARTED: zero idle CPUs",
+  "unit_result": "WRITTEN/UNRUN",
+  "clippy_result": "UNRUN",
+  "binary": null,
+  "signature_and_root_gates": "First code checkpoint, not readiness or integration proof; root all full caller/helper/kernel/correctness/attribution/profile/benchmark/mutation/matrix/main gates owed."
+}

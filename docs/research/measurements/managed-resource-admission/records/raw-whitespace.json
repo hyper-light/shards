@@ -1,0 +1,10 @@
+{
+  "command": "git diff --cached --check",
+  "exit_code": 2,
+  "classification": "Two original whitespace lines in retained pinned upstream research bytes, not production code or generated test output. No stripping or global exception.",
+  "path": "docs/research/measurements/managed-resource-admission/research/linux-v6.18-cgroup-v2.rst",
+  "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97",
+  "lines": [1340, 2172],
+  "unchanged_upstream_bytes": true,
+  "source_and_other_evidence_check": "Recorded separately with exactly this raw source excluded; no production scope exception."
+}
