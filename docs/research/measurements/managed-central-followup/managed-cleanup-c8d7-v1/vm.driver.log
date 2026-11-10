@@ -1,0 +1,57 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.18s
+     Running tests/managed_cleanup.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_cleanup-d5bcb27f6e39fc64)
+
+running 1 test
+test main_cleanup_reaps_owned_children_and_preserves_independent_joiner ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+    Finished `guest` profile [optimized] target(s) in 14.46s
+CLEANUP_BINARIES shards=/home/adalundhe/managed-capture-check/target/e2e/shards-873d5905db49cfe9/shards init=/home/adalundhe/managed-capture-target/test-release/build/shards-530092e3dcf4aac9/out/shards-init guest=/home/adalundhe/managed-capture-check/target/guest/by-process/3427649/shards-testguest kernel=/home/adalundhe/managed-capture-check/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400 helpers=/home/adalundhe/managed-capture-target/test-release/build/shards-530092e3dcf4aac9/out/helpers
+remaining 894 Ok("894 (testguest) S 890 890 890 0 -1 4194560 106 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139719829308096 139719831765790 140737298412992 0 0 0 0 4096 1088 1 0 0 17 5 0 0 0 0 0 139719831852736 139719831855968 93825764630528 140737298419548 140737298419627 140737298419627 140737298419689 0\n")
+remaining 895 Ok("895 (testguest) S 890 890 890 0 -1 4194560 103 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139804023919296 139804026376990 140730316995440 0 0 0 0 4096 1088 1 0 0 17 6 0 0 0 0 0 139804026463936 139804026467168 93825968271360 140730316996444 140730316996523 140730316996523 140730316996585 0\n")
+remaining 896 Ok("896 (testguest) S 890 890 890 0 -1 4194560 104 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139941133701824 139941136159518 140729730096176 0 0 0 0 4096 1088 1 0 0 17 7 0 0 0 0 0 139941136246464 139941136249696 93826046590976 140729730101084 140729730101163 140729730101163 140729730101225 0\n")
+remaining 897 Ok("897 (testguest) S 890 890 890 0 -1 4194560 105 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139767058313920 139767060771614 140731798197664 0 0 0 0 4096 1088 1 0 0 17 9 0 0 0 0 0 139767060858560 139767060861792 93825152843776 140731798204252 140731798204331 140731798204331 140731798204393 0\n")
+remaining 898 Ok("898 (testguest) S 890 890 890 0 -1 4194560 104 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139914284774080 139914287231774 140734546124944 0 0 0 0 4096 1088 1 0 0 17 10 0 0 0 0 0 139914287318720 139914287321952 93825311764480 140734546128732 140734546128811 140734546128811 140734546128873 0\n")
+remaining 899 Ok("899 (testguest) S 890 890 890 0 -1 4194560 104 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 140697341571776 140697344029470 140734841563104 0 0 0 0 4096 1088 1 0 0 17 11 0 0 0 0 0 140697344116416 140697344119648 93825860210688 140734841569116 140734841569195 140734841569195 140734841569257 0\n")
+remaining 900 Ok("900 (testguest) S 890 890 890 0 -1 4194560 105 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 139692488848064 139692491305758 140733375129456 0 0 0 0 4096 1088 1 0 0 17 12 0 0 0 0 0 139692491392704 139692491395936 93825123782656 140733375135580 140733375135659 140733375135659 140733375135721 0\n")
+remaining 901 Ok("901 (testguest) S 890 890 890 0 -1 4194560 105 0 0 0 0 0 0 0 20 0 1 0 51 3411968 64 18446744073709551615 140207805403840 140207807861534 140723968209328 0 0 0 0 4096 1088 1 0 0 17 13 0 0 0 0 0 140207807948480 140207807951712 93825190490112 140723968216924 140723968217003 140723968217003 140723968217065 0\n")
+cleanup fixture: timed out
+CLEANUP_CONTROL deliberately_unreleased=true children=8 expected_observer_timeout=true
+CLEANUP_RESULT mode=own children=8 vm_pid=3428615 cleanup children 8 reaped 8 remaining 0 elapsed_us 111193 surviving_joiner_progress=true total_us=20177
+CLEANUP_RESULT mode=init children=8 vm_pid=3428767 cleanup children 8 reaped 8 remaining 0 elapsed_us 12708 surviving_joiner_progress=true total_us=18290
+CLEANUP_RESULT mode=host children=8 vm_pid=3428950 cleanup children 8 reaped 8 remaining 0 elapsed_us 11260 surviving_joiner_progress=true total_us=16677
+CLEANUP_RESULT mode=host children=72 vm_pid=3429069 cleanup children 72 reaped 72 remaining 0 elapsed_us 8207 surviving_joiner_progress=true total_us=13306
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 17.58s
+

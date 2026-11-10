@@ -1,0 +1,4 @@
+{"variant":"std","mode":"count","sample":0,"ns":15462,"length":324,"capacity":512,"allocs":1,"reallocs":4,"deallocs":1,"requested_bytes":992,"user_us":23,"system_us":0,"minor_faults":4,"major_faults":0}
+{"variant":"std","mode":"count","sample":1,"ns":7906,"length":324,"capacity":512,"allocs":1,"reallocs":4,"deallocs":1,"requested_bytes":992,"user_us":9,"system_us":0,"minor_faults":0,"major_faults":0}
+{"variant":"std","mode":"count","sample":2,"ns":6705,"length":324,"capacity":512,"allocs":1,"reallocs":4,"deallocs":1,"requested_bytes":992,"user_us":8,"system_us":0,"minor_faults":0,"major_faults":0}
+{"variant":"std","mode":"count","sample":3,"ns":6100,"length":324,"capacity":512,"allocs":1,"reallocs":4,"deallocs":1,"requested_bytes":992,"user_us":6,"system_us":0,"minor_faults":0,"major_faults":0}

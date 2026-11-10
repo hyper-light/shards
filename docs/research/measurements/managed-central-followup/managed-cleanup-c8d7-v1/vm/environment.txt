@@ -1,0 +1,2 @@
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+rustc 1.98.1 (48a229cea 2026-09-01)

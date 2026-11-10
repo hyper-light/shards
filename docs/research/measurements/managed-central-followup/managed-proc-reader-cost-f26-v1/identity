@@ -1,0 +1,16 @@
+22ea786d8753c1f5f13a263612d626e2b7bed9dd
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+cc (GCC) 16.2.1 20260819 (Red Hat 16.2.1-2)
+Copyright (C) 2026 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+uid=1000(adalundhe) gid=1000(adalundhe) groups=1000(adalundhe),10(wheel),965(docker) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+3.15 2.19 3.71 3/2944 3665279

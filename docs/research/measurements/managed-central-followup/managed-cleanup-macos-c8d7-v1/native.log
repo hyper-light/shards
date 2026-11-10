@@ -1,0 +1,171 @@
+   Compiling libc v0.2.189
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling dunce v1.0.5
+   Compiling pkg-config v0.3.34
+   Compiling fs_extra v1.3.0
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling jobserver v0.1.35
+   Compiling cc v1.5.1
+   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/managed-combined-seven-target-check/vendor/aws-lc-rs)
+   Compiling serde_core v1.0.229
+   Compiling cmake v0.1.58
+   Compiling typenum v1.20.1
+   Compiling syn v3.0.6
+   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/managed-combined-seven-target-check/vendor/aws-lc-sys)
+   Compiling autocfg v1.5.1
+   Compiling cfg-if v1.0.5
+   Compiling num-traits v0.2.19
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/abi)
+   Compiling serde_derive v1.0.229
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling hybrid-array v0.4.15
+   Compiling memchr v2.8.3
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling cpufeatures v0.3.1
+   Compiling const-oid v0.10.2
+   Compiling zeroize v1.9.0
+   Compiling digest v0.11.3
+   Compiling zlib-rs v0.6.8
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling sha2 v0.11.0
+   Compiling libm v0.2.16
+   Compiling getrandom v0.4.3
+   Compiling itoa v1.0.18
+   Compiling portable-atomic v1.15.0
+   Compiling num-integer v0.1.47
+   Compiling regex v1.13.1
+   Compiling base64 v0.23.1
+   Compiling num-bigint v0.4.8
+   Compiling flate2 v1.1.10
+   Compiling rustls-pki-types v1.15.1
+   Compiling once_cell v1.21.4
+   Compiling thiserror v2.0.21
+   Compiling twox-hash v2.1.4
+   Compiling ruzstd v0.9.1
+   Compiling thiserror-impl v2.0.21
+   Compiling alloc-no-stdlib v2.0.4
+   Compiling shards-erofs v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/erofs)
+   Compiling foldhash v0.2.0
+   Compiling rand_core v0.10.1
+   Compiling shards-template v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/template)
+   Compiling untrusted v0.9.0
+   Compiling shards-image v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/image)
+   Compiling alloc-stdlib v0.2.4
+   Compiling subtle v2.6.1
+   Compiling httparse v1.10.1
+   Compiling rustls v0.23.46
+   Compiling brotli-decompressor v5.0.3
+   Compiling shards-cmdline v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/cmdline)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/ipc)
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling keccak v0.2.2
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling tinyvec v1.13.3
+   Compiling num-conv v0.2.2
+   Compiling time v0.3.55
+   Compiling sha3 v0.11.0
+   Compiling digest v0.10.7
+   Compiling shards-agentfile v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/agentfile)
+   Compiling brotli v8.0.4
+   Compiling chacha20 v0.10.2
+   Compiling tracing-core v0.1.36
+   Compiling cpufeatures v0.2.17
+   Compiling siphasher v1.0.4
+   Compiling pin-project-lite v0.2.17
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/vmm)
+   Compiling log v0.4.34
+   Compiling tracing v0.1.44
+   Compiling fastbloom v0.17.0
+   Compiling sha1 v0.10.7
+   Compiling rand v0.10.3
+   Compiling rand_pcg v0.10.2
+   Compiling hashbrown v0.17.1
+   Compiling shards-netring v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/netring)
+   Compiling bytes v1.12.1
+   Compiling slab v0.4.12
+   Compiling lru-slab v0.1.3
+   Compiling percent-encoding v2.3.2
+   Compiling rustc-hash v2.1.3
+   Compiling libbz2-rs-sys v0.2.5
+   Compiling form_urlencoded v1.2.2
+   Compiling bzip2 v0.6.1
+   Compiling hashlink v0.12.2
+   Compiling shards v0.7.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/shards)
+   Compiling sha1-checked v0.10.0
+   Compiling yasna v0.6.0
+   Compiling unicode-normalization v0.1.25
+   Compiling pem v4.0.0
+   Compiling lzma-rust2 v0.21.0
+   Compiling encoding_rs v0.8.35
+   Compiling shards-apple v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/apple)
+   Compiling shards-dns v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/dns)
+   Compiling arraydeque v0.5.1
+   Compiling iri-string v0.7.14
+   Compiling yaml-rust2 v0.13.0
+   Compiling shards-net v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/net)
+   Compiling shards-build v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/build)
+   Compiling shards-git v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/git)
+   Compiling shards-rego v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/seccomp)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/test-release/build/aws-lc-sys-0e168ded0d1c4126/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/managed-combined-seven-target-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/test-release/build/aws-lc-sys-0e168ded0d1c4126/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/test-release/build/aws-lc-sys-0e168ded0d1c4126/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/test-release/build/aws-lc-sys-0e168ded0d1c4126/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-gitsign v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/gitsign)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-tuf v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/tuf)
+   Compiling shards-registry v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/registry)
+   Compiling shards-sigstore v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/sigstore)
+   Compiling shards-remote v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/remote)
+   Compiling rcgen v0.14.10
+   Compiling shards-archive v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/archive)
+   Compiling shards-flate v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/flate)
+   Compiling shards-ext4 v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/ext4)
+   Compiling shards-user v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/user)
+   Compiling shards-gateway v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/gateway)
+   Compiling shards-tui v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/tui)
+   Compiling shards-zstd v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/zstd)
+   Compiling shards-api v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/api)
+   Compiling shards-testguest v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/testguest)
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/managed-combined-seven-target-check/crates/testdir)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3m 47s
+     Running tests/managed_cleanup.rs (/Users/adalundhe/.cache/managed-combined-seven-target-b8fe/test-release/deps/managed_cleanup-f5d0a8704cfc7e17)
+
+running 5 tests
+test native::dropping_ready_client_reaps_without_releasing_the_child ... CLEANUP_CHILD_PID 84738
+ok
+test native::early_exit_reaps_the_owned_process ... CLEANUP_CHILD_PID 84739
+ok
+test native::normal_release_preserves_output_and_reaps ... CLEANUP_CHILD_PID 84740
+ok
+test native::partial_readiness_keeps_the_same_deadline_and_reaps ... CLEANUP_CHILD_PID 84741
+ok
+test native::silent_child_deadline_reaps_the_owned_process ... CLEANUP_CHILD_PID 84742
+ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 1.30s
+
