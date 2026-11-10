@@ -49,9 +49,12 @@ control each; private Linux runner8fadc1ec213332e16cb0d915a3fb913f,
 2CPU/2GiB/4GiB admission, <=600s/-j2. Formatter-only packet retained separately
 at `~/relay-turn-pending-cancel-0342-format-v1`; no local target/cache/build.
 
-This first source checkpoint has unrun compilation and native cases. Exact
-source closure/hashes precede actors; actual outcomes, failures, FD/pidfd/reap
-facts and uncertainty will be retained. Prior ce601 and5a4/2300 records keep
+The first source checkpoint8de7fb74d explicitly had unrun compilation/native
+cases. Its [actual validation record](VALIDATION.md) now retains GNU/musl strict
+checks and all FOUR first native invocations passing0: one pending-cancel and
+one forwarding control per libc. Exact pre-build/source-after hashes and raw
+signal/cancel/suffix/EOF/FD/pidfd/reap facts are preserved. No mutation ran.
+Prior ce601 and5a4/2300 records keep
 their original scope; original db4 pressure result remains19/20 plus a separate
 unchanged passing repeat, never20/20.
 

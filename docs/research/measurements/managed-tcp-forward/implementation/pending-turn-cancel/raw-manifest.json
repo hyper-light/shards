@@ -1,0 +1,304 @@
+{
+  "files": [
+    {
+      "path": "ENVIRONMENT.json",
+      "bytes": 1959,
+      "sha256": "4b237bd77627c3688a539f85cb172c37e4fdabdcddb89cceb4f48d9b74ef8368"
+    },
+    {
+      "path": "SUMMARY.json",
+      "bytes": 196796,
+      "sha256": "60357961934ad57bd068d6c0762d1e31434e4b2d491abc384d44a0a13dce58df"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pending-cancel/inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pending-cancel/observed.json",
+      "bytes": 34905,
+      "sha256": "b807b613cdc733d0bb8c8cfa86aa379e20174168749a622c159d5a5356d99049"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pending-cancel/result.json",
+      "bytes": 1340,
+      "sha256": "9c65054b2456c031db9c45bc141e9933b41dbf24d2e210521e5638d97f80c0a8"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pending-cancel/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pending-cancel/stdout",
+      "bytes": 34710,
+      "sha256": "d3cb317eff012d58342c8a9b82314b26db1a9e06629a93afc32c873d9dde53b0"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pressure/inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pressure/observed.json",
+      "bytes": 52102,
+      "sha256": "620e18c8adfa55e3062a3e90c30c08ff37940a9a513df1be72ebbf3361ef8087"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pressure/result.json",
+      "bytes": 1229,
+      "sha256": "65e704a281d514c296dce7751686b493ef3de1d4bc5ebdfbf2e3c861f1a7773f"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pressure/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-gnu-turn-pressure/stdout",
+      "bytes": 51694,
+      "sha256": "95c7537afac1ec6c27e9efd986b8df6f4978114607508bc6ab20dad09475dd0d"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pending-cancel/inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pending-cancel/observed.json",
+      "bytes": 34905,
+      "sha256": "dfa9c2544b500dee71c71a255b1449c2913e8e1c6aa0b20ea072ee8670533be3"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pending-cancel/result.json",
+      "bytes": 1341,
+      "sha256": "602f745cdd440290333b29406c28f43b59614cc21b0d710cefa2afd1ea5f6843"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pending-cancel/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pending-cancel/stdout",
+      "bytes": 34710,
+      "sha256": "761a845c3c2d21c06dfc5dcad8024893034deba76123bba86ba9a9624e5a6ca1"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pressure/inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pressure/observed.json",
+      "bytes": 52102,
+      "sha256": "360d73a264c6c806eec63e864350160947dc6759985a703c9d0b82b9d121bae0"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pressure/result.json",
+      "bytes": 1230,
+      "sha256": "a3c0bd28b9e5b85160727d034c8ff525603797d05ba1a234095ace23f6e062a7"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pressure/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cases/x86_64-unknown-linux-musl-turn-pressure/stdout",
+      "bytes": 51694,
+      "sha256": "94d4758e9b429adf5f89023e99fc171e109d322486189ccebf6880769a1d8a1a"
+    },
+    {
+      "path": "formatter/original.rs",
+      "bytes": 16950,
+      "sha256": "105a69e9380dec4d3cc29f796884af9242553c6eca8e641233fc1f59a246eff3"
+    },
+    {
+      "path": "formatter/result.json",
+      "bytes": 262,
+      "sha256": "8396966f10b9672f952d921df60c418d932b5d797dffa938d5929d090e34ad64"
+    },
+    {
+      "path": "formatter/rustfmt.toml",
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    },
+    {
+      "path": "formatter/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "formatter/stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "formatter/turn_native.rs",
+      "bytes": 17327,
+      "sha256": "28f4004ac35b3a00941a9aeb49993fcb53cd3250f6fbd213c9b572d5e9640f6a"
+    },
+    {
+      "path": "projection/Cargo.lock",
+      "bytes": 464,
+      "sha256": "72d892a34cd521d65b0cc2ad3ab9c2fd7cdfde537187161220b22a17dae0b4f8"
+    },
+    {
+      "path": "projection/Cargo.toml",
+      "bytes": 253,
+      "sha256": "5fb99c0d34294e416bb9a7d29090683bb554e7b66b7999bcdfb2a52fc51442c7"
+    },
+    {
+      "path": "record/build-x86_64-unknown-linux-gnu.log",
+      "bytes": 4296,
+      "sha256": "de115b61e5e5be94bc17520eb622bdc77aa0fb33d20eda18d35729e9cab87274"
+    },
+    {
+      "path": "record/build-x86_64-unknown-linux-musl.log",
+      "bytes": 4303,
+      "sha256": "651a152138a7751b622ff527b798a04f7fe97c851378878008ecff20c6b1d948"
+    },
+    {
+      "path": "record/check-x86_64-unknown-linux-gnu.log",
+      "bytes": 315,
+      "sha256": "16d72b48ca05ae3db5b9711323ce17b726c103e35292d1bdb86dd2fdc8e5f50e"
+    },
+    {
+      "path": "record/check-x86_64-unknown-linux-musl.log",
+      "bytes": 510,
+      "sha256": "4d3fc2bbc3baaa71731740bc88a290aceb3a22ff27a08d4a936978b87decbfcd"
+    },
+    {
+      "path": "record/clippy-x86_64-unknown-linux-gnu.log",
+      "bytes": 175,
+      "sha256": "7efe149393a9a29d1ac078a5c12d56da723939f70d45f03a6bcafaa868a03a70"
+    },
+    {
+      "path": "record/clippy-x86_64-unknown-linux-musl.log",
+      "bytes": 175,
+      "sha256": "ba11a0b00e8d4d6ba9304d973df0f503c6d8a083cf4b2f03745c6151d62e7e3d"
+    },
+    {
+      "path": "record/clone.log",
+      "bytes": 3568,
+      "sha256": "a8db38f2c5c55299634f59727102f99b8b1fb7b182795338d44ef28f858a04d0"
+    },
+    {
+      "path": "record/identity-before-build.json",
+      "bytes": 2319,
+      "sha256": "a10ef8052f4ee1487f662f99d690b6b0dd432193fb45677dd7cb4b5d84337b09"
+    },
+    {
+      "path": "record/native-x86_64-unknown-linux-gnu-turn-pending-cancel.log",
+      "bytes": 1218,
+      "sha256": "f99c395fa0b1a2a084b80fbf699ba4a62adf59f0133d9af382b4160805de9c2f"
+    },
+    {
+      "path": "record/native-x86_64-unknown-linux-gnu-turn-pressure.log",
+      "bytes": 1115,
+      "sha256": "1c5dec5d0bf5204a065ca2543bc1921c839fa4686ac0f265abb4a6b49db145e1"
+    },
+    {
+      "path": "record/native-x86_64-unknown-linux-musl-turn-pending-cancel.log",
+      "bytes": 1219,
+      "sha256": "b2b4552ab9641aaff750de27f2bff9b3c501a3a4104b5a8b1bea2df08d0104c7"
+    },
+    {
+      "path": "record/native-x86_64-unknown-linux-musl-turn-pressure.log",
+      "bytes": 1116,
+      "sha256": "f6d9e61f2466fdffc75cb4695caeff8d1e36dd1777a02de3dce904c997186d5e"
+    },
+    {
+      "path": "record/policy.log",
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "path": "record/result.json",
+      "bytes": 196354,
+      "sha256": "2bd6a1c521362580625d585ca009fba357195c05a888d0680073f2e1cfd64d23"
+    },
+    {
+      "path": "record/source-after.json",
+      "bytes": 1715,
+      "sha256": "080180fcaaa0454341c4b2d62b6ae73e54370f556875891d416de7d16b0050ad"
+    },
+    {
+      "path": "record/test-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "record/workspace-lints.json",
+      "bytes": 462,
+      "sha256": "af71d298c742a37917a0eef84a2f0947651f4e842cb1b1909fc1b4127226aa49"
+    },
+    {
+      "path": "record/x86_64-unknown-linux-gnu-turn-pending-cancel.inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "record/x86_64-unknown-linux-gnu-turn-pressure.inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "record/x86_64-unknown-linux-musl-turn-pending-cancel.inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "record/x86_64-unknown-linux-musl-turn-pressure.inputs.json",
+      "bytes": 396,
+      "sha256": "db48c9b7269b583e1a9fd440362422c9a044cc3729c5aabccc2eec7693067f0b"
+    },
+    {
+      "path": "source-context/.cargo/config.toml",
+      "bytes": 1094,
+      "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+    },
+    {
+      "path": "source-context/Cargo.lock",
+      "bytes": 45993,
+      "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+    },
+    {
+      "path": "source-context/Cargo.toml",
+      "bytes": 3885,
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+    },
+    {
+      "path": "source-context/clippy.toml",
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    {
+      "path": "source-context/crates/init/src/relay/turn_native.rs",
+      "bytes": 17327,
+      "sha256": "28f4004ac35b3a00941a9aeb49993fcb53cd3250f6fbd213c9b572d5e9640f6a"
+    },
+    {
+      "path": "source-context/crates/testguest/src/interface_root.rs",
+      "bytes": 42,
+      "sha256": "7a12e0a8977cc5a4a868bd70425dfb2b4e58fbf4b8096e06204f9c7238f289d1"
+    },
+    {
+      "path": "source-context/docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/native_case.py",
+      "bytes": 11469,
+      "sha256": "e8c06dd2aa035ce829b1b30964781a628ef3cfe315750a9d993150fa5d7b1bf0"
+    },
+    {
+      "path": "source-context/docs/research/measurements/managed-tcp-forward/implementation/pending-turn-cancel/source-identities.json",
+      "bytes": 2857,
+      "sha256": "48fb9b26e62f5e3b304013fdaced012f8d4d50f51a3b83f350dc7caf39219ded"
+    },
+    {
+      "path": "source-context/rustfmt.toml",
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    }
+  ]
+}
