@@ -377,8 +377,8 @@ fn a_running_microvm_is_saved_whole_left_running_or_stopped() {
 }
 
 /// A save a microVM cannot keep whole is refused, and the microVM goes on as it was, with
-/// nothing of the save left: a volume's open files are its server's, which no snapshot
-/// holds yet.
+/// nothing of the save left: a volume's removed open files must fit the control frame
+/// that carries its server's tables.
 #[test]
 fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
     let Some((home, image)) = home("saved-refused") else {
@@ -388,9 +388,9 @@ fn a_save_refused_leaves_the_microvm_running_and_nothing_behind() {
         return;
     }
     let shards = |args: &[&str]| shards_in(&home, args);
-    // Files it holds open in its volume after removing them, whose bytes go with its
-    // snapshot, past what a snapshot keeps (D176).
-    let past = ((64u64 << 20) + 1).to_string();
+    // A sparse file past the share tables' control frame (D176): its size is refused
+    // before its bytes are read, so this checks the real bound without allocating it.
+    let past = (shards_vmm::devices::virtio::fs::server::MAX_TABLES as u64 + 1).to_string();
     let (mut client, mut counts, _) = start(
         &home,
         &image,

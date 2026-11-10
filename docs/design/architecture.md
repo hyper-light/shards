@@ -4918,7 +4918,15 @@ connections, local stdio is read and written by threads of their own whose bound
 channels hold the connection's flow control back, so that a reader that stops holds up no
 packet the connection's liveness needs, and other threads wake it with a datagram to its
 own socket, which every target has (Windows' consoles and pipes are no descriptor a poll of
-a socket reaches). The daemon's side (`server.rs`, `daemon/remote.rs`) starts each command
+a socket reaches). An interrupted receive starts another driver turn, checking commands
+and connection timers again while retaining the connections. Linux's
+[signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html) specifies that a socket
+receive with `SO_RCVTIMEO` returns `EINTR` on a caught signal even with `SA_RESTART`.
+`net::tests::an_interrupted_receive_keeps_serving_commands` waits until Linux shows the
+driver blocked in `recvfrom`, targets that thread with a signal in an isolated process,
+then verifies it still handles Stop; without the retry it returns the same socket error
+seen by context commands on Fedora. The daemon's side (`server.rs`, `daemon/remote.rs`)
+starts each command
 by its spawner as this machine's own shards (`SHARDS_CONTEXT=default`, so that a machine
 whose owner uses a context of their own never sends a client's command on), says each in
 its log (`client NAME: shards ARGS`), hangs a command up whose connection went (SIGHUP, as a
@@ -7232,6 +7240,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   unbudgeted time at every least room from 1 to 16 times this one (a Xeon's three reads at
   8 times, 1.07), and with the buffers kept 1.19 to 1.31 times on the EPYCs and 1.86 on a
   Xeon 8573C, its unbudgeted reads 0.50 to 0.62 times as long.
+- **A template's zero gaps stay anonymous on restore.** Unix maps only the snapshot's
+  recorded runs of data from its RAM file, as Windows does; the gaps keep their reserved
+  anonymous zero memory. Mapping the sparse file whole made a read of a hole allocate a
+  page in a tmpfs file (`mm/shmem.c`, `shmem_fault`), which stayed charged as shmem even
+  after that restore ended. Repeated restores could fill the template's holes and leave
+  a short budget with nothing its host could reclaim, throttling the share's reads at
+  `memory.high`. The file-backed runs keep their private, copy-on-write mappings. A
+  snapshot from before the runs were recorded still maps the file whole. The memory test
+  `a_restores_zero_gaps_do_not_fill_its_templates_sparse_file` checks that reads and private
+  writes leave those holes unallocated and another restore's bytes unchanged; on Fedora's
+  tmpfs it fails before the fix and passes after it.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
@@ -9904,7 +9923,11 @@ estimator's of what was measured (the table below).
   `a_failed_send_resumes_from_what_the_registry_has` (a PUT cut off, 4 bytes in: the next
   PATCH starts at byte 4); and containers.rs' `a_push_climbs_from_one_and_the_next_starts_where_it_got`
   (`shards push image` of forty 2 MiB layers at 4 MiB/s a connection: the first starts at one
-  and climbs; its record in the home; the second starts at the count kept).
+  and tries a doubling; its measured count and variance are recorded in the home; the
+  second starts at the count kept). The real-host test does not require four uploads:
+  an idle-policy launcher on a busy host may gain nothing beyond two, or keep one after
+  trying two. Convergence to four where each doubling pays is the seeded simulation's
+  assertion; the E2E pins the actual decision and its reuse, without imposing a count.
 - **Which input bound each case**: M488's first measurements had all its hosts at 32
   cores and at most 16 transfers, so none was bound by the CPU: one host's rose to 16 (the
   blobs), the LAN's and ttl.sh's were bound by the link. The adaptive push's and pull's own
@@ -10097,6 +10120,13 @@ the user told).
   later contended and 5.8 sooner idle: contention costs slice 1's start no more than
   idleness does. Tested: platform's `a_prompt_thread_has_the_shortest_slice_at_its_own_weight`,
   and on real microVMs `a_microvms_vcpus_and_governor_wake_at_the_shortest_slice`.
+  The tests establish or read their launcher's policy rather than assume SCHED_OTHER:
+  an SSH session on adacachy inherited SCHED_IDLE, and both tests wrongly expected it
+  to become SCHED_OTHER (2026-11-09). The unit fixture checks its inherited policy's
+  slice and also checks that SCHED_BATCH and SCHED_IDLE are preserved, without needing
+  privilege to leave an inherited idle policy;
+  the microVM check compares against its launcher's policy, nice value and slice.
+  `run_promptly`'s policy-preserving behavior is unchanged.
 - **A held vCPU goes on as its period ends, by itself** (2026-11-03). The hold's cost to a
   memory-heavy run on a contended host (PM M292: fills 9 and 16% longer, n 8) did not
   repeat (PM M441: n 16, the held arm the quicker in 9 rounds of 16, the host's drift
@@ -17493,6 +17523,9 @@ completeness; `--network=none` and `host` steps.
   an untrusted HTTPS host's 502, nothing past the proxy, the step's log lines byte for
   byte, the provenance, the step from the cache with its requests asked again, run again
   under a policy refusing one, and run with the network open once no cap is asked for.
+  Its six proxy addresses are checked against the guest's own default route, read from
+  `/proc/net/route`: the builder retains the bridge it elected at startup, whereas a
+  second election on the host after the build may see changed routes.
   Mutation-checked, 68 guards, each mutant killed: the network process's one flow (4); the
   CA's PEM reading, markers, bound, regular file, mode and cleanup (11); the proxy's
   questions, URLs, Go's head checks and bounds, keep-alive and discards, the reach,
