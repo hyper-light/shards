@@ -1,0 +1,193 @@
+[
+  {
+    "argv": [
+      "git",
+      "clone",
+      "--filter=blob:none",
+      "--sparse",
+      "--no-checkout",
+      "--single-branch",
+      "--branch",
+      "main",
+      "git@github.com:hyper-light/shards.git",
+      "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1",
+    "exit_code": 0,
+    "log": "clone.log",
+    "sha256": "18ad95cfb0eae515bba02a7928db3f676d7c7ed4e6c8e9fc1983de5ab7bbf67f"
+  },
+  {
+    "argv": [
+      "git",
+      "sparse-checkout",
+      "set",
+      "--no-cone",
+      "/Cargo.toml",
+      "/Cargo.lock",
+      "/AGENTS.md",
+      "/CLAUDE.md",
+      "/clippy.toml",
+      "/rustfmt.toml",
+      "/.cargo/",
+      "/scripts/check-development-policy",
+      "/scripts/lint",
+      "/resources/supported-targets.txt",
+      "/.github/workflows/ci.yml",
+      "/.github/workflows/release.yml",
+      "/docs/development-rules.md",
+      "/docs/development-evidence.md",
+      "/crates/abi/",
+      "/crates/ipc/",
+      "/crates/remote/",
+      "/crates/testdir/",
+      "/vendor/aws-lc-rs/",
+      "/vendor/aws-lc-sys/",
+      "/vendor/rquickjs-sys/"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "sparse.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "git",
+      "checkout",
+      "--detach",
+      "1d0588b28f839fd0fec049e4bcb00e261e28c3aa"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "checkout.log",
+    "sha256": "f8ef6352762c7a672d651fa1025ed896fc47aeed2bc6f23ab1e9df51bd005dd1"
+  },
+  {
+    "argv": [
+      "rustc",
+      "--version",
+      "--verbose"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "rustc.log",
+    "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+  },
+  {
+    "argv": [
+      "cargo",
+      "--version",
+      "--verbose"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "cargo.log",
+    "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+  },
+  {
+    "argv": [
+      "uname",
+      "-a"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "uname.log",
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  },
+  {
+    "argv": [
+      "cargo",
+      "test",
+      "--offline",
+      "-p",
+      "shards-remote",
+      "--lib",
+      "managed::tests::terminal_controls::",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-operator-terminal-light-1d05-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "--test-threads=1"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "pure-tests.log",
+    "sha256": "5ab4a1d8b7870b8a8abb565494b1e32cde4421ead3ace573ffbbeb0825d08ce0"
+  },
+  {
+    "argv": [
+      "cargo",
+      "clippy",
+      "--offline",
+      "-p",
+      "shards-remote",
+      "--lib",
+      "--tests",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--target-dir",
+      "/home/adalundhe/managed-operator-terminal-light-1d05-v1/target",
+      "--jobs",
+      "1",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "clippy.log",
+    "sha256": "4fc881aa19d285c98d187c6830395958eb35ae6b2b52dfe64ce52ab56be2091e"
+  },
+  {
+    "argv": [
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "crates/remote/src/managed.rs"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "format.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "policy.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "argv": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "diff-check.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "argv": [
+      "du",
+      "-sk",
+      "/home/adalundhe/managed-operator-terminal-light-1d05-v1"
+    ],
+    "cwd": "/home/adalundhe/managed-operator-terminal-light-1d05-v1/source",
+    "exit_code": 0,
+    "log": "storage.log",
+    "sha256": "9ceae214892200990a1ad213b087fbb25dd1f72286de55a0bd471f6312305462"
+  }
+]

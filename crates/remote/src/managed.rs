@@ -902,6 +902,115 @@ impl Handler for Service {
 mod tests {
     use super::*;
 
+    mod terminal_controls {
+        use super::*;
+
+        fn decoded_ack(cursor: u64) -> u64 {
+            let wire = consumed(cursor);
+            let (Input::Consumed(at), end) = input(&wire).unwrap().unwrap() else {
+                panic!("expected the ACK control variant");
+            };
+            assert_eq!(end, wire.len());
+            at
+        }
+
+        fn decoded_subscription(service: &Service, cursor: u64) -> u64 {
+            let wire = subscribe(service.scope, cursor);
+            let (Input::Subscribe(scope, at), end) = input(&wire).unwrap().unwrap() else {
+                panic!("expected the subscription control variant");
+            };
+            assert_eq!(end, wire.len());
+            assert_eq!(service.check_scope(scope), Ok(()));
+            at
+        }
+
+        #[test]
+        fn finished_reconnect_requires_the_exact_tail_and_does_not_accept_another_ack() {
+            for tail in [0, u64::MAX] {
+                let mut service = service(Slot::Finished(tail));
+                lock(&service.shared).1 = Ending::Finishing;
+                service.disconnect();
+                let wrong = if tail == 0 { 1 } else { tail - 1 };
+                assert!(!service.subscribe(decoded_subscription(&service, wrong)));
+                assert!(service.subscribe(decoded_subscription(&service, tail)));
+                assert!(!service.consumed(decoded_ack(tail)));
+                service.disconnect();
+                assert!(service.subscribe(decoded_subscription(&service, tail)));
+                assert!(matches!(lock(&service.shared).0, Slot::Finished(at) if at == tail));
+                assert!(matches!(lock(&service.shared).1, Ending::Finishing));
+            }
+        }
+
+        #[test]
+        fn equal_cursor_abort_cannot_be_reopened_by_a_decoded_subscription_or_ack() {
+            for cursor in [0, u64::MAX] {
+                let mut service = service(Slot::Aborted {
+                    accepted: cursor,
+                    consumed: cursor,
+                });
+                lock(&service.shared).1 = Ending::Aborted;
+                for _ in 0..2 {
+                    service.disconnect();
+                    assert!(!service.subscribe(decoded_subscription(&service, cursor)));
+                    assert!(!service.consumed(decoded_ack(cursor)));
+                    let state = lock(&service.shared);
+                    assert!(
+                        matches!(state.0, Slot::Aborted { accepted, consumed } if accepted == cursor && consumed == cursor)
+                    );
+                    assert!(matches!(state.1, Ending::Aborted));
+                }
+            }
+        }
+
+        #[test]
+        fn partial_finishing_record_disconnect_retains_bytes_and_resets_only_the_write_cursor() {
+            let bytes = [0, u8::MAX];
+            let start = u64::MAX - u64::try_from(bytes.len()).unwrap();
+            for written in [1, DATA_HEAD, DATA_HEAD + 1] {
+                let mut service = service(Slot::Record {
+                    start,
+                    bytes: bytes.to_vec(),
+                    written,
+                });
+                lock(&service.shared).1 = Ending::Finishing;
+                let pointer = match &lock(&service.shared).0 {
+                    Slot::Record { bytes, .. } => bytes.as_ptr(),
+                    other => panic!("expected the prepared partial record {other:?}"),
+                };
+                assert!(!service.consumed(decoded_ack(u64::MAX)));
+                assert!(matches!(lock(&service.shared).0, Slot::Record { written: at, .. } if at == written));
+                service.disconnect();
+                assert!(!service.subscribe(decoded_subscription(&service, u64::MAX)));
+                assert!(service.subscribe(decoded_subscription(&service, start)));
+                assert!(
+                    !service.consumed(decoded_ack(u64::MAX)),
+                    "replay has not been transmitted"
+                );
+                let state = lock(&service.shared);
+                match &state.0 {
+                    Slot::Record {
+                        start: at,
+                        bytes: retained,
+                        written: 0,
+                    } => {
+                        assert_eq!(*at, start);
+                        assert_eq!(retained, &bytes);
+                        assert_eq!(retained.as_ptr(), pointer);
+                    }
+                    other => panic!("disconnect changed the retained record {other:?}"),
+                }
+                assert!(matches!(state.1, Ending::Finishing));
+                assert_eq!(
+                    progress(&state.0),
+                    Progress {
+                        accepted: u64::MAX,
+                        consumed: start
+                    }
+                );
+            }
+        }
+    }
+
     fn native_endpoint() -> (Endpoint, Producer, Control) {
         let identity = Identity::generate().unwrap();
         Endpoint::bind(

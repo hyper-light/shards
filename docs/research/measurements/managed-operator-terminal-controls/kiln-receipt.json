@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "",
+    "running": true,
+    "id": "r26",
+    "why": "linux/x86_64 · 28 of 32 cores idle · 41 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk"
+  },
+  "calls": [
+    {
+      "name": "machines.start",
+      "ok": true
+    }
+  ]
+}
