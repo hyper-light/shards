@@ -72,6 +72,8 @@ enum Stage {
     ValidateDatagram,
     ReplySend,
     HoldReply,
+    BackendComplete,
+    NotifyWorkReturn,
     Record,
 }
 #[derive(Debug)]
@@ -206,11 +208,17 @@ impl DatagramReport {
 pub(super) enum Terminal {
     ScriptComplete,
     Cancelled,
+    BackendComplete,
 }
 pub(super) struct ScriptedCompletion {
     pub(super) report: DatagramReport,
     stage: Stage,
     pub(super) result: Result<Terminal, Fault>,
+}
+impl ScriptedCompletion {
+    pub(super) fn backend_completed(&self) -> bool {
+        matches!(self.result, Ok(Terminal::BackendComplete)) && matches!(self.stage, Stage::BackendComplete)
+    }
 }
 pub(super) enum Completion {
     Scripted(ScriptedCompletion),
@@ -236,6 +244,12 @@ pub(super) enum Work {
         sender: UdpSocket,
         destination: SocketAddr,
         receipt: OwnedFd,
+    },
+    CompleteAfterReceipt {
+        receiver: UdpSocket,
+        sender: UdpSocket,
+        destination: SocketAddr,
+        completed: OwnedFd,
     },
     Forwarded(forward::Inputs),
 }
@@ -324,6 +338,38 @@ impl DatagramWorker {
                 &receiver_cancel,
                 ReplyPlan::Baseline(receipt),
             )),
+            Work::CompleteAfterReceipt {
+                receiver,
+                sender,
+                destination,
+                completed,
+            } => {
+                // scripted owns and drops both native sockets before this return
+                // notification. The thread's termination is observed only by join.
+                let mut done = scripted(
+                    receiver,
+                    sender,
+                    destination,
+                    Reply::Backend,
+                    &deadline,
+                    &receiver_cancel,
+                    ReplyPlan::CompleteAfterBaseline,
+                );
+                if done.backend_completed() {
+                    let notified = (|| {
+                        let mut out = io::stdout().lock();
+                        writeln!(out, "managed-intercept {{\"type\":\"BackendWorkReturned\",\"terminal\":\"BackendComplete\",\"receipt\":\"ValidatedBackendDatagram\",\"reply\":\"NotIssued\",\"thread_termination\":\"UnobservedUntilJoin\"}}")?;
+                        out.flush()?;
+                        drop(out);
+                        notify(&completed, &deadline)
+                    })();
+                    if let Err(error) = notified {
+                        done.stage = Stage::NotifyWorkReturn;
+                        done.result = Err(Fault::Io(error));
+                    }
+                }
+                Completion::Scripted(done)
+            }
             Work::Forwarded(input) => Completion::Forwarded(forward::run(input, &deadline, &receiver_cancel)),
         })?;
         Ok(Self {
@@ -366,6 +412,8 @@ enum ReplyPlan {
     Respond,
     Baseline(OwnedFd),
     AwaitForwardedBinary(OwnedFd),
+    CompleteAfterBaseline,
+    CompleteAfterForwardedBinary,
 }
 fn scripted(
     receiver: UdpSocket,
@@ -408,6 +456,10 @@ fn scripted(
         stage = Stage::ValidateDatagram;
         let metadata = validate(arrival, step.request(), destination, None)?;
         report.matched = report.matched.checked_add(1).ok_or(Fault::CountOverflow)?;
+        if matches!(plan, ReplyPlan::CompleteAfterForwardedBinary) {
+            stage = Stage::BackendComplete;
+            return Ok(Terminal::BackendComplete);
+        }
         if let ReplyPlan::AwaitForwardedBinary(receipt) = &plan {
             stage = Stage::HoldReply;
             let mut out = io::stdout().lock();
@@ -454,9 +506,11 @@ fn scripted(
         match (step, role) {
             (Exchange::Binary, _) => step = Exchange::Empty,
             (Exchange::Empty, Reply::Backend) => {
-                if let ReplyPlan::Baseline(receipt) = plan {
-                    plan = ReplyPlan::AwaitForwardedBinary(receipt);
-                }
+                plan = match plan {
+                    ReplyPlan::Baseline(receipt) => ReplyPlan::AwaitForwardedBinary(receipt),
+                    ReplyPlan::CompleteAfterBaseline => ReplyPlan::CompleteAfterForwardedBinary,
+                    other => other,
+                };
                 step = Exchange::Binary;
             }
             (Exchange::Empty, Reply::Relay) => return Ok(Terminal::ScriptComplete),
@@ -756,6 +810,29 @@ pub(in super::super) fn run(input: Inputs) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn controlled_work_return_keeps_receipts_distinct_from_cancel_and_expiry() {
+        let mut done = ScriptedCompletion {
+            report: DatagramReport {
+                arrivals: 3,
+                matched: 3,
+                empty: 1,
+                replies_sent: 2,
+            },
+            stage: Stage::BackendComplete,
+            result: Ok(Terminal::BackendComplete),
+        };
+        assert!(done.backend_completed());
+        done.result = Ok(Terminal::Cancelled);
+        assert!(!done.backend_completed());
+        assert_eq!((done.report.arrivals, done.report.replies_sent), (3, 2));
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        assert!(!done.backend_completed());
+        done.result = Ok(Terminal::BackendComplete);
+        done.stage = Stage::NotifyWorkReturn;
+        assert!(!done.backend_completed());
+        assert_eq!((done.report.arrivals, done.report.matched), (3, 3));
+    }
     #[test]
     fn inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence() {
         for family in [Family::Ipv4, Family::Ipv6] {

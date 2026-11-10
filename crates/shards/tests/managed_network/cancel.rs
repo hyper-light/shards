@@ -36,6 +36,34 @@ fn cancellation_record_rejects_work_expiry_and_preserves_sent_fact() {
 enum CancellationCase {
     UpstreamReceive,
     BeforeUpstreamSend,
+    BackendComplete,
+}
+fn backend_work_returned(record: &Value) -> bool {
+    record["type"] == "UdpWorkerCompletion"
+        && record["role"] == "Backend"
+        && record["joined"] == true
+        && record["stage"] == "BackendComplete"
+        && record["terminal"] == "BackendComplete"
+        && record["arrivals"] == 3
+        && record["matched"] == 3
+        && record["empty"] == 1
+        && record["replies_sent"] == 2
+}
+#[test]
+fn backend_work_record_rejects_cancel_expiry_and_unjoined_or_missing_receipts() {
+    let mut record = json!({"type":"UdpWorkerCompletion","role":"Backend","joined":true,"stage":"BackendComplete","terminal":"BackendComplete","arrivals":3,"matched":3,"empty":1,"replies_sent":2});
+    assert!(backend_work_returned(&record));
+    for terminal in ["Cancelled", "Error"] {
+        record["terminal"] = json!(terminal);
+        assert!(!backend_work_returned(&record));
+        assert_eq!(record["arrivals"], 3);
+    }
+    record["terminal"] = json!("BackendComplete");
+    record["joined"] = json!(false);
+    assert!(!backend_work_returned(&record));
+    record["joined"] = json!(true);
+    record["matched"] = json!(2);
+    assert!(!backend_work_returned(&record));
 }
 fn cancelled_before_send(record: &Value) -> bool {
     record["type"] == "ForwardCompletion"
@@ -79,6 +107,11 @@ fn direct_guest_udp4_cancels_after_backend_receipt_before_work_deadline() {
 fn direct_guest_udp4_precommit_cancel_requires_no_backend_effect() {
     cancellation_case(CancellationCase::BeforeUpstreamSend);
 }
+#[test]
+#[ignore = "coordinator alone executes controlled backend work return and actual joined terminal"]
+fn direct_guest_udp4_backend_completes_without_reply_before_relay_cancel() {
+    cancellation_case(CancellationCase::BackendComplete);
+}
 fn cancellation_case(case: CancellationCase) {
     let input = Inputs::supplied();
     let mode = required("SHARDS_SOCK_ADDR_MODE");
@@ -94,6 +127,9 @@ fn cancellation_case(case: CancellationCase) {
             2,
             "ReceiveDatagram",
         ),
+        CancellationCase::BackendComplete => {
+            ("sock-addr-backend-end4", "CompleteBackend", 3, "BackendComplete")
+        }
     };
     let name = format!("{command}-{mode}");
     let run = input.boot(&name, &[command, &mode, &millis, &bytes]);
@@ -198,7 +234,7 @@ fn cancellation_case(case: CancellationCase) {
         check(r, step, hex, &baseline["local"], &target["backend"]);
     }
     match case {
-        CancellationCase::UpstreamReceive => {
+        CancellationCase::UpstreamReceive | CancellationCase::BackendComplete => {
             check(
                 backend[2],
                 "Binary",
@@ -215,11 +251,27 @@ fn cancellation_case(case: CancellationCase) {
                 ),
                 BackendSource::OwnedUpstream
             );
-            let held = one("HeldReply");
-            assert_eq!(held["stage"], "HoldReply");
-            assert_eq!(held["step"], "Binary");
-            assert_eq!(held["receipt"], "ValidatedBackendDatagram");
-            assert_eq!(held["reply"], "NotIssued");
+            match case {
+                CancellationCase::UpstreamReceive => {
+                    let held = one("HeldReply");
+                    assert_eq!(held["stage"], "HoldReply");
+                    assert_eq!(held["step"], "Binary");
+                    assert_eq!(held["receipt"], "ValidatedBackendDatagram");
+                    assert_eq!(held["reply"], "NotIssued");
+                }
+                CancellationCase::BackendComplete => {
+                    let returned = one("BackendWorkReturned");
+                    assert_eq!(returned["terminal"], "BackendComplete");
+                    assert_eq!(returned["receipt"], "ValidatedBackendDatagram");
+                    assert_eq!(returned["reply"], "NotIssued");
+                    assert_eq!(returned["thread_termination"], "UnobservedUntilJoin");
+                    let boundary = one("BackendReturnBoundary");
+                    assert_eq!(boundary["state"], "ObservedWorkReturn");
+                    assert_eq!(boundary["thread_termination"], "UnobservedUntilJoin");
+                    assert!(select("HeldReply").is_empty());
+                }
+                CancellationCase::BeforeUpstreamSend => panic!("pre-send case has no forwarded receipt"),
+            }
             let entered = one("ReceiveStageEntered");
             assert_eq!(entered["stage"], "UpstreamReceive");
             assert_eq!(entered["step"], "Binary");
@@ -243,6 +295,7 @@ fn cancellation_case(case: CancellationCase) {
     let (stage, receipt) = match case {
         CancellationCase::UpstreamReceive => ("UpstreamReceive", "ValidatedBackendDatagram"),
         CancellationCase::BeforeUpstreamSend => ("BeforeUpstreamSend", "ValidatedOwnedIngress"),
+        CancellationCase::BackendComplete => ("UpstreamReceive", "CompletedBackendWork"),
     };
     assert_eq!(boundaries[0]["stage"], stage);
     assert_eq!(boundaries[0]["receipt"], receipt);
@@ -260,6 +313,13 @@ fn cancellation_case(case: CancellationCase) {
             assert!(position(one("ReceiveStageEntered")) < position(requested));
             assert!(cancelled_receive(one("ForwardCompletion")), "{run}");
         }
+        CancellationCase::BackendComplete => {
+            assert!(position(backend[2]) < position(one("BackendWorkReturned")));
+            assert!(position(one("BackendWorkReturned")) < position(one("BackendReturnBoundary")));
+            assert!(position(one("BackendReturnBoundary")) < position(requested));
+            assert!(position(one("ReceiveStageEntered")) < position(requested));
+            assert!(cancelled_receive(one("ForwardCompletion")), "{run}");
+        }
         CancellationCase::BeforeUpstreamSend => {
             assert!(position(ingress[0]) < position(one("IngressValidated")));
             assert!(position(one("IngressValidated")) < position(requested));
@@ -271,7 +331,10 @@ fn cancellation_case(case: CancellationCase) {
     assert_eq!(worker["role"], "Backend");
     assert_eq!(worker["joined"], true);
     assert_eq!(worker["stage"], backend_stage);
-    assert_eq!(worker["terminal"], "Cancelled");
+    match case {
+        CancellationCase::BackendComplete => assert!(backend_work_returned(worker), "{run}"),
+        _ => assert_eq!(worker["terminal"], "Cancelled"),
+    }
     assert_eq!(worker["arrivals"], backend_expected);
     assert_eq!(worker["matched"], backend_expected);
     assert_eq!(worker["empty"], 1);

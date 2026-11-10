@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "test", "--offline", "--manifest-path", "/home/adalundhe/managed-relay-backend-end-light-v1/host/Cargo.toml", "--lib", "socket_address_record_parser_keeps_actual_tuple_and_failed_verdict", "--", "--exact"]

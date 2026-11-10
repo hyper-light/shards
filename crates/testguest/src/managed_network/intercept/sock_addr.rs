@@ -47,6 +47,7 @@ enum ControllerKind {
     BufferedRelay { buffer_bytes: usize },
     CancelUpstreamReceive { buffer_bytes: usize },
     CancelBeforeUpstreamSend { buffer_bytes: usize },
+    CompleteBackend { buffer_bytes: usize },
 }
 enum Cancellation {
     Receive {
@@ -58,22 +59,30 @@ enum Cancellation {
         release: OwnedFd,
         receipt: OwnedFd,
     },
+    BackendComplete {
+        entered: OwnedFd,
+        completed: OwnedFd,
+    },
 }
 impl Cancellation {
     fn ready(&self) -> &OwnedFd {
         match self {
-            Self::Receive { entered, .. } => entered,
+            Self::Receive { entered, .. } | Self::BackendComplete { entered, .. } => entered,
             Self::BeforeSend { ready, .. } => ready,
         }
     }
     fn receipt(&self) -> &OwnedFd {
         match self {
             Self::Receive { receipt, .. } | Self::BeforeSend { receipt, .. } => receipt,
+            Self::BackendComplete { completed, .. } => completed,
         }
     }
     fn control(&self) -> io::Result<udp::forward::Control> {
         match self {
             Self::Receive { entered, .. } => Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?)),
+            Self::BackendComplete { entered, .. } => {
+                Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?))
+            }
             Self::BeforeSend { ready, release, .. } => Ok(udp::forward::Control::BeforeUpstreamSend {
                 ready: ready.try_clone()?,
                 release: release.try_clone()?,
@@ -171,6 +180,16 @@ impl Inputs {
             }),
             ["sock-addr-precommit4", how, millis, budget] => Ok(Role::Controller {
                 kind: ControllerKind::CancelBeforeUpstreamSend {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
+            ["sock-addr-backend-end4", how, millis, budget] => Ok(Role::Controller {
+                kind: ControllerKind::CompleteBackend {
                     buffer_bytes: budget
                         .parse()
                         .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
@@ -775,7 +794,8 @@ fn controller(
         ControllerKind::ScriptedResponder => Payload::Scripted,
         ControllerKind::BufferedRelay { buffer_bytes }
         | ControllerKind::CancelUpstreamReceive { buffer_bytes }
-        | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes } => {
+        | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes }
+        | ControllerKind::CompleteBackend { buffer_bytes } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -809,6 +829,7 @@ fn controller(
         ControllerKind::BufferedRelay { .. } => "BufferedRelay",
         ControllerKind::CancelUpstreamReceive { .. } => "CancelUpstreamReceive",
         ControllerKind::CancelBeforeUpstreamSend { .. } => "CancelBeforeUpstreamSend",
+        ControllerKind::CompleteBackend { .. } => "CompleteBackend",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -826,7 +847,8 @@ fn controller(
         ControllerKind::ScriptedResponder => ClientRole::ScriptedResponder,
         ControllerKind::BufferedRelay { .. }
         | ControllerKind::CancelUpstreamReceive { .. }
-        | ControllerKind::CancelBeforeUpstreamSend { .. } => ClientRole::ForwardedBackend,
+        | ControllerKind::CancelBeforeUpstreamSend { .. }
+        | ControllerKind::CompleteBackend { .. } => ClientRole::ForwardedBackend,
     };
     let cancellation = match kind {
         ControllerKind::CancelUpstreamReceive { .. } => Some(Cancellation::Receive {
@@ -837,6 +859,10 @@ fn controller(
             ready: udp::notification()?,
             release: udp::notification()?,
             receipt: udp::notification()?,
+        }),
+        ControllerKind::CompleteBackend { .. } => Some(Cancellation::BackendComplete {
+            entered: udp::notification()?,
+            completed: udp::notification()?,
         }),
         _ => None,
     };
@@ -884,6 +910,12 @@ fn controller(
         .checked_mul(backend_scripts)
         .ok_or_else(|| invalid("expected empty count overflow"))?;
     let backend_work = match &cancellation {
+        Some(Cancellation::BackendComplete { completed, .. }) => Work::CompleteAfterReceipt {
+            receiver: backend.try_clone()?,
+            sender: backend,
+            destination: destination.into(),
+            completed: completed.try_clone()?,
+        },
         Some(cancellation) => Work::HeldReply {
             receiver: backend.try_clone()?,
             sender: backend,
@@ -948,11 +980,19 @@ fn controller(
             // each case requires its owned phase entry before the cancel request.
             // Neither notification claims an observed kernel sleep.
             let boundary = (|| {
-                if let Cancellation::Receive { receipt, .. } = cancellation {
+                if matches!(
+                    cancellation,
+                    Cancellation::Receive { .. } | Cancellation::BackendComplete { .. }
+                ) {
                     at(
                         Stage::AwaitCancellationBoundary,
-                        udp::notified(receipt, &deadline),
+                        udp::notified(cancellation.receipt(), &deadline),
                     )?;
+                    if matches!(cancellation, Cancellation::BackendComplete { .. }) {
+                        record(format_args!(
+                            "{{\"type\":\"BackendReturnBoundary\",\"state\":\"ObservedWorkReturn\",\"thread_termination\":\"UnobservedUntilJoin\"}}"
+                        ))?;
+                    }
                 }
                 at(
                     Stage::AwaitCancellationBoundary,
@@ -966,6 +1006,7 @@ fn controller(
                 let (stage, receipt) = match cancellation {
                     Cancellation::Receive { .. } => ("UpstreamReceive", "ValidatedBackendDatagram"),
                     Cancellation::BeforeSend { .. } => ("BeforeUpstreamSend", "ValidatedOwnedIngress"),
+                    Cancellation::BackendComplete { .. } => ("UpstreamReceive", "CompletedBackendWork"),
                 };
                 record(format_args!(
                     "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"{stage}\",\"receipt\":\"{receipt}\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
@@ -984,7 +1025,7 @@ fn controller(
                         Ok(())
                     }
                 }),
-                Cancellation::Receive { .. } => Ok(()),
+                Cancellation::Receive { .. } | Cancellation::BackendComplete { .. } => Ok(()),
             };
             // Even a failed boundary/cancel report ends and reaps this owned child
             // before the existing worker/link/cgroup cleanup path proceeds.
@@ -1084,7 +1125,7 @@ fn controller(
     let (expected_backend, expected_empty) = match &cancellation {
         Some(cancellation) => (
             match cancellation {
-                Cancellation::Receive { .. } => Exchange::SCRIPT
+                Cancellation::Receive { .. } | Cancellation::BackendComplete { .. } => Exchange::SCRIPT
                     .len()
                     .checked_add(1)
                     .ok_or_else(|| invalid("held backend count overflow"))?,
@@ -1101,7 +1142,10 @@ fn controller(
         || backend.report.matched != expected_backend
         || backend.report.empty != expected_empty
         || (cancellation.is_some() && backend.report.replies_sent != Exchange::SCRIPT.len())
-        || !matches!(backend.result, Ok(udp::Terminal::Cancelled))
+        || !match kind {
+            ControllerKind::CompleteBackend { .. } => backend.backend_completed(),
+            _ => matches!(backend.result, Ok(udp::Terminal::Cancelled)),
+        }
     {
         return Err(invalid("backend script/terminal differs"));
     }
@@ -1136,6 +1180,13 @@ fn controller(
         (ControllerKind::CancelUpstreamReceive { .. }, udp::Completion::Forwarded(relay)) => {
             if !relay.cancelled_upstream_receive() {
                 return Err(invalid("relay did not cancel at the upstream receive boundary"));
+            }
+        }
+        (ControllerKind::CompleteBackend { .. }, udp::Completion::Forwarded(relay)) => {
+            if !relay.cancelled_upstream_receive() {
+                return Err(invalid(
+                    "relay did not cancel after controlled backend completion",
+                ));
             }
         }
         (ControllerKind::CancelBeforeUpstreamSend { .. }, udp::Completion::Forwarded(relay)) => {
@@ -1271,6 +1322,36 @@ mod tests {
                 io::ErrorKind::InvalidInput
             );
         }
+    }
+    #[test]
+    fn backend_completion_command_requires_explicit_mode_deadline_and_envelope() {
+        for mode in ["connected", "unconnected"] {
+            let input = Inputs::parse(&["sock-addr-backend-end4", mode, "1000", "18"]).unwrap();
+            assert!(matches!(
+                input.0,
+                Role::Controller {
+                    kind: ControllerKind::CompleteBackend { buffer_bytes: 18 },
+                    presentation: Presentation::FixedOriginalPeer,
+                    ..
+                }
+            ));
+        }
+        for words in [
+            vec!["sock-addr-backend-end4", "connected", "1000"],
+            vec!["sock-addr-backend-end4", "other", "1000", "18"],
+            vec!["sock-addr-backend-end4", "connected", "1000", "bad"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(
+            Inputs::parse(&["sock-addr-backend-end4", "connected", "0", "18"])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
     }
     #[test]
     fn finite_hook_plans_are_explicit_and_mode_specific() {

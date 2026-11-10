@@ -1,0 +1,13 @@
+{
+  "base": "200089e47bc125037a350e0a3954863a86bb6d47",
+  "source_sha256": {
+    "crates/testguest/src/managed_network.rs": "ea7a32ee771aefc5300412ce9c26d2df877dc420f6382081a6ce8267979ce4ae",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "9855d08d22a5b469090f52bea899df9413aaac4ba3b0109b3481ef85d7633523",
+    "crates/testguest/src/managed_network/intercept/udp.rs": "633e3c25eceddb9f627c2037f8fec108799677f795d9ca5f161bd4e817f54347",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "94742edb970bfc92a47de64fb66a139029f1b65f2ac08aa3f42bb16c8aa05cd0",
+    "crates/shards/tests/managed_network/cancel.rs": "6f8ec6fe421b934e0c9c72aa9d9d46e3c54bcf1aeff7b8f41b36d11168523461",
+    "docs/research/measurements/managed-relay-backend-end/light.py": "0b9b68dafa803a6efe5573379769440d60779a4a65a56b1634cc359c833711f4"
+  },
+  "Deadline_identical_to_base_sha256": "30c90a9dc89398a7dcf90541e1ad6654d52b5b731bf08e1fb4472f3ca14819fe",
+  "scope": "36GNU+36musl pure/scopedlint; inerthostcomposition/sixexactpurefilters; noVM/event/socketexecution"
+}

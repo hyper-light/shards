@@ -331,6 +331,7 @@ pub(super) fn record(completed: &Completion) -> io::Result<()> {
     let terminal = match &completed.result {
         Ok(Terminal::ScriptComplete) => "ScriptComplete",
         Ok(Terminal::Cancelled) => "Cancelled",
+        Ok(Terminal::BackendComplete) => "BackendComplete",
         Err(_) => "Error",
     };
     writeln!(

@@ -1,0 +1,20 @@
+[
+  {
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-backend-end-light-v1/guest/target/debug/deps/sock_addr_pure-6677ba405c459de9",
+    "bytes": 10546352,
+    "sha256": "cfca719e52f0d33c85ebc8f00565941d37f88c807b078fc0fe0c3c566105b92a"
+  },
+  {
+    "case": "guest",
+    "path": "/home/adalundhe/managed-relay-backend-end-light-v1/guest/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-4674fc7ee58ec134",
+    "bytes": 10656016,
+    "sha256": "7c0d1632232a902a69679f0ae007c290abede72b5b2b52a552ab646123e8724a"
+  },
+  {
+    "case": "host",
+    "path": "/home/adalundhe/managed-relay-backend-end-light-v1/host/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41",
+    "bytes": 11574080,
+    "sha256": "45e53c5d2994cd8ee8270e3244970fbc5f968f40abb23dc5b492c892492af2ce"
+  }
+]

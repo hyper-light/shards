@@ -1,0 +1,8 @@
+{
+  "transport": "compressed in-memory text JSON/base64; no local archive/executable transfer",
+  "bytes": 13604,
+  "sha256": "eccebea9a9a92bb089552568a49141508e762743fef4f56f5918add7a4e6e787",
+  "files": 46,
+  "member_hashes_verified": true,
+  "originals": "Fedora ~/managed-relay-backend-end-light-v1, preserved"
+}
