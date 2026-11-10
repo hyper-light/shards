@@ -1,0 +1,20 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/abi)
+   Compiling num-traits v0.2.19
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/vmm)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/syscall-filter)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/netring)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/testdir)
+    Checking memchr v2.8.3
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/ipc)
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+    Checking num-integer v0.1.47
+    Checking regex-automata v0.4.18
+   Compiling shards-vm-process v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/vm-process)
+    Checking num-bigint v0.4.8
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/template)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/dns)
+    Checking shards-net v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/net)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/cmdline)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.03s

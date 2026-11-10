@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "scripts/check-development-policy"
+  ],
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98",
+  "CARGO_TARGET_DIR": "/home/adalundhe/main-cmdline-error-type-target",
+  "SHARDS_HELPERS": "skip"
+}
