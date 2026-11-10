@@ -1,0 +1,9 @@
+{
+  "stage": "python3 environment discovery",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "command": "python3 -c \"import sys,os,platform,shutil; print(sys.executable); print(platform.platform()); print(shutil.disk_usage(os.path.expanduser('~')).free)\"",
+  "exit_code": 49,
+  "output": "Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.\r\n",
+  "native_build_or_tests_started": false,
+  "followup": "Existing PowerShell5.1; no installer, alias or execution-policy changes."
+}

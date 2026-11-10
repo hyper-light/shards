@@ -1,0 +1,17 @@
+{
+  "source": "f08cc06b009158a5eafce00d3bc806b702a8aff7",
+  "private": "C:\\Users\\corph\\managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf\\execution-v2",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "needs": "windows/amd64,cpus=2,mem=4g,disk=12g",
+  "packed_sha256": "f8de0641f894063bb0b0138d651fc2aa89f93bb33ffc5133c97ea25775ff704d",
+  "driver_sha256": "92be2d3fa6b35def1dd29e58951559ba34b3a8e8120d050d863aa677aa1ee43a",
+  "driver_parts": 7,
+  "command": "set -o noclobber\npowershell.exe -NoProfile -NonInteractive -File C:/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.ps1 -Bundle C:/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/input.json -Root C:/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/execution-v2 -Seconds 870 > /c/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.stdout 2> /c/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.stderr\ndriver_status=$?\nprintf '%s\\n' \"$driver_status\" > /c/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.exit\ncat /c/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.stdout\ncat /c/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/driver-v2.stderr >&2\nexit \"$driver_status\"",
+  "initial": {
+    "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+    "output": "",
+    "running": true,
+    "id": "r505",
+    "why": "windows/x86_64 · 29 of 32 cores idle · 74 GB free · room for 2 CPUs, 4 GiB of memory, 12 GiB of disk"
+  }
+}

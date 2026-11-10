@@ -1,0 +1,10 @@
+{
+  "stage": "first 12000-character base64 transfer chunk",
+  "exit_code": 2,
+  "output": "/usr/bin/bash: -c: line 1: unexpected EOF while looking for matching `''\n",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "private": "C:\\Users\\corph\\managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf",
+  "native_build_or_tests_started": false,
+  "cause": "Transport quoting/length not established; command did not parse. No source fix inferred.",
+  "next": "Use short chunks with one outer shell quote and PowerShell double-quoted literal data; create_new differently named parts, retaining any original file."
+}

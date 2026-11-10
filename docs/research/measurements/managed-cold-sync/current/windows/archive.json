@@ -1,0 +1,11 @@
+{
+  "archive": "C:/Users/corph/managed-cold-sync-windows-f08-v1-a59029f2d752470c98a96216f08223cf/records.json.gz",
+  "bytes": 736954,
+  "sha256": "5d4f122ea2c7547bcd76e0603b859da1ddc19b878de34cf240c0d99eacf7ae80",
+  "payloads": 55,
+  "local_file": "raw/records.json.gz.b64",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "source_revision": "f08cc06b009158a5eafce00d3bc806b702a8aff7",
+  "driver_v2_sha256": "92be2d3fa6b35def1dd29e58951559ba34b3a8e8120d050d863aa677aa1ee43a",
+  "source_bundle_gzip_sha256": "f8de0641f894063bb0b0138d651fc2aa89f93bb33ffc5133c97ea25775ff704d"
+}

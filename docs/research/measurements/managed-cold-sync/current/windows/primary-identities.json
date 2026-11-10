@@ -1,0 +1,10 @@
+{
+  "retrieved_utc": "2026-11-10T20:52:19.745416+00:00",
+  "source_url": "https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/08ed091870a25a4ddeffe0727789ca0164beadd2/sdk-api-src/content/winbase/nf-winbase-setprocessaffinitymask.md",
+  "commit": "08ed091870a25a4ddeffe0727789ca0164beadd2",
+  "sha256": "ec96f59ecef57850ef28f3f033bf7e43e64ba3f4c68f270adf4dc535df81e83c",
+  "bytes": 5346,
+  "official_contract_url": "https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-setprocessaffinitymask",
+  "dotnet_property_url": "https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.processoraffinity?view=netframework-4.8.1",
+  "scope": "Launcher-owned CPU affinity only; no production synchronization, job/host setting or runtime-performance proof."
+}
