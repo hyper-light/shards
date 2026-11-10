@@ -5,7 +5,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::error::Error;
 use std::io::Write as _;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
 use std::sync::mpsc;
 use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
@@ -31,12 +31,32 @@ static FREES: AtomicU64 = AtomicU64::new(0);
 static LIVE: AtomicU64 = AtomicU64::new(0);
 static PEAK: AtomicU64 = AtomicU64::new(0);
 static TOTAL: AtomicU64 = AtomicU64::new(0);
+static TRACE_MIN: AtomicUsize = AtomicUsize::new(usize::MAX);
+thread_local! { static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+fn trace_allocation(bytes: usize) {
+    if bytes < TRACE_MIN.load(Relaxed) {
+        return;
+    }
+    let _ = TRACING.try_with(|active| {
+        if active.replace(true) {
+            return;
+        }
+        let trace = std::backtrace::Backtrace::force_capture();
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "diagnostic_allocation\tbytes={bytes}\n{trace}"
+        );
+        active.set(false);
+    });
+}
 
 fn allocated(bytes: usize) {
     ALLOCS.fetch_add(1, Relaxed);
     TOTAL.fetch_add(bytes as u64, Relaxed);
     let live = LIVE.fetch_add(bytes as u64, Relaxed).saturating_add(bytes as u64);
     PEAK.fetch_max(live, Relaxed);
+    trace_allocation(bytes);
 }
 
 // SAFETY: every operation delegates the original pointer/layout to System. The
@@ -69,6 +89,7 @@ unsafe impl GlobalAlloc for Count {
             LIVE.fetch_sub(layout.size() as u64, Relaxed);
             let live = LIVE.fetch_add(size as u64, Relaxed).saturating_add(size as u64);
             PEAK.fetch_max(live, Relaxed);
+            trace_allocation(size);
         }
         next
     }
@@ -536,6 +557,9 @@ fn worker(
 }
 
 pub(super) fn run_with(args: Vec<String>) -> Result<()> {
+    if let Ok(threshold) = std::env::var("MANAGED_TRACE_ALLOC_MIN") {
+        TRACE_MIN.store(threshold.parse()?, Relaxed);
+    }
     if args.len() != 7 {
         return Err(
             "usage: managed-performance TENANTS RECORDS BYTES PATIENCE_MS normal|stall endpoint".into(),
