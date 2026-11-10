@@ -2542,8 +2542,11 @@ mod tests {
         std::thread::scope(|scope| {
             let (one, first) = mpsc::channel();
             let (two, second) = mpsc::channel();
-            let a = scope.spawn(|| wait_reply(&first, Some(&cancel), after(Duration::from_secs(2))));
-            let b = scope.spawn(|| wait_reply(&second, Some(&cancel), after(Duration::from_secs(2))));
+            let cancellation = &cancel;
+            let a =
+                scope.spawn(move || wait_reply(&first, Some(cancellation), after(Duration::from_secs(2))));
+            let b =
+                scope.spawn(move || wait_reply(&second, Some(cancellation), after(Duration::from_secs(2))));
             Reply::new(two, Some(&cancel)).send(2);
             assert!(matches!(b.join().unwrap(), Replied::Answer(2)));
             cancel.cancel();
