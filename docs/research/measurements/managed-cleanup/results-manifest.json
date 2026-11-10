@@ -1,0 +1,96 @@
+{
+  "archive": "results.tar.gz",
+  "sha256": "c28c8da8c4271d21b9621a8cb58b4313cb40b376492134c51690e4681b357d96",
+  "files": [
+    {
+      "path": "clone.txt",
+      "bytes": 88,
+      "sha256": "6aa1af07c11be50e3d3d292eb359d996de40cd6449b39a1ff5a08831a4e502f6"
+    },
+    {
+      "path": "final/binary-identities.json",
+      "bytes": 2175,
+      "sha256": "09cd52aaf70df34fa1fafb3eaeb89dd20ff1adc69d65b13143736ed3c838a360"
+    },
+    {
+      "path": "final/environment.txt",
+      "bytes": 155,
+      "sha256": "820ff32296c71366cdb3fc9aa367c064785d36a1dbfc2cacc17bd0a6fbc91c72"
+    },
+    {
+      "path": "final/guest-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "final/guest-clippy.log",
+      "bytes": 2508,
+      "sha256": "0561ff14eff9beadb3ef38571fe2af0287c6eea455f34d3bca1c2c48e512d3c3"
+    },
+    {
+      "path": "final/host-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "final/host-clippy.log",
+      "bytes": 7475,
+      "sha256": "6286672afb923562d98ef284185120218a078a861db432bdd6acd1c8e81f69eb"
+    },
+    {
+      "path": "final/run.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "final/run.log",
+      "bytes": 8580,
+      "sha256": "28ad947b7f0b2f2ba0c208bde3ea527ff35f4af6a125b671521be9a712373028"
+    },
+    {
+      "path": "final/source.sha256",
+      "bytes": 669,
+      "sha256": "804994d32ef533d085f5e58656c5fabf4b0a14bf736c346ce1ad343f8935e6be"
+    },
+    {
+      "path": "final/source.txt",
+      "bytes": 41,
+      "sha256": "b41f5183a1da5ec7ba24b9c4065ce140528c80b5edff7c44be4353f2425e09aa"
+    },
+    {
+      "path": "initial/clean.log",
+      "bytes": 39,
+      "sha256": "b2e3aedf669d35e222db783e371429fadc17571478453aa07da96e1a40a83830"
+    },
+    {
+      "path": "initial/environment.txt",
+      "bytes": 208,
+      "sha256": "cf00479f2d88c911de90892da4e912fcf32166841321e0a765e9bc27bb0c4fa6"
+    },
+    {
+      "path": "initial/run.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "initial/run.log",
+      "bytes": 14566,
+      "sha256": "f562b49b9e8292561334347e673418f60cfd8eb9297e5ab5c8f9eacd3dd1c4da"
+    },
+    {
+      "path": "initial/source.sha256",
+      "bytes": 579,
+      "sha256": "daab7b13228e7e75f4d35af01e2a36b3483a09e23a0800bae40756e7318e11dd"
+    },
+    {
+      "path": "initial/source.txt",
+      "bytes": 41,
+      "sha256": "b41f5183a1da5ec7ba24b9c4065ce140528c80b5edff7c44be4353f2425e09aa"
+    },
+    {
+      "path": "report.json",
+      "bytes": 4888,
+      "sha256": "6c18d3a683af220c0fe8474bcb48cd53eef0c146b831c5050f678bcbb22b0193"
+    }
+  ]
+}

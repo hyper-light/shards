@@ -1,0 +1,16 @@
+COMMAND ['scripts/check-development-policy']
+Development policy checks passed; evidence/coordinator review is still required.
+
+EXIT 0
+COMMAND ['rustfmt', '--check', '--edition', '2024', 'crates/testguest/src/cleanup.rs', 'crates/testguest/src/main.rs', 'crates/testguest/src/workload.rs', 'crates/shards/tests/managed_cleanup.rs']
+
+EXIT 0
+COMMAND ['git', 'diff', '--check']
+
+EXIT 0
+COMMAND ['bash', '-n', 'docs/research/measurements/managed-cleanup/run.sh']
+
+EXIT 0
+All final tested fixture and init production source hashes match checkpoint bytes.
+Archive and every archived file hash verified.
+crates/init bytes unchanged from combined b8febd1c; no production cleanup edit.

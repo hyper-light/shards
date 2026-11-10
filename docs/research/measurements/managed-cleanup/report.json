@@ -1,0 +1,92 @@
+{
+  "base_revision": "b8febd1c3b988453d12c0690c27f7e53a2ac24a0",
+  "results": [
+    {
+      "campaign": "initial",
+      "record": "CLEANUP_RESULT mode=own children=8 vm_pid=2006485 cleanup children 8 reaped 8 remaining 0 elapsed_us 6274 surviving_joiner_progress=true total_us=25593"
+    },
+    {
+      "campaign": "initial",
+      "record": "CLEANUP_RESULT mode=init children=8 vm_pid=2006760 cleanup children 8 reaped 8 remaining 0 elapsed_us 8360 surviving_joiner_progress=true total_us=16726"
+    },
+    {
+      "campaign": "initial",
+      "record": "CLEANUP_RESULT mode=host children=8 vm_pid=2006891 cleanup children 8 reaped 8 remaining 0 elapsed_us 50660 surviving_joiner_progress=true total_us=58847"
+    },
+    {
+      "campaign": "initial",
+      "record": "CLEANUP_RESULT mode=host children=72 vm_pid=2007123 cleanup children 72 reaped 72 remaining 0 elapsed_us 10788 surviving_joiner_progress=true total_us=20908"
+    },
+    {
+      "campaign": "final",
+      "record": "CLEANUP_RESULT mode=own children=8 vm_pid=2026494 cleanup children 8 reaped 8 remaining 0 elapsed_us 114913 surviving_joiner_progress=true total_us=22418"
+    },
+    {
+      "campaign": "final",
+      "record": "CLEANUP_RESULT mode=init children=8 vm_pid=2026625 cleanup children 8 reaped 8 remaining 0 elapsed_us 7398 surviving_joiner_progress=true total_us=23975"
+    },
+    {
+      "campaign": "final",
+      "record": "CLEANUP_RESULT mode=host children=8 vm_pid=2026757 cleanup children 8 reaped 8 remaining 0 elapsed_us 9567 surviving_joiner_progress=true total_us=16996"
+    },
+    {
+      "campaign": "final",
+      "record": "CLEANUP_RESULT mode=host children=72 vm_pid=2026881 cleanup children 72 reaped 72 remaining 0 elapsed_us 11737 surviving_joiner_progress=true total_us=21645"
+    }
+  ],
+  "negative_control": true,
+  "source_hashes": "7ba4a1b4014b213c160cc7303a75faf5af75414ff7783664fcbbec7103fe9555  crates/init/src/run.rs\n7850fa6a28c65a1063cd349748f227ecc874bb381507a0565e39c500d7f07d1e  crates/init/src/managed.rs\nec6f7d74f07122457a20429095cc83bb67a0dfcb672abff1487b08621cce9cd6  crates/init/src/join.rs\nd3cd999f6d4b3a19e89160d777ee91caa1bc7d5bfcdb3601694cdf587a1f34ca  crates/testguest/src/main.rs\n32bdb948393c605916a4d8704a0d16915e5a58ce749c599b9e1ab111f2e09922  crates/testguest/src/workload.rs\n684d8e1f70891157c117d6720d149cbb6330d408fcef60708d5830bb3c46b26a  crates/testguest/src/cleanup.rs\nd1f049f1900b16779e8da5412fdf3792eefea5437180a252b6cbe23475e064f3  crates/shards/tests/managed_cleanup.rs\n",
+  "binary_identities": [
+    {
+      "role": "shards",
+      "executed_path": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-a4aff8513b/target/e2e/shards-9b23049c9d921031/shards",
+      "bytes": 570732336,
+      "sha256": "9b23049c9d9210312771c5ab08c4eafc74bf2254dba23b4dc6fb2629379a803b"
+    },
+    {
+      "role": "init",
+      "executed_path": "/home/adalundhe/managed-cleanup-target/debug/build/shards-b26bed6193a0fe8c/out/shards-init",
+      "bytes": 2090888,
+      "sha256": "13c66e857972c663ac8b7591e3c42feb7372e969a3499592bc8c32e553cd2f9f"
+    },
+    {
+      "role": "guest",
+      "executed_path": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-a4aff8513b/target/guest/by-process/2025440/shards-testguest",
+      "bytes": 3103672,
+      "sha256": "9fa69ae4a2c4d1ca27459ba91d51198f0f9e7e8a96070d6611206300e00531f5"
+    },
+    {
+      "role": "kernel",
+      "executed_path": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-cleanup-a4aff8513b/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+      "bytes": 27758808,
+      "sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+    },
+    {
+      "role": "test",
+      "executed_path": "/home/adalundhe/managed-cleanup-target/debug/deps/managed_cleanup-613b829172fa0357",
+      "bytes": 80707568,
+      "sha256": "1edc012e5f56fa1c80c1bf84faa259ffd35bfe4b9ca21f1aba16c2923ec8b09c"
+    },
+    {
+      "role": "helper-shards-vm",
+      "executed_path": "/home/adalundhe/managed-cleanup-target/debug/build/shards-b26bed6193a0fe8c/out/helpers/shards-vm",
+      "bytes": 85411344,
+      "sha256": "2a735165509aaa45d2c91e1bbb1e14a2892efff7aa6ec6bbbd4db8b34c3107c6"
+    },
+    {
+      "role": "helper-shards-net",
+      "executed_path": "/home/adalundhe/managed-cleanup-target/debug/build/shards-b26bed6193a0fe8c/out/helpers/shards-net",
+      "bytes": 15751984,
+      "sha256": "d92673b16b4db6c93988bbf7c826e72f460606e46bac041b4fa0be17bdbb57e1"
+    },
+    {
+      "role": "helper-shards-vm-gpu",
+      "executed_path": "/home/adalundhe/managed-cleanup-target/debug/build/shards-b26bed6193a0fe8c/out/helpers/shards-vm-gpu",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "run_exit": "0",
+  "host_clippy_exit": "0",
+  "guest_clippy_exit": "0"
+}
