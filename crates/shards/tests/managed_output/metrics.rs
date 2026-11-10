@@ -164,3 +164,106 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
     }
     save("completed", b"fixture body and owner/observer cleanup returned\n");
 }
+
+#[test]
+fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
+    let records = std::env::var_os("SHARDS_OTEL_JOINER_RECORDS").map(PathBuf::from);
+    if let Some(path) = &records {
+        assert!(path.is_absolute());
+        std::fs::create_dir(path).unwrap();
+    }
+    let save = |name: &str, bytes: &[u8]| {
+        if let Some(path) = &records {
+            std::fs::write(path.join(name), bytes).unwrap();
+        }
+    };
+    let Some(_) = with_fixture(|fixture| {
+        let provider = fixture.metadata.as_ref().unwrap().run.clone();
+        let (image, _) = common::served();
+        let joined = fixture.command(
+            &[
+                "run",
+                "vm",
+                "-d",
+                "--name",
+                "metrics-joiner",
+                "--network",
+                "container:owner-output",
+                &image,
+                "sleep",
+            ],
+            WITHIN,
+        );
+        assert_eq!(joined.status, Some(0), "{joined}");
+        let joiner = joined.stdout.trim();
+        assert_ne!(joiner, provider);
+        save("provider.id", provider.as_bytes());
+        save("joiner.id", joiner.as_bytes());
+
+        let boot = |name: &str| {
+            let run = fixture.command(
+                &[
+                    "exec",
+                    name,
+                    "/bin/testguest",
+                    "confined",
+                    "cat",
+                    "/proc/sys/kernel/random/boot_id",
+                ],
+                WITHIN,
+            );
+            save(&format!("{name}-boot.stdout"), run.stdout.as_bytes());
+            save(&format!("{name}-boot.stderr"), run.stderr.as_bytes());
+            assert_eq!(run.status, Some(0), "{run}");
+            let value = run
+                .stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("confined cat /proc/sys/kernel/random/boot_id: "))
+                .unwrap();
+            assert!(!value.is_empty() && !value.starts_with("errno"));
+            value.to_owned()
+        };
+        assert_eq!(
+            boot("owner-output"),
+            boot("metrics-joiner"),
+            "actual shared guest boot"
+        );
+
+        let first = fixture.command(&["read", "metrics", &provider], WITHIN);
+        let second = fixture.command(&["read", "metrics", joiner], WITHIN);
+        for (name, run) in [("provider", &first), ("joiner", &second)] {
+            save(&format!("{name}.json"), run.stdout.as_bytes());
+            save(&format!("{name}.stderr"), run.stderr.as_bytes());
+            assert_eq!(run.status, Some(0), "{run}");
+        }
+        let joined: Value = serde_json::from_str(&second.stdout).unwrap();
+        let [workload] = joined["resourceMetrics"].as_array().unwrap().as_slice() else {
+            panic!("joiner exports only its workload, not provider/member facts");
+        };
+        let identity = attrs(&workload["resource"]["attributes"]);
+        assert_eq!(identity["shards.cgroup.scope"]["stringValue"], "workload");
+        assert_eq!(identity["shards.microvm.id"]["stringValue"], provider);
+        assert_eq!(identity["shards.run.id"]["stringValue"], joiner);
+
+        let first: Value = serde_json::from_str(&first.stdout).unwrap();
+        for resource in first["resourceMetrics"].as_array().unwrap() {
+            let identity = attrs(&resource["resource"]["attributes"]);
+            assert_eq!(identity["shards.microvm.id"]["stringValue"], provider);
+            assert_eq!(identity["shards.run.id"]["stringValue"], provider);
+        }
+        let removed = fixture.command(&["rm", "-f", joiner], WITHIN);
+        assert_eq!(removed.status, Some(0), "{removed}");
+        fixture.main_progress(WITHIN);
+        for (member, label) in [(1, "agent"), (2, "harness")] {
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                fixture.consume(member, label, channel);
+            }
+        }
+    }) else {
+        return;
+    };
+    save(
+        "completed",
+        b"distinct run/shared VM identity and owner cleanup returned\n",
+    );
+}
