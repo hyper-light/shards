@@ -45,6 +45,8 @@ def main(given):
         "runner": given["runner"], "admission": "1 CPU/1 GiB RAM/2 GiB disk; serial; sync:false",
         "source": str(source), "target": str(target), "records": str(records),
         "executed": "actual module's targeted pure/private ordinary-file unit tests only",
+        "test_filter": given.get("test_filter", "admission::tests::"),
+        "expected_unit_count": given.get("expected_unit_count"),
         "unrun": "actual run_group/Parent admission, kernel controllers/cgroups, full init caller, helper/VM/resource attribution/profile/benchmark/mutation/matrix",
         "harness_allowance": "dead_code only for unused production entrypoints in the isolated import; production panic/unsafe lints remain enabled",
     }, indent=2) + "\n")
@@ -103,12 +105,13 @@ def main(given):
         binary = artifacts[0]
         identity = {"path": str(binary), "bytes": binary.stat().st_size, "sha256": digest(binary)}
         (records / "binary.json").write_text(json.dumps(identity, indent=2) + "\n")
-        outcomes["units"], unit_output = run("units", [str(binary), "admission::tests::", "--test-threads=1", "--nocapture"])
+        outcomes["units"], unit_output = run("units", [str(binary), given.get("test_filter", "admission::tests::"), "--test-threads=1", "--nocapture"])
         if "expected_unit_count" in given and outcomes["units"] == 0:
             marker = ("test result: ok. " + str(given["expected_unit_count"]) +
                       " passed; 0 failed; 0 ignored; 0 measured; 0 filtered out")
             if marker.encode() not in unit_output:
                 outcomes["unit_count"] = "Unexpected unit coverage"
+                (records / "unit_count.log").write_bytes(unit_output)
         outcomes["clippy"], _ = run("clippy", [cargo, "+1.98.1", "clippy", "--all-targets", "-j", "1", "--", "-D", "warnings"])
         assert digest(binary) == identity["sha256"]
     (records / "outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")

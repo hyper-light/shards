@@ -35,6 +35,12 @@ ROOT owns its shared checked comparison correction and the exact musl/combined
 reruns. This lane does not duplicate that edit, introduce a fallback, or claim
 portability from GNU-only checking. Raw combined logs remain ROOT-owned.
 
+[Six additional cap correctness checks](CAP-CORRECTNESS.md) now pass in a new
+private GNU scope together with the original nine:15 passed, zero failed/ignored/
+filtered, build0 and Clippy0. They validate ordinary-file refusal/held-object
+boundaries with only a private cfg(test) child suffix; production remains frozen.
+These tests do not replace ROOT's actual kernel, musl or combined gates.
+
 The earlier follow-up source `5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7` adds a
 checked diagnostic writer: every fragment fits actual remaining String capacity
 before push; formatting failure discards partial output. Build0, nine pure/private

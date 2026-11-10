@@ -1,0 +1,92 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 496,
+    "sha256": "a929ffa9fafe5c9d0f00a2f0d377f620a1a0a57d0ee5e7156bdb96d48c454e7b"
+  },
+  {
+    "path": "binary.json",
+    "bytes": 252,
+    "sha256": "8a480c0f641470b506154c04fc29698700e45de0bbfdf5e89e8c405b244b15cc"
+  },
+  {
+    "path": "build.command.json",
+    "bytes": 269,
+    "sha256": "16c1539cb6753a1a0ed1b2b168eedf2e879fd2f229af0fcb5321a523bf720149"
+  },
+  {
+    "path": "build.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "build.log",
+    "bytes": 4558,
+    "sha256": "25b96b818eb8b7a4832f7f3e74cf678093077894e818f1be315453e3b3ad4a5e"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "clippy.command.json",
+    "bytes": 270,
+    "sha256": "3a51f54243fd7ae476b2f47ac35f254d98223497cf909c0c3213502dca0b03bf"
+  },
+  {
+    "path": "clippy.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "clippy.log",
+    "bytes": 358,
+    "sha256": "81b5591e036b9fd5cdc3007e09fde18ae91e255381b4b09e43a1298372f8c685"
+  },
+  {
+    "path": "environment.json",
+    "bytes": 486,
+    "sha256": "919002b30804d7a1f60a0d3007b6d63487a9ce7eb82d99b241b7ff10b5618a3d"
+  },
+  {
+    "path": "outcomes.json",
+    "bytes": 46,
+    "sha256": "c0e2aaf3da2039e0807aa44f2595009858de9116ed50c7951e87c432b729b750"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "scope.json",
+    "bytes": 815,
+    "sha256": "a163ebe16e5bba5eadac72a4f01ef6c13e7166acef14c30cbe87d1273907b729"
+  },
+  {
+    "path": "source.json",
+    "bytes": 3323,
+    "sha256": "08fc9f8974820981435b896434370a1b9f346ca54c9f0e45cf76c2385fe844ff"
+  },
+  {
+    "path": "tools.json",
+    "bytes": 475,
+    "sha256": "46c7f728a4c961c8bc6d5ad84dba3fb1d953ae341e9785ee829e98dce227639f"
+  },
+  {
+    "path": "units.command.json",
+    "bytes": 330,
+    "sha256": "93a3ef39398848b09e7f7cf13ad8e7b1b32075fbe70a7ae72a8783b2e24c60fe"
+  },
+  {
+    "path": "units.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "units.log",
+    "bytes": 1448,
+    "sha256": "433fe9ed86b5ec38d41da95454961050aab69fb86f0ae0b39a199041335aafc0"
+  }
+]

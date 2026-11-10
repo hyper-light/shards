@@ -30,10 +30,16 @@ Fresh Fedora reboot inventory verified only own source/records/binaries at boot
 059f75eb-7936-4784-8c79-39b0ed191809, not process liveness/cleanup. Command/result
 are in records/post-restart-owned-inventory-*.json. No old run assumed resumed.
 
-CONTINUE test-only six ordinary-file cap boundary/held-object cases in own
-cap-correctness.rs, appended ONLY as private cfg(test) child of exact module body
-for an admitted serial1CPU/1GiB RAM/2GiB disk NEW remote scope. No production edit
-or claimed cgroup emulation. Retain nine existing cases and require all15 to run.
+Latest next batch: test-only six ordinary-file cap boundary/held-object cases in
+own cap-correctness.rs now build0, all15 PASS0fail0ignored0filtered, Clippy0.
+Appended ONLY as private cfg(test) child of exact module body for admitted
+serial1CPU/1GiB RAM/2GiB disk NEW remote72c202955-caps-v5 source/target/log. No
+production edit or claimed cgroup emulation. Actualbin7483960B SHA
+e015b2d9d9c7b5d441c0eb2ba30bf11f08de496177792121afd48d9ae7bcd99c;
+raw19originalmembers+archive verified, SHA
+1f7e8c2f43c7c9263dbaf4abb8aac3c95663d506972e375787b81d2803c4f7ae.
+CAP-CORRECTNESS.md maps actual witnesses and exact source/input/binary identities.
+All own jobs terminal; source/cache/binary/evidence preserved; no cleanup claim.
 No actual controller/VM/guarantee work assigned; ROOT all combined/heavy gates.
 Strict guarantees and owner/domain/execution/flow/control budgets remain OPEN;
 ROOT says no authoritative checked guaranteed-claim producer exists. Existing

@@ -1,0 +1,4 @@
+    Checking libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caps-v5/crates/testdir)
+    Checking managed-resource-admission-light v0.0.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caps-v5/admission-light)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.21s
