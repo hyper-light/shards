@@ -1,0 +1,37 @@
+{
+  "before_revision": "26bab0778ddb8f35b11e4b5644ee83b1b1d0df99",
+  "after_revision": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "implementation_revision": "d26084720cb86e530bf9f9b69af91984b6c85539",
+  "fixtures": {
+    "crates/shards/tests/managed_output.rs": {
+      "before_sha256": "e6eb34de83806a5fdc77997ad24cdc2be9388d2b3fee2d2e95c4adda67a06a83",
+      "after_sha256": "e6eb34de83806a5fdc77997ad24cdc2be9388d2b3fee2d2e95c4adda67a06a83",
+      "unchanged": true
+    },
+    "crates/shards/tests/managed_output/tenant_exit.rs": {
+      "before_sha256": "b07ce14c30db6fb812aaa33a8da9c00e7f13cdb4bc6738a03c575dca4ca76aff",
+      "after_sha256": "b07ce14c30db6fb812aaa33a8da9c00e7f13cdb4bc6738a03c575dca4ca76aff",
+      "unchanged": true
+    },
+    "crates/shards/tests/managed_output/tenant_stdio.rs": {
+      "before_sha256": "df8956c994cd10afe28f03d9e10066dca9fcdd0233a9f955947f53a011d56a15",
+      "after_sha256": "df8956c994cd10afe28f03d9e10066dca9fcdd0233a9f955947f53a011d56a15",
+      "unchanged": true
+    },
+    "crates/testguest/src/main.rs": {
+      "before_sha256": "9e5927853a03ea819a86c4104d8a7f86c9b2717a9e935a6e0cdf6234f2706037",
+      "after_sha256": "9e5927853a03ea819a86c4104d8a7f86c9b2717a9e935a6e0cdf6234f2706037",
+      "unchanged": true
+    }
+  },
+  "production": {
+    "crates/shards/src/daemon/managed.rs": {
+      "sha256": "2b3e4d2c80be615a58b062b6a077c11511e2679c738c798a27f0e014a880f655",
+      "matches_d260": true
+    },
+    "crates/remote/src/managed.rs": {
+      "sha256": "79c949b781e71821079a0858c67270355ed24a231789aafad80c9695f6226fdd",
+      "matches_d260": true
+    }
+  }
+}

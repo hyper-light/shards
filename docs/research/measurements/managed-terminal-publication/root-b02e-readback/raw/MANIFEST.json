@@ -1,0 +1,446 @@
+[
+  {
+    "path": "after/source.txt",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/source.txt",
+    "bytes": 41,
+    "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+  },
+  {
+    "path": "after/compile.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/driver.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/results.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/results.json",
+    "bytes": 955,
+    "sha256": "8f4896467ea27943fe2353950e11eba7f12dbbca05e3800eb667fc65cec5c37f"
+  },
+  {
+    "path": "after/test-artifact.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/test-artifact.json",
+    "bytes": 191,
+    "sha256": "d801b3c805994a0efcb3dd4a56cdf6ab7e0f04eb17c5f8c66fc4264c49cf52c9"
+  },
+  {
+    "path": "before/normal/command.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/command.json",
+    "bytes": 229,
+    "sha256": "c8077f95b63da03b7b3fbfab36eff71ac4b1f59715485003133398a47a629a3f"
+  },
+  {
+    "path": "before/normal/test.exit",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "before/normal/test.log",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/test.log",
+    "bytes": 9310,
+    "sha256": "963b233ae01b500dd42abf4d2853a5542493a4a487e127ad1399854ee425f75e"
+  },
+  {
+    "path": "before/normal/records/inputs.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/inputs.json",
+    "bytes": 1228,
+    "sha256": "50403d83fc09da3a310ea1b89cca742d0509e0ce5f9bbcb65ab6e53e44ed3cbe"
+  },
+  {
+    "path": "before/normal/records/managed-output.before-stop",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/managed-output.before-stop",
+    "bytes": 433,
+    "sha256": "aba810a4695197cc9ae84b27991ca7b97bb59b36da918720f554e2463d15e24c"
+  },
+  {
+    "path": "before/normal/records/managed-output.stopped",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/managed-output.stopped",
+    "bytes": 719,
+    "sha256": "b6c1d50f2fafe413e9149b0a27ee2cb831834fa96d228027a56006c72b048a62"
+  },
+  {
+    "path": "before/normal/records/teardown.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/teardown.json",
+    "bytes": 295,
+    "sha256": "976675665258e6dcefa25090fc8238d2d63052e4b734aab5c2c5b22ca161884d"
+  },
+  {
+    "path": "before/normal/records/stop.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/stop.json",
+    "bytes": 140,
+    "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+  },
+  {
+    "path": "before/normal/records/stopped-state.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/stopped-state.json",
+    "bytes": 170,
+    "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+  },
+  {
+    "path": "before/normal/records/remove.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/remove.json",
+    "bytes": 123,
+    "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+  },
+  {
+    "path": "before/normal/records/run-cleanup.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/run-cleanup.json",
+    "bytes": 161,
+    "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+  },
+  {
+    "path": "before/normal/records/member-ended.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/member-ended.json",
+    "bytes": 1087,
+    "sha256": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+  },
+  {
+    "path": "before/normal/records/managed-output.member-ended",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/managed-output.member-ended",
+    "bytes": 433,
+    "sha256": "aba810a4695197cc9ae84b27991ca7b97bb59b36da918720f554e2463d15e24c"
+  },
+  {
+    "path": "before/normal/records/neighbor-progress.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records/neighbor-progress.json",
+    "bytes": 1245,
+    "sha256": "0909f1a67448e27e495f99057f732382f47f6d2748ac1a4358cb5dca701653dd"
+  },
+  {
+    "path": "after/normal/command.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/command.json",
+    "bytes": 229,
+    "sha256": "c8077f95b63da03b7b3fbfab36eff71ac4b1f59715485003133398a47a629a3f"
+  },
+  {
+    "path": "after/normal/test.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/normal/test.log",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/test.log",
+    "bytes": 2723,
+    "sha256": "562f9cd6eec4dad118ec078c6b633ca09ed1a5f36117935957dfec333ea96cbc"
+  },
+  {
+    "path": "after/normal/records/inputs.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/inputs.json",
+    "bytes": 1228,
+    "sha256": "b23ef16da599b4d58906b2e006d7eba1c9ce8adc43353ab3efcd30fa4d676c3c"
+  },
+  {
+    "path": "after/normal/records/managed-output.before-stop",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/managed-output.before-stop",
+    "bytes": 573,
+    "sha256": "8857e14dc202023b6545b3174103340ff8bccde6c6db5589679692585151465a"
+  },
+  {
+    "path": "after/normal/records/managed-output.stopped",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/managed-output.stopped",
+    "bytes": 717,
+    "sha256": "0bfc6d01691596db9214e378ccd230ee001705748b675f1f2337a51b76c873f3"
+  },
+  {
+    "path": "after/normal/records/teardown.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/teardown.json",
+    "bytes": 295,
+    "sha256": "976675665258e6dcefa25090fc8238d2d63052e4b734aab5c2c5b22ca161884d"
+  },
+  {
+    "path": "after/normal/records/stop.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/stop.json",
+    "bytes": 140,
+    "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+  },
+  {
+    "path": "after/normal/records/stopped-state.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/stopped-state.json",
+    "bytes": 170,
+    "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+  },
+  {
+    "path": "after/normal/records/remove.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/remove.json",
+    "bytes": 123,
+    "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+  },
+  {
+    "path": "after/normal/records/run-cleanup.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/run-cleanup.json",
+    "bytes": 161,
+    "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+  },
+  {
+    "path": "after/normal/records/member-ended.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/member-ended.json",
+    "bytes": 1087,
+    "sha256": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+  },
+  {
+    "path": "after/normal/records/managed-output.member-ended",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/managed-output.member-ended",
+    "bytes": 573,
+    "sha256": "8857e14dc202023b6545b3174103340ff8bccde6c6db5589679692585151465a"
+  },
+  {
+    "path": "after/normal/records/neighbor-progress.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/normal/records/neighbor-progress.json",
+    "bytes": 1245,
+    "sha256": "0909f1a67448e27e495f99057f732382f47f6d2748ac1a4358cb5dca701653dd"
+  },
+  {
+    "path": "before/stdio/command.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/command.json",
+    "bytes": 243,
+    "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+  },
+  {
+    "path": "before/stdio/test.exit",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "before/stdio/test.log",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/test.log",
+    "bytes": 8816,
+    "sha256": "eb0c89f901a7fc63e0a69f6d4182635744a6a55a9c241fb4d6b9e24c6236a45c"
+  },
+  {
+    "path": "before/stdio/records/inputs.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/inputs.json",
+    "bytes": 466,
+    "sha256": "511a0f91911ed68d8a1deb5bf01ff49892f1f8e64ca1f134e5f0169757881bcb"
+  },
+  {
+    "path": "before/stdio/records/managed-output.before-stop",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/managed-output.before-stop",
+    "bytes": 433,
+    "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+  },
+  {
+    "path": "before/stdio/records/managed-output.stopped",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/managed-output.stopped",
+    "bytes": 719,
+    "sha256": "37417bf05ed2c70102b5e3676577732624f4543a1920dc82aaf741d732d98664"
+  },
+  {
+    "path": "before/stdio/records/teardown.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/teardown.json",
+    "bytes": 266,
+    "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+  },
+  {
+    "path": "before/stdio/records/stop.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/stop.json",
+    "bytes": 140,
+    "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+  },
+  {
+    "path": "before/stdio/records/stopped-state.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/stopped-state.json",
+    "bytes": 170,
+    "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+  },
+  {
+    "path": "before/stdio/records/remove.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/remove.json",
+    "bytes": 123,
+    "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+  },
+  {
+    "path": "before/stdio/records/run-cleanup.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/run-cleanup.json",
+    "bytes": 161,
+    "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+  },
+  {
+    "path": "before/stdio/records/actor-eof.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/actor-eof.json",
+    "bytes": 1045,
+    "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+  },
+  {
+    "path": "before/stdio/records/managed-output.actor-eof",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/managed-output.actor-eof",
+    "bytes": 433,
+    "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+  },
+  {
+    "path": "before/stdio/records/actor-control.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/actor-control.json",
+    "bytes": 577,
+    "sha256": "0845861aa328473f30b3ed1bbbcb02d187f73e867ab306794bf81e13f1a442d0"
+  },
+  {
+    "path": "before/stdio/records/actor-live-after-eof.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/actor-live-after-eof.json",
+    "bytes": 888,
+    "sha256": "c8e066542792b9cf4a5c0c90daa0de593bea63fbbd0deda52e93638b977caa64"
+  },
+  {
+    "path": "before/stdio/records/subsequent-progress.json",
+    "original": "/home/adalundhe/root-managed-terminal-before-26ba-v1/stdio/records/subsequent-progress.json",
+    "bytes": 1285,
+    "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+  },
+  {
+    "path": "after/stdio/command.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/command.json",
+    "bytes": 243,
+    "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+  },
+  {
+    "path": "after/stdio/test.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/stdio/test.log",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/test.log",
+    "bytes": 2761,
+    "sha256": "2aef421bf3a231b5741557c21bf986e4a926b23d2ced26f187267a590907f233"
+  },
+  {
+    "path": "after/stdio/records/inputs.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/inputs.json",
+    "bytes": 463,
+    "sha256": "202de47784a1d391f090cec460f307d29c1ddad7de305a9bc6b8e7418cd6ceed"
+  },
+  {
+    "path": "after/stdio/records/managed-output.before-stop",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/managed-output.before-stop",
+    "bytes": 573,
+    "sha256": "77d1cf2959b48a6b469628d22537454bbd92604e3fbe8fa7a614e0ee509bae3b"
+  },
+  {
+    "path": "after/stdio/records/managed-output.stopped",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/managed-output.stopped",
+    "bytes": 717,
+    "sha256": "11d6f76851add6a1dfed58fb6dc679c0138218a9e544cd3dc5a6a58f5b5d4f30"
+  },
+  {
+    "path": "after/stdio/records/teardown.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/teardown.json",
+    "bytes": 266,
+    "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+  },
+  {
+    "path": "after/stdio/records/stop.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/stop.json",
+    "bytes": 140,
+    "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+  },
+  {
+    "path": "after/stdio/records/stopped-state.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/stopped-state.json",
+    "bytes": 170,
+    "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+  },
+  {
+    "path": "after/stdio/records/remove.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/remove.json",
+    "bytes": 123,
+    "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+  },
+  {
+    "path": "after/stdio/records/run-cleanup.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/run-cleanup.json",
+    "bytes": 161,
+    "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+  },
+  {
+    "path": "after/stdio/records/actor-eof.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/actor-eof.json",
+    "bytes": 1045,
+    "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+  },
+  {
+    "path": "after/stdio/records/managed-output.actor-eof",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/managed-output.actor-eof",
+    "bytes": 573,
+    "sha256": "77d1cf2959b48a6b469628d22537454bbd92604e3fbe8fa7a614e0ee509bae3b"
+  },
+  {
+    "path": "after/stdio/records/actor-control.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/actor-control.json",
+    "bytes": 571,
+    "sha256": "2e9a46aa3e308a52e5e3ec7df9af0e342348398754405b74a9d41b85a4142cf6"
+  },
+  {
+    "path": "after/stdio/records/actor-live-after-eof.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/actor-live-after-eof.json",
+    "bytes": 888,
+    "sha256": "4b3567a85e54c50960159fe00ac3a7b421a34fe88d14a0ffc8fa8f8d3a79259e"
+  },
+  {
+    "path": "after/stdio/records/subsequent-progress.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/stdio/records/subsequent-progress.json",
+    "bytes": 1285,
+    "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+  },
+  {
+    "path": "after/ordinary.command.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/ordinary.command.json",
+    "bytes": 134,
+    "sha256": "22f17158e7e20dec5c4c10c6a8f76610373e552bff2de13d7c73ad66e3e3e7e7"
+  },
+  {
+    "path": "after/ordinary.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/ordinary.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/ordinary.log",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/ordinary.log",
+    "bytes": 5883,
+    "sha256": "babd65e33615a1777d892879039511a1895600081e1860fa1a2f496f2de053b9"
+  },
+  {
+    "path": "after/daemon-unit.command.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/daemon-unit.command.json",
+    "bytes": 163,
+    "sha256": "00d7d1cf2b5f7cfe07af494c65d5236b7bd903222036dd20e673e6ad457aab17"
+  },
+  {
+    "path": "after/daemon-unit.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/daemon-unit.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/daemon-unit.log",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/daemon-unit.log",
+    "bytes": 3636,
+    "sha256": "4af0de1fb61f521df72242f37b9be5ed16d605ef579cabd934afdb9dc63a3c95"
+  },
+  {
+    "path": "after/remote-unit.command.json",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/remote-unit.command.json",
+    "bytes": 157,
+    "sha256": "76a36e0845001da61077d96e9da7bdc1b62d2398f4f15815613b215a1b34effb"
+  },
+  {
+    "path": "after/remote-unit.exit",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/remote-unit.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "after/remote-unit.log",
+    "original": "/home/adalundhe/root-managed-terminal-after-b02e-v2/remote-unit.log",
+    "bytes": 3919,
+    "sha256": "5fe030de347f1ae22632e882043fcb8060716774b20ed03d2c3c2590cf7e5c2e"
+  }
+]
