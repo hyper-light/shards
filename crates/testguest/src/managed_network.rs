@@ -174,7 +174,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], {intercept-tcp4|intercept-tcp6} {local|forward|local-loopback|local-self|forward-relay-absent} DEADLINE_MS MARK TABLE RULE_PRIORITY, {intercept-udp4|intercept-udp6} {local|forward|local-loopback|local-self} {connected|unconnected} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -888,10 +888,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn udp_interception_parser_is_explicit_and_peer_only() {
+    fn udp_interception_parser_has_explicit_origins() {
         let args = |words: &[&str]| words.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
         for protocol in ["intercept-udp4", "intercept-udp6"] {
-            for origin in ["local", "forward"] {
+            for origin in ["local", "forward", "local-loopback", "local-self"] {
                 for mode in ["connected", "unconnected"] {
                     assert!(matches!(
                         parse(&args(&[protocol, origin, mode, "1000", "1", "1000", "100"])).unwrap(),
@@ -903,7 +903,7 @@ mod tests {
         assert!(
             parse(&args(&[
                 "intercept-udp4",
-                "local-self",
+                "forward-relay-absent",
                 "connected",
                 "1000",
                 "1",

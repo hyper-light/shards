@@ -203,13 +203,13 @@ fn experimental_tcp6_interception_has_distinct_backend_and_relay_observations() 
 }
 
 #[test]
-#[ignore = "coordinator runs isolated peer UDP4 experiment; no production adoption"]
+#[ignore = "coordinator runs isolated UDP4 compatibility experiment; no production adoption"]
 fn experimental_udp4_interception_has_datagram_and_original_tuple_observations() {
     experimental_udp_interception(InterceptionFamily::Ipv4);
 }
 
 #[test]
-#[ignore = "coordinator runs isolated peer UDP6 experiment; no production adoption"]
+#[ignore = "coordinator runs isolated UDP6 compatibility experiment; no production adoption"]
 fn experimental_udp6_interception_has_datagram_and_original_tuple_observations() {
     experimental_udp_interception(InterceptionFamily::Ipv6);
 }
@@ -222,7 +222,10 @@ fn experimental_udp_interception(family: InterceptionFamily) {
     let inputs = Inputs::supplied();
     assert!(!common::cannot_run_vms(), "real hypervisor required");
     let origin = required("SHARDS_INTERCEPT_ORIGIN");
-    assert!(matches!(origin.as_str(), "local" | "forward"));
+    assert!(matches!(
+        origin.as_str(),
+        "local" | "forward" | "local-loopback" | "local-self"
+    ));
     let mode = required("SHARDS_INTERCEPT_UDP_MODE");
     assert!(matches!(mode.as_str(), "connected" | "unconnected"));
     let mark = required("SHARDS_INTERCEPT_MARK");
@@ -250,7 +253,11 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
     let backend = namespaces["backend_inode"].as_u64().unwrap();
     let client = namespaces["client_inode"].as_u64().unwrap();
     assert!(router != backend && router != client && backend != client);
-    let target = one("UdpTarget");
+    let target = one("UdpSetup");
+    assert_eq!(target["stage"], "ReserveReplyTuple");
+    for field in ["baseline", "backend_worker", "relay_worker"] {
+        assert_eq!(target[field], "NotStarted");
+    }
     assert_eq!(
         target["family"],
         match family {
@@ -260,7 +267,13 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
     );
     assert_eq!(
         target["origin"],
-        if origin == "local" { "Local" } else { "Forward" }
+        match origin {
+            "local" => "Local",
+            "forward" => "Forward",
+            "local-loopback" => "LocalLoopback",
+            "local-self" => "LocalSelf",
+            other => panic!("unknown UDP origin {other}"),
+        }
     );
     assert_eq!(
         target["mode"],
@@ -270,21 +283,53 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
             "Unconnected"
         }
     );
-    assert_eq!(target["backend_inode"], backend);
+    assert_eq!(
+        target["backend_inode"],
+        if matches!(origin, "local-loopback" | "local-self") {
+            router
+        } else {
+            backend
+        }
+    );
     assert_eq!(target["relay_inode"], router);
     assert_eq!(
         target["client_inode"],
-        if origin == "local" { router } else { client }
+        if origin == "forward" { client } else { router }
     );
     let destination: std::net::SocketAddr = target["destination"].as_str().unwrap().parse().unwrap();
-    let expected_ip: std::net::IpAddr = match family {
-        InterceptionFamily::Ipv4 => "192.0.2.2",
-        InterceptionFamily::Ipv6 => "2001:db8:1::2",
+    let expected_ip: std::net::IpAddr = match (family, origin) {
+        (InterceptionFamily::Ipv4, "local-loopback") => "127.0.0.1",
+        (InterceptionFamily::Ipv4, "local-self") => "192.0.2.1",
+        (InterceptionFamily::Ipv4, _) => "192.0.2.2",
+        (InterceptionFamily::Ipv6, "local-loopback") => "::1",
+        (InterceptionFamily::Ipv6, "local-self") => "2001:db8:1::1",
+        (InterceptionFamily::Ipv6, _) => "2001:db8:1::2",
     }
     .parse()
     .unwrap();
     assert_eq!(destination.ip(), expected_ip);
     assert_ne!(destination.port(), 0);
+    let reservation_errors: Vec<_> = records
+        .iter()
+        .filter(|record| record["type"] == "UdpError" && record["role"] == "ReplySocket")
+        .collect();
+    assert!(
+        reservation_errors.is_empty(),
+        "native reply reservation failed; interception was not tested: setup={target}, actual_errors={reservation_errors:?}"
+    );
+    let ready = one("UdpTarget");
+    for field in [
+        "family",
+        "origin",
+        "mode",
+        "destination",
+        "client_inode",
+        "backend_inode",
+        "relay_inode",
+    ] {
+        assert_eq!(ready[field], target[field]);
+    }
+    let target = ready;
     assert_eq!(target["reply_local"], destination.to_string());
     let relay_port = target["relay_port"].as_u64().unwrap();
     assert!((1..=u16::MAX as u64).contains(&relay_port));
@@ -325,9 +370,11 @@ fn assert_udp_records(records: &[serde_json::Value], family: InterceptionFamily,
     for (packets, server) in [(&baseline, &backend_packets), (&intercepted, &relay_packets)] {
         let local: std::net::SocketAddr = packets[0]["local"].as_str().unwrap().parse().unwrap();
         let expected_source: std::net::IpAddr = match (family, origin) {
-            (InterceptionFamily::Ipv4, "local") => "192.0.2.1",
+            (InterceptionFamily::Ipv4, "local-loopback") => "127.0.0.1",
+            (InterceptionFamily::Ipv4, "local" | "local-self") => "192.0.2.1",
             (InterceptionFamily::Ipv4, _) => "198.51.100.2",
-            (InterceptionFamily::Ipv6, "local") => "2001:db8:1::1",
+            (InterceptionFamily::Ipv6, "local-loopback") => "::1",
+            (InterceptionFamily::Ipv6, "local" | "local-self") => "2001:db8:1::1",
             (InterceptionFamily::Ipv6, _) => "2001:db8:2::2",
         }
         .parse()
