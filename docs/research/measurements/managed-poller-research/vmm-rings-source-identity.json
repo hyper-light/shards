@@ -1,0 +1,338 @@
+{
+  "kind": "four named VMM queue decisions primary-source research identity, no measurement/audit",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "main_freshness_checked": "7c26e5292161fc891a7c6c6525305464a3a044be",
+  "lane": "01a1c5bda0bf766683384c0705c0a9bc",
+  "role": "implementer",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "owned_paths": [
+    "docs/research/managed-poller-capacity.md",
+    "docs/research/measurements/managed-poller-research/**"
+  ],
+  "policies": [
+    {
+      "path": "AGENTS.md",
+      "sha256": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+      "matches_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "docs/development-rules.md",
+      "sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+      "matches_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "sha256": "a84c60f20e3a06a294bd5b091c1f43cfd5cc4b33ef1bd22a50cd94cea07bb97b",
+      "matches_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "54c3ad93162608248419fe54c42d14bd00ed3cf6aebaf99b78a1c4d83acd28a1",
+      "matches_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "docs/design/managed-runtime-plan.md",
+      "sha256": "ebae0bb6922dba5f90d036d06310cc546352279fd368b5c307770a84ddc4a968",
+      "matches_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    }
+  ],
+  "handoff_fully_read_sha256": "42f035652d31893551dba0fe9339c75cf4a289377cf3d0ee4a9c0302a85f9cfb",
+  "local_sources": [
+    {
+      "path": "crates/vmm/src/devices/virtio/block.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "615529371d6481344933aae653e58557612ad57d",
+      "sha256": "67e46136a75ca0a8722573f54165db2e72501ec47da7f22c029ad3a70f7833fc",
+      "bytes": 63044,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/mod.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "d42d51743f98f6886925a11154260bff830e82ec",
+      "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b",
+      "bytes": 97233,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/mod.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "40a40575add47ca71103878f68a19655b0bf6fd9",
+      "sha256": "8858bc80655d9f52436690be2bea3d40d94820d8abe64438282dbf6539d6d1a3",
+      "bytes": 55987,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/iommu.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "2aa4ebbe6a338ad88fb02bd8fb0e1151e26d94e3",
+      "sha256": "7d5d5ae1b4d22b0ba80dd60523698e7566d81e2553f14e2aea0a96c58b5151b7",
+      "bytes": 64217,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/queue.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "7049fcf3d9e8909eebbc18c573abd26051905eea",
+      "sha256": "9f335d155788531053bd4ee0bb75d29580b30d8808d56b4cbd8e4fc50300aea0",
+      "bytes": 42699,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/worker.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "c7169d18c290ee5f1173124b23acbdb68ae9232d",
+      "sha256": "a5a3205f2644b6d3c8505140ab0d17bde5723bf28b534f20507935562f046bac",
+      "bytes": 5678,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/mmio.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "d5befbd3414869f3dd5c27aa3fe90ced0ab0185f",
+      "sha256": "ae036b30742eb86603770d7a177f11c4bef343535fa27fbf9a66d3d5a92c0733",
+      "bytes": 21325,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/pci.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "8a065a29807377821d895fed08547ebb019800a3",
+      "sha256": "3afd57b626138327a2a71c825641ee9cec639def6a570643733d027d079e5ede",
+      "bytes": 28301,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/mod.rs",
+      "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "063f5ff5b276ad380a1c42c5c2b3aec797ff7883",
+      "sha256": "d0f601bbe68c2739bada99a6020e3a16f8cf6a74096bb9217c181e270a4b362a",
+      "bytes": 8102,
+      "same_blob_at_main": "7c26e5292161fc891a7c6c6525305464a3a044be"
+    }
+  ],
+  "external_sources": [
+    {
+      "id": "linuxVirtioRing",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/virtio/virtio_ring.c",
+      "expected_git_blob": "7b6205253b46b3235ce81cc823a5c8431b466068",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/virtio/virtio_ring.c",
+      "status": 200,
+      "bytes": 89902,
+      "sha256": "bdd790acbae3ba6226d5c6cef03612c7639a43d5200d5046ba193a7d5c2de3b7",
+      "git_blob_sha1": "7b6205253b46b3235ce81cc823a5c8431b466068",
+      "retrieved_utc": "2026-11-10T14:51:12.446176+00:00",
+      "last_modified": null,
+      "etag": "\"71b51199963f18b2cbd5c28de3b13c4ffb9851a4336133ad97fe1e3d801404ef\""
+    },
+    {
+      "id": "linuxVirtioBlk",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/block/virtio_blk.c",
+      "expected_git_blob": "f061420dfb10c40b21765b173fab7046aa447506",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/block/virtio_blk.c",
+      "status": 200,
+      "bytes": 44136,
+      "sha256": "b8df6f312e28a42803fe4f9d86c94735dcccc569ba0fe71f8b3e21419f2ad0c5",
+      "git_blob_sha1": "f061420dfb10c40b21765b173fab7046aa447506",
+      "retrieved_utc": "2026-11-10T14:51:12.541731+00:00",
+      "last_modified": null,
+      "etag": "\"fd923b9acada8187af6349b60c67f22e19adf0882c650d680d7b09d60783a35f\""
+    },
+    {
+      "id": "linuxVirtioFs",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/fuse/virtio_fs.c",
+      "expected_git_blob": "b2f6486fe1d565c461d9fd967d56cc326bbcffd4",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/fs/fuse/virtio_fs.c",
+      "status": 200,
+      "bytes": 45018,
+      "sha256": "7f2cea3b37f661f29a39c28d3b0f3f0c92dc340ea47c912e5db27f6b82d7ee60",
+      "git_blob_sha1": "b2f6486fe1d565c461d9fd967d56cc326bbcffd4",
+      "retrieved_utc": "2026-11-10T14:51:12.635641+00:00",
+      "last_modified": null,
+      "etag": "\"15fde34f004640eb6381c4db626e2d03f7d70a6de37fcef94f87efcc750eb1ee\""
+    },
+    {
+      "id": "linuxVirtioGpuVq",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/gpu/drm/virtio/virtgpu_vq.c",
+      "expected_git_blob": "8181b22b9b46a1c69587c2a7b06f195fbcf143a6",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/gpu/drm/virtio/virtgpu_vq.c",
+      "status": 200,
+      "bytes": 42981,
+      "sha256": "96e3fdf0991c6baa6b8dc9af12f0b0a4abb564679cc5cb231b0848d8b29a89f3",
+      "git_blob_sha1": "8181b22b9b46a1c69587c2a7b06f195fbcf143a6",
+      "retrieved_utc": "2026-11-10T14:51:12.727400+00:00",
+      "last_modified": null,
+      "etag": "\"d241440af64317802396afc4938450471e03cb0c2554745b578b0483a2824f58\""
+    },
+    {
+      "id": "linuxVirtioGpuKms",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/gpu/drm/virtio/virtgpu_kms.c",
+      "expected_git_blob": "1c15cbf326b78c204a7d4f172a307ef65cf5a8f2",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/gpu/drm/virtio/virtgpu_kms.c",
+      "status": 200,
+      "bytes": 10316,
+      "sha256": "dec10064e3e1e8e2d565d5d5c2286896c9cb63e285fa6a6e34643cc689b61f51",
+      "git_blob_sha1": "1c15cbf326b78c204a7d4f172a307ef65cf5a8f2",
+      "retrieved_utc": "2026-11-10T14:51:12.806455+00:00",
+      "last_modified": null,
+      "etag": "\"28d4488472514e0e833acd8212e9f1e8c30c252582be6ea9f45b718c8422f79a\""
+    },
+    {
+      "id": "linuxVirtioIommu",
+      "url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/iommu/virtio-iommu.c",
+      "expected_git_blob": "b39d6f134ab28ffd8524ac4ed5ba19bdb1247118",
+      "resolved_url": "https://raw.githubusercontent.com/torvalds/linux/7d0a66e4bb9081d75c82ec4957c50034cb0ea449/drivers/iommu/virtio-iommu.c",
+      "status": 200,
+      "bytes": 32772,
+      "sha256": "e3661e4c61d07097e2b16c840a34c246a2842195b8771db29a561595b94be4c9",
+      "git_blob_sha1": "b39d6f134ab28ffd8524ac4ed5ba19bdb1247118",
+      "retrieved_utc": "2026-11-10T14:51:12.883906+00:00",
+      "last_modified": null,
+      "etag": "\"bdd3e0295ff3375b24b686278fea5922025b03dfc5ea0d7013a7b5430058beb5\""
+    },
+    {
+      "id": "qemuBlock",
+      "url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/block/virtio-blk.c",
+      "expected_git_blob": "9166d7974d4606dc65847ba09faea396707f61e4",
+      "resolved_url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/block/virtio-blk.c",
+      "status": 200,
+      "bytes": 67722,
+      "sha256": "fd300142d86844cb6e3b039e6bf2a77c1fd674c7a751f0b14575cc36c2de6556",
+      "git_blob_sha1": "9166d7974d4606dc65847ba09faea396707f61e4",
+      "retrieved_utc": "2026-11-10T14:51:12.979821+00:00",
+      "last_modified": null,
+      "etag": "\"3242d3d6c25c49349bb07fcd31d1ed55248966354e7236dd2148a940485fba15\""
+    },
+    {
+      "id": "qemuFs",
+      "url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/virtio/vhost-user-fs.c",
+      "expected_git_blob": "32ee7f496d6c8f64a07adf5cb962d601b4e36096",
+      "resolved_url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/virtio/vhost-user-fs.c",
+      "status": 200,
+      "bytes": 12931,
+      "sha256": "68b3a4b37edadef954b290aa04c5cb5d22bf6235c66c72bc8e10c147a9955a85",
+      "git_blob_sha1": "32ee7f496d6c8f64a07adf5cb962d601b4e36096",
+      "retrieved_utc": "2026-11-10T14:51:13.061114+00:00",
+      "last_modified": null,
+      "etag": "\"aebdd613450b9bc4dd514ab71ce38336f8427e5e848240d706f822722f024bfe\""
+    },
+    {
+      "id": "qemuGpu",
+      "url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/display/virtio-gpu-base.c",
+      "expected_git_blob": "4fc7ef8896c1e349a6680eba4128f45e9631d713",
+      "resolved_url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/display/virtio-gpu-base.c",
+      "status": 200,
+      "bytes": 9267,
+      "sha256": "4586c1bf2f5abdfffb9d920cf482e6be71f38923f2ec39ca5038bd56d769e674",
+      "git_blob_sha1": "4fc7ef8896c1e349a6680eba4128f45e9631d713",
+      "retrieved_utc": "2026-11-10T14:51:13.142208+00:00",
+      "last_modified": null,
+      "etag": "\"0968c63e0a4741d5fc58dce8159e5e6adf08efcb433905038b09f67ee5f0f1a7\""
+    },
+    {
+      "id": "qemuIommu",
+      "url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/virtio/virtio-iommu.c",
+      "expected_git_blob": "59ef4fb2174e8a92b9d9aa2cc1f034c93fced463",
+      "resolved_url": "https://raw.githubusercontent.com/qemu/qemu/ae35f033b874c627d81d51070187fbf55f0bf1a7/hw/virtio/virtio-iommu.c",
+      "status": 200,
+      "bytes": 54982,
+      "sha256": "8538018185f0646bdd53522548af7964c4a7b8b3be8e00d2089cd8f4492c5b34",
+      "git_blob_sha1": "59ef4fb2174e8a92b9d9aa2cc1f034c93fced463",
+      "retrieved_utc": "2026-11-10T14:51:13.244851+00:00",
+      "last_modified": null,
+      "etag": "\"616cd8993fec7261df6caf931cc980e32bb9eda1a1e6acff453301e5109b42c7\""
+    },
+    {
+      "id": "virtio-1.2-cs01",
+      "url": "https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html",
+      "stage": "Committee Specification01, 2022-07-01",
+      "resolved_url": "https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html",
+      "status": 200,
+      "bytes": 2677431,
+      "sha256": "2f366c5ffaf4fd52282930a2f9fe8bdc555fe76de4b32245a46bc3b5f3467649",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:51:13.439380+00:00",
+      "last_modified": "Sun, 05 Apr 2026 14:15:21 GMT",
+      "etag": null
+    },
+    {
+      "id": "virtio-1.3-csd01",
+      "url": "https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html",
+      "stage": "Committee Specification Draft01, 2023-10-06, not asserted final/latest",
+      "resolved_url": "https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html",
+      "status": 200,
+      "bytes": 3085554,
+      "sha256": "47be709f12656f06af63dcfd51092c6fad844b32102e8d1b0d4d2e299b9d7609",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:51:13.668442+00:00",
+      "last_modified": "Sun, 05 Apr 2026 14:15:24 GMT",
+      "etag": null
+    },
+    {
+      "id": "little-author-reprint",
+      "url": "https://projectproduction.org/journal/reprint-littles-law-as-viewed-on-its-50th-anniversary/",
+      "identity": "JohnD.C.Little author reprint of 50th-anniversary paper; primary author text",
+      "resolved_url": "https://projectproduction.org/journal/reprint-littles-law-as-viewed-on-its-50th-anniversary/",
+      "status": 200,
+      "bytes": 155705,
+      "sha256": "a80b07bb9572de76928a3ddd4a3b81d2da16c1699d8e54f40d78193e071d824f",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:51:14.188907+00:00",
+      "last_modified": null,
+      "etag": null
+    }
+  ],
+  "linux_pin": {
+    "tag": "v6.18",
+    "commit": "7d0a66e4bb9081d75c82ec4957c50034cb0ea449",
+    "scope": "six named driver/request/refill files; not asserted running experimental6.18.48kernel"
+  },
+  "qemu_pin": {
+    "tag": "v9.2.0",
+    "resolved_commit": "ae35f033b874c627d81d51070187fbf55f0bf1a7",
+    "commit_date": "2024-12-10T16:20:54Z",
+    "resolution_url": "https://api.github.com/repos/qemu/qemu/commits/v9.2.0",
+    "scope": "historical implementation/default comparison, no performance/equivalence claim"
+  },
+  "little_original": {
+    "doi": "10.1287/opre.9.3.383",
+    "url": "https://pubsonline.informs.org/doi/10.1287/opre.9.3.383",
+    "author": "JohnD.C.Little",
+    "published": "1961",
+    "observed": "publisher abstract read via web; not full proof, no raw-byte hash claimed",
+    "abstract_limits": "finite means, strict stationarity and stated arrival-process assumptions; not a maximum/tail queue-capacity theorem"
+  },
+  "scope_pending": [
+    "precise coordinator vmm-round2 evidence locator/revision",
+    "coordinator confirmation FS shared literal scope includes hiprio and request queue",
+    "coordinator source/caller-map acceptance; source-derived map committed8fe"
+  ],
+  "targeted_evidence_locator": {
+    "command": "git ls-tree -r --name-only 3ea2164dd98878426936c880f0e8d542ef67d98f docs/research | rg -i (vmm.*round.?2|round.?2.*vmm)",
+    "rg_exit": 1,
+    "matches": [],
+    "limit": "Complete targeted path query, not a claim evidence is absent elsewhere. Earlier tool-filtered unpiped listing was truncated and supplies no negative search evidence."
+  },
+  "first_identity_attempt": {
+    "outcome": "AssertionError before record write",
+    "cause": "canonical managed-runtime-plan changed from expected3ea bytes while mainadvanced7c26; other4policy files unchanged",
+    "response": "full new canonical plan read, new planSHAebae0bb6922dba5f90d036d06310cc546352279fd368b5c307770a84ddc4a968 recorded, coordinatorPOLICY_READ sent; no dependent write occurred"
+  },
+  "unrun": [
+    "all compile/unit/integration/realguest/syscall/campaign execution",
+    "queue negotiation/occupancy/notification/wrap/driverfailure/reset/restore/cancel validation",
+    "all profiles/benchmarks/comparative costs and hard aggregate accounting",
+    "seven-target/actual hardware/platform coverage"
+  ],
+  "resource_envelope": "No local target/cache/buildjob/newfullworktree/mirror/archive retained. HTML/code bytes read in memory; only textual metadata saved. ProtectedROOT sources/targets and pausedWinARM untouched.",
+  "no_selected_depth_or_method": true,
+  "latest_headroom_instruction": {
+    "latest_user_free_bytes": 33713639424,
+    "history": "below30GiB again, then restored byroot reclaimonly1232inactive .rcgu.o intermediates; no source/evidence/finalbinary discarded",
+    "active_local_targets_caches_buildjobs": [],
+    "hold": "no localheavybuild/newfullworktree; no other buildapproved here",
+    "continues": "source/research/docs and separatelyapproved remote light only",
+    "protected_root_receipt": "Fedora closingr644/source1533 active/exclusive; Macr6341533full7+native12complete0 user-reported, notthislanetests",
+    "preserve": "all ROOTvalidationclones/targets and pausedWinARM; no pause/stop/delete"
+  }
+}

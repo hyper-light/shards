@@ -1,0 +1,240 @@
+{
+  "kind": "four-ring documentation/source identity checks only",
+  "checked_utc": "2026-11-10T14:55:58.939969+00:00",
+  "documentation_parent": "fb43546609c8303edaeb589e5544d11a6daf80be",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "main_freshness": "7c26e5292161fc891a7c6c6525305464a3a044be",
+  "commands": [
+    {
+      "command": "python3 scripts/check-development-policy",
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required."
+    }
+  ],
+  "manual_checks": {
+    "relative_links": [
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-output-cost/HOST-EXIT.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-coordinator-output-exit/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "../../managed-poller-capacity.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-plan.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-research.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-poller.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-inotify.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-contracts.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2-sources.json",
+        "exists": true
+      },
+      {
+        "from": "vmm-rings.md",
+        "target": "next-seams.md",
+        "exists": true
+      },
+      {
+        "from": "vmm-rings.md",
+        "target": "vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "vmm-rings.md",
+        "target": "vmm-rings-kiln-research.md",
+        "exists": true
+      }
+    ],
+    "no_trailing_whitespace": true,
+    "individual_R01_R16_account": true,
+    "external_sources_identity_verified": 13,
+    "local_git_blobs_verified": 9,
+    "policy_plan_files": 5,
+    "index_empty_before_own_staging": true,
+    "exact_six_staged_paths": [
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/vmm-rings-checks.json",
+      "docs/research/measurements/managed-poller-research/vmm-rings-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/vmm-rings-source-identity.json",
+      "docs/research/measurements/managed-poller-research/vmm-rings.md"
+    ],
+    "no_other_staged_path": true
+  },
+  "artifact_sha256": {
+    "docs/research/managed-poller-capacity.md": "971d4d872ef9b14ed3f89d0da5b3a40fe30de4be43c53545f8ba657434e9d2f2",
+    "docs/research/measurements/managed-poller-research/README.md": "f018b1229b69d6c8d1855a784a3c3aa35e19b2025104389fdfdba1444ad4843d",
+    "docs/research/measurements/managed-poller-research/vmm-rings.md": "054eea38bb76cf9894818b75e0fa581c568429fceab75a83a0f0e020c22f642b",
+    "docs/research/measurements/managed-poller-research/vmm-rings-source-identity.json": "4cce3d5f6b7945164d02cbd3f37c254aaabc87dc94da44a5d4d4a9415bb76ea3",
+    "docs/research/measurements/managed-poller-research/vmm-rings-kiln-research.md": "40b24dfe65b7659766eb3a2783d993ab2e94f501ed6f6b4e2215db4a4645cc0d"
+  },
+  "kiln_grades": {
+    "f15": "B/72",
+    "f16": "B/72",
+    "f17": "B/79",
+    "f18": "B/79",
+    "f19": "C/68",
+    "twelve_quotes_found": true
+  },
+  "earlier_identity_failure": {
+    "outcome": "AssertionError before record write",
+    "cause": "canonical managed-runtime-plan changed from expected3ea bytes while mainadvanced7c26; other4policy files unchanged",
+    "response": "full new canonical plan read, new planSHAebae0bb6922dba5f90d036d06310cc546352279fd368b5c307770a84ddc4a968 recorded, coordinatorPOLICY_READ sent; no dependent write occurred"
+  },
+  "scope_pending": [
+    "precise coordinator vmm-round2 evidence locator/revision",
+    "coordinator confirmation FS shared literal scope includes hiprio and request queue",
+    "coordinator source/caller-map acceptance; source-derived map committed8fe"
+  ],
+  "unrun": [
+    "all compile/unit/integration/realguest/syscall/campaign execution",
+    "queue negotiation/occupancy/notification/wrap/driverfailure/reset/restore/cancel validation",
+    "all profiles/benchmarks/comparative costs and hard aggregate accounting",
+    "seven-target/actual hardware/platform coverage"
+  ],
+  "preserved_other_session_files": [
+    "step9-checkpoints.json",
+    "step9-kiln-verify.json",
+    "step9-verify-checkpoints.py"
+  ],
+  "signature_scope": "Session gits; header/trailer and exact pushed branch identity verified separately; no local cryptographic-pass claim",
+  "named_staged_whitespace": "Restage six named files and final staged check0 immediately before commit; prior own stagedcheck0 retained as actual, no runtime check implied.",
+  "latest_headroom_instruction": {
+    "latest_user_free_bytes": 33713639424,
+    "history": "below30GiB again, then restored byroot reclaimonly1232inactive .rcgu.o intermediates; no source/evidence/finalbinary discarded",
+    "active_local_targets_caches_buildjobs": [],
+    "hold": "no localheavybuild/newfullworktree; no other buildapproved here",
+    "continues": "source/research/docs and separatelyapproved remote light only",
+    "protected_root_receipt": "Fedora closingr644/source1533 active/exclusive; Macr6341533full7+native12complete0 user-reported, notthislanetests",
+    "preserve": "all ROOTvalidationclones/targets and pausedWinARM; no pause/stop/delete"
+  }
+}

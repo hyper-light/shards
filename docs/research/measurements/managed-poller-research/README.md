@@ -169,6 +169,28 @@ guest/daemon reservation. All runtime/native truncation/backpressure/cancellatio
 and comparative measurements remain unrun; no production size or method is
 selected. The original lane continues to the four root-named ring decisions.
 
+The [four-ring return](vmm-rings.md) covers those exact decisions with separate
+Linux request/refill contracts, QEMU/default comparisons, representation versus
+request/occupancy distinctions, conditional methods and unrun root-only cases.
+Its [identity ledger](vmm-rings-source-identity.json) records nine matching source
+blobs through main7c26 and thirteen external byte identities. The canonical
+managed plan changed during recording: the guard aborted before writing, then
+the full new plan was read (SHA256
+`ebae0bb6922dba5f90d036d06310cc546352279fd368b5c307770a84ddc4a968`).
+R01–R16 remain unchanged d634; current handoff42f was fully read. This is research
+only; source/caller acceptance and the exact vmm-round2/FS scope answers remain
+pending root. No replacement depth, learning method, production fix or runtime
+result is selected.
+
+The Mac dipped below30GiB again, then user reported restoration to
+**33,713,639,424 bytes** after reclaiming only old inactive intermediates. This
+lane has **no active local target, cache or build job** and continues
+source/research/documentation. No local heavy build/new full worktree is
+authorized. Root owns every remote validation source/target, including active
+Fedora closing r644/source1533; the reported Mac r634/source1533 seven-target/
+native results are root's revision-specific results, not this lane's tests.
+No lane pause/stop or data/evidence deletion follows from headroom steering.
+
 ## R01–R16 account for both research batches
 
 | Rule | Actual work and remaining limit |

@@ -590,3 +590,28 @@ and an entirely unrun root-only boundary/backpressure/cancellation/credit/cost
 matrix. It selects no number, window method, receive API or architecture and
 does not propose a speculative terminal fix. The next research item is the
 four specific blk/fs/GPU-control/IOMMU-request maxima supplied by root.
+
+## 12. Four named VMM ring decisions
+
+The [four-ring return](measurements/managed-poller-research/vmm-rings.md) covers
+only block/fs/GPU control 256 and IOMMU request 64, plus their necessary shared
+queue/worker/activation and Linux driver contracts. They are advertised
+descriptor maxima, distinct from negotiated size, logical requests and retained
+memory. FS's literal reaches both hiprio and request queues. IOMMU offers no
+indirect descriptors, while Linux supplies two direct descriptors per request;
+the derived capacity bound is floor(N/2) requests for actual negotiated N.
+
+Block segment limits, FS request page splitting, GPU held-fence completion and
+IOMMU full-queue synchronization make the four decisions non-interchangeable.
+The return pins Linux v6.18, QEMU v9.2.0, explicitly identified OASIS stages and
+Little's primary author/publisher sources. A mean occupancy relationship is not
+a maximum/tail-capacity derivation. Neither copied defaults, page size nor one
+benchmark chooses a new depth.
+
+Nine source blobs match base24f through main7c26. The
+[source ledger](measurements/managed-poller-research/vmm-rings-source-identity.json)
+records the updated canonical plan readback, a safely refused stale-plan identity
+attempt, pending exact `vmm-round2`/FS scope confirmations and all unrun work.
+Alternatives and a bounded root-only per-device/notification/refusal/restore/
+occupancy/cost matrix select no production method. No harness or runtime action
+was executed or implicitly authorized by this research return.
