@@ -1672,3 +1672,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "../../../docs/research/measurements/managed-borrowed/red.rs"]
+mod borrowed_repro;
