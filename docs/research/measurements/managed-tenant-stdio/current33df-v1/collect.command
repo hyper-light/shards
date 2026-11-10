@@ -20,7 +20,7 @@ for p in sorted(records.rglob('*')):
     if rel.as_posix()=='compile.jsonl':
         remote_only.append(entry);continue
     dest=out/rel
-    if p.suffix=='.log':
+    if p.suffix=='.log' or rel.as_posix()=='commit.txt':
         dest=dest.with_name(dest.name+'.gz');stored=gzip.compress(b,mtime=0)
         assert gzip.decompress(stored)==b
     else: stored=b

@@ -45,9 +45,9 @@
       "original": "commit.txt",
       "bytes": 535,
       "sha256": "588839d00893cb849b4a4db0301da31f3eef151afe87884fe58a50b449b17613",
-      "stored": "commit.txt",
-      "stored_bytes": 535,
-      "stored_sha256": "588839d00893cb849b4a4db0301da31f3eef151afe87884fe58a50b449b17613"
+      "stored": "commit.txt.gz",
+      "stored_bytes": 334,
+      "stored_sha256": "1aefec4010dd612b1a3f1a00ffaa073eda9de6dcaf6c211fe1d82ddd81d705ef"
     },
     {
       "original": "compile.command",
@@ -738,5 +738,13 @@
     }
   ],
   "binary_and_source_preservation": "private source/target/cache/frozen unchanged; full CargoJSONL retained remotely",
-  "unknown": "full population/kernel/parent resource return unverified"
+  "unknown": "full population/kernel/parent resource return unverified",
+  "local_storage_correction": {
+    "source_manifest": "STORAGE.source.json",
+    "source_manifest_sha256": "fe8be5e848536020aa1c2d8eeead1e4a667974052cb8d1d13d5db630be9963cb",
+    "transcript_original_sha256": "588839d00893cb849b4a4db0301da31f3eef151afe87884fe58a50b449b17613",
+    "reason": "Raw git-show indented blank lines retained under gzip after staged whitespace check failed; no bytes normalized",
+    "intermediate_signed_commit": "da7dce6c67b99bdd687496113662d1eaa41fc9a3",
+    "shell_check_failure": "non-errexit shell continued into commit; corrected before ready/push"
+  }
 }
