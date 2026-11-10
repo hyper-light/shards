@@ -5,9 +5,18 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod managed_network;
+#[cfg(target_os = "linux")]
 mod workload;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "managed-network")
+    {
+        std::process::exit(managed_network::main());
+    }
     #[cfg(target_os = "linux")]
     // The VM's init, which the kernel starts with `shards_test=` from its command line in
     // its environment; anything else, PID 1 of a build step's namespace included, is a
