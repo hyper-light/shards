@@ -6,7 +6,7 @@ POLICY_READ: R01–R16 at policy revision `b4918cd8`, SHA-256
 The coordinator owns audits, real-VM/adversarial campaigns and all measurements.
 
 This checkpoint implements a transport component, not complete G02/G11/P3.
-It does not yet launch actors or create a daemon admission default.
+The follow-on daemon registration, scoped credit, admission and learning are described in [admission.md](admission.md); combined live gates remain open.
 
 ## Interface and ownership
 
@@ -28,7 +28,7 @@ data worker; `on_credit` wakes that worker after state locks are released.
 capacity, not merely slice length. Captured content is omitted from error Debug.
 
 The wire reuses remote framing: tag byte, u32BE payload length. Subscribe is Exec
-with run fingerprint, u64 generation, u64 next offset. Data is Stdout with u64
+with distinct RunId, u64 generation, u32 member, channel and u64 next offset. Data is Stdout with u64
 start offset then one unchanged managed record. Consumed is Stdin with u64 end
 offset. These tags do not invoke the remote CLI server. ACKs only clear an entirely
 sent record at its exact contiguous end; transport/socket ACKs do not return credit.
@@ -102,7 +102,7 @@ an encode-loop mutable-borrow error; the encoder was corrected and rerun.
 - R15/R16: scoped implementation/light tests only, no children/self-merges/cache
   deletion. Local heavyweight rebuild avoided because Mac disk headroom is small.
 
-Still owed: daemon admission/registration/private IPC wiring; owner-only native
+Still owed: combined daemon/private-IPC and active-plan validation; owner-only native
 TLS+real-VM byte delivery; unauthorized/cross-scope/generation and replay guards;
 forced partial I/O/slow consumer/reconnect/owner death; queue-full/ENOMEM/EMFILE/
 handshake flood/socket blockage; deadlock/livelock/cleanup; meaningful guard-removal

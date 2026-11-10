@@ -21,7 +21,7 @@ use crate::Error;
 
 /// The largest datagram taken off the socket: QUIC's are at most 65,527 bytes of UDP payload
 /// (RFC 9000 §18.2, max_udp_payload_size), and an IPv6 jumbogram is no UDP datagram std reads.
-const DATAGRAM: usize = 65_527;
+pub(crate) const DATAGRAM: usize = 65_527;
 
 /// A connection, by the number the driver gave it, which it gives no other: what a thread
 /// sends for a connection that has ended reaches none that came after it.
@@ -68,6 +68,10 @@ impl<C> std::fmt::Debug for Sender<C> {
 }
 
 impl<C> Sender<C> {
+    pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        socket_buffers(&self.waker)
+    }
+
     /// Sends `command` and wakes the driver; an error once the driver has ended.
     pub fn send(&self, command: Command<C>) -> Result<(), Error> {
         self.try_send(command).map_err(|e| match e {
@@ -93,6 +97,71 @@ impl<C> Sender<C> {
         self.stopping.store(true, Ordering::Release);
         let _ = self.waker.send_to(&[0], self.to);
     }
+}
+
+// Queue sizes are cost facts for an owner's reservation, never admission authority.
+// Linux socket(7) reports its doubled bookkeeping-inclusive SO_*BUF values.
+fn socket_buffers(socket: &UdpSocket) -> Result<u64, Error> {
+    #[cfg(unix)]
+    fn get(socket: &UdpSocket, option: i32) -> std::io::Result<u64> {
+        use std::os::fd::AsRawFd as _;
+        let mut bytes: libc::c_int = 0;
+        let mut len = std::mem::size_of_val(&bytes) as libc::socklen_t;
+        // SAFETY: the owned socket and a correctly sized integer output.
+        let rc = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                (&raw mut bytes).cast(),
+                &raw mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if len as usize != std::mem::size_of_val(&bytes) || bytes <= 0 {
+            return Err(std::io::Error::other("unknown UDP queue size"));
+        }
+        u64::try_from(bytes).map_err(std::io::Error::other)
+    }
+    #[cfg(windows)]
+    fn get(socket: &UdpSocket, option: i32) -> std::io::Result<u64> {
+        use std::os::windows::io::AsRawSocket as _;
+        use windows_sys::Win32::Networking::WinSock::{SOL_SOCKET, WSAGetLastError, getsockopt};
+        let mut bytes: i32 = 0;
+        let mut len = std::mem::size_of_val(&bytes) as i32;
+        // SAFETY: the owned socket and a correctly sized integer output.
+        let rc = unsafe {
+            getsockopt(
+                socket.as_raw_socket() as usize,
+                SOL_SOCKET,
+                option,
+                (&raw mut bytes).cast(),
+                &raw mut len,
+            )
+        };
+        if rc != 0 {
+            // SAFETY: retrieves this thread's Winsock failure.
+            return Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }));
+        }
+        if len as usize != std::mem::size_of_val(&bytes) || bytes <= 0 {
+            return Err(std::io::Error::other("unknown UDP queue size"));
+        }
+        u64::try_from(bytes).map_err(std::io::Error::other)
+    }
+    #[cfg(unix)]
+    use libc::{SO_RCVBUF, SO_SNDBUF};
+    #[cfg(windows)]
+    use windows_sys::Win32::Networking::WinSock::{SO_RCVBUF, SO_SNDBUF};
+    get(socket, SO_RCVBUF)
+        .and_then(|rx| {
+            get(socket, SO_SNDBUF).and_then(|tx| {
+                rx.checked_add(tx)
+                    .ok_or_else(|| std::io::Error::other("UDP queue size overflow"))
+            })
+        })
+        .map_err(|e| Error::new(format!("the driver's kernel queues: {e}")))
 }
 
 impl<C> Sender<C> {
@@ -548,6 +617,10 @@ impl<H: Handler> Driver<H> {
         self.socket
             .local_addr()
             .map_err(|e| Error::new(format!("the driver's socket: {e}")))
+    }
+
+    pub(crate) fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        socket_buffers(&self.socket)
     }
 
     /// The handler, once the driver has ended.

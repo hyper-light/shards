@@ -12,6 +12,81 @@
 
 use std::time::{Duration, Instant};
 
+/// An admitted byte quantum requested by the same measured climb as transfers
+/// (D226). Its caller must reserve an increase before issuing that credit.
+#[derive(Debug)]
+pub struct Quantum {
+    base: usize,
+    most: usize,
+    climb: Climb,
+    samples: QuantumSamples,
+}
+
+#[derive(Debug)]
+enum QuantumSamples {
+    Cold,
+    Measuring {
+        window: Window,
+        carried: u64,
+        last: Instant,
+    },
+}
+
+impl Quantum {
+    pub fn new(minimum: usize, maximum: usize) -> Option<Self> {
+        if minimum == 0 || minimum > maximum {
+            return None;
+        }
+        Some(Self {
+            base: minimum,
+            most: maximum,
+            climb: Climb::new(None, maximum / minimum),
+            samples: QuantumSamples::Cold,
+        })
+    }
+
+    pub fn desired(&self) -> usize {
+        self.climb.target().saturating_mul(self.base).min(self.most)
+    }
+
+    /// Only a full data record consumed by the application is a busy sample.
+    /// `began` includes producer, queue and acknowledgment service, not TCP/QUIC ACK alone.
+    pub fn consumed(&mut self, began: Instant, now: Instant, bytes: u64) -> Option<usize> {
+        let elapsed = now.checked_duration_since(began).filter(|d| !d.is_zero())?;
+        if bytes == 0 {
+            return None;
+        }
+        self.climb.answered(elapsed);
+        if matches!(self.samples, QuantumSamples::Cold) {
+            self.samples = QuantumSamples::Measuring {
+                window: Window::new(began, 0),
+                carried: 0,
+                last: began,
+            };
+        }
+        let QuantumSamples::Measuring {
+            window,
+            carried,
+            last,
+        } = &mut self.samples
+        else {
+            return None;
+        };
+        let Some(total) = carried.checked_add(bytes) else {
+            self.samples = QuantumSamples::Cold;
+            return None;
+        };
+        *carried = total;
+        if now.checked_duration_since(*last)? < period(self.climb.answer()) {
+            return None;
+        }
+        *last = now;
+        let rate = window.sample(now, total)?;
+        self.climb.window(rate, true, self.base as f64)?;
+        Some(self.desired())
+    }
+}
+
 /// Samples at a count before it is judged, and of a window before it ends: the fewest
 /// that have a variance.
 const SAMPLES: u64 = 2;
@@ -303,6 +378,25 @@ impl Climb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_byte_quantum_climbs_on_consumed_full_data_inside_its_ceiling() {
+        let mut quantum = Quantum::new(20, 320).unwrap();
+        let start = Instant::now();
+        for n in 0..200u32 {
+            let began = start + Duration::from_millis(u64::from(n));
+            let now = began + Duration::from_millis(1);
+            let bytes = quantum.desired().saturating_sub(16) as u64;
+            quantum.consumed(began, now, bytes);
+            assert!((20..=320).contains(&quantum.desired()));
+        }
+        assert!(quantum.desired() > 20);
+        assert!(Quantum::new(0, 320).is_none());
+        assert!(Quantum::new(20, 19).is_none());
+        let before = quantum.desired();
+        assert!(quantum.consumed(start, start, 20).is_none());
+        assert_eq!(quantum.desired(), before);
+    }
 
     fn spread(xs: &[f64]) -> Spread {
         let mut s = Spread::default();

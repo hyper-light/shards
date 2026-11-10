@@ -32,6 +32,8 @@ pub struct Agentfile {
     /// How many agents and harnesses it declares, the domains its init numbers (D59) and
     /// whose IDs no other process takes (D115).
     pub domains: u32,
+    pub managed_labels: Vec<String>,
+    pub active_members: Vec<u32>,
     /// Whether their flows past the microVM, out or in, or their names, cross init's
     /// network namespace, the command's, on their way to eth0 (D59, D115).
     pub uplink: bool,
@@ -244,7 +246,10 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         }
         _ => false,
     });
+    let (managed_labels, active_members) = managed_plan(&mut image, &directives).map_err(fail)?;
     let agentfile = Agentfile {
+        managed_labels,
+        active_members,
         volumes,
         uplink: !grants.egress.is_empty() || !grants.mcp.is_empty() || grants.dns || ingress,
         ipv6: af::ipv6(&directives),
@@ -256,6 +261,83 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         .unwrap_or_else(PoisonError::into_inner)
         .insert(key, agentfile.clone());
     Ok(agentfile)
+}
+
+/// Read the image's runnable fact with the same root-confined Linux path semantics
+/// as init. EROFS read_file deliberately does not follow links; vfs already does.
+fn managed_plan(
+    image: &mut std::fs::File,
+    directives: &[shards_agentfile::agentfile::Directive],
+) -> Result<(Vec<String>, Vec<u32>), String> {
+    use shards_agentfile::agentfile::Directive;
+    use shards_build::vfs::{Errno, Fs};
+    use shards_image::erofs::Kind;
+    use std::io::{Read as _, Seek as _};
+    if !directives
+        .iter()
+        .any(|d| matches!(d, Directive::Agent(_) | Directive::Harness(_)))
+    {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let tree = shards_image::erofs::read_tree(image, 0).map_err(|e| e.to_string())?;
+    // The clock is unused: this is a read-only resolution, not a file action.
+    let root = Fs::new(tree, (0, 0));
+    let mut labels = Vec::new();
+    let mut active = Vec::new();
+    for harness in [false, true] {
+        for directive in directives {
+            let (kind, domain) = match (harness, directive) {
+                (false, Directive::Agent(domain)) => ("agent", domain),
+                (true, Directive::Harness(domain)) => ("harness", domain),
+                _ => continue,
+            };
+            let member = u32::try_from(labels.len()).map_err(|e| e.to_string())?;
+            let name = std::str::from_utf8(&domain.name).map_err(|e| e.to_string())?;
+            labels.try_reserve(1).map_err(|e| e.to_string())?;
+            labels.push(format!("{kind} {name}"));
+            let home = if harness { "/harness" } else { "/agents" };
+            let to = domain
+                .to
+                .as_ref()
+                .map(|to| std::str::from_utf8(to))
+                .transpose()
+                .map_err(|e| e.to_string())?
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{home}/{name}"));
+            let path = format!("{to}.d/osi.json");
+            let id = match root.stat(path.as_bytes()) {
+                Ok(id) => id,
+                Err(e) if e.errno == Errno::NoEnt => continue,
+                Err(e) => return Err(e.to_string()),
+            };
+            let Some(node) = root.node(id) else {
+                return Err("missing managed config inode".into());
+            };
+            let Kind::File { size, data } = node.kind else {
+                return Err(format!("{path}: not a regular config file"));
+            };
+            if size > AGENTFILE_MOST || data.source != 0 {
+                return Err(format!(
+                    "{path}: config exceeds the guest reader or names foreign data"
+                ));
+            }
+            let len = usize::try_from(size).map_err(|e| e.to_string())?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).map_err(|e| e.to_string())?;
+            bytes.resize(len, 0);
+            image
+                .seek(std::io::SeekFrom::Start(data.offset))
+                .map_err(|e| e.to_string())?;
+            image.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+            let config: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|e| format!("{path}: {e}"))?;
+            if config.get("run").is_some() {
+                active.try_reserve(1).map_err(|e| e.to_string())?;
+                active.push(member);
+            }
+        }
+    }
+    Ok((labels, active))
 }
 
 #[cfg(test)]
@@ -399,6 +481,67 @@ mod tests {
         );
         let raw = caps(&["CAP_NET_RAW"]);
         assert_ne!(beside(true).caps(&raw) & net_raw, 0);
+    }
+
+    #[test]
+    fn runnable_members_keep_declared_ids_and_resolve_config_links_inside_the_image() {
+        use shards_agentfile::agentfile::{Directive, Domain, Processes};
+        use shards_build::vfs::Fs;
+        use shards_image::erofs::{DataRef, Meta, Source, Tree};
+        struct Contents(Vec<Vec<u8>>);
+        impl Source for Contents {
+            fn read_at(&mut self, data: DataRef, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+                let bytes = self.0.get(data.source as usize).unwrap();
+                out.copy_from_slice(bytes.get(at as usize..at as usize + out.len()).unwrap());
+                Ok(())
+            }
+        }
+        let mut fs = Fs::new(
+            Tree::new(Meta {
+                mode: 0o755,
+                ..Meta::default()
+            }),
+            (0, 0),
+        );
+        for path in ["/agents", "/agents/files.d", "/agents/a.d", "/harness", "/shared"] {
+            fs.mkdir(path.as_bytes(), 0o755).unwrap();
+        }
+        let mut contents = Contents(vec![b"{}".to_vec(), br#"{"run":{"command":["true"]}}"#.to_vec()]);
+        for (index, path) in ["/agents/files.d/osi.json", "/shared/osi.json"]
+            .into_iter()
+            .enumerate()
+        {
+            let id = fs.create(path.as_bytes(), 0o444).unwrap();
+            fs.set_data(
+                id,
+                contents.0.get(index).unwrap().len() as u64,
+                DataRef {
+                    source: index as u32,
+                    offset: 0,
+                },
+            );
+        }
+        fs.symlink(b"/shared/osi.json", b"/agents/a.d/osi.json").unwrap();
+        fs.symlink(b"/shared", b"/harness/h.d").unwrap();
+        let domain = |name: &str| Domain {
+            name: name.as_bytes().to_vec(),
+            source: b"./artifact".to_vec(),
+            to: None,
+            processes: Processes::Unbounded,
+        };
+        let declarations = [
+            Directive::Harness(domain("h")),
+            Directive::Agent(domain("files")),
+            Directive::Agent(domain("a")),
+        ];
+        let dir = shards_testdir::TempDir::new("managed-plan").unwrap();
+        let path = dir.join("root.erofs");
+        let mut file = std::fs::File::create(&path).unwrap();
+        shards_image::erofs::write(fs.tree(), &mut contents, &mut file).unwrap();
+        drop(file);
+        let (labels, active) = managed_plan(&mut std::fs::File::open(path).unwrap(), &declarations).unwrap();
+        assert_eq!(labels, ["agent files", "agent a", "harness h"]);
+        assert_eq!(active, [1, 2]);
     }
 
     /// An image's Agentfile read from its root as its microVM mounts it, and checked as

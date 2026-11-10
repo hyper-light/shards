@@ -5866,23 +5866,23 @@ capture records, retains one admitted record until a contiguous application ACK,
 and never owns the VM through an observer connection. No persistent spool is implied.
 The caller must retain an actual resource reservation for its explicit allowances;
 a protocol window is not host authority or proof of kernel attribution. The service
-is a component pending daemon/guest integration and root real-VM/cost gates.
+is an experimental component with [daemon admission/independent channel credit](../research/measurements/managed-output/admission.md), pending combined guest integration and root real-VM/cost gates.
 [Interface, alternatives, states and evidence](../research/measurements/managed-output/README.md).
 
 | Production literal/bound | Derivation/source |
 | --- | --- |
 | Frame tag1byte + length4bytes | existing D180 wire, u8+u32BE; unchanged remote framing |
 | Offset/generation8bytes | their u64BE encoding, checked before advance |
-| Run fingerprint32bytes | existing SHA-256 Fingerprint type |
-| Subscription48bytes/control53bytes | fingerprint + generation + cursor; plus existing frame head |
+| RunId32bytes | SHA-256 of the container ID namespace, a distinct type from the owner key fingerprint |
+| Subscription53bytes/control58bytes | RunId + generation + member + channel + cursor; plus existing frame head |
 | Data head13bytes | frame head + starting cursor |
-| One connection/subscription/pending record/command slot | the explicit one-owner/one-producer service contract; no per-child capacity multiplication |
+| One connection/subscription/pending record/command slot per active channel | experimental same-transport composition; active member count and two channels are trusted-plan admitted, not multiplied by wire IDs |
 | Zero initial cursor/no UNI streams/no QUIC datagrams/pre-accept buffered bytes | no prior records, one bidirectional subscription, no DATAGRAM application protocol/early-data queue |
 | Record/transport/crypto/datagram capacities and patience | explicit caller-retained admission, checked for zero/overflow/protocol field bounds; no hidden default |
 | Receive turns | admitted queued datagram bytes divided by RFC9000 maximum UDP payload (existing driver DATAGRAM), at least one before bind |
 | One-nanosecond bounded timer floor | smallest nonzero Duration, avoiding socket timeout zero; actual OS rounding remains measured, not hardcoded |
 | Excluded ports80/443 | owner's explicit output-endpoint requirement; OS otherwise chooses |
-| Protocol revision/close code1 | managed-output/1 protocol discriminator and local refusal code; not a tuning parameter |
+| Protocol revision1/close reasons1–5 | managed-output/1 discriminator; typed Protocol/Scope/Stale/Closed/Auth wire ordinals, not tuning parameters |
 
 Linux light tests/clippy pass; authentication/native byte delivery, adversarial
 cleanup, all other targets and allocation/kernel accounting remain coordinator gates.

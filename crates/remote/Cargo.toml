@@ -18,12 +18,16 @@ hyper-quic = { git = "https://github.com/hyper-light/hyper-raft", rev = "f116ac2
 sha2 = "0.11"
 # A file of its user's alone wherever it is: an identity's, an invitation's.
 shards-ipc = { path = "../ipc" }
+shards-abi = { path = "../abi" }
 
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }
 
-[target.'cfg(target_os = "linux")'.dev-dependencies]
+[target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Networking_WinSock"] }
 
 [lints]
 workspace = true

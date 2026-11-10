@@ -2,29 +2,106 @@
 
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use hyper_quic::{ClientConfig, IdleTimeout, StreamId, TransportConfig, VarInt};
+use shards_abi::run::managed::Channel;
 
 use crate::frame::{self, Tag};
 use crate::identity::{Fingerprint, Identity};
 use crate::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
-use crate::{Error, tls};
+use crate::tls;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolError {
+    ControlKind,
+    Length,
+    Scope,
+    Channel,
+    Cursor,
+    CloseReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionError {
+    Capacity,
+    Window,
+    Patience,
+    ExcludedPort,
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Protocol(ProtocolError),
+    Admission(AdmissionError),
+    Closed,
+    Transport(crate::Error),
+}
+
+impl From<crate::Error> for Error {
+    fn from(error: crate::Error) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protocol(reason) => write!(out, "managed output protocol: {reason:?}"),
+            Self::Admission(reason) => write!(out, "managed output admission: {reason:?}"),
+            Self::Closed => out.write_str("managed output is closed"),
+            Self::Transport(error) => std::fmt::Display::fmt(error, out),
+        }
+    }
+}
+impl std::error::Error for Error {}
+
+/// Stable application close reasons; text is presentation, never a control key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Reason {
+    Protocol = 1,
+    Scope = 2,
+    Stale = 3,
+    Closed = 4,
+    Auth = 5,
+}
+
+impl TryFrom<u32> for Reason {
+    type Error = ProtocolError;
+    fn try_from(code: u32) -> Result<Self, Self::Error> {
+        match code {
+            1 => Ok(Self::Protocol),
+            2 => Ok(Self::Scope),
+            3 => Ok(Self::Stale),
+            4 => Ok(Self::Closed),
+            5 => Ok(Self::Auth),
+            _ => Err(ProtocolError::CloseReason),
+        }
+    }
+}
 
 pub const ALPN: &[u8] = b"shards-managed-output/1";
+pub const DATAGRAM_BYTES: usize = crate::net::DATAGRAM;
 
 const FRAME_HEAD: usize = size_of::<u8>() + size_of::<u32>();
 const OFFSET_BYTES: usize = size_of::<u64>();
-const SCOPE_BYTES: usize = size_of::<Fingerprint>() + size_of::<u64>();
+const SCOPE_BYTES: usize = size_of::<RunId>() + size_of::<u64>() + size_of::<u32>() + size_of::<u8>();
 const SUBSCRIBE_BYTES: usize = SCOPE_BYTES + OFFSET_BYTES;
-const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
-const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
+pub const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
+pub const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
 
 /// A run and its current management generation, minted by the trusted owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunId(pub [u8; 32]);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scope {
-    pub run: Fingerprint,
+    pub run: RunId,
     pub generation: u64,
+    pub member: u32,
+    pub channel: Channel,
 }
 
 /// The fixed subscription message; the cursor names the first unconsumed record byte.
@@ -34,8 +111,10 @@ pub fn subscribe(scope: Scope, offset: u64) -> [u8; CONTROL_BYTES] {
     for part in [
         &[Tag::Exec as u8][..],
         &(SUBSCRIBE_BYTES as u32).to_be_bytes(),
-        &scope.run,
+        &scope.run.0,
         &scope.generation.to_be_bytes(),
+        &scope.member.to_be_bytes(),
+        &[scope.channel as u8],
         &offset.to_be_bytes(),
     ] {
         let end = at.saturating_add(part.len());
@@ -67,42 +146,56 @@ enum Input {
 }
 
 fn input(bytes: &[u8]) -> Result<Option<(Input, usize)>, Error> {
-    let Some((tag, len)) = frame::peek(bytes)? else {
+    let Some((tag, len)) = frame::peek(bytes).map_err(|_| Error::Protocol(ProtocolError::ControlKind))?
+    else {
         return Ok(None);
     };
     let expected = match tag {
         Tag::Exec => SUBSCRIBE_BYTES,
         Tag::Stdin => OFFSET_BYTES,
-        _ => return Err(Error::new("not a managed output control")),
+        _ => return Err(Error::Protocol(ProtocolError::ControlKind)),
     };
     if len != expected {
-        return Err(Error::new("invalid managed output control length"));
+        return Err(Error::Protocol(ProtocolError::Length));
     }
     let end = FRAME_HEAD
         .checked_add(len)
-        .ok_or_else(|| Error::new("control length overflow"))?;
+        .ok_or(Error::Protocol(ProtocolError::Length))?;
     let Some(payload) = bytes.get(FRAME_HEAD..end) else {
         return Ok(None);
     };
     let value = if tag == Tag::Exec {
         let (run, rest) = payload
-            .split_first_chunk::<{ size_of::<Fingerprint>() }>()
-            .ok_or_else(|| Error::new("subscription has no run"))?;
+            .split_first_chunk::<{ size_of::<RunId>() }>()
+            .ok_or(Error::Protocol(ProtocolError::Scope))?;
         let (generation, rest) = rest
             .split_first_chunk::<OFFSET_BYTES>()
-            .ok_or_else(|| Error::new("subscription has no generation"))?;
+            .ok_or(Error::Protocol(ProtocolError::Scope))?;
+        let (member, rest) = rest
+            .split_first_chunk::<{ size_of::<u32>() }>()
+            .ok_or(Error::Protocol(ProtocolError::Scope))?;
+        let (channel, rest) = rest
+            .split_first()
+            .ok_or(Error::Protocol(ProtocolError::Channel))?;
+        let channel = match channel {
+            1 => Channel::Stdout,
+            2 => Channel::Stderr,
+            _ => return Err(Error::Protocol(ProtocolError::Channel)),
+        };
         let offset =
-            <[u8; OFFSET_BYTES]>::try_from(rest).map_err(|_| Error::new("subscription has no cursor"))?;
+            <[u8; OFFSET_BYTES]>::try_from(rest).map_err(|_| Error::Protocol(ProtocolError::Cursor))?;
         Input::Subscribe(
             Scope {
-                run: *run,
+                run: RunId(*run),
                 generation: u64::from_be_bytes(*generation),
+                member: u32::from_be_bytes(*member),
+                channel,
             },
             u64::from_be_bytes(offset),
         )
     } else {
         let offset =
-            <[u8; OFFSET_BYTES]>::try_from(payload).map_err(|_| Error::new("consumption has no cursor"))?;
+            <[u8; OFFSET_BYTES]>::try_from(payload).map_err(|_| Error::Protocol(ProtocolError::Cursor))?;
         Input::Consumed(u64::from_be_bytes(offset))
     };
     Ok(Some((value, end)))
@@ -133,7 +226,10 @@ enum Slot {
         bytes: Vec<u8>,
     },
     Finished(u64),
-    Aborted,
+    Aborted {
+        accepted: u64,
+        consumed: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,8 +242,33 @@ enum Ending {
 struct Shared {
     slot: Mutex<(Slot, Ending)>,
     changed: Condvar,
-    record_bytes: usize,
+    record_bytes: AtomicUsize,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// Endpoint record bytes accepted and explicitly consumed; these are distinct
+/// from bytes still in guest pipes, whose tail is unknown after owner revocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub accepted: u64,
+    pub consumed: u64,
+}
+
+fn progress(slot: &Slot) -> Progress {
+    match slot {
+        Slot::Waiting(at) | Slot::Ready(at) | Slot::Finished(at) => Progress {
+            accepted: *at,
+            consumed: *at,
+        },
+        Slot::Record { start, bytes, .. } | Slot::AwaitingAck { start, bytes } => Progress {
+            accepted: start.saturating_add(bytes.len() as u64),
+            consumed: *start,
+        },
+        Slot::Aborted { accepted, consumed } => Progress {
+            accepted: *accepted,
+            consumed: *consumed,
+        },
+    }
 }
 
 impl Shared {
@@ -205,10 +326,20 @@ impl std::fmt::Debug for Rejected {
 }
 
 impl Producer {
+    /// Raises retained-record allowance only after the caller extends its owned
+    /// reservation. This does not enlarge QUIC's fixed in-flight send window.
+    pub fn admit(&self, record_bytes: usize) -> Result<(), Error> {
+        if record_bytes == 0 || record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES) {
+            return Err(Error::Admission(AdmissionError::Capacity));
+        }
+        self.shared.record_bytes.fetch_max(record_bytes, Ordering::AcqRel);
+        Ok(())
+    }
+
     pub fn capacity(&self) -> usize {
         let state = lock(&self.shared);
         if matches!(state.0, Slot::Ready(_)) && matches!(state.1, Ending::Open) {
-            self.shared.record_bytes
+            self.shared.record_bytes.load(Ordering::Acquire)
         } else {
             0
         }
@@ -229,9 +360,13 @@ impl Producer {
         let mut state = lock(&self.shared);
         loop {
             match state.0 {
-                Slot::Ready(_) if matches!(state.1, Ending::Open) => return Ok(self.shared.record_bytes),
-                Slot::Finished(_) | Slot::Aborted => return Err(Error::new("managed output is closed")),
-                _ if !matches!(state.1, Ending::Open) => return Err(Error::new("managed output is ending")),
+                Slot::Ready(_) if matches!(state.1, Ending::Open) => {
+                    return Ok(self.shared.record_bytes.load(Ordering::Acquire));
+                }
+                Slot::Finished(_) | Slot::Aborted { .. } => {
+                    return Err(Error::Closed);
+                }
+                _ if !matches!(state.1, Ending::Open) => return Err(Error::Closed),
                 _ => {
                     state = self
                         .shared
@@ -246,14 +381,14 @@ impl Producer {
     /// Returns the owned record on refusal. Capacity, not only length, is charged:
     /// a short slice of a larger allocation cannot hide retained memory.
     pub fn submit(&self, bytes: Vec<u8>) -> Result<(), Rejected> {
-        if bytes.is_empty() || bytes.capacity() > self.shared.record_bytes {
+        if bytes.is_empty() || bytes.capacity() > self.shared.record_bytes.load(Ordering::Acquire) {
             return Err(Rejected::Invalid(bytes));
         }
         {
             let mut state = lock(&self.shared);
             let Slot::Ready(start) = state.0 else {
                 return Err(match state.0 {
-                    Slot::Finished(_) | Slot::Aborted => Rejected::Closed(bytes),
+                    Slot::Finished(_) | Slot::Aborted { .. } => Rejected::Closed(bytes),
                     _ => Rejected::Full(bytes),
                 });
             };
@@ -271,7 +406,13 @@ impl Producer {
         }
         if self.sender.send(Command::Handler(())).is_err() {
             let mut state = lock(&self.shared);
-            let old = std::mem::replace(&mut state.0, Slot::Aborted);
+            let old = std::mem::replace(
+                &mut state.0,
+                Slot::Aborted {
+                    accepted: 0,
+                    consumed: 0,
+                },
+            );
             drop(state);
             self.shared.notify();
             if let Slot::Record { bytes, .. } = old {
@@ -301,6 +442,14 @@ impl Drop for Control {
 }
 
 impl Control {
+    /// The driver's two UDP sockets, counted once despite cloned wake handles.
+    pub fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        self.sender.kernel_buffer_bytes().map_err(Error::Transport)
+    }
+    pub fn progress(&self) -> Progress {
+        progress(&lock(&self.shared).0)
+    }
+
     /// Ends normally after the admitted record is application-acknowledged.
     pub fn finish(&self) -> Result<(), Error> {
         {
@@ -311,14 +460,18 @@ impl Control {
             }
         }
         self.shared.notify();
-        self.sender.send(Command::Handler(()))
+        self.sender.send(Command::Handler(())).map_err(Error::Transport)
     }
 
     /// Revocation uses the driver's separate stop flag, even with a full handoff.
     pub fn abort(&self) {
         {
             let mut state = lock(&self.shared);
-            state.0 = Slot::Aborted;
+            let at = progress(&state.0);
+            state.0 = Slot::Aborted {
+                accepted: at.accepted,
+                consumed: at.consumed,
+            };
             state.1 = Ending::Aborted;
         }
         self.shared.notify();
@@ -363,8 +516,8 @@ impl std::fmt::Debug for Endpoint {
 fn transport(admitted: Admitted, receive_bytes: usize) -> Result<TransportConfig, Error> {
     let mut transport = TransportConfig::default();
     let receive =
-        VarInt::from_u64(u64::try_from(receive_bytes).map_err(|_| Error::new("receive window overflow"))?)
-            .map_err(|_| Error::new("receive window does not fit QUIC"))?;
+        VarInt::from_u64(u64::try_from(receive_bytes).map_err(|_| Error::Admission(AdmissionError::Window))?)
+            .map_err(|_| Error::Admission(AdmissionError::Window))?;
     transport
         .stream_receive_window(receive)
         .receive_window(receive)
@@ -376,7 +529,7 @@ fn transport(admitted: Admitted, receive_bytes: usize) -> Result<TransportConfig
         .datagram_send_buffer_size(0)
         .max_idle_timeout(Some(
             IdleTimeout::try_from(admitted.patience)
-                .map_err(|_| Error::new("output patience does not fit QUIC"))?,
+                .map_err(|_| Error::Admission(AdmissionError::Patience))?,
         ));
     Ok(transport)
 }
@@ -391,11 +544,14 @@ pub fn client_config(
     let receive = admitted
         .record_bytes
         .checked_add(DATA_HEAD)
-        .ok_or_else(|| Error::new("record window overflow"))?;
-    tls::client_with(identity, server, transport(admitted, receive)?, ALPN)
+        .ok_or(Error::Admission(AdmissionError::Window))?;
+    tls::client_with(identity, server, transport(admitted, receive)?, ALPN).map_err(Error::Transport)
 }
 
 impl Endpoint {
+    pub fn kernel_buffer_bytes(&self) -> Result<u64, Error> {
+        self.driver.kernel_buffer_bytes().map_err(Error::Transport)
+    }
     pub fn bind(
         identity: &Identity,
         owner: Fingerprint,
@@ -409,7 +565,7 @@ impl Endpoint {
             || admitted.patience.is_zero()
             || std::time::Instant::now().checked_add(admitted.patience).is_none()
         {
-            return Err(Error::new("managed output lacks admitted protocol capacity"));
+            return Err(Error::Admission(AdmissionError::Capacity));
         }
         let transport = transport(admitted, CONTROL_BYTES)?;
         let mut config = tls::owner_server(identity, owner, transport, ALPN)?;
@@ -420,7 +576,7 @@ impl Endpoint {
         let shared = Arc::new(Shared {
             slot: Mutex::new((Slot::Waiting(0), Ending::Open)),
             changed: Condvar::new(),
-            record_bytes: admitted.record_bytes,
+            record_bytes: AtomicUsize::new(admitted.record_bytes),
             waker: Mutex::new(None),
         });
         let handler = Service {
@@ -444,7 +600,7 @@ impl Endpoint {
         )?;
         let address = driver.local()?;
         if matches!(address.port(), 80 | 443) {
-            return Err(Error::new("the OS selected an excluded managed output port"));
+            return Err(Error::Admission(AdmissionError::ExcludedPort));
         }
         let producer = Producer {
             shared: Arc::clone(&shared),
@@ -468,18 +624,39 @@ impl Endpoint {
         let shared = &self.driver.handler_mut().shared;
         let mut state = lock(shared);
         if !matches!(state.0, Slot::Finished(_)) {
-            state.0 = Slot::Aborted;
+            let at = progress(&state.0);
+            state.0 = Slot::Aborted {
+                accepted: at.accepted,
+                consumed: at.consumed,
+            };
         }
         drop(state);
         shared.notify();
-        result
+        result.map_err(Error::Transport)
     }
 }
 
 impl Service {
     fn refuse(&mut self, io: &mut Io<'_>, conn: ConnKey) {
-        io.close(conn, 1, "managed output subscription refused");
+        self.refuse_reason(io, conn, Reason::Protocol);
+    }
+
+    fn refuse_reason(&mut self, io: &mut Io<'_>, conn: ConnKey, reason: Reason) {
+        io.close(conn, reason as u32, "managed output subscription refused");
         self.disconnect();
+    }
+
+    fn check_scope(&self, offered: Scope) -> Result<(), Reason> {
+        if offered.run != self.scope.run
+            || offered.member != self.scope.member
+            || offered.channel != self.scope.channel
+        {
+            return Err(Reason::Scope);
+        }
+        if offered.generation != self.scope.generation {
+            return Err(Reason::Stale);
+        }
+        Ok(())
     }
 
     fn disconnect(&mut self) {
@@ -490,7 +667,13 @@ impl Service {
             Slot::Ready(at) => state.0 = Slot::Waiting(*at),
             Slot::Record { written, .. } => *written = 0,
             Slot::AwaitingAck { .. } => {
-                if let Slot::AwaitingAck { start, bytes } = std::mem::replace(&mut state.0, Slot::Aborted) {
+                if let Slot::AwaitingAck { start, bytes } = std::mem::replace(
+                    &mut state.0,
+                    Slot::Aborted {
+                        accepted: 0,
+                        consumed: 0,
+                    },
+                ) {
                     state.0 = Slot::Record {
                         start,
                         bytes,
@@ -526,28 +709,31 @@ impl Service {
             };
             target.copy_from_slice(&bytes);
             self.control_len = self.control_len.saturating_add(bytes.len());
-            if !self.controls(io, conn, stream) || ended {
-                self.refuse(io, conn);
+            if let Err(reason) = self.controls(io, conn, stream) {
+                self.refuse_reason(io, conn, reason);
+                return;
+            }
+            if ended {
+                self.refuse_reason(io, conn, Reason::Closed);
                 return;
             }
         }
         self.flush(io);
     }
 
-    fn controls(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) -> bool {
+    fn controls(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) -> Result<(), Reason> {
         loop {
             let bytes = self.control.get(..self.control_len).unwrap_or_default();
             let (message, end) = match input(bytes) {
                 Ok(Some(value)) => value,
-                Ok(None) => return true,
-                Err(_) => return false,
+                Ok(None) => return Ok(()),
+                Err(_) => return Err(Reason::Protocol),
             };
             match (self.state, message) {
-                (Subscription::Connecting(c), Input::Subscribe(scope, offset))
-                    if c == conn && scope == self.scope =>
-                {
+                (Subscription::Connecting(c), Input::Subscribe(scope, offset)) if c == conn => {
+                    self.check_scope(scope)?;
                     if !self.subscribe(offset) {
-                        return false;
+                        return Err(Reason::Protocol);
                     }
                     self.state = Subscription::Subscribed { conn, stream };
                 }
@@ -555,16 +741,16 @@ impl Service {
                     if c == conn && s == stream =>
                 {
                     if !self.consumed(offset) {
-                        return false;
+                        return Err(Reason::Protocol);
                     }
                 }
-                _ => return false,
+                _ => return Err(Reason::Protocol),
             }
             self.control.copy_within(end..self.control_len, 0);
             self.control_len -= end;
             self.flush(io);
             if self.control_len == 0 {
-                return true;
+                return Ok(());
             }
         }
     }
@@ -644,7 +830,13 @@ impl Service {
                 Ok(n) => *written = written.saturating_add(n).min(total),
             }
         }
-        if let Slot::Record { start, bytes, .. } = std::mem::replace(&mut state.0, Slot::Aborted) {
+        if let Slot::Record { start, bytes, .. } = std::mem::replace(
+            &mut state.0,
+            Slot::Aborted {
+                accepted: 0,
+                consumed: 0,
+            },
+        ) {
             state.0 = Slot::AwaitingAck { start, bytes };
         }
     }
@@ -656,7 +848,11 @@ impl Handler for Service {
         if crate::identity::fingerprint(peer) != self.owner || !matches!(self.state, Subscription::Listening)
         {
             return Err(Close {
-                code: 1,
+                code: if crate::identity::fingerprint(peer) != self.owner {
+                    Reason::Auth as u32
+                } else {
+                    Reason::Scope as u32
+                },
                 why: "managed output owner refused",
             });
         }
@@ -702,14 +898,16 @@ mod tests {
     fn service(slot: Slot) -> Service {
         Service {
             scope: Scope {
-                run: [7; 32],
+                run: RunId([7; 32]),
                 generation: 9,
+                member: 0,
+                channel: Channel::Stdout,
             },
             owner: [3; 32],
             shared: Arc::new(Shared {
                 slot: Mutex::new((slot, Ending::Open)),
                 changed: Condvar::new(),
-                record_bytes: 16,
+                record_bytes: AtomicUsize::new(16),
                 waker: Mutex::new(None),
             }),
             state: Subscription::Listening,
@@ -721,8 +919,10 @@ mod tests {
     #[test]
     fn controls_preserve_scope_and_cursor_across_every_split() {
         let scope = Scope {
-            run: [42; 32],
+            run: RunId([42; 32]),
             generation: u64::MAX,
+            member: u32::MAX,
+            channel: Channel::Stderr,
         };
         let bytes = subscribe(scope, u64::MAX);
         for cut in 0..bytes.len() {
@@ -746,6 +946,38 @@ mod tests {
         let mut short = vec![Tag::Stdin as u8];
         short.extend_from_slice(&0u32.to_be_bytes());
         assert!(input(&short).is_err());
+    }
+
+    #[test]
+    fn refusal_categories_preserve_scope_and_stale_generation() {
+        let service = service(Slot::Waiting(0));
+        let scope = service.scope;
+        assert_eq!(service.check_scope(scope), Ok(()));
+        assert_eq!(
+            service.check_scope(Scope {
+                generation: scope.generation + 1,
+                ..scope
+            }),
+            Err(Reason::Stale)
+        );
+        assert_eq!(
+            service.check_scope(Scope {
+                member: scope.member + 1,
+                ..scope
+            }),
+            Err(Reason::Scope)
+        );
+        assert_eq!(
+            service.check_scope(Scope {
+                channel: Channel::Stderr,
+                ..scope
+            }),
+            Err(Reason::Scope)
+        );
+        assert!(matches!(
+            input(&[Tag::Stdin as u8, 0, 0, 0, 0]),
+            Err(Error::Protocol(ProtocolError::Length))
+        ));
     }
 
     #[test]

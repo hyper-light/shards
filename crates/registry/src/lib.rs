@@ -9,6 +9,7 @@ mod apple;
 pub mod auth;
 pub mod certs;
 mod climb;
+pub use climb::Quantum;
 pub mod credentials;
 mod fetch;
 pub mod http;
