@@ -1,0 +1,33 @@
+{
+  "Deadline": {
+    "path": "crates/testguest/src/managed_network.rs",
+    "identical_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "sha256": "abbbe85b66394ebed88bc8c1edbc2ec18985bccce90d8af3d37cdc15c59e2599"
+  },
+  "forward_real_io": {
+    "path": "crates/testguest/src/managed_network/intercept/udp/forward.rs",
+    "identical_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "sha256": "191bb8ce91090612589a9737ea4d313d6f15c909063b1f68b2d24ef5e407d244"
+  },
+  "notification_reader": {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "identical_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "sha256": "5847081c6fa6f3e028ec962d5bc8fa28c5039084a0b6f4a1b25306006da1d40e"
+  },
+  "worker_cancel_join": {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "identical_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "sha256": "93b640ddf42345617d38c0d12186445a9838bf424114b476cea4c5ed74488879"
+  },
+  "all_prior_host_case_bytes": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_prefix_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "bytes": 32656,
+    "sha256": "815c8d75984b1f261af3af7cd9706fb156613e04529a368c316f68a330140c62"
+  },
+  "scripted_decoder": {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "identical_to": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+    "sha256": "044aec0962f2189fd0d9eaeabfdb80757301578b6be4dbc822d62ac2f9f4e8b9"
+  }
+}

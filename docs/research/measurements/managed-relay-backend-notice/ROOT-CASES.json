@@ -1,0 +1,96 @@
+{
+  "scope": "ROOT execution only; no actual result",
+  "base_revision": "015f047b9ffb95851115af4436865b59e3c1ed9e",
+  "source_sha256": "light/source-sha256.json",
+  "required_common_env": "../managed-relay-fixture-compose/ROOT-CASES.json required_caller_env, no new defaults",
+  "root_preparation": "review/wire existing module, rebuild matching normal host/testguest/carried helpers; freeze source/toolchain/artifact/kernel/config/caller identity with fresh per-case records",
+  "cases": [
+    {
+      "id": "connected-duplicate-complete",
+      "filter": "cancel::direct_guest_udp4_backend_return_notice_keeps_completed_work_and_typed_rejection",
+      "arguments": [
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_BACKEND_NOTICE": "duplicate-complete"
+      },
+      "expected_test_exit": 0,
+      "observer_error": "InvalidInput",
+      "actual_joined_backend": "BackendComplete consumed3 matched3 empty1 replies2",
+      "actual_relay_terminal": "Cancelled/UpstreamReceive/KernelAccepted ingress1 sent1 replies0 by owned teardown",
+      "required_independent_bytes": "actual third Backend ordinal3 Binary5245515545535400ff from owned upstream, original backend tuple; exact Binary+Empty baseline",
+      "cleanup": "owned child reap, actual backend+relay join, all acquired links detached, cgroup removed",
+      "no_successful_cancel_boundary": true
+    },
+    {
+      "id": "connected-missing-complete",
+      "filter": "cancel::direct_guest_udp4_backend_return_notice_keeps_completed_work_and_typed_rejection",
+      "arguments": [
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "connected",
+        "SHARDS_BACKEND_NOTICE": "missing-complete"
+      },
+      "expected_test_exit": 0,
+      "observer_error": "TimedOut",
+      "actual_joined_backend": "BackendComplete consumed3 matched3 empty1 replies2",
+      "actual_relay_terminal": "Io/TimedOut/UpstreamReceive/KernelAccepted ingress1 sent1 replies0 at original expiry",
+      "required_independent_bytes": "actual third Backend ordinal3 Binary5245515545535400ff from owned upstream, original backend tuple; exact Binary+Empty baseline",
+      "cleanup": "owned child reap, actual backend+relay join, all acquired links detached, cgroup removed",
+      "no_successful_cancel_boundary": true
+    },
+    {
+      "id": "unconnected-duplicate-complete",
+      "filter": "cancel::direct_guest_udp4_backend_return_notice_keeps_completed_work_and_typed_rejection",
+      "arguments": [
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_BACKEND_NOTICE": "duplicate-complete"
+      },
+      "expected_test_exit": 0,
+      "observer_error": "InvalidInput",
+      "actual_joined_backend": "BackendComplete consumed3 matched3 empty1 replies2",
+      "actual_relay_terminal": "Cancelled/UpstreamReceive/KernelAccepted ingress1 sent1 replies0 by owned teardown",
+      "required_independent_bytes": "actual third Backend ordinal3 Binary5245515545535400ff from owned upstream, original backend tuple; exact Binary+Empty baseline",
+      "cleanup": "owned child reap, actual backend+relay join, all acquired links detached, cgroup removed",
+      "no_successful_cancel_boundary": true
+    },
+    {
+      "id": "unconnected-missing-complete",
+      "filter": "cancel::direct_guest_udp4_backend_return_notice_keeps_completed_work_and_typed_rejection",
+      "arguments": [
+        "--ignored",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "env": {
+        "SHARDS_SOCK_ADDR_MODE": "unconnected",
+        "SHARDS_BACKEND_NOTICE": "missing-complete"
+      },
+      "expected_test_exit": 0,
+      "observer_error": "TimedOut",
+      "actual_joined_backend": "BackendComplete consumed3 matched3 empty1 replies2",
+      "actual_relay_terminal": "Io/TimedOut/UpstreamReceive/KernelAccepted ingress1 sent1 replies0 at original expiry",
+      "required_independent_bytes": "actual third Backend ordinal3 Binary5245515545535400ff from owned upstream, original backend tuple; exact Binary+Empty baseline",
+      "cleanup": "owned child reap, actual backend+relay join, all acquired links detached, cgroup removed",
+      "no_successful_cancel_boundary": true
+    }
+  ],
+  "controls": "all existing strict/ready-notice/backend-end/extra/scripted/two-leg cases; old predicates unchanged",
+  "mutations": "ROOT-owned meaningful guard removal, exact finally restoration and fresh controls; none executed here",
+  "limits": "work return is not thread exit or UDP EOF; error/expiry not successful cancellation; no atomic external commit/rollback/cost/cleanup guarantee"
+}

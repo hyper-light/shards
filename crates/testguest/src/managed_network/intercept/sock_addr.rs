@@ -59,6 +59,10 @@ enum ControllerKind {
     UnexpectedBackend {
         buffer_bytes: usize,
     },
+    BackendNotification {
+        buffer_bytes: usize,
+        notice: udp::BoundaryNotice,
+    },
     BoundaryNotification {
         buffer_bytes: usize,
         notice: udp::BoundaryNotice,
@@ -83,6 +87,11 @@ enum Cancellation {
         receipt: OwnedFd,
         completed: OwnedFd,
     },
+    BackendNotification {
+        entered: OwnedFd,
+        completed: OwnedFd,
+        notice: udp::BoundaryNotice,
+    },
     Notification {
         ready: OwnedFd,
         release: OwnedFd,
@@ -95,7 +104,8 @@ impl Cancellation {
         match self {
             Self::Receive { entered, .. }
             | Self::BackendComplete { entered, .. }
-            | Self::ExtraDatagram { entered, .. } => entered,
+            | Self::ExtraDatagram { entered, .. }
+            | Self::BackendNotification { entered, .. } => entered,
             Self::BeforeSend { ready, .. } | Self::Notification { ready, .. } => ready,
         }
     }
@@ -105,7 +115,9 @@ impl Cancellation {
             | Self::BeforeSend { receipt, .. }
             | Self::ExtraDatagram { receipt, .. }
             | Self::Notification { receipt, .. } => receipt,
-            Self::BackendComplete { completed, .. } => completed,
+            Self::BackendComplete { completed, .. } | Self::BackendNotification { completed, .. } => {
+                completed
+            }
         }
     }
     fn control(&self) -> io::Result<udp::forward::Control> {
@@ -114,7 +126,7 @@ impl Cancellation {
             Self::BackendComplete { entered, .. } => {
                 Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?))
             }
-            Self::ExtraDatagram { entered, .. } => {
+            Self::ExtraDatagram { entered, .. } | Self::BackendNotification { entered, .. } => {
                 Ok(udp::forward::Control::ReceiveEntry(entered.try_clone()?))
             }
             Self::BeforeSend { ready, release, .. } => Ok(udp::forward::Control::BeforeUpstreamSend {
@@ -304,6 +316,21 @@ impl Inputs {
                 mode: mode(how)?,
                 within: within(millis)?,
             }),
+            ["sock-addr-backend-notice4", how, millis, budget, notice] => Ok(Role::Controller {
+                kind: ControllerKind::BackendNotification {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                    notice: match *notice {
+                        "duplicate-complete" => udp::BoundaryNotice::Duplicate,
+                        "missing-complete" => udp::BoundaryNotice::Missing,
+                        _ => return Err(invalid("expected duplicate-complete or missing-complete")),
+                    },
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
             ["sock-addr-boundary4", how, millis, budget, notice] => Ok(Role::Controller {
                 kind: ControllerKind::BoundaryNotification {
                     buffer_bytes: budget
@@ -370,6 +397,7 @@ enum Stage {
     JoinWorkers,
     RemoveCgroup,
     AwaitCancellationBoundary,
+    AwaitBackendReturnBoundary,
     CancelRelay,
 }
 fn error(stage: Stage, error: &io::Error) {
@@ -918,7 +946,8 @@ fn controller(
         | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes }
         | ControllerKind::CompleteBackend { buffer_bytes }
         | ControllerKind::UnexpectedBackend { buffer_bytes }
-        | ControllerKind::BoundaryNotification { buffer_bytes, .. } => {
+        | ControllerKind::BoundaryNotification { buffer_bytes, .. }
+        | ControllerKind::BackendNotification { buffer_bytes, .. } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -955,6 +984,7 @@ fn controller(
         ControllerKind::CompleteBackend { .. } => "CompleteBackend",
         ControllerKind::UnexpectedBackend { .. } => "UnexpectedBackend",
         ControllerKind::BoundaryNotification { .. } => "BoundaryNotification",
+        ControllerKind::BackendNotification { .. } => "BackendNotification",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -975,7 +1005,8 @@ fn controller(
         | ControllerKind::CancelBeforeUpstreamSend { .. }
         | ControllerKind::CompleteBackend { .. }
         | ControllerKind::UnexpectedBackend { .. }
-        | ControllerKind::BoundaryNotification { .. } => ClientRole::ForwardedBackend,
+        | ControllerKind::BoundaryNotification { .. }
+        | ControllerKind::BackendNotification { .. } => ClientRole::ForwardedBackend,
     };
     let cancellation = match kind {
         ControllerKind::CancelUpstreamReceive { .. } => Some(Cancellation::Receive {
@@ -995,6 +1026,11 @@ fn controller(
             entered: udp::notification()?,
             receipt: udp::notification()?,
             completed: udp::notification()?,
+        }),
+        ControllerKind::BackendNotification { notice, .. } => Some(Cancellation::BackendNotification {
+            entered: udp::notification()?,
+            completed: udp::notification()?,
+            notice,
         }),
         ControllerKind::BoundaryNotification { notice, .. } => Some(Cancellation::Notification {
             ready: udp::notification()?,
@@ -1074,6 +1110,16 @@ fn controller(
             sender: backend,
             destination: destination.into(),
             completed: completed.try_clone()?,
+            notice: udp::BoundaryNotice::Once,
+        },
+        Some(Cancellation::BackendNotification {
+            completed, notice, ..
+        }) => Work::CompleteAfterReceipt {
+            receiver: backend.try_clone()?,
+            sender: backend,
+            destination: destination.into(),
+            completed: completed.try_clone()?,
+            notice: *notice,
         },
         Some(cancellation) => Work::HeldReply {
             receiver: backend.try_clone()?,
@@ -1140,6 +1186,37 @@ fn controller(
             // each case requires its owned phase entry before the cancel request.
             // Neither notification claims an observed kernel sleep.
             let boundary = (|| {
+                if let Cancellation::BackendNotification {
+                    entered,
+                    completed,
+                    notice,
+                } = cancellation
+                {
+                    // Receive entry precedes owned teardown; an omitted completion
+                    // notification still waits only until the original deadline.
+                    at(
+                        Stage::AwaitCancellationBoundary,
+                        udp::notified(entered, &deadline),
+                    )?;
+                    let observed = at(
+                        Stage::AwaitBackendReturnBoundary,
+                        udp::notified(completed, &deadline),
+                    );
+                    notification_observation = BoundaryObservation::observe(&observed);
+                    match &observed {
+                        Ok(()) => record(format_args!(
+                            "{{\"type\":\"BackendReturnObservation\",\"notice\":\"{notice:?}\",\"state\":\"Accepted\",\"kind\":null,\"cancel_request\":\"NotIssued\"}}"
+                        )),
+                        Err(error) => record(format_args!(
+                            "{{\"type\":\"BackendReturnObservation\",\"notice\":\"{notice:?}\",\"state\":\"Rejected\",\"kind\":\"{:?}\",\"cancel_request\":\"NotIssued\"}}",
+                            error.kind()
+                        )),
+                    }?;
+                    observed?;
+                    return Err(invalid(
+                        "faulty backend return notification was unexpectedly accepted",
+                    ));
+                }
                 if matches!(
                     cancellation,
                     Cancellation::Receive { .. }
@@ -1197,7 +1274,7 @@ fn controller(
                     Cancellation::ExtraDatagram { .. } => {
                         ("UpstreamReceive", "ConsumedUnexpectedBackendDatagram")
                     }
-                    Cancellation::Notification { .. } => {
+                    Cancellation::BackendNotification { .. } | Cancellation::Notification { .. } => {
                         return Err(invalid(
                             "notification case cannot request successful cancellation",
                         ));
@@ -1223,7 +1300,8 @@ fn controller(
                 Cancellation::Receive { .. }
                 | Cancellation::BackendComplete { .. }
                 | Cancellation::ExtraDatagram { .. }
-                | Cancellation::Notification { .. } => Ok(()),
+                | Cancellation::Notification { .. }
+                | Cancellation::BackendNotification { .. } => Ok(()),
             };
             // Even a failed boundary/cancel report ends and reaps this owned child
             // before the existing worker/link/cgroup cleanup path proceeds.
@@ -1349,6 +1427,54 @@ fn controller(
                 .ok_or_else(|| invalid("negative notice required"))?
         ));
     }
+    if let ControllerKind::BackendNotification { notice, .. } = kind {
+        pending?;
+        reports?;
+        backend_witness?;
+        if !notification_observation.matches(notice)
+            || !matches!(&result, Err(error) if Some(error.kind()) == notice.rejection())
+        {
+            return Err(invalid("backend notification rejection differs"));
+        }
+        let backend = backend?.scripted()?;
+        let expected = Exchange::SCRIPT
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| invalid("backend receipt count overflow"))?;
+        if !backend.backend_completed()
+            || backend.report.arrivals != expected
+            || backend.report.matched != expected
+            || backend.report.empty != 1
+            || backend.report.replies_sent != Exchange::SCRIPT.len()
+        {
+            return Err(invalid(
+                "backend notification lost completed work or consumed facts",
+            ));
+        }
+        let udp::Completion::Forwarded(done) =
+            relay.ok_or_else(|| invalid("backend notice relay not started"))??
+        else {
+            return Err(invalid("backend notice expected forwarded completion"));
+        };
+        let terminal = match notice {
+            udp::BoundaryNotice::Duplicate if done.cancelled_upstream_receive() => "CancelledByOwnedTeardown",
+            udp::BoundaryNotice::Missing if done.expired_upstream_receive() => "OriginalDeadlineExpired",
+            _ => return Err(invalid("backend notice relay terminal or retained counts differ")),
+        };
+        if let Some(error) = detach_report_failure {
+            return Err(error);
+        }
+        if let Some(failure) = detach_failure {
+            return Err(failure.cause);
+        }
+        removed?;
+        return record(format_args!(
+            "{{\"type\":\"BackendNoticeOutcome\",\"notice\":\"{notice:?}\",\"observed\":\"Rejected\",\"kind\":\"{:?}\",\"backend\":\"BackendComplete\",\"relay\":\"{terminal}\",\"deadline\":\"Original\"}}",
+            notice
+                .rejection()
+                .ok_or_else(|| invalid("negative notice required"))?
+        ));
+    }
     result?;
     pending?;
     reports?;
@@ -1360,7 +1486,8 @@ fn controller(
             match cancellation {
                 Cancellation::Receive { .. }
                 | Cancellation::BackendComplete { .. }
-                | Cancellation::ExtraDatagram { .. } => Exchange::SCRIPT
+                | Cancellation::ExtraDatagram { .. }
+                | Cancellation::BackendNotification { .. } => Exchange::SCRIPT
                     .len()
                     .checked_add(1)
                     .ok_or_else(|| invalid("held backend count overflow"))?,
@@ -1625,6 +1752,36 @@ mod tests {
             FixtureInjection::ForwardOnly.send(&deadline).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+    #[test]
+    fn backend_notice_cases_select_only_explicit_completed_work_negatives() {
+        for mode in ["connected", "unconnected"] {
+            for (word, notice) in [
+                ("duplicate-complete", udp::BoundaryNotice::Duplicate),
+                ("missing-complete", udp::BoundaryNotice::Missing),
+            ] {
+                let parsed = Inputs::parse(&["sock-addr-backend-notice4", mode, "1000", "18", word]).unwrap();
+                assert!(
+                    matches!(parsed.0, Role::Controller { kind: ControllerKind::BackendNotification { buffer_bytes:18, notice:actual }, presentation: Presentation::FixedOriginalPeer, .. } if actual==notice)
+                );
+            }
+        }
+        for words in [
+            vec!["sock-addr-backend-notice4", "connected", "1000", "18"],
+            vec!["sock-addr-backend-notice4", "connected", "1000", "18", "once"],
+            vec![
+                "sock-addr-backend-notice4",
+                "connected",
+                "1000",
+                "bad",
+                "missing-complete",
+            ],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
     }
     #[test]
     fn notification_cases_are_explicit_and_cannot_accept_success_or_other_errors() {

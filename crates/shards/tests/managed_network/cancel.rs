@@ -747,3 +747,293 @@ fn cancellation_case(case: CancellationCase) {
     )));
     assert_eq!(run.status, Some(0), "{run}");
 }
+
+fn expired_receive(record: &Value, error: &Value) -> bool {
+    record["type"] == "ForwardCompletion"
+        && record["joined"] == true
+        && record["terminal"] == "Error"
+        && record["step"] == "Binary"
+        && record["stage"] == "UpstreamReceive"
+        && record["upstream_progress"] == "KernelAccepted"
+        && record["ingress_received"] == 1
+        && record["upstream_sent"] == 1
+        && ["upstream_received", "client_sent", "empty_ingress", "empty_reply"]
+            .iter()
+            .all(|key| record[*key] == 0)
+        && error["type"] == "ForwardError"
+        && error["stage"] == "UpstreamReceive"
+        && error["progress"] == "KernelAccepted"
+        && error["cause"] == "Io"
+        && error["kind"] == "TimedOut"
+}
+#[test]
+fn backend_notice_expiry_record_retains_actual_send_and_rejects_cleanup_cancel() {
+    let mut record = json!({"type":"ForwardCompletion","joined":true,"terminal":"Error","step":"Binary","stage":"UpstreamReceive","upstream_progress":"KernelAccepted","ingress_received":1,"upstream_sent":1,"upstream_received":0,"client_sent":0,"empty_ingress":0,"empty_reply":0});
+    let mut error = json!({"type":"ForwardError","stage":"UpstreamReceive","progress":"KernelAccepted","cause":"Io","kind":"TimedOut"});
+    assert!(expired_receive(&record, &error));
+    assert!(!cancelled_receive(&record));
+    record["terminal"] = json!("Cancelled");
+    assert!(!expired_receive(&record, &error));
+    record["terminal"] = json!("Error");
+    error["kind"] = json!("ConnectionAborted");
+    assert!(!expired_receive(&record, &error));
+    error["kind"] = json!("TimedOut");
+    record["upstream_sent"] = json!(2);
+    assert!(!expired_receive(&record, &error));
+    assert_eq!(record["upstream_sent"], 2);
+}
+#[test]
+#[ignore = "coordinator alone executes actual duplicate/missing backend work-return notification and cleanup"]
+fn direct_guest_udp4_backend_return_notice_keeps_completed_work_and_typed_rejection() {
+    let input = Inputs::supplied();
+    let mode = required("SHARDS_SOCK_ADDR_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let case = required("SHARDS_BACKEND_NOTICE");
+    let (notice, kind, word, write) = match case.as_str() {
+        "duplicate-complete" => ("Duplicate", "InvalidInput", json!(2), "Completed"),
+        "missing-complete" => ("Missing", "TimedOut", Value::Null, "Omitted"),
+        _ => panic!("supply duplicate-complete or missing-complete"),
+    };
+    let budget = positive("SHARDS_SOCK_ADDR_BUFFER_BYTES");
+    let run = input.boot(
+        &format!("sock-addr-backend-notice4-{mode}-{case}"),
+        &[
+            "sock-addr-backend-notice4",
+            &mode,
+            &input.case_ms.to_string(),
+            &budget.to_string(),
+            &case,
+        ],
+    );
+    let records = sock_addr_records(&run.stdout);
+    let select = |kind: &str| -> Vec<&Value> { records.iter().filter(|r| r["type"] == kind).collect() };
+    let one = |kind: &str| {
+        let found = select(kind);
+        assert_eq!(found.len(), 1, "{kind}: {run}");
+        found[0]
+    };
+    let target = one("Target");
+    let flow = one("ForwardTarget");
+    assert_eq!(target["operation"], "BackendNotification");
+    assert_eq!(target["profile"], "FixedOriginalPeer");
+    assert_eq!(flow["backend"], target["backend"]);
+    assert_eq!(flow["ingress"], target["responder"]);
+    assert_eq!(flow["upstream_peer"], target["backend"]);
+    let slots = one("PayloadSlots");
+    assert_eq!(slots["provided"], budget);
+    assert!(
+        slots["request_capacity"]
+            .as_u64()
+            .unwrap()
+            .checked_add(slots["reply_capacity"].as_u64().unwrap())
+            .unwrap()
+            <= budget
+    );
+    assert_eq!(slots["charge_scope"], "PayloadCapacityOnly");
+    assert_eq!(slots["allocator_kernel_console"], "Unaccounted");
+    let identities = select("ClientIdentity");
+    assert_eq!(identities.len(), 2);
+    let identity = |role: &str| {
+        let found: Vec<_> = identities.iter().copied().filter(|r| r["role"] == role).collect();
+        assert_eq!(found.len(), 1);
+        found[0]
+    };
+    let baseline = identity("BaselineBackend");
+    let client = identity("ForwardedBackend");
+    assert_ne!(baseline["pid"], client["pid"]);
+    for identity in [baseline, client] {
+        assert_eq!(identity["namespace"], target["namespace"]);
+        assert_eq!(identity["requested"], target["backend"]);
+        let raw = identity["cgroup_hex"].as_str().unwrap();
+        let bytes: Vec<_> = raw
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert!(String::from_utf8(bytes).unwrap().contains("/sock-addr-client\n"));
+        if mode == "connected" {
+            assert_eq!(identity["peer"], target["backend"]);
+        } else {
+            assert!(identity["peer"].is_null());
+            assert_eq!(identity["peer_error"], "NotConnected");
+        }
+    }
+    assert_ne!(
+        flow["upstream"], client["local"],
+        "backend source must be the independent owned upstream"
+    );
+    let arrivals = |role: &str| -> Vec<&Value> {
+        records
+            .iter()
+            .filter(|r| r["type"] == "UdpArrival" && r["role"] == role)
+            .collect()
+    };
+    let check = |r: &Value, step: &str, hex: &str, peer: &Value, original: &Value| {
+        assert_eq!(r["step"], step);
+        assert_eq!(r["copied_hex"], hex);
+        assert_eq!(r["reported"], hex.len() / 2);
+        assert_eq!(r["flags"].as_i64().unwrap() & 0x28, 0);
+        assert_eq!(r["metadata"], "Known");
+        assert_eq!(&r["peer"], peer);
+        assert_eq!(&r["original"], original);
+    };
+    let backend = arrivals("Backend");
+    assert_eq!(backend.len(), 3, "actual completed backend receipts: {run}");
+    check(
+        backend[0],
+        "Binary",
+        "5245515545535400ff",
+        &baseline["local"],
+        &target["backend"],
+    );
+    check(backend[1], "Empty", "", &baseline["local"], &target["backend"]);
+    check(
+        backend[2],
+        "Binary",
+        "5245515545535400ff",
+        &flow["upstream"],
+        &target["backend"],
+    );
+    for (index, r) in backend.iter().enumerate() {
+        assert_eq!(r["ordinal"], index + 1);
+    }
+    let replies = arrivals("SockAddrBaselineClient");
+    assert_eq!(replies.len(), 2);
+    check(
+        replies[0],
+        "Binary",
+        "4241434b454e4400ff",
+        &target["backend"],
+        &baseline["local"],
+    );
+    check(replies[1], "Empty", "", &target["backend"], &baseline["local"]);
+    let ingress = arrivals("ForwardIngress");
+    assert_eq!(ingress.len(), 1);
+    check(
+        ingress[0],
+        "Binary",
+        "5245515545535400ff",
+        &client["local"],
+        &flow["ingress"],
+    );
+    let returned = one("BackendWorkReturned");
+    assert_eq!(returned["terminal"], "BackendComplete");
+    assert!(returned["cause"].is_null());
+    assert_eq!(returned["receipt"], "ValidatedBackendDatagram");
+    assert_eq!(returned["reply"], "NotIssued");
+    assert_eq!(returned["thread_termination"], "UnobservedUntilJoin");
+    assert!(backend_work_returned(one("UdpWorkerCompletion")), "{run}");
+    let entered = one("ReceiveStageEntered");
+    assert_eq!(entered["stage"], "UpstreamReceive");
+    assert_eq!(entered["step"], "Binary");
+    assert_eq!(entered["upstream_progress"], "KernelAccepted");
+    assert_eq!(entered["kernel_sleep"], "Unobserved");
+    let issued = one("BoundaryNoticeIssued");
+    assert_eq!(issued["notice"], notice);
+    assert_eq!(issued["word"], word);
+    assert_eq!(issued["write"], write);
+    let observed = one("BackendReturnObservation");
+    assert_eq!(observed["notice"], notice);
+    assert_eq!(observed["state"], "Rejected");
+    assert_eq!(observed["kind"], kind);
+    assert_eq!(observed["cancel_request"], "NotIssued");
+    let outcome = one("BackendNoticeOutcome");
+    assert_eq!(outcome["notice"], notice);
+    assert_eq!(outcome["observed"], "Rejected");
+    assert_eq!(outcome["kind"], kind);
+    assert_eq!(outcome["backend"], "BackendComplete");
+    assert_eq!(outcome["deadline"], "Original");
+    match case.as_str() {
+        "duplicate-complete" => {
+            assert!(cancelled_receive(one("ForwardCompletion")), "{run}");
+            assert!(select("ForwardError").is_empty());
+            assert_eq!(outcome["relay"], "CancelledByOwnedTeardown");
+        }
+        "missing-complete" => {
+            assert!(
+                expired_receive(one("ForwardCompletion"), one("ForwardError")),
+                "{run}"
+            );
+            assert_eq!(outcome["relay"], "OriginalDeadlineExpired");
+        }
+        _ => unreachable!(),
+    }
+    let position = |r: &Value| records.iter().position(|value| std::ptr::eq(value, r)).unwrap();
+    assert!(position(backend[2]) < position(returned));
+    assert!(position(returned) < position(observed));
+    assert!(position(entered) < position(observed));
+    // The aggregate write can wake the controller before its sender logs it.
+    // No cross-thread sender/observer log order is assumed.
+    let errors = select("Error");
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|r| r["stage"] == "AwaitBackendReturnBoundary" && r["kind"] == kind)
+            .count(),
+        1
+    );
+    assert!(errors.iter().all(
+        |r| (r["stage"] == "AwaitBackendReturnBoundary" && r["kind"] == kind)
+            || (matches!(r["stage"].as_str(), Some("WaitChild" | "Receive")) && r["kind"] == "TimedOut")
+    ));
+    let reaped = select("ChildReaped");
+    assert_eq!(reaped.len(), 2);
+    assert_eq!(reaped[0]["role"], "Backend");
+    assert_eq!(reaped[0]["code"], 0);
+    assert_eq!(reaped[0]["success"], true);
+    assert_eq!(reaped[1]["role"], "ForwardedBackend");
+    assert_eq!(reaped[1]["success"], false);
+    assert!(
+        (reaped[1]["signal"] == 9 && reaped[1]["code"].is_null())
+            || (reaped[1]["code"] == 1 && reaped[1]["signal"].is_null())
+    );
+    assert!(reaped.iter().all(|r| r["reaped"] == true));
+    let children = select("ClientCompletion");
+    assert!(
+        children
+            .iter()
+            .any(|r| r["role"] == "BaselineBackend" && r["success"] == true && r["exchanges"] == 2)
+    );
+    if reaped[1]["code"] == 1 {
+        assert!(children.iter().any(|r| r["role"] == "ForwardedBackend"
+            && r["success"] == false
+            && r["stage"] == "Receive"
+            && r["exchanges"] == 0));
+        assert!(
+            errors
+                .iter()
+                .any(|r| r["stage"] == "Receive" && r["kind"] == "TimedOut")
+        );
+    }
+    assert_eq!(one("ChildCancellation")["role"], "ForwardedBackend");
+    assert_eq!(one("ChildCancellation")["requested"], true);
+    for absent in [
+        "CancelBoundary",
+        "PreSendRelease",
+        "BackendReturnBoundary",
+        "BackendExtraBoundary",
+        "HeldReply",
+        "ForwardExchange",
+        "UdpError",
+        "HookError",
+        "PayloadRefusal",
+    ] {
+        assert!(select(absent).is_empty(), "{absent}: {run}");
+    }
+    for absent in [
+        "BackendUnexpected",
+        "ForwardUpstreamReply",
+        "SockAddrForwardedClient",
+    ] {
+        assert!(arrivals(absent).is_empty());
+    }
+    assert_sock_addr_hooks_and_cleanup(
+        &records,
+        target,
+        SockAddrPresentation::FixedOriginalPeer.hooks(&mode),
+        &run,
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}

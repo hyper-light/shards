@@ -1,0 +1,51 @@
+{
+  "classification": "Captured raw logs preserved byte-identically; no source/global whitespace relaxation",
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/guest/1.log",
+      "sha256": "017cf3659f573572eaae8a909826327c62aa86a901b19a0173b7468834dda3f9"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/guest/2.log",
+      "sha256": "559f345980772d227667d0c17a70c4523e951c2d988833144852610bc2d97e91"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/0.log",
+      "sha256": "3a545728c64945dfd5aba03ec83a668e54abddef6b6faf2baa524037fc753332"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/1.log",
+      "sha256": "4c62e75e3342ad72767ac471d13defde9b936b7b1db6ebf313af86c5f35194fc"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/2.log",
+      "sha256": "d92867a791cf4a7c64314b9d71c19d51611d10791d8a931b2e328654271d449a"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/3.log",
+      "sha256": "71c46cf0d8189a0035c1c1d160a65ed3f4a59cf8a1aa60894b269659a3fc34fb"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/4.log",
+      "sha256": "e0608eb65e1574511d90cef09f90a80faf7648663daa7406d6260ff5bc1e9976"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/5.log",
+      "sha256": "d898930a91ce659e0b646caace31fc26b0ff5b4a32a3da5ae0675b2f1e404a8c"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/7.log",
+      "sha256": "d5b5d01641aa296918a3293e77063f9f29260fbfdbd61c6a2fa0bd4c12b9026b"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/8.log",
+      "sha256": "c9475068895a4a193e06d7dc8ffc21927bf8b1acca0639ff7723c7274619aa7b"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-backend-notice/light/host/9.log",
+      "sha256": "7a3a9235c55bbba936fd3f00f9b75384eb729c7b5f07c807dc304c4be6b86887"
+    }
+  ],
+  "raw_check_exit": 2,
+  "raw_check_output": "docs/research/measurements/managed-relay-backend-notice/light/guest/1.log:58: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/guest/2.log:56: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/0.log:16: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/1.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/2.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/3.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/4.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/5.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/7.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/8.log:8: new blank line at EOF.\ndocs/research/measurements/managed-relay-backend-notice/light/host/9.log:8: new blank line at EOF.\n"
+}

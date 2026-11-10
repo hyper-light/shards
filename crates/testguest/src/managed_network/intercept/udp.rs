@@ -262,6 +262,7 @@ pub(super) enum Work {
         sender: UdpSocket,
         destination: SocketAddr,
         completed: OwnedFd,
+        notice: BoundaryNotice,
     },
     ObserveExtra {
         receiver: UdpSocket,
@@ -411,6 +412,7 @@ impl DatagramWorker {
                 sender,
                 destination,
                 completed,
+                notice,
             } => {
                 // scripted owns and drops both native sockets before this return
                 // notification. The thread's termination is observed only by join.
@@ -424,7 +426,7 @@ impl DatagramWorker {
                     ReplyPlan::CompleteAfterBaseline,
                 );
                 if done.backend_completed() {
-                    notify_work_return(&mut done, &completed, &deadline);
+                    notify_work_return(&mut done, &completed, notice, &deadline);
                 }
                 Completion::Scripted(done)
             }
@@ -445,7 +447,7 @@ impl DatagramWorker {
                     ReplyPlan::Baseline(receipt),
                 );
                 if done.unexpected_extra() {
-                    notify_work_return(&mut done, &completed, &deadline);
+                    notify_work_return(&mut done, &completed, BoundaryNotice::Once, &deadline);
                 }
                 Completion::Scripted(done)
             }
@@ -487,7 +489,12 @@ impl Drop for DatagramWorker {
         }
     }
 }
-fn notify_work_return(done: &mut ScriptedCompletion, completed: &OwnedFd, deadline: &Deadline) {
+fn notify_work_return(
+    done: &mut ScriptedCompletion,
+    completed: &OwnedFd,
+    notice: BoundaryNotice,
+    deadline: &Deadline,
+) {
     let notified = (|| {
         let (terminal, cause, receipt) = match &done.result {
             Ok(Terminal::BackendComplete) => ("BackendComplete", "null", "ValidatedBackendDatagram"),
@@ -503,7 +510,7 @@ fn notify_work_return(done: &mut ScriptedCompletion, completed: &OwnedFd, deadli
         )?;
         out.flush()?;
         drop(out);
-        notify(completed, deadline)
+        notify_boundary(completed, notice, deadline)
     })();
     if let Err(error) = notified {
         done.stage = Stage::NotifyWorkReturn;

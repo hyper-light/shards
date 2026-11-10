@@ -1,0 +1,43 @@
+{
+  "id": "f7",
+  "claim": "An eventfd created without EFD_SEMAPHORE returns and consumes its current aggregate counter; one successful write of two can supply a deterministic duplicate-notification input independently of two-write scheduling. This is the fixture's API/source basis, not an actual new backend-return runtime result.",
+  "cites": [
+    {
+      "source": "eventfd",
+      "quote": "*cnt = ((ctx->flags & EFD_SEMAPHORE) && ctx->count) ? 1 : ctx->count;",
+      "at": "eventfd_ctx_do_read",
+      "check": {
+        "state": "found",
+        "at": 1794323980543
+      }
+    },
+    {
+      "source": "eventfddocs",
+      "quote": "reset to zero.",
+      "at": "DESCRIPTION/read",
+      "check": {
+        "state": "found",
+        "at": 1794323980543
+      }
+    }
+  ],
+  "against": [],
+  "inferred": true,
+  "note": "Existing exact-one notified() rejects value2 as InvalidInput. Proposed controlled backend notice preserves actual consumed/sent facts/work return/join separately; Missing/cleanup/cost remain ROOT actual unrun. No production defect/fix claimed.",
+  "at": 1794323979348,
+  "confidence": {
+    "score": 76,
+    "grade": "B",
+    "words": "good",
+    "support": 0.7610000000000001,
+    "against": 0,
+    "reliability": 0.9,
+    "citation": 1,
+    "independent": 2,
+    "cites": 2,
+    "found": 2,
+    "failed": 0,
+    "why": "2 independent sources (code, official docs); 2 of 2 quotes found where cited; some out of date; inferred from them"
+  },
+  "against_weights": []
+}

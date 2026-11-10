@@ -1,0 +1,8 @@
+{
+  "crates/testguest/src/managed_network.rs": "853dca55a37ec3a17cd75c7ef176de3a3cfa3dd60be0d575b9b12170a51ed94f",
+  "crates/testguest/src/managed_network/intercept/sock_addr.rs": "c2943ef9758467679f19f6e051d2421f71a1443d22e34ec94015d4b19903dfc3",
+  "crates/testguest/src/managed_network/intercept/udp.rs": "e4a1fac1102b4cb3c26a32e0c790fa3fc28f235fad722a40ac421ad31830e03d",
+  "crates/testguest/src/managed_network/intercept/udp/forward.rs": "3980a2db6b7546152f899b92f118af96752ddf493bfe929fdf2e50814a056c70",
+  "crates/shards/tests/managed_network/cancel.rs": "be3ae18dfd19b0c502f07ecb69158482bd871b05560c7c71c813e269a2283355",
+  "docs/research/measurements/managed-relay-backend-notice/light.py": "62e85135c3de5bd5944cb042149b48ca9e124d2c8068ee4e279fc138895ca0d3"
+}

@@ -153,6 +153,18 @@ pub(in super::super) struct Completion {
     pub(in super::super) result: Result<Terminal, Fault>,
 }
 impl Completion {
+    pub(in super::super) fn expired_upstream_receive(&self) -> bool {
+        matches!(&self.result, Err(Fault::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+            && matches!(self.step, Exchange::Binary)
+            && matches!(self.stage, Stage::UpstreamReceive)
+            && matches!(self.progress, UpstreamProgress::KernelAccepted)
+            && self.report.ingress == 1
+            && self.report.upstream_sent == 1
+            && self.report.upstream_received == 0
+            && self.report.client_sent == 0
+            && self.report.empty_ingress == 0
+            && self.report.empty_reply == 0
+    }
     pub(in super::super) fn expired_before_upstream_send(&self) -> bool {
         matches!(&self.result, Err(Fault::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
             && matches!(self.step, Exchange::Binary)
@@ -460,6 +472,33 @@ mod tests {
         done.report.upstream_sent = 1;
         assert!(!done.expired_before_upstream_send());
         assert_eq!((done.report.ingress, done.report.upstream_sent), (1, 1));
+    }
+    #[test]
+    fn backend_notice_expiry_retains_sent_fact_without_becoming_cancelled() {
+        let mut done = Completion {
+            report: Report {
+                ingress: 1,
+                upstream_sent: 1,
+                ..Report::default()
+            },
+            step: Exchange::Binary,
+            stage: Stage::UpstreamReceive,
+            progress: UpstreamProgress::KernelAccepted,
+            result: Err(Fault::Io(io::ErrorKind::TimedOut.into())),
+        };
+        assert!(done.expired_upstream_receive());
+        assert!(!done.cancelled_upstream_receive());
+        done.result = Ok(Terminal::Cancelled);
+        assert!(!done.expired_upstream_receive());
+        done.result = Err(Fault::Io(io::ErrorKind::InvalidInput.into()));
+        assert!(!done.expired_upstream_receive());
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        done.stage = Stage::UpstreamSend;
+        assert!(!done.expired_upstream_receive());
+        done.stage = Stage::UpstreamReceive;
+        done.report.upstream_sent = 2;
+        assert!(!done.expired_upstream_receive());
+        assert_eq!((done.report.ingress, done.report.upstream_sent), (1, 2));
     }
     #[test]
     fn cancellation_witness_keeps_send_facts_and_rejects_expiry_or_wrong_stage() {
