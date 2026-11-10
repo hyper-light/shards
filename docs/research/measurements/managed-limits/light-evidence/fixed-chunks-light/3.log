@@ -1,0 +1,117 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-limits-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-limits-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/testguest)
+    Checking rcgen v0.14.10
+    Checking shards-build v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/build)
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/shards)
+    Checking shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/remote)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/sigstore)
+    Checking shards-git v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/git)
+    Checking shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/vmm)
+    Checking shards-rego v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/rego)
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/api)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/testdir)
+    Checking shards-flate v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/flate)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/ext4)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/zstd)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/gateway)
+    Checking shards-bus v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/bus)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/user)
+    Checking shards-tui v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad/crates/tui)
+error: function `publish` is never used
+  --> crates/shards/tests/managed_limits.rs:18:4
+   |
+18 | fn publish(directory: &Path, name: &str, bytes: &[u8]) {
+   |    ^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: used `expect()` on an `Option` value
+  --> crates/shards/tests/managed_limits.rs:88:17
+   |
+88 |       let actor = actors
+   |  _________________^
+89 | |         .iter()
+90 | |         .find(|actor| rows.iter().any(|p| p.pid == actor.parent && p.uid == 0))
+91 | |         .expect("no actor below a root-owned reaper");
+   | |_____________________________________________________^
+   |
+   = note: if this value is `None`, it will panic
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+   = note: requested on the command line with `-D clippy::expect-used`
+
+error: use of `eprintln!`
+   --> crates/shards/tests/managed_limits.rs:133:9
+    |
+133 |         eprintln!("{phase} trusted process snapshot:\n{result}");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#print_stderr
+    = note: requested on the command line with `-D clippy::print-stderr`
+
+error: use of `eprintln!`
+   --> crates/shards/tests/managed_limits.rs:144:9
+    |
+144 |         eprintln!("private daemon teardown: {result}");
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#print_stderr
+
+error: use of `eprintln!`
+   --> crates/shards/tests/managed_limits.rs:146:13
+    |
+146 | /             eprintln!(
+147 | |                 "private daemon log:\n{}",
+148 | |                 std::fs::read_to_string(Path::new(home).join("daemon.log")).unwrap_or_default()
+149 | |             );
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#print_stderr
+
+error: use of `eprintln!`
+   --> crates/shards/tests/managed_limits.rs:156:5
+    |
+156 |     eprintln!("{name} actor observation: {report:?}");
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#print_stderr
+
+error: used `expect()` on an `Option` value
+   --> crates/shards/tests/managed_limits.rs:175:26
+    |
+175 |       let host_port: u16 = ports
+    |  __________________________^
+176 | |         .stdout
+177 | |         .lines()
+178 | |         .find(|line| line.starts_with(&format!("{port}/tcp")))
+...   |
+181 | |         .and_then(|port| port.parse().ok())
+182 | |         .expect("no published fixture control port");
+    | |____________________________________________________^
+    |
+    = note: if this value is `None`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#expect_used
+
+error: use of `eprintln!`
+   --> crates/shards/tests/managed_limits.rs:231:5
+    |
+231 |     eprintln!("fresh HARNESS and main nonce answered after {phase}: {hex}");
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#print_stderr
+
+error: could not compile `shards` (test "managed_limits") due to 8 previous errors

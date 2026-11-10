@@ -1,0 +1,1 @@
+cargo clippy --locked -j4 --profile test-release -p shards --test managed_limits -- -D warnings

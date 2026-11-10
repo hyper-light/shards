@@ -1,0 +1,1 @@
+cargo test --locked -j4 --profile test-release -p shards-testguest --lib limits:: -- --nocapture

@@ -138,8 +138,65 @@ state. Profiling/allocation/copy/kernel and unfairness costs remain unmeasured.
 
 ## Light checks and exact coordinator invocation
 
-Light results and exact source identities are recorded below after execution.
-No real VM, task exhaustion, chaos, sweep, benchmark or profiling run is delegated.
+Final checked source is `6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a`.
+Fedora44 amd64 / kernel6.19.10-300.fc44 / Rust1.98.1(48a229cea), LLVM22.1.8;
+identity was captured in the private repository cwd before each proof. Actual
+Linux-GNU guest workload and host fixture strict clippy passed. These are compile
+and pure units, not a carried-musl executable or live VM result.
+
+| Kiln run / retained directory | Source | Observed light result |
+| --- | --- | --- |
+| r47 / `e98b2e24-light` | e98b2e24 | record2/0, host tree1/0; both clippy101 on two fixed-chunk codec lints. |
+| r49 / `fixed-chunks-light` | 2ec73275 | record2/0, host tree1/0, guest clippy0; host clippy101 on unused old file control, expect and stderr diagnostics. |
+| r50 / `agentfile-light` | eb198544 | record2/0, host2/0, guest+host clippy0. This parser/check test did not yet assert effective network boundary. |
+| r51 / `owned-birth-light` | 3fec1300 | record2/0, host2/0, guest+host clippy0 after exact birth cleanup follow-up. Same incomplete network-boundary assertion. |
+| r53 / `boundary-red` | a4a743ef | record2/0; host1pass/1fail (exit101), actual boundary[]; guest+host clippy0, wrapper1. |
+| r54 / `boundary-green` | 6d00dd0c | record2/0, host2/0 including effective boundaries; guest+host strict clippy0, wrapper0. |
+
+All84 raw identity, source-hash, command, log and exit files remain verbatim in
+[light-evidence](light-evidence/), with SHA256SUMS. The first14 files predate the
+durable driver and carry equivalent plain command/identity text; subsequent runs
+use `run-light.py`. Archive transfers were SHA256-verified. Source touching forces
+actual recompile after sync; no stale binary result is reused. Final source hashes:
+
+- guest actor `da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171`
+- shared codec `241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a`
+- host fixture `f8a1f5e741d47f72cb73b4180ee78ce732e2a557ac3265bbccbd4378d5bc296c`
+
+The first constructor used `NETWORK --ingress=7100,7101 control`. The parser,
+instructions parser and `agentfile::check` returned Ok, preserving one raw ingress
+port string `7100,7101` in normalized Network.ports. The added actual boundary
+assertion reproduced **no effective ingress**, `[]`, against expected
+`[(6,7100,7100),(6,7101,7101)]`. The corrected constructor uses repeated
+`--ingress=7100 --ingress=7101`; its native assertion observes exactly that vector
+and empty outward boundary. Historical comma source/raw logs remain intact.
+This fixes the fixture's declaration. Accepting then dropping a malformed port
+request is a separate coordinator-owned checked-plan validation question; no
+production parser/grant fix or networking product failure is asserted here.
+
+The original `scripts/check-development-policy` first failed because this sparse
+checkout omitted `.github/workflows/ci.yml`; adding the existing tracked `.github`
+(and required vendor sources) to sparse checkout made it pass. No policy was
+weakened. Final rustfmt/diff/policy checks pass. Commits use signed named-path gits
+and the required exact attribution; signed headers/trailers were checked, not a
+certificate trust chain.
+
+Light replay in the owned clone with the unchanged4CPU8GiB10GiB envelope:
+
+```sh
+CARGO_TARGET_DIR="$HOME/managed-limits-target" \
+python3 docs/research/measurements/managed-limits/run-light.py \
+  --evidence "$HOME/managed-limits-evidence/reviewed-light"
+```
+
+That path must not already exist. It sets SHARDS_HELPERS=skip, runs exactly the
+four light commands and never invokes the ignored VM test or actor. The final
+remote clone is `~/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-tenant-limits-d0af2755ad`,
+target `~/managed-limits-target`, external evidence `~/managed-limits-evidence`.
+No job remains active; original endpoint target was copied read-only after an
+empty open-FD check and remains preserved. This lane made no local builds.
+
+No real VM, task exhaustion, chaos, sweep, benchmark or profiling run was performed.
 
 From the reviewed/composed source, in a coordinator-owned private clone/target
 with carried helpers, KVM/HVF/WHP and the ordinary 4CPU/8GiB/**20GiB** VM envelope:
