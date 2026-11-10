@@ -1,0 +1,139 @@
+{
+  "result": {
+    "findings": [
+      {
+        "id": "f5",
+        "claim": "A future credit-worker drain wait must check its completion predicate while coordinating with the same existing credit mutex; Condvar wait atomically unlocks, may wake spuriously, and supplies no evidence of remote completion by itself.",
+        "cites": [
+          {
+            "source": "s7",
+            "quote": "This function will atomically unlock the mutex specified",
+            "at": "wait",
+            "check": {
+              "state": "found",
+              "at": 1794323937791
+            }
+          },
+          {
+            "source": "s7",
+            "quote": "spurious wakeups",
+            "at": "wait",
+            "check": {
+              "state": "found",
+              "at": 1794323937791
+            }
+          }
+        ],
+        "against": [],
+        "inferred": true,
+        "at": 1794323937336,
+        "confidence": {
+          "score": 68,
+          "grade": "C",
+          "words": "moderate",
+          "support": 0.68,
+          "against": 0,
+          "reliability": 0.85,
+          "citation": 1,
+          "independent": 1,
+          "cites": 2,
+          "found": 2,
+          "failed": 0,
+          "why": "1 independent source (official docs); 2 of 2 quotes found where cited; inferred from them"
+        },
+        "against_weights": []
+      },
+      {
+        "id": "f6",
+        "claim": "The existing synchronous Shared.notify callback must not reacquire Output Life during a future terminal-publication change: Output.finish holds Life while calling Control.finish, whose notify invokes the callback inline.",
+        "cites": [
+          {
+            "source": "s8",
+            "quote": "if let Some(wake) = wake {\n            wake();",
+            "at": "Shared::notify",
+            "check": {
+              "state": "found",
+              "at": 1794323937791
+            }
+          },
+          {
+            "source": "s9",
+            "quote": "self.control.finish().map_err(io::Error::other)?;\n        *life = Life::Draining;",
+            "at": "Output::finish",
+            "check": {
+              "state": "found",
+              "at": 1794323937791
+            }
+          },
+          {
+            "source": "s10",
+            "quote": "this function will not return on the second call",
+            "at": "lock",
+            "check": {
+              "state": "found",
+              "at": 1794323937791
+            }
+          }
+        ],
+        "against": [],
+        "inferred": true,
+        "at": 1794323937336,
+        "confidence": {
+          "score": 79,
+          "grade": "B",
+          "words": "good",
+          "support": 0.788,
+          "against": 0,
+          "reliability": 0.9,
+          "citation": 1,
+          "independent": 2,
+          "cites": 3,
+          "found": 3,
+          "failed": 0,
+          "why": "2 independent sources (code, official docs); 3 of 3 quotes found where cited; inferred from them"
+        },
+        "against_weights": []
+      }
+    ],
+    "sources": [
+      {
+        "id": "s7",
+        "type": "docs",
+        "title": "Rust Condvar::wait",
+        "locator": "https://doc.rust-lang.org/std/sync/struct.Condvar.html#method.wait",
+        "origin": "Rust project",
+        "retrieved_at": 1794323937336
+      },
+      {
+        "id": "s8",
+        "type": "code",
+        "title": "Shared notify at main69db",
+        "locator": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-network-assertions/crates/remote/src/managed.rs",
+        "origin": "hyper-light/shards",
+        "retrieved_at": 1794323937336
+      },
+      {
+        "id": "s9",
+        "type": "code",
+        "title": "Output finish at main69db",
+        "locator": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-network-assertions/crates/shards/src/daemon/managed.rs",
+        "origin": "hyper-light/shards",
+        "retrieved_at": 1794323937336
+      },
+      {
+        "id": "s10",
+        "type": "docs",
+        "title": "Rust Mutex::lock",
+        "locator": "https://doc.rust-lang.org/std/sync/struct.Mutex.html#method.lock",
+        "origin": "Rust project",
+        "retrieved_at": 1794323937336
+      }
+    ]
+  },
+  "calls": [
+    {
+      "name": "research.get",
+      "ok": true
+    }
+  ]
+}

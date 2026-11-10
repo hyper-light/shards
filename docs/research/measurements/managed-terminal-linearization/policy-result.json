@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"base\": \"/home/adalundhe/managed-terminal-linearization-policy-69db-v1\", \"argv\": [\"python3\", \"/home/adalundhe/managed-terminal-linearization-policy-69db-v1/scripts/check-development-policy\"], \"exit_code\": 0, \"output\": \"Development policy checks passed; evidence/coordinator review is still required.\\n\", \"rules_sha256\": \"d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242\", \"scope\": \"mechanical policy only; no build/unit/native/profile/VM\"}\n",
+    "running": false,
+    "why": "linux/x86_64 · 17 of 32 cores idle · 45 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}
