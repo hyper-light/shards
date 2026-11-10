@@ -1,0 +1,84 @@
+{
+  "source": "8c8625b614f543e1b490faee19a4cc4917166286",
+  "preserved_initial_checkpoint": "07dd26ae4eb840688e9419c18fff3ef9a880947a",
+  "base": "95e3b55e420199cd29a5649ad690d554dbf73942",
+  "policy": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "docs/research/measurements/managed-output-cost/fixture.rs"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "95e3b55e420199cd29a5649ad690d554dbf73942",
+        "8c8625b614f543e1b490faee19a4cc4917166286",
+        "--",
+        "crates/shards/tests/managed_output.rs",
+        "crates/vmm/src/platform",
+        "docs/research/measurements/managed-output-cost/parse.rs",
+        "Cargo.toml",
+        "Cargo.lock"
+      ],
+      "exit": 0,
+      "output": ""
+    }
+  ],
+  "changed_source_paths": [
+    "docs/research/measurements/managed-output-cost/fixture.rs"
+  ],
+  "source_hashes": [
+    {
+      "path": "docs/research/measurements/managed-output-cost/fixture.rs",
+      "bytes": 34043,
+      "sha256": "a0ed1cd19511ff27be24d8bff1acd70d0b5070c682a1fe462e09681439a655c3"
+    },
+    {
+      "path": "docs/research/measurements/managed-output-cost/parse.rs",
+      "bytes": 3498,
+      "sha256": "c24b9b2233c9dd0f03a1fa336cdc9a12ea4b48a21267e34ca40f7665f97cf3f9"
+    },
+    {
+      "path": "crates/shards/tests/managed_output.rs",
+      "bytes": 29008,
+      "sha256": "23fd8e1c96e31c2dd201255c3762fb2a2727adee21cd98f5b3d9b576695aa016"
+    },
+    {
+      "path": "crates/vmm/src/platform/unix.rs",
+      "bytes": 137180,
+      "sha256": "4b801f582cf76ddac4bec248bd3dba9ddb91a9b3b130c6b55bab98a95f89978f"
+    }
+  ],
+  "actual_caller_compile": "Unrun; coordinator owed",
+  "actual_proc_handles_vm_fd_waits_resources_mutations": "Unrun; coordinator owned",
+  "synthetic_parser_rerun": "Unrun; parser unchanged; no passing type/runtime claim from old revision"
+}
