@@ -1,0 +1,7 @@
+{
+  "reason": "git diff --check rejects unified diff context blank lines as trailing whitespace; preserve exact original bytes compressed",
+  "original_sha256": "3c26d0a98e886dbbbc7376b7dc82ed97af3cf49c5191c7f9ff4c255295aff656",
+  "gzip_sha256": "f96db0bf888df621c523a036aed0b3b197ef693fc7e7d87eb99a0c66c80b4e56",
+  "compression_round_trip_equal": true,
+  "root_applied_to_parent": true
+}
