@@ -1,0 +1,198 @@
+{
+  "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "full_build": {
+    "path": "/home/adalundhe/managed-current-controls-28e-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "frozen": "/home/adalundhe/managed-current-controls-28e-v1/artifacts/managed_output",
+    "sha256": "6217535e1bdfc54e81334318d68f4359c6d2648234f81c2e67a6156c4f614a69",
+    "fresh": false,
+    "source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+    "elapsed_s": 380.2774209850004
+  },
+  "vm_cases": [
+    {
+      "kind": "actual KVM",
+      "channel": "stdout",
+      "run": "6941e86524d670db8d1bd5850acbd0f2ea0596440cd59cdc1cc33c11e62ef434",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    },
+    {
+      "kind": "actual KVM",
+      "channel": "stderr",
+      "run": "89fe6335aa3f38fa2e6958459b9a63d30b39abc69cc4f058f59899535b9062c7",
+      "executed_tests": 1,
+      "exit": 0,
+      "reason": "Closed",
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 5,
+            "kind": "Write",
+            "pending": 0
+          },
+          {
+            "error": null,
+            "kind": "Finish"
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": true,
+        "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+        "submitted_bytes": 5
+      },
+      "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+      "cleanup": {
+        "metadata_copy": {
+          "complete": true,
+          "error": null
+        },
+        "observer_fds": {
+          "after": 7,
+          "before": 7,
+          "error": null
+        },
+        "owner_stop_observer_join": {
+          "complete": true,
+          "error": null
+        },
+        "population_reaping_kernel_return": "Unknown; stop/PID0/FD return do not prove full return",
+        "protocol_complete": true,
+        "protocol_failure": null,
+        "remove_failure": null,
+        "run_removed": true
+      },
+      "main_raw_bytes_retained": true
+    }
+  ],
+  "native_cases": [
+    {
+      "kind": "actual native Endpoint",
+      "channel": "stdout",
+      "supplied_errno": 5,
+      "run": "f21aa278-5fdb-4877-a333-a3c1f1bdb2ad",
+      "executed_tests": 1,
+      "exit": 0,
+      "canonical": {
+        "actual_transport_end": true,
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        }
+      },
+      "refusal": {
+        "canonical_state": "Aborted { offset: 26, errno: 5 }",
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "reason": "Protocol",
+        "returned_payload_bytes": 42,
+        "returned_payload_sha256": "sha256:242ddcff2ed0a63c363827b6bd28859e31fa951b483b0739099d59e97c164fb8",
+        "selected_control": "Resubscribe",
+        "submitted_bytes": 58
+      },
+      "observer": {
+        "error": null,
+        "joined": true,
+        "owner_control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Finished(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "post_join_records": 0
+      },
+      "owner": {
+        "control": {
+          "accepted": 90,
+          "consumed": 90,
+          "state": "Aborted(Progress { accepted: 90, consumed: 90 })",
+          "transport_drained": "Unknown; local stop/join is a separate witness"
+        },
+        "finish_after_abort": "Err(Closed)"
+      },
+      "actual_io": {
+        "actual": [
+          {
+            "accepted": 55,
+            "kind": "Write",
+            "pending": 3
+          },
+          {
+            "accepted": 3,
+            "kind": "Write",
+            "pending": 0
+          }
+        ],
+        "driver_joined": true,
+        "finish_requested": false,
+        "meaning": "actual local acceptance/read receipts; not peer ACK or daemon metadata",
+        "submitted_bytes": 58
+      },
+      "cleanup": {
+        "cleanup_completed": true,
+        "cleanup_errors": [],
+        "cleanup_panic": null,
+        "observer_fds": {
+          "after": 4,
+          "before": 4
+        },
+        "population_kernel_return": "Unknown; this fixture has no guest or daemon lifecycle",
+        "protocol_complete": true,
+        "protocol_failure": null
+      }
+    }
+  ],
+  "pure": "7pass/0fail/3explicitignored",
+  "clippy_exit": 0,
+  "shared_client_patch": "3939d78f2bf3e175a2c504e859a08a5d8cb2a1d10bf81c3ad868d5f121eee123",
+  "registration_patch": "83132563b3eadea370e89912f641141638ff310af278e25a24d826d4d003f6bc",
+  "kernel_scope": "experimental own kernel; not product-pin gate",
+  "population_parent_kernel_cost": "Unknown; no profiling/benchmarking claim"
+}

@@ -1,0 +1,38 @@
+--- frozen/adversarial_controls.rs
++++ current/current_controls.rs
+@@ -1,15 +1,21 @@
+ //! Assigned adversarial authenticated control cases; one fresh run per selection.
+ use super::*;
+-
+-#[path = "adversarial_controls/contract.rs"]
++use crate::managed_capture::ControlReceipt;
++use sha2::{Digest, Sha256};
++use shards_remote::frame::{self, Tag};
++use shards_remote::managed::{self, Admitted, RunId};
++use std::sync::mpsc;
++use std::thread::JoinHandle;
++
++#[path = "current_controls/contract.rs"]
+ mod contract;
+ use contract::{AckCase, ControlCase, Limits, Selection, TerminalCase};
+ 
+-#[path = "adversarial_controls/control_inputs.rs"]
++#[path = "current_controls/control_inputs.rs"]
+ mod control_inputs;
+-#[path = "adversarial_controls/native_terminal.rs"]
++#[path = "current_controls/native_terminal.rs"]
+ mod native_terminal;
+-#[path = "adversarial_controls/write_receipts.rs"]
++#[path = "current_controls/write_receipts.rs"]
+ mod write_receipts;
+ 
+ struct Supplied {
+@@ -510,7 +516,7 @@
+     let base = &input.base;
+     assert!(!common::cannot_run_vms(), "requires a supported real VM host");
+     let artifact = |path: &std::path::Path| json!({"path":path,"sha256":common::sha256_digest(&std::fs::read(path).unwrap())});
+-    base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"leaf_sha256":common::sha256_digest(include_bytes!("adversarial_controls.rs")),"contract_sha256":common::sha256_digest(include_bytes!("adversarial_controls/contract.rs")),"control_inputs_sha256":common::sha256_digest(include_bytes!("adversarial_controls/control_inputs.rs")),"write_receipts_sha256":common::sha256_digest(include_bytes!("adversarial_controls/write_receipts.rs"))}));
++    base.write("artifacts.json", &json!({"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"leaf_sha256":common::sha256_digest(include_bytes!("current_controls.rs")),"contract_sha256":common::sha256_digest(include_bytes!("current_controls/contract.rs")),"control_inputs_sha256":common::sha256_digest(include_bytes!("current_controls/control_inputs.rs")),"write_receipts_sha256":common::sha256_digest(include_bytes!("current_controls/write_receipts.rs"))}));
+     base.write("inputs.json", &json!({"case":format!("{:?}",input.case),"channel":input.channel as u8,"port":base.port,"phase_ms":input.limits.phase_ms,"work_ms":input.limits.work_ms,"cleanup_ms":input.limits.cleanup_ms,"outer_ms":input.limits.outer_ms,"caller_declared_source":input.source,"outer_enforcement":"admitted caller enforces supplied OUTER_MS on the fixture process","owner":"fresh retained Fixture; one target subscription; no endpoint reuse"}));
+     let mut fixture = Fixture::new();
+     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

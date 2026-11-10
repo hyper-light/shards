@@ -1,0 +1,73 @@
+{
+  "tested_source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "policy_main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "checks": [
+    {
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "--check",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/contract.rs",
+        "crates/shards/tests/managed_output/current_controls/control_inputs.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "crates/shards/tests/managed_output/current_controls/write_receipts.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--exit-code",
+        "HEAD",
+        "--",
+        "crates/shards/tests/common/managed_capture.rs",
+        "crates/shards/tests/managed_output/tenant_exit.rs",
+        "crates/shards/tests/managed_output/current_controls.rs",
+        "crates/shards/tests/managed_output/current_controls/contract.rs",
+        "crates/shards/tests/managed_output/current_controls/control_inputs.rs",
+        "crates/shards/tests/managed_output/current_controls/native_terminal.rs",
+        "crates/shards/tests/managed_output/current_controls/write_receipts.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "base_to_source_raw_patch_whitespace_exit": 2,
+  "raw_patch_context_preserved": true,
+  "source_hashes_still_match_pretest_readback": true,
+  "local_free_bytes": 220041404416,
+  "local_build_targets": []
+}

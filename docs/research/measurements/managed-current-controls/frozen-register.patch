@@ -1,0 +1,13 @@
+diff --git a/crates/shards/tests/managed_output/tenant_exit.rs b/crates/shards/tests/managed_output/tenant_exit.rs
+--- a/crates/shards/tests/managed_output/tenant_exit.rs
++++ b/crates/shards/tests/managed_output/tenant_exit.rs
+@@ -6,6 +6,9 @@ use std::io::Read as _;
+ #[path = "tenant_stdio.rs"]
+ mod stdio;
+ 
++#[path = "adversarial_controls.rs"]
++mod adversarial_controls;
++
+ struct Inputs {
+     port: u16,
+     patience: Duration,

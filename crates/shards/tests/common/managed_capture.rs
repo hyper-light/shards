@@ -37,11 +37,26 @@ impl std::fmt::Debug for Event {
     }
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) enum ControlReceipt {
+    Write { accepted: usize, pending: usize },
+    Read { bytes: usize, ended: bool },
+    Finish { error: Option<String> },
+    WriteError(String),
+}
+
 pub(super) enum Ask {
     Connect(SocketAddr),
     Ack(u64),
     AckAndFinish(u64),
     Cancel,
+    #[cfg(test)]
+    RawControl {
+        bytes: Vec<u8>,
+        finish: bool,
+        receipts: mpsc::Sender<ControlReceipt>,
+    },
 }
 
 struct Client {
@@ -51,6 +66,8 @@ struct Client {
     stream: Option<StreamId>,
     events: mpsc::Sender<Event>,
     pending: Vec<u8>,
+    #[cfg(test)]
+    control_receipts: Option<mpsc::Sender<ControlReceipt>>,
     inbound: Vec<u8>,
     finish: bool,
     done: bool,
@@ -73,15 +90,33 @@ impl Client {
                 Ok(0) => return,
                 Ok(n) => {
                     self.pending.drain(..n);
+                    #[cfg(test)]
+                    if let Some(receipts) = &self.control_receipts {
+                        let _ = receipts.send(ControlReceipt::Write {
+                            accepted: n,
+                            pending: self.pending.len(),
+                        });
+                    }
                 }
                 Err(error) => {
+                    #[cfg(test)]
+                    if let Some(receipts) = &self.control_receipts {
+                        let _ = receipts.send(ControlReceipt::WriteError(error.to_string()));
+                    }
                     self.fail(error.to_string());
                     return;
                 }
             }
         }
         if self.finish {
-            if let Err(error) = io.finish(conn, stream) {
+            let result = io.finish(conn, stream);
+            #[cfg(test)]
+            if let Some(receipts) = &self.control_receipts {
+                let _ = receipts.send(ControlReceipt::Finish {
+                    error: result.as_ref().err().map(ToString::to_string),
+                });
+            }
+            if let Err(error) = result {
                 self.fail(error.to_string());
             }
             self.finish = false;
@@ -115,6 +150,13 @@ impl Handler for Client {
                     return;
                 }
             };
+            #[cfg(test)]
+            if let Some(receipts) = &self.control_receipts {
+                let _ = receipts.send(ControlReceipt::Read {
+                    bytes: bytes.len(),
+                    ended,
+                });
+            }
             self.inbound.extend_from_slice(&bytes);
             loop {
                 let (tag, bytes) = match frame::take(&mut self.inbound) {
@@ -176,6 +218,24 @@ impl Handler for Client {
                 }
                 self.done = true;
             }
+            #[cfg(test)]
+            Ask::RawControl {
+                bytes,
+                finish,
+                receipts,
+            } => {
+                if bytes.len() > managed::CONTROL_BYTES
+                    || self.control_receipts.is_some()
+                    || !self.pending.is_empty()
+                {
+                    self.fail("raw control requires one bounded command after flushed subscription".into());
+                    return;
+                }
+                self.control_receipts = Some(receipts);
+                self.pending.extend_from_slice(&bytes);
+                self.finish |= finish;
+                self.flush(io);
+            }
         }
     }
 
@@ -224,6 +284,8 @@ impl Observer {
             stream: None,
             events: event,
             pending: Vec::new(),
+            #[cfg(test)]
+            control_receipts: None,
             inbound: Vec::new(),
             finish: false,
             done: false,
