@@ -117,6 +117,26 @@ pub enum State {
 }
 
 impl State {
+    fn checkpoint_block(self) -> Option<(shards_abi::run::quiesce::Reason, i32)> {
+        use shards_abi::run::quiesce::Reason;
+        match self {
+            Self::Running | Self::Ended { .. } => None,
+            Self::Starting => Some((Reason::Starting, 0)),
+            Self::Stopping => Some((Reason::Stopping, 0)),
+            Self::Draining { .. } => Some((Reason::Draining, 0)),
+            Self::Quarantined { errno, .. } => Some((Reason::Quarantined, errno)),
+            Self::Faulted { fault, .. } => Some((
+                Reason::Faulted,
+                match fault {
+                    BoundaryFault::PopulationControl { errno } | BoundaryFault::LeaderControl { errno } => {
+                        errno
+                    }
+                    BoundaryFault::StatusConflict => libc::EPROTO,
+                },
+            )),
+        }
+    }
+
     fn stopping(self) -> Self {
         match self {
             Self::Starting | Self::Running => Self::Stopping,
@@ -381,6 +401,10 @@ impl Owned {
     }
     pub fn ended(&self) -> bool {
         matches!(self.state, State::Ended { .. })
+    }
+
+    pub fn checkpoint_block(&self) -> Option<(shards_abi::run::quiesce::Reason, i32)> {
+        self.state.checkpoint_block()
     }
 
     pub fn quarantined(&self) -> bool {
@@ -856,6 +880,37 @@ mod tests {
         write.write_all(bytes).unwrap();
         drop(write);
         read
+    }
+
+    #[test]
+    fn only_running_and_proven_ended_populations_are_checkpoint_ready() {
+        use shards_abi::run::quiesce::Reason;
+        assert_eq!(State::Running.checkpoint_block(), None);
+        assert_eq!(State::Ended { status: 17 }.checkpoint_block(), None);
+        assert_eq!(State::Starting.checkpoint_block(), Some((Reason::Starting, 0)));
+        assert_eq!(State::Stopping.checkpoint_block(), Some((Reason::Stopping, 0)));
+        assert_eq!(
+            State::Draining { status: 17 }.checkpoint_block(),
+            Some((Reason::Draining, 0))
+        );
+        for status in [None, Some(17)] {
+            assert_eq!(
+                State::Quarantined {
+                    status,
+                    errno: libc::EISDIR
+                }
+                .checkpoint_block(),
+                Some((Reason::Quarantined, libc::EISDIR))
+            );
+            assert_eq!(
+                State::Faulted {
+                    status,
+                    fault: BoundaryFault::StatusConflict
+                }
+                .checkpoint_block(),
+                Some((Reason::Faulted, libc::EPROTO))
+            );
+        }
     }
 
     #[test]

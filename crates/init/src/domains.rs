@@ -541,6 +541,7 @@ fn domain(
 /// A started domain: its label, and its output's read end.
 #[derive(Debug)]
 pub struct Started {
+    pub member: u32,
     pub label: String,
     /// Its cgroup's directory.
     pub cgroup: String,
@@ -1613,6 +1614,9 @@ pub fn start(
     };
     let mut started = Vec::new();
     for (i, d) in domains.iter().enumerate() {
+        let member =
+            d.id.checked_sub(FIRST_ID)
+                .ok_or("a domain's identity precedes its declared range")?;
         let group = format!("{CGROUPS}/{}", d.cgroup);
         std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
         if let Some(n) = d.pids {
@@ -1868,6 +1872,7 @@ pub fn start(
             .map_err(|e| format!("{}: its launch: {e}", d.label))?;
         crate::run::set_nonblocking(read_end.as_raw_fd(), true);
         started.push(Started {
+            member,
             label: d.label.clone(),
             cgroup: group.clone(),
             lifecycle,

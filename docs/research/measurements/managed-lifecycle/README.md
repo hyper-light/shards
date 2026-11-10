@@ -126,3 +126,8 @@ and native9/9 evidence. A domain is a tenant within a potentially shared microVM
 Quarantined retains unknown population and owned references; no claim of full
 cleanup/checkpoint readiness is made. Root's mixed-tenant actual-VM/mutation tests
 and the separate typed checkpoint-refusal slice remain required.
+
+The separate [typed quiesce-refusal slice](quiesce-refusal.md) now implements the
+known-state refusal at the existing save seam. This does not complete P11's full
+freeze/revalidation or establish post-commit consistency; root's live/mutation
+gates and the remaining transfer/uncertainty work are explicit there.

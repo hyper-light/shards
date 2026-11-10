@@ -1131,7 +1131,7 @@ fn save_request(message: shards_ipc::Message) -> Result<shards_vmm::vm::Saved, S
     // Nothing of the guest's on its way to the host as it is saved: what it held is in the
     // run's log, and what comes after waits in it, for the microVM saved or restored.
     let asked = shards_vmm::log::uptime_us();
-    crate::workload::quiesce(tokens)?;
+    crate::workload::quiesce(tokens).map_err(|error| error.to_string())?;
     let quiet = shards_vmm::log::uptime_us();
     let saved = crate::vm_run::save(shards_vmm::vm::Save {
         name,

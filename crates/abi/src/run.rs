@@ -8,6 +8,8 @@
 
 use alloc::vec::Vec;
 
+pub mod quiesce;
+
 /// The host port the guest dials for its workload.
 pub const PORT: u32 = 1024;
 /// The host port the guest dials, once the workload runs, for [`kind::SIGNAL`] frames.
@@ -162,6 +164,9 @@ pub mod kind {
     /// the layer its template mounted, has its host put the kept file under the
     /// device, mounts it and makes its root the image under it, as the microVM left it.
     pub const OVER: u8 = 42;
+    /// Guest to host: a requested cut was refused, as [`quiesce::Refused`](super::quiesce::Refused).
+    /// It is a control result, never workload output or a successful QUIESCED.
+    pub const QUIESCE_REFUSED: u8 = 46;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
