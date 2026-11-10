@@ -30,6 +30,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use crate::json::{self, Value};
 
+mod admission;
+
 /// The first domain's uid and gid; the n-th's is this plus n.
 pub const FIRST_ID: u32 = shards_abi::DOMAIN_FIRST_ID;
 /// Where the domains' cgroups are.
@@ -1357,12 +1359,6 @@ pub fn start(
     // kernel.rst), which a workload's `seccomp=unconfined` or `--device /dev/kmsg` would
     // leave it.
     crate::setup::write_sysctl("kernel.dmesg_restrict", "1")?;
-    match std::fs::create_dir(CGROUPS) {
-        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(format!("{CGROUPS}: {e}")),
-        _ => {}
-    }
-    std::fs::write(format!("{CGROUPS}/cgroup.subtree_control"), "+pids +memory")
-        .map_err(|e| format!("{CGROUPS}: enabling pids and memory: {e}"))?;
     // The domains together take at most what the microVM can give as they start
     // (`MemAvailable`, Documentation/filesystems/proc.rst, and what it may still have
     // plugged, D148), less what the workload's own limit (`-m`) still promises it: never
@@ -1372,20 +1368,16 @@ pub fn start(
     // it throttles them and kills none (Documentation/admin-guide/cgroup-v2.rst), in the
     // charge itself as well as on the way back to user space (mm/memcontrol.c,
     // `try_charge_memcg`), and [`Memory`] ends the domain holding the most.
-    let promised = crate::run::workload_headroom();
+    let promised = admission::workload_headroom().map_err(|e| e.message("domains"))?;
     // What may still be plugged counted once: the kernel's own report of it taken off
     // `MemAvailable` (D149), whose kernel reports it.
     let [available] = crate::plug::unreported(|| available_memory().map(|a| [a]).map_err(io::Error::other))
         .map_err(|e| e.to_string())?;
-    let available = available
-        .saturating_add(crate::plug::still_pluggable())
-        .saturating_sub(promised);
-    std::fs::write(format!("{CGROUPS}/memory.high"), available.to_string())
-        .map_err(|e| format!("{CGROUPS}/memory.high: {e}"))?;
+    let available = admission::pressure_headroom(available, crate::plug::still_pluggable(), promised)
+        .map_err(|e| e.message("domains"))?;
     // None of the microVM's swap (D159), which a run's limits give it for its own: a
     // domain's memory is what its Agentfile grants, and nothing grants one swap.
-    std::fs::write(format!("{CGROUPS}/memory.swap.max"), "0")
-        .map_err(|e| format!("{CGROUPS}/memory.swap.max: {e}"))?;
+    let admission = admission::Parent::prepare(available).map_err(|e| e.message("domains"))?;
     let last_cap = crate::defaults::last_cap();
     landlock_abi()?;
     let lower =
@@ -1621,19 +1613,11 @@ pub fn start(
             d.id.checked_sub(FIRST_ID)
                 .ok_or("a domain's identity precedes its declared range")?;
         let group = format!("{CGROUPS}/{}", d.cgroup);
-        std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
-        if let Some(n) = d.pids {
-            std::fs::write(format!("{group}/pids.max"), n.to_string())
-                .map_err(|e| format!("{group}/pids.max: {e}"))?;
-        }
-        // Out of memory, a domain ends whole, and no other with it.
-        std::fs::write(format!("{group}/memory.oom.group"), "1")
-            .map_err(|e| format!("{group}/memory.oom.group: {e}"))?;
-        if let Some(n) = d.memory {
-            std::fs::write(format!("{group}/memory.max"), n.to_string())
-                .map_err(|e| format!("{group}/memory.max: {e}"))?;
-        }
-        let cgroup = std::fs::File::open(&group).map_err(|e| format!("{group}: {e}"))?;
+        let admitted = admission
+            .prepare_child(&d.cgroup)
+            .and_then(|p| p.commit(d.pids, d.memory))
+            .map_err(|e| e.message(&d.label))?;
+        let cgroup = admitted.group();
         let filter = filters
             .get(usize::from(d.no_processes))
             .and_then(Option::as_ref)
@@ -1792,7 +1776,7 @@ pub fn start(
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
         let (stderr, stderr_write) =
             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
-        let mut launch = crate::managed::Launch::new(last_cap, &cgroup)
+        let mut launch = crate::managed::Launch::new(last_cap, cgroup)
             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
         let mut args = CloneArgs {
             pidfd: (&raw mut launch.pidfd) as u64,
@@ -1829,7 +1813,7 @@ pub fn start(
         let pid = libc::pid_t::try_from(pid)
             .map_err(|_| format!("{}: the kernel returned a PID out of range", d.label))?;
         let mut lifecycle = launch
-            .parent(pid, cgroup)
+            .parent(pid, admitted.into_file())
             .map_err(|e| format!("{}: retaining its owner: {e}", d.label))?;
         drop(stdout_write);
         drop(stderr_write);
