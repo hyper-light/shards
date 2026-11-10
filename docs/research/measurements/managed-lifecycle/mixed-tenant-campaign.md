@@ -121,3 +121,37 @@ leak freedom, comparative performance or the seven-target matrix. The production
 quarantine retains unknown population, held handles and charges until reconciliation
 or disposal. Guest/root resource and per-tenant channel guarantees remain separate
 requirements in the management plan.
+
+## Coordinator recovery and completed live result
+
+Coordinator POLICY_READ c921a0b1, SHA256
+`1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`.
+The lane's turn was twice rejected automatically as “possible cybersecurity risk”; nobody
+stopped it. These provider rejections are not Shards lifecycle failures and prove
+nothing about actor control. The remaining security campaign is unverified. The
+coordinator recovered the already completed synthetic reliability run directly.
+
+At `dcedefaad3bd4ea284a7597f9c5db27024ba770e`, r15 passed1/1 in2.10s,
+exit0. The exact post-quarantine main exec returned0 and reported its namespace;
+the healthy HARNESS echoed the newly supplied16byte challenge after syncing the
+same bytes to its private answer. Remaining process rows included main testguest,
+server/sandbox and lifecycle-ready. Explicit VM stop succeeded. Full raw log,
+exit, environment and applied source patch are retained in live-e2e under
+`managed-tenant-fault-granted-tcp-pid-v1-green.*`. Earlier files whose names end
+“green” but whose .exit is101 remain failed fixture attempts, not passing results.
+
+R01/R03/R04: only fixtures and test-only source patches are added; no production
+fault switch, runtime constant or alternate state machine. R02/R05/R12: actual
+FileWatch completion events and existing explicit ingress grants replace the
+incorrect cross-filesystem inotify assumption; prior sources and alternatives
+are recorded above. R06/R07/R13: one focused mixed workload and shared observation
+helpers, no new generic process manager. R08/R14: no throughput, leak freedom,
+allocation/fault accounting or comparative claim; all remain owed. R09/R10:
+each actual failure and correction is retained, and r15 is real KVM evidence;
+the fatal-scope independent mutation remains pending. R11: GNU/Linux x86_64 KVM
+only; seven-target and other VM hosts remain unverified. R15: root recovered and
+reviewed outputs, owns combined validation/main merge. R16: source/evidence
+preserved, no unrelated data cleanup or credential use. This proves this
+synthetic failure's scope, not full hostile cross-tenant isolation, resource
+exhaustion, deep descendant control, telemetry completeness or repeated-crash
+recovery.
