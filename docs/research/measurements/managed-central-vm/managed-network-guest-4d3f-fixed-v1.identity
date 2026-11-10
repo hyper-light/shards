@@ -1,0 +1,14 @@
+4d3f454f194a0b6927423f0f859071147c43786d
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+uid=1000(adalundhe) gid=1000(adalundhe) groups=1000(adalundhe),10(wheel),965(docker) context=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023
+Filesystem      1K-blocks       Used  Available Use% Mounted on
+/dev/nvme1n1p3 7811313664 5784308180 1999890060  75% /home
+97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae  /home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy
+fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d  /home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy

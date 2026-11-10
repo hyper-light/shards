@@ -1,0 +1,2 @@
+mode=warm-control injected_allocation_bytes=64
+allocations=0 last_bytes=0

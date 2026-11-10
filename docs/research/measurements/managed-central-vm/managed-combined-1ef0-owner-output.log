@@ -1,0 +1,131 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-remote v0.1.0 (/home/adalundhe/managed-capture-check/crates/remote)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 30s
+     Running tests/managed_output.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_output-27c7f5b2529c465b)
+
+running 4 tests
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test metadata_requires_unique_scoped_loopback_endpoints ... ok
+test private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/managed-capture-check/crates/testguest)
+    Finished `guest` profile [optimized] target(s) in 15.14s
+managed-owner subscribe member=1 channel=1 outsider=true
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner subscribe member=2 channel=2 outsider=false
+
+thread 'private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope' (2281824) panicked at crates/shards/tests/managed_output.rs:271:21:
+member bytes differ at offset 0; lengths actual=30 expected=25
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+managed-owner owner stop
+managed-owner observer_fds before=12 after=12
+owner cleanup: Ok(())
+--- /tmp/shards-tests/2281822/owner-output-0/daemon.log, its last 13 lines
+shards daemon 2284840: the default bridge is 172.22.0.0/16
+shards daemon 2284840: serving /tmp/shards-tests/2281822/owner-output-0 through /tmp/shards-tests/2281822/owner-output-0/requests, with up to 524288 descriptors open
+shards daemon 2284840: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 30.511135ms
+shards daemon 2284840: stepping aside: a client asked it to stop
+shards daemon 2284840: managed output capture: managed output closed
+shards daemon 2284840: exiting
+--- /tmp/shards-tests/2281822/owner-output-0/daemon.log, its last 2707 of 2707 bytes
+shards daemon 2284840: the default bridge is 172.22.0.0/16
+shards daemon 2284840: serving /tmp/shards-tests/2281822/owner-output-0 through /tmp/shards-tests/2281822/owner-output-0/requests, with up to 524288 descriptors open
+shards daemon 2284840: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2284840: the host is short of memory: its microVMs gave back 0 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 30.511135ms
+shards daemon 2284840: stepping aside: a client asked it to stop
+shards daemon 2284840: managed output capture: managed output closed
+shards daemon 2284840: exiting
+
+--- /tmp/shards-tests/2281822/owner-context-1/daemon.log, its last 0 lines
+FAILED
+test supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent ... managed-owner subscribe member=1 channel=1 outsider=false
+
+thread 'supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent' (2287148) panicked at crates/shards/tests/managed_output.rs:271:21:
+member bytes differ at offset 0; lengths actual=28 expected=26
+managed-owner owner stop
+managed-owner observer_fds before=12 after=12
+owner cleanup: Ok(())
+--- /tmp/shards-tests/2281822/owner-output-3/daemon.log, its last 12 lines
+shards daemon 2287229: the default bridge is 172.22.0.0/16
+shards daemon 2287229: serving /tmp/shards-tests/2281822/owner-output-3 through /tmp/shards-tests/2281822/owner-output-3/requests, with up to 524288 descriptors open
+shards daemon 2287229: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: stepping aside: a client asked it to stop
+shards daemon 2287229: managed output capture: managed output closed
+shards daemon 2287229: exiting
+--- /tmp/shards-tests/2281822/owner-output-3/daemon.log, its last 2475 of 2475 bytes
+shards daemon 2287229: the default bridge is 172.22.0.0/16
+shards daemon 2287229: serving /tmp/shards-tests/2281822/owner-output-3 through /tmp/shards-tests/2281822/owner-output-3/requests, with up to 524288 descriptors open
+shards daemon 2287229: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c47ddd7a777e8f7e9e4a70f45da4/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.high: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: watching /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/memory.max: No such file or directory (os error 2); its microVMs are held to its budget by their host's passes alone
+shards daemon 2287229: stepping aside: a client asked it to stop
+shards daemon 2287229: managed output capture: managed output closed
+shards daemon 2287229: exiting
+
+--- /tmp/shards-tests/2281822/owner-context-4/daemon.log, its last 0 lines
+FAILED
+
+failures:
+
+failures:
+    private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope
+    supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent
+
+test result: FAILED. 1 passed; 2 failed; 1 ignored; 0 measured; 0 filtered out; finished in 37.37s
+
+error: test failed, to rerun pass `-p shards --test managed_output`

@@ -1,0 +1,1 @@
+console=ttyS0 quiet panic=-1 shards_test=managed-network -- managed-network pair udp-connected [::1]:0 "" "" 30000 native

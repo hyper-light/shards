@@ -1,0 +1,64 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/managed-capture-check/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.81s
+     Running tests/managed_output.rs (/home/adalundhe/managed-capture-target/test-release/deps/managed_output-27c7f5b2529c465b)
+
+running 4 tests
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test metadata_requires_unique_scoped_loopback_endpoints ... ok
+test private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `guest` profile [optimized] target(s) in 0.05s
+managed-owner subscribe member=1 channel=1 outsider=true
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner subscribe member=2 channel=2 outsider=false
+managed-owner consumed member=2 channel=2 bytes=25
+managed-owner main exec
+managed-owner owner stop
+managed-owner observer_fds before=12 after=12
+ok
+test supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent ... managed-owner subscribe member=1 channel=1 outsider=false
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner consumed member=1 channel=2 bytes=23
+managed-owner main exec
+managed-owner local cancellation complete
+managed-owner main exec
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner consumed member=2 channel=1 bytes=28
+managed-owner subscribe member=2 channel=2 outsider=false
+managed-owner consumed member=2 channel=2 bytes=25
+managed-owner owner stop
+managed-owner observer_fds before=12 after=12
+ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 22.75s
+

@@ -1,0 +1,12 @@
+1ef0b40cc7b9281de03412b61fee49dbabae7a6c
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+4551ae4c605e35e8f18616373712803eb9f205636ce0deb73ff2ab88179fae2c  crates/shards/tests/managed_output.rs
+7dd271f6ca1a0a1da6469cece9942cde1f3deae0c9d2c4501ea644e1d5188b4d  crates/shards/Cargo.toml
+4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1  Cargo.lock

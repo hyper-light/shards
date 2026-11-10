@@ -1,0 +1,24 @@
+   Compiling shards-api v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.93s
+     Running unittests src/lib.rs (/Users/adalundhe/.cache/g121-managed-borrowed-trace-target/test-release/deps/shards_api-1004f0f8fcc190b7)
+
+running 1 test
+test client::tests::owned_connection_oom_is_typed_before_error_formatting ... ROOT-COLD-MUTEX-TRACE
+0   shards_api-1004f0f8fcc190b7         0x000000010475ac90 _RINvMNtNtNtCs82bWklYMk3w_3std3sys4sync8once_boxINtB3_7OnceBoxNtNtNtNtNtB7_3pal4unix4sync5mutex5MutexE10initializeNCNvMNtNtB5_5mutex7pthreadNtB1S_5Mutex3get0ECsaMToI7IJzgv_10shards_api + 296
+1   shards_api-1004f0f8fcc190b7         0x00000001046a829c _RNvXs5_NtCsaMToI7IJzgv_10shards_api6clientNtB5_11ShardsGuestNtB7_5Guest7connect + 708
+2   shards_api-1004f0f8fcc190b7         0x00000001046b2ff0 _RNvNtNtCsaMToI7IJzgv_10shards_api6client5testss_53owned_connection_oom_is_typed_before_error_formatting + 444
+3   shards_api-1004f0f8fcc190b7         0x00000001046cb62c _RNvYNCNvNtNtCsaMToI7IJzgv_10shards_api6client5tests53owned_connection_oom_is_typed_before_error_formatting0INtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_onceBa_ + 20
+4   shards_api-1004f0f8fcc190b7         0x00000001046df5e0 _RINvCs6pj9lYx6hxu_4test28___rust_begin_short_backtraceINtNtCs8Mbv00yxnRz_4core6result6ResultuNtNtCshxvaOLs88l5_5alloc6string6StringEFEBQ_EB2_ + 24
+5   shards_api-1004f0f8fcc190b7         0x00000001046ea914 _RNCNvCs6pj9lYx6hxu_4test8run_test0B3_ + 952
+6   shards_api-1004f0f8fcc190b7         0x00000001046e57f4 _RINvNtNtCs82bWklYMk3w_3std3sys9backtrace28___rust_begin_short_backtraceNCNvCs6pj9lYx6hxu_4test8run_tests_0uEB1b_ + 132
+7   shards_api-1004f0f8fcc190b7         0x00000001046ecddc _RNSNvYNCINvNtNtCs82bWklYMk3w_3std6thread9lifecycle15spawn_uncheckedNCNvCs6pj9lYx6hxu_4test8run_tests_0uEs_0INtNtNtCs8Mbv00yxnRz_4core3ops8function6FnOnceuE9call_once6vtableB17_ + 64
+8   shards_api-1004f0f8fcc190b7         0x000000010473fc98 _RNvNvMs0_NtNtNtCs82bWklYMk3w_3std3sys6thread4unixNtB7_6Thread3new12thread_start + 392
+9   libsystem_pthread.dylib             0x0000000181fd7c58 _pthread_start + 136
+10  libsystem_pthread.dylib             0x0000000181fd2c1c thread_start + 8
+memory allocation of 64 bytes failed
+memory allocation of 64 bytes failed
+skipping backtrace printing to avoid potential recursion
+error: test failed, to rerun pass `-p shards-api --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/scripts/hvf-run /Users/adalundhe/.cache/g121-managed-borrowed-trace-target/test-release/deps/shards_api-1004f0f8fcc190b7 'client::tests::owned_connection_oom_is_typed_before_error_formatting' --exact --test-threads=1 --nocapture` (signal: 6, SIGABRT: process abort signal)

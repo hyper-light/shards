@@ -1,0 +1,5 @@
+[    0.009877] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "capabilities", "reboot=k", "pci=off"]
+managed-network failed kind=InvalidInput errno=None: use capabilities [CONFIG] or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.056565] reboot: Power down

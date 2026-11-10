@@ -1,0 +1,28 @@
+diff --git a/docs/research/measurements/managed-borrowed/allocation.rs b/docs/research/measurements/managed-borrowed/allocation.rs
+index 4922e5c0..87bae32a 100644
+--- a/docs/research/measurements/managed-borrowed/allocation.rs
++++ b/docs/research/measurements/managed-borrowed/allocation.rs
+@@ -6,6 +6,7 @@ thread_local! {
+     static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
+ }
+ 
++static TRACE_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+ struct Allocator;
+ #[global_allocator]
+ static ALLOCATOR: Allocator = Allocator;
+@@ -28,6 +29,15 @@ fn refuse() -> bool {
+ unsafe impl GlobalAlloc for Allocator {
+     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+         if refuse() {
++            if layout.size() == 64 && !TRACE_TAKEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
++                let mut frames = [std::ptr::null_mut(); 32];
++                // Root test-only diagnostic: keep the allocation refusal unchanged.
++                unsafe {
++                    libc::write(2, b"ROOT-COLD-MUTEX-TRACE\n".as_ptr().cast(), b"ROOT-COLD-MUTEX-TRACE\n".len());
++                    let count = libc::backtrace(frames.as_mut_ptr(), 32);
++                    libc::backtrace_symbols_fd(frames.as_ptr(), count, 2);
++                }
++            }
+             std::ptr::null_mut()
+         } else {
+             // SAFETY: the caller's layout satisfies GlobalAlloc's contract.

@@ -1,0 +1,8 @@
+[    0.012230] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "capabilities"]
+managed-network capabilities kernel=6.18.48 netns=net:[4026531833]
+managed-network capability ipv4-transparent-bind=accepted nft-hook=unverified
+managed-network capability ipv6-transparent-bind=accepted nft-hook=unverified
+managed-network config=unverified provide-exact-built-config
+SHARDS-TEST PASS
+[    0.060816] reboot: Power down

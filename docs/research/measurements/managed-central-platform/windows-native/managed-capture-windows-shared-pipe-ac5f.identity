@@ -1,0 +1,11 @@
+ac5fe69eb39589b074e4e13e3b7d99ca3ab0a944
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-pc-windows-msvc
+release: 1.98.1
+LLVM version: 22.1.8
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+corph
+MINGW64_NT-10.0-26200 Jupiter 3.6.10-5a1665c8.x86_64 2026-09-28 10:40 UTC x86_64 Msys

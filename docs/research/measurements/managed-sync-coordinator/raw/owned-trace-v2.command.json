@@ -1,0 +1,1 @@
+["lockf", "/tmp/g121-mac.lock", "cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards-api", "--lib", "client::tests::owned_connection_oom_is_typed_before_error_formatting", "--", "--exact", "--test-threads=1", "--nocapture"]

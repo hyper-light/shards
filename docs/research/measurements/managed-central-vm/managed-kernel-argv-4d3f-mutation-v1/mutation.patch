@@ -1,0 +1,31 @@
+diff --git a/crates/vmm/src/vm/x86_64.rs b/crates/vmm/src/vm/x86_64.rs
+index 7cf46f9be..57fbe8edd 100644
+--- a/crates/vmm/src/vm/x86_64.rs
++++ b/crates/vmm/src/vm/x86_64.rs
+@@ -741,18 +741,17 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
+     config.share_window_mib = a.share_window_mib;
+     config.gpu = a.gpu_window;
+     let told = super::kernel_cmdline(cfg);
+-    let required = [
+-        Some(MACHINE_CMDLINE),
+-        a.pci.is_none().then_some(NO_PCI_CMDLINE),
+-        cfg!(hv = "whp").then_some(ONE_AT_A_TIME_CMDLINE),
+-    ];
+-    let mut cmdline_bytes = [0; layout::CMDLINE_MAX];
+-    let cmdline = super::cmdline::with_machine_options(&told, &required, &mut cmdline_bytes)
+-        .map_err(|e| e.to_string())?;
++    let mut cmdline = match &a.pci {
++        Some(_) => format!("{told} {MACHINE_CMDLINE}"),
++        None => format!("{told} {MACHINE_CMDLINE} {NO_PCI_CMDLINE}"),
++    };
++    if cfg!(hv = "whp") {
++        cmdline = format!("{cmdline} {ONE_AT_A_TIME_CMDLINE}");
++    }
+     let boot_state = boot::write_boot_state(
+         &memory,
+         kernel.entry,
+-        cmdline,
++        &cmdline,
+         &boot::ZeroPage {
+             ram,
+             initrd,

@@ -1,0 +1,6 @@
+{
+  "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+  "sha256": "fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d",
+  "provenance": "root r122 exact 5d231e source, 14 patches, NFT_SOCKET/NFT_TPROXY overlay; artifact SHA97819d00 configSHAfb1a17c6",
+  "association_with_booted_kernel": "coordinator-supplied, not independently verified"
+}

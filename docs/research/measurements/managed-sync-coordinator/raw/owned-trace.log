@@ -1,0 +1,25 @@
+   Compiling libc v0.2.189
+   Compiling typenum v1.20.1
+   Compiling const-oid v0.10.2
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/crates/abi)
+   Compiling cfg-if v1.0.5
+   Compiling triomphe v0.1.17
+   Compiling hybrid-array v0.4.15
+   Compiling crypto-common v0.2.2
+   Compiling block-buffer v0.12.1
+   Compiling digest v0.11.3
+   Compiling cpufeatures v0.3.1
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/crates/testdir)
+   Compiling sha2 v0.11.0
+   Compiling shards-api v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3.72s
+     Running unittests src/lib.rs (/Users/adalundhe/.cache/g121-managed-borrowed-trace-target/test-release/deps/shards_api-1004f0f8fcc190b7)
+
+running 1 test
+test client::tests::owned_connection_oom_is_typed_before_error_formatting ... memory allocation of 64 bytes failed
+memory allocation of 64 bytes failed
+skipping backtrace printing to avoid potential recursion
+error: test failed, to rerun pass `-p shards-api --lib`
+
+Caused by:
+  process didn't exit successfully: `/Users/adalundhe/Projects/shards/.claude/worktrees/managed-borrowed-trace/scripts/hvf-run /Users/adalundhe/.cache/g121-managed-borrowed-trace-target/test-release/deps/shards_api-1004f0f8fcc190b7 'client::tests::owned_connection_oom_is_typed_before_error_formatting' --exact --test-threads=1 --nocapture` (signal: 6, SIGABRT: process abort signal)

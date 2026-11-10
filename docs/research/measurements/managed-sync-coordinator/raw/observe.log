@@ -1,0 +1,2 @@
+mode=observe injected_allocation_bytes=64
+allocations=1 last_bytes=64

@@ -1,0 +1,5 @@
+(lldb) target create "/Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7"
+Current executable set to '/Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7' (arm64).
+(lldb) breakpoint set -r rust_alloc_error
+Breakpoint 1: where = shards_api-1004f0f8fcc190b7`__rustc::__rust_alloc_error_handler + 12 at alloc.rs:423:1, address = 0x00000001000e41f0
+(lldb) run --exact client::tests::owned_connection_oom_is_typed_before_error_formatting --test-threads=1 --nocapture

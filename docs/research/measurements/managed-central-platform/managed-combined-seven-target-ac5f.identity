@@ -1,0 +1,12 @@
+ac5fe69eb39589b074e4e13e3b7d99ca3ab0a944
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: aarch64-apple-darwin
+release: 1.98.1
+LLVM version: 22.1.8
+0.16.0
+cargo-xwin 0.23.1
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   460Gi   320Gi   115Gi    74%    3.5M  1.2G    0%   /System/Volumes/Data

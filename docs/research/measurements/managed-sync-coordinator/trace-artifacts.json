@@ -1,0 +1,14 @@
+{
+  "source_revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+  "test_only_patch": "raw/owned-trace-v2.patch",
+  "instrumented_binary": {
+    "path": "/Users/adalundhe/.cache/g121-managed-borrowed-trace-target/test-release/deps/shards_api-1004f0f8fcc190b7",
+    "sha256": "53ff2cc01648fb25443beb4356c06ca4cea7ae8134e7563cf2b158d90c171da8"
+  },
+  "original_unchanged_binary": {
+    "path": "/Users/adalundhe/.cache/g121-managed-borrowed-mac-target/test-release/deps/shards_api-1004f0f8fcc190b7",
+    "sha256": "46054f6fa67730987529b54eb73b9a6bb0ca8f119828c5c9b88fddb312dade9d"
+  },
+  "trace_worktree_status": "",
+  "warning": "trace artifact remains instrumented after source restoration; never reuse as ordinary passing artifact"
+}

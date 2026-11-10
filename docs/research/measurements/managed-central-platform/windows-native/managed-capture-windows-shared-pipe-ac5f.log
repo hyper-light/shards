@@ -1,0 +1,14 @@
+    Updating git repository `https://github.com/hyper-light/hyper-raft`
+   Compiling shards-abi v0.1.0 (C:\Users\corph\managed-capture-windows-check\crates\abi)
+   Compiling windows-link v0.2.1
+   Compiling shards-testdir v0.1.0 (C:\Users\corph\managed-capture-windows-check\crates\testdir)
+   Compiling windows-sys v0.61.2
+   Compiling shards-ipc v0.1.0 (C:\Users\corph\managed-capture-windows-check\crates\ipc)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 28.30s
+     Running unittests src\lib.rs (C:/Users/corph/managed-capture-windows-target\test-release\deps\shards_ipc-51679e9294aa53fc.exe)
+
+running 1 test
+test pipe::tests::a_shared_plain_handle_survives_the_original_stream_and_keeps_half_close ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 70 filtered out; finished in 0.00s
+

@@ -1,0 +1,12 @@
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: aarch64-apple-darwin
+release: 1.98.1
+LLVM version: 22.1.8
+Darwin Adas-MacBook-Pro-2.local 25.4.0 Darwin Kernel Version 25.4.0: Thu Mar 19 19:33:50 PDT 2026; root:xnu-12377.101.15~1/RELEASE_ARM64_T6050 arm64
+uid=501(adalundhe) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),264(_webdeveloper),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae),701(com.apple.sharepoint.group.1)
+Filesystem   1024-blocks       Used Available Capacity  iused     ifree %iused  Mounted on
+/dev/disk3s5  7811034400 7744230600  39920608   100% 16702961 399206080    4%   /System/Volumes/Data
+59d9f918abc11bfd1a4d2c474023c53fd73f017be31ce22cc7b81f978c0313bc  /Users/adalundhe/g121-managed-sync-cold-mutex-v1/source.rs
