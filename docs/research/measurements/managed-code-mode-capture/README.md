@@ -1,5 +1,9 @@
 # Legacy code-mode E2E migration to private canonical capture
 
+The migrated ordinary E2E passed in actual KVM r86. [Results](RESULTS.md) retain
+all original outcomes, source/binary associations,112-member raw archive and
+remaining limits. No production change or restored line rewriting.
+
 Role: implementer and assigned adversarial tester `/root/terminal_order_fixture`.
 Source `0219ab2eb2466ee3e9b08064434dc9efd70053d5`; loaded policy from that source
 and canonical origin/main `cbd39284937d024640c56db6f8d8ef2bd9b0ee24` (identical
@@ -15,6 +19,13 @@ new metadata closure may carry those raw files; this0219 checkout contains only
 the admission README/allocation source, so the raw directory is not present here.
 The received coordinator's actual record is the baseline, not a new local
 reproduction or proof that its unobserved tool outputs passed.
+At closing, canonical main `33df95b08ad8f95bddeaa1c48acf0c64386e0eac`
+contains that raw record. Its identity/exit/log were read through Git and verified:
+actual source3b, exit101, first missing prefixed line; log SHA256
+`72805b3e49b1b12cd829ac9e2810df5ee3344a77d632f2a0be80f922cc9e512c`.
+Current AGENTS/rules/evidence/CLAUDE are unchanged from loaded0219, rules hash
+stilldf2 above; current plan status/G22 updates were loaded. The owned task and
+constraints are unchanged.
 
 ## Existing seam and exact scope
 
