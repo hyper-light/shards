@@ -1,6 +1,8 @@
 set -eu
 export CARGO_TARGET_DIR="$HOME/managed-borrowed-held-target"
-evidence="$HOME/managed-borrowed-evidence/held-output-v1"
+batch="${HELD_OUTPUT_EVIDENCE:-held-output-v2}"
+evidence="$HOME/managed-borrowed-evidence/$batch"
+test ! -e "$evidence"
 mkdir -p "$evidence"
 git rev-parse HEAD > "$evidence/source.txt"
 git status --short > "$evidence/status.txt"
@@ -83,10 +85,12 @@ build restored
 cp "$binary" "$evidence/restored.bin"
 run_check restored "$binary" --exact "$test_name" --test-threads=1 --nocapture
 test "$(cat "$evidence/restored.exit")" -eq 0
-run_check corpus cargo test --locked -j4 --profile test-release --target x86_64-unknown-linux-gnu -p shards-api -- --test-threads=1 --nocapture
+if test "${HELD_OUTPUT_FOCUSED_ONLY:-0}" -ne 1; then
+  run_check corpus cargo test --locked -j4 --profile test-release --target x86_64-unknown-linux-gnu -p shards-api -- --test-threads=1 --nocapture
+  test "$(cat "$evidence/corpus.exit")" -eq 0
+fi
 run_check clippy cargo clippy --locked -j4 --target x86_64-unknown-linux-gnu -p shards-api -p shards-afunix --all-targets -- -D warnings
 sha256sum crates/api/src/*.rs crates/api/tests/sim.rs docs/research/measurements/managed-borrowed/held-output.rs > "$evidence/final-source.sha256"
 diff "$evidence/source.sha256" "$evidence/final-source.sha256" > "$evidence/final-source.diff"
-test "$(cat "$evidence/corpus.exit")" -eq 0
 test "$(cat "$evidence/clippy.exit")" -eq 0
-tar --exclude='*.bin' -czf "$HOME/managed-borrowed-evidence/held-output-v1-raw.tgz" -C "$evidence" .
+tar --exclude='*.bin' -czf "$HOME/managed-borrowed-evidence/$batch-raw.tgz" -C "$evidence" .

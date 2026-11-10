@@ -188,24 +188,26 @@ fn a_child_holding_shards_output_holds_no_refusal_back() {
         .unwrap()
         .write_all(b"x")
         .unwrap();
-    assert!(fixture.writer.as_mut().unwrap().wait().unwrap().success());
+    let writer_status = fixture.writer.as_mut().unwrap().wait().unwrap();
     fixture.join();
+    let vm_code = lock(&shared.state)
+        .status
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .code();
+    println!(
+        "writer_explicitly_released=true writer_exit={:?} vm_reaped_exit={vm_code:?} all_workers_joined=true",
+        writer_status.code()
+    );
+    assert!(writer_status.success());
+    assert_eq!(vm_code, Some(7));
+    assert!(lock(&shared.tail).drained);
     held_after.unwrap();
     assert!(unreaped);
     match refusal.unwrap() {
         Some(Refusal::Boot(why)) => assert!(why.contains("no kernel at kernel"), "{why}"),
         other => panic!("{other:?}"),
     }
-    assert!(lock(&shared.tail).drained);
-    assert_eq!(
-        lock(&shared.state)
-            .status
-            .as_ref()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .code(),
-        Some(7)
-    );
-    println!("writer_explicitly_released=true both_children_reaped=true all_workers_joined=true");
 }
