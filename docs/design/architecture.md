@@ -20473,8 +20473,14 @@ are charged to that same scope, not added as an unexplained entitlement.
 
 Prepared launch, Starting, Running, Stopping, Draining, Ended and Faulted are
 explicit. Termination status and population emptiness are distinct observations.
-A read/control failure faults the run rather than supplying an exit status or
-polling a known failing descriptor indefinitely. Reported child setup/exec errno
+A tenant population-read failure quarantines that tenant when its held cgroup and
+leader stop controls still contain it: admission/output end, its bad poll object is
+unregistered, and siblings/main continue. Quarantined retains unknown population,
+observed status and owned charges; it is not Ended or checkpoint-ready. Failed
+population/leader control or conflicting reaping status is a typed shared-boundary
+failure. See the [fault matrix and evidence](../research/measurements/managed-lifecycle/fault-scope.md).
+Neither local quarantine nor shared failure invents an exit status from a failed
+observation or polls a known failing descriptor indefinitely. Reported child setup/exec errno
 failures travel apart from an application's exit code. Error-pipe EOF alone does
 not establish actual exec against abrupt pre-exec death; that startup-confirmation
 limit remains explicit pending root's fault/contract review. Canonical output

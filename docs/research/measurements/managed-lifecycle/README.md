@@ -117,3 +117,12 @@ owed. The old-source test diff is `~/managed-lifecycle-pids-control-fixture.patc
 | R14 | No allocation-free/low-cost claim. Root measures additional process/FD/parent/kernel costs and allocation/fault paths. |
 | R15 | Implementer ran scoped compile/unit checks only; root owns audit/heavy/adversarial/benchmark/merge work. No subagents or self-merges. |
 | R16 | Owned local compiler cache only232MiB when checked; Mac remained above30GiB, last34GiB. No cleanup or user-data/source/evidence deletion. |
+
+## Tenant-local failure update
+
+The initial read-error → whole-run failure rule is superseded by the
+[tenant-local fault matrix](fault-scope.md), its typed quarantine/control outcomes
+and native9/9 evidence. A domain is a tenant within a potentially shared microVM.
+Quarantined retains unknown population and owned references; no claim of full
+cleanup/checkpoint readiness is made. Root's mixed-tenant actual-VM/mutation tests
+and the separate typed checkpoint-refusal slice remain required.

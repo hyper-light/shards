@@ -39,6 +39,31 @@ impl std::fmt::Display for Failure {
 
 impl std::error::Error for Failure {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundaryFault {
+    PopulationControl { errno: i32 },
+    LeaderControl { errno: i32 },
+    StatusConflict,
+}
+
+impl std::fmt::Display for BoundaryFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PopulationControl { errno } => write!(f, "tenant population control lost: errno {errno}"),
+            Self::LeaderControl { errno } => write!(f, "tenant leader control lost: errno {errno}"),
+            Self::StatusConflict => f.write_str("conflicting owned termination status"),
+        }
+    }
+}
+
+impl std::error::Error for BoundaryFault {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Update {
+    Observed,
+    Quarantined { errno: i32 },
+}
+
 impl Failure {
     fn protocol(step: Step) -> Self {
         Self {
@@ -75,9 +100,20 @@ pub enum State {
     Starting,
     Running,
     Stopping,
-    Draining { status: u32 },
-    Ended { status: u32 },
-    Faulted { status: Option<u32>, errno: i32 },
+    Draining {
+        status: u32,
+    },
+    Ended {
+        status: u32,
+    },
+    Quarantined {
+        status: Option<u32>,
+        errno: i32,
+    },
+    Faulted {
+        status: Option<u32>,
+        fault: BoundaryFault,
+    },
 }
 
 impl State {
@@ -88,18 +124,25 @@ impl State {
         }
     }
 
-    fn reaped(self, status: u32) -> io::Result<Self> {
+    fn reaped(self, status: u32) -> Result<Self, BoundaryFault> {
         match self {
             Self::Starting | Self::Running | Self::Stopping => Ok(Self::Draining { status }),
             Self::Draining { status: old } | Self::Ended { status: old } if old == status => Ok(self),
-            Self::Faulted { status: None, errno } => Ok(Self::Faulted {
+            Self::Quarantined { status: None, errno } => Ok(Self::Quarantined {
                 status: Some(status),
                 errno,
+            }),
+            Self::Quarantined {
+                status: Some(old), ..
+            } if old == status => Ok(self),
+            Self::Faulted { status: None, fault } => Ok(Self::Faulted {
+                status: Some(status),
+                fault,
             }),
             Self::Faulted {
                 status: Some(old), ..
             } if old == status => Ok(self),
-            _ => Err(io::Error::from_raw_os_error(libc::EALREADY)),
+            _ => Err(BoundaryFault::StatusConflict),
         }
     }
 
@@ -110,13 +153,19 @@ impl State {
         }
     }
 
-    fn faulted(self, errno: i32) -> Self {
-        let status = match self {
+    fn status(self) -> Option<u32> {
+        match self {
             Self::Draining { status } | Self::Ended { status } => Some(status),
-            Self::Faulted { status, .. } => status,
+            Self::Quarantined { status, .. } | Self::Faulted { status, .. } => status,
             _ => None,
-        };
-        Self::Faulted { status, errno }
+        }
+    }
+
+    fn faulted(self, fault: BoundaryFault) -> Self {
+        Self::Faulted {
+            status: self.status(),
+            fault,
+        }
     }
 }
 
@@ -317,42 +366,88 @@ impl Owned {
         self.pid == pid
             && matches!(
                 self.state,
-                State::Starting | State::Running | State::Stopping | State::Faulted { status: None, .. }
+                State::Starting
+                    | State::Running
+                    | State::Stopping
+                    | State::Quarantined { status: None, .. }
+                    | State::Faulted { status: None, .. }
             )
     }
-    pub fn events(&self) -> RawFd {
-        self.events.as_raw_fd()
+    pub fn events(&self) -> Option<RawFd> {
+        match self.state {
+            State::Ended { .. } | State::Quarantined { .. } | State::Faulted { .. } => None,
+            _ => Some(self.events.as_raw_fd()),
+        }
     }
     pub fn ended(&self) -> bool {
         matches!(self.state, State::Ended { .. })
     }
 
-    pub fn stop(&mut self) -> io::Result<()> {
-        if self.ended() {
+    pub fn quarantined(&self) -> bool {
+        matches!(self.state, State::Quarantined { .. })
+    }
+
+    /// A quarantine can finish VM disposal; it does not prove emptiness or release its charge.
+    pub fn settled(&self) -> bool {
+        self.ended() || self.quarantined()
+    }
+
+    pub fn stop(&mut self) -> Result<(), BoundaryFault> {
+        if self.settled() {
             return Ok(());
         }
         self.state = self.state.stopping();
         self.owner = None;
-        self.kill_population()
+        self.kill_population().map_err(|e| {
+            let fault = BoundaryFault::PopulationControl {
+                errno: e.raw_os_error().unwrap_or(libc::EIO),
+            };
+            self.state = self.state.faulted(fault);
+            fault
+        })
     }
 
-    pub fn reaped(&mut self, status: u32) -> io::Result<()> {
-        self.state = self.state.reaped(status)?;
+    pub fn reaped(&mut self, status: u32) -> Result<Update, BoundaryFault> {
+        self.state = self
+            .state
+            .reaped(status)
+            .inspect_err(|&fault| self.state = self.state.faulted(fault))?;
+        if self.quarantined() {
+            return Ok(Update::Observed);
+        }
         self.owner = None;
-        self.kill_population()?;
+        self.stop()?;
         self.changed()
     }
 
-    pub fn changed(&mut self) -> io::Result<()> {
+    pub fn changed(&mut self) -> Result<Update, BoundaryFault> {
+        if self.settled() {
+            return Ok(Update::Observed);
+        }
         match self.population_empty() {
             Ok(true) => self.state = self.state.empty(),
             Ok(false) => {}
             Err(e) => {
-                self.state = self.state.faulted(e.raw_os_error().unwrap_or(libc::EIO));
-                return Err(e);
+                return self.quarantine(e.raw_os_error().unwrap_or(libc::EIO));
             }
         }
-        Ok(())
+        Ok(Update::Observed)
+    }
+
+    fn quarantine(&mut self, errno: i32) -> Result<Update, BoundaryFault> {
+        self.stop()?;
+        if let Err(e) = signal_stop(&self.pidfd) {
+            let fault = BoundaryFault::LeaderControl {
+                errno: e.raw_os_error().unwrap_or(libc::EIO),
+            };
+            self.state = self.state.faulted(fault);
+            return Err(fault);
+        }
+        self.state = State::Quarantined {
+            status: self.state.status(),
+            errno,
+        };
+        Ok(Update::Quarantined { errno })
     }
 
     fn population_empty(&self) -> io::Result<bool> {
@@ -388,6 +483,30 @@ impl Owned {
 
     fn kill_population(&self) -> io::Result<()> {
         kill_population(&self.kill)
+    }
+}
+
+fn signal_stop(pidfd: &OwnedFd) -> io::Result<()> {
+    loop {
+        // SAFETY: the held pidfd names this tenant's namespace init; it cannot select a reused PID.
+        let stopped = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        if stopped == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => return Ok(()),
+            Some(libc::EINTR) => {}
+            _ => return Err(error),
+        }
     }
 }
 
@@ -795,7 +914,7 @@ mod tests {
     fn a_second_completion_cannot_replace_the_owned_status() {
         for state in [State::Draining { status: 17 }, State::Ended { status: 17 }] {
             assert_eq!(state.reaped(17).unwrap(), state);
-            assert_eq!(state.reaped(18).unwrap_err().raw_os_error(), Some(libc::EALREADY));
+            assert_eq!(state.reaped(18).unwrap_err(), BoundaryFault::StatusConflict);
             assert_eq!(state.stopping(), state);
         }
     }
@@ -813,45 +932,160 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_real_population_read_error_faults_the_owner_and_stop_still_works() {
-        let dir = shards_testdir::TempDir::new("lifecycle-events-error").unwrap();
-        let group = std::fs::File::open(&dir).unwrap();
+    struct Child {
+        pid: Option<libc::pid_t>,
+        pidfd: OwnedFd,
+    }
+
+    impl Child {
+        fn start() -> Self {
+            let mut pidfd = -1;
+            let mut args = crate::domains::CloneArgs {
+                flags: libc::CLONE_PIDFD as u64,
+                pidfd: (&raw mut pidfd) as u64,
+                exit_signal: libc::SIGCHLD as u64,
+                ..Default::default()
+            };
+            // SAFETY: a private fixture child; its branch calls only raw setup/pause/exit.
+            let parent = unsafe { libc::getpid() };
+            // SAFETY: clone3 writes its pidfd into this slot in the parent only.
+            let pid = unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    &raw mut args,
+                    size_of::<crate::domains::CloneArgs>(),
+                )
+            };
+            if pid == 0 {
+                // SAFETY: no inherited allocator/runtime state is entered by the child.
+                unsafe {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
+                        || libc::getppid() != parent
+                    {
+                        libc::_exit(1);
+                    }
+                    loop {
+                        libc::pause();
+                    }
+                }
+            }
+            assert!(pid > 0, "clone3: {}", io::Error::last_os_error());
+            assert!(pidfd >= 0);
+            Self {
+                pid: Some(libc::pid_t::try_from(pid).unwrap()),
+                // SAFETY: CLONE_PIDFD created the sole descriptor stored here.
+                pidfd: unsafe { OwnedFd::from_raw_fd(pidfd) },
+            }
+        }
+
+        fn reap(&mut self) -> u32 {
+            let pid = self.pid.take().unwrap();
+            let mut status = 0;
+            loop {
+                // SAFETY: this fixture alone waits for its own child.
+                let got = unsafe { libc::waitpid(pid, &raw mut status, 0) };
+                if got == pid {
+                    break;
+                }
+                assert_eq!(io::Error::last_os_error().kind(), io::ErrorKind::Interrupted);
+            }
+            assert!(libc::WIFSIGNALED(status));
+            assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
+            128 + libc::WTERMSIG(status) as u32
+        }
+    }
+
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if self.pid.is_some() {
+                let _ = signal_stop(&self.pidfd);
+                self.reap();
+            }
+        }
+    }
+
+    fn wrong_event_owner(dir: &std::path::Path, pidfd: OwnedFd, pid: libc::pid_t) -> Owned {
+        let group = std::fs::File::open(dir).unwrap();
         let kill = std::fs::File::create(dir.join("kill")).unwrap();
-        let (pidfd, other) = pipe().unwrap();
-        drop(other);
         let (_, owner) = pipe().unwrap();
-        let mut domain = Owned {
-            pid: 0,
+        Owned {
+            pid,
             pidfd,
             _group: group.try_clone().unwrap(),
             kill,
-            // Reading a directory yields a real EISDIR, without changing any live cgroup.
+            // Reading a private directory gives EISDIR, never a real kernel cgroup fault.
             events: group,
             owner: Some(owner),
             ready: None,
             setup: None,
             state: State::Running,
-        };
-        assert_eq!(domain.changed().unwrap_err().raw_os_error(), Some(libc::EISDIR));
+        }
+    }
+
+    #[test]
+    fn a_real_observation_error_quarantines_only_the_owned_tenant() {
+        let mut child = Child::start();
+        let sibling = Child::start();
+        let dir = shards_testdir::TempDir::new("lifecycle-events-error").unwrap();
+        let mut domain = wrong_event_owner(&dir, child.pidfd.try_clone().unwrap(), child.pid.unwrap());
+        assert_eq!(domain.changed(), Ok(Update::Quarantined { errno: libc::EISDIR }));
         assert_eq!(
             domain.state,
-            State::Faulted {
+            State::Quarantined {
                 status: None,
                 errno: libc::EISDIR
             }
         );
-        domain.stop().unwrap();
-        assert_eq!(
-            domain.state,
-            State::Faulted {
-                status: None,
-                errno: libc::EISDIR
-            }
-        );
-        assert!(!domain.ended());
         assert!(domain.owner.is_none());
+        assert!(domain.events().is_none());
+        assert!(domain.settled());
+        assert!(!domain.ended());
         assert_eq!(std::fs::read(dir.join("kill")).unwrap(), b"1");
-        // The test's pidfd is a pipe, so Drop's pidfd_send_signal cannot name a process.
+        let status = child.reap();
+        assert_eq!(domain.reaped(status), Ok(Update::Observed));
+        assert_eq!(
+            domain.state,
+            State::Quarantined {
+                status: Some(status),
+                errno: libc::EISDIR
+            }
+        );
+        assert_eq!(domain.changed(), Ok(Update::Observed));
+        assert!(!domain.ended());
+        let mut poll = libc::pollfd {
+            fd: sibling.pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: a nonblocking look at the independent fixture child's pidfd.
+        assert_eq!(unsafe { libc::poll(&raw mut poll, 1, 0) }, 0);
+    }
+
+    #[test]
+    fn a_lost_population_control_is_a_shared_boundary_failure() {
+        let dir = shards_testdir::TempDir::new("lifecycle-kill-error").unwrap();
+        let (wrong_pidfd, other) = pipe().unwrap();
+        drop(other);
+        let mut domain = wrong_event_owner(&dir, wrong_pidfd, 0);
+        domain.kill = std::fs::File::open(dir.join("kill")).unwrap();
+        let fault = BoundaryFault::PopulationControl { errno: libc::EBADF };
+        assert_eq!(domain.changed(), Err(fault));
+        assert_eq!(domain.state, State::Faulted { status: None, fault });
+        assert!(!domain.settled());
+        assert!(domain.owner.is_none());
+        assert!(domain.events().is_none());
+    }
+
+    #[test]
+    fn a_lost_leader_identity_is_a_shared_boundary_failure() {
+        let dir = shards_testdir::TempDir::new("lifecycle-identity-error").unwrap();
+        let (wrong_pidfd, other) = pipe().unwrap();
+        drop(other);
+        let mut domain = wrong_event_owner(&dir, wrong_pidfd, 0);
+        let fault = BoundaryFault::LeaderControl { errno: libc::EBADF };
+        assert_eq!(domain.changed(), Err(fault));
+        assert_eq!(domain.state, State::Faulted { status: None, fault });
+        assert!(!domain.settled());
+        assert!(domain.events().is_none());
     }
 }

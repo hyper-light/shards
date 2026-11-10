@@ -550,6 +550,13 @@ pub struct Started {
     pub partial: Vec<u8>,
 }
 
+impl Started {
+    pub fn abort_output(&mut self) {
+        self.out = None;
+        self.partial.clear();
+    }
+}
+
 /// `struct clone_args` (include/uapi/linux/sched.h), as `clone3` reads it.
 #[repr(C)]
 #[derive(Default)]
@@ -940,7 +947,11 @@ impl Memory {
 
     /// After the watch says the domains' memory changed: ends the domain holding the most
     /// where they are past their share, and says so through `say`.
-    pub fn relieve(&self, domains: &mut [Started], mut say: impl FnMut(&[u8])) {
+    pub fn relieve(
+        &self,
+        domains: &mut [Started],
+        mut say: impl FnMut(&[u8]),
+    ) -> Result<(), crate::managed::BoundaryFault> {
         let mut buf = [0u8; 4096];
         // SAFETY: read(2) into a buffer it owns, until the watch has nothing more.
         while unsafe { libc::read(self.events.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) } > 0 {}
@@ -980,10 +991,10 @@ impl Memory {
             number(&format!("{CGROUPS}/memory.current")),
             number(&format!("{CGROUPS}/memory.high")),
         ) else {
-            return;
+            return Ok(());
         };
         if current <= high {
-            return;
+            return Ok(());
         }
         let most = domains
             .iter()
@@ -991,8 +1002,10 @@ impl Memory {
             .filter(|(_, d)| populated(d))
             .map(|(i, d)| (i, number(&format!("{}/memory.current", d.cgroup)).unwrap_or(0)))
             .max_by_key(|&(_, held)| held);
-        let Some((i, held)) = most else { return };
-        let Some(d) = domains.get_mut(i) else { return };
+        let Some((i, held)) = most else { return Ok(()) };
+        let Some(d) = domains.get_mut(i) else {
+            return Ok(());
+        };
         // What it held, as its `memory.stat` counts it, read before it is ended.
         let stat = std::fs::read_to_string(format!("{}/memory.stat", d.cgroup)).unwrap_or_default();
         let of = |key: &str| {
@@ -1001,13 +1014,13 @@ impl Memory {
                 .map_or("?", |(_, v)| v.trim())
         };
         let (anon, file, shmem, kernel) = (of("anon"), of("file"), of("shmem"), of("kernel"));
-        if d.lifecycle.stop().is_ok() {
-            say(format!(
-                "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
-                d.label
-            )
-            .as_bytes());
-        }
+        d.lifecycle.stop()?;
+        say(format!(
+            "[{}] shards-init: ended: the agents' memory, {current} bytes, was past their share, {high}, and its {held} the most: anon {anon}, file {file}, shmem {shmem}, kernel {kernel}\n",
+            d.label
+        )
+        .as_bytes());
+        Ok(())
     }
 }
 
