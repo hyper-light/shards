@@ -13,7 +13,7 @@ import paired as p
 def manifest(variant="before", revision="a" * 40):
     artifacts = {name: {"path": f"/synthetic/{variant}/{name}", "sha256": "1" * 64} for name in (*p.ARTIFACTS, "build_record", "workload_record")}
     artifacts["testguest"]["path"] = f"/synthetic/{variant}/guests/guest/shards-testguest"
-    return {"schema": "managed-output-cost-pair-manifest-v1", "variant": variant, "source": {"directory": f"/synthetic/{variant}/source", "revision": revision, "tree": "b" * 40}, "artifacts": artifacts, "test_guests": f"/synthetic/{variant}/guests", "environment": {"PATH": "/usr/bin:/bin", "HOME": "/synthetic/home"}}
+    return {"schema": "managed-output-cost-pair-manifest-v1", "build_profile": "release", "variant": variant, "source": {"directory": f"/synthetic/{variant}/source", "revision": revision, "tree": "b" * 40}, "artifacts": artifacts, "test_guests": f"/synthetic/{variant}/guests", "environment": {"PATH": "/usr/bin:/bin", "HOME": "/synthetic/home"}}
 
 
 def synthetic_case(m, members=1):
@@ -48,7 +48,7 @@ class PurePairedTests(unittest.TestCase):
     def test_manifest_requires_exact_source_roles_public_env_and_prebuilt_guest(self):
         valid = manifest()
         self.assertEqual(p.validate_manifest(valid), valid)
-        for path, bad in [(('source', 'revision'), 'main'), (('environment', 'TOKEN'), 'synthetic-secret'), (('artifacts', 'fixture', 'sha256'), 'missing'), (('artifacts', 'testguest', 'path'), '/different/path')]:
+        for path, bad in [(('build_profile',), 'test-release'), (('source', 'revision'), 'main'), (('environment', 'TOKEN'), 'synthetic-secret'), (('artifacts', 'fixture', 'sha256'), 'missing'), (('artifacts', 'testguest', 'path'), '/different/path')]:
             value = copy.deepcopy(valid)
             owner = value
             for key in path[:-1]:

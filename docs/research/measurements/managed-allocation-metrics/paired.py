@@ -96,6 +96,9 @@ def absolute(value):
 def validate_manifest(value):
     require(isinstance(value, dict), "ManifestObjectRequired")
     require(value.get("schema") == "managed-output-cost-pair-manifest-v1", "UnsupportedManifest")
+    # CLAUDE.md requires release for measurements; root still reviews the
+    # retained actual build record, not merely this manifest declaration.
+    require(value.get("build_profile") == "release", "ReleaseMeasurementBuildRequired")
     require(isinstance(value.get("variant"), str) and re.fullmatch(r"[A-Za-z0-9_-]+", value["variant"]), "MalformedVariant")
     source = value.get("source", {})
     require(isinstance(source, dict), "SourceObjectRequired")
