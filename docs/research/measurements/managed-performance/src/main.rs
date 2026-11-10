@@ -256,6 +256,8 @@ impl Event {
 #[derive(Debug)]
 enum Ask {
     Connect(SocketAddr),
+    Close,
+    Seen(mpsc::SyncSender<shards_remote::net::Seen>),
 }
 
 struct Client {
@@ -399,6 +401,17 @@ impl Handler for Client {
                     Err(e) => self.fail(e),
                 }
             }
+            Ask::Close => {
+                if let Some(conn) = self.conn {
+                    io.close(conn, 0, "observer measurement complete");
+                }
+                self.done = true;
+            }
+            Ask::Seen(sender) => {
+                if let Some(seen) = self.conn.and_then(|conn| io.seen(conn)) {
+                    let _ = sender.try_send(seen);
+                }
+            }
         }
     }
     fn done(&self) -> bool {
@@ -459,6 +472,32 @@ impl Drop for Live {
     }
 }
 impl Live {
+    fn seen(&self, patience: Duration) -> Result<()> {
+        let (send, receive) = mpsc::sync_channel(1);
+        self.sender
+            .as_ref()
+            .ok_or("observer")?
+            .send(Command::Handler(Ask::Seen(send)))?;
+        let seen = receive.recv_timeout(patience)?;
+        println!(
+            "client_transport\tsent_udp_payload_bytes={}\tacked_bytes={}\tlost_packets={}",
+            seen.sent_bytes, seen.acked_bytes, seen.lost_packets
+        );
+        Ok(())
+    }
+    fn disconnect_observer(&mut self) -> Result<()> {
+        self.sender
+            .take()
+            .ok_or("observer")?
+            .send(Command::Handler(Ask::Close))?;
+        self.client
+            .take()
+            .ok_or("observer thread")?
+            .join()
+            .map_err(|_| "observer panicked")??;
+        self.events = None;
+        Ok(())
+    }
     fn client(&mut self, owner: &Identity, server: &Identity, admitted: Admitted, ack: bool) -> Result<()> {
         let (event, events) = mpsc::sync_channel(1);
         let handler = Client {
@@ -511,6 +550,122 @@ impl Live {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+pub(super) fn certificate_probe() -> Result<()> {
+    use hyper_quic::rustls::compress::{BROTLI_COMPRESSOR, CompressionLevel, ZLIB_COMPRESSOR};
+    let identity = Identity::generate()?;
+    let case = std::env::var("MANAGED_CERTIFICATE_CASE")?;
+    if case != "direct" && case != "handshake" {
+        return Err("certificate case must be direct or handshake".into());
+    }
+    // RFC 8446 §4.4.2: context<0..255>, certificate_list<uint24>,
+    // cert_data<uint24>, extensions<uint16>; RFC 7250 substitutes the SPKI.
+    let mut encoding = Vec::new();
+    encoding.try_reserve_exact(
+        identity
+            .spki()
+            .len()
+            .checked_add(9)
+            .ok_or("certificate size overflow")?,
+    )?;
+    encoding.push(0);
+    let entry = u32::try_from(identity.spki().len().checked_add(5).ok_or("entry overflow")?)?.to_be_bytes();
+    encoding.extend_from_slice(entry.get(1..).ok_or("uint24")?);
+    let length = u32::try_from(identity.spki().len())?.to_be_bytes();
+    encoding.extend_from_slice(length.get(1..).ok_or("uint24")?);
+    encoding.extend_from_slice(identity.spki());
+    encoding.extend_from_slice(&0_u16.to_be_bytes());
+    if case == "direct" {
+        for compressor in [BROTLI_COMPRESSOR, ZLIB_COMPRESSOR] {
+            for level in [CompressionLevel::Interactive, CompressionLevel::Amortized] {
+                let input = encoding.clone();
+                let start = Instant::now();
+                let before = counts();
+                let output = compressor
+                    .compress(input, level)
+                    .map_err(|_| "certificate compression failed")?;
+                let elapsed = start.elapsed();
+                println!(
+                    "certificate\talgorithm={:?}\tlevel={level:?}\tencoded_bytes={}\tcompressed_payload_bytes={}\tcompressed_message_bytes={}\tuncompressed_message_bytes={}",
+                    compressor.algorithm(),
+                    encoding.len(),
+                    output.len(),
+                    output.len().checked_add(8).ok_or("compressed size overflow")?,
+                    encoding.len()
+                );
+                phase("direct_compression", before, elapsed)?;
+            }
+        }
+        return Ok(());
+    }
+    let bytes: usize = std::env::var("MANAGED_BYTES")?.parse()?;
+    let patience = Duration::from_millis(std::env::var("MANAGED_PATIENCE_MS")?.parse()?);
+    let admitted = Admitted {
+        record_bytes: bytes,
+        transport_bytes: u64::try_from(
+            bytes
+                .checked_add(managed::DATA_HEAD)
+                .ok_or("transport overflow")?,
+        )?,
+        handshake_bytes: std::env::var("MANAGED_HANDSHAKE_BYTES")?.parse()?,
+        datagram_bytes: std::env::var("MANAGED_DATAGRAM_BYTES")?.parse()?,
+        patience,
+    };
+    let owner = Identity::generate()?;
+    let scope = Scope {
+        run: RunId([0; 32]),
+        generation: 1,
+        member: 0,
+        channel: Channel::Stdout,
+    };
+    let (endpoint, producer, control) = Endpoint::bind(&identity, owner.fingerprint(), scope, admitted)?;
+    let address = endpoint.address;
+    let server = thread::Builder::new().name("warm-server".into()).spawn(move || {
+        endpoint.run()?;
+        Ok(())
+    })?;
+    let mut live = Live {
+        producer: Some(producer),
+        control: OutputControl::Endpoint(control),
+        server: Some(server),
+        client: None,
+        sender: None,
+        events: None,
+        address,
+        scope,
+    };
+    let (wake, woke) = mpsc::sync_channel(1);
+    live.producer.as_ref().ok_or("producer")?.on_credit(move || {
+        let _ = wake.try_send(());
+    });
+    let repetitions: usize = std::env::var("MANAGED_REPETITIONS")?.parse()?;
+    for repeat in 0..repetitions {
+        let start = Instant::now();
+        let before = counts();
+        live.client(&owner, &identity, admitted, true)?;
+        live.producer.as_ref().ok_or("producer")?.wait_capacity()?;
+        phase(
+            if repeat == 0 {
+                "cold_server_tls"
+            } else {
+                "warm_server_fresh_client_tls"
+            },
+            before,
+            start.elapsed(),
+        )?;
+        live.seen(patience)?;
+        live.disconnect_observer()?;
+        loop {
+            if live.producer.as_ref().ok_or("producer")?.capacity() == 0 {
+                break;
+            }
+            woke.recv_timeout(patience)?;
+        }
+    }
+    live.end()?;
+    Ok(())
 }
 
 fn worker(

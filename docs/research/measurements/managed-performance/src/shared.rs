@@ -342,6 +342,19 @@ impl Handler for Clients {
                     }
                 }
             }
+            Ask::Close => {
+                if let Some(conn) = self.conn {
+                    io.close(conn, 0, "observer measurement complete");
+                }
+                for channel in &mut self.channels {
+                    channel.done = true;
+                }
+            }
+            Ask::Seen(sender) => {
+                if let Some(seen) = self.conn.and_then(|conn| io.seen(conn)) {
+                    let _ = sender.try_send(seen);
+                }
+            }
         }
     }
     fn done(&self) -> bool {

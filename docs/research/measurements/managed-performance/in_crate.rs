@@ -12,3 +12,9 @@ fn native_authenticated_comparison() {
     args.extend(arguments.split_whitespace().map(str::to_owned));
     measurement::run_with(args).expect("native authenticated measurement");
 }
+
+#[test]
+#[ignore = "explicit admitted certificate cost campaign only"]
+fn native_certificate_cost() {
+    measurement::certificate_probe().expect("native certificate cost");
+}
