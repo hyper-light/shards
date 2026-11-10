@@ -62,6 +62,14 @@ mod linux {
     use std::io;
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 
+    #[cfg(test)]
+    mod tests {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/research/measurements/managed-proc-main/repro.rs"
+        ));
+    }
+
     pub(super) fn started(pid: u32) -> io::Result<u64> {
         let at = format!("/proc/{pid}/stat");
         let stat = std::fs::read_to_string(&at)?;
