@@ -326,6 +326,37 @@ that input before echo; no helper or grant changes are selected. Actual refusal,
 phase/history, strict test failure and owned cleanup must be retained, followed
 by exact restoration. This is prepared source, not a run or production finding.
 
+## Invalid child-control tag and third exact restoration
+
+Resumed-session r10 ran exact signed mutation-only59672abe with real matching
+caller/static guest build0. The actual21-byte request began with tag0; no echo
+bytes arrived and the host recorded unexpected EOF. The strict A test failed101,
+one test/20 filtered, in2.09s. Separately retained history records the owned child
+exiting Challenge stage14 and its parent exiting Status stage10. Prior sibling
+fd1/fd2 and main progress is recorded; it is not evidence of new neighbor bytes
+after that refusal. Owned stop/remove/joins completed with FD11→11.
+[Actual refusal receipt](live-cbd-v1/raw-v6/child-control-v9/result.json).
+
+r11 preserved the mutation final binaries in `frozen/59672abe1`, restored exact
+0ea38a52 source and rebuilt caller/static guest0. Caller and guest both matched
+the frozen positive bytes. A fresh actual strict A test passed0, one selected
+test/20 filtered, in1.67s, with exact challenge, inherited suffix/End/ACK/EOF,
+strict metadata and owned cleanup FD11→11.
+[Exact restoration](live-cbd-v1/raw-v6/restored-v10/result.json).
+
+[Transfer manifest](live-cbd-v1/raw-v6/TRANSFER.json) retains129 length/SHA256-
+verified files (62,066 bytes), with full Cargo JSONL/final binaries on Linux.
+This adds real owned-fixture input/refusal/lifecycle validity evidence only.
+It does not establish a product ownership guard, complete reaping/kernel return
+or full managed-runtime closure. Existing R01–R16 limits remain unchanged.
+
+The next finite current-source case is the existing frozen B test
+`tenant_exit::stdio::actor_stdio_eof_preserves_actor_control_and_neighbor_lifetime`
+on exact0ea, using a fresh UUID16 challenge and report91 (49 controlled prefix
+bytes plus42 request/echo bytes). No helper, host B body, protocol, grants or
+assertion change is proposed. The approved optional task argument remains None
+for B, as for the existing default/normal callers. Actual result is pending.
+
 ## R01–R16 at this checkpoint
 
 | Rule | Evidence and remaining limit |

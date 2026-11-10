@@ -1,0 +1,30 @@
+{
+  "cause_known_to_host": "transport IO only; actor IO failure phase/history can remain Unknown",
+  "complete": false,
+  "error": "unexpected end of file",
+  "received": [],
+  "sent": [
+    0,
+    0,
+    0,
+    0,
+    16,
+    162,
+    71,
+    106,
+    190,
+    73,
+    137,
+    77,
+    11,
+    158,
+    128,
+    145,
+    142,
+    90,
+    116,
+    65,
+    187
+  ],
+  "state": "OwnerChallengeAfterParentWritersClosedAndNewSiblingBytes"
+}

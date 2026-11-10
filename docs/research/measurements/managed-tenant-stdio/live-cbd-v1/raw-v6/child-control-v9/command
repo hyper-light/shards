@@ -1,0 +1,1 @@
+/home/adalundhe/managed-tenant-live-01a1c5d2-v1/target/test-release/deps/managed_output-27c7f5b2529c465b tenant_exit::stdio::inherited::inherited_child_writers_survive_parent_stdio_closure --exact --ignored --nocapture --test-threads=1

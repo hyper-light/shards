@@ -1,0 +1,11 @@
+commit 59672abe11b677c6fb0d48ce4d5c019d272d84a9
+Author:     Ada Lundhe <adalundhe@lundhe.audio>
+AuthorDate: Tue Nov 10 09:59:50 2026 -0800
+Commit:     Ada Lundhe <adalundhe@lundhe.audio>
+CommitDate: Tue Nov 10 09:59:50 2026 -0800
+
+    test: send invalid owned-child control tag for bounded refusal case
+    
+    Mutation-only candidate from0ea38a52 changes one host fixture challenge tag from1 to0. The existing native child checks the tag before echo; preserve all literal helpers, resource inputs, grants, exact byte/End assertions and finite owned cleanup. No product ownership proof or production correction is claimed.
+    
+    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

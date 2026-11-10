@@ -1,0 +1,49 @@
+{
+  "source": "59672abe11b677c6fb0d48ce4d5c019d272d84a9",
+  "test_exit": 101,
+  "parent_status_stage10_observed": true,
+  "child_challenge_stage14_observed": true,
+  "actor_control": {
+    "cause_known_to_host": "transport IO only; actor IO failure phase/history can remain Unknown",
+    "complete": false,
+    "error": "unexpected end of file",
+    "received": [],
+    "sent": [
+      0,
+      0,
+      0,
+      0,
+      16,
+      162,
+      71,
+      106,
+      190,
+      73,
+      137,
+      77,
+      11,
+      158,
+      128,
+      145,
+      142,
+      90,
+      116,
+      65,
+      187
+    ],
+    "state": "OwnerChallengeAfterParentWritersClosedAndNewSiblingBytes"
+  },
+  "prior_sibling_progress_record": true,
+  "teardown": {
+    "observer_fd_baseline": 11,
+    "owner_stop_observer_join": {
+      "complete": true,
+      "error": null
+    },
+    "parent_child_waitstatus_and_full_population_return": "Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop",
+    "protocol_complete": false,
+    "run_removed": true
+  },
+  "proof_scope": "owned fixture input/refusal validity only; no ownership guard or post-fault neighbor proof",
+  "full_population_kernel_return": "Unknown"
+}

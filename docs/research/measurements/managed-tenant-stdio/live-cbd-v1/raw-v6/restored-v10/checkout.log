@@ -1,0 +1,11 @@
+Warning: you are leaving 1 commit behind, not connected to
+any of your branches:
+
+  59672ab test: send invalid owned-child control tag for bounded refusal case
+
+If you want to keep it by creating a new branch, this may be a good time
+to do so with:
+
+ git branch <new-branch-name> 59672ab
+
+HEAD is now at 0ea38a5 test: record live inherited writer pass and correct release caption
