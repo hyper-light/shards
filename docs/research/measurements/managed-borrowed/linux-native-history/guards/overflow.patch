@@ -1,0 +1,37 @@
+--- crates/api/src/borrowed.rs
++++ crates/api/src/borrowed.rs
+@@ -86,10 +86,7 @@
+     patience: Duration,
+ ) -> Result<Box<dyn Stream>, BorrowError> {
+     let began = Instant::now();
+-    if patience.is_zero() {
+-        return Err(BorrowError::Expired);
+-    }
+-    let deadline = began.checked_add(patience).ok_or(BorrowError::DeadlineOverflow)?;
++    let deadline = began.checked_add(patience).filter(|_| !patience.is_zero());
+     #[cfg(unix)]
+     let held = crate::taken::Held::find_checked(identity.pid, identity.started);
+     #[cfg(windows)]
+@@ -100,7 +97,7 @@
+     })?;
+     let mut cost = Duration::ZERO;
+     let stream =
+-        crate::channel::handshake(&identity.vsock, port, Some(deadline), &mut cost).map_err(|cause| {
++        crate::channel::handshake(&identity.vsock, port, deadline, &mut cost).map_err(|cause| {
+             if cause.allocation() {
+                 BorrowError::Allocation
+             } else {
+@@ -111,11 +108,11 @@
+         pid: identity.pid,
+         cause,
+     })?;
+-    if Instant::now() >= deadline {
++    if deadline.is_some_and(|at| Instant::now() >= at) {
+         return Err(BorrowError::Expired);
+     }
+     let stream = stream.boxed().map_err(|_| BorrowError::Allocation)?;
+-    if Instant::now() >= deadline {
++    if deadline.is_some_and(|at| Instant::now() >= at) {
+         return Err(BorrowError::Expired);
+     }
+     Ok(stream)

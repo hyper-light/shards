@@ -1,0 +1,20 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 4.35s
+     Running unittests src/lib.rs (/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 1 test
+test client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget ... current_handshake patience=200ms elapsed=500.680023ms accepted_late_reply=true
+
+thread 'client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget' (2611994) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/red.rs:94:5:
+per-read waits accepted a reply beyond the total finite budget
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 53 filtered out; finished in 0.52s
+
+error: test failed, to rerun pass `-p shards-api --lib`

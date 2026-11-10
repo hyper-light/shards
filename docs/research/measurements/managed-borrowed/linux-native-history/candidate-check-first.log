@@ -1,0 +1,32 @@
+    Updating crates.io index
+     Locking 1 package to latest Rust 1.98.1 compatible version
+      Adding triomphe v0.1.17
+ Downloading crates ...
+  Downloaded triomphe v0.1.17
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/abi)
+    Checking triomphe v0.1.17
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+warning: unused import: `self`
+  --> crates/api/src/client.rs:24:21
+   |
+24 | use crate::stream::{self, Socket};
+   |                     ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `ANSWER` is never used
+  --> crates/api/src/client.rs:60:7
+   |
+60 | const ANSWER: usize = crate::channel::ANSWER;
+   |       ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `connect` is never used
+  --> crates/api/src/stream.rs:61:15
+   |
+61 | pub(crate) fn connect(path: &Path, wait: Option<Duration>) -> io::Result<Socket> {
+   |               ^^^^^^^
+
+warning: `shards-api` (lib) generated 3 warnings (run `cargo fix --lib -p shards-api` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.25s

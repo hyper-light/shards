@@ -1,0 +1,11 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 4.91s
+     Running unittests src/lib.rs (/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 1 test
+test borrowed::tests::shared_state_and_stream_box_oom_return_without_allocating_errors ... memory allocation of 32 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p shards-api --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-995bfe5a5b6dd15f 'borrowed::tests::shared_state_and_stream_box_oom_return_without_allocating_errors' --exact --test-threads=1 --nocapture` (signal: 6, SIGABRT: process abort signal)

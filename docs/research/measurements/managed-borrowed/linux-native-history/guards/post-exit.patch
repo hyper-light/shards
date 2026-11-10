@@ -1,0 +1,14 @@
+--- crates/api/src/borrowed.rs
++++ crates/api/src/borrowed.rs
+@@ -107,10 +107,7 @@
+                 BorrowError::Channel { port, cause }
+             }
+         })?;
+-    held.check().map_err(|cause| BorrowError::Process {
+-        pid: identity.pid,
+-        cause,
+-    })?;
++    // Diagnostic: post-handshake process validation removed.
+     if Instant::now() >= deadline {
+         return Err(BorrowError::Expired);
+     }

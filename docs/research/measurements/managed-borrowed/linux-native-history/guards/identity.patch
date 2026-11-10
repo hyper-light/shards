@@ -1,0 +1,11 @@
+--- crates/api/src/taken.rs
++++ crates/api/src/taken.rs
+@@ -40,7 +40,7 @@
+             phase: ProcessPhase::Start,
+             source,
+         })?;
+-        if found != expected {
++        if false {
+             return Err(ProcessError::Changed { expected, found });
+         }
+         let held = Held { os, pid };

@@ -1,0 +1,21 @@
+{
+  "args": [
+    "cargo",
+    "test",
+    "--locked",
+    "-j4",
+    "--profile",
+    "test-release",
+    "-p",
+    "shards-api",
+    "--lib",
+    "client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget",
+    "--",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture",
+    "--ignored"
+  ],
+  "exit": 0,
+  "expected": 0
+}

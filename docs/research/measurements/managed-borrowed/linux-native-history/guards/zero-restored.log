@@ -1,0 +1,10 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3.53s
+     Running unittests src/lib.rs (/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 1 test
+test borrowed::tests::zero_with_withheld_muxer_never_dials ... patience=0ns actual_CONNECT=false
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 53 filtered out; finished in 0.00s
+

@@ -1,0 +1,20 @@
+{
+  "args": [
+    "cargo",
+    "test",
+    "--locked",
+    "-j4",
+    "--profile",
+    "test-release",
+    "-p",
+    "shards-api",
+    "--lib",
+    "borrowed::tests::changed_identity_is_rejected_before_dial",
+    "--",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "exit": 101,
+  "expected": 101
+}

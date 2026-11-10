@@ -1,0 +1,26 @@
+[
+  {
+    "target": "shards_afunix",
+    "path": "/home/adalundhe/managed-borrowed-target/x86_64-unknown-linux-musl/test-release/deps/shards_afunix-a08763caeaedbd09",
+    "sha256": "29735030541755c0aecd3007553a0e9aa30c7de37d05699966d279d2af25e3f1",
+    "fresh": false
+  },
+  {
+    "target": "real",
+    "path": "/home/adalundhe/managed-borrowed-target/x86_64-unknown-linux-musl/test-release/deps/real-bc1321e0ca7c813c",
+    "sha256": "8626284a8aa31b85faa5201db0186a4c6d82284d1ad556f55320b609b0bf04ae",
+    "fresh": false
+  },
+  {
+    "target": "sim",
+    "path": "/home/adalundhe/managed-borrowed-target/x86_64-unknown-linux-musl/test-release/deps/sim-4f2b8fcd145a490b",
+    "sha256": "ba33ec4738232a5ec1d195c8ca75f35aaf5bb7a77901b9c6a3bb8418b8a5032f",
+    "fresh": false
+  },
+  {
+    "target": "shards_api",
+    "path": "/home/adalundhe/managed-borrowed-target/x86_64-unknown-linux-musl/test-release/deps/shards_api-16640ff8e275a4d5",
+    "sha256": "3db770ef70456f9d411af47556db43c0a8c95b6e87312568f5a362ffce0fee67",
+    "fresh": false
+  }
+]

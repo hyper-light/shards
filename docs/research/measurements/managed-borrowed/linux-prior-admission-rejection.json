@@ -1,0 +1,11 @@
+{
+  "classification": "historical admission rejection before latest accepted r192",
+  "source": "53535ab61225905acfa98f12dabdabb75138c808",
+  "requested_envelope": "linux/amd64,cpus=4,mem=8g,disk=10g",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "diagnostic_excerpt": "kiln-a094a12d.attlocal.net: 1 of 32 cores idle, under 4 CPUs",
+  "job_started": false,
+  "job_id": null,
+  "lowered_ask": false,
+  "note": "Full tool result retained in session history; this is an explicitly labeled relevant excerpt. The later root-authorized r192 used 4CPU/8GiB/20GiB and was accepted."
+}

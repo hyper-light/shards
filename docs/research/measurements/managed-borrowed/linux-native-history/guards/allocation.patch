@@ -1,0 +1,11 @@
+--- crates/api/src/stream.rs
++++ crates/api/src/stream.rs
+@@ -29,7 +29,7 @@
+ 
+ impl Socket {
+     fn shared() -> io::Result<triomphe::Arc<Shared>> {
+-        triomphe::Arc::try_new(Shared::default()).map_err(|_| io::ErrorKind::OutOfMemory.into())
++        Ok(triomphe::Arc::new(Shared::default()))
+     }
+ 
+     /// Fixed, nonzero Socket storage, using Box's documented Global layout contract.

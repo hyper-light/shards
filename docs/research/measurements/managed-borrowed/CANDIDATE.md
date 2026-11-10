@@ -3,9 +3,10 @@
 Current production-source checkpoint: signed
 `53535ab61225905acfa98f12dabdabb75138c808`, branch `p/managed-borrowed`, isolated
 worktree `managed-borrowed`, based on combined `cbe3d027`. Experimental; no main
-merge or adoption claim. Exact53535 Linux light rerun is pending: kiln rejected the
-4CPU/8GiB/10GiB request when the assigned Linux runner had fewer than4 idle CPUs.
-The ask was not reduced and the runner guard was not bypassed. Root subsequently
+merge or adoption claim. Latest exact Linux results are in [LINUX.md](LINUX.md):
+GNU units48/0 but integration14/1; native musl48/0+15/0, both strict clippy0.
+An earlier4CPU/8GiB/10GiB request was denied for CPU headroom; the ask was not
+reduced or runner guard bypassed. Root subsequently
 authorized native Mac light checks: independent passes and the full-library RED
 are recorded in [MAC.md](MAC.md). No ready-main/whole-library panic-free claim.
 Native Windowsamd64 focused light results on exact12233203 subsequently passed
@@ -127,8 +128,9 @@ untouched. The subsequently authorized private Mac build is recorded separately.
 | ac8c2834 / r184 | Ordinary units45 pass/0fail/7ignored; integration15 pass/0fail/2 measurement ignored; real measurement1 ignored; strict all-targets API clippy0 |
 | 11913786 / r185 | Six independent local guard mutations each cargo101 for actual forbidden effect/allocator abort; each restored focused test0, restored library corpus0 and strict clippy0. No VM/profile sweep |
 | 389e823e / r186 | Additional candidate regression actually reproduced: queued byte with1ns wait incorrectly returns WouldBlock before initial I/O |
-| 53535ab6 production / c5c8e4c6 source | Mac borrowed12/0, Stream11/0 (including ready-I/O regression), sim15/0, scoped clippy0; full lib RED via owned-OOM64B SIGABRT. Latest Linux complete rerun still held/unverified |
+| 53535ab6 production / c5c8e4c6 source | Mac borrowed12/0, Stream11/0 (including ready-I/O regression), sim15/0, scoped clippy0; full lib RED via owned-OOM64B SIGABRT |
 | 12233203 / r190 | Native Windowsamd64 compile0, borrowed12/0/1 child ignored, Stream9/0, strict API+afunix all-targets clippy0. Two earlier launcher setup failures retained separately; no production change |
+| eaedd0b0 / r192 | Fresh GNU/musl build0 and strict clippy0. GNU units48/0, integration14/1 on inherited-output refusal timing bound; musl units48/0+integration15/0. All earlier owed native raw records recovered without mutations rerun |
 
 The r184 corpus includes exact binary payload with u32::MAX port, clone and
 half-close; withheld and dribbled reply deadlines; malformed/closed reply typing;
@@ -156,30 +158,29 @@ before/after I/O. The1ns test is the smallest representable nonzero Duration, no
 production timeout default. EINTR/suspension/Windows boundary behavior remains
 additional central fault-matrix work.
 
-Current private `shards_api-995bfe5a5b6dd15f` was last built for the r186 red source,
-not53535. Do not reuse it as a passing latest binary. Re-sync latest source, touch
-owned module inputs/lib.rs, verify an actual compile in logs, then capture binary
-hash. Earlier exact-source hashes/logs remain named for their own revisions.
+The old implicit-target `shards_api-995bfe5a5b6dd15f` was last built for r186.
+Latest r192 instead used explicit GNU/musl target directories and actual fresh
+compiler-selected binaries listed in [LINUX.md](LINUX.md). Do not reuse the old
+implicit-target artifact as a latest passing binary. Historical results and
+hashes remain named for their own revisions.
 
 ## Root replay and owed work
 
-With the same4CPU/8GiB/10GiB admission and private target, after sync:
+With the assigned4CPU/8GiB/20GiB admission and private target, after sync:
 
 ```sh
 export CARGO_TARGET_DIR="$HOME/managed-borrowed-target"
 touch crates/api/src/{lib,borrowed,channel,client,sim,stream,taken}.rs
-cargo test --locked -j4 --profile test-release -p shards-api -- --test-threads=1 --nocapture
-cargo clippy --locked -j4 -p shards-api --all-targets -- -D warnings
-ulimit -c 0
-python3 docs/research/measurements/managed-borrowed/guards.py "$HOME/managed-borrowed-evidence/guards-latest"
+cargo test --locked -j4 --profile test-release --target x86_64-unknown-linux-gnu -p shards-api -p shards-afunix -- --test-threads=1 --nocapture
+cargo clippy --locked -j4 --target x86_64-unknown-linux-gnu -p shards-api -p shards-afunix --all-targets -- -D warnings
 ```
 
-First owed:53535 exact Linux full light corpus/clippy and latest Linux binary identity;
-retrieve/preserve remaining raw runner evidence when admission returns. Then root
-review of the narrow source/diagnostic text changes, D215 integration note,
-seven-target check/lint and remaining macOSarm64/Windows behavior. The Mac full-lib
-owned-OOM abort remains RED; root owns isolated cold-primitive confirmation before
-any broader synchronization remedy. Root subsequently confirmed the actual
+GNU refusal-timing assertion remains RED; a causal controlled-writer fixture
+proposal is separate next work. The six historical guard mutations were not
+rerun; their original raw evidence is now retained in linux-native-history/.
+Root review of the narrow source/diagnostic text changes, [D215 migration note](D215-MIGRATION.md),
+seven-target check/lint and remaining macOSarm64/Windows behavior remain owed. The Mac full-lib
+owned-OOM abort remains RED. Root subsequently confirmed the actual
 OnceBox→ShardsGuest::connect stack in separate coordinator tracing; no warming/skip
 is used to call it green. Native repeated
 Windows success/zero/overflow/identity/error handle counts, live VM borrowed
@@ -189,7 +190,7 @@ profiling/comparisons and final combined source validation. There is no4–5x,
 allocation-free, hard-quota, leak-free or managed-runtime-completion claim.
 
 R01: borrowed allocation/error paths passed scoped injection on Linux/Mac; Mac's
-owned cold-OOM full-lib abort remains RED, and latest Linux still needs final checks; existing
+owned cold-OOM full-lib abort and GNU integration timing assertion remain RED; existing
 unrelated allocation hazards explicitly retained. R02: primary alternatives,
 coordinator decision, actual red/green/failure data linked. R03: protocol/u32
 buffer bounds, two directions, OS rights/layout and milliseconds units derived;
@@ -201,7 +202,7 @@ R08/R14: performance work remains root-owned and unclaimed. R09: pre-fix native
 red and candidate regression red retained. R10: reproducible fixtures/raw records,
 actual-effect mutation/removal and restored runs; latest source gaps explicit.
 R11: Linuxamd64, Macarm64 and Windowsamd64 scoped native checks recorded, with
-exact-source/red limits above; Windows/Linuxarm64/musl and real VM hosts remain
+exact-source/red limits above; Windows/Linuxarm64 and real VM hosts remain
 unverified here.
 R12: shared handshake/stream + minimal Unix held reuse/Windows adapter, rootless,
 one installed binary, no security bypass. R13: concrete API and real failure causes,

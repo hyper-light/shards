@@ -1,0 +1,64 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 2.91s
+     Running unittests src/lib.rs (/home/adalundhe/managed-borrowed-target/test-release/deps/shards_api-995bfe5a5b6dd15f)
+
+running 51 tests
+test borrowed::tests::changed_identity_is_rejected_before_dial ... stale_identity_actual_CONNECT=false
+ok
+test borrowed::tests::dribbled_reply_does_not_renew_deadline ... ok
+test borrowed::tests::dropping_borrowed_stream_leaves_process_alive_and_responsive ... borrowed_drop_child_alive_and_actual_reply=true
+ok
+test borrowed::tests::exact_bytes_clone_half_close_and_resource_return ... ok
+test borrowed::tests::malformed_or_closed_replies_remain_typed ... ok
+test borrowed::tests::private_refcounts_are_bounded_by_retained_socket_storage ... ok
+test borrowed::tests::process_exit_before_or_during_handshake_is_rejected ... actual_process_reaped_before_OK=true returned_stream=false
+ok
+test borrowed::tests::process_role ... ignored, private child role, launched only by focused borrowed tests
+test borrowed::tests::shared_state_and_stream_box_oom_return_without_allocating_errors ... ok
+test borrowed::tests::withheld_reply_expires_without_fixture_release ... ok
+test borrowed::tests::zero_and_overflow_are_typed_before_any_io ... ok
+test client::borrowed_repro::a_current_handshake_dribble_cannot_renew_the_total_budget ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::borrowed_repro::old_patch_overflow_is_refused_before_io ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::borrowed_repro::old_patch_zero_is_expired_before_io ... ignored, historical intentional red; run borrowed_repro with --ignored explicitly
+test client::tests::a_dial_to_a_full_listener_is_asked_again_within_its_patience ... ok
+test client::tests::a_dials_cost_is_its_work_not_its_wait_for_an_answer ... ok
+test client::tests::a_dropped_guest_leaves_no_zombie ... ok
+test client::tests::a_guest_names_itself_by_pid_start_and_socket ... ok
+test client::tests::a_guest_taken_back_ends_as_it_drops_or_by_itself ... ok
+test client::tests::a_path_ending_in_ro_is_refused ... ok
+test client::tests::a_patience_of_max_dials_until_the_guest_listens ... ok
+test client::tests::a_patience_of_zero_dials_once ... ok
+test client::tests::a_pause_weighs_the_dials_cost_against_lateness ... ok
+test client::tests::a_socket_directory_too_long_is_passed_over_or_refused ... ok
+test client::tests::a_spec_is_the_flags_shards_run_reads ... ok
+test client::tests::a_stop_kills_at_once ... ok
+test client::tests::an_answer_past_the_longest_ok_is_refused ... ok
+test client::tests::attach_takes_back_a_guest_whose_client_crashed ... ok
+test client::tests::attach_takes_back_a_guest_whose_handle_was_lost ... ok
+test client::tests::child_a_client_that_crashes ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::child_a_vm_process_serving_its_vsock ... ignored, a child of attach_takes_back_a_guest_whose_client_crashed
+test client::tests::owned_connection_oom_is_typed_before_error_formatting ... ok
+test client::tests::the_cost_of_a_refused_dial ... ignored, a measurement, run by its harness
+test client::tests::the_socket_directory_is_named_apart_from_the_pid ... ok
+test client::tests::the_socket_directory_is_private_and_removed ... ok
+test said::tests::a_kernels_pin_is_its_bytes_digest ... ok
+test sim::tests::past_what_its_descriptors_leave_a_connect_is_refused_by_its_bound ... ok
+test stream::tests::a_buffer_size_of_zero_or_less_is_an_error ... ok
+test stream::tests::a_clone_is_the_same_connection ... ok
+test stream::tests::a_connection_reports_its_buffer_sizes ... buffer_sizes: send 212992, receive 212992
+buffer_sizes: send 212992, receive 212992
+ok
+test stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read ... ok
+test stream::tests::a_pair_carries_bytes_both_ways_and_a_half_close ... ok
+test stream::tests::a_read_a_clone_raced_ends_at_its_timeout ... ok
+test stream::tests::a_read_times_out_and_the_connection_goes_on ... ok
+test stream::tests::a_timeout_is_kept_as_given ... ok
+test stream::tests::a_write_to_a_gone_peer_fails_epipe_where_sigpipe_kills ... ok
+test stream::tests::a_write_to_a_peer_that_stops_reading_ends_at_its_timeout ... ok
+test tests::a_bound_seeds_from_the_records_and_rises_with_what_it_sees ... ok
+test tests::backends_are_named_per_host ... ok
+test tests::bounds_are_refused_by_name ... ok
+test tests::the_hypervisors_bounds_are_its_own_to_refuse ... ok
+
+test result: ok. 44 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 1.24s
+

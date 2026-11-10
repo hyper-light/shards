@@ -1,0 +1,21 @@
+    Checking triomphe v0.1.17
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+error: using `write!()` with a format string that ends in a single newline
+   --> crates/api/src/channel.rs:132:5
+    |
+132 |     write!(&mut unused, "CONNECT {port}\n").map_err(|source| HandshakeError::Io { phase: Write, source })?;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#write_with_newline
+    = note: `-D clippy::write-with-newline` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::write_with_newline)]`
+help: use `writeln!` instead
+    |
+132 -     write!(&mut unused, "CONNECT {port}\n").map_err(|source| HandshakeError::Io { phase: Write, source })?;
+132 +     writeln!(&mut unused, "CONNECT {port}").map_err(|source| HandshakeError::Io { phase: Write, source })?;
+    |
+
+error: could not compile `shards-api` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `shards-api` (lib) due to 1 previous error
+error: could not compile `shards-api` (lib test) due to 1 previous error

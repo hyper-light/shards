@@ -1,0 +1,22 @@
+--- crates/api/src/channel.rs
++++ crates/api/src/channel.rs
+@@ -101,18 +101,7 @@
+     }
+ }
+ 
+-fn remaining(deadline: Option<Instant>, phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> {
+-    deadline
+-        .map(|at| {
+-            let left = at.saturating_duration_since(Instant::now());
+-            if left.is_zero() {
+-                Err(HandshakeError::Expired { phase })
+-            } else {
+-                Ok(left)
+-            }
+-        })
+-        .transpose()
+-}
++fn remaining(_deadline: Option<Instant>, _phase: HandshakePhase) -> Result<Option<Duration>, HandshakeError> { Ok(None) }
+ 
+ pub(crate) fn handshake(
+     path: &Path,

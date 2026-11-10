@@ -1,0 +1,33 @@
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-c5f6175fcc/crates/api)
+error: cannot mutably bind by value within an implicitly-borrowing pattern
+  --> crates/api/src/../../../docs/research/measurements/managed-borrowed/green.rs:73:16
+   |
+73 |     if let Ok((mut stream, _)) = dial.as_ref() {
+   |                ^^^ `mut` binding modifier not allowed when implicitly borrowing
+   |
+   = note: for more information, see <https://doc.rust-lang.org/reference/patterns.html#binding-modes>
+note: matching on a reference type with a non-reference pattern implicitly borrows the contents
+  --> crates/api/src/../../../docs/research/measurements/managed-borrowed/green.rs:73:15
+   |
+73 |     if let Ok((mut stream, _)) = dial.as_ref() {
+   |               ^^^^^^^^^^^^^^^ this non-reference pattern matches on a reference type `&_`
+help: match on the reference with a reference pattern to avoid implicitly borrowing
+   |
+73 |     if let Ok(&(mut stream, _)) = dial.as_ref() {
+   |               +
+
+error[E0507]: cannot move out of a shared reference
+  --> crates/api/src/../../../docs/research/measurements/managed-borrowed/green.rs:73:34
+   |
+73 |     if let Ok((mut stream, _)) = dial.as_ref() {
+   |                ----------        ^^^^^^^^^^^^^
+   |                |
+   |                data moved here because `stream` has type `UnixStream`, which does not implement the `Copy` trait
+   |
+help: consider borrowing the pattern binding
+   |
+73 |     if let Ok((ref mut stream, _)) = dial.as_ref() {
+   |                +++
+
+For more information about this error, try `rustc --explain E0507`.
+error: could not compile `shards-api` (lib test) due to 2 previous errors
