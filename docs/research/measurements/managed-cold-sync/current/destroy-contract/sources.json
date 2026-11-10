@@ -1,0 +1,332 @@
+{
+  "schema": "managed-cold-sync-destroy-contract-sources-v1",
+  "role": "implementer; research/interface only",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "main_policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "owned_directory": "docs/research/measurements/managed-cold-sync/current/destroy-contract",
+  "local_sources": [
+    {
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "path": "crates/api/src/sync.rs",
+      "present": true,
+      "bytes": 18757,
+      "sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c",
+      "git_blob": "2095db9e924ba36327aeb7e3f38b5f7364595142"
+    },
+    {
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "path": "crates/api/src/client.rs",
+      "present": true,
+      "bytes": 83513,
+      "sha256": "3941532a6ab8c450ba532001b19dca657a6327391c04c3666ee69b3635ad9a32",
+      "git_blob": "874c01d0a989cea097d255508624242e3409a82f"
+    },
+    {
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "path": "crates/api/src/lib.rs",
+      "present": true,
+      "bytes": 28800,
+      "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01",
+      "git_blob": "c30ca5806aec17af6378e02a0b502ec7093c572b"
+    },
+    {
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "path": "crates/api/Cargo.toml",
+      "present": true,
+      "bytes": 722,
+      "sha256": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+      "git_blob": "91bbceef45e56720438406450a87741266b6d798"
+    },
+    {
+      "revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "path": "crates/api/src/sync.rs",
+      "present": false
+    },
+    {
+      "revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "path": "crates/api/src/client.rs",
+      "present": true,
+      "bytes": 78689,
+      "sha256": "8d8b2dac91a3c419956bb41168705c5a15f21d51d7c043b6dd7f4f027443121b",
+      "git_blob": "a44297d5ece80cb2acf0ec261ad8cce5aa5f3cb8"
+    },
+    {
+      "revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "path": "crates/api/src/lib.rs",
+      "present": true,
+      "bytes": 28337,
+      "sha256": "b104a092604c73276eca05c387ecc93aa4a81d092b8b6a6f3e56dc5cc245106c",
+      "git_blob": "99d5454b19ea32538c42a108cd8a605bb385d939"
+    },
+    {
+      "revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "path": "crates/api/Cargo.toml",
+      "present": true,
+      "bytes": 722,
+      "sha256": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+      "git_blob": "91bbceef45e56720438406450a87741266b6d798"
+    }
+  ],
+  "sdk_headers": [
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/SDKSettings.json",
+      "bytes": 7725,
+      "sha256": "f231d03c93d59ebfffd410e941e50db8fcef6ec19ebe715967ab07ac44a51fc8"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/pthread/pthread.h",
+      "bytes": 28093,
+      "sha256": "9d621c730d1d96b600893b0e3e4c45822a24d565e7b6b166973c41a6a2eb02e7"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/sys/_pthread/_pthread_types.h",
+      "bytes": 3855,
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/pthread/pthread_impl.h",
+      "bytes": 1977,
+      "sha256": "42896cbc575d9099c53f8c0afbaa04f40b2d11d24f92af5ccd7dacdaf8690231"
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/lib/system/libsystem_pthread.tbd",
+      "bytes": 8560,
+      "sha256": "6c556ae5da5e1dc9986f0fdb052ea94104280968df5fb1fd3109b574e7c52fa8"
+    }
+  ],
+  "local_os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.4.1\nBuildVersion:\t\t25E253\n",
+  "local_arch": "arm64",
+  "handoff_sha256": "91bdbe09542049712c1b3c24665be1410ed5f301cca30bc1898e84327645e1fb",
+  "primary_sources": [
+    {
+      "id": "posix-mutex",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_destroy.html",
+      "resolved_url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_destroy.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:27.008752+00:00",
+      "bytes": 22596,
+      "sha256": "fc034bd017434b80b38d0a68cbb88cd8561075480b2069586b93d8b710291379"
+    },
+    {
+      "id": "posix-cond",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html",
+      "resolved_url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:27.310182+00:00",
+      "bytes": 11391,
+      "sha256": "4835848bcbccd9d43becf4b015deff8fb497207c9576c967d2de5fd0288f0ad9"
+    },
+    {
+      "id": "apple-mutex",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_mutex.c",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_mutex.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:27.631579+00:00",
+      "bytes": 50968,
+      "sha256": "28e355c987bcde9db2bc001933fd543b925a395344aedf7b029b79069b6744f3"
+    },
+    {
+      "id": "apple-cond",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_cond.c",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_cond.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:27.829788+00:00",
+      "bytes": 26879,
+      "sha256": "1ae8db5b479ad2a7314fc5c5d61b765a0a88be5c9521a2db64448f40b1232a0b"
+    },
+    {
+      "id": "rust-mutex",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/pthread.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/pthread.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:28.046505+00:00",
+      "bytes": 2485,
+      "sha256": "1aa80435780abe34a365179635e92fb5935894fb9b4f615eb45b336958c28035"
+    },
+    {
+      "id": "rust-pal-mutex",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/mutex.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:28.242960+00:00",
+      "bytes": 5515,
+      "sha256": "1df3c112f84ccfa7ff048aa88a604dc6029b405f59e0aa96d35381b589aa9b17"
+    },
+    {
+      "id": "rust-pal-cond",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/condvar.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/condvar.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:24:28.450454+00:00",
+      "bytes": 9027,
+      "sha256": "d9ee3e1dfed50235c9c3963f6a585aa359b6d2cb8cc524e27295c6ed8e1a6804"
+    },
+    {
+      "id": "libcxx-mutex",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/mutex.cpp",
+      "resolved_url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/mutex.cpp",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:22.447738+00:00",
+      "bytes": 3768,
+      "sha256": "e458015dc1dd19969bc811b2865b7c5d7ea36f4a345cd7b232bb8343299caef4"
+    },
+    {
+      "id": "libcxx-cond",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/condition_variable.cpp",
+      "resolved_url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/condition_variable.cpp",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:22.680874+00:00",
+      "bytes": 2783,
+      "sha256": "60f9ac564007c3b0b2e6d667fc5d72990f6ba79eed6d199600930a86291a0be5"
+    },
+    {
+      "id": "libcxx-pthread",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/include/__thread/support/pthread.h",
+      "resolved_url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/include/__thread/support/pthread.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:22.874192+00:00",
+      "bytes": 7044,
+      "sha256": "8be652c7865ad4ec332b9cb904b8ef150b1af147227bed0137e65db7854e5921"
+    },
+    {
+      "id": "libuv-thread",
+      "url": "https://raw.githubusercontent.com/libuv/libuv/5152db2cbfeb5582e9c27c5ea1dba2cd9e10759b/src/unix/thread.c",
+      "resolved_url": "https://raw.githubusercontent.com/libuv/libuv/5152db2cbfeb5582e9c27c5ea1dba2cd9e10759b/src/unix/thread.c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:23.088773+00:00",
+      "bytes": 21718,
+      "sha256": "69f6814b5cf8e3bf9709dbfa84ff58358e3ac6c7f9193819860017c2d7ea0a46"
+    },
+    {
+      "id": "triomphe-arc",
+      "url": "https://raw.githubusercontent.com/Manishearth/triomphe/1c3cfa221b3f97729cbc989fc67976f45f874331/src/arc.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Manishearth/triomphe/1c3cfa221b3f97729cbc989fc67976f45f874331/src/arc.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:23.349037+00:00",
+      "bytes": 49638,
+      "sha256": "68a8048894d2c02d7a13b7392a0a958a4bedcc54916c0cae1227af1b5f28d593"
+    },
+    {
+      "id": "libcxx-mutex-dtor",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/mutex_destructor.cpp",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:37.563493+00:00",
+      "sha256": "b3df9d6ce47baa0901227a8c1d6761c2979481c8843b5f375605d62c5c12f389",
+      "bytes": 1506
+    },
+    {
+      "id": "libcxx-cond-dtor",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/ca7933e47d3a3451d81e72ac174dcb5aa28b59d1/libcxx/src/condition_variable_destructor.cpp",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:26:37.824089+00:00",
+      "sha256": "e168226c3aee38eba3be75167f62a68b301b94119ddf0367c05c46dac2503117",
+      "bytes": 1260
+    },
+    {
+      "id": "apple-header",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/include/pthread/pthread.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:29:16.725675+00:00",
+      "sha256": "c14ac88c6c17f6eaea94ecd5a6fed5bb2a509cc154be43bfea44e6a4430468ca",
+      "bytes": 28135
+    },
+    {
+      "id": "apple-types",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/include/sys/_pthread/_pthread_types.h",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:29:16.918350+00:00",
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b",
+      "bytes": 3855
+    },
+    {
+      "id": "posix-mutex-lock",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_lock.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:30:29.697342+00:00",
+      "bytes": 18499,
+      "sha256": "53d04354cfe888f4663947bdcf354c16cba9cb771bebfa7154daf349aeeb041e"
+    },
+    {
+      "id": "posix-cond-wait",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:30:30.058094+00:00",
+      "bytes": 27790,
+      "sha256": "59661e8808655b7d6efdb7455fe752ce705b599b5246e390f7ef15b358230882"
+    },
+    {
+      "id": "posix-mutex-attr-destroy",
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutexattr_destroy.html",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:30:30.429301+00:00",
+      "bytes": 15490,
+      "sha256": "5c4338b830b289c2aace415c0cafcc35b03aba92efb869a45aa762ef1e5a94a2"
+    },
+    {
+      "id": "rust-mem-forget",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/mem/mod.rs",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T21:30:30.692400+00:00",
+      "bytes": 61022,
+      "sha256": "538b04a5f1988ae5c50edc376021f6db3fe6291ebc24423ba6a747bc0d00688b"
+    }
+  ],
+  "resolved_tags": [
+    {
+      "repository": "llvm/llvm-project",
+      "tag": "llvmorg-22.1.8",
+      "revision": "ca7933e47d3a3451d81e72ac174dcb5aa28b59d1",
+      "type": "commit"
+    },
+    {
+      "repository": "libuv/libuv",
+      "tag": "v1.51.0",
+      "revision": "5152db2cbfeb5582e9c27c5ea1dba2cd9e10759b",
+      "type": "commit"
+    },
+    {
+      "repository": "Manishearth/triomphe",
+      "tag": "v0.1.17",
+      "revision": "1c3cfa221b3f97729cbc989fc67976f45f874331",
+      "type": "commit"
+    }
+  ],
+  "retrieval_limits": [
+    {
+      "method": "web.open",
+      "urls": [
+        "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_destroy.html",
+        "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html"
+      ],
+      "result": "403; direct HTTPS urllib request later returned200 from the SAME official URLs; no secondary text substituted"
+    },
+    {
+      "method": "local source-fetch orchestration",
+      "result": "One request yielded before completion; parsing empty interim output failed. No identity/result was accepted from it. Bounded completed repeat produced the recorded Apple header identities."
+    }
+  ],
+  "runtime_scope": "No runner, native actor, build/typecheck, allocation denial, profiling or native destroy invocation. SDK headers and tbd are source/link facts, not deployed dylib binary identity.",
+  "initial_handoff_sha256": "2caf9429d55574abd983717588eb76460db12a2dfd9ba7ba2e8c6bfa40df775f",
+  "handoff_readback_note": "Full updated handoff reread after research observed SHA91bd...; policy and research-only scope unchanged.",
+  "sdk_comparison": {
+    "types_match_pinned_apple_types": true,
+    "pthread_header_identical": false,
+    "relevant_sync_declarations_unchanged": true,
+    "header_difference_scope": "Unrelated API availability annotations; no header or host setting changed.",
+    "stub_current_version": "539.100.4",
+    "stub_is_not_deployed_runtime_binary": true
+  },
+  "function_locations": {
+    "apple_mutex_destroy": {
+      "raw_line": 1838,
+      "note": "Exact downloaded raw bytes; web renderer normalizes line counts."
+    },
+    "apple_cond_destroy": {
+      "raw_line": 278
+    },
+    "triomphe_drop_inner": {
+      "raw_line": 794
+    }
+  }
+}

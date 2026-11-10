@@ -1,0 +1,59 @@
+{
+  "source_revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "local_source_and_sdk_identities_rechecked": true,
+  "all_internal_links_resolve": true,
+  "primary_metadata_records_checked": 20,
+  "external_hash_scope": "computed over complete original bytes at HTTPS retrieval; source bodies not vendored here",
+  "mechanical_checks": [
+    {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": "",
+      "scope": "All three new research files after named-path staging; no production changes"
+    }
+  ],
+  "initial_patch_failure": "apply_patch rejected delete/add of the same sources.json in one patch; no change occurred; corrected with a single exact Update",
+  "builds_typechecks_runners_native_actors": 0,
+  "local_free_bytes": 192529321984,
+  "owned_paths": [
+    "README.md",
+    "sources.json",
+    "local-checks.json"
+  ],
+  "unrun": [
+    "native destroy entry/return observation",
+    "legal teardown resource return",
+    "native error actors/injection",
+    "allocator campaigns",
+    "all new native/seven-target/VM gates",
+    "cost/profile/benchmark"
+  ],
+  "source_concern_is_not_live_reproduction": true
+}
