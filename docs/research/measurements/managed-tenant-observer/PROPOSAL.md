@@ -50,6 +50,23 @@ Client currently hardcodes subscribe(scope,0). ROOT should approve/provide a
 caller-supplied initial wire offset through Client/Observer::start/Fixture::observe
 with existing callers default0; the new test supplies only an actually retained
 start. No product protocol change. This seam must be approved before edits there.
+`initial-offset-seam.patch` makes that exact test-only change reviewable against
+87503's host parent. It is a PROPOSED patch artifact, not applied source: one
+caller-supplied Client cursor, Observer::start_at and Fixture::observe_at, with
+existing start/observe wrappers default0. ROOT owns approval/application there.
+
+ROOT reported actual r606 failure before normal metadata: a pure Unit wake from
+Control.finish sees the existing one-slot queue Full and triggers Output.abort /
+Lost0 on final ACK. Refactor lane owns the authorized production fix. This
+proposal's real body depends on that fix because step1 preserves fce's normal
+End/ACK/EOF witness; ROOT was notified BEFORE reconnect component edits. Pure
+retained-record composition can proceed independently. No weakened assertion or
+duplicate production fix is authorized here.
+
+Local observer join is not an independently observed remote close-processing
+barrier. The real fixture must retain any actual typed refusal/deadline and raw
+records; no guessed sleep, periodic probe, hidden retry or assertion waiver is
+proposed to mask a race. Only actual ROOT results can establish that behavior.
 
 ROOT actual negative/mutation gates: wrong retained cursor rejected with actual
 typed reason, replay mismatch detected before release, disconnect never stops

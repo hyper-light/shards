@@ -1,0 +1,13 @@
+     Locking 1 package to highest Rust 1.99.1 compatible version
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-tenant-observer-pure-01a1c5d2-v1/source/abi)
+   Compiling managed-tenant-observer-pure v0.1.0 (/home/adalundhe/managed-tenant-observer-pure-01a1c5d2-v1/source)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.07s
+     Running unittests src/lib.rs (/home/adalundhe/managed-tenant-observer-pure-01a1c5d2-v1/target/debug/deps/managed_tenant_observer_pure-178b5eeb1f04f2ba)
+
+running 3 tests
+test reconnect::tests::held_witness_requires_scoped_data_at_the_prior_canonical_payload_tail ... ok
+test reconnect::tests::nonzero_retained_wire_cursor_advances_payload_once_then_accepts_new_production ... ok
+test reconnect::tests::replay_rejects_zero_forward_shifted_cursors_and_same_length_changed_bytes ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

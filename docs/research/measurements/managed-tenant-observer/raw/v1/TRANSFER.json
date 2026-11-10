@@ -1,0 +1,5 @@
+{
+  "sha256": "19b47b44d451a67462f85b9941ca8aef84677483ab82ec0c13ed2c138b3ad28e",
+  "exact_component_sha256": "b48e575bfcc0532a35472261c90ff3d6be2d1a8d68727c2d968715651e837e2c",
+  "scope": "ONLY pure replay component, no observers/helpers/socket/VM"
+}

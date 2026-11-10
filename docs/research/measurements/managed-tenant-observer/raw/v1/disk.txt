@@ -1,0 +1,2 @@
+192	/home/adalundhe/managed-tenant-observer-pure-01a1c5d2-v1/source
+66216	/home/adalundhe/managed-tenant-observer-pure-01a1c5d2-v1/target
