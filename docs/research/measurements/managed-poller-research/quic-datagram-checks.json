@@ -1,0 +1,208 @@
+{
+  "kind": "QUIC documentation/source identity checks only, no runtime/performance validation",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "main_freshness": "3ea2164dd98878426936c880f0e8d542ef67d98f",
+  "documentation_parent": "d31246d74e2bdfdf9d21be47b2511802d31580c6",
+  "checked_utc": "2026-11-10T14:44:42.167145+00:00",
+  "commands": [
+    {
+      "command": "python3 scripts/check-development-policy",
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required."
+    }
+  ],
+  "manual_checks": {
+    "relative_links": [
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-output-cost/HOST-EXIT.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-coordinator-output-exit/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "../../managed-poller-capacity.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-plan.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-research.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-poller.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-inotify.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-contracts.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2-sources.json",
+        "exists": true
+      },
+      {
+        "from": "quic-datagram.md",
+        "target": "quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "quic-datagram.md",
+        "target": "quic-datagram-kiln-research.md",
+        "exists": true
+      }
+    ],
+    "no_trailing_whitespace": true,
+    "individual_R01_R16_account": true,
+    "external_source_identities": 16,
+    "local_source_blobs": 8,
+    "index_empty_before_original_lane_staging": true,
+    "exact_staged_paths": [
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/quic-datagram-checks.json",
+      "docs/research/measurements/managed-poller-research/quic-datagram-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/quic-datagram-source-identity.json",
+      "docs/research/measurements/managed-poller-research/quic-datagram.md"
+    ],
+    "no_other_staged_path": true
+  },
+  "artifact_sha256": {
+    "docs/research/managed-poller-capacity.md": "5e56840194245a1ac56b6b39681e75b7f2667f2d7654124708a40e22bc9d763c",
+    "docs/research/measurements/managed-poller-research/README.md": "5ff32938ea2ce74bf6389692e59f18a4063a4d31522ac2f90a00adaa20026f5f",
+    "docs/research/measurements/managed-poller-research/quic-datagram.md": "3ba1a5d944f260d9ea0e1db2410943e3cde78b8fc64e47aa2b27d436fc091f84",
+    "docs/research/measurements/managed-poller-research/quic-datagram-source-identity.json": "7a8a9d376a519ac33e8ae4913ca92875027c07628ff3e541dbbde86dd2e86690",
+    "docs/research/measurements/managed-poller-research/quic-datagram-kiln-research.md": "167721e0fbd3fed63ee58dbf226d60d1f9680152d0ed1123d87cd3158e2b176a"
+  },
+  "kiln_grades": {
+    "f13": "B/79, three code quotes found",
+    "f14": "B/80, four code quotes found"
+  },
+  "unrun": [
+    "all Rust compile/unit/integration/runtime/VM/fault/mutation/cancellation cases",
+    "native UDP oversized/empty/truncation/queue-pressure tests",
+    "paired cost/profile/benchmark, aggregate parent/native/kernel accounting",
+    "seven-target/real-host compatibility checks"
+  ],
+  "signature_scope": "gits required; header/trailer and remote branch identity checked, separate local cryptographic verification not claimed",
+  "preserved_untracked_other_session_files": [
+    "step9-checkpoints.json",
+    "step9-kiln-verify.json",
+    "step9-verify-checkpoints.py"
+  ],
+  "named_staged_whitespace": {
+    "exit": 0,
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check",
+      "--",
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/quic-datagram-checks.json",
+      "docs/research/measurements/managed-poller-research/quic-datagram-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/quic-datagram-source-identity.json",
+      "docs/research/measurements/managed-poller-research/quic-datagram.md"
+    ],
+    "stdout": "",
+    "stderr": ""
+  }
+}

@@ -161,6 +161,14 @@ for serial scheduler correction. Existing work is preserved with named-file and
 index handoffs; no explicit spawn, local build or runtime action was performed by
 the original lane. The parent maintenance goal remains incomplete.
 
+The [QUIC datagram/credit return](quic-datagram.md) follows TLS, with its own
+[identity ledger](quic-datagram-source-identity.json) and individual R01–R16
+account. It distinguishes protocol payload/advertisement/path constraints from
+UDP scratch and queued capacities, transport windows, application Consumed and
+guest/daemon reservation. All runtime/native truncation/backpressure/cancellation
+and comparative measurements remain unrun; no production size or method is
+selected. The original lane continues to the four root-named ring decisions.
+
 ## R01–R16 account for both research batches
 
 | Rule | Actual work and remaining limit |

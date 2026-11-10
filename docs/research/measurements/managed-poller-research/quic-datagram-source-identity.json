@@ -1,0 +1,293 @@
+{
+  "kind": "focused primary-source identity, no runtime or performance validation",
+  "role": "implementer",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "lane": "01a1c5bda0bf766683384c0705c0a9bc",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "main_freshness_checked": "3ea2164dd98878426936c880f0e8d542ef67d98f",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "dependency": "hyper-raft233b7fcef7a363327c5439b191724a38065062cd",
+  "external_sources": [
+    {
+      "id": "quicTransport",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/config/transport.rs",
+      "expected_git_blob": "d0086e722939c1b4605529ced78c25b1778ecd47",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/config/transport.rs",
+      "status": 200,
+      "bytes": 36194,
+      "sha256": "8e600803bcf04006340d4682c155450a122ea1adb5ba728264b90469156164a8",
+      "git_blob_sha1": "d0086e722939c1b4605529ced78c25b1778ecd47",
+      "retrieved_utc": "2026-11-10T14:41:29.406055+00:00",
+      "etag": "\"32d873a0e08dbbbf7d1b6298e65f27a438e309136d460d63e256a697f27da5ba\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicConnection",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/mod.rs",
+      "expected_git_blob": "2b5ccfc19963ad4d1e1c45bb53180185263ac52c",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/mod.rs",
+      "status": 200,
+      "bytes": 224576,
+      "sha256": "14fee8ac207c2ee047bf52d60dd22a2e3f72c1f652eeb46179d5c8ae39db3940",
+      "git_blob_sha1": "2b5ccfc19963ad4d1e1c45bb53180185263ac52c",
+      "retrieved_utc": "2026-11-10T14:41:29.702155+00:00",
+      "etag": "\"fdf5836c47ff658e16af263aac7f202e1e79b6e73d844893017555b8f00eb2d8\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicAssembler",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/assembler.rs",
+      "expected_git_blob": "32ac8c2c6c0aa01d123345f7bc4498dfe20c6be5",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/assembler.rs",
+      "status": 200,
+      "bytes": 37781,
+      "sha256": "5dda2af141695baa9b20c814d4b80447ecb8643d9228a08a447a8911671aa3de",
+      "git_blob_sha1": "32ac8c2c6c0aa01d123345f7bc4498dfe20c6be5",
+      "retrieved_utc": "2026-11-10T14:41:29.937197+00:00",
+      "etag": "\"d8cf435edb1ca6002e8649a67d227439cd0bd16ad2000439a7166116e1b8f363\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicEndpointConfig",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/config/mod.rs",
+      "expected_git_blob": "53eb3ecf9ee9d72153428bb658da2bb385abaf27",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/config/mod.rs",
+      "status": 200,
+      "bytes": 31461,
+      "sha256": "57d76f0c965fa20f55439eca59cb82bf92b1c47a55a53a3423d778a5e4ecc011",
+      "git_blob_sha1": "53eb3ecf9ee9d72153428bb658da2bb385abaf27",
+      "retrieved_utc": "2026-11-10T14:41:30.150548+00:00",
+      "etag": "\"9968ca19a79ab4260752b6ecbdeb015ffd739267b8fedee71330fe7b0ac08191\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicEndpoint",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/endpoint.rs",
+      "expected_git_blob": "e66e1ae1f4d803dd9f818c0af320cf1bd9926ee3",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/endpoint.rs",
+      "status": 200,
+      "bytes": 81915,
+      "sha256": "736aa3707f6aa212676bb64e2db533b51465f2563033a3bacf64088bd5cf5edb",
+      "git_blob_sha1": "e66e1ae1f4d803dd9f818c0af320cf1bd9926ee3",
+      "retrieved_utc": "2026-11-10T14:41:30.387841+00:00",
+      "etag": "\"11638ee01e14db789329e0ff657c34e869d248689abb1ba288bd77b261c99808\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicTransportParameters",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/transport_parameters.rs",
+      "expected_git_blob": "b99c4c0f3d42fb8050bdeae273a5f973ccf84112",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/transport_parameters.rs",
+      "status": 200,
+      "bytes": 38517,
+      "sha256": "b3634f82328b2f402031a1ee3481835f6ce9b25cfa6bb41fac10dc29141e9e97",
+      "git_blob_sha1": "b99c4c0f3d42fb8050bdeae273a5f973ccf84112",
+      "retrieved_utc": "2026-11-10T14:41:30.620378+00:00",
+      "etag": "\"c486a5b9704c69a81d89dd3e6b178b2b484ddf3b028a8b6139472b9db51f36cd\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicMtuDiscovery",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/mtud.rs",
+      "expected_git_blob": "39b287fc00bd3b8ab641d4944bf67bdbd63d6f87",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/mtud.rs",
+      "status": 200,
+      "bytes": 37839,
+      "sha256": "81f76a830fafb74f55d05a6e8f960ea5d0378730cb6c07a8c70eca5d6a0826bd",
+      "git_blob_sha1": "39b287fc00bd3b8ab641d4944bf67bdbd63d6f87",
+      "retrieved_utc": "2026-11-10T14:41:30.839527+00:00",
+      "etag": "\"8b00a589e96f1499719f925f497e01bbfb0babf101b47807a053ea09bb7ce0da\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicStreams",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/streams/mod.rs",
+      "expected_git_blob": "ed2b0733330c4045082ef7580353315bdfed7f66",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/streams/mod.rs",
+      "status": 200,
+      "bytes": 24097,
+      "sha256": "50e24b8633c979304ef3de89bb20c659a618c1e8e1ef785fad942b33f69eba70",
+      "git_blob_sha1": "ed2b0733330c4045082ef7580353315bdfed7f66",
+      "retrieved_utc": "2026-11-10T14:41:31.067623+00:00",
+      "etag": "\"f5bf3419acf0499df086672d841ec9512a11dbf7b4d5015d226f0a8b62e80f25\"",
+      "last_modified": null
+    },
+    {
+      "id": "quicStreamState",
+      "url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/streams/state.rs",
+      "expected_git_blob": "7e2c3213513a53f33ef27fcc09db0d90f9a7f093",
+      "resolved_url": "https://raw.githubusercontent.com/hyper-light/hyper-raft/233b7fcef7a363327c5439b191724a38065062cd/crates/hyper-quic/src/connection/streams/state.rs",
+      "status": 200,
+      "bytes": 104773,
+      "sha256": "17cf7161de40234cf692de3e6b85ec15424a76caca42c5613477a4fd8b1a1101",
+      "git_blob_sha1": "7e2c3213513a53f33ef27fcc09db0d90f9a7f093",
+      "retrieved_utc": "2026-11-10T14:41:31.317161+00:00",
+      "etag": "\"9ac0bda8208ed73bd8849bb32f4153434beef273aec4adbb19b2e45183a9f53c\"",
+      "last_modified": null
+    },
+    {
+      "id": "upstream-quinn-endpoint",
+      "url": "https://raw.githubusercontent.com/quinn-rs/quinn/eaec0db4bcb698f76df736d89938743c88a2ad5f/quinn-proto/src/config/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/quinn-rs/quinn/eaec0db4bcb698f76df736d89938743c88a2ad5f/quinn-proto/src/config/mod.rs",
+      "status": 200,
+      "bytes": 27739,
+      "sha256": "9d2de1a6a4f8957fac9cd565874385e2f86db285c6a51af85b7d9de6777dd294",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:31.401713+00:00",
+      "etag": "\"11ca86d301e799011074f8b893cad09bda3ba1a0828d47320b11a330a700d9c5\"",
+      "last_modified": null
+    },
+    {
+      "id": "upstream-quinn-transport",
+      "url": "https://raw.githubusercontent.com/quinn-rs/quinn/eaec0db4bcb698f76df736d89938743c88a2ad5f/quinn-proto/src/config/transport.rs",
+      "resolved_url": "https://raw.githubusercontent.com/quinn-rs/quinn/eaec0db4bcb698f76df736d89938743c88a2ad5f/quinn-proto/src/config/transport.rs",
+      "status": 200,
+      "bytes": 33320,
+      "sha256": "67f8538b102d247c607ccfb55b86a05fa37290beab30dbca43f69d26a05f7cc4",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:31.685758+00:00",
+      "etag": "\"6d38b52c16608996782f6148df8d7d44812ad5c82b6f905bf5a40f002e1cb2f8\"",
+      "last_modified": null
+    },
+    {
+      "id": "rfc9000",
+      "url": "https://www.rfc-editor.org/rfc/rfc9000.txt",
+      "resolved_url": "https://www.rfc-editor.org/rfc/rfc9000.txt",
+      "status": 200,
+      "bytes": 403442,
+      "sha256": "f88aae47f8b18e102024916e975e919201d8dde689cba79b01079eaedd402e22",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:32.044594+00:00",
+      "etag": "W/\"3834aac83a34e69629383b3b126e59fe\"",
+      "last_modified": null
+    },
+    {
+      "id": "rfc9002",
+      "url": "https://www.rfc-editor.org/rfc/rfc9002.txt",
+      "resolved_url": "https://www.rfc-editor.org/rfc/rfc9002.txt",
+      "status": 200,
+      "bytes": 89071,
+      "sha256": "3a8a54eea1ad5d1c134a548bf15edfa0e21bfb4106dbd7db3c09cace842099af",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:32.276003+00:00",
+      "etag": "W/\"81b1e8a411c6dd9eb52f402f8a281ad7\"",
+      "last_modified": null
+    },
+    {
+      "id": "rust-udp-api-snapshot",
+      "url": "https://doc.rust-lang.org/std/net/struct.UdpSocket.html",
+      "resolved_url": "https://doc.rust-lang.org/std/net/struct.UdpSocket.html",
+      "status": 200,
+      "bytes": 120130,
+      "sha256": "6a2aa727577a4e3f4ba962426995d01499ed9812a607dc13c0c4e7153324718d",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:32.585311+00:00",
+      "etag": "\"7147e9987a097f8458accb4d0156ca0a\"",
+      "last_modified": "Thu, 15 Oct 2026 17:33:35 GMT"
+    },
+    {
+      "id": "winsock-recvfrom-snapshot",
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-recvfrom",
+      "resolved_url": "https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-recvfrom",
+      "status": 200,
+      "bytes": 65330,
+      "sha256": "ab74db49b0b640a506beb16e73ca45e911bac34e57dcb490aa6c3511d40b29bf",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:33.202006+00:00",
+      "etag": "\"k/r788+R2itLj6BoeBLRzudXIWc=\"",
+      "last_modified": "Wed, 05 Aug 2026 07:36:25 GMT"
+    },
+    {
+      "id": "linux-recv-man-snapshot",
+      "url": "https://man7.org/linux/man-pages/man2/recv.2.html",
+      "resolved_url": "https://man7.org/linux/man-pages/man2/recv.2.html",
+      "status": 200,
+      "bytes": 28285,
+      "sha256": "792ba30d2abc25c8081362ed595de614165eccaf21a20cd7b48a2b2152d3dbc9",
+      "git_blob_sha1": null,
+      "retrieved_utc": "2026-11-10T14:41:34.086986+00:00",
+      "etag": "\"6e7d-65f50e092bf80\"",
+      "last_modified": "Mon, 02 Nov 2026 20:20:30 GMT"
+    }
+  ],
+  "local_sources": [
+    {
+      "path": "crates/remote/src/net.rs",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "28a81675aa84eba864540429bbc11de31b40ab71",
+      "sha256": "e3cf92dbff95d0302b96199d170ade037361585bf425a766a226ce09d8f0c678",
+      "bytes": 48062,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "crates/remote/src/managed.rs",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "1e1dc01fd3d6ebdb3ef1992261a0b69cb6c37377",
+      "sha256": "eeb45ad4e8a7fd2fcaaff293bede87b2adc99e37cd5fa9f3d036da2d7f6d852f",
+      "bytes": 34680,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "crates/remote/src/tls.rs",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "e40de8e4d47a98c1936b588a735cfc49d4b0d609",
+      "sha256": "4643140b1b52f09b06f633f2f6985a7d9c05c0cc811bae5a4b6071338b0fc02f",
+      "bytes": 11187,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "crates/shards/src/daemon/managed.rs",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "d4788ebd36b040079c0add345188086a42b32a01",
+      "sha256": "524751057d4466b382c5fca303e2487f1c6898d2a3532b19722fc6e21ae8a44e",
+      "bytes": 46447,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "crates/shards/tests/managed_output.rs",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "bbefb48e660e927697cff87c25d3ff1699e8e6d9",
+      "sha256": "23fd8e1c96e31c2dd201255c3762fb2a2727adee21cd98f5b3d9b576695aa016",
+      "bytes": 29008,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "crates/remote/Cargo.toml",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "b760830ab962df79be31ca464cf59d59211f83c5",
+      "sha256": "41040d0ab3b20bec76774ac970d76a5e8ff074fbbf46c9587075ee10257d0abf",
+      "bytes": 1326,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "Cargo.lock",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "5da9bf3774e0336ac8d6d3cd5dc87f988cb524dc",
+      "sha256": "4fc91bf96949709475a6cfadf6bfd32a961e21d181a48368c0e5305e329a1bd1",
+      "bytes": 45787,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    },
+    {
+      "path": "Cargo.toml",
+      "revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+      "git_blob_sha1": "7dae13acc848860d15ee2ef48ecde05ec8ee826e",
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f",
+      "bytes": 3885,
+      "same_blob_at_main": "3ea2164dd98878426936c880f0e8d542ef67d98f"
+    }
+  ],
+  "freshness_limits": [
+    "Published RFC9000/9002 text pins, no complete errata review.",
+    "Rust API HTML snapshot identifies std1.99.1; Cargo rust-version1.98.1 is an MSRV, not an observed toolchain. No compiler invoked.",
+    "Microsoft/man7 API documents are content-hashed mutable snapshots; no invented revision.",
+    "Upstream Quinn historical source pin establishes mechanism/default provenance, not selected replacement or performance baseline.",
+    "No downloaded archive, external source tree, target or build job retained."
+  ],
+  "unrun": [
+    "all Rust compile/unit/integration/runtime/VM/fault/mutation/cancellation cases",
+    "native UDP oversized/empty/truncation/queue-pressure tests",
+    "paired cost/profile/benchmark, aggregate parent/native/kernel accounting",
+    "seven-target/real-host compatibility checks"
+  ],
+  "no_candidate_selected": true
+}

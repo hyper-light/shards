@@ -1,4 +1,4 @@
-# Poller event capacity and memory-event read storage
+# Managed capacity constants: Poller, memory events and transport
 
 This is primary-source research for coordinator-selected capacity literals, not a
 repository audit, reproduced defect, implementation decision or performance
@@ -566,3 +566,27 @@ guard/cost checks. It includes individual R01–R16 gaps and a
 No size, architecture, crypto change, reproduced defect or production fix is
 selected. Work continues with UDP datagram storage/QUIC credits, then the four
 coordinator-named VMM ring decisions.
+
+## 11. UDP datagram storage and QUIC credit
+
+The [QUIC return](measurements/managed-poller-research/quic-datagram.md) resolves
+managed DATAGRAM_BYTES to UDP scratch/output storage and a receive-turn
+calculation. RFC 9221 application DATAGRAM frames are explicitly disabled in this
+endpoint. A protocol payload envelope, configured receive advertisement,
+peer/path send limit, retained queue capacity and application record are
+different constraints. The pinned default receive advertisement of 1472 does
+not justify replacing the driver's protocol-max scratch buffer; native
+truncation/error behavior and ownership would need proof first.
+
+The Driver already reuses a fallibly provisioned receive Vec. Its copied packet
+backing and queued payload capacities have separate lifetimes and costs.
+Transport peer flow credit, local stored send bytes, explicit application
+Consumed acknowledgment and caller-held guest/daemon reservation are traced
+separately. No transport ACK is treated as an application-consumption witness.
+
+The return gives conditional alternatives, exact
+[source identities](measurements/managed-poller-research/quic-datagram-source-identity.json)
+and an entirely unrun root-only boundary/backpressure/cancellation/credit/cost
+matrix. It selects no number, window method, receive API or architecture and
+does not propose a speculative terminal fix. The next research item is the
+four specific blk/fs/GPU-control/IOMMU-request maxima supplied by root.
