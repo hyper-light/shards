@@ -1,6 +1,6 @@
 --- a/crates/init/src/managed.rs
 +++ b/crates/init/src/managed.rs
-@@ -207,7 +207,7 @@
+@@ -250,7 +250,7 @@
  }
  
  impl Launch {
@@ -9,7 +9,7 @@
          // SAFETY: open(2) of init's own executable, before entering an actor root.
          let binary = unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
          if binary < 0 {
-@@ -219,7 +219,7 @@
+@@ -262,7 +262,7 @@
          std::fs::File::from(owner.1.try_clone()?).write_all(&last_cap.to_be_bytes())?;
          Ok(Self {
              binary,
@@ -21,9 +21,9 @@
 --- a/crates/init/src/domains.rs
 +++ b/crates/init/src/domains.rs
 @@ -1792,7 +1792,7 @@
-         }
-         // SAFETY: both descriptors were just made, and are owned here alone.
-         let (read_end, write_end) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+             crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
+         let (stderr, stderr_write) =
+             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
 -        let mut launch = crate::managed::Launch::new(last_cap, &cgroup)
 +        let mut launch = crate::managed::Launch::new(last_cap, &cgroup, d.cgroup == "agent-faulty")
              .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
