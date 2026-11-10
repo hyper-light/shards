@@ -528,7 +528,8 @@ API's separate macOS Mutex failure also remains open. Typed startup and process
 errors require the public API migration recorded with their candidate source.
 
 The UDP experiment is a responder, not a forwarding relay. Same-namespace UDP
-loopback/self and the remaining route classes require separate evidence. Hard
+loopback/self now has an [actual eight-case failed reservation record](../research/measurements/managed-network-udp-local/COORDINATOR.md);
+the local requirement and remaining route classes stay open. Hard
 aggregate/parent/kernel budgets, broker-owned effects, native harness adapters,
 credential contracts and restore generations remain implementation obligations.
 The Windows ARM VM remains paused and its real-VM coverage remains unverified.

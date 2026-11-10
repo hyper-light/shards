@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards", "--test", "managed_network", "experimental_udp4_interception_has_datagram_and_original_tuple_observations", "--", "--ignored", "--exact", "--nocapture", "--test-threads=1"]

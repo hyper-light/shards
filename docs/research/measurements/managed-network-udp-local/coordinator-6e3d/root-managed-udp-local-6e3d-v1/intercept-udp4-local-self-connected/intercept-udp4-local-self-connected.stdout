@@ -1,0 +1,8 @@
+[    0.008479] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "intercept-udp4", "local-self", "connected", "30000", "1", "100", "100"]
+managed-intercept {"type":"Namespaces","origin":"LocalSelf","router_inode":4026532020,"backend_inode":4026532093,"client_inode":4026532166,"mark":1,"table":100,"priority":100}
+managed-intercept {"type":"UdpSetup","stage":"ReserveReplyTuple","family":"Ipv4","origin":"LocalSelf","mode":"Connected","destination":"192.0.2.1:43903","client_inode":4026532020,"backend_inode":4026532020,"relay_inode":4026532020,"baseline":"NotStarted","backend_worker":"NotStarted","relay_worker":"NotStarted"}
+managed-intercept {"type":"UdpError","role":"ReplySocket","stage":"ReserveReplyTuple","cause":"Io","kind":"AddrInUse","errno":98}
+managed-network failed kind=AddrInUse errno=Some(98): Address in use (os error 98)
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.056376] reboot: Power down

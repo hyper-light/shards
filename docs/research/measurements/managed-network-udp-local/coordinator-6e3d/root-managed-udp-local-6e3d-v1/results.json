@@ -1,0 +1,284 @@
+[
+  {
+    "case": "intercept-udp4-local-loopback-connected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv4",
+      "origin": "LocalLoopback",
+      "mode": "Connected",
+      "destination": "127.0.0.1:48632",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp4-local-loopback-unconnected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv4",
+      "origin": "LocalLoopback",
+      "mode": "Unconnected",
+      "destination": "127.0.0.1:45390",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp4-local-self-connected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv4",
+      "origin": "LocalSelf",
+      "mode": "Connected",
+      "destination": "192.0.2.1:43903",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp4-local-self-unconnected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv4",
+      "origin": "LocalSelf",
+      "mode": "Unconnected",
+      "destination": "192.0.2.1:33170",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp4-local-connected",
+    "cargo_exit": 0,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv4",
+      "origin": "Local",
+      "mode": "Connected",
+      "destination": "192.0.2.2:33504",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532093,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [],
+    "compatibility": "passed-peer",
+    "success_records": 1
+  },
+  {
+    "case": "intercept-udp6-local-loopback-connected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv6",
+      "origin": "LocalLoopback",
+      "mode": "Connected",
+      "destination": "[::1]:33123",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp6-local-loopback-unconnected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv6",
+      "origin": "LocalLoopback",
+      "mode": "Unconnected",
+      "destination": "[::1]:33314",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp6-local-self-connected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv6",
+      "origin": "LocalSelf",
+      "mode": "Connected",
+      "destination": "[2001:db8:1::1]:33036",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp6-local-self-unconnected",
+    "cargo_exit": 101,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv6",
+      "origin": "LocalSelf",
+      "mode": "Unconnected",
+      "destination": "[2001:db8:1::1]:34715",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532020,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [
+      {
+        "type": "UdpError",
+        "role": "ReplySocket",
+        "stage": "ReserveReplyTuple",
+        "cause": "Io",
+        "kind": "AddrInUse",
+        "errno": 98
+      }
+    ],
+    "compatibility": "FAILED-native-reservation",
+    "success_records": 0
+  },
+  {
+    "case": "intercept-udp6-local-connected",
+    "cargo_exit": 0,
+    "setup": {
+      "type": "UdpSetup",
+      "stage": "ReserveReplyTuple",
+      "family": "Ipv6",
+      "origin": "Local",
+      "mode": "Connected",
+      "destination": "[2001:db8:1::2]:45942",
+      "client_inode": 4026532020,
+      "backend_inode": 4026532093,
+      "relay_inode": 4026532020,
+      "baseline": "NotStarted",
+      "backend_worker": "NotStarted",
+      "relay_worker": "NotStarted"
+    },
+    "faults": [],
+    "compatibility": "passed-peer",
+    "success_records": 1
+  }
+]

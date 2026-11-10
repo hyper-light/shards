@@ -1,0 +1,21 @@
+{
+  "case": "intercept-udp6-local-connected",
+  "cargo_exit": 0,
+  "setup": {
+    "type": "UdpSetup",
+    "stage": "ReserveReplyTuple",
+    "family": "Ipv6",
+    "origin": "Local",
+    "mode": "Connected",
+    "destination": "[2001:db8:1::2]:45942",
+    "client_inode": 4026532020,
+    "backend_inode": 4026532093,
+    "relay_inode": 4026532020,
+    "baseline": "NotStarted",
+    "backend_worker": "NotStarted",
+    "relay_worker": "NotStarted"
+  },
+  "faults": [],
+  "compatibility": "passed-peer",
+  "success_records": 1
+}

@@ -1,0 +1,1 @@
+console=ttyS0 quiet panic=-1 shards_test=managed-network -- managed-network intercept-udp4 local-loopback unconnected 30000 1 100 100
