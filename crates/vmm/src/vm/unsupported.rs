@@ -11,8 +11,8 @@ fn no_backend() -> String {
     )
 }
 
-pub fn start(_cfg: &Config) -> Result<(Handle, Running), String> {
-    Err(no_backend())
+pub fn start(_cfg: &Config) -> Result<(Handle, Running), super::StartError> {
+    Err(no_backend().into())
 }
 
 pub fn restore(_cfg: &RestoreConfig) -> Result<(Handle, Running), String> {

@@ -1,0 +1,45 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/vmm)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/syscall-filter)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/testdir)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/ipc)
+error[E0435]: attempt to use a non-constant value in a constant
+    --> crates/vmm/src/vm/mod.rs:2684:29
+     |
+2684 |         let mut bytes = [0; expected.len()];
+     |                             ^^^^^^^^ non-constant value
+     |
+help: consider using `const` instead of `let`
+     |
+2683 -         let expected = b"command line at 0x20000+0x800 does not fit guest RAM";
+2683 +         const expected: /* Type */ = b"command line at 0x20000+0x800 does not fit guest RAM";
+     |
+
+error[E0277]: `?` couldn't convert the error to `String`
+    --> crates/vmm/src/vm/mod.rs:2442:34
+     |
+2441 | pub fn run(cfg: &Config) -> Result<ExitReason, String> {
+     |                             -------------------------- expected `String` because of this
+2442 |     let (_, running) = start(cfg)?;
+     |                        ----------^ the trait `From<vm::StartError>` is not implemented for `String`
+     |                        |
+     |                        this can't be annotated with `?` because it has type `Result<_, vm::StartError>`
+     |
+note: `vm::StartError` needs to implement `Into<String>`
+    --> crates/vmm/src/vm/mod.rs:23:1
+     |
+  23 | pub enum StartError {
+     | ^^^^^^^^^^^^^^^^^^^
+     = note: the question mark operation (`?`) implicitly performs a conversion on the error value using the `From` trait
+     = help: `String` implements trait `From<T>`:
+               From<&String>
+               From<&mut str>
+               From<&str>
+               From<Box<str>>
+               From<Cow<'_, str>>
+               From<char>
+
+Some errors have detailed explanations: E0277, E0435.
+For more information about an error, try `rustc --explain E0277`.
+error: could not compile `shards-vmm` (lib test) due to 2 previous errors

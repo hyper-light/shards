@@ -1195,10 +1195,10 @@ fn check_vcpus(vcpus: u32) -> Result<(), String> {
 }
 
 /// Boots a VM.
-pub fn start(cfg: &Config) -> Result<(Handle, Running), String> {
+pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     check_host()?;
     check_vcpus(cfg.vcpus)?;
-    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join)
+    launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join).map_err(super::StartError::from)
 }
 
 /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file

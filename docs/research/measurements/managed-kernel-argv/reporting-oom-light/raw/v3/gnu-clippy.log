@@ -1,0 +1,3 @@
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/vmm)
+    Checking shards-vm-process v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98/crates/vm-process)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.53s

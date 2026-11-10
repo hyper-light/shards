@@ -1,0 +1,20 @@
+{
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98",
+  "source": "6276f895469a9a20e78e82cdbf4b6d2fd99ce8f0",
+  "status": " M crates/shards/src/vm_run.rs\n M crates/vmm/src/vm/mod.rs\n M crates/vmm/src/vm/runtime.rs\n M crates/vmm/src/vm/unsupported.rs\n M crates/vmm/src/vm/x86_64.rs\n",
+  "kernel": "Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux\n",
+  "compiler": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+  "targets": "aarch64-unknown-linux-gnu\naarch64-unknown-linux-musl\nx86_64-pc-windows-msvc\nx86_64-unknown-linux-gnu\nx86_64-unknown-linux-musl\n",
+  "prior_private_target": "1431448\t/home/adalundhe/main-kernel-argv-target\n",
+  "disk": {
+    "total": 7998785191936,
+    "used": 5951726608384,
+    "free": 2020985446400
+  },
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "envelope": {
+    "cpus": 4,
+    "memory_gib": 1,
+    "disk_gib": 2
+  }
+}

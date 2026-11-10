@@ -1,0 +1,18 @@
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/vmm)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/ipc)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/syscall-filter)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/testdir)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.97s
+     Running unittests src/lib.rs (/home/adalundhe/main-kernel-argv-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470)
+
+running 4 tests
+test vm::cmdline::tests::delimiter_matches_kernel_quotes_and_values ... ok
+test vm::cmdline::tests::without_delimiter_existing_order_and_spacing_are_unchanged ... ok
+test vm::cmdline::tests::required_options_precede_only_the_first_delimiter_and_keep_raw_tail ... ok
+test vm::cmdline::tests::command_line_max_includes_the_nul_and_overflow_is_typed ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 413 filtered out; finished in 0.00s
+

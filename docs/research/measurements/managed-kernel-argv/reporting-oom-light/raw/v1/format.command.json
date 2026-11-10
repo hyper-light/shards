@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--check",
+    "--config",
+    "skip_children=true",
+    "--config-path",
+    "rustfmt.toml",
+    "crates/vmm/src/vm/mod.rs",
+    "crates/vmm/src/vm/x86_64.rs",
+    "crates/vmm/src/vm/runtime.rs",
+    "crates/vmm/src/vm/unsupported.rs",
+    "crates/shards/src/vm_run.rs"
+  ],
+  "cwd": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98",
+  "CARGO_TARGET_DIR": "/home/adalundhe/main-cmdline-error-type-target",
+  "SHARDS_HELPERS": "skip"
+}

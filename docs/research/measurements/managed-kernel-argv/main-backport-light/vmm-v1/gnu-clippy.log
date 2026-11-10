@@ -1,0 +1,8 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/abi)
+    Checking libc v0.2.189
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/vmm)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/syscall-filter)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/testdir)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-kernel-argv-e7286513bc/crates/ipc)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.39s

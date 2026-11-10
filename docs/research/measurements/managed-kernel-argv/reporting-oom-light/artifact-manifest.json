@@ -1,0 +1,28 @@
+{
+  "captured_utc": "2026-11-10T10:51:12.553484+00:00",
+  "source_checkpoint": "ef3ba744fbd696bc98f5d0b0e3d1acee834a4e6c",
+  "source_identity": "compiled dirty6276 snapshot; v3 full source hashes match ef3",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private_clone": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/main-cmdline-error-type-7beed95f98",
+  "private_target": "/home/adalundhe/main-cmdline-error-type-target",
+  "last_compile_job": "r74 ended0",
+  "own_active_compile_jobs": [],
+  "writes": "no further clone/target writes planned; only this external frozen-copy/metadata write",
+  "unmeasured": "No global process audit or physical unique extent measurement",
+  "artifacts": [
+    {
+      "native_unit_target": "gnu",
+      "compiler_target_path": "/home/adalundhe/main-cmdline-error-type-target/x86_64-unknown-linux-gnu/debug/deps/shards_vmm-3767de9accb51470",
+      "frozen_copy": "/home/adalundhe/main-cmdline-error-type-evidence/frozen-binaries/gnu-vmm-unit",
+      "bytes": 68864136,
+      "sha256": "eda8643aadf3697cb762a75b441e662b6a6a165ece1e90d61ccedeb139286c8e"
+    },
+    {
+      "native_unit_target": "musl",
+      "compiler_target_path": "/home/adalundhe/main-cmdline-error-type-target/x86_64-unknown-linux-musl/debug/deps/shards_vmm-5a4f1b9aa1c715da",
+      "frozen_copy": "/home/adalundhe/main-cmdline-error-type-evidence/frozen-binaries/musl-vmm-unit",
+      "bytes": 69177680,
+      "sha256": "d2b509123a25af5ecf01e0043beeaa053203a26d1ef268fb3147ffc1b6f025c9"
+    }
+  ]
+}

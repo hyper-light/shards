@@ -1,0 +1,7 @@
+{
+  "crates/vmm/src/vm/mod.rs": "95858f8933a9d975db88a2d23c4232a3f6d1ab42dbd950d5054622e2e141a1d1",
+  "crates/vmm/src/vm/x86_64.rs": "1d7b53176cebf2ff9e88b294a4e9053c8f141310bdd56ca6b41c790549a5fb73",
+  "crates/vmm/src/vm/runtime.rs": "6bdeb1030a4985033dfb71f25f78a5ef60971ef1e6797a5f9f2c6df51a0c18f5",
+  "crates/vmm/src/vm/unsupported.rs": "56a166c5d60e94c75d1346e293bf80208c80e037af98d2aec6a828275314add1",
+  "crates/shards/src/vm_run.rs": "4bff0a477abd9f1608b7f16298d56d5346b8988dc40a0bc6b40dd0fd841c2670"
+}

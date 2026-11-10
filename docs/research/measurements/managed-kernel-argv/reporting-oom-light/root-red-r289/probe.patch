@@ -1,0 +1,31 @@
+diff --git a/crates/vmm/src/vm/cmdline.rs b/crates/vmm/src/vm/cmdline.rs
+index 942fa3c2b..ca742aab1 100644
+--- a/crates/vmm/src/vm/cmdline.rs
++++ b/crates/vmm/src/vm/cmdline.rs
+@@ -213,3 +213,26 @@ mod tests {
+         ));
+     }
+ }
++
++#[cfg(test)]
++#[path = "../../../../docs/research/measurements/managed-borrowed/allocation.rs"]
++mod root_faults;
++
++#[cfg(test)]
++mod root_oom_bridge_probe {
++    use super::*;
++    #[test]
++    fn rejected_cmdline_reporting_returns_under_allocator_refusal() {
++        let told = "x".repeat(layout::CMDLINE_MAX);
++        let options = [Some("reboot=k"), Some("pci=off")];
++        let mut bytes = [0; layout::CMDLINE_MAX];
++        let before = with_machine_options(&told, &options, &mut bytes);
++        assert!(matches!(before, Err(BootError::DoesNotFit { .. })));
++        eprintln!("actual_boot_error_before_refusal={before:?}");
++        // Exact build call-site conversion, with real BootError/Display, not a mock.
++        let result = super::root_faults::fail_after(0, || {
++            with_machine_options(&told, &options, &mut bytes).map_err(|e| e.to_string())
++        });
++        assert!(result.is_err());
++    }
++}
