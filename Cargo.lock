@@ -1382,6 +1382,7 @@ dependencies = [
  "shards-devcgroup",
  "shards-dns",
  "shards-erofs",
+ "shards-ipc",
  "shards-testdir",
  "shards-user",
 ]
@@ -1506,6 +1507,8 @@ dependencies = [
  "rcgen",
  "rquickjs",
  "rustls",
+ "shards-abi",
+ "shards-ipc",
  "shards-testdir",
 ]
 

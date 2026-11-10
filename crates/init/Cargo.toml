@@ -20,5 +20,8 @@ shards-dns = { path = "../dns" }
 shards-erofs = { path = "../erofs" }
 shards-user = { path = "../user" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+shards-ipc = { path = "../ipc" }
+
 [dev-dependencies]
 shards-testdir = { path = "../testdir" }

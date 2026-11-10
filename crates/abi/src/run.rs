@@ -8,6 +8,7 @@
 
 use alloc::vec::Vec;
 
+pub mod audit;
 pub mod managed;
 pub mod quiesce;
 

@@ -13,8 +13,10 @@ workspace = true
 
 [dependencies]
 libc = { workspace = true }
+shards-abi = { path = "../abi" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+shards-ipc = { path = "../ipc" }
 rustls = { version = "0.23.45", default-features = false, features = ["std", "aws_lc_rs"] }
 rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 # Code mode's programs (D136): QuickJS-NG, its C compiled for the guest as AWS-LC's is.
