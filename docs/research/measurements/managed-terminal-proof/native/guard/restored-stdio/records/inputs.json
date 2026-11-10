@@ -1,0 +1,28 @@
+{
+  "actor_port": 35929,
+  "actor_work_ms": 300000,
+  "challenge": [
+    31,
+    129,
+    136,
+    73,
+    187,
+    214,
+    68,
+    151,
+    166,
+    115,
+    189,
+    119,
+    12,
+    122,
+    78,
+    3
+  ],
+  "cleanup_ms": 300000,
+  "host_work_ms": 300000,
+  "lifetime_owner": "retained Fixture owner; output observers and EOF are not lifecycle ownership",
+  "report_bytes": 91,
+  "sibling_port": 53737,
+  "source": "b02e8592c547553c788702ac6c52ea6b633e875d"
+}

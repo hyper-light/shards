@@ -1,0 +1,71 @@
+
+running 20 tests
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test cost::native_faults::tests::native_labels_and_widths_remain_distinct ... ok
+test cost::native_faults::tests::native_range_and_lossy_zero_cannot_become_observed_zero ... ok
+test cost::native_faults::tests::read_exit_and_unreached_states_remain_unknown ... ok
+test cost::native_faults::tests::source_identity_and_phase_mismatches_refuse_deltas ... ok
+test cost::native_faults::tests::valid_pairs_are_conditional_and_decreasing_pairs_are_unknown ... ok
+test cost::owner_output_resources_at_explicit_member_count ... ignored, coordinator-only explicit member count/deadline/records; real VM resource observations
+test cost::parse::tests::namespace_socket_rows_are_retained_only_for_sampled_owned_inodes ... ok
+test cost::parse::tests::only_exact_socket_inode_links_are_accepted ... ok
+test cost::parse::tests::process_identity_ignores_raw_comm_and_checks_numeric_fields ... ok
+test managed_alloc::tests::failed_requests_do_not_become_live_or_successful_bytes ... ok
+test managed_alloc::tests::realloc_growth_equal_size_and_shrink_count_one_event_each ... ok
+test managed_alloc::tests::representation_exhaustion_and_underflow_are_sticky_unknown ... ok
+test managed_alloc::tests::valid_system_alloc_and_zeroed_blocks_are_released ... ok
+test managed_alloc::tests::valid_system_realloc_uses_only_returned_pointer_and_matching_layout ... ok
+test metadata_requires_unique_scoped_loopback_endpoints ... ok
+test private_owner_output_refuses_wrong_owner_stale_generation_and_cross_member_scope ... warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/managed-capture-check/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/managed-capture-check/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-capture-check/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Size-optimized AWS-LC build enabled. Applying OPENSSL_SMALL and disabling AVX-512 assembly.
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/guest/x86_64-unknown-linux-musl/guest/build/aws-lc-sys-546722d66a375a49/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `guest` profile [optimized] target(s) in 0.04s
+managed-owner subscribe member=1 channel=1 outsider=true
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner subscribe member=2 channel=2 outsider=false
+managed-owner consumed member=2 channel=2 bytes=25
+managed-owner main exec
+managed-owner owner stop
+managed-owner observer_fds before=7 after=7
+managed-owner terminal member=1 channel=1 accepted=0 consumed=0 tail=unknown
+managed-owner terminal member=1 channel=2 accepted=0 consumed=0 tail=unknown
+managed-owner terminal member=2 channel=1 accepted=0 consumed=0 tail=unknown
+managed-owner terminal member=2 channel=2 accepted=87 consumed=87 tail=unknown
+ok
+test supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independent ... managed-owner subscribe member=1 channel=1 outsider=false
+managed-owner subscribe member=1 channel=2 outsider=false
+managed-owner consumed member=1 channel=2 bytes=23
+managed-owner main exec
+managed-owner local cancellation complete
+managed-owner main exec
+managed-owner subscribe member=2 channel=1 outsider=false
+managed-owner consumed member=2 channel=1 bytes=28
+managed-owner subscribe member=2 channel=2 outsider=false
+managed-owner consumed member=2 channel=2 bytes=25
+managed-owner owner stop
+managed-owner observer_fds before=7 after=7
+managed-owner terminal member=1 channel=1 accepted=86 consumed=58 tail=unknown
+managed-owner terminal member=1 channel=2 accepted=83 consumed=83 tail=unknown
+managed-owner terminal member=2 channel=1 accepted=90 consumed=90 tail=unknown
+managed-owner terminal member=2 channel=2 accepted=87 consumed=87 tail=unknown
+ok
+test tenant_exit::member_normal_exit_preserves_sibling_and_main_progress ... ignored, coordinator-only real VM; explicit owner gate port/deadline/evidence directory
+test tenant_exit::stdio::actor_stdio_eof_preserves_actor_control_and_neighbor_lifetime ... ignored, coordinator-only real VM; explicit two ports/challenge/byte envelope/work+cleanup/evidence
+
+test result: ok. 16 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 22.11s
+

@@ -1,0 +1,62 @@
+from pathlib import Path
+import hashlib,json,os,socket,subprocess,uuid
+home=Path.home();root=home/'managed-capture-check';r=home/'root-managed-terminal-after-b02e-v2';r.mkdir(exist_ok=False)
+(r/'driver.py').write_text(Path(__file__).read_text())
+source='b02e8592c547553c788702ac6c52ea6b633e875d';(r/'source.txt').write_text(source+'\n')
+assert not subprocess.check_output(['git','-C',str(root),'status','--porcelain'],text=True).strip()
+subprocess.run(['git','-C',str(root),'fetch','origin','refs/heads/main:refs/remotes/origin/main','refs/heads/p/managed-terminal-proof-v1:refs/remotes/origin/p/managed-terminal-proof-v1'],check=True)
+rules=subprocess.check_output(['git','-C',str(root),'show','origin/main:docs/development-rules.md']);assert hashlib.sha256(rules).hexdigest()=='d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242'
+subprocess.run(['git','-C',str(root),'switch','--detach',source],check=True);os.chdir(root)
+(r/'empty-docker').mkdir();env=os.environ.copy()
+for key in ['SHARDS_HELPERS','SHARDS_INIT_BINARY','SHARDS_SERVER_BINARY','SHARDS_HELPERS_DIR','SHARDS_VM_BINARY','SHARDS_TEST_GUESTS']:env.pop(key,None)
+kernel=home/'managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy'
+assert hashlib.sha256(kernel.read_bytes()).hexdigest()=='97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae'
+settings={'CARGO_BUILD_JOBS':'4','CARGO_TARGET_DIR':str(root/'target'),'DOCKER_CONFIG':str(r/'empty-docker'),'SHARDS_REQUIRE_VMS':'1','SHARDS_KERNEL':str(kernel),'SHARDS_TEST_KERNEL':str(kernel),'SHARDS_TENANT_EXIT_SOURCE_REVISION':source,'SHARDS_TENANT_STDIO_SOURCE_REVISION':source,'SHARDS_OUTPUT_COST_SOURCE_REVISION':source}
+env.update(settings);(r/'environment.json').write_text(json.dumps(settings,indent=2)+'\n')
+for name,args in [('rustc',['rustc','--version','--verbose']),('cargo',['cargo','--version'])]:(r/(name+'.txt')).write_text(subprocess.check_output(args,text=True))
+cmd=['cargo','test','--locked','-j4','--profile','test-release','-p','shards','--test','managed_output','--no-run','--message-format=json'];(r/'compile.command.json').write_text(json.dumps(cmd)+'\n')
+with (r/'compile.jsonl').open('wb') as out,(r/'compile.log').open('wb') as err:p=subprocess.run(cmd,env=env,stdout=out,stderr=err,timeout=900)
+(r/'compile.exit').write_text(str(p.returncode)+'\n')
+if p.returncode:raise SystemExit(p.returncode)
+binary=None
+for line in (r/'compile.jsonl').read_text().splitlines():
+ v=json.loads(line)
+ if v.get('reason')=='compiler-artifact' and v.get('target',{}).get('name')=='managed_output' and v.get('executable'):binary=v['executable']
+assert binary;(r/'test-artifact.json').write_text(json.dumps({'path':binary,'sha256':hashlib.sha256(Path(binary).read_bytes()).hexdigest()},indent=2)+'\n')
+results=[]
+for name,test in [('normal','tenant_exit::member_normal_exit_preserves_sibling_and_main_progress'),('stdio','tenant_exit::stdio::actor_stdio_eof_preserves_actor_control_and_neighbor_lifetime')]:
+ d=r/name;d.mkdir()
+ with socket.socket() as a,socket.socket() as b:
+  a.bind(('127.0.0.1',0));b.bind(('127.0.0.1',0));port=a.getsockname()[1];actor=b.getsockname()[1]
+ assert port!=actor
+ if name=='normal':extra={'SHARDS_TENANT_EXIT_PORT':str(port),'SHARDS_TENANT_EXIT_DEADLINE_MS':'300000','SHARDS_TENANT_EXIT_RECORDS':str(d/'records')}
+ else:
+  challenge=uuid.uuid4().bytes;envelope=len(b'agent\0stdout\n\xff\x1b[2Jout-tail')+len(b'agent\0stderr\n\x80\xfeerr-tail')+2*(1+4+len(challenge))
+  extra={'SHARDS_TENANT_STDIO_PORT':str(port),'SHARDS_TENANT_STDIO_ACTOR_PORT':str(actor),'SHARDS_TENANT_STDIO_DEADLINE_MS':'300000','SHARDS_TENANT_STDIO_WORK_MS':'300000','SHARDS_TENANT_STDIO_CLEANUP_MS':'300000','SHARDS_TENANT_STDIO_REPORT_BYTES':str(envelope),'SHARDS_TENANT_STDIO_CHALLENGE_HEX':challenge.hex(),'SHARDS_TENANT_STDIO_RECORDS':str(d/'records')}
+ (d/'environment.json').write_text(json.dumps(extra,indent=2)+'\n')
+ cmd=[binary,test,'--exact','--ignored','--nocapture','--test-threads=1'];(d/'command.json').write_text(json.dumps(cmd)+'\n')
+ try:
+  with (d/'test.log').open('wb') as out:p=subprocess.run(cmd,env=env|extra,stdout=out,stderr=subprocess.STDOUT,timeout=900)
+ except subprocess.TimeoutExpired:
+  (d/'outer-timeout.json').write_text(json.dumps({'state':'TimedOut','cleanup':'Unknown; stop schedule and root reconcile','timeout_s':900})+'\n');raise
+ (d/'test.exit').write_text(str(p.returncode)+'\n')
+ q=d/'records/teardown.json';result={'case':name,'test':test,'actual_exit':p.returncode,'teardown':json.loads(q.read_text()) if q.exists() else None}
+ results.append(result);(r/'results.json').write_text(json.dumps(results,indent=2)+'\n');print(name,p.returncode,'actual testcase outcome, not driver pass',flush=True)
+for result in results:
+ assert result['actual_exit']==0,result
+ d=r/result['case'];log=(d/'test.log').read_text();assert '1 passed; 0 failed' in log,log[-1000:]
+ t=result['teardown'];assert t is not None
+ if result['case']=='normal':assert t['protocol_completed'] and t['private_run_cleanup_completed'] and t['owner_stop_and_observer_join']['completed']
+ else:assert t['protocol_complete'] and t['run_removed'] and t['owner_stop_observer_join']['complete']
+for name,args in [
+ ('ordinary',[binary,'--nocapture','--test-threads=1']),
+ ('daemon-unit',['cargo','test','--locked','-j4','--profile','test-release','-p','shards','--bin','shards','daemon::managed::','--','--nocapture','--test-threads=1']),
+ ('remote-unit',['cargo','test','--locked','-j4','--profile','test-release','-p','shards-remote','--lib','managed::tests','--','--nocapture','--test-threads=1'])
+]:
+ (r/(name+'.command.json')).write_text(json.dumps(args)+'\n')
+ with (r/(name+'.log')).open('wb') as out:q=subprocess.run(args,env=env,stdout=out,stderr=subprocess.STDOUT,timeout=900)
+ (r/(name+'.exit')).write_text(str(q.returncode)+'\n');print(name,q.returncode,flush=True)
+ if q.returncode:raise SystemExit(q.returncode)
+(r/'driver.exit').write_text('0\n')
+
+

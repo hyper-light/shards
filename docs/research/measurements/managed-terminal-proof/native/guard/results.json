@@ -1,0 +1,87 @@
+[
+  {
+    "case": "mutant-stdio",
+    "kind": "stdio",
+    "actual_exit": 101,
+    "expected_exit": 101,
+    "cleanup_observed": true,
+    "teardown": {
+      "full_population_reaping_kernel_return": "Unverified; ROOT independent held-watch/resource gates owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_observer_join": {
+        "complete": true,
+        "error": null
+      },
+      "protocol_complete": true,
+      "run_removed": true
+    },
+    "actual_canonical_end_tails": {
+      "1": 102,
+      "2": 99
+    },
+    "actual_false_abort_rows": [
+      {
+        "metadata": "managed-output.before-cleanup",
+        "channel": 1,
+        "accepted": 102,
+        "consumed": 102,
+        "canonical_end_wire_tail": 102
+      },
+      {
+        "metadata": "managed-output.before-cleanup",
+        "channel": 2,
+        "accepted": 99,
+        "consumed": 99,
+        "canonical_end_wire_tail": 99
+      },
+      {
+        "metadata": "managed-output.stopped",
+        "channel": 1,
+        "accepted": 102,
+        "consumed": 102,
+        "canonical_end_wire_tail": 102
+      },
+      {
+        "metadata": "managed-output.stopped",
+        "channel": 2,
+        "accepted": 99,
+        "consumed": 99,
+        "canonical_end_wire_tail": 99
+      }
+    ]
+  },
+  {
+    "case": "restored-normal",
+    "kind": "normal",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "cleanup_observed": true,
+    "teardown": {
+      "host_exit_reaping_kernel_return": "Unverified; coordinator held-watches/independent cleanup campaign owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_and_observer_join": {
+        "completed": true,
+        "error": null
+      },
+      "private_run_cleanup_completed": true,
+      "protocol_completed": true
+    }
+  },
+  {
+    "case": "restored-stdio",
+    "kind": "stdio",
+    "actual_exit": 0,
+    "expected_exit": 0,
+    "cleanup_observed": true,
+    "teardown": {
+      "full_population_reaping_kernel_return": "Unverified; ROOT independent held-watch/resource gates owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_observer_join": {
+        "complete": true,
+        "error": null
+      },
+      "protocol_complete": true,
+      "run_removed": true
+    }
+  }
+]

@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards", "--bin", "shards", "daemon::managed::", "--", "--nocapture", "--test-threads=1"]

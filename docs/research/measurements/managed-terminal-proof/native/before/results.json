@@ -1,0 +1,32 @@
+[
+  {
+    "case": "normal",
+    "test": "tenant_exit::member_normal_exit_preserves_sibling_and_main_progress",
+    "actual_exit": 101,
+    "teardown": {
+      "host_exit_reaping_kernel_return": "Unverified; coordinator held-watches/independent cleanup campaign owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_and_observer_join": {
+        "completed": true,
+        "error": null
+      },
+      "private_run_cleanup_completed": true,
+      "protocol_completed": true
+    }
+  },
+  {
+    "case": "stdio",
+    "test": "tenant_exit::stdio::actor_stdio_eof_preserves_actor_control_and_neighbor_lifetime",
+    "actual_exit": 101,
+    "teardown": {
+      "full_population_reaping_kernel_return": "Unverified; ROOT independent held-watch/resource gates owed",
+      "observer_fd_baseline": 7,
+      "owner_stop_observer_join": {
+        "complete": true,
+        "error": null
+      },
+      "protocol_complete": true,
+      "run_removed": true
+    }
+  }
+]

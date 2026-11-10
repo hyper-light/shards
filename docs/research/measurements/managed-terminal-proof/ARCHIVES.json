@@ -1,0 +1,20 @@
+[
+  {
+    "path": "/home/adalundhe/root-managed-terminal-closing-b02e-text-v1.tar.gz",
+    "size": 116166,
+    "sha256": "be1f0d7a923ffaab2d501984267cf9341c764811d5609c580f120a44bac8eabe",
+    "files": 294,
+    "destination": "native",
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "localOriginal": "/Users/adalundhe/g121-retained-archives/root-managed-terminal-closing-b02e-text-v1.tar.gz"
+  },
+  {
+    "path": "/Users/adalundhe/root-managed-seven-b02e-text-v1.tar.gz",
+    "size": 5800,
+    "sha256": "b913c871dece7ccc9d8c07a30763fb0c0a71c3051081d070b86212822b168838",
+    "files": 14,
+    "destination": "matrix",
+    "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "localOriginal": "/Users/adalundhe/g121-retained-archives/root-managed-seven-b02e-text-v1.tar.gz"
+  }
+]

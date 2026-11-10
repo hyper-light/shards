@@ -1,0 +1,7 @@
+{
+  "path": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_output-27c7f5b2529c465b",
+  "sha256": "c623f835e219b1aaca10f7dd2d0b5b89ed6887a6f28aec164eca25c194c4b47e",
+  "head": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "source_variant": "b02e8592c547553c788702ac6c52ea6b633e875d+canonical-finish-guard-disabled",
+  "daemon_sha256": "bd83139d729633df761b61a79573601793631375222c62cfae61ed864ca33b5f"
+}

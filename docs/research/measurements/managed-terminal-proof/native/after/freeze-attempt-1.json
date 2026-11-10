@@ -1,0 +1,6 @@
+{
+  "state": "PartialThenStopped",
+  "directory": "/home/adalundhe/root-managed-terminal-after-b02e-artifacts-v1",
+  "reason": "original per-process testguest path absent after later ordinary suite",
+  "preserved": "first three verified copies retained; new v2 manifest records exact-hash alternate"
+}

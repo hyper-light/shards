@@ -522,6 +522,14 @@ covert channel or abuse of deliberately delegated read/write/credential authorit
 
 ## 12. Current coordinator checkpoint
 
+The [canonical terminal closing record](../research/measurements/managed-terminal-proof/README.md)
+retains strict normal and post-stdio-EOF KVM red/green cases, the exact completion
+guard removal with actual false-abort metadata and restored passes, full real
+daemon/remote component callers, and the exact seven-target/native Mac gate at
+b02e8592c. This corrects a reproduced completion classification; metadata fault/
+ordering, reconnect, inherited-writer and full managed-plan obligations remain
+open. Logical completion is not a successful or durable metadata append.
+
 The [UDP/API/reporting record](../research/measurements/managed-coordinator-udp-api-reporting/README.md)
 retains actual eight-case UDP peer interception and two TCP regressions, public
 identity guard mutations with restored ordinary suites, native Linux/macOS API

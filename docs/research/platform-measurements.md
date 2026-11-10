@@ -20512,3 +20512,11 @@ revision before comparing a changed API/implementation.
   `shards_api::record::Learned`) was 2.41 s, which that boot met with 3 ms to spare. WHP's
   rows are from after jupiter's reboot: before it, an NTFS stall held 81-96% of its CPU in
   the kernel and its boots took up to 134 s, a host fault the rows do not measure.
+
+### Managed output canonical completion coordinator gate
+
+The [source-specific terminal closing record](measurements/managed-terminal-proof/README.md)
+links actual root KVM before/after, meaningful one-guard failure/restoration,
+real daemon/remote unit callers and exact seven-target/native macOS results at
+b02e8592c. These are functional gates; comparative cost, metadata fault/ordering
+and the complete managed-runtime contract remain unverified.

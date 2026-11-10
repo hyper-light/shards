@@ -1,0 +1,1475 @@
+{
+  "kind": "regular-files-sha256-v1",
+  "members": [
+    {
+      "path": "before/MANIFEST.json",
+      "size": 11701,
+      "sha256": "4a7082e6e75a741f1ac71bcf1b28eabc291aa2cbb78dfcb5e00a101ee8c82560"
+    },
+    {
+      "path": "before/cargo.txt",
+      "size": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "before/compile.command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "before/compile.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "before/compile.jsonl",
+      "size": 260583,
+      "sha256": "dcb352cd17d0ad80a79b818a1b19e27b5a8673d45296de553b906fc07d866e0e"
+    },
+    {
+      "path": "before/compile.log",
+      "size": 1859,
+      "sha256": "061b8dc0e6f0516a33f3190bb4004ecc37a263044d0e330f9c512c93ae3edf02"
+    },
+    {
+      "path": "before/driver-meaning.txt",
+      "size": 98,
+      "sha256": "5d4e0810a9b1677fa68eb272bf8967ce065307a24ec257471aa97f07ce8b10fb"
+    },
+    {
+      "path": "before/driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "before/driver.py",
+      "size": 4884,
+      "sha256": "b89eebcde09047236a8b3ee776eb20e214c2928e987083124f0172fca180fee5"
+    },
+    {
+      "path": "before/environment.json",
+      "size": 695,
+      "sha256": "76614951f5852cbb6cf83dc7d881376a9f30327730dd2ffc3faccc4568e717c1"
+    },
+    {
+      "path": "before/frozen-artifacts.json",
+      "size": 1315,
+      "sha256": "b27eb3dab84e140f138f25ea08ff042ec35bb22fb033bec8a2c51e672e40129b"
+    },
+    {
+      "path": "before/normal/command.json",
+      "size": 229,
+      "sha256": "c8077f95b63da03b7b3fbfab36eff71ac4b1f59715485003133398a47a629a3f"
+    },
+    {
+      "path": "before/normal/environment.json",
+      "size": 190,
+      "sha256": "4bed0b49439030f7777dae858e65a1967fda1baf9e0b0d14db17de5f80826cd0"
+    },
+    {
+      "path": "before/normal/records/Agentfile",
+      "size": 246,
+      "sha256": "264f1f7be2ef9ac4f3e24d8af5a2cbc8095b4b1b429facecee25df84fc0f6e24"
+    },
+    {
+      "path": "before/normal/records/inputs.json",
+      "size": 1228,
+      "sha256": "50403d83fc09da3a310ea1b89cca742d0509e0ce5f9bbcb65ab6e53e44ed3cbe"
+    },
+    {
+      "path": "before/normal/records/managed-output.before-stop",
+      "size": 433,
+      "sha256": "aba810a4695197cc9ae84b27991ca7b97bb59b36da918720f554e2463d15e24c"
+    },
+    {
+      "path": "before/normal/records/managed-output.member-ended",
+      "size": 433,
+      "sha256": "aba810a4695197cc9ae84b27991ca7b97bb59b36da918720f554e2463d15e24c"
+    },
+    {
+      "path": "before/normal/records/managed-output.ready",
+      "size": 433,
+      "sha256": "aba810a4695197cc9ae84b27991ca7b97bb59b36da918720f554e2463d15e24c"
+    },
+    {
+      "path": "before/normal/records/managed-output.stopped",
+      "size": 719,
+      "sha256": "b6c1d50f2fafe413e9149b0a27ee2cb831834fa96d228027a56006c72b048a62"
+    },
+    {
+      "path": "before/normal/records/member-ended.json",
+      "size": 1087,
+      "sha256": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+    },
+    {
+      "path": "before/normal/records/neighbor-progress.json",
+      "size": 1245,
+      "sha256": "0909f1a67448e27e495f99057f732382f47f6d2748ac1a4358cb5dca701653dd"
+    },
+    {
+      "path": "before/normal/records/ports.json",
+      "size": 451,
+      "sha256": "9877c9649e82c96973567996ce1e0fa29d3e33babf69fa9a729062382f2e39b4"
+    },
+    {
+      "path": "before/normal/records/processes-after-member1.json",
+      "size": 700,
+      "sha256": "595b4b4c698453547df412b3e97491cac5a41797ef27628ab9888d4ca0fdcf3a"
+    },
+    {
+      "path": "before/normal/records/release.json",
+      "size": 138,
+      "sha256": "8de2101fc248375c0133a48c93239045a7431da416e8666534327fdf620c3224"
+    },
+    {
+      "path": "before/normal/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "before/normal/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "before/normal/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "before/normal/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "before/normal/records/teardown.json",
+      "size": 295,
+      "sha256": "976675665258e6dcefa25090fc8238d2d63052e4b734aab5c2c5b22ca161884d"
+    },
+    {
+      "path": "before/normal/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "before/normal/test.log",
+      "size": 9310,
+      "sha256": "963b233ae01b500dd42abf4d2853a5542493a4a487e127ad1399854ee425f75e"
+    },
+    {
+      "path": "before/results.json",
+      "size": 959,
+      "sha256": "69ccfe3bdae47fc7f88c612acdffc51ea8a7819ed7b4bf26182823d505305596"
+    },
+    {
+      "path": "before/rustc.txt",
+      "size": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "before/source.txt",
+      "size": 41,
+      "sha256": "0d51f467698792db08ae3cba65e2fb7235dba0459ba6338a0e84f2d9ec02e812"
+    },
+    {
+      "path": "before/stdio/command.json",
+      "size": 243,
+      "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+    },
+    {
+      "path": "before/stdio/environment.json",
+      "size": 445,
+      "sha256": "822079f82737af357548cdd8b0af3e1982ba30907b6abe05af199b8b3a3780ac"
+    },
+    {
+      "path": "before/stdio/records/Agentfile",
+      "size": 352,
+      "sha256": "6b24d3f3a3fe0462d4a35e6cdd094efc17ece2bf3f95019056815c6b617f0ec8"
+    },
+    {
+      "path": "before/stdio/records/actor-control.json",
+      "size": 577,
+      "sha256": "0845861aa328473f30b3ed1bbbcb02d187f73e867ab306794bf81e13f1a442d0"
+    },
+    {
+      "path": "before/stdio/records/actor-eof.json",
+      "size": 1045,
+      "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+    },
+    {
+      "path": "before/stdio/records/actor-live-after-eof.json",
+      "size": 888,
+      "sha256": "c8e066542792b9cf4a5c0c90daa0de593bea63fbbd0deda52e93638b977caa64"
+    },
+    {
+      "path": "before/stdio/records/actor-ports.json",
+      "size": 499,
+      "sha256": "0968e6d1d210ea1a70445b3ac6174e24049918eebd51201efebec8c6019a1d4c"
+    },
+    {
+      "path": "before/stdio/records/artifacts.json",
+      "size": 1065,
+      "sha256": "3cacb7d75fc66a19890d27a7233864101ca0606387b69e4e8d76721d05d63bcc"
+    },
+    {
+      "path": "before/stdio/records/inputs.json",
+      "size": 466,
+      "sha256": "511a0f91911ed68d8a1deb5bf01ff49892f1f8e64ca1f134e5f0169757881bcb"
+    },
+    {
+      "path": "before/stdio/records/managed-output.actor-eof",
+      "size": 433,
+      "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+    },
+    {
+      "path": "before/stdio/records/managed-output.before-cleanup",
+      "size": 433,
+      "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+    },
+    {
+      "path": "before/stdio/records/managed-output.before-stop",
+      "size": 433,
+      "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+    },
+    {
+      "path": "before/stdio/records/managed-output.ready",
+      "size": 433,
+      "sha256": "11d9eb2ed1eab039157d8876d67728dcdff42f2ceafca5ca1f3e8f7c16969488"
+    },
+    {
+      "path": "before/stdio/records/managed-output.stopped",
+      "size": 719,
+      "sha256": "37417bf05ed2c70102b5e3676577732624f4543a1920dc82aaf741d732d98664"
+    },
+    {
+      "path": "before/stdio/records/ports.json",
+      "size": 499,
+      "sha256": "0968e6d1d210ea1a70445b3ac6174e24049918eebd51201efebec8c6019a1d4c"
+    },
+    {
+      "path": "before/stdio/records/release.json",
+      "size": 138,
+      "sha256": "6a62c05197b6de53b37acef4f779d813c9e73743099c5dc19851a2db89d78130"
+    },
+    {
+      "path": "before/stdio/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "before/stdio/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "before/stdio/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "before/stdio/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "before/stdio/records/subsequent-progress.json",
+      "size": 1285,
+      "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+    },
+    {
+      "path": "before/stdio/records/teardown.json",
+      "size": 266,
+      "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+    },
+    {
+      "path": "before/stdio/records/wire-1-1-0.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "before/stdio/records/wire-1-1-28.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "before/stdio/records/wire-1-1-58.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "before/stdio/records/wire-1-1-86.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "before/stdio/records/wire-1-2-0.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "before/stdio/records/wire-1-2-28.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "before/stdio/records/wire-1-2-58.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "before/stdio/records/wire-1-2-83.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-0.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-120.bin",
+      "size": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-150.bin",
+      "size": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-30.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-60.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "before/stdio/records/wire-2-1-90.bin",
+      "size": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-0.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-117.bin",
+      "size": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-147.bin",
+      "size": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-30.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-60.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "before/stdio/records/wire-2-2-87.bin",
+      "size": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "path": "before/stdio/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "before/stdio/test.log",
+      "size": 8816,
+      "sha256": "eb0c89f901a7fc63e0a69f6d4182635744a6a55a9c241fb4d6b9e24c6236a45c"
+    },
+    {
+      "path": "before/test-artifact.json",
+      "size": 191,
+      "sha256": "1b62c6743cc515c469b03f57d556b75afae1aa6692fc6fc6a44d10116fef4065"
+    },
+    {
+      "path": "after-v1-failed/driver.py",
+      "size": 5933,
+      "sha256": "f1e6341c0b8d062b3d1d2273a8dee4c6f31dbb6883302e5334bba765ebf5ff38"
+    },
+    {
+      "path": "after-v1-failed/source.txt",
+      "size": 41,
+      "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+    },
+    {
+      "path": "after/cargo.txt",
+      "size": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "after/compile.command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "after/compile.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/compile.jsonl",
+      "size": 260586,
+      "sha256": "bcb11c75aee98bbba6272c2367f68eff26dc07660b62d686f1dee5f6b2aa86a7"
+    },
+    {
+      "path": "after/compile.log",
+      "size": 1948,
+      "sha256": "d35506b977ee0b513a141acb69cc53ff546b525aa5f8f5ecadb3e00b6b471c63"
+    },
+    {
+      "path": "after/daemon-unit.command.json",
+      "size": 163,
+      "sha256": "00d7d1cf2b5f7cfe07af494c65d5236b7bd903222036dd20e673e6ad457aab17"
+    },
+    {
+      "path": "after/daemon-unit.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/daemon-unit.log",
+      "size": 3636,
+      "sha256": "4af0de1fb61f521df72242f37b9be5ed16d605ef579cabd934afdb9dc63a3c95"
+    },
+    {
+      "path": "after/driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/driver.py",
+      "size": 5933,
+      "sha256": "e95e7e3172ecc448ccf07a64f9b48e78f3b52f87d1eb38b4a948eecdb56792b1"
+    },
+    {
+      "path": "after/environment.json",
+      "size": 694,
+      "sha256": "449719c18b97935908046f6515d425ef111ddc0469283d5a25fe2a87b338859c"
+    },
+    {
+      "path": "after/freeze-attempt-1.json",
+      "size": 302,
+      "sha256": "5ae96570f0de113ec77c71bf987d3fcb687fc59a84d3dc9864873cc361104932"
+    },
+    {
+      "path": "after/frozen-artifacts.json",
+      "size": 2788,
+      "sha256": "c7666699b220029dd96938e570c388bd11d9c995e816961bce4e02c9e2cf9601"
+    },
+    {
+      "path": "after/normal/command.json",
+      "size": 229,
+      "sha256": "c8077f95b63da03b7b3fbfab36eff71ac4b1f59715485003133398a47a629a3f"
+    },
+    {
+      "path": "after/normal/environment.json",
+      "size": 189,
+      "sha256": "280c8689ef222370fad38288bc5b52e011eb834a76fd44f4625a23d215d32a8c"
+    },
+    {
+      "path": "after/normal/records/Agentfile",
+      "size": 246,
+      "sha256": "d8bf3a108712ee5b7191ada06967ffd34138df101d080048223740659be9675f"
+    },
+    {
+      "path": "after/normal/records/inputs.json",
+      "size": 1228,
+      "sha256": "b23ef16da599b4d58906b2e006d7eba1c9ce8adc43353ab3efcd30fa4d676c3c"
+    },
+    {
+      "path": "after/normal/records/managed-output.before-stop",
+      "size": 573,
+      "sha256": "8857e14dc202023b6545b3174103340ff8bccde6c6db5589679692585151465a"
+    },
+    {
+      "path": "after/normal/records/managed-output.member-ended",
+      "size": 573,
+      "sha256": "8857e14dc202023b6545b3174103340ff8bccde6c6db5589679692585151465a"
+    },
+    {
+      "path": "after/normal/records/managed-output.ready",
+      "size": 433,
+      "sha256": "c68bdd72744521a15996ae285428730b1359b0582629428404c9fa0c2b477176"
+    },
+    {
+      "path": "after/normal/records/managed-output.stopped",
+      "size": 717,
+      "sha256": "0bfc6d01691596db9214e378ccd230ee001705748b675f1f2337a51b76c873f3"
+    },
+    {
+      "path": "after/normal/records/member-ended.json",
+      "size": 1087,
+      "sha256": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+    },
+    {
+      "path": "after/normal/records/neighbor-progress.json",
+      "size": 1245,
+      "sha256": "0909f1a67448e27e495f99057f732382f47f6d2748ac1a4358cb5dca701653dd"
+    },
+    {
+      "path": "after/normal/records/ports.json",
+      "size": 327,
+      "sha256": "60fd274fdadf1d542fdba8e47c355fed2d156dbb40d281071d82f73049b2c13d"
+    },
+    {
+      "path": "after/normal/records/processes-after-member1.json",
+      "size": 700,
+      "sha256": "c490b7c2acaf7944207305e4696605db8792439b9e39edce3cff77a8753859ca"
+    },
+    {
+      "path": "after/normal/records/release.json",
+      "size": 138,
+      "sha256": "63e9165afccd0a3a7ed84342a43142793c6a41f0a7d5ce8e8e5dbb7e239ade91"
+    },
+    {
+      "path": "after/normal/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "after/normal/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "after/normal/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "after/normal/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "after/normal/records/teardown.json",
+      "size": 295,
+      "sha256": "976675665258e6dcefa25090fc8238d2d63052e4b734aab5c2c5b22ca161884d"
+    },
+    {
+      "path": "after/normal/test.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/normal/test.log",
+      "size": 2723,
+      "sha256": "562f9cd6eec4dad118ec078c6b633ca09ed1a5f36117935957dfec333ea96cbc"
+    },
+    {
+      "path": "after/ordinary.command.json",
+      "size": 134,
+      "sha256": "22f17158e7e20dec5c4c10c6a8f76610373e552bff2de13d7c73ad66e3e3e7e7"
+    },
+    {
+      "path": "after/ordinary.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/ordinary.log",
+      "size": 5883,
+      "sha256": "babd65e33615a1777d892879039511a1895600081e1860fa1a2f496f2de053b9"
+    },
+    {
+      "path": "after/remote-unit.command.json",
+      "size": 157,
+      "sha256": "76a36e0845001da61077d96e9da7bdc1b62d2398f4f15815613b215a1b34effb"
+    },
+    {
+      "path": "after/remote-unit.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/remote-unit.log",
+      "size": 3919,
+      "sha256": "5fe030de347f1ae22632e882043fcb8060716774b20ed03d2c3c2590cf7e5c2e"
+    },
+    {
+      "path": "after/results.json",
+      "size": 955,
+      "sha256": "8f4896467ea27943fe2353950e11eba7f12dbbca05e3800eb667fc65cec5c37f"
+    },
+    {
+      "path": "after/rustc.txt",
+      "size": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "after/source.txt",
+      "size": 41,
+      "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+    },
+    {
+      "path": "after/stdio/command.json",
+      "size": 243,
+      "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+    },
+    {
+      "path": "after/stdio/environment.json",
+      "size": 444,
+      "sha256": "8d07d40a7eb3b6638d6a8de9dde579404e0053c5013f8697781dd4edeeb1e3a5"
+    },
+    {
+      "path": "after/stdio/records/Agentfile",
+      "size": 352,
+      "sha256": "787bd41006b4d23a96527522a57102fca16253e2676ed7d20ce96d269c5f6cac"
+    },
+    {
+      "path": "after/stdio/records/actor-control.json",
+      "size": 571,
+      "sha256": "2e9a46aa3e308a52e5e3ec7df9af0e342348398754405b74a9d41b85a4142cf6"
+    },
+    {
+      "path": "after/stdio/records/actor-eof.json",
+      "size": 1045,
+      "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+    },
+    {
+      "path": "after/stdio/records/actor-live-after-eof.json",
+      "size": 888,
+      "sha256": "4b3567a85e54c50960159fe00ac3a7b421a34fe88d14a0ffc8fa8f8d3a79259e"
+    },
+    {
+      "path": "after/stdio/records/actor-ports.json",
+      "size": 375,
+      "sha256": "2b5a6670eed13b3b78e5d909be7ee0dc4f6f6e1e926c195adb2bc7180facf2e2"
+    },
+    {
+      "path": "after/stdio/records/artifacts.json",
+      "size": 1065,
+      "sha256": "820bb0e4d4c20581ae0bdddfe8cf3e5f15036426c5448c6d67a3adef14cba7f9"
+    },
+    {
+      "path": "after/stdio/records/inputs.json",
+      "size": 463,
+      "sha256": "202de47784a1d391f090cec460f307d29c1ddad7de305a9bc6b8e7418cd6ceed"
+    },
+    {
+      "path": "after/stdio/records/managed-output.actor-eof",
+      "size": 573,
+      "sha256": "77d1cf2959b48a6b469628d22537454bbd92604e3fbe8fa7a614e0ee509bae3b"
+    },
+    {
+      "path": "after/stdio/records/managed-output.before-cleanup",
+      "size": 573,
+      "sha256": "77d1cf2959b48a6b469628d22537454bbd92604e3fbe8fa7a614e0ee509bae3b"
+    },
+    {
+      "path": "after/stdio/records/managed-output.before-stop",
+      "size": 573,
+      "sha256": "77d1cf2959b48a6b469628d22537454bbd92604e3fbe8fa7a614e0ee509bae3b"
+    },
+    {
+      "path": "after/stdio/records/managed-output.ready",
+      "size": 433,
+      "sha256": "888cf49a98ee897e21bf612ce33be682a7675f9e10f16cc05519904603819a9b"
+    },
+    {
+      "path": "after/stdio/records/managed-output.stopped",
+      "size": 717,
+      "sha256": "11d6f76851add6a1dfed58fb6dc679c0138218a9e544cd3dc5a6a58f5b5d4f30"
+    },
+    {
+      "path": "after/stdio/records/ports.json",
+      "size": 375,
+      "sha256": "2b5a6670eed13b3b78e5d909be7ee0dc4f6f6e1e926c195adb2bc7180facf2e2"
+    },
+    {
+      "path": "after/stdio/records/release.json",
+      "size": 138,
+      "sha256": "0ba01ad01c10cf0aebaed42073845ed44dd0ca036d63a4f92f715d3eddd75796"
+    },
+    {
+      "path": "after/stdio/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "after/stdio/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "after/stdio/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "after/stdio/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "after/stdio/records/subsequent-progress.json",
+      "size": 1285,
+      "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+    },
+    {
+      "path": "after/stdio/records/teardown.json",
+      "size": 266,
+      "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+    },
+    {
+      "path": "after/stdio/records/wire-1-1-0.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "after/stdio/records/wire-1-1-28.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "after/stdio/records/wire-1-1-58.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "after/stdio/records/wire-1-1-86.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "after/stdio/records/wire-1-2-0.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "after/stdio/records/wire-1-2-28.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "after/stdio/records/wire-1-2-58.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "after/stdio/records/wire-1-2-83.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-0.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-120.bin",
+      "size": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-150.bin",
+      "size": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-30.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-60.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "after/stdio/records/wire-2-1-90.bin",
+      "size": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-0.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-117.bin",
+      "size": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-147.bin",
+      "size": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-30.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-60.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "after/stdio/records/wire-2-2-87.bin",
+      "size": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "path": "after/stdio/test.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "after/stdio/test.log",
+      "size": 2761,
+      "sha256": "2aef421bf3a231b5741557c21bf986e4a926b23d2ced26f187267a590907f233"
+    },
+    {
+      "path": "after/test-artifact.json",
+      "size": 191,
+      "sha256": "d801b3c805994a0efcb3dd4a56cdf6ab7e0f04eb17c5f8c66fc4264c49cf52c9"
+    },
+    {
+      "path": "guard/driver.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guard/mutant-build/artifact.json",
+      "size": 428,
+      "sha256": "7acd76419b6765dc348175ff1fedef02025ff8e1ed275e698db28988498dc241"
+    },
+    {
+      "path": "guard/mutant-build/command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "guard/mutant-build/exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guard/mutant-build/stderr",
+      "size": 1860,
+      "sha256": "edb943c6437a9fc88d06127e8dfc0cf615897e3fd9d284a7c139a29bc8b72844"
+    },
+    {
+      "path": "guard/mutant-build/stdout",
+      "size": 260584,
+      "sha256": "33c11943538e9c040c96dbbc55d4e711f07311aeedcbb0c769c7c37de637c63e"
+    },
+    {
+      "path": "guard/mutant-stdio/command.json",
+      "size": 243,
+      "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+    },
+    {
+      "path": "guard/mutant-stdio/environment.json",
+      "size": 451,
+      "sha256": "2433bd9216cf0842722b0df519e7bdf2611d941ab07f99578b8326ff6b8a45f0"
+    },
+    {
+      "path": "guard/mutant-stdio/records/Agentfile",
+      "size": 352,
+      "sha256": "f45867edc80a980a012efe8180c4ffcad4323279ea183369d09fdb04f30a15b6"
+    },
+    {
+      "path": "guard/mutant-stdio/records/actor-control.json",
+      "size": 567,
+      "sha256": "abbbf7ed9206b9ac8987b99e4f49b551dd946760ab2e869edcd79b70b806a097"
+    },
+    {
+      "path": "guard/mutant-stdio/records/actor-eof.json",
+      "size": 1045,
+      "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+    },
+    {
+      "path": "guard/mutant-stdio/records/actor-live-after-eof.json",
+      "size": 888,
+      "sha256": "5cca6aacf562f133602064d0f16a431f8778f33ae32d6fb7b420c21ab6cbcb29"
+    },
+    {
+      "path": "guard/mutant-stdio/records/actor-ports.json",
+      "size": 375,
+      "sha256": "03968fb7820d04e9bba4059137622ddbda407f5f7b6d5fe09a5458b82e08315b"
+    },
+    {
+      "path": "guard/mutant-stdio/records/artifacts.json",
+      "size": 1065,
+      "sha256": "5e1a397bd6533a20cec8b29da01cf09d707842402fefa7853089da3664707e9c"
+    },
+    {
+      "path": "guard/mutant-stdio/records/inputs.json",
+      "size": 493,
+      "sha256": "f95ad31c5527b68c9a403cffb65834eb970aa178697ff83159bfff9eab0336ac"
+    },
+    {
+      "path": "guard/mutant-stdio/records/managed-output.actor-eof",
+      "size": 575,
+      "sha256": "6cea6f6e1e821db308b3c40efea6c0c77551383f69df390ce02dd1638efc11d4"
+    },
+    {
+      "path": "guard/mutant-stdio/records/managed-output.before-cleanup",
+      "size": 575,
+      "sha256": "6cea6f6e1e821db308b3c40efea6c0c77551383f69df390ce02dd1638efc11d4"
+    },
+    {
+      "path": "guard/mutant-stdio/records/managed-output.before-stop",
+      "size": 575,
+      "sha256": "6cea6f6e1e821db308b3c40efea6c0c77551383f69df390ce02dd1638efc11d4"
+    },
+    {
+      "path": "guard/mutant-stdio/records/managed-output.ready",
+      "size": 433,
+      "sha256": "696236fe15c1de4702680abc0109db7222065ad6871ee556b650b512f3f849f2"
+    },
+    {
+      "path": "guard/mutant-stdio/records/managed-output.stopped",
+      "size": 719,
+      "sha256": "148b4efeddfcdc958d38a01f6223063b66d3540457176e5468c19b855ebd8158"
+    },
+    {
+      "path": "guard/mutant-stdio/records/ports.json",
+      "size": 375,
+      "sha256": "03968fb7820d04e9bba4059137622ddbda407f5f7b6d5fe09a5458b82e08315b"
+    },
+    {
+      "path": "guard/mutant-stdio/records/release.json",
+      "size": 138,
+      "sha256": "3a4ab799eb237208c2b63c72ec29ad31f971ba6e57d63efa62d057babb5f9269"
+    },
+    {
+      "path": "guard/mutant-stdio/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "guard/mutant-stdio/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "guard/mutant-stdio/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "guard/mutant-stdio/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "guard/mutant-stdio/records/subsequent-progress.json",
+      "size": 1285,
+      "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+    },
+    {
+      "path": "guard/mutant-stdio/records/teardown.json",
+      "size": 266,
+      "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-1-0.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-1-28.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-1-58.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-1-86.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-2-0.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-2-28.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-2-58.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-1-2-83.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-0.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-120.bin",
+      "size": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-150.bin",
+      "size": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-30.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-60.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-1-90.bin",
+      "size": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-0.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-117.bin",
+      "size": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-147.bin",
+      "size": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-30.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-60.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "guard/mutant-stdio/records/wire-2-2-87.bin",
+      "size": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "path": "guard/mutant-stdio/test.exit",
+      "size": 4,
+      "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+    },
+    {
+      "path": "guard/mutant-stdio/test.log",
+      "size": 8816,
+      "sha256": "c107cee8f69486780c2e4914cc0039bafbcf025f4779481a009a48459d8aee06"
+    },
+    {
+      "path": "guard/mutant.sha256",
+      "size": 65,
+      "sha256": "0eb274200b265eee7fce035fad730ac228b5711b1f0d14f0d415230574732384"
+    },
+    {
+      "path": "guard/mutation.patch",
+      "size": 829,
+      "sha256": "5c3f32066abd31530ada34ef24320def871065055a39126c8f7b6766e5656edc"
+    },
+    {
+      "path": "guard/original.sha256",
+      "size": 65,
+      "sha256": "d300eb868ef0836e72b1a422f23d21c0b9f5eda876876c18881b12001d5a6e87"
+    },
+    {
+      "path": "guard/restored-build/artifact.json",
+      "size": 396,
+      "sha256": "fb2fb0ecf88a6287e0251bf39f2fc56aaef0cd4b57be7cafbf3a0b5d0eb06d28"
+    },
+    {
+      "path": "guard/restored-build/command.json",
+      "size": 147,
+      "sha256": "719c398080567b25c3712e4bba24814c774f2c7c8f60d66734e0c9906cbb9903"
+    },
+    {
+      "path": "guard/restored-build/exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guard/restored-build/stderr",
+      "size": 1860,
+      "sha256": "95c1a1c5558d148f1115efee15a67545ad86ad3284683760c04e7b7cca1e8e07"
+    },
+    {
+      "path": "guard/restored-build/stdout",
+      "size": 260584,
+      "sha256": "0eb234d86d3b704087256f4b70d6489eb317d17d42aeb8798a4ebf79471532ef"
+    },
+    {
+      "path": "guard/restored-normal/command.json",
+      "size": 229,
+      "sha256": "c8077f95b63da03b7b3fbfab36eff71ac4b1f59715485003133398a47a629a3f"
+    },
+    {
+      "path": "guard/restored-normal/environment.json",
+      "size": 198,
+      "sha256": "0f548c9a326a55edd95d8b73a1a69bf53b5c7a740a870a9456a37a799ac342cd"
+    },
+    {
+      "path": "guard/restored-normal/records/Agentfile",
+      "size": 246,
+      "sha256": "12a29fb685fc5682e6c99fd06730a53754b26f49950c77fcbf3a6a7dc26b19f6"
+    },
+    {
+      "path": "guard/restored-normal/records/inputs.json",
+      "size": 1228,
+      "sha256": "12597a407c8472a0d5db9069551a77a90e19c4e4afe87b8171ec7d77e30616db"
+    },
+    {
+      "path": "guard/restored-normal/records/managed-output.before-stop",
+      "size": 573,
+      "sha256": "e956b4de434d4f4e5a8de87255ff2992c84651559084ca42ae8a934f1b1a173c"
+    },
+    {
+      "path": "guard/restored-normal/records/managed-output.member-ended",
+      "size": 573,
+      "sha256": "e956b4de434d4f4e5a8de87255ff2992c84651559084ca42ae8a934f1b1a173c"
+    },
+    {
+      "path": "guard/restored-normal/records/managed-output.ready",
+      "size": 433,
+      "sha256": "2d5e79e2b0792339d2d359fe6f7377793a521bd13b38bf9e0b4bcf710054b256"
+    },
+    {
+      "path": "guard/restored-normal/records/managed-output.stopped",
+      "size": 717,
+      "sha256": "c927afd4f1f28013fe7719e46ff72b4474b4cc03523508e6c158ccefbdd95884"
+    },
+    {
+      "path": "guard/restored-normal/records/member-ended.json",
+      "size": 1087,
+      "sha256": "b86439b2b38b87c5658c76ef6cc7ce933d7918ea9c17f515da69f3916159b3b7"
+    },
+    {
+      "path": "guard/restored-normal/records/neighbor-progress.json",
+      "size": 1245,
+      "sha256": "0909f1a67448e27e495f99057f732382f47f6d2748ac1a4358cb5dca701653dd"
+    },
+    {
+      "path": "guard/restored-normal/records/ports.json",
+      "size": 327,
+      "sha256": "6e467b1bc46b6cda422c796076492ef81a1e8e6d7df34431db6f0f30e48eac6c"
+    },
+    {
+      "path": "guard/restored-normal/records/processes-after-member1.json",
+      "size": 700,
+      "sha256": "8d1ba8c1b9147da0a6ef4429d92790b53d0b0a6b3004bfe9cee6c14f8e1d33f7"
+    },
+    {
+      "path": "guard/restored-normal/records/release.json",
+      "size": 138,
+      "sha256": "94d2ddcb29614f4160d9ec0c2f692ef219a46c9b002fe26ab68a1fad359c1553"
+    },
+    {
+      "path": "guard/restored-normal/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "guard/restored-normal/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "guard/restored-normal/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "guard/restored-normal/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "guard/restored-normal/records/teardown.json",
+      "size": 295,
+      "sha256": "976675665258e6dcefa25090fc8238d2d63052e4b734aab5c2c5b22ca161884d"
+    },
+    {
+      "path": "guard/restored-normal/test.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guard/restored-normal/test.log",
+      "size": 2723,
+      "sha256": "8ff9a36e19c5cccb0acfb6fa1dd2388a3b7b96e1bf5882cf5958d6445e9bbbb4"
+    },
+    {
+      "path": "guard/restored-stdio/command.json",
+      "size": 243,
+      "sha256": "3e6329ea19a31150de542260085ddc010c04d9ba4574fca230fe703d96003185"
+    },
+    {
+      "path": "guard/restored-stdio/environment.json",
+      "size": 453,
+      "sha256": "ccada5d5dd680b5242376c11d95f0495d723be2dc48886ceb51b257320e5fe09"
+    },
+    {
+      "path": "guard/restored-stdio/records/Agentfile",
+      "size": 352,
+      "sha256": "fb45514761a5ee42ea5ae6b6471b34a5edcf33fa7a7f78a00898dd9ea7d85506"
+    },
+    {
+      "path": "guard/restored-stdio/records/actor-control.json",
+      "size": 571,
+      "sha256": "61ac20fce18c457d357a6deb2207b8f70d7944761f5714a655bd122443c0521c"
+    },
+    {
+      "path": "guard/restored-stdio/records/actor-eof.json",
+      "size": 1045,
+      "sha256": "3305fc1b087873c6590f30a9ff4416c7ca8adc4e02139650992dd5de5250aa22"
+    },
+    {
+      "path": "guard/restored-stdio/records/actor-live-after-eof.json",
+      "size": 888,
+      "sha256": "a96dce621818e3d6dfe3cf69a5444c80e6f8fed8552359074e8a577345ee19c0"
+    },
+    {
+      "path": "guard/restored-stdio/records/actor-ports.json",
+      "size": 375,
+      "sha256": "c98eb85fe35c69a28bbac97668a7e85d615cf8e34f09e82f54d0f823806ef228"
+    },
+    {
+      "path": "guard/restored-stdio/records/artifacts.json",
+      "size": 1065,
+      "sha256": "c49ad14ee0ea12bca8e0ca025ce43e930f47b986c2df489edd546fdb9b52e2cb"
+    },
+    {
+      "path": "guard/restored-stdio/records/inputs.json",
+      "size": 463,
+      "sha256": "d040cdea1a27d28cc7a9cc167a160d0af5fd1e6a1370a50ca14479c3d76eb20e"
+    },
+    {
+      "path": "guard/restored-stdio/records/managed-output.actor-eof",
+      "size": 573,
+      "sha256": "a1bbdc8e83b9398a3746e7c4eb2c90e661a8c3ab53d8867e41f07903ad974509"
+    },
+    {
+      "path": "guard/restored-stdio/records/managed-output.before-cleanup",
+      "size": 573,
+      "sha256": "a1bbdc8e83b9398a3746e7c4eb2c90e661a8c3ab53d8867e41f07903ad974509"
+    },
+    {
+      "path": "guard/restored-stdio/records/managed-output.before-stop",
+      "size": 573,
+      "sha256": "a1bbdc8e83b9398a3746e7c4eb2c90e661a8c3ab53d8867e41f07903ad974509"
+    },
+    {
+      "path": "guard/restored-stdio/records/managed-output.ready",
+      "size": 433,
+      "sha256": "a2f1507cd8f729c50d6a2cda416ec3ab51711ea973fb40b4b717b8724ef41812"
+    },
+    {
+      "path": "guard/restored-stdio/records/managed-output.stopped",
+      "size": 717,
+      "sha256": "35cba317338ce635896057c0ca336b53283db1ff0ef7c12e96bdca503604443e"
+    },
+    {
+      "path": "guard/restored-stdio/records/ports.json",
+      "size": 375,
+      "sha256": "c98eb85fe35c69a28bbac97668a7e85d615cf8e34f09e82f54d0f823806ef228"
+    },
+    {
+      "path": "guard/restored-stdio/records/release.json",
+      "size": 138,
+      "sha256": "5a6512de9733f54614df3984333e905758df1b075a1cde97d8f1d1fe1f5908ed"
+    },
+    {
+      "path": "guard/restored-stdio/records/remove.json",
+      "size": 123,
+      "sha256": "b030daab97d17523fe146b82aafc77b19af6c6ea6e82b9860a884970570010bc"
+    },
+    {
+      "path": "guard/restored-stdio/records/run-cleanup.json",
+      "size": 161,
+      "sha256": "0a79f0b28014bb836e5e6656d972b6d3515337ee1ac3bd44b9ab83e08d67eab3"
+    },
+    {
+      "path": "guard/restored-stdio/records/stop.json",
+      "size": 140,
+      "sha256": "e6b2265dabe32237a34dc0f674d3132bcc48e24645c54ff61ad5abcdfbd4e4fa"
+    },
+    {
+      "path": "guard/restored-stdio/records/stopped-state.json",
+      "size": 170,
+      "sha256": "8c26963cdb1a98d9cd38e9972aeb9989045d02b0fd04dde7d5750945fc3e06b6"
+    },
+    {
+      "path": "guard/restored-stdio/records/subsequent-progress.json",
+      "size": 1285,
+      "sha256": "307cbaed6d2d75b47b1f2d56c2c3b9ab786f66ad6e59bc25004340a022f7fc05"
+    },
+    {
+      "path": "guard/restored-stdio/records/teardown.json",
+      "size": 266,
+      "sha256": "0da674c5064872af25b36f585a6be8a9411cf28eacc00800422f5ed79240989e"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-1-0.bin",
+      "size": 28,
+      "sha256": "2d22d8db4ca89c95fea0591428f5862beb29fb065afb3cdf09ee59036fc03ed6"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-1-28.bin",
+      "size": 30,
+      "sha256": "2562b603c275cfc9ca5071dcf68ea9043e3409b07c9da1092d15f7a299451a9a"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-1-58.bin",
+      "size": 28,
+      "sha256": "f4d88c4d92eb9f2d3f66636931d381a5c1b75b91818691ba08941ad063c1f6ce"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-1-86.bin",
+      "size": 16,
+      "sha256": "a0a12da7e825345259094310dbac06d79b8c1699e7aa7d1922f63ad02552a525"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-2-0.bin",
+      "size": 28,
+      "sha256": "cf104e23e058a14c5d21cd9538631de9a24576c20f2e31faa1511f894d675fd3"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-2-28.bin",
+      "size": 30,
+      "sha256": "4b98b6f871bbd9bad1fb5e62292e319730971a47e9ef06ccad939b920de66e23"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-2-58.bin",
+      "size": 25,
+      "sha256": "522886424267170d91578138f93a33e21b7ba9c60b85ef65975c935d9bfe3b3a"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-1-2-83.bin",
+      "size": 16,
+      "sha256": "5afe79de6c9ef3a8a4db21037e7bd710c379d81af1ad670e3376b335c4d09b9d"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-0.bin",
+      "size": 30,
+      "sha256": "065fb75d62fed2abbd3f3d96e49e14fbc7b3fee82bc5bbb958eed826bd7c5d74"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-120.bin",
+      "size": 30,
+      "sha256": "e87cdc08576d81c1a82c466d59a53729a780dda2af4e0bcbf412f67a21c33ac7"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-150.bin",
+      "size": 27,
+      "sha256": "084ce904f22d8a5affc376f5ce4862b844af29cf71582efee1ad3532bb22d909"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-30.bin",
+      "size": 30,
+      "sha256": "5a982e66d32ea182124b510073997be4dfadea0ce4d86698d6c475ea596d78e4"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-60.bin",
+      "size": 30,
+      "sha256": "4283b84081c1fd2d99dc1abc8bdba14d2c7ce06d9592c0aa1d69cde4a4f6e682"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-1-90.bin",
+      "size": 30,
+      "sha256": "2b9d6a7d712d204f7e14589511e1d57cb2ab094119b2e102a1e8039b7b77237f"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-0.bin",
+      "size": 30,
+      "sha256": "fe8dd34a4392854452593f016a58c77fffb75baef91a7728a88b2b7bccd4992a"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-117.bin",
+      "size": 30,
+      "sha256": "2ecc61e42ddbe2576aecbb53abbbc4f6823a15281e7407ccf65e24261e839309"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-147.bin",
+      "size": 24,
+      "sha256": "b95550b17bb932da0553ec51e9fdbaec59595713508f6304802917ac9a8439fa"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-30.bin",
+      "size": 30,
+      "sha256": "71ef820f75b2067ff12894c9aff50b7fa96045d20db38a0f207c8a2ee9b20bf1"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-60.bin",
+      "size": 27,
+      "sha256": "c6b3e40f7a6cbb65b87e3495af3def8582192d25b52a3f8f8aab5ec7e57d4bb0"
+    },
+    {
+      "path": "guard/restored-stdio/records/wire-2-2-87.bin",
+      "size": 30,
+      "sha256": "a7a92fd01b1c346a10fe57319ffa94a6f6ff3df93e2c3b65b34c6669670ccf41"
+    },
+    {
+      "path": "guard/restored-stdio/test.exit",
+      "size": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "guard/restored-stdio/test.log",
+      "size": 2761,
+      "sha256": "a0c6b7c88e43adfa8e47dadb9f666f43658a0d54b1a7d1bd87f88976e9497fa4"
+    },
+    {
+      "path": "guard/restored.diff",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "guard/restored.sha256",
+      "size": 65,
+      "sha256": "d300eb868ef0836e72b1a422f23d21c0b9f5eda876876c18881b12001d5a6e87"
+    },
+    {
+      "path": "guard/results.json",
+      "size": 2217,
+      "sha256": "c5857f4e606656f14ec232eccca567db1dd6a5f2e5127ee607c029e7b7daa7cc"
+    },
+    {
+      "path": "guard/source.txt",
+      "size": 41,
+      "sha256": "57302fc098cfb198e642b15715403f9799b7c08626e9487b470a13893696c4b6"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "SHARDS_TENANT_EXIT_PORT": "44175",
+  "SHARDS_TENANT_EXIT_DEADLINE_MS": "300000",
+  "SHARDS_TENANT_EXIT_RECORDS": "/home/adalundhe/root-managed-terminal-guard-b02e-v1/restored-normal/records"
+}

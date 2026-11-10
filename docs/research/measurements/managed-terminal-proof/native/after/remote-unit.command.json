@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards-remote", "--lib", "managed::tests", "--", "--nocapture", "--test-threads=1"]

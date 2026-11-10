@@ -1,0 +1,13 @@
+diff --git a/crates/shards/src/daemon/managed.rs b/crates/shards/src/daemon/managed.rs
+index dc2f915a3..de66d365e 100644
+--- a/crates/shards/src/daemon/managed.rs
++++ b/crates/shards/src/daemon/managed.rs
+@@ -177,7 +177,7 @@ impl Life {
+ 
+     fn resolve(&mut self, state: State, event: Resolve) -> Option<Self> {
+         let next = match (*self, state, event) {
+-            (Self::Draining(Terminal::End), State::Finished(_), _) => Self::Ended,
++            (Self::Draining(Terminal::End), State::Finished(_), _) if false => Self::Ended,
+             (Self::Draining(terminal), State::Finished(_) | State::Aborted(_), _)
+             | (Self::Draining(terminal), _, Resolve::Stop) => Self::Aborted(Some(terminal)),
+             (Self::Serving, State::Aborted(_), _) | (Self::Serving, _, Resolve::Stop) => Self::Aborted(None),

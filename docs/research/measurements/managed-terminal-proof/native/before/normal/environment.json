@@ -1,0 +1,5 @@
+{
+  "SHARDS_TENANT_EXIT_PORT": "52969",
+  "SHARDS_TENANT_EXIT_DEADLINE_MS": "300000",
+  "SHARDS_TENANT_EXIT_RECORDS": "/home/adalundhe/root-managed-terminal-before-26ba-v1/normal/records"
+}

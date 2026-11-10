@@ -1,0 +1,10 @@
+{
+  "args": [
+    "read",
+    "ports",
+    "owner-output"
+  ],
+  "status": 0,
+  "stderr": "",
+  "stdout": "PORT             PUBLISHED        REACHES\n35929/tcp        127.0.0.1:41409  agent helper\n53737/tcp        127.0.0.1:34883  harness driver\nmanaged-2-1/udp  127.0.0.1:55440  authenticated owner output\nmanaged-2-2/udp  127.0.0.1:33494  authenticated owner output\n"
+}

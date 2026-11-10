@@ -1,0 +1,11 @@
+{
+  "CARGO_BUILD_JOBS": "4",
+  "CARGO_TARGET_DIR": "/home/adalundhe/managed-capture-check/target",
+  "DOCKER_CONFIG": "/home/adalundhe/root-managed-terminal-after-b02e-v2/empty-docker",
+  "SHARDS_REQUIRE_VMS": "1",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TENANT_EXIT_SOURCE_REVISION": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "SHARDS_TENANT_STDIO_SOURCE_REVISION": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "SHARDS_OUTPUT_COST_SOURCE_REVISION": "b02e8592c547553c788702ac6c52ea6b633e875d"
+}
