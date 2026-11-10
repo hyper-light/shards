@@ -1,0 +1,6 @@
+[package]
+name="shards-devcgroup"
+version="0.0.0"
+edition="2024"
+[lib]
+path="/home/adalundhe/managed-relay-native-witness-draft-light-v1/guest/source/crates/devcgroup/src/lib.rs"

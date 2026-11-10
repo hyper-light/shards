@@ -1,0 +1,1 @@
+["rustup", "run", "1.98.1", "rustfmt", "--check", "--edition", "2024", "--config", "skip_children=true", "crates/testguest/src/managed_network.rs", "crates/testguest/src/managed_network/intercept/sock_addr.rs", "crates/testguest/src/managed_network/intercept/udp.rs", "crates/testguest/src/managed_network/intercept/udp/forward.rs"]

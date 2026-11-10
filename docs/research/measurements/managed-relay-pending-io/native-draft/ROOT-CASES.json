@@ -1,0 +1,35 @@
+{
+  "status": "DRAFT SOURCE FOR ROOT REVIEW; actual native execution/adoption pending",
+  "base": "6b346e2298ca350ca2955a9f7cb57f0a8a2304fa",
+  "required_env": {
+    "SHARDS_CANCEL_CASE_MS": "positive caller u64 milliseconds, no default; existing checked Deadline overflow behavior"
+  },
+  "arguments": [
+    "EXACT_FILTER",
+    "--ignored",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "filters": [
+    "managed_network::intercept::udp::tests::native_cancellation::pending_token_and_expiry_precede_operation_without_consumption",
+    "managed_network::intercept::udp::tests::native_cancellation::owned_reader_hup_refuses_operation",
+    "managed_network::intercept::udp::tests::native_cancellation::owned_writer_err_refuses_operation"
+  ],
+  "artifact_identity": "light/binary-identities.json (two source-linked GNU/musl test binaries; no carried VM helper claim)",
+  "phases": [
+    "Pending: ConnectionAborted,attempts0,token_retained=true",
+    "ExpiredAndPending: TimedOut,attempts0,token_retained=true",
+    "OwnedReaderHup: BrokenPipe,attempts0",
+    "OwnedWriterErr: Other,attempts0"
+  ],
+  "scope": "Owned same-process eventfd/pipe only; operation is counter-only, no socket/VM/cotenant/closed FD number/signal handler",
+  "outer_envelope": "ROOT supplies actual execution timeout/resource envelope and retains source/artifact/toolchain/kernel/FD cleanup evidence",
+  "unverified": [
+    "all four native phases",
+    "actual NVAL/EINTR signal/race cases",
+    "all OS-error cleanup and resource counts",
+    "combined matrix/hardware/cost",
+    "main adoption/lane closure"
+  ]
+}

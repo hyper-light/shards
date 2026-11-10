@@ -7,7 +7,9 @@ notification `f8d643c59`, backend-end `47912a11c` and extra-datagram `a343f772d`
 Full canonical policy/plan/handoff readback remains loaded; policy files
 `f5cec365`, rules SHA256
 `d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242`.
-No runtime/source edit, new defect or actual descriptor result is reported here.
+The original6b proposal was documentation-only. A reviewable ignored-test draft
+is now retained in [native-draft](native-draft/README.md); no production change,
+new defect or actual descriptor result is reported by that draft.
 
 ROOT reported r626's actual pending-cancel correction/guard-removal/restoration
 and original controls passing, with independent backend bytes on the mutant.
@@ -24,8 +26,10 @@ adapter, thread, signal handler, grant or installed artifact. Use the actual
 Deadline::io implementation and existing notification/cancellation consumer.
 
 Every native case requires explicit positive `SHARDS_CANCEL_CASE_MS`; no built-in
-wait/default, sleep or invented timing tolerance. All checks remain within that
-same original absolute deadline. Test-only pipe2 setup owns both successful FDs
+wait/default, sleep or invented timing tolerance. Positive/HUP/ERR checks retain that original absolute deadline. The separate
+expiry input is explicitly already expired at creation; it does not sleep until
+the positive phase expires or change that phase's at. This is not a hard bound
+on OS setup or whole-test execution. Test-only pipe2 setup owns both successful FDs
 as OwnedFd immediately and deliberately drops only its own peer. No other
 process/cotenant descriptors or closed descriptor-number reuse are involved.
 
@@ -68,7 +72,9 @@ are not represented as native tests.
 
 ## Gates and R01–R16 accounting
 
-Before source implementation, ROOT reviews this additional scope. Proposed native
+The original pre-source hold was a proposal-stage restriction. The user's
+approved scoped fixture work permits preparing a reversible draft for review;
+ROOT reviews before adoption and alone executes actual native cases. Draft
 test functions stay ignored, preserve production source semantics, and reuse
 existing pure/light wrappers with NEW private source/target under Kiln admission
 at most1CPU/1GiB/2GiB. ROOT runs exact named native tests under a supplied caller

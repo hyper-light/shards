@@ -1,0 +1,15 @@
+{
+  "classification": "Captured raw text logs preserved byte-identically; no source/global whitespace waiver",
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-relay-pending-io/native-draft/light/guest/1.log",
+      "sha256": "e189b1763aebf136cc7c231ddd4e2f93dbf8940903013ba8769a6e8cf432abb2"
+    },
+    {
+      "path": "docs/research/measurements/managed-relay-pending-io/native-draft/light/guest/2.log",
+      "sha256": "be758a236f311ff5bee2040633b60d01557bdc700845c63d270dc217bd8c4ecc"
+    }
+  ],
+  "raw_check_exit": 2,
+  "raw_check_output": "docs/research/measurements/managed-relay-pending-io/native-draft/light/guest/1.log:52: new blank line at EOF.\ndocs/research/measurements/managed-relay-pending-io/native-draft/light/guest/2.log:50: new blank line at EOF.\n"
+}

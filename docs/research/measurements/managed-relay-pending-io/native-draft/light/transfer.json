@@ -1,0 +1,8 @@
+{
+  "bytes": 8554,
+  "sha256": "dd33c50d5dc0c2703e6152fc929fee7c082ad9e1ece0e70a7425aad9f3f56fcd",
+  "files": 24,
+  "all_member_hashes_verified": true,
+  "transport": "compressed in-memory text JSON, no local archive/executable",
+  "originals": "Fedora ~/managed-relay-native-witness-draft-light-v1 retained"
+}

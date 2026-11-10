@@ -1,0 +1,14 @@
+{
+  "base": "6b346e2298ca350ca2955a9f7cb57f0a8a2304fa",
+  "udp_non_test_sha256": "0602648e5e10288a5ede5fc864e6f6f149875afe6bc119ec15e3a8d0dc1d3292",
+  "udp_non_test_exact_base": true,
+  "unchanged_whole_paths": {
+    "crates/testguest/src/managed_network.rs": "5c44f5b696fbd8084a2ffe89ac9018972113226dafd1597117a2fc95f4b7d93f",
+    "crates/testguest/src/managed_network/intercept/sock_addr.rs": "9d47e42ad6b767508ec60a47ba1283ac1b3fdbe6b4742ef3e8b884a92b18eb4a",
+    "crates/testguest/src/managed_network/intercept/udp/forward.rs": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61",
+    "crates/shards/tests/managed_network/cancel.rs": "bf5dbdfb05dd5e886db334a60c37d64b26aba3e35c4fede4258a0728a7081d76"
+  },
+  "native_functions": 3,
+  "ignored_attributes": 3,
+  "scope": "ignored Linux cfg(test) draft only; no native execution or production change"
+}

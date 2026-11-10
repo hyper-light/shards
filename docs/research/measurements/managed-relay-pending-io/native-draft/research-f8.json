@@ -1,0 +1,43 @@
+{
+  "id": "f8",
+  "claim": "Linux pipe2 supplies a read/write descriptor pair and supports CLOEXEC plus nonblocking flags at creation. A test-only RAII pair can therefore create and drop only its own peer without descriptor-number reuse, signal-handler changes or a socket setup. Native error results and cleanup are not established by this source basis.",
+  "cites": [
+    {
+      "source": "s1",
+      "quote": "return two file descriptors referring to the ends of the pipe.",
+      "at": "DESCRIPTION",
+      "check": {
+        "state": "found",
+        "at": 1794325125756
+      }
+    },
+    {
+      "source": "pipe",
+      "quote": "fd_install(fd[0], files[0]);",
+      "at": "do_pipe2",
+      "check": {
+        "state": "found",
+        "at": 1794325125756
+      }
+    }
+  ],
+  "against": [],
+  "inferred": true,
+  "note": "Three ignored Linux tests/four phases are a reviewable draft only; implementer default GNU/musl suites skip them. No actual native HUP/ERR/FD lifetime result or production change.",
+  "at": 1794325124816,
+  "confidence": {
+    "score": 76,
+    "grade": "B",
+    "words": "good",
+    "support": 0.7610000000000001,
+    "against": 0,
+    "reliability": 0.9,
+    "citation": 1,
+    "independent": 2,
+    "cites": 2,
+    "found": 2,
+    "failed": 0,
+    "why": "2 independent sources (official docs, code); 2 of 2 quotes found where cited; some out of date; inferred from them"
+  },
+  "against_weights": []
+}

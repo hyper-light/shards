@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/home/adalundhe/managed-relay-native-witness-draft-light-v1/guest/target/debug/deps/sock_addr_pure-21e30d5efd6c79d0",
+    "bytes": 10725104,
+    "sha256": "5aad314dc39e4364f9235f9452f3a8b8412caa2e56e77e484e4b59aa73a3a72d"
+  },
+  {
+    "path": "/home/adalundhe/managed-relay-native-witness-draft-light-v1/guest/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-aa5c5217bce35e26",
+    "bytes": 10835872,
+    "sha256": "63be2e7174e4360afea3ec9552aa18a18cae9fb27160c37874ba379d71de7719"
+  }
+]

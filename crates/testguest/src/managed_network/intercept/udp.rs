@@ -825,4 +825,118 @@ mod tests {
         assert!(validate(arrival(0, 0, vec![], known()), b"", other, None).is_err());
         assert!(validate(arrival(0, 0, vec![], known()), b"", at, Some(other)).is_err());
     }
+
+    #[cfg(target_os = "linux")]
+    mod native_cancellation {
+        use super::*;
+
+        fn supplied_deadline() -> Deadline {
+            let millis = std::env::var("SHARDS_CANCEL_CASE_MS")
+                .expect("ROOT must supply SHARDS_CANCEL_CASE_MS")
+                .parse::<u64>()
+                .expect("SHARDS_CANCEL_CASE_MS must be u64 milliseconds");
+            assert!(millis > 0, "ROOT supplies a positive native fixture budget");
+            Deadline::new(Duration::from_millis(millis)).unwrap()
+        }
+
+        fn owned_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+            // The two outputs are the native pipe ABI, not a runtime capacity.
+            let mut pair = [-1; 2];
+            // SAFETY: pair holds both initialized pipe2 output slots.
+            if unsafe { libc::pipe2(pair.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let [reader, writer] = pair;
+            // SAFETY: successful pipe2 returned two fresh, uniquely owned FDs;
+            // both enter RAII immediately, with no fallible step between them.
+            Ok(unsafe { (OwnedFd::from_raw_fd(reader), OwnedFd::from_raw_fd(writer)) })
+        }
+
+        #[test]
+        #[ignore = "ROOT alone executes native cancel readiness, token retention and expiry precedence"]
+        fn pending_token_and_expiry_precede_operation_without_consumption() {
+            let setup = supplied_deadline();
+            let cancel = notification().unwrap();
+            notify(&cancel, &setup).unwrap();
+            let pending = Deadline {
+                at: setup.at,
+                cancel: Some(cancel.as_raw_fd()),
+            };
+            let mut attempts = 0;
+            let observed = pending.io(cancel.as_raw_fd(), libc::POLLIN, || {
+                attempts += 1;
+                Ok(())
+            });
+            let kind = observed.as_ref().err().map(io::Error::kind);
+            let retained = cancellation_observed(&cancel);
+            writeln!(io::stdout().lock(), "managed-cancel-native phase=Pending kind={kind:?} attempts={attempts} token_retained={retained}").unwrap();
+            assert_eq!(kind, Some(io::ErrorKind::ConnectionAborted));
+            assert_eq!(attempts, 0);
+            assert!(retained, "pre-attempt observation must leave the worker's token");
+
+            notify(&cancel, &setup).unwrap();
+            // This separate input is already expired at creation. No sleep,
+            // replacement allowance or change to the pending phase's at.
+            let expired = Deadline {
+                at: Instant::now(),
+                cancel: Some(cancel.as_raw_fd()),
+            };
+            let mut attempts = 0;
+            let observed = expired.io(cancel.as_raw_fd(), libc::POLLIN, || {
+                attempts += 1;
+                Ok(())
+            });
+            let kind = observed.as_ref().err().map(io::Error::kind);
+            let retained = cancellation_observed(&cancel);
+            writeln!(io::stdout().lock(), "managed-cancel-native phase=ExpiredAndPending kind={kind:?} attempts={attempts} token_retained={retained}").unwrap();
+            assert_eq!(kind, Some(io::ErrorKind::TimedOut));
+            assert_eq!(attempts, 0);
+            assert!(
+                retained,
+                "expiry precedence must not consume pending cancellation"
+            );
+        }
+
+        #[test]
+        #[ignore = "ROOT alone executes native HUP from an owned pipe peer drop"]
+        fn owned_reader_hup_refuses_operation() {
+            let setup = supplied_deadline();
+            let (reader, writer) = owned_pipe().unwrap();
+            drop(writer);
+            let guarded = Deadline {
+                at: setup.at,
+                cancel: Some(reader.as_raw_fd()),
+            };
+            let mut attempts = 0;
+            let observed = guarded.io(reader.as_raw_fd(), libc::POLLIN, || {
+                attempts += 1;
+                Ok(())
+            });
+            let kind = observed.as_ref().err().map(io::Error::kind);
+            writeln!(io::stdout().lock(), "managed-cancel-native phase=OwnedReaderHup kind={kind:?} attempts={attempts} peer=OwnedWriterDropped").unwrap();
+            assert_eq!(kind, Some(io::ErrorKind::BrokenPipe));
+            assert_eq!(attempts, 0);
+        }
+
+        #[test]
+        #[ignore = "ROOT alone executes native ERR from an owned pipe peer drop"]
+        fn owned_writer_err_refuses_operation() {
+            let setup = supplied_deadline();
+            let (reader, writer) = owned_pipe().unwrap();
+            drop(reader);
+            let guarded = Deadline {
+                at: setup.at,
+                cancel: Some(writer.as_raw_fd()),
+            };
+            let mut attempts = 0;
+            let observed = guarded.io(writer.as_raw_fd(), libc::POLLIN, || {
+                attempts += 1;
+                Ok(())
+            });
+            let kind = observed.as_ref().err().map(io::Error::kind);
+            writeln!(io::stdout().lock(), "managed-cancel-native phase=OwnedWriterErr kind={kind:?} attempts={attempts} peer=OwnedReaderDropped").unwrap();
+            assert_eq!(kind, Some(io::ErrorKind::Other));
+            assert_eq!(attempts, 0);
+        }
+    }
 }
