@@ -23,15 +23,6 @@ use shards_image::store::Store;
 /// The artifact type of an SBOM referrer: SPDX's JSON (D116).
 pub const SPDX_JSON: &str = "application/spdx+json";
 
-/// The file a directory's config is read from, by kind.
-fn config_file(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Agent => "agent.json",
-        Kind::Harness => "harness.json",
-        Kind::Mcp => "mcp.json",
-    }
-}
-
 pub(crate) fn kind_of(word: &str) -> Option<Kind> {
     match word {
         "agent" | "agents" => Some(Kind::Agent),
@@ -108,7 +99,7 @@ fn usage(kind: Kind) -> String {
     };
     format!(
         "Usage:\n  shards build {w} DIR -t NAME [--platform LIST]   make one of DIR and its {}\n  shards sign {w} NAME [--key FILE]               sign it with a cosign key (COSIGN_PASSWORD), or keylessly\n  shards push {w} NAME                             with its signatures and SBOMs\n  shards pull {w} NAME\n  shards ls {w}\n  shards inspect {w} NAME\n  shards rm {w} NAME\n  shards rm {w} NAME --referrer DIGEST             delete a signature or SBOM from its registry",
-        config_file(kind)
+        kind.config_file()
     )
 }
 
@@ -181,13 +172,14 @@ fn build(kind: Kind, args: &[String]) -> Result<(), String> {
     if !platforms.is_empty() {
         return build_index(kind, &dir, &name, &platforms, &store, sbom.as_deref());
     }
-    let (desc, _) = make(kind, &dir, &store)?;
+    let startup_name = name.path.rsplit('/').next().ok_or("-t needs a repository name")?;
+    let (desc, _) = make(kind, &dir, &store, Some(startup_name))?;
     let digest = desc.digest().map_err(|e| e.to_string())?;
     store
         .tag(&name.to_string(), &desc, &digest, &contents(&store, &desc)?)
         .map_err(|e| e.to_string())?;
     if let Some(sbom) = &sbom {
-        attach_sbom(&store, &name, &desc, &dir, &[config_file(kind)], sbom)?;
+        attach_sbom(&store, &name, &desc, &dir, &[kind.config_file()], sbom)?;
     }
     let _ = writeln!(io::stdout(), "{digest}");
     Ok(())
@@ -375,13 +367,29 @@ fn build_index(
             variant: (!p.variant.is_empty()).then(|| text(&p.variant)),
         };
         let (mut desc, _) = if content.is_dir() {
-            let made = make_in(kind, dir, &content, &[], store, Some(&platform))?;
+            let made = make_in(
+                kind,
+                dir,
+                &content,
+                &[],
+                store,
+                Some(&platform),
+                name.path.rsplit('/').next(),
+            )?;
             scanned.push((content.clone(), Vec::new(), made.0.clone()));
             made
         } else {
-            let made = make_in(kind, dir, dir, &skip, store, Some(&platform))?;
+            let made = make_in(
+                kind,
+                dir,
+                dir,
+                &skip,
+                store,
+                Some(&platform),
+                name.path.rsplit('/').next(),
+            )?;
             let mut left = skip.clone();
-            left.push(config_file(kind));
+            left.push(kind.config_file());
             scanned.push((dir.to_path_buf(), left, made.0.clone()));
             made
         };
@@ -446,8 +454,13 @@ fn build_index(
 
 /// The artifact of `dir`: its config (its `agent.json`, with `schemaVersion` filled in),
 /// and its files in one uncompressed tar, all stored. Returns its manifest's descriptor.
-pub fn make(kind: Kind, dir: &Path, store: &Store) -> Result<(Descriptor, Config), String> {
-    make_in(kind, dir, dir, &[], store, None)
+pub fn make(
+    kind: Kind,
+    dir: &Path,
+    store: &Store,
+    startup_name: Option<&str>,
+) -> Result<(Descriptor, Config), String> {
+    make_in(kind, dir, dir, &[], store, None, startup_name)
 }
 
 /// [`make`] of the config in `dir` and the content of `content`, `skip` left out of it,
@@ -459,16 +472,24 @@ fn make_in(
     skip: &[&str],
     store: &Store,
     platform: Option<&osi::Platform>,
+    startup_name: Option<&str>,
 ) -> Result<(Descriptor, Config), String> {
-    let cfg_path = dir.join(config_file(kind));
+    let cfg_path = dir.join(kind.config_file());
     let text = fs::read(&cfg_path).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
-    let mut v: serde_json::Value =
-        serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
-    if let Some(o) = v.as_object_mut() {
-        o.entry("schemaVersion").or_insert(osi::SCHEMA_VERSION.into());
-    }
-    let bytes = serde_json::to_vec(&v).map_err(|e| e.to_string())?;
-    let mut config = Config::parse(&bytes).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+    let mut config = if kind == Kind::Mcp {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
+        if let Some(object) = value.as_object_mut() {
+            object
+                .entry("schemaVersion")
+                .or_insert(osi::SCHEMA_VERSION.into());
+        }
+        let bytes = serde_json::to_vec(&value).map_err(|e| e.to_string())?;
+        Config::parse(&bytes).map_err(|e| format!("{}: {e}", cfg_path.display()))?
+    } else {
+        shards_agentfile::startup::config(&text, startup_name.unwrap_or_default())
+            .map_err(|e| format!("{}: {e}", cfg_path.display()))?
+    };
     if let Some(p) = platform {
         if let Some(said) = config.platform.as_ref().filter(|said| *said != p) {
             return Err(format!(
@@ -484,7 +505,7 @@ fn make_in(
     }
     let config_bytes = config.to_bytes().map_err(|e| e.to_string())?;
     let mut tar = Vec::new();
-    let mut skipped = vec![config_file(kind)];
+    let mut skipped = vec![kind.config_file()];
     skipped.extend_from_slice(skip);
     pack(content, &skipped, &mut tar)?;
     let put = |bytes: &[u8]| -> Result<Digest, String> {
@@ -1668,6 +1689,36 @@ mod tests {
         }
     }
 
+    /// A simple descriptor uses the explicit repository basename, while legacy OSI
+    /// input keeps its own name; no filesystem name is guessed (D54).
+    #[test]
+    fn supplied_artifact_builds_use_the_explicit_tag_name() {
+        let home = shards_testdir::TempDir::new("startup-artifact-store").unwrap();
+        let store = crate::pull::store(home.as_ref()).unwrap();
+        let dir = shards_testdir::TempDir::new("unrelated-directory-name").unwrap();
+        let dir: &Path = dir.as_ref();
+        fs::write(
+            dir.join("harness.json"),
+            r#"{"entrypoint":"codex exec","options":["--dangerously-bypass-approvals-and-sandbox"]}"#,
+        )
+        .unwrap();
+        let tag = reference("registry.example/team/codex-cli:demo").unwrap();
+        let name = tag.path.rsplit('/').next();
+        let (_, config) = make(Kind::Harness, dir, &store, name).unwrap();
+        assert_eq!(config.name, "codex-cli");
+        assert_eq!(
+            config.run.unwrap().command,
+            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
+        );
+        assert!(make(Kind::Harness, dir, &store, None).unwrap_err().contains("-t"));
+        fs::write(
+            dir.join("agent.json"),
+            r#"{"name":"legacy","run":{"command":["bin/start"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(make(Kind::Agent, dir, &store, name).unwrap().1.name, "legacy");
+    }
+
     /// The PKCS #8 of a key cosign v3.1.3 made (crates/sigstore's oracle).
     fn pkcs8() -> Vec<u8> {
         let oracle: serde_json::Value =
@@ -1698,7 +1749,7 @@ mod tests {
         fs::write(dir.join("run.sh"), "one").unwrap();
         let name = reference("team/agent:1").unwrap();
         let tagged = || {
-            let (desc, _) = make(Kind::Agent, dir, &store).unwrap();
+            let (desc, _) = make(Kind::Agent, dir, &store, None).unwrap();
             let digest = desc.digest().unwrap();
             store
                 .tag(

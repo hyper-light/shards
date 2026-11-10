@@ -275,6 +275,27 @@ HARNESS <name> FROM <source>[:<tag>] [TO <dest_path>]
 
 - A harness is a file artifact. The build unpacks it to `/harness/<name>`, or to
   `TO <dest_path>` if given.
+- **Starting supplied files.** A path, archive, Git tree or HTTP archive may carry a
+  root `harness.json` (`agent.json` for `AGENT`) containing:
+
+  ```json
+  {"entrypoint": "nohup codex exec ", "options": ["--dangerously-bypass-approvals-and-sandbox"]}
+  ```
+
+  `entrypoint` is a nonempty command string. Quotes and backslash escapes delimit its
+  words; no shell is implied, and variables, globs and command substitutions are never
+  expanded. `options` is optional (an empty array by default); every element is one
+  literal argument appended after those words. `nohup`, when supplied, is an ordinary
+  explicit program. Shards already supervises the domain; it adds no `nohup` or shell.
+  The example's Codex option stays exactly as supplied, under the domain's own grants.
+  A bare program is found in the artifact's root, then its `bin`, then the system's
+  ordinary executable directories. The same `PATH` reaches explicitly started children.
+  The build validates the descriptor and normalizes it into the existing OSI runtime
+  config; this simple form needs no schema, name or `run` fields. Full OSI descriptors
+  remain supported. A source without a descriptor retains its prior layout behavior;
+  copying it alone does not declare a command to run. `shards build agent` and
+  `shards build harness` also read this simple descriptor: their required `-t` gives
+  its internal name, the repository's last component, rather than the source directory.
 - **It has no agents** by default. `ATTACH` (§4.9) grants it agents.
 - **`VOLUME` and `CONNECT`** name harnesses as they name agents, told apart by
   `--target-kind`

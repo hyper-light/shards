@@ -483,8 +483,11 @@ fn domain(
         ),
     };
     let workdir = run.get("workdir").and_then(Value::str).unwrap_or(".");
+    // A supplied bare command lives in its own artifact before the system tools.
+    // The inherited PATH also lets an explicit launcher such as nohup find its child.
+    let path = format!("{dir}:{dir}/bin:{PATH}");
     let mut env = vec![
-        cstr(&format!("PATH={PATH}"))?,
+        cstr(&format!("PATH={path}"))?,
         cstr("HOME=/tmp")?,
         cstr(&format!("SHARDS_DOMAIN={label}"))?,
     ];
@@ -500,7 +503,7 @@ fn domain(
     } else {
         // A bare name, on PATH as execvp(3) would find it, found here: the child may not
         // allocate.
-        PATH.split(':')
+        path.split(':')
             .map(|p| format!("{p}/{first}"))
             .find(|p| {
                 CString::new(p.as_str()).is_ok_and(|c| {

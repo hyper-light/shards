@@ -29,7 +29,7 @@ use shards_agentfile::platform::{self, Platform};
 use shards_gateway::gateway::{self as gw, Client, Pong, Ref, Returned, RpcStatus, Solve};
 use shards_gateway::grpc;
 
-use crate::build::{gitobject, sbom, skills};
+use crate::build::{domain_config, gitobject, sbom, skills};
 
 mod check;
 mod inputs;
@@ -2023,7 +2023,7 @@ fn build_platforms<R: Read, W: Write>(
             group_prefix: &format!("{}-", g.env.session),
         };
         let mut plan_def = planned.definition();
-        lay_skills(g, &mut plan_def, &carried, entry)?;
+        lay_sources(g, &mut plan_def, &carried, entry)?;
         lay_artifacts(g, &mut plan_def)?;
         if !planned.domains.is_empty() {
             check_domains(g, g.me.clone(), &plan_def, &planned.domains, &carried, entry)?;
@@ -2622,27 +2622,51 @@ impl<R: Read, W: Write> skills::Fetched for GatewayTree<'_, '_, R, W> {
     }
 }
 
-/// Each of shards' own skills steps (D54) made a file op BuildKit runs: the tree it checks
+enum SourceCheck {
+    Skills(String),
+    Domain {
+        kind: Vec<u8>,
+        name: Vec<u8>,
+        platform: Option<Platform>,
+    },
+}
+
+/// Each of shards' source checks (skills and domain startup) made a file op BuildKit runs: the tree it checks
 /// solved first, read through the gateway, checked as `shards build image` checks it, and laid
 /// out by the copies that check gives; a refusal the build's error, on the SKILL's lines.
-fn lay_skills<R: Read, W: Write>(
+fn lay_sources<R: Read, W: Write>(
     g: &Gateway<'_, R, W>,
     def: &mut Definition,
     carried: &Carried<'_>,
     entry: &Entrypoint,
 ) -> Result<(), Failure> {
     for k in 0..def.ops.len() {
-        let (came_as, input) = match def.ops.get(k) {
+        let (check, input) = match def.ops.get(k) {
             Some(Op {
                 kind: OpKind::Skills { name },
                 inputs,
                 ..
             }) => (
-                String::from_utf8_lossy(name).into_owned(),
+                SourceCheck::Skills(String::from_utf8_lossy(name).into_owned()),
                 inputs
                     .first()
                     .copied()
                     .ok_or_else(|| Failure::new("a skills step without what it checks"))?,
+            ),
+            Some(Op {
+                kind: OpKind::DomainConfig { kind, name },
+                inputs,
+                platform,
+            }) => (
+                SourceCheck::Domain {
+                    kind: kind.clone(),
+                    name: name.clone(),
+                    platform: platform.clone(),
+                },
+                inputs
+                    .first()
+                    .copied()
+                    .ok_or_else(|| Failure::new("a domain config step without its source"))?,
             ),
             _ => continue,
         };
@@ -2661,8 +2685,13 @@ fn lay_skills<R: Read, W: Write>(
             .get(k)
             .map(|m| m.locations.clone())
             .unwrap_or_default();
-        let actions =
-            skills::layout_of(&mut tree, &came_as).map_err(|e| entry.wrap(Failure::new(e), &locations))?;
+        let actions = match check {
+            SourceCheck::Skills(came_as) => skills::layout_of(&mut tree, &came_as),
+            SourceCheck::Domain { kind, name, platform } => {
+                domain_config::layout_of(&mut tree, &kind, &name, platform.as_ref())
+            }
+        }
+        .map_err(|e| entry.wrap(Failure::new(e), &locations))?;
         if let Some(op) = def.ops.get_mut(k) {
             op.kind = OpKind::File { actions };
         }
@@ -3078,7 +3107,7 @@ mod tests {
         let mut out = Vec::new();
         gateway_over(server, &mut out, |g| {
             let mut def = skills_definition();
-            lay_skills(g, &mut def, &Carried::default(), &entry()).unwrap();
+            lay_sources(g, &mut def, &Carried::default(), &entry()).unwrap();
             let Some(Op {
                 kind: OpKind::File { actions },
                 inputs,
@@ -3101,6 +3130,45 @@ mod tests {
             assert_eq!(
                 (src.as_slice(), dest.as_slice(), *dir_copy_contents),
                 (b"/my-skill".as_slice(), b"/my-skill".as_slice(), true)
+            );
+        });
+    }
+
+    /// A supplied harness's simple descriptor is checked through the gateway and
+    /// normalized exactly as the native solver does, before the runtime copy (D54).
+    #[test]
+    fn a_supplied_harness_startup_is_normalized_through_the_gateway() {
+        let descriptor =
+            br#"{"entrypoint":"codex exec","options":["--dangerously-bypass-approvals-and-sandbox"]}"#;
+        let server = fake_server(&[
+            Ok(solved("r1")),
+            Ok(listed(&[stat("harness.json", 0o644, descriptor.len() as u64)])),
+            Ok(stated(stat("harness.json", 0o644, descriptor.len() as u64))),
+            Ok(read(descriptor)),
+        ]);
+        let mut out = Vec::new();
+        gateway_over(server, &mut out, |g| {
+            let mut def = skills_definition();
+            def.ops[1].kind = OpKind::DomainConfig {
+                kind: b"harness".to_vec(),
+                name: b"codex".to_vec(),
+            };
+            def.ops[1].platform = Some(Platform::new("linux", "amd64"));
+            lay_sources(g, &mut def, &Carried::default(), &entry()).unwrap();
+            let OpKind::File { actions } = &def.ops[1].kind else {
+                panic!("{:?}", def.ops[1]);
+            };
+            let shards_agentfile::llb::OpActionKind::Mkfile { data, path, .. } =
+                &actions.last().unwrap().action
+            else {
+                panic!("{actions:?}");
+            };
+            assert_eq!(path, b"/osi.json");
+            let config = shards_image::osi::Config::parse(data).unwrap();
+            assert_eq!(config.name, "codex");
+            assert_eq!(
+                config.run.unwrap().command,
+                ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"]
             );
         });
     }
@@ -3194,7 +3262,7 @@ mod tests {
         let mut out = Vec::new();
         gateway_over(server, &mut out, |g| {
             let mut def = skills_definition();
-            let f = lay_skills(g, &mut def, &Carried::default(), &entry()).unwrap_err();
+            let f = lay_sources(g, &mut def, &Carried::default(), &entry()).unwrap_err();
             assert!(f.message.starts_with("skill my-skill: "), "{}", f.message);
             assert_eq!(f.details.len(), 1);
             assert_eq!(f.details[0].0, SOURCE_DETAIL);

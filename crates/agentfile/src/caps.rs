@@ -166,7 +166,7 @@ pub fn op(op: &Op, meta: &Meta, sets_default_path: bool) -> BTreeSet<&'static st
         }
         // shards' own step (D54) needs nothing BuildKit names; an operation given whole
         // carries its own in its metadata, as it came.
-        OpKind::Skills { .. } | OpKind::Raw { .. } => {}
+        OpKind::Skills { .. } | OpKind::DomainConfig { .. } | OpKind::Raw { .. } => {}
     }
     caps
 }

@@ -38,5 +38,6 @@ pub mod parser;
 pub mod pb;
 pub mod plan;
 pub mod platform;
+pub mod startup;
 pub mod subrequests;
 pub mod url;

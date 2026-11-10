@@ -22,6 +22,8 @@ use crate::platform::Platform;
 const VARINT: u8 = 0;
 /// The field shards' own SKILL step is written in: past every `pb.Op` field.
 const SKILLS: u32 = 100;
+/// The next shards-owned operation field, after SKILLS; BuildKit skips both.
+const DOMAIN_CONFIG: u32 = SKILLS + 1;
 const LEN: u8 = 2;
 
 /// A message being written.
@@ -175,6 +177,12 @@ pub fn op(op: &Op, digests: &[Vec<u8>]) -> Option<Vec<u8>> {
             let mut k = W::default();
             k.bytes(1, name);
             w.message(SKILLS, k);
+        }
+        OpKind::DomainConfig { kind, name } => {
+            let mut k = W::default();
+            k.bytes(1, kind);
+            k.bytes(2, name);
+            w.message(DOMAIN_CONFIG, k);
         }
         // Returned above, as it came.
         OpKind::Raw { .. } => {}

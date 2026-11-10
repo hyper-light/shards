@@ -39,6 +39,7 @@ pub(crate) mod builder;
 mod cache;
 pub(crate) mod cdi;
 mod compress;
+pub(crate) mod domain_config;
 pub(crate) mod domains;
 mod estargz;
 mod exec;
@@ -3767,7 +3768,11 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
         // made, as BuildKit's solver takes a vertex its cache key finds (D114).
         let step = matches!(
             op.kind,
-            OpKind::Exec { .. } | OpKind::File { .. } | OpKind::Merge | OpKind::Skills { .. }
+            OpKind::Exec { .. }
+                | OpKind::File { .. }
+                | OpKind::Merge
+                | OpKind::Skills { .. }
+                | OpKind::DomainConfig { .. }
         );
         // A step with the network under the build's proxy (D110) is keyed apart, by
         // either of its keys.
@@ -4009,6 +4014,22 @@ fn run(parsed: &Parsed, status: &std::cell::Cell<u8>) -> Result<(), String> {
                     .ok_or_else(|| fail(&v, "a skills step without what it checks"))?;
                 let actions =
                     skills::layout(&input, &show(came_as), &mut exec.sources).map_err(|e| fail(&v, &e))?;
+                let outs = exec.file(&[input], &actions, &name).map_err(|e| fail(&v, &e))?;
+                progress.borrow().done(&v);
+                outs
+            }
+            OpKind::DomainConfig {
+                kind,
+                name: domain_name,
+            } => {
+                let v = progress.borrow_mut().start(&name);
+                let input = inputs
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| fail(&v, "a domain config step without its source"))?;
+                let actions =
+                    domain_config::layout(&input, kind, domain_name, op.platform.as_ref(), &mut exec.sources)
+                        .map_err(|e| fail(&v, &e))?;
                 let outs = exec.file(&[input], &actions, &name).map_err(|e| fail(&v, &e))?;
                 progress.borrow().done(&v);
                 outs
