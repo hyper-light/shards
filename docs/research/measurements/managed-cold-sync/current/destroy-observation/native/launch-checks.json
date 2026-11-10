@@ -1,0 +1,62 @@
+{
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source_revision": "79276d1923811bde0b275dda7afa98f587737f3f",
+  "role": "implementer / scoped ordinary native tester",
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+  "commands": [
+    {
+      "argv": [
+        "python3",
+        "-"
+      ],
+      "scope": "compile three Python source strings in memory, no .pyc",
+      "exit": 0
+    },
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/prepare.py",
+        "--out",
+        "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/inputs-v1"
+      ],
+      "exit": 0
+    },
+    {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check"
+      ],
+      "exit": 2,
+      "stdout": "docs/research/measurements/managed-cold-sync/current/destroy-observation/native/held_exit.py:164: new blank line at EOF.\n",
+      "scope": "Exact copied supervisor prefix retains its original separator; full check is NOT passed"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--check",
+        "--",
+        ".",
+        ":!docs/research/measurements/managed-cold-sync/current/destroy-observation/native/held_exit.py"
+      ],
+      "exit": 0,
+      "scope": "All other staged launcher/snapshot paths"
+    }
+  ],
+  "api_source_or_test_case_edits": false,
+  "rust_build_typecheck_lint_or_native_execution": false,
+  "native_cases_started": 0,
+  "no_case_retry_or_deadline_increase": true
+}
