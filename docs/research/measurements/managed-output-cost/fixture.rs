@@ -16,21 +16,23 @@ impl Inputs {
     fn supplied() -> Self {
         let required = |name| std::env::var(name).unwrap_or_else(|_| panic!("supply {name}"));
         let members = required("SHARDS_OUTPUT_COST_MEMBERS").parse::<u32>().unwrap();
-        members
-            .checked_add(1)
-            .expect("files-only declaration and members must fit u32");
-        usize::try_from(members)
-            .unwrap()
-            .checked_mul(2)
-            .expect("channel count must fit usize");
+        assert!(
+            members.checked_add(1).is_some(),
+            "files-only declaration and members must fit u32"
+        );
+        assert!(
+            usize::try_from(members).unwrap().checked_mul(2).is_some(),
+            "channel count must fit usize"
+        );
         let patience = Duration::from_millis(required("SHARDS_OUTPUT_COST_DEADLINE_MS").parse().unwrap());
         assert!(
             !patience.is_zero(),
             "explicit finite positive phase deadline required"
         );
-        Instant::now()
-            .checked_add(patience)
-            .expect("representable phase deadline");
+        assert!(
+            Instant::now().checked_add(patience).is_some(),
+            "representable phase deadline"
+        );
         let records = PathBuf::from(required("SHARDS_OUTPUT_COST_RECORDS"));
         assert!(records.is_absolute(), "records must be an absolute new directory");
         std::fs::create_dir(&records).unwrap();
@@ -161,7 +163,7 @@ fn start(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> (Ready, Vec<
         Ready::NoManagedMembers { run }
     } else {
         let text = std::fs::read_to_string(&record).unwrap();
-        let metadata = Metadata::parse(&text).expect("trusted scoped owner metadata");
+        let metadata = Metadata::parse(&text).unwrap_or_else(|| panic!("trusted scoped owner metadata"));
         assert_eq!(metadata.run, run);
         assert_eq!(metadata.server, fixture.owner.fingerprint());
         assert_eq!(metadata.owner, fixture.owner.fingerprint());
