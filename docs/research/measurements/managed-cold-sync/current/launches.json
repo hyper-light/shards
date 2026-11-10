@@ -1,0 +1,24 @@
+{
+  "initial_launch": {
+    "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "output": "Traceback (most recent call last):\n  File \"/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/run.py\", line 221, in <module>\n    main()\n  File \"/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/run.py\", line 175, in main\n    resource.setrlimit(resource.RLIMIT_DATA, (1073741824, 1073741824))\nValueError: current limit exceeds maximum limit\n",
+    "running": false,
+    "why": "macos/aarch64 · 30 of 32 cores idle · 47 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 1
+  },
+  "second_launch": {
+    "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "output": "Traceback (most recent call last):\n  File \"/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/run-v2.py\", line 226, in <module>\n    main()\n  File \"/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/run-v2.py\", line 178, in main\n    resource.setrlimit(resource.RLIMIT_DATA, (data_limit, hard))\nValueError: current limit exceeds maximum limit\n",
+    "running": false,
+    "why": "macos/aarch64 · 30 of 32 cores idle · 47 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 1
+  },
+  "executed_launch": {
+    "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "output": "",
+    "running": true,
+    "id": "r17",
+    "why": "macos/aarch64 · 30 of 32 cores idle · 48 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk"
+  },
+  "scope": "The executed run's exit0 is collector completion, not a native passing result. All four native tests exited SIGABRT(-6). No production edit has been made in this checkpoint."
+}

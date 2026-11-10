@@ -1,0 +1,38 @@
+{
+  "trace": true,
+  "deadline_monotonic": 27.166653375,
+  "seconds": 15,
+  "argv": [
+    "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/current-cbd392/target/test-release/deps/shards_api-eb9b7710ed083f27",
+    "client::cold_sync_current::owned_connection_cold_sync_refusal_current",
+    "--exact",
+    "--test-threads=1",
+    "--nocapture"
+  ],
+  "standin_exit_observed": true,
+  "test_exit_observed": true,
+  "timed_out": false,
+  "cleanup": [
+    {
+      "kill_owned_group": "sent"
+    },
+    {
+      "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/v"
+    },
+    {
+      "owned_unlink": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/cold-sync-owned"
+    },
+    {
+      "owned_rmdir": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0"
+    }
+  ],
+  "child_reaping_after_abort": "unknown; outer is not its parent",
+  "test_pid": 14930,
+  "test_pgid": 14930,
+  "standin_pid": 14931,
+  "vsock": "/var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-2f47cc557770820d-0/v",
+  "observer_registered_before_release": true,
+  "exit": -6,
+  "stdout_sha256": "5f4d9908d8741bfc4893fdeb96046f793140e4b6cfbd40e86267ab052bcbb888",
+  "stderr_sha256": "39b2700322bef27a45aac6eecde25b93c4a89ad226a70ab446fc3bd63078f963"
+}

@@ -1,0 +1,3 @@
+
+running 1 test
+test client::cold_sync_current::owned_connection_cold_sync_refusal_current ... COLD_READY 14984 /var/folders/_9/gtl3lhln36z1pmgzqws751100000gn/T/shards-api-1478888aee97dfac-0/v
