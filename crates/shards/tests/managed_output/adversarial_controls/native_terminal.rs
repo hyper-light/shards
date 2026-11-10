@@ -2,18 +2,25 @@
 use super::*;
 use shards_remote::managed::{Control, Endpoint, Producer, State};
 
+#[derive(Clone, Copy, Debug)]
+enum TerminalControl {
+    DuplicateAck,
+    Resubscribe,
+}
+
 struct NativeInput {
     directory: PathBuf,
     run: String,
     generation: u64,
     channel: Channel,
     errno: i32,
+    control: TerminalControl,
     until: Instant,
     cleanup: Instant,
 }
 
 impl NativeInput {
-    fn read(began: Instant) -> Self {
+    fn read(began: Instant, control: TerminalControl) -> Self {
         let required = |suffix| {
             let key = format!("SHARDS_ADVERSARIAL_NATIVE_{suffix}");
             std::env::var(&key).unwrap_or_else(|_| panic!("supply {key}"))
@@ -48,10 +55,11 @@ impl NativeInput {
             generation,
             channel,
             errno,
+            control,
             until: deadlines.work,
             cleanup: deadlines.cleanup,
         };
-        input.write("inputs.json", &json!({"scope":"actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error","supplied_errno":errno,"source":source,"phase_ms":limits.phase_ms,"cleanup_ms":limits.cleanup_ms,"outer_ms":limits.outer_ms,"outer_enforcement":"direct caller required","run":input.run,"generation":generation,"channel":channel as u8,"work":"three canonical records; one duplicate control; one returned postterminal payload","fixture_sha256":common::sha256_digest(&std::fs::read(std::env::current_exe().unwrap()).unwrap()),"compiled_leaf_sha256":common::sha256_digest(include_bytes!("native_terminal.rs"))}));
+        input.write("inputs.json", &json!({"scope":"actual native authenticated Endpoint; no daemon/VM metadata or observed guest read error","supplied_errno":errno,"source":source,"phase_ms":limits.phase_ms,"cleanup_ms":limits.cleanup_ms,"outer_ms":limits.outer_ms,"outer_enforcement":"direct caller required","run":input.run,"generation":generation,"channel":channel as u8,"work":"three canonical records; one selected terminal control; one returned postterminal payload","control":format!("{control:?}"),"fixture_sha256":common::sha256_digest(&std::fs::read(std::env::current_exe().unwrap()).unwrap()),"compiled_leaf_sha256":common::sha256_digest(include_bytes!("native_terminal.rs"))}));
         input
     }
 
@@ -209,10 +217,28 @@ impl Native {
             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
         );
         input.write("canonical.json", &json!({"canonical_state":format!("{state:?}"),"control":snapshot(&worker.control),"actual_transport_end":true}));
-        observer.sender.send(Command::Handler(Ask::Ack(cursor))).unwrap();
-        let event = trace.next(observer, "native-duplicate", input.until);
+        let (command, bytes, receipts) = match input.control {
+            TerminalControl::DuplicateAck => (Ask::Ack(cursor), managed::consumed(cursor).to_vec(), None),
+            TerminalControl::Resubscribe => {
+                let bytes = managed::subscribe(scope, cursor).to_vec();
+                assert_eq!(bytes.len(), managed::CONTROL_BYTES);
+                let (sender, receipts) = mpsc::channel();
+                (
+                    Ask::RawControl {
+                        bytes: bytes.clone(),
+                        finish: false,
+                        receipts: sender,
+                    },
+                    bytes,
+                    Some(receipts),
+                )
+            }
+        };
+        std::fs::write(input.directory.join("postterminal-control.bin"), &bytes).unwrap();
+        observer.sender.send(Command::Handler(command)).unwrap();
+        let event = trace.next(observer, "native-control", input.until);
         let Event::Lost(Some(code)) = event else {
-            panic!("duplicate terminal ACK must report typed refusal");
+            panic!("selected terminal control must report typed refusal");
         };
         assert_eq!(
             Reason::try_from(u32::try_from(code).unwrap()),
@@ -230,7 +256,25 @@ impl Native {
             panic!("postterminal payload must return with typed Closed");
         };
         assert_eq!(returned, refused);
-        input.write("duplicate.json", &json!({"reason":format!("{:?}",Reason::Protocol),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len()}));
+        input.write("control-refusal.json", &json!({"selected_control":format!("{:?}",input.control),"submitted_bytes":bytes.len(),"reason":format!("{:?}",Reason::Protocol),"control":snapshot(&worker.control),"canonical_state":format!("{state:?}"),"returned_payload_sha256":common::sha256_digest(&returned),"returned_payload_bytes":returned.len()}));
+        observer.sender.request_stop();
+        let observer = self.observer.as_mut().unwrap();
+        let joined = observer.join(input.until);
+        let remaining: Vec<_> = observer.events.try_iter().collect();
+        for event in &remaining {
+            trace.record(observer, "native-after-join", event);
+        }
+        if let Some(receipts) = receipts {
+            let receipts: Vec<_> = receipts.try_iter().collect();
+            input.write("io-receipts.json", &json!({"actual":receipts.iter().map(receipt_value).collect::<Vec<_>>(),"driver_joined":joined.is_ok(),"submitted_bytes":bytes.len(),"finish_requested":false,"meaning":"actual local acceptance/read receipts; not peer ACK or daemon metadata"}));
+            check_receipts(&receipts, bytes.len(), false);
+        }
+        input.write("observer-stop.json", &json!({"joined":joined.is_ok(),"error":joined.as_ref().err(),"post_join_records":remaining.iter().filter(|e|matches!(e,Event::Record(..))).count(),"owner_control":snapshot(&worker.control)}));
+        joined.unwrap();
+        assert!(!remaining.iter().any(|event| matches!(event, Event::Record(..))));
+        assert!(
+            matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
+        );
     }
 
     fn cleanup(&mut self, input: &NativeInput) -> Vec<String> {
@@ -274,11 +318,9 @@ impl Native {
     }
 }
 
-#[test]
-#[ignore = "assigned native actual endpoint; explicit positive phase/cleanup/outer, scope/errno and new records"]
-fn canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit() {
+fn exercise(control: TerminalControl) {
     let began = Instant::now();
-    let input = NativeInput::read(began);
+    let input = NativeInput::read(began, control);
     let before = std::fs::read_dir("/proc/self/fd").unwrap().count();
     let mut native = Native::default();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| native.run(&input)));
@@ -291,4 +333,16 @@ fn canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit() {
     let errors = cleanup.unwrap_or_else(|error| std::panic::resume_unwind(error));
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(after, before);
+}
+
+#[test]
+#[ignore = "assigned native actual endpoint; explicit positive phase/cleanup/outer, scope/errno and new records"]
+fn canonical_aborted_duplicate_ack_preserves_errno_and_terminal_credit() {
+    exercise(TerminalControl::DuplicateAck);
+}
+
+#[test]
+#[ignore = "assigned native actual endpoint; one owned Subscribe after Aborted, explicit bounds and new records"]
+fn canonical_aborted_resubscribe_preserves_errno_and_terminal_credit() {
+    exercise(TerminalControl::Resubscribe);
 }
