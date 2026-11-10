@@ -273,7 +273,8 @@ def allocation_metrics(data):
         value = native.get(role, {})
         native_identity = value.get("identity")
         expected_identity = [data["snapshots"][role]["pid"], data["snapshots"][role]["expected_start"]]
-        if value.get("state") == "ConditionalDifference" and integer(value.get("value")) and value.get("source") == "LinuxMinfltPlusMajfltViaPlatformUsage" and value.get("native_bits") == 64 and native_identity == expected_identity:
+        # The accepted producer's Delta::ConditionalDifference carries a u64.
+        if value.get("state") == "ConditionalDifference" and integer(value.get("value")) and value["value"] < (1 << 64) and value.get("source") == "LinuxMinfltPlusMajfltViaPlatformUsage" and value.get("native_bits") == 64 and native_identity == expected_identity:
             result[f"native_faults.{role}.start_to_ready"] = value | {"state": "Conditional"}
         else:
             result[f"native_faults.{role}.start_to_ready"] = unknown(value.get("reason", "NativeFaultPhaseUnavailable"))

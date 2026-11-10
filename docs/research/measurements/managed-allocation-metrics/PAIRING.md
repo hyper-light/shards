@@ -118,7 +118,10 @@ non-atomic phase deltas for cumulative counters and absolute live/lifetime peak
 gauges. Peaks are never subtracted as phase peaks. Final live values can include
 other test/runtime/input/result owners and do not establish leak freedom.
 Native fault deltas remain conditional, tied to the native Linux aggregate,
-width and actual role identity; missing/invalid coverage is Unknown. No native
+width and actual role identity; missing/invalid coverage is Unknown. An accepted
+delta must fit the existing Rust producer's `ConditionalDifference(u64)` field:
+nonnegative and less than 2^64. This is a representation bound, not a measured
+fault limit or assurance against native wrap/reset/lossy fallback. No native
 fault categories are equated across operating systems. This Linux cost caller
 does not establish macOS/Windows host results.
 
