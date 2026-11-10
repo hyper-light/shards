@@ -171,3 +171,72 @@ or proof of configured server availability. Bare ordinary launches are unchanged
 production/test Clippy0 and two tests0failed/0ignored. It is NOT a product ABI or
 real caller gate. The local discriminants and proposed owner CLI spelling require
 ROOT's shared module/token/public syntax approval before any ABI/Run/Spec/CLI edit.
+
+## D-HA2: one-owner JSONL framing
+
+NEW `harness/framing.rs` is the concrete selected-pipe assembly component. The
+owner supplies an empty, initialized, already-admitted Vec. Its actual capacity
+is the only assembly storage bound; this module cannot grow it, acquire input
+rights or open/read a descriptor. `feed` consumes only through the first LF and
+returns the consumed length, leaving every later packet in the caller's suffix.
+Whitespace, CR, invalid UTF-8 and chunk boundaries are retained as bytes. The
+separate owner capture remains authoritative for exact raw protocol retention.
+
+States are `Receiving -> Ready(Newline) -> Receiving`, or
+`Receiving -> Ready(Eof) -> Closed`; empty EOF closes directly. A partial tail
+at EOF is offered to the SAME parser, following the pinned Claude SDK's
+`_LineFramer.flush` behavior. The frame does not certify JSON or operation/reap
+completion. Capacity/length failure is terminal, preserves the accepted prefix
+and returns a typed cause. Ready data cannot be overwritten. Rejected initial
+storage and final storage return to the caller without a retained copy. There
+is no retry, reconnect, timer, wait, polling, cache, executor or second queue.
+
+This shares the two protocols' actual JSONL framing. Established alternatives
+considered: upstream SDK's fragment-list/join allocates a second assembled text;
+line-oriented BufRead/LinesCodec introduce their own growing buffers. Here the
+actual pre-admitted buffer serves the required fragmented input without adopting
+the SDK's1MiB default. LF is the protocol delimiter; UTF-8/JSON validation is a
+separate checked step. No timing or capacity measurement becomes a runtime bound.
+
+`raw/light-framing-01` records12 tests passed/0failed/0ignored/1unrelated JSON
+test filtered, native production/test scoped Clippy0, named format0 and policy0.
+One test feeds each byte of the already captured18258-byte Claude stdout and
+reconstructs the EXACT original, including all three native MCP bootstrap
+packets. Another checks retained suffix, ready/EOF/closed transitions, storage
+pointer/capacity preservation and typed capacity refusal. No native child was
+started and the one authorized Claude causal probe was not rerun.
+
+Repeat the source checks using a NEW output name:
+`lockf -t 30 /tmp/g121-mac.lock python3 docs/research/measurements/managed-harness-adapters/light-codecs.py light-NEW`.
+The finite driver retains exact commands, source/Cargo.lock hashes, separate
+stdout/stderr and the30GiB free-space check; compilation is serial under the
+normal2CPU/2GiB/4GiB<=600s scope. An initial runner inventory had0local idle
+cores, so no compile started then. Fresh inventory later admitted11idle/68GB,
+and the completed lock-held check recorded167883948032bytes free. No headroom
+or lock bypass, benchmark/profile or physical memory attribution is claimed.
+
+Actual selected MemberActor capture/startup/input/serve registration is still
+pending coordinated shared spans. Source shows init `capture::read` is currently
+the sole member stdout reader. ROOT received exact source spans and the private
+same-server link proposal at seq7601; no general output decoder or second reader
+was added. Existing `json::parse` uses infallible allocation: this is a source
+observation and NEW ingress requirement, not a reproduced old defect. A single
+fallible typed entry through that SAME parser was requested, not duplicated.
+
+Read-only recovery attempts also retained in the tool transcript: guessed
+`final-light.py` and `raw/final-light-03/receipt.json` reads returned1 because
+those paths do not exist; actual commands/source records were subsequently read.
+A broad source search included one-line Git tree JSON and its tool output was
+truncated; precise source reads replaced it. A documentation patch missed its
+context and applied nothing before this corrected append. There are no separate
+original raw files for those tool-only attempts. They are not passing checks.
+
+R01/R03: all new arithmetic/slices and actual-capacity appends are checked; no
+production allocation or new resource default in framing. R02/R04/R05/R12/R13:
+pinned source/native bytes, concrete states, shared protocol mechanism and one
+existing owner; actual caller remains unverified. R06/R07: focused component and
+ownership/EOF comments. R08/R14: no cost/performance claim. R09/R10: NEW work,
+repeatable component/source receipts, no live effect defect/mutation claim.
+R11: native Mac ARM64 only; other targets/full caller unrun. R15/R16: no children,
+heavy tests, main merge, native rerun or cleanup; no owned job remains active.
+The original R01–R16 accounting in README still applies to all other open gates.

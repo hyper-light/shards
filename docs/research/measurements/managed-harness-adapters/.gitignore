@@ -7,3 +7,6 @@
 /raw/final-light-*/*.rmeta
 /raw/selector-*/selector-tests
 /raw/selector-*/*.rmeta
+/raw/light-*/*.rmeta
+/raw/light-*/codec-tests
+/raw/light-*/codec-tests.dSYM/

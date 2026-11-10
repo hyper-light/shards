@@ -1,0 +1,46 @@
+{
+  "crates/server/src/harness/catalog.rs": {
+    "bytes": 1373,
+    "sha256": "9e0e295ebc6c808d1157b5241b2a122563f297e545bc81461fc0d1f6e2e6bb84"
+  },
+  "crates/server/src/harness/claude.rs": {
+    "bytes": 4586,
+    "sha256": "5f29eeaf52c4fd50b5d3cac65cce164f806bd662e24c8d3c69a0fbb19916b512"
+  },
+  "crates/server/src/harness/codex.rs": {
+    "bytes": 2627,
+    "sha256": "71aca592baaa7178f774b408b6916b8c2273c9d7d2072bcbd948a1abe7e97fb3"
+  },
+  "crates/server/src/harness/framing.rs": {
+    "bytes": 4142,
+    "sha256": "ebb15019e6f6c664f7893f2627976e403345e262bf354c524b91968d54ad7734"
+  },
+  "crates/server/src/harness/mod.rs": {
+    "bytes": 8546,
+    "sha256": "35b9375775bdacfc7a42f48f4d7973cdcb4be55438ffd7923e64633b2b799e19"
+  },
+  "crates/server/src/harness/tests.rs": {
+    "bytes": 18535,
+    "sha256": "1e9872c87f01030e8d1d20d13255ea3ab8f566634b50971abd3e262d45e3fccc"
+  },
+  "crates/server/src/harness/wire.rs": {
+    "bytes": 2482,
+    "sha256": "cd9ca8e0d11bab62b32917f768936dff361219c70dad0643ff385ee1cb6288c2"
+  },
+  "docs/research/measurements/managed-harness-adapters/fixture.rs": {
+    "bytes": 288,
+    "sha256": "e48f05b1344b34b0ce8db8184b452eb2aa3dac82daa31530623ffe78541091ea"
+  },
+  "crates/init/src/json.rs": {
+    "bytes": 10713,
+    "sha256": "171c03e1e3b1da9d925658416cf1ef1e250ebe623159ac81081515a7ae57e38f"
+  },
+  "Cargo.lock": {
+    "bytes": 45993,
+    "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "docs/research/measurements/managed-harness-adapters/light-codecs.py": {
+    "bytes": 3008,
+    "sha256": "6840598d62de4330e48d3c7042f016851b6a1692ff0d2b884d795730ed9fb6d1"
+  }
+}

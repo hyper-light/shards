@@ -348,3 +348,93 @@ fn both_native_catalog_formats_preserve_the_canonical_peer_schemas() {
         }
     }
 }
+
+#[test]
+fn one_owner_framer_preserves_actual_native_packets_across_chunk_boundaries() {
+    use framing::{End, Line, State};
+    let capture = include_bytes!(
+        "../../../../docs/research/measurements/managed-harness-adapters/raw/claude-mcp-causal-01/native.stdout"
+    );
+    let capacity = capture
+        .split(|&byte| byte == b'\n')
+        .map(<[u8]>::len)
+        .max()
+        .unwrap();
+    let mut line = Line::attach(Vec::with_capacity(capacity))
+        .unwrap_or_else(|rejected| panic!("{:?}", rejected.failure));
+    let mut reconstructed = Vec::new();
+    let mut controls = Vec::new();
+    // Each byte boundary includes whitespace, UTF-8 and JSON escape boundaries;
+    // the fixture never launches another native child.
+    for byte in capture {
+        assert_eq!(line.feed(std::slice::from_ref(byte)), Ok(1));
+        if line.state() == State::Ready(End::Newline) {
+            let bytes = line.line().unwrap();
+            reconstructed.extend_from_slice(bytes);
+            reconstructed.push(b'\n');
+            let packet = json::parse(bytes).unwrap();
+            if packet.get("type").and_then(Value::str) == Some("control_request") {
+                let NativeMessage::Mcp(control) = Protocol::Claude.receive_native(&packet).unwrap() else {
+                    panic!("captured bootstrap became an effect");
+                };
+                controls.push(control.method);
+            }
+            assert_eq!(line.release(), Ok(State::Receiving));
+        }
+    }
+    assert_eq!(reconstructed, capture);
+    assert_eq!(
+        controls,
+        [
+            Bootstrap::Initialize,
+            Bootstrap::Initialized,
+            Bootstrap::ToolsList
+        ]
+    );
+    assert_eq!(line.eof(), Ok(State::Closed));
+    assert!(line.into_storage().capacity() >= capacity);
+}
+
+#[test]
+fn framer_retains_suffix_and_storage_on_terminal_and_capacity_paths() {
+    use framing::{End, Failure, Line, State};
+    let storage = Vec::with_capacity(b" \xff\r".len());
+    let capacity = storage.capacity();
+    let pointer = storage.as_ptr();
+    let mut line = Line::attach(storage).unwrap_or_else(|rejected| panic!("{:?}", rejected.failure));
+    let bytes = b" \xff\r\nsecond";
+    assert_eq!(line.feed(bytes), Ok(b" \xff\r\n".len()));
+    assert_eq!(line.line(), Some(b" \xff\r".as_slice()));
+    assert_eq!(line.feed(b"second"), Err(Failure::State));
+    assert_eq!(line.eof(), Err(Failure::State));
+    assert_eq!(line.release(), Ok(State::Receiving));
+    assert_eq!(line.feed(b"end"), Ok(3));
+    assert_eq!(line.eof(), Ok(State::Ready(End::Eof)));
+    assert_eq!(line.line(), Some(b"end".as_slice()));
+    assert_eq!(line.release(), Ok(State::Closed));
+    assert_eq!(line.feed(b"later"), Err(Failure::State));
+    let storage = line.into_storage();
+    assert_eq!(storage.capacity(), capacity);
+    assert_eq!(storage.as_ptr(), pointer);
+
+    let mut line = Line::attach(storage).unwrap_or_else(|rejected| panic!("{:?}", rejected.failure));
+    assert_eq!(line.feed(b"a"), Ok(1));
+    let failure = Failure::Capacity { capacity };
+    assert_eq!(line.feed(&vec![b'x'; capacity]), Err(failure));
+    assert_eq!(line.state(), State::Failed(failure));
+    assert_eq!(line.release(), Err(failure));
+    assert_eq!(line.eof(), Err(failure));
+    let storage = line.into_storage();
+    assert_eq!(storage, b"a");
+    assert_eq!(storage.capacity(), capacity);
+    assert_eq!(storage.as_ptr(), pointer);
+
+    let pointer = storage.as_ptr();
+    let rejected = match Line::attach(storage) {
+        Ok(_) => panic!("nonempty storage was accepted"),
+        Err(rejected) => rejected,
+    };
+    assert_eq!(rejected.failure, Failure::InitialStorage);
+    assert_eq!(rejected.storage.as_ptr(), pointer);
+    assert_eq!(rejected.storage, b"a");
+}

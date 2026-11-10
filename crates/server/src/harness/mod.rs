@@ -6,6 +6,7 @@
 pub(crate) mod catalog;
 mod claude;
 mod codex;
+pub(crate) mod framing;
 mod wire;
 
 use crate::server::json::Value;

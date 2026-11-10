@@ -1,5 +1,16 @@
 # Harness adapter lane checkpoint
 
+Latest owned continuation: one-owner JSONL framing uses supplied admitted storage
+and concrete Receiving/Ready(Newline|Eof)/Closed/Failed states, no allocation/read/
+poll/newqueue. `light-codecs.py light-framing-01` has12native scoped tests0failed/
+0ignored, strict production/test0, format/policy0, exact current source+lock hashes.
+It replays the already captured Claude bytes, no new native CLI. Actual private
+endpoint/MemberActor input/capture/startup remains unregistered/unverified. ROOT
+seq7601 has exact sole-reader spans and NEW fallible same-parser requirement;
+no shared source mutated. Parent now requests shared leaf ABI run/adapter.rs
+tags1/2 and composes its module token; ROOT exact leaf GO still pending. Signed
+pushed selector candidate is19b8a946282c99ca2a47c7e56f9c1c58d3359f95. No jobs.
+
 Current continuation: ROOT delivered GO for private owner-selected native
 ingress, main's harness module, canonical peer dispatcher and broker bound/typed
 Presented API. Audit owns the shared broker/Prepared/call composition; its API
