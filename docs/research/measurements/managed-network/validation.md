@@ -34,3 +34,34 @@ experiment run and no production mechanism selected by this implementer.
 
 The r1 temporary generated crate/cache was removed by its own exit trap; source
 and this evidence remain. No jobs are left running in this lane.
+
+## Coordinator native campaign
+
+The coordinator extended the probe with paired endpoints, then ran the exact
+module on Fedora as uid1000, outside a VM. At source88a20dc4, native-red had
+27cases:19passed and8failed. Six zero-deadline cases still created/listened on
+sockets; their stdout retained actual `Listening` observations. Both oversized
+UDP cases consumed the full120000ms parent budget because a failed sender joined
+a receiver that was still waiting. Logs are retained remotely under
+`~/managed-network-native-check/native-red/`; results.json records each command,
+status, payload, output hashes and elapsed time. This is live probe correctness
+evidence, not interception, VM security or comparative performance evidence.
+
+The correction rejects zero before resource setup. A peer failure now signals one
+owned eventfd included in the receiver's poll set before joining its thread.
+An atomic flag alone cannot wake that poll; changing socket shutdown semantics
+would conflate cancellation with the TCP half-close/UDP behavior under test.
+[eventfd's counter and poll contract](https://man7.org/linux/man-pages/man2/eventfd.2.html)
+and [poll's descriptor contract](https://man7.org/linux/man-pages/man2/poll.2.html)
+define the64-bit signal word, readable wake and ignored negative descriptor.
+This adds one owned cancellation descriptor per paired probe, released after join,
+without a timer or a new production relay mechanism. Its green/mutation results
+must be recorded after the actual reruns; none is assumed here.
+
+Repeat with `native-cases.py --binary PATH --out NEW_DIRECTORY --within-ms120000
+--revision SHA` (separate `--within-ms` and `120000` in the actual command).
+The120000ms is the existing build.rs test guard supplied by the coordinator, not
+a product timeout. The27cases cover both IP families, TCP/connected/unconnected
+UDP, empty/binary/protocol-sized payloads, zero deadlines, oversized datagrams
+and malformed hex. The runner's outer deadline catches failed cleanup; it must
+not be converted into a passing expected refusal.

@@ -162,18 +162,24 @@ fn unhex(text: &str) -> io::Result<Vec<u8>> {
 }
 
 #[derive(Clone, Copy)]
-struct Deadline(Instant);
+struct Deadline {
+    at: Instant,
+    cancel: Option<RawFd>,
+}
 
 impl Deadline {
     fn new(within: Duration) -> io::Result<Self> {
+        if within.is_zero() {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "probe deadline ended"));
+        }
         Instant::now()
             .checked_add(within)
-            .map(Self)
+            .map(|at| Self { at, cancel: None })
             .ok_or_else(|| invalid("deadline overflow"))
     }
 
     fn left(&self) -> io::Result<Duration> {
-        let left = self.0.saturating_duration_since(Instant::now());
+        let left = self.at.saturating_duration_since(Instant::now());
         if left.is_zero() {
             Err(io::Error::new(io::ErrorKind::TimedOut, "probe deadline ended"))
         } else {
@@ -192,15 +198,28 @@ impl Deadline {
             let left = self.left()?;
             let millis = left.as_nanos().div_ceil(Duration::from_millis(1).as_nanos());
             let timeout = i32::try_from(millis).unwrap_or(i32::MAX);
-            let mut poll = libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            };
-            // SAFETY: poll reads and fills the one pollfd held by this call.
-            let result = unsafe { libc::poll(&raw mut poll, 1, timeout) };
+            let mut poll = [
+                libc::pollfd {
+                    fd,
+                    events,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.cancel.unwrap_or(-1),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // SAFETY: poll reads/fills this array; negative descriptors are ignored.
+            let result = unsafe { libc::poll(poll.as_mut_ptr(), poll.len() as _, timeout) };
             if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
                 return Err(io::Error::last_os_error());
+            }
+            if poll.last().is_some_and(|p| p.revents != 0) {
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    "paired peer failed",
+                ));
             }
         }
     }
@@ -479,6 +498,19 @@ fn paired(mut client: Case, deadline: Deadline) -> io::Result<()> {
         received: copied(&client.sent)?,
         within: client.within,
     };
+    // eventfd's uint64 counter wakes the owned server on a failed client, even while
+    // that server is blocked in poll. It closes only after the worker has joined.
+    // SAFETY: eventfd returns one descriptor, owned immediately below.
+    let cancel = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+    if cancel < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: cancel is the new uniquely owned eventfd.
+    let cancel = unsafe { OwnedFd::from_raw_fd(cancel) };
+    let server_deadline = Deadline {
+        at: deadline.at,
+        cancel: Some(cancel.as_raw_fd()),
+    };
     let (address, worker) = match client.transport {
         Transport::Tcp => {
             let socket = bound(client.address, libc::SOCK_STREAM, SocketMode::Native)?;
@@ -489,14 +521,14 @@ fn paired(mut client: Case, deadline: Deadline) -> io::Result<()> {
             let listener = TcpListener::from(socket);
             let address = listener.local_addr()?;
             let worker = std::thread::Builder::new()
-                .spawn(move || tcp_serve_on(server, SocketMode::Native, &deadline, listener))?;
+                .spawn(move || tcp_serve_on(server, SocketMode::Native, &server_deadline, listener))?;
             (address, worker)
         }
         Transport::Udp | Transport::UdpConnected => {
             let socket = udp_socket(client.address, SocketMode::Native)?;
             let address = socket.local_addr()?;
             let worker = std::thread::Builder::new()
-                .spawn(move || udp_serve_on(server, SocketMode::Native, &deadline, socket))?;
+                .spawn(move || udp_serve_on(server, SocketMode::Native, &server_deadline, socket))?;
             (address, worker)
         }
     };
@@ -505,6 +537,17 @@ fn paired(mut client: Case, deadline: Deadline) -> io::Result<()> {
         Transport::Tcp => tcp_dial(client, &deadline),
         Transport::Udp | Transport::UdpConnected => udp_dial(client, &deadline),
     };
+    if result.is_err() {
+        let word = 1u64;
+        loop {
+            // SAFETY: eventfd takes exactly one uint64; only this caller writes once.
+            let wrote =
+                unsafe { libc::write(cancel.as_raw_fd(), (&raw const word).cast(), size_of_val(&word)) };
+            if wrote >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+    }
     let served = worker
         .join()
         .map_err(|_| io::Error::other("paired probe worker failed"))?;
@@ -772,7 +815,14 @@ mod tests {
 
     #[test]
     fn a_zero_deadline_does_not_attempt_io() {
-        let deadline = Deadline::new(Duration::ZERO).unwrap();
+        assert_eq!(
+            Deadline::new(Duration::ZERO).err().unwrap().kind(),
+            io::ErrorKind::TimedOut
+        );
+        let deadline = Deadline {
+            at: Instant::now(),
+            cancel: None,
+        };
         let mut attempted = false;
         let result = deadline.io(-1, libc::POLLIN, || {
             attempted = true;
