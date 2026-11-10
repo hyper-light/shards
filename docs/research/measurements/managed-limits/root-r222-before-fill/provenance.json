@@ -1,0 +1,8 @@
+{
+  "run": "root r222",
+  "source": "3f7aeba45e90ad815e5477b8c840865507946ab8",
+  "original": "/home/adalundhe/managed-limits-3f7a-v1/campaign.log",
+  "campaign_sha256": "49d4bdbbca08841253c148e014d6fc151f6f7fb15c742aa817a4f73b390c5d38",
+  "role": "coordinator real KVM; copied read-only by implementer",
+  "result": "fixture panic before Fill; no exhaustion/recovery evidence"
+}
