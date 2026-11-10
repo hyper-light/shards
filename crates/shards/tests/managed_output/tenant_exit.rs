@@ -3,6 +3,9 @@ use super::*;
 use serde_json::{Value, json};
 use std::io::Read as _;
 
+#[path = "tenant_reconnect.rs"]
+mod reconnect;
+
 struct Inputs {
     port: u16,
     patience: Duration,
