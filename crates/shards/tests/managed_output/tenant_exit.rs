@@ -341,6 +341,20 @@ fn member_normal_exit_preserves_sibling_and_main_progress() {
     inputs.write("inputs.json",&json!({"port":inputs.port,"phase_deadline_ms":inputs.patience.as_millis(),"source":option_env!("SHARDS_TENANT_EXIT_SOURCE_REVISION"),"fixture":artifact(&std::env::current_exe().unwrap()),"cli":artifact(common::shards()),"testguest":artifact(common::test_guest()),"kernel":artifact(common::kernel()),"init":artifact(common::guest_init()),"topology":"EXPERIMENTAL2N; not selected final design"}));
     let mut fixture = Fixture::new();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&mut fixture, &inputs, until)));
+    if result.is_err() {
+        let metadata = fixture
+            .record
+            .as_ref()
+            .map(|p| std::fs::read_to_string(p).map_err(|e| e.to_string()));
+        let queued: Vec<_> = fixture.observers.iter().map(|observer| {
+            let events: Vec<_> = observer.events.try_iter().map(|event| match event {
+                Event::Record(offset, bytes) => json!({"kind":"Record","offset":offset,"controlled_hex":bytes.iter().map(|b|format!("{b:02x}")).collect::<String>()}),
+                other => json!({"kind":"Control","event":format!("{other:?}")}),
+            }).collect();
+            json!({"member":observer.scope.member,"channel":observer.scope.channel as u8,"already_queued":events})
+        }).collect();
+        inputs.write("protocol-failure-observations.json", &json!({"metadata_before_owner_stop":metadata,"queued_controlled_fixture_events":queued,"meaning":"single diagnostic queue snapshot; absence is not progress/completeness proof"}));
+    }
     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
     let removed = result.as_ref().ok().map(|_| {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

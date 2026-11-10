@@ -907,8 +907,12 @@ fn send_credits(
                         *slot = CreditSlot::Ended;
                         drop(state);
                         if let Some(output) = owner.outputs.get(index).and_then(Option::as_ref)
-                            && output.finish().is_err()
+                            && let Err(error) = output.finish()
                         {
+                            log(format!(
+                                "managed output diagnostic finish member={} channel={}: {error}",
+                                output.scope.member, output.scope.channel as u8
+                            ));
                             output.abort();
                         }
                     }
