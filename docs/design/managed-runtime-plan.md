@@ -57,6 +57,14 @@ socket boots and the independently reproduced/fixed x86 init-argv bug.
 name the exact seven-target revision and native Windows pipe check. Later source
 does not inherit an earlier revision's passing gate.
 
+The [local-ceiling and PID-reset closing record](../research/measurements/managed-pids-reset/ROOT.md)
+adds actual kernel finite/max observations, six fixed OTLP state points, a live
+selected-negative PID reset correction,25 ordinary KVM cases, six official
+consumer artifacts, meaningful kernel-effect guard removal/restoration and the
+seven-target gate at a84e1a81f. All raw members were independently verified after
+read-only runner recovery. These are local cap observations, not resource rights,
+parent/kernel backing, production HTTP delivery or completion of G25/P0-P13.
+
 The per-channel endpoint design remains an experiment: aggregate parent/kernel
 budgets and the final topology are not established. Native TCP/UDP byte matches
 are not interception evidence. [Central interception records](../research/measurements/managed-central-intercept/README.md)

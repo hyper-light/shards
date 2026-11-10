@@ -1,0 +1,10 @@
+{
+  "archive_sha256": "72301893a7bb2865a723c294a6b435ec70ed30a499afe80850fc4bcbbaebbe27",
+  "bytes": 97086,
+  "members": 218,
+  "payloads_verified": 217,
+  "all_unique_safe_regular_exact_length_hash": true,
+  "generation": "read-only in memory after Fedora returned EROFS; no remount/repair/write",
+  "role": "coordinator",
+  "management_complete": false
+}

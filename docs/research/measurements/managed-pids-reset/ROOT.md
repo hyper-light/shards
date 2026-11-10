@@ -7,12 +7,17 @@ Selected metrics158b6d0b2 and actual caller4299285281 precede the reviewed
 shared PID reset fix a84e1a81fc9ac8fe7e8ef938defe3352dc72cac3 (source-equivalent
 cherry-pick of implementer547d8e34). Main merge is separate from this test record.
 
-The after-a84 full raw archive is still pending local transfer/verification:
-Fedora went offline during archival r929, after the complete r921 pass was
-reported. The original outputs/frozen binaries remain protected there. Before429
-and Maca84 archives are already independently verified here. Main merge remains
-held for that closing evidence check; a signed integration checkpoint may be
-pushed without claiming the missing archive or the full management layer passed.
+The complete after-a84 raw archive is now independently verified locally:
+217payloads plus manifest,97,086bytes, SHA256
+72301893a7bb2865a723c294a6b435ec70ed30a499afe80850fc4bcbbaebbe27.
+Fedora first disconnected, then returned EROFS on attempted packaging. ROOT
+performed only normally admitted read-only operations, generated a deterministic
+archive in memory and transferred nine bounded chunks. Every unique safe regular
+member's length/hash matches its manifest. No remount, repair, deletion, privilege
+change or approval/headroom bypass occurred. The refused/failed write attempts
+and original tool receipts remain retained. Frozen binaries/guests/runtime trees
+remain on the runner, explicitly excluded from raw archives. read-archive.py
+retains the exact read-only generation method.
 
 ## Before and after
 
