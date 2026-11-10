@@ -92,10 +92,7 @@ impl Relay {
     }
 }
 
-/// Takes connections until the listener fails, each relayed on a thread of its own. Init's
-/// descriptors (1,048,576, `defaults::limits`) outnumber two for each connection the VM's
-/// vsock takes at once (1,023), and an accept of a Unix socket allocates nothing: what
-/// fails here is the listener itself.
+/// Each accepted connection has an owned relay thread; a listener error ends acceptance.
 fn serve(listener: &UnixListener, token: &[u8; run::TOKEN]) {
     loop {
         match listener.accept() {

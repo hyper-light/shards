@@ -23,7 +23,7 @@ fn supplied_payload(key: &str) -> (String, String) {
         let chars = bytes.checked_mul(2).unwrap();
         let (count, tail) = (chars / seed.len(), chars % seed.len());
         let mut expanded = seed.repeat(count);
-        expanded.push_str(&seed[..tail]);
+        expanded.push_str(seed.get(..tail).expect("validated hex prefix"));
         expanded
     } else {
         seed.to_owned()
