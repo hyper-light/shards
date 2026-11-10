@@ -1187,6 +1187,25 @@ pub fn failed(entry: &[u8], errno: i32) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn managed_capture_metadata_is_not_a_workload_mount() {
+        use shards_abi::run::{self, managed};
+
+        let mut setup = vec![
+            [managed::TOKEN_KEY, &[0xff; run::TOKEN]].concat(),
+            [managed::ACTIVE_KEY, &0u32.to_be_bytes()].concat(),
+            [managed::MEMBERS_KEY, b"1"].concat(),
+            [managed::CAPACITY_KEY, run::MAX_PAYLOAD.to_string().as_bytes()].concat(),
+        ];
+        assert!(managed::token(&setup).unwrap().is_some());
+        assert!(managed::active(&setup).unwrap().is_some());
+        assert!(managed::capacity(&setup).unwrap().is_some());
+        for entry in setup.drain(..) {
+            assert_eq!(apply(&entry), Ok(()));
+        }
+        assert_eq!(apply(&[0xff]), Err(libc::EINVAL));
+    }
+
     /// Each volume is told the run's owner, once: its share's server gives them the host's
     /// files, and one that takes the image's files where the image has none gives them its
     /// top; every other entry is left as it is.
