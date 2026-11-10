@@ -1,0 +1,23 @@
+[
+  {
+    "archive": "linux-originals.tar.gz",
+    "bytes": 100260,
+    "sha256": "7eb46921f55aed18ac82d7a268f3cf5f95990b2ada8b6fa08bdbb2f83b5239f3",
+    "verified_originals": 188,
+    "safe_unique_regular_members": true
+  },
+  {
+    "archive": "mac-originals.tar.gz",
+    "bytes": 8198,
+    "sha256": "5899787943f56c79a81e9cae932db3109fd38ec487d90f257bb3e004248f3ca8",
+    "verified_originals": 25,
+    "safe_unique_regular_members": true
+  },
+  {
+    "archive": "member-mutation-originals.tar.gz",
+    "bytes": 106702,
+    "sha256": "620ca0f0f1031c4eb72d2f2b642c97450dbf3e6c3060c2cc23dadeed7638259b",
+    "verified_originals": 31,
+    "safe_unique_regular_members": true
+  }
+]

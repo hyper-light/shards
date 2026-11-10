@@ -1,8 +1,9 @@
 # Managed-runtime OpenTelemetry metrics
 
-Status: implementation in progress; no export, collector, performance or
-cross-platform pass is claimed yet. This implements G25/P9 alongside the remaining
-management work, not in place of it.
+Status: the on-demand OTLP artifact passes its real KVM caller, the official
+decoder/Collector and the seven-target compilation gate at `28e147c4d`.
+[Validation](VALIDATION.md) records the exact scope and remaining gates. This is
+a G25/P9 slice; the full management layer and production HTTP delivery remain open.
 
 POLICY_READ: coordinator, main `33df95b08ad8f95bddeaa1c48acf0c64386e0eac`,
 rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
