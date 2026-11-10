@@ -1,0 +1,16 @@
+{
+  "proof": "/home/adalundhe/managed-relay-review-queue-policy-v1",
+  "policy_exit": 0,
+  "command": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "policy_log": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "document_sha256": {
+    "docs/research/measurements/managed-relay-pending-io/native-draft/REVIEW-QUEUE.md": "000dc72ae8eb94ba11630d0ab6de5e7459a339d35a07454e8e02ecd987104b0e",
+    "docs/research/measurements/managed-relay-pending-io/native-draft/review-queue-identities.json": "c4c65c3df8d4ab96d9b8a83963faeefcafbc9f97bded544aba4dfa6a896d4eb3"
+  },
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "scope": "documentation policy only, no cargo/compile/native/socket/VM/profile/mutation",
+  "admission": "NEWprivate Kiln1CPU1GiB2GiB syncfalse"
+}
