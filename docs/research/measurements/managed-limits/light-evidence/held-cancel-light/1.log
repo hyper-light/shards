@@ -1,0 +1,36 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/testguest)
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1.53s
+     Running tests/managed_limits.rs (/home/adalundhe/managed-limits-cancel-target/test-release/deps/managed_limits-98f9561da5c46fbf)
+
+running 5 tests
+
+thread 'fixture_ambiguous_actor_roots_are_rejected' (3904472) panicked at crates/shards/tests/managed_limits.rs:112:9:
+expected exactly one visible actor root: [Process { pid: 916, parent: 1, uid: 1000, threads: 1 }, Process { pid: 923, parent: 1, uid: 4394304, threads: 1 }, Process { pid: 929, parent: 923, uid: 4394304, threads: 1 }, Process { pid: 935, parent: 933, uid: 200000, threads: 1 }, Process { pid: 1712, parent: 1, uid: 4394305, threads: 1 }, Process { pid: 1717, parent: 1712, uid: 4394305, threads: 1 }, Process { pid: 1725, parent: 1720, uid: 200001, threads: 1 }, Process { pid: 2000, parent: 1999, uid: 200000, threads: 1 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+visible actor Process { pid: 935, parent: 933, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+checked fixture normalized declaration: {"schemaVersion":1,"agents":[{"name":"limited","source":"./limited","to":"/agents/limited","processes":6}],"harnesses":[{"name":"healthy","source":"./healthy","to":"/harness/healthy","processes":null}],"skills":[],"mcp":[],"networks":[{"name":"control","driver":"","ipamDriver":"","attachable":false,"internal":false,"external":false,"dns":false,"ipv4":null,"ipv6":null,"driverOpts":[],"labels":[],"ipamOpts":[],"subnets":[],"ipRanges":[],"gateways":[],"auxAddresses":[],"protocols":["tcp","udp"],"ports":[{"port":"7100","direction":"ingress"},{"port":"7101","direction":"ingress"}],"for":{"kind":null,"names":[]}}],"connections":[{"kind":null,"from":["limited"],"bothWays":true,"to":["limited"],"on":["control"],"ports":[]},{"kind":null,"from":["healthy"],"bothWays":true,"to":["healthy"],"on":["control"],"ports":[]}],"attachments":[],"exposures":[{"ports":["7100"],"direction":"ingress","networks":["control"],"agents":["limited"]},{"ports":["7101"],"direction":"ingress","networks":["control"],"harnesses":["healthy"]}],"volumes":[{"source":null,"paths":["/limits"],"chown":"limited","chmod":"","for":{"kind":null,"names":["limited"]}},{"source":null,"paths":["/healthy"],"chown":"healthy","chmod":"","for":{"kind":null,"names":["healthy"]}}]}test fixture_ambiguous_actor_roots_are_rejected - should panic ... 
+ok
+test fixture_actual_r222_rows_do_not_require_an_unlisted_reaper ... ok
+visible actor Process { pid: 11, parent: 10, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 1. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+test fixture_agentfile_preserves_the_finite_task_declaration_and_grants ... ok
+test fixture_synthetic_held_children_belong_to_one_visible_actor ... ok
+existing connections rejected original comma request: NETWORK --ingress=7100,7101 on network control: no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)
+test fixture_connections_rejects_the_original_comma_port_request ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+

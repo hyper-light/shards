@@ -1,8 +1,9 @@
 # Finite managed-tenant task refusal fixture
 
-This is a fixture implementation for G10/P2/P12, not evidence of a product defect
-or a passing exhaustion campaign. The coordinator owns the actual VM run,
-mutations, repetition, audits and parent/kernel resource measurements. The original fixture
+This records the G10/P2/P12 fixture and the coordinator's one bounded refusal/
+recovery run below. The new held-population cancellation case has only light
+checks; actual cancellation, mutations, repetitions, audits and parent/kernel
+resource measurements remain coordinator-owned. No product defect is asserted. The original fixture
 started at combined `4d3f454f194a0b6927423f0f859071147c43786d`. The current host
 correction branches from `0b2813008ea2df68fe4a48bf65bf60f61af76342` in private
 `p/managed-limits-cancel`; the original branch/worktree remain unchanged. No production init,
@@ -149,8 +150,9 @@ and an ambiguity case requires rejection rather than selecting the first actor.
 It does not fabricate an unlisted reaper row or total. No guest record, production
 visibility, process limit, timeout, policy or grant changed. Existing namespace
 reaper owner metadata remains a separate guest observation; no reaper thread count
-was added. The coordinator must rerun actual Fill/refusal/recovery before the
-separately requested held-population cancellation extraction proceeds.
+was added. The required corrected Fill/refusal/recovery rerun was subsequently performed
+by root r276 below, enabling the separately scoped held-population cancellation
+implementation. Actual cancellation remains unverified.
 
 ## Root r273: missing explicit host publication
 
@@ -174,8 +176,59 @@ selected actor and healthy target ports, with OS-assigned public ports. Grants,
 process limits, deadlines, guest code and production code stay unchanged.
 Missing-row diagnostics now retain the target port and full read_ports result,
 including status/stdout/stderr. Compile/pure tests do not establish actual
-publication or control traffic; the coordinator must rerun the real path through
-Fill/refusal/recovery before held-child cancellation proceeds.
+publication or control traffic. Root r276 below subsequently crossed the real
+Fill/refusal/recovery path; the new cancellation path still needs its actual run.
+
+## Root r276: bounded actual refusal and recovery
+
+Coordinator KVM run r276 at exact source
+`e98260de18a0cf3fea19bb965d283e4d423bb40e` passed7/0: one actual recovery
+campaign, five host fixture units and the common port check. The retained
+[campaign log](root-r276-recovery/campaign.log) has SHA256
+`467395c4ed3026aa6ba8ebd820ce7e18ae3c6a07e721f1a193be1ee80d76cfdd`;
+provenance names the original coordinator path. It was copied read-only.
+
+| Actual barrier | Observed guest record and control |
+| --- | --- |
+| Ready | descriptors5; tasks6/reserved4/children2, actor2/parent1/UID200000, reaper metadata owner0, actor Threads1. |
+| Refused | held2/reaped0, typed ForkRefused/errno11, descriptors10; exact two visible direct children, fresh HARNESS and main nonce replies after refusal. |
+| Recovered | held0/reaped3/replacementPID6, descriptors6; unchanged observed actor tuple, new HARNESS and main nonce replies. |
+| Stop | stop returns, daemon reports not-running/PID0 and private run removal. |
+
+This proves that one declared finite fork refusal/replacement cycle on that
+source/host reached those barriers. Trusted cgroup current/max/membership/total,
+reaper thread count, parent/kernel cost return, repetitions and cancellation are
+not established. The before-Fill reds remain intact; this successful baseline
+neither erases them nor makes this a complete exhaustion/isolation claim.
+
+## Held-population cancellation case (actual run owed)
+
+Two concrete ignored host tests now share the existing setup/assertions through
+`campaign(EndAt::{Recovered,RefusedHeld})` and the same `Run::stop(last_report)`.
+This is a test-local choice of the requested terminal edge, not a new process
+manager or mutable admission state. Guest code, budgets, one round, deadlines,
+explicit port publications and grants stay unchanged.
+
+The new cancellation caller waits for actual typed Refused, verifies the exact
+held population and actor tuple, and completes a fresh HARNESS/main nonce barrier.
+It takes one final held-population snapshot, keeps both control streams owned,
+and stops the whole run **without sending Release**. It cannot release children
+by dropping its observer connection before stop. The shared stop helper retains
+the last confirmed guest record and existing stop/PID0/remove results. It never
+labels Refused/held/reaped0 as successful terminal reaping.
+
+After stop, an unexpected Recovered publication fails the cancellation case.
+An optional typed guest Failed publication is retained; no publication remains
+explicitly unknown, because whole-run teardown can end the guest before it writes
+one. Neither record absence nor stopped metadata proves all owned host/kernel
+resources returned. The coordinator owns those observations and the actual
+cancellation/mutation campaign. The recovery caller retains its previous Release,
+exact reap/replacement, descriptor checks and second nonce barrier; its shared
+stop extraction also needs regression validation on the composed source.
+
+No enum-mirror unit was added. Existing meaningful record/identity/Agentfile
+checks remain, and both ignored bodies compile. Light success below is not an
+execution of either new branch in a VM.
 
 ## Waits, alternatives and primary evidence
 
@@ -207,8 +260,9 @@ state. Profiling/allocation/copy/kernel and unfairness costs remain unmeasured.
 ## Light checks and exact coordinator invocation
 
 The earlier connection-validation source was `aab5b4ce2a9619ebb2e45dbf455179142aa13827`.
-Current host fixture source is `cce0ecc969450a4dd52b55a88947fce48990924b`;
-its light result is recorded below. The prior visible-assertion source
+Current host fixture source is `703774211fecf065332e4fb850c983cffbccba1f`;
+its light result is recorded below. The publishing source
+`cce0ecc969450a4dd52b55a88947fce48990924b` was the parent of the new case. The prior visible-assertion source
 `aa3e4d876cc08a3c9301fd3c89fb28b5321cf3ae` remains historical evidence.
 The earlier boundary-only checkpoint
 `6d00dd0c3341d8fd8b81121a0fc4a7e2cad6d67a` remains historical evidence.
@@ -227,9 +281,10 @@ and pure units, not a carried-musl executable or live VM result.
 | r54 / `boundary-green` | 6d00dd0c | record2/0, host2/0 including effective boundaries; guest+host strict clippy0, wrapper0. |
 | r56 / `connections-light` | aab5b4ce | record2/0, host3/0 including existing validator rejection and corrected grants; guest+host strict clippy0, wrapper0. |
 | r60 / `visible-parent-light` | aa3e4d876 | record2/0, host5/0 including actual r222-shaped table, synthetic held child and expected ambiguity rejection; guest+host strict clippy0, wrapper0. |
-| r62 / `publish-light` | cce0ecc96 | record2/0, host5/0, guest+host strict clippy0 after explicit host publishing and retained read_ports diagnostics; wrapper0. No real publication/control proof. |
+| r62 / `publish-light` | cce0ecc96 | record2/0, host5/0, guest+host strict clippy0 after explicit host publishing and retained read_ports diagnostics; wrapper0. No real publication/control proof in that light run. |
+| r65 / `held-cancel-light` | 703774211 | record2/0, host5/0, guest+host strict clippy0; wrapper0. Both ignored campaign bodies compile; no actual cancellation or new-source recovery run. |
 
-All127 raw identity, source-hash, command, log and exit files remain verbatim in
+All141 raw identity, source-hash, command, log and exit files remain verbatim in
 [light-evidence](light-evidence/), with SHA256SUMS. The first14 files predate the
 durable driver and carry equivalent plain command/identity text; subsequent runs
 use `run-light.py`. Archive transfers were SHA256-verified. Source touching forces
@@ -237,7 +292,7 @@ actual recompile after sync; no stale binary result is reused. Final source hash
 
 - guest actor `da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171`
 - shared codec `241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a`
-- host fixture `09d23973235fadf28b8e2b60478c60fa15ec49e3d096702424d9c11cfdadcfec`
+- host fixture `3cb7b9fbb42edcf06d508c138068c425b21034a30f43f3ce34752cfff53f9c32`
 
 The first constructor used `NETWORK --ingress=7100,7101 control`. The parser,
 instructions parser and `agentfile::check` returned Ok, preserving one raw ingress
@@ -298,8 +353,9 @@ owned target after an empty open-FD check, retained as
 preserved from the earlier batch. No job remains active and no local builds ran.
 
 No real VM, task exhaustion, chaos, sweep, benchmark or profiling run was performed
-by this implementer. The coordinator-owned r222 and r273 pre-Fill reds are recorded separately
-above and establish only those fixture failures.
+by this implementer. The coordinator-owned r222/r273 pre-Fill reds and r276 bounded recovery pass
+are recorded separately above with their exact sources. They are not implementer
+VM runs and establish no new-source cancellation proof.
 
 From the reviewed/composed source, in a coordinator-owned private clone/target
 with carried helpers, KVM/HVF/WHP and the ordinary 4CPU/8GiB/**20GiB** VM envelope:
@@ -315,13 +371,27 @@ env -u SHARDS_HELPERS \
   -- --ignored --exact --test-threads=1 --nocapture
 ```
 
+The separately owed held-child cancellation invocation uses the same explicit
+4CPU8GiB20GiB coordinator envelope and carried helpers:
+
+```sh
+env -u SHARDS_HELPERS \
+  MANAGED_LIMIT_TASKS=6 MANAGED_LIMIT_RESERVED=4 MANAGED_LIMIT_CHILDREN=2 \
+  MANAGED_LIMIT_ROUNDS=1 MANAGED_LIMIT_PATIENCE_MS=120000 \
+  CARGO_TARGET_DIR="$HOME/managed-limits-vm-target" \
+  timeout 600 cargo test --locked -j4 --profile test-release -p shards \
+  --test managed_limits \
+  a_finite_held_tenant_population_can_be_cancelled_after_neighbor_progress \
+  -- --ignored --exact --test-threads=1 --nocapture
+```
+
 The 120000ms is an explicit initial experiment input, not a production timeout or
 measured guarantee. Kernel/artifact/build startup is separately bounded by common
 CLI supervision; actor/control work uses one deadline started with its run, and
 partial records never extend it. On any failure retain full raw stdout/stderr,
 daemon log, exact source/binaries, toolchain/kernel/arch and input environment.
 
-Owed root gates: actual refusal/recovery at the declared boundary; real healthy
+Owed root gates: recovery regression and actual held cancellation on the new source; real healthy
 neighbor/main nonces after each barrier; cancellation while children remain held
 and ownership-object error paths; independent limit/hold/reap/check mutations;
 stop/daemon-owned host tasks/FDs and parent/kernel cost return; repeated campaigns
@@ -341,8 +411,8 @@ paused. A skip or source prediction is unverified, never a passing VM result.
 | R06 | One actor cycle, one excess attempt, exact owned children, two nonce barriers; no recursive creation. |
 | R07 | Safety/ownership/deadline rationale comments; source links and bounds recorded. |
 | R08 | No comparative performance claim;4–5× target unmeasured and owed coordinator. |
-| R09 | Coordinator r222/r273 reproduced host fixture assumption/publication failures before Fill; original raw reds retained. No product defect/fix asserted. Corrected actual exhaustion remains owed coordinator. |
-| R10 | Original r222/r273 reds and exact r222 visible table, sources, light commands/logs/identity retained. Actual corrected effect/mutations/cleanup logs owed coordinator. |
+| R09 | Root r222/r273 fixture reds and r276 bounded recovery pass retained at exact sources. No product defect/fix asserted. New-source recovery/cancellation remains owed root. |
+| R10 | Original r222/r273 reds, exact r222 table, r276 baseline pass, sources and light commands/logs/identity retained. New cancellation/mutations/resource proof owed root. |
 | R11 | Linux-target light checks below only. Seven-target and real supported host VM matrix unrun; macOS arm64 only, paused WinARM preserved. |
 | R12 | Existing public CLI/grant/common platform readiness; testguest is already carried, no new install/root/security/crypto dependency. |
 | R13 | One finite fork case; no generic manager, retry engine or broad cleanup. |
