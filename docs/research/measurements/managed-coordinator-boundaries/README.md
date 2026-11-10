@@ -145,8 +145,48 @@ actual transport and mutation results; later logical metadata remains open.
 Each failed tenant run still completed owner stop and observer joins; r601/r604/
 r606 logged exact observer FD7→7. Explicit private run removal and sibling/main
 causal checks were not reached. Canonical EOF is not a child wait status or
-proof of empty population. The earlier metadata-publication source prediction
-has not yet been isolated by a passing transport gate; it remains unverified.
+proof of empty population. The later r668 record below now isolates the final metadata mismatch after
+canonical EOF, publication and causally later sibling/main progress succeed.
+
+## Complete normal transport exposed a separate terminal metadata failure
+
+Rootr662 sourcee180fa7d0380f8bb92609f7de56a34f03bf2d7d9 first
+confirmed explicit loopback TCP publication and owner release after both member1
+canonical End records and actual transport EOF. The next failure was the fixture
+observer's duplicate final ACK followed by ACK+FIN filling its bounded handoff.
+The [retained original](normale180/normal-tenant-exit/test.log) is exit101; it is
+not a product queue defect or a completed metadata result. Fixtureb324ef0a9 uses
+explicit CanonicalEnd/InitialPayload/FinalPayload read goals: only the final
+payload returns before ACK, leaving the existing ACK+FIN caller one owner. No
+queue enlargement, polling or relaxed protocol/byte assertion was introduced.
+
+Rootr668 sourceeaf0982b4716f320b34162d3a366f0116caf0607 compiled normal host/test
+binaries with source-matching carried helpers, then ran the same strict normal
+case. [Exact command/environment/artifacts](normaleaf0/) remain retained.
+Both member1 channels produced canonical End and actual transport EOF after
+successful application ACKs. The owner-published TCP gate released the sibling
+only afterward; [neighbor progress](normaleaf0/normal-tenant-exit/records/neighbor-progress.json)
+retains exact new fd1/fd2 payload bytes, and independent main exec succeeded.
+Explicit stop, inspect false/0 and private run removal succeeded, as did owner
+stop and observer joins with observer FD7→7. Host process reaping and full kernel
+charge return remain explicitly unverified in teardown.json.
+
+The strict test still returned101, now precisely at tenant_exit.rs:340:
+normal canonical EOF must remain complete across observer cancellation and owner
+stop; actual (aborted, unknown), expected (ended, complete). The before-stop
+metadata is header-only. [Stopped metadata](normaleaf0/normal-tenant-exit/records/managed-output.stopped)
+shows member1 stdout accepted102/consumed102 and stderr99/99, both aborted with
+tailunknown. Wire counters do not themselves prove canonical completion; the
+independent canonical records, successful final ACKs and actual EOF establish
+the distinct facts here. Driver protocol_completed:true describes that fixture
+stage, not test success. The original assertion is preserved.
+
+This live red authorizes a narrow existing-Life/Shared/credit-worker correction;
+it does not establish a concurrent stop/completion ordering, mandatory metadata
+durability, a passing fix, universal cleanup, or the full plan. ROOT retains the
+original and owes fixed/guard-removal/restored VM cases plus withheld ACK,
+disconnect, canonical Aborted, revocation and stop/completion order witnesses.
+No source implementation is included in this documentation batch.
 
 ## Provenance, policy and remaining work
 
@@ -176,6 +216,5 @@ all red/cleanup records and protected targets. Raw whitespace remains unchanged,
 classified in WHITESPACE.json. No safety or rule weakening closes these failures.
 
 Remaining actual gates include notification/worker/readiness failures, concurrent
-revocation and expiry; normal-tenant publication, causally later sibling progress
-and final terminal metadata; other native hardware and comparable cost. Full hard budgets, mandatory routes,
+revocation and expiry; normal-tenant final terminal metadata and concurrent outcome ordering; other native hardware and comparable cost. Full hard budgets, mandatory routes,
 effect broker, native harness adapters/credentials and generations remain open.

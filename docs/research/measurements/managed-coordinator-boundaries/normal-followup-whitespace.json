@@ -1,0 +1,20 @@
+{
+  "classification": "Actual raw fixture/build logs preserved byte-identically; every staged whitespace finding confined to these retained logs, no global or source exception.",
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check"
+  ],
+  "actual_exit": 2,
+  "paths": [
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/normale180/normal-tenant-exit/test.log",
+      "sha256": "68739b51760dc95922b9787f3265d302f8f74a4537298d98fcdb0a5644fcf48f"
+    },
+    {
+      "path": "docs/research/measurements/managed-coordinator-boundaries/normaleaf0/normal-tenant-exit/test.log",
+      "sha256": "ee90876bfb417778096f4fed898ac2c84740fc2b6d84b4297c19c8bfde245953"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "meaning": "single diagnostic queue snapshot; absence is not progress/completeness proof",
+  "metadata_before_owner_stop": {
+    "Ok": "shards managed output 1\nserver 31281b3ff174599438f3331d34a760b6812e40cde4e1bf6f10939d6b9a91f24e\nowner 31281b3ff174599438f3331d34a760b6812e40cde4e1bf6f10939d6b9a91f24e\nrun c6eeb7922a3d4d789dc4354d8c075f2e3e6854887cbb08f656992d9d67e62196\ngeneration 1\ncapacity 30\nmember 1 channel 1 address 127.0.0.1:40953\nmember 1 channel 2 address 127.0.0.1:43189\nmember 2 channel 1 address 127.0.0.1:39112\nmember 2 channel 2 address 127.0.0.1:38762\n"
+  },
+  "queued_controlled_fixture_events": [
+    {
+      "already_queued": [],
+      "channel": 1,
+      "member": 1
+    },
+    {
+      "already_queued": [],
+      "channel": 2,
+      "member": 1
+    },
+    {
+      "already_queued": [],
+      "channel": 1,
+      "member": 2
+    },
+    {
+      "already_queued": [
+        {
+          "controlled_hex": "010102000000000200000000000000196861726e6573732d61667465722d",
+          "kind": "Record",
+          "offset": 87
+        }
+      ],
+      "channel": 2,
+      "member": 2
+    }
+  ]
+}

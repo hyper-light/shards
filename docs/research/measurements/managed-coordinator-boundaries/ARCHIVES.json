@@ -81,5 +81,23 @@
     "hash": "6d686f4ae00c2ec41b627f1a3560cf64efee825b48a4040d82842632beb8890c",
     "key": "windows1533",
     "on": "f766f09294f2e17e3b8a631ffd4e6a4b"
+  },
+  {
+    "name": "root-managed-normal-e180-v1.tar.gz",
+    "bytes": 24460,
+    "hash": "c81c3f9d01eff4843d414e04e1728a07da3c20856351c03ad835911f430dbfb8",
+    "files": 24,
+    "key": "normale180",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "local_name": "normale180-root-managed-normal-e180-v1.tar.gz"
+  },
+  {
+    "name": "root-managed-normal-eaf0-v1.tar.gz",
+    "bytes": 25310,
+    "hash": "3b4958ce2b5b475600a681fed7b0694da5b2103a00117afc2076d4ebac9e6bd0",
+    "files": 30,
+    "key": "normaleaf0",
+    "on": "8fadc1ec213332e16cb0d915a3fb913f",
+    "local_name": "normaleaf0-root-managed-normal-eaf0-v1.tar.gz"
   }
 ]

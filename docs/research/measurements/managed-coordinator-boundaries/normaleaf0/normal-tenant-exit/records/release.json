@@ -1,0 +1,8 @@
+{
+  "gate_peer_eof": true,
+  "guest_port": 38013,
+  "release_bytes": [
+    1
+  ],
+  "state": "OwnerReleasedNeighborAfterBothMember1Eofs"
+}
