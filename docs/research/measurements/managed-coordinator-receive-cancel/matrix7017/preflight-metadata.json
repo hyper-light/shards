@@ -1,0 +1,18 @@
+[
+  {
+    "path": ".DS_Store",
+    "sha256": "db03351a13e995a8f0600db35661d4944ccfa6cb59d8ce922d448bcd17f67b7e"
+  },
+  {
+    "path": "crates/.DS_Store",
+    "sha256": "11fce6b5239a869a98adace4d7458712bdc9cfcb681e74a8dbfa462f4db424c8"
+  },
+  {
+    "path": "docs/.DS_Store",
+    "sha256": "d762593a5755022c7b360682a08f1f2bf88fcff81931a8a0931121597cf70aa8"
+  },
+  {
+    "path": "docs/research/.DS_Store",
+    "sha256": "d6a1e4d3d20580cc412a09d5c83920337cc6da1c64ded15a59a034c3a0e1f36c"
+  }
+]

@@ -1,0 +1,68 @@
+{
+  "boot_ms": 120000,
+  "case": "sock-addr-cancel4-connected",
+  "case_ms": 30000,
+  "cli": {
+    "path": "/home/adalundhe/managed-capture-check/target/e2e/shards-385ff23abe5f7ec9/shards"
+  },
+  "config": {
+    "authority": "coordinator-supplied evidence; association with booted kernel not independently verified",
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+    "provenance": "root r122 experimental artifact/output config",
+    "sha256": "sha256:fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d",
+    "symbols": [
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NFT_SOCKET"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NFT_TPROXY"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NF_SOCKET_IPV4"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NF_SOCKET_IPV6"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NF_TPROXY_IPV4"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_NF_TPROXY_IPV6"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_IP_MULTIPLE_TABLES"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_IPV6_MULTIPLE_TABLES"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_BPF_SYSCALL"
+      },
+      {
+        "supplied_value": "y",
+        "symbol": "CONFIG_CGROUP_BPF"
+      }
+    ]
+  },
+  "fixture_revision": "68362c3eb236f2d06e9a78984521eeb67f71ede4",
+  "guest": {
+    "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/1668418/shards-testguest",
+    "sha256": "sha256:7d485aa02182163e04ca91f8385979599a8c9028c2c91a44ee332d972f247d82"
+  },
+  "interception": "not installed or verified",
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "memory_mib": 256,
+  "vcpus": 1
+}

@@ -1,0 +1,2 @@
+Previous HEAD position was c141f67d0 test(network): admit payload slots before fixture setup
+HEAD is now at 68362c3eb test: wire the owned relay cancellation caller

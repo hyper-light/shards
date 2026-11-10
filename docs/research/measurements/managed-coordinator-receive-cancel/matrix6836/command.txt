@@ -1,0 +1,1 @@
+CARGO_TARGET_DIR=~/.cache/managed-combined-seven-target-b8fe CARGO_BUILD_JOBS=4 lockf /tmp/g121-mac.lock sh scripts/lint

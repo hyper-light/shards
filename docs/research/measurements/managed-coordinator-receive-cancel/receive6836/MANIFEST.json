@@ -1,0 +1,587 @@
+[
+  {
+    "path": "cancel-connected-fixed-original-peer/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/environment.json",
+    "bytes": 844,
+    "sha256": "d4a4028df5531ee704e710f2207111bba0b3ef3188acfb164af7a96ff8f0be12"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/observed.json",
+    "bytes": 7218,
+    "sha256": "83cac86f0da7eda59397c2b3c9dfdb91d2db0b575b2bb45aba421dee8af5b0cf"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/sock-addr-cancel4-connected.cmdline",
+    "bytes": 112,
+    "sha256": "02f305c264ab7a05f5bd2f37ec2e297c351b807f3e510a345e089f8649d17b5a"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/sock-addr-cancel4-connected.identity.json",
+    "bytes": 2063,
+    "sha256": "11c7c9d25f2f0d6f41f335ebb2f1cc7435227230034c7b975f24137b8af1ec00"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/sock-addr-cancel4-connected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/sock-addr-cancel4-connected.stderr",
+    "bytes": 227,
+    "sha256": "29aefff8bae03d41eea8602e30d41e180a8e489ac677d9221bce5d1c1efda36e"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/sock-addr-cancel4-connected.stdout",
+    "bytes": 6531,
+    "sha256": "aa4efdebe1aa5b49d85057c6fae3f24732803d9f167fa782fc57efb877fca036"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "cancel-connected-fixed-original-peer/test.log",
+    "bytes": 4008,
+    "sha256": "326de8f7b2b192363ff36d420b903e5ad0b9dfe8bdd1b47ea98a0baf93cfb814"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/command.json",
+    "bytes": 239,
+    "sha256": "ff95b1392accb829a7bf24798e6f7ad7394fd0fb37dc8279fd5f96b21d88f98b"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/environment.json",
+    "bytes": 848,
+    "sha256": "2cc86e3cd6a6cadbf838c2e01d30ebe930b4adf69dbe87819fd1a3642736242e"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/observed.json",
+    "bytes": 6665,
+    "sha256": "13877dcb178aed5fce5b1719ddb4427f32743091d2a4b5e429fc0ff840c0b938"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/sock-addr-cancel4-unconnected.cmdline",
+    "bytes": 114,
+    "sha256": "8a9dfdd3b8897fca75d8b5501f787762594d4610acd503119e8833bb7f81eec6"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/sock-addr-cancel4-unconnected.identity.json",
+    "bytes": 2065,
+    "sha256": "c319b37cb29990fa92df785041b485fee4cb60f7f9e0030de724b2eef9660d24"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/sock-addr-cancel4-unconnected.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/sock-addr-cancel4-unconnected.stderr",
+    "bytes": 227,
+    "sha256": "28afc2676ee0c1ba3a084812d2b9c9f677e029c90acba5be0d3f3bbac1720186"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/sock-addr-cancel4-unconnected.stdout",
+    "bytes": 6007,
+    "sha256": "0458765d90ec6f49af4a6b72ff3963a87912bb5e24a67e9d9bae5707800d75e6"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "cancel-unconnected-fixed-original-peer/test.log",
+    "bytes": 4010,
+    "sha256": "03a4d8af6b843f53ab01a8ed2a57fbdbbeb57917394726e77a0125d67824f6b8"
+  },
+  {
+    "path": "checkout.log",
+    "bytes": 165,
+    "sha256": "be4035f5ec9424c93a6647f3ea94df0be9f7b3edc3ec0bd9a97954f4a44c225d"
+  },
+  {
+    "path": "compile.command.json",
+    "bytes": 148,
+    "sha256": "fd108450dd00e1ff203285e29106907404851ba84f9f4534fb6ac3ee99b63482"
+  },
+  {
+    "path": "compile.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "compile.jsonl",
+    "bytes": 260587,
+    "sha256": "096da5d1877ca44ddee8387699168ff01395d3090edcbb58d978c4db55eeafef"
+  },
+  {
+    "path": "compile.log",
+    "bytes": 1859,
+    "sha256": "b2fbab4b7261ee49aeb5857f00280c6c9b3b49ff9ecc8dd3b86af0d7607376b5"
+  },
+  {
+    "path": "driver.actual-exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "driver.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "driver.log",
+    "bytes": 538,
+    "sha256": "4f4d8a20e4277422830d3fa2e12eacd1fd88aa50576bdb66e3b316949badf601"
+  },
+  {
+    "path": "driver.py",
+    "bytes": 4243,
+    "sha256": "7438464cd28362e564756a120288b65de3874aa0c6922a1107005d10aeda26ff"
+  },
+  {
+    "path": "fetch.log",
+    "bytes": 166,
+    "sha256": "09fd205b39566924c53bfa1642cf69b439e3fe7ac2d1f997c61f372c1ed2be34"
+  },
+  {
+    "path": "forward-connected-destination-only/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "forward-connected-destination-only/environment.json",
+    "bytes": 839,
+    "sha256": "bebfcabb95e06b70c123aeef1374d70136fbc22f4a11950b3821b77ecc664935"
+  },
+  {
+    "path": "forward-connected-destination-only/observed.json",
+    "bytes": 8075,
+    "sha256": "fec8b7068f8a62227159fbb5b1238eaf441f7d705dabe64886d2b6ae7fadb1cb"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.cmdline",
+    "bytes": 128,
+    "sha256": "3648280f5439db6f6b9af41b80843efee0903fde6a77f21fce134bb0f0e06dd5"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.identity.json",
+    "bytes": 2079,
+    "sha256": "642a65c9bc104fe61fae149fc04b9ed0ca17c77699874d12da0de28243f9d82a"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.stderr",
+    "bytes": 225,
+    "sha256": "6590f1171e81cb57dbf3dbcbaf9f2dffa9e14012d8772f2a6350a0f40ed9e146"
+  },
+  {
+    "path": "forward-connected-destination-only/sock-addr-relay4-connected-destination-only.stdout",
+    "bytes": 7339,
+    "sha256": "5c8e2218d8c8b4f02ca119a654bf90d34568f545ee6e08b5a6db2fd32204ea1f"
+  },
+  {
+    "path": "forward-connected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "forward-connected-destination-only/test.log",
+    "bytes": 12100,
+    "sha256": "289060aaa7b3f7711b36954111c597611b606745b64b418aae93ab83fa730ea0"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/environment.json",
+    "bytes": 845,
+    "sha256": "7dd5f3dd3b8b8be6dc67c3ab6a05dc6d0fc294f65a91a2ec39339f19ccc85887"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/observed.json",
+    "bytes": 9060,
+    "sha256": "5880f772a18f7678c318a835bdf7747812e17a847875dae5a70f2e46458117ed"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.cmdline",
+    "bytes": 131,
+    "sha256": "6892deb0b528e51d4a3a5ac0a8399a757d482b1858476611d8d53cade04212c3"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.identity.json",
+    "bytes": 2082,
+    "sha256": "15092510fdc65e74fe83f4e75abd830aa594b4861e812d80bb6c9f0094f89640"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "a29a902ff7f8b550f23900ab5759496ae6822bc36547538ce3c969e18dc96ba9"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/sock-addr-relay4-connected-fixed-original-peer.stdout",
+    "bytes": 8027,
+    "sha256": "ad9eeacd418e7e5ad685e7b8e0737dcff915d2aef39874666c90683512e74b17"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "forward-connected-fixed-original-peer/test.log",
+    "bytes": 4018,
+    "sha256": "1e727036d5ca1f99ccf13dceef166e3b409d51b46fdcbfcc2188143ddbd2406b"
+  },
+  {
+    "path": "forward-unconnected-destination-only/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "forward-unconnected-destination-only/environment.json",
+    "bytes": 843,
+    "sha256": "314e71d7b9b278564e90b9144bd73f290d627ac491dac58fa8dc87cf780e6104"
+  },
+  {
+    "path": "forward-unconnected-destination-only/observed.json",
+    "bytes": 8075,
+    "sha256": "c7600eab4956c15371af0dee75fbefbe7e22907c01000cd44db67346f3af81a1"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.cmdline",
+    "bytes": 130,
+    "sha256": "b1b4b71468f3136cbc727ada1c256ede0dc4b5ffb47d9ece5550679ae80f0587"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.identity.json",
+    "bytes": 2081,
+    "sha256": "c9289fb4f4a68ec3e129cc57c314b5db6a64e53dd7d4c8592b9f0a180ba032a2"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.stderr",
+    "bytes": 225,
+    "sha256": "708b06a56025e6c072a5618b1dfa4e5fddb1efbff65da44d41c158cd3b662c10"
+  },
+  {
+    "path": "forward-unconnected-destination-only/sock-addr-relay4-unconnected-destination-only.stdout",
+    "bytes": 7341,
+    "sha256": "624e3444d986b64e5f2563c6aabea4ffdca60245d7dd40293ad2a45dd047adb5"
+  },
+  {
+    "path": "forward-unconnected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "forward-unconnected-destination-only/test.log",
+    "bytes": 4445,
+    "sha256": "c15117f45133c8e3728219d38d00030207521767e989bd4507c9c104d62a0069"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/command.json",
+    "bytes": 230,
+    "sha256": "0dfdcabe8e98834389a5e0f128c2a345580206b917cc62813b24467797220d9d"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/environment.json",
+    "bytes": 849,
+    "sha256": "1db12b2ff1e23324300d83b0fbe66e44e51cf17ef3227aa1fc4e301dee5a2e8a"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/observed.json",
+    "bytes": 8507,
+    "sha256": "23190dca60b3c7a3498cb6fa19300bdf7dfd2856b3d55bab9365dd58db0af8a2"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 133,
+    "sha256": "3ad8377791c5bf04d2321c62160f24287c50bc3ea0865f65fb679bbc1f6179e8"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2084,
+    "sha256": "444abed9ad8ce4c1b9d1b0fe78c7e8961b94494ff38e3e5c0023f2b7dcfd3791"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.payload-input.json",
+    "bytes": 97,
+    "sha256": "3e23b4e66be540963a26b38fc5c146237243f01ca524b85e45b188e5e47d5a24"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.stderr",
+    "bytes": 227,
+    "sha256": "25617006b85f6395c40061bdf1bef362d09721a40faead843dcbb677ba54fa44"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/sock-addr-relay4-unconnected-fixed-original-peer.stdout",
+    "bytes": 7503,
+    "sha256": "65c606d92f62b1e76076811fc54d810f41cfa235010312ea298f26dfe990585b"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "forward-unconnected-fixed-original-peer/test.log",
+    "bytes": 4020,
+    "sha256": "4de09caec362fb368241633aa1e7ab19dc26b84291c23d9bf81a882e2ab5c75c"
+  },
+  {
+    "path": "results.json",
+    "bytes": 14447,
+    "sha256": "77525470e7f787c5545e9ee9e4169fca1c6ae424b201cd72c9e3648ed9701620"
+  },
+  {
+    "path": "scripted-connected-destination-only/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "scripted-connected-destination-only/environment.json",
+    "bytes": 840,
+    "sha256": "16740616b123666b0c9930aae1091998abfc7a23f020dcdc52232091b61b980c"
+  },
+  {
+    "path": "scripted-connected-destination-only/observed.json",
+    "bytes": 5597,
+    "sha256": "2b5eb40f93733f814aee38cc4cbac1d3035cb86da5f626acb4e0db1bcd93928a"
+  },
+  {
+    "path": "scripted-connected-destination-only/sock-addr-udp4-connected-destination-only.cmdline",
+    "bytes": 123,
+    "sha256": "e95232e2e6b705fb9de27532bc2ce3f039a8e2f57f2664f8bcfb3b02d9c7fdaf"
+  },
+  {
+    "path": "scripted-connected-destination-only/sock-addr-udp4-connected-destination-only.identity.json",
+    "bytes": 2077,
+    "sha256": "fc90b268c9154c2fb9a3ed034bf5b3d0d8f9b4199705fabd4e04aa3cda9822dd"
+  },
+  {
+    "path": "scripted-connected-destination-only/sock-addr-udp4-connected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "scripted-connected-destination-only/sock-addr-udp4-connected-destination-only.stderr",
+    "bytes": 227,
+    "sha256": "3cd5cc595413041a67066328a4e9773b181e31e9ebb9e57ea14d9ad171775f04"
+  },
+  {
+    "path": "scripted-connected-destination-only/sock-addr-udp4-connected-destination-only.stdout",
+    "bytes": 5229,
+    "sha256": "cd0cfdda61da568e4d955165ceebb980fdfd87e3529187cd549751aadf78f664"
+  },
+  {
+    "path": "scripted-connected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "scripted-connected-destination-only/test.log",
+    "bytes": 10077,
+    "sha256": "6149962210e73f11cd85706b98fea1589dd12bffc7b937491a1b82f57e03231e"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/environment.json",
+    "bytes": 846,
+    "sha256": "61187ebf498726687ee2f5778fd6db5f6f51db4fc112b5c30be71fc250df30ba"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/observed.json",
+    "bytes": 6582,
+    "sha256": "f346368ac74b51e5458de43964cd33670b445d4e33958947d2bf7d03f8f7ee72"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.cmdline",
+    "bytes": 126,
+    "sha256": "5a110cc3d60729729bce2294fd856f152f2d70ce14766d105979a8d5380e4946"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.identity.json",
+    "bytes": 2080,
+    "sha256": "a917bc7f35b01e28f94a46c18b99221e1902b1054166557082bcd74941f27846"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "52f406f698a571ed5e2b91f8926c36e5abbcd36ff85146544de5a3e839bbfa98"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/sock-addr-udp4-connected-fixed-original-peer.stdout",
+    "bytes": 5917,
+    "sha256": "bc5736dd5ae7d93c01d3b8487dd077586a48647692f9771a7774d73d5b341667"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "scripted-connected-fixed-original-peer/test.log",
+    "bytes": 4012,
+    "sha256": "98472f835a57a2bf2516c3d47218f842705f34cbeb7201fbff1f26d861dee40d"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/environment.json",
+    "bytes": 844,
+    "sha256": "beed1b227355298b4bb2f2908307b29426c632f961f179f7a15c3ab241401daa"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/observed.json",
+    "bytes": 5597,
+    "sha256": "a899d767959ed301ddbeb60ec015179939b0f2c315e23e69e27cecb9c90fe963"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.cmdline",
+    "bytes": 125,
+    "sha256": "ad688911eb4043ce0cc3a50762156b663864e27dbf96dd3662a89d3337a65b68"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.identity.json",
+    "bytes": 2079,
+    "sha256": "ccf5a43022874deb04c0e08d7531b31f8bf95523c24c18091e6e1cb1885033b2"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.stderr",
+    "bytes": 225,
+    "sha256": "5ebb2db5b5188d00eef5021cd6cf0fff0549f352b597d51dfe1689bc842e70ba"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/sock-addr-udp4-unconnected-destination-only.stdout",
+    "bytes": 5231,
+    "sha256": "cf784478d24d47283ce3f323755d2d970b64ec38de13776c705add7aa564d9b5"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/test.exit",
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  {
+    "path": "scripted-unconnected-destination-only/test.log",
+    "bytes": 9980,
+    "sha256": "098d90b00577d2a10f16cc35b1c180167c5cf20e9becea61d4cc247b691cf0d0"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/command.json",
+    "bytes": 226,
+    "sha256": "13fac36139cca3069bdc735cb78cbd69e2ffdb5dfd55f246cc40897cf15c832c"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/environment.json",
+    "bytes": 850,
+    "sha256": "595921cbcffe3c26b1fe306f881e633cbb3804ad391eb65cd5631b5d3d93ee46"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/observed.json",
+    "bytes": 6029,
+    "sha256": "df73c9471ee2cd475fdb23f8ab96d965cc78417dcda216b738fc35dfbd8a155f"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.cmdline",
+    "bytes": 128,
+    "sha256": "c3d615e38f66f9ec80ff5dfb0c57f04e618ace3b224f17caec4bb10549a8ae86"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.identity.json",
+    "bytes": 2082,
+    "sha256": "c34af44d7e219f5d59f4b1ee123ee177b04ab4317d4619db6beda9b33ec4451a"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.status.json",
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.stderr",
+    "bytes": 225,
+    "sha256": "cef940ea445b74fb231708ddcb13de30990ba4d7e21e4f485ad1aeba55746bf8"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/sock-addr-udp4-unconnected-fixed-original-peer.stdout",
+    "bytes": 5393,
+    "sha256": "a848108813cbcb9f72f3286b57fce3b3adb4927c02ac84f5cfdeb38950e14e54"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/test.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "scripted-unconnected-fixed-original-peer/test.log",
+    "bytes": 4014,
+    "sha256": "4ae937f32ec5e412d00fe21ee508690f0e189e64b7751553f5342a497cd339a4"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "84f18584793382f7240374cbd00e292094379d9f14319099b6ed24ab0fc290c4"
+  },
+  {
+    "path": "test-artifact.json",
+    "bytes": 192,
+    "sha256": "967283b224a4507436813a812c9c87a172c932eb27f26ba585772fda86766907"
+  }
+]

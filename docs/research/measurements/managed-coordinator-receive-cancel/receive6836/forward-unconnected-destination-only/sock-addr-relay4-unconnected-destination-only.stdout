@@ -1,0 +1,39 @@
+[    0.012720] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-relay4", "unconnected", "30000", "destination-only", "18"]
+managed-sock-addr {"type":"PayloadSlots","provided":18,"request_len":9,"reply_len":9,"request_capacity":9,"reply_capacity":9,"charge_scope":"PayloadCapacityOnly","allocator_kernel_console":"Unaccounted"}
+managed-sock-addr {"type":"Target","mode":"Unconnected","namespace":4026532020,"cgroup_inode":21,"backend":"127.0.0.1:59755","responder":"127.0.0.1:49615","profile":"DestinationOnly","operation":"BufferedRelay"}
+managed-sock-addr {"type":"ForwardTarget","ingress":"127.0.0.1:49615","upstream":"127.0.0.1:51661","backend":"127.0.0.1:59755","upstream_peer":"127.0.0.1:59755","source_preservation":"MustObserveBackend"}
+managed-sock-addr {"type":"Child","pid":543,"role":"Backend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":1,"local":"127.0.0.1:59755","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:49141","original":"127.0.0.1:59755"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":2,"local":"127.0.0.1:59755","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:49141","original":"127.0.0.1:59755"}
+managed-sock-addr {"type":"ClientIdentity","pid":543,"namespace":4026532020,"requested":"127.0.0.1:59755","local":"127.0.0.1:49141","mode":"Unconnected","role":"BaselineBackend","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Binary","ordinal":1,"local":"127.0.0.1:49141","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:59755","original":"127.0.0.1:49141"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrBaselineClient","step":"Empty","ordinal":2,"local":"127.0.0.1:49141","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:59755","original":"127.0.0.1:49141"}
+managed-sock-addr {"type":"ClientCompletion","role":"BaselineBackend","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Exact","script":"Complete","success":true}
+managed-sock-addr {"type":"ChildReaped","role":"Backend","reaped":true,"success":true,"code":0,"signal":null}
+managed-sock-addr {"type":"Program","hook":"Sendmsg4","from":"127.0.0.1:59755","to":"127.0.0.1:49615","bytecode_hex":"611200000000000056020a000200000061122000000000005602080002000000611224000000000056020600110000006112040000000000560204007f000001611218000000000056020200e96b0000620104007f00000162011800c1cf0000b7000000010000009500000000000000","verifier_log":"NotRequested"}
+managed-sock-addr {"type":"LinkAttached","hook":"Sendmsg4"}
+managed-sock-addr {"type":"Child","pid":545,"role":"ForwardedBackend","state":"ExecReturned"}
+managed-intercept {"type":"UdpArrival","role":"ForwardIngress","step":"Binary","ordinal":1,"local":"127.0.0.1:49615","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:56222","original":"127.0.0.1:49615"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Binary","ordinal":3,"local":"127.0.0.1:59755","reported":9,"flags":0,"copied_hex":"5245515545535400ff","metadata":"Known","peer":"127.0.0.1:51661","original":"127.0.0.1:59755"}
+managed-intercept {"type":"UdpArrival","role":"ForwardUpstreamReply","step":"Binary","ordinal":1,"local":"127.0.0.1:51661","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:59755","original":"127.0.0.1:51661"}
+managed-intercept {"type":"ForwardExchange","step":"Binary","client":"127.0.0.1:56222","ingress":"127.0.0.1:49615","upstream":"127.0.0.1:51661","backend":"127.0.0.1:59755","progress":"ReplyValidated","source_preservation":"Changed","stage":"ExchangeComplete"}
+managed-intercept {"type":"UdpArrival","role":"ForwardIngress","step":"Empty","ordinal":2,"local":"127.0.0.1:49615","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:56222","original":"127.0.0.1:49615"}
+managed-intercept {"type":"UdpArrival","role":"Backend","step":"Empty","ordinal":4,"local":"127.0.0.1:59755","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:51661","original":"127.0.0.1:59755"}
+managed-intercept {"type":"UdpArrival","role":"ForwardUpstreamReply","step":"Empty","ordinal":2,"local":"127.0.0.1:51661","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:59755","original":"127.0.0.1:51661"}
+managed-sock-addr {"type":"ClientIdentity","pid":545,"namespace":4026532020,"requested":"127.0.0.1:59755","local":"127.0.0.1:56222","mode":"Unconnected","role":"ForwardedBackend","peer":null,"peer_error":"NotConnected","cgroup_hex":"303a3a2f736f636b2d616464722d636c69656e740a"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrForwardedClient","step":"Binary","ordinal":1,"local":"127.0.0.1:56222","reported":9,"flags":0,"copied_hex":"4241434b454e4400ff","metadata":"Known","peer":"127.0.0.1:49615","original":"127.0.0.1:56222"}
+managed-intercept {"type":"UdpArrival","role":"SockAddrForwardedClient","step":"Empty","ordinal":2,"local":"127.0.0.1:56222","reported":0,"flags":0,"copied_hex":"","metadata":"Known","peer":"127.0.0.1:49615","original":"127.0.0.1:56222"}
+managed-sock-addr {"type":"Error","stage":"Compatibility","kind":"InvalidInput","errno":null}
+managed-sock-addr {"type":"ClientCompletion","role":"ForwardedBackend","expected":"Backend","stage":"Compatibility","exchanges":2,"compatibility":"Mismatch","script":"Complete","success":false}
+managed-network failed kind=InvalidInput errno=None: original endpoint/port or datagram compatibility differs
+managed-sock-addr {"type":"ChildReaped","role":"ForwardedBackend","reaped":true,"success":false,"code":1,"signal":null}
+managed-sock-addr {"type":"Cleanup","state":"Pending","stage":"JoinWorkers"}
+managed-intercept {"type":"ForwardExchange","step":"Empty","client":"127.0.0.1:56222","ingress":"127.0.0.1:49615","upstream":"127.0.0.1:51661","backend":"127.0.0.1:59755","progress":"ReplyValidated","source_preservation":"Changed","stage":"ExchangeComplete"}
+managed-intercept {"type":"UdpWorkerCompletion","role":"Backend","joined":true,"stage":"ReceiveDatagram","arrivals":4,"matched":4,"empty":2,"replies_sent":4,"terminal":"Cancelled"}
+managed-intercept {"type":"ForwardCompletion","joined":true,"step":"Empty","stage":"ExchangeComplete","upstream_progress":"ReplyValidated","ingress_received":2,"upstream_sent":2,"upstream_received":2,"client_sent":2,"empty_ingress":1,"empty_reply":1,"terminal":"ScriptComplete","external_commit":"UnverifiedBeyondIndependentBackendReceipts"}
+managed-sock-addr {"type":"LinkDetached","hook":"Sendmsg4","detached":true}
+managed-sock-addr {"type":"Cleanup","state":"Observed","backend_joined":true,"relay_joined":true,"hook_setup":"Ready","links_required":1,"links_acquired":1,"link_detached":true,"cgroup_removed":true,"after_window":"Unverified"}
+managed-network failed kind=InvalidInput errno=None: hooked native compatibility failed
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.115840] reboot: Power down
