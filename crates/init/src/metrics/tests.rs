@@ -351,3 +351,42 @@ fn limits_keep_fixed_names_and_held_groups_independent_after_errors() {
         buffer
     );
 }
+
+#[test]
+fn snapshots_keep_actual_limit_results_and_reuse_the_one_page() {
+    let mut reader = Reader::new().unwrap();
+    let buffer = (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity());
+    let group = Group::complete("usage_usec 31\n", "47\n", "3\n", "8:0 rbytes=11 wbytes=17\n");
+    let signed_max = i64::MAX.to_string();
+    let unsigned_max = u64::MAX.to_string();
+    for (text, expected) in [
+        ("0", Ok(Limit::Finite(0))),
+        (signed_max.as_str(), Ok(Limit::Finite(i64::MAX as u64))),
+        (unsigned_max.as_str(), Ok(Limit::Finite(u64::MAX))),
+        ("max", Ok(Limit::Unbounded)),
+        ("malformed", Err(Failure::Invalid)),
+        ("", Err(Failure::Missing)),
+    ] {
+        for name in ["memory.max", "pids.max"] {
+            fs::write(group.directory.join(name), text).unwrap();
+        }
+        let sample = reader.snapshot(&group.held, Scope::Workload).unwrap();
+        assert_other_metrics(sample);
+        assert_eq!(sample.memory_limit, expected);
+        assert_eq!(sample.task_limit, expected);
+        assert_eq!(
+            (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+            buffer
+        );
+    }
+    fs::write(group.directory.join("memory.max"), "0").unwrap();
+    fs::remove_file(group.directory.join("pids.max")).unwrap();
+    let missing = reader.snapshot(&group.held, Scope::Member(7)).unwrap();
+    assert_eq!(missing.memory_limit, Ok(Limit::Finite(0)));
+    assert_eq!(missing.task_limit, Err(Failure::Io(libc::ENOENT)));
+    std::os::unix::fs::symlink("memory.max", group.directory.join("pids.max")).unwrap();
+    let symlink = reader.snapshot(&group.held, Scope::Run).unwrap();
+    assert_eq!(symlink.memory_limit, Ok(Limit::Finite(0)));
+    assert_eq!(symlink.task_limit, Err(Failure::Io(libc::ELOOP)));
+    assert_eq!(fs::read(group.directory.join("memory.max")).unwrap(), b"0");
+}

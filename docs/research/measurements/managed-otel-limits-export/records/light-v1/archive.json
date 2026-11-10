@@ -1,0 +1,611 @@
+{
+  "archive": {
+    "bytes": 41172,
+    "sha256": "1d61cf2bcd43092016f0701d5a4bc5e0c368ec2ab2e0f803f1453bdf7c28a5f0"
+  },
+  "original_payload_count": 99,
+  "embedded_manifest_count": 1,
+  "outside_inventory_rows_including_manifest": 100,
+  "members": [
+    {
+      "path": "cargo-version.command.json",
+      "role": "original payload",
+      "bytes": 297,
+      "sha256": "5d9c03756571560393871c18b650119117044f621676abf42e0087a754c3d8cc"
+    },
+    {
+      "path": "cargo-version.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "cargo-version.stdout",
+      "role": "original payload",
+      "bytes": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "clippy-version.command.json",
+      "role": "original payload",
+      "bytes": 320,
+      "sha256": "db244a1d9c62a6107ad2dac4b3f3737b6a96de8a993b0f328e2b4039bdff4809"
+    },
+    {
+      "path": "clippy-version.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "clippy-version.stdout",
+      "role": "original payload",
+      "bytes": 38,
+      "sha256": "5b2434a8299036c6e83749c249f2837c1689942551958368a628f5e06be5c21c"
+    },
+    {
+      "path": "complete-semantic-shape.command.json",
+      "role": "original payload",
+      "bytes": 417,
+      "sha256": "d3db8ae55b6664401245f3f42a55d0fe86e909d5e261897a03be491db9d8c557"
+    },
+    {
+      "path": "complete-semantic-shape.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "complete-semantic-shape.stdout",
+      "role": "original payload",
+      "bytes": 1179,
+      "sha256": "dc4b771b1dc59cee9c2ecfabfb094396a9588f32020e575b45a3de72d6162195"
+    },
+    {
+      "path": "encoder-build.command.json",
+      "role": "original payload",
+      "bytes": 492,
+      "sha256": "63ff6b492ddc9ae6337dea87c52a91594542768ed9e42b15564f63be4a83a123"
+    },
+    {
+      "path": "encoder-build.stderr",
+      "role": "original payload",
+      "bytes": 239,
+      "sha256": "23dc1f18584c15403ae4a6082266b9c96eea61597aa5237dcff78f818c9ae26b"
+    },
+    {
+      "path": "encoder-build.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "encoder-clippy.command.json",
+      "role": "original payload",
+      "bytes": 524,
+      "sha256": "ce6621a65c40afeb20373920c5120203290425c24cca0a6ff733a071ccd77e8e"
+    },
+    {
+      "path": "encoder-clippy.stderr",
+      "role": "original payload",
+      "bytes": 239,
+      "sha256": "d436ff3b0ce018f62d2405ad7971fa404954250e5b6725c65e40c26c729026e0"
+    },
+    {
+      "path": "encoder-clippy.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "encoder-payload.command.json",
+      "role": "original payload",
+      "bytes": 348,
+      "sha256": "0567ea2c6ad85848e29dbafbc5eb5dfa2f62eac1c2b87ee6c4364e570be3b6d4"
+    },
+    {
+      "path": "encoder-payload.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "encoder-payload.stdout",
+      "role": "original payload",
+      "bytes": 10150,
+      "sha256": "614db829d86ed49806a4c6efb965a99d5fae37442e6790f44c750958d469a62b"
+    },
+    {
+      "path": "encoder-shape.command.json",
+      "role": "original payload",
+      "bytes": 531,
+      "sha256": "cb10fa425cbfc5bf70f127a582558a7e1bfff6e14d64c7607e08dda0f496b46f"
+    },
+    {
+      "path": "encoder-shape.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "encoder-shape.stdout",
+      "role": "original payload",
+      "bytes": 93,
+      "sha256": "b6e6c62a1fc24ac69720d8093cef32d0e2fc11e3795edf83e3dc9c2a1425cf5a"
+    },
+    {
+      "path": "format-check.command.json",
+      "role": "original payload",
+      "bytes": 588,
+      "sha256": "ddf26db69086d369b02bd63c8f2f14357612a9444668b510df7d6e57513610e3"
+    },
+    {
+      "path": "format-check.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "format-check.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "format.command.json",
+      "role": "original payload",
+      "bytes": 561,
+      "sha256": "ba9cea6b41f48d49b59f503038653b8c9e00df5d80dcade76309d519f08511ff"
+    },
+    {
+      "path": "format.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "format.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "formatted/crates/init/src/metrics.rs",
+      "role": "original payload",
+      "bytes": 10201,
+      "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+    },
+    {
+      "path": "formatted/crates/init/src/metrics/otlp.rs",
+      "role": "original payload",
+      "bytes": 22937,
+      "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+    },
+    {
+      "path": "formatted/crates/init/src/metrics/tests.rs",
+      "role": "original payload",
+      "bytes": 15236,
+      "sha256": "7211b1570c857d374f4ca261755e86cf52f2eca1a4985ff944321c9b4d9141bb"
+    },
+    {
+      "path": "formatted/docs/research/measurements/managed-otel-encoder/fixture.rs",
+      "role": "original payload",
+      "bytes": 1358,
+      "sha256": "8a919b3584a57c46da60981aae070a361977dd4fa765d3a0d16c77009fb08568"
+    },
+    {
+      "path": "formatted/docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+      "role": "original payload",
+      "bytes": 3104,
+      "sha256": "8e14eddc2da4548f9aee95d2facfcf07e82acd8fd4f3df72470cc48fa61f8095"
+    },
+    {
+      "path": "formatted/docs/research/measurements/managed-otel-rust-reference/src/reference.rs",
+      "role": "original payload",
+      "bytes": 11347,
+      "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+    },
+    {
+      "path": "formatted/docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs",
+      "role": "original payload",
+      "bytes": 1709,
+      "sha256": "3db77bd5b7a1b92ac150648a2c0cd0103d20ca70e76da6ad8414a9108d8eda3c"
+    },
+    {
+      "path": "formatted/docs/research/measurements/managed-otel/profile/src/main.rs",
+      "role": "original payload",
+      "bytes": 5955,
+      "sha256": "f4099923a3a891fa34852ff76b0fd98c9ef6904c6763919b61df3c9b7584086a"
+    },
+    {
+      "path": "installed-targets.command.json",
+      "role": "original payload",
+      "bytes": 335,
+      "sha256": "8c46f19118463d6b65488129e02f8e273e69f0bc2963c156f544d6ff1e0960e4"
+    },
+    {
+      "path": "installed-targets.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "installed-targets.stdout",
+      "role": "original payload",
+      "bytes": 127,
+      "sha256": "1368770f7064c90c2e05865bf2cec05e4c9e57c5c9818ce06b99b144899dc544"
+    },
+    {
+      "path": "members.json",
+      "role": "embedded manifest (not original payload)",
+      "bytes": 14447,
+      "sha256": "100510ee8f61dcbddb0f1e82ddf474cb0baaaaeeaab39f8301a969704de4fd06"
+    },
+    {
+      "path": "payload-native-stream.command.json",
+      "role": "original payload",
+      "bytes": 407,
+      "sha256": "ed3498ba00afa5ff4e94eea82fa9fc3535cb1ce424492d9d4ef4bab66370d97f"
+    },
+    {
+      "path": "payload-native-stream.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "payload-official-compact-buffer.command.json",
+      "role": "original payload",
+      "bytes": 437,
+      "sha256": "60b0be3e2d5f743bd1c16fcabb2a1599f18ad9e3c73fef530fb21955a5b3ba6c"
+    },
+    {
+      "path": "payload-official-compact-buffer.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "payload-official-pretty-buffer.command.json",
+      "role": "original payload",
+      "bytes": 434,
+      "sha256": "bb6d7d87c5c32ace80968051df8c8050d2dfcd33d1cd42e1485322e1e8c7d79f"
+    },
+    {
+      "path": "payload-official-pretty-buffer.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "payloads/native-stream.json",
+      "role": "original payload",
+      "bytes": 10150,
+      "sha256": "614db829d86ed49806a4c6efb965a99d5fae37442e6790f44c750958d469a62b"
+    },
+    {
+      "path": "payloads/native-stream.receipt.json",
+      "role": "original payload",
+      "bytes": 9911,
+      "sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce"
+    },
+    {
+      "path": "payloads/official-compact-buffer.json",
+      "role": "original payload",
+      "bytes": 13099,
+      "sha256": "62d2837b2faaa7748a527cf62aec03ab925add70fbc3b2b9b753957b10b3c7b7"
+    },
+    {
+      "path": "payloads/official-compact-buffer.receipt.json",
+      "role": "original payload",
+      "bytes": 9911,
+      "sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce"
+    },
+    {
+      "path": "payloads/official-pretty-buffer.json",
+      "role": "original payload",
+      "bytes": 34568,
+      "sha256": "3312c65ddc64983b282c7493e2653e9f969fe7d5bf0c3246cdf5213fff9a1f47"
+    },
+    {
+      "path": "payloads/official-pretty-buffer.receipt.json",
+      "role": "original payload",
+      "bytes": 9911,
+      "sha256": "142d39088f0ef6ecb4c31e56143e63a3b40ceaf72a1d3bf273295475fbadc3ce"
+    },
+    {
+      "path": "profile-alloc-feature-check-only.command.json",
+      "role": "original payload",
+      "bytes": 539,
+      "sha256": "f25d1e0ec486b3e41325aee71b6370d5f6f14846dbadd52a77cad6565ca9e8d2"
+    },
+    {
+      "path": "profile-alloc-feature-check-only.stderr",
+      "role": "original payload",
+      "bytes": 233,
+      "sha256": "68c8146d60dae7c9fd62bdd0b95aac57720d4cbdc4b6b99d0842a6d2972a8c52"
+    },
+    {
+      "path": "profile-alloc-feature-check-only.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-check-only.command.json",
+      "role": "original payload",
+      "bytes": 474,
+      "sha256": "ef68fce7e9c2d5e351ca5f4dbdf13f1a537fd729540b4bc5d571c955ded0299d"
+    },
+    {
+      "path": "profile-check-only.stderr",
+      "role": "original payload",
+      "bytes": 311,
+      "sha256": "2c7557d0c8efa99f01e07d5cc94aeb1890201a73d23239f7b475b8d2e8441be9"
+    },
+    {
+      "path": "profile-check-only.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-format-check-only.command.json",
+      "role": "original payload",
+      "bytes": 424,
+      "sha256": "388d54ea6de20e6806c69b27b49b94843a03c69f5d8c80724d330690eb61cafc"
+    },
+    {
+      "path": "profile-format-check-only.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "profile-format-check-only.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-gnu.command.json",
+      "role": "original payload",
+      "bytes": 568,
+      "sha256": "76ed8b9f56b4906f92b15e1a4d6e0b1ea67ed29f568b9b0b2b085c299b8d35b9"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-gnu.stderr",
+      "role": "original payload",
+      "bytes": 500,
+      "sha256": "0179841c85b30e72f3afe8d13a75e64e6b242ab39de484a4ab9c56ba453e065f"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-gnu.stdout",
+      "role": "original payload",
+      "bytes": 4417,
+      "sha256": "a81290b1325aa8ce60281f0479e56856ba50517b9bdfe6542ffd92d0a12ab41d"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-musl.command.json",
+      "role": "original payload",
+      "bytes": 571,
+      "sha256": "513b316729452ade7f6732277743b419260b31d3f31d51ac701f48e0d06ed360"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-musl.stderr",
+      "role": "original payload",
+      "bytes": 420,
+      "sha256": "6f30245641838002ab07cbac7d2dbeb8b2fd802aa61c2aa0d121e1c7d70363f5"
+    },
+    {
+      "path": "reader-build-x86_64-unknown-linux-musl.stdout",
+      "role": "original payload",
+      "bytes": 4423,
+      "sha256": "4ec95939c6c01a4bc7b6c3e921633396a9b0851963d11f36010491abb77def0e"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-gnu.command.json",
+      "role": "original payload",
+      "bytes": 583,
+      "sha256": "370f622281b645aefe8fc5157c2c8d64435b5f14581c23408b6b7d62b4e9a857"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-gnu.stderr",
+      "role": "original payload",
+      "bytes": 419,
+      "sha256": "6e5e66cd3b006c658323de50701cf9463a52bc5615672e9421d770bc6bbb8674"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-gnu.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-musl.command.json",
+      "role": "original payload",
+      "bytes": 586,
+      "sha256": "3ead19b00c9b785427666c07af3761368c47c6f691f6a480d49d806d385b9cf4"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-musl.stderr",
+      "role": "original payload",
+      "bytes": 419,
+      "sha256": "510312694d768f69d5ce83e018a5731433a8539454952b9d53ce3fbb47b0e8e7"
+    },
+    {
+      "path": "reader-codec-clippy-x86_64-unknown-linux-musl.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-gnu.command.json",
+      "role": "original payload",
+      "bytes": 492,
+      "sha256": "6a4e3254be46c9d4bf9fd6d8104714e0dbea7bcb6e66b037f2a5932023be4908"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-gnu.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-gnu.stdout",
+      "role": "original payload",
+      "bytes": 2473,
+      "sha256": "cd3859ff9a132f8e487ce527e151a8c2b42d0e071c77e2a600f90fc5589e8af3"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-musl.command.json",
+      "role": "original payload",
+      "bytes": 495,
+      "sha256": "dc329d6f2d630f6145d8a3458f19167741750ab4f94ffbd20ebc431932b06c8c"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-musl.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reader-codec-tests-x86_64-unknown-linux-musl.stdout",
+      "role": "original payload",
+      "bytes": 2473,
+      "sha256": "388621965add87eadd202e53b5359def2208adc6cfe3ef9432bdfd1d8b1ab762"
+    },
+    {
+      "path": "reference-build-tests.command.json",
+      "role": "original payload",
+      "bytes": 552,
+      "sha256": "702908767e752de14dd05de9fce1c08e297fa5eb83956b3fd119e1fe4094998b"
+    },
+    {
+      "path": "reference-build-tests.stderr",
+      "role": "original payload",
+      "bytes": 3150,
+      "sha256": "7bfcae09e6e88b1b97a6d86dd8d0ebbd97ccb873da3080dd0df272794518a21a"
+    },
+    {
+      "path": "reference-build-tests.stdout",
+      "role": "original payload",
+      "bytes": 49252,
+      "sha256": "4171206dfce232454fccd2256d4d004cb76e52eee873042038a822fe178441d4"
+    },
+    {
+      "path": "reference-clippy.command.json",
+      "role": "original payload",
+      "bytes": 535,
+      "sha256": "3a00e844e92a8bdbe2bdd9365a9b087483fadaed7baaa8f3ed754ddc2e6afbf3"
+    },
+    {
+      "path": "reference-clippy.stderr",
+      "role": "original payload",
+      "bytes": 1181,
+      "sha256": "37ae88908741caac3000bfa741e0cbc71ff64eac9d1a978b66d78ba9d89a5a04"
+    },
+    {
+      "path": "reference-clippy.stdout",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reference-tests-0.command.json",
+      "role": "original payload",
+      "bytes": 425,
+      "sha256": "52b846deb763dfed0489b498843a250826815892709174d8632c27e4251c0edc"
+    },
+    {
+      "path": "reference-tests-0.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reference-tests-0.stdout",
+      "role": "original payload",
+      "bytes": 290,
+      "sha256": "e89cb4333633328317fcb815e87b0a2cc82f106e15112ba27c2fdf21fa6036f6"
+    },
+    {
+      "path": "reference-tests-1.command.json",
+      "role": "original payload",
+      "bytes": 402,
+      "sha256": "9a6baedb84f1cffcf4b05babdbb72c1e9c388b7a04941f2b700274065b96d471"
+    },
+    {
+      "path": "reference-tests-1.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reference-tests-1.stdout",
+      "role": "original payload",
+      "bytes": 186,
+      "sha256": "dfc762b9a60588589b7d1bf0ef76804c4d3d5e9de1868ccac13d85a4685215b6"
+    },
+    {
+      "path": "result.json",
+      "role": "original payload",
+      "bytes": 24118,
+      "sha256": "671ba9b00d26eba1265f9fbf1229675b3261c0b40b9f995bb364da3c3915c037"
+    },
+    {
+      "path": "rustc-version.command.json",
+      "role": "original payload",
+      "bytes": 298,
+      "sha256": "0c1f5d0d91ce77702b80d5ccb3b33394547f863f8ebd0731b89db0f00936730a"
+    },
+    {
+      "path": "rustc-version.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rustc-version.stdout",
+      "role": "original payload",
+      "bytes": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "rustfmt-version.command.json",
+      "role": "original payload",
+      "bytes": 310,
+      "sha256": "ceb28b6fe0418d63ee66fe22997eb6d71da5aafc716744ad21ffe3956b497a3e"
+    },
+    {
+      "path": "rustfmt-version.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rustfmt-version.stdout",
+      "role": "original payload",
+      "bytes": 45,
+      "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+    },
+    {
+      "path": "toolchains.command.json",
+      "role": "original payload",
+      "bytes": 272,
+      "sha256": "4041c0a13288aa0e2dc13ba43a30342684046e0543e07d1adc3bda3e7a3da04d"
+    },
+    {
+      "path": "toolchains.stderr",
+      "role": "original payload",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "toolchains.stdout",
+      "role": "original payload",
+      "bytes": 287,
+      "sha256": "5876c73b8cbdd6905fad224ef537394372f3a9f9dd568a3d34b9a2771222a36b"
+    }
+  ]
+}

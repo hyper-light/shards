@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "/Users/adalundhe/.kiln-run/bin/gits",
+    "add",
+    "--",
+    "crates/init/src/metrics.rs",
+    "crates/init/src/metrics/otlp.rs",
+    "crates/init/src/metrics/tests.rs",
+    "docs/research/measurements/managed-otel-encoder/check.py",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs",
+    "docs/research/measurements/managed-otel-rust-reference/check.py",
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs",
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs",
+    "docs/research/measurements/managed-otel/profile/src/main.rs",
+    "docs/research/measurements/managed-otel-limits-export"
+  ],
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-otel-limits",
+  "reported_exit_code": 1,
+  "tool_chunk_id": "2199a6",
+  "diagnostic_representation": "Summary of original tool diagnostic, not an original separately captured stderr file.",
+  "diagnostic": "Git refused to add transferred fixture/profile/evidence paths outside the sparse-checkout definition and suggested the --sparse option. The three in-cone metrics files were staged; no reset/stash/clean or index deletion was performed.",
+  "correction": "Use gits add --sparse with the same explicit authorized named paths. Do not widen checkout or alter source/test bytes."
+}

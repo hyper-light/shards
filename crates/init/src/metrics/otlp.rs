@@ -18,6 +18,13 @@ pub enum Scope {
     Member(u32),
 }
 
+/// The local configured ceiling, not available memory or an admitted entitlement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Finite(u64),
+    Unbounded,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub scope: Scope,
@@ -26,6 +33,8 @@ pub struct Snapshot {
     pub memory_bytes: Result<u64, Failure>,
     /// cgroup pids.current counts subtree TIDs, not just process leaders.
     pub threads: Result<u64, Failure>,
+    pub memory_limit: Result<Limit, Failure>,
+    pub task_limit: Result<Limit, Failure>,
     pub read_bytes: Result<u64, Failure>,
     pub write_bytes: Result<u64, Failure>,
 }
@@ -33,7 +42,13 @@ pub struct Snapshot {
 /// One ExportMetricsServiceRequest, with cumulative kernel values. Unknown counter
 /// birth times are omitted, not replaced with each collection's timestamp.
 /// `generation` is the VMM lineage restore count, not a management epoch.
-pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapshot]) -> io::Result<()> {
+pub fn write(
+    out: &mut impl Write,
+    run: &str,
+    microvm: &str,
+    generation: u64,
+    samples: &[Snapshot],
+) -> io::Result<()> {
     if samples.iter().any(|s| s.time_unix_nano == 0) {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -42,14 +57,22 @@ pub fn write(out: &mut impl Write, run: &str, generation: u64, samples: &[Snapsh
         if at != 0 {
             out.write_all(b",")?;
         }
-        resource(out, run, generation, sample)?;
+        resource(out, run, microvm, generation, sample)?;
     }
     out.write_all(b"]}\n")
 }
 
-fn resource(out: &mut impl Write, run: &str, generation: u64, sample: &Snapshot) -> io::Result<()> {
+fn resource(
+    out: &mut impl Write,
+    run: &str,
+    microvm: &str,
+    generation: u64,
+    sample: &Snapshot,
+) -> io::Result<()> {
     out.write_all(b"{\"resource\":{\"attributes\":[")?;
-    attribute(out, "shards.microvm.id", run)?;
+    attribute(out, "shards.run.id", run)?;
+    out.write_all(b",")?;
+    attribute(out, "shards.microvm.id", microvm)?;
     // The VMM lineage restore count is u64; AnyValue.int_value is int64.
     write!(
         out,
@@ -74,9 +97,12 @@ fn resource(out: &mut impl Write, run: &str, generation: u64, sample: &Snapshot)
         Instrument::Memory,
         Instrument::Tasks,
         Instrument::Io,
+        Instrument::MemoryLimit,
+        Instrument::TaskLimit,
     ] {
         metric(out, sample.time_unix_nano, instrument, &points)?;
     }
+    limit_states(out, sample)?;
     diagnostics(out, sample.time_unix_nano, &points)?;
     out.write_all(b"]}]}")
 }
@@ -87,30 +113,44 @@ enum Instrument {
     Memory,
     Tasks,
     Io,
+    MemoryLimit,
+    TaskLimit,
 }
 
 struct Observation {
     instrument: Instrument,
     direction: Option<&'static str>,
-    value: Result<u64, Failure>,
+    value: Result<Option<u64>, Failure>,
 }
 
-fn observations(sample: &Snapshot) -> [Observation; 5] {
-    let point = |instrument, direction, value: Result<u64, Failure>| Observation {
+fn observations(sample: &Snapshot) -> [Observation; 7] {
+    let point = |instrument, direction, value: Result<Option<u64>, Failure>| Observation {
         instrument,
         direction,
         value: if instrument == Instrument::Cpu {
             value
         } else {
-            value.and_then(|n| i64::try_from(n).map(|_| n).map_err(|_| Failure::Overflow))
+            value.and_then(|value| {
+                value
+                    .map(|n| i64::try_from(n).map(|_| n).map_err(|_| Failure::Overflow))
+                    .transpose()
+            })
         },
     };
+    let limit = |value: Result<Limit, Failure>| {
+        value.map(|value| match value {
+            Limit::Finite(n) => Some(n),
+            Limit::Unbounded => None,
+        })
+    };
     [
-        point(Instrument::Cpu, None, sample.cpu_usec),
-        point(Instrument::Memory, None, sample.memory_bytes),
-        point(Instrument::Tasks, None, sample.threads),
-        point(Instrument::Io, Some("read"), sample.read_bytes),
-        point(Instrument::Io, Some("write"), sample.write_bytes),
+        point(Instrument::Cpu, None, sample.cpu_usec.map(Some)),
+        point(Instrument::Memory, None, sample.memory_bytes.map(Some)),
+        point(Instrument::Tasks, None, sample.threads.map(Some)),
+        point(Instrument::Io, Some("read"), sample.read_bytes.map(Some)),
+        point(Instrument::Io, Some("write"), sample.write_bytes.map(Some)),
+        point(Instrument::MemoryLimit, None, limit(sample.memory_limit)),
+        point(Instrument::TaskLimit, None, limit(sample.task_limit)),
     ]
 }
 
@@ -121,6 +161,8 @@ impl Instrument {
             Self::Memory => ("shards.cgroup.memory.usage", "By", false),
             Self::Tasks => ("shards.cgroup.task.count", "{task}", false),
             Self::Io => ("shards.cgroup.disk.io", "By", true),
+            Self::MemoryLimit => ("shards.cgroup.memory.limit", "By", false),
+            Self::TaskLimit => ("shards.cgroup.task.limit", "{task}", false),
         }
     }
 }
@@ -134,16 +176,21 @@ fn metric(
     let recorded = || {
         points
             .iter()
-            .filter(|p| p.instrument == instrument && p.value.is_ok())
+            .filter(|p| p.instrument == instrument && matches!(p.value, Ok(Some(_))))
     };
     if recorded().next().is_none() {
         return Ok(());
     }
     let (name, unit, monotonic) = instrument.fields();
-    write!(
-        out,
-        "{{\"name\":\"{name}\",\"unit\":\"{unit}\",\"sum\":{{\"aggregationTemporality\":2,\"isMonotonic\":{monotonic},\"dataPoints\":["
-    )?;
+    write!(out, "{{\"name\":\"{name}\",\"unit\":\"{unit}\",")?;
+    if matches!(instrument, Instrument::MemoryLimit | Instrument::TaskLimit) {
+        out.write_all(b"\"gauge\":{\"dataPoints\":[")?;
+    } else {
+        write!(
+            out,
+            "\"sum\":{{\"aggregationTemporality\":2,\"isMonotonic\":{monotonic},\"dataPoints\":["
+        )?;
+    }
     for (at, point) in recorded().enumerate() {
         if at != 0 {
             out.write_all(b",")?;
@@ -154,7 +201,7 @@ fn metric(
         }
         out.write_all(b"]")?;
         match point.value {
-            Ok(usec) if matches!(instrument, Instrument::Cpu) => {
+            Ok(Some(usec)) if matches!(instrument, Instrument::Cpu) => {
                 // SI: one second is 10^6 microseconds. JSON decodes this decimal as
                 // binary64; this does not promise exact preservation of large usec.
                 const PER_SECOND: u64 = 1_000_000;
@@ -165,10 +212,43 @@ fn metric(
                     usec % PER_SECOND
                 )?;
             }
-            Ok(value) => write!(out, ",\"asInt\":\"{value}\"")?,
-            Err(_) => return Err(io::ErrorKind::InvalidData.into()),
+            Ok(Some(value)) => write!(out, ",\"asInt\":\"{value}\"")?,
+            Ok(None) | Err(_) => return Err(io::ErrorKind::InvalidData.into()),
         }
         out.write_all(b"}")?;
+    }
+    out.write_all(b"]}},")
+}
+
+fn limit_states(out: &mut impl Write, sample: &Snapshot) -> io::Result<()> {
+    out.write_all(b"{\"name\":\"shards.cgroup.limit.state\",\"unit\":\"1\",\"gauge\":{\"dataPoints\":[")?;
+    for (at, (instrument, value)) in [
+        (Instrument::MemoryLimit, sample.memory_limit),
+        (Instrument::TaskLimit, sample.task_limit),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observed = match value {
+            Ok(Limit::Finite(_)) => "finite",
+            Ok(Limit::Unbounded) => "unbounded",
+            Err(_) => "unavailable",
+        };
+        for (state_at, state) in ["finite", "unbounded", "unavailable"].into_iter().enumerate() {
+            if at != 0 || state_at != 0 {
+                out.write_all(b",")?;
+            }
+            write!(
+                out,
+                "{{\"timeUnixNano\":\"{}\",\"asInt\":\"{}\",\"attributes\":[",
+                sample.time_unix_nano,
+                u8::from(state == observed)
+            )?;
+            attribute(out, "shards.cgroup.metric", instrument.fields().0)?;
+            out.write_all(b",")?;
+            attribute(out, "shards.cgroup.limit.state", state)?;
+            out.write_all(b"]}")?;
+        }
     }
     out.write_all(b"]}},")
 }
@@ -263,6 +343,8 @@ mod tests {
             cpu_usec: Ok(1_000_001),
             memory_bytes: Ok(0),
             threads: Ok(4),
+            memory_limit: Ok(Limit::Unbounded),
+            task_limit: Ok(Limit::Unbounded),
             read_bytes: Ok(12),
             write_bytes: Ok(34),
         }
@@ -270,7 +352,7 @@ mod tests {
 
     fn encode(samples: &[Snapshot]) -> String {
         let mut bytes = Vec::new();
-        write(&mut bytes, "run", u64::MAX, samples).unwrap();
+        write(&mut bytes, "run", "vm", u64::MAX, samples).unwrap();
         String::from_utf8(bytes).unwrap()
     }
 
@@ -282,6 +364,16 @@ mod tests {
         let mut member = sample();
         member.scope = Scope::Member(u32::MAX);
         let text = encode(&[run, workload, member]);
+        assert_eq!(
+            text.matches("\"shards.run.id\",\"value\":{\"stringValue\":\"run\"}")
+                .count(),
+            3
+        );
+        assert_eq!(
+            text.matches("\"shards.microvm.id\",\"value\":{\"stringValue\":\"vm\"}")
+                .count(),
+            3
+        );
         for name in ["run", "workload", "member"] {
             assert!(text.contains(&format!(
                 "\"shards.cgroup.scope\",\"value\":{{\"stringValue\":\"{name}\"}}"
@@ -355,7 +447,15 @@ mod tests {
         }
         assert!(text.contains("\"shards.error.errno\",\"value\":{\"intValue\":\"2\"}"));
         assert!(!text.contains("\"flags\""));
-        assert!(!text.contains("\"asInt\":\"0\""));
+        for name in [
+            "shards.cgroup.cpu.time",
+            "shards.cgroup.memory.usage",
+            "shards.cgroup.task.count",
+            "shards.cgroup.memory.limit",
+            "shards.cgroup.task.limit",
+        ] {
+            assert!(!text.contains(&format!("\"name\":\"{name}\"")));
+        }
     }
 
     #[test]
@@ -388,7 +488,7 @@ mod tests {
         let mut invalid = sample();
         invalid.time_unix_nano = 0;
         let mut bytes = Vec::new();
-        let error = write(&mut bytes, "run", 0, &[sample(), invalid]).unwrap_err();
+        let error = write(&mut bytes, "run", "vm", 0, &[sample(), invalid]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(bytes.is_empty());
     }
@@ -413,6 +513,67 @@ mod tests {
         }
         assert!(encoded.ends_with('"'));
         assert!(!encoded.as_bytes().iter().any(|b| *b < 0x20));
+    }
+
+    fn assert_limit_state(text: &str, metric: &str, observed: &str) {
+        for state in ["finite", "unbounded", "unavailable"] {
+            let expected = format!(
+                "{{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"{}\",\"attributes\":[{{\"key\":\"shards.cgroup.metric\",\"value\":{{\"stringValue\":\"{metric}\"}}}},{{\"key\":\"shards.cgroup.limit.state\",\"value\":{{\"stringValue\":\"{state}\"}}}}]}}",
+                u8::from(state == observed)
+            );
+            assert!(text.contains(&expected), "{expected}: {text}");
+        }
+    }
+
+    #[test]
+    fn limit_gauges_keep_zero_range_and_all_states_distinct_without_identity_churn() {
+        let mut identity = None;
+        for (value, numeric, state, errors) in [
+            (Ok(Limit::Finite(0)), Some("0"), "finite", 0),
+            (
+                Ok(Limit::Finite(i64::MAX as u64)),
+                Some("9223372036854775807"),
+                "finite",
+                0,
+            ),
+            (Ok(Limit::Finite(i64::MAX as u64 + 1)), None, "finite", 2),
+            (Ok(Limit::Finite(u64::MAX)), None, "finite", 2),
+            (Ok(Limit::Unbounded), None, "unbounded", 0),
+            (Err(Failure::Missing), None, "unavailable", 2),
+            (Err(Failure::Invalid), None, "unavailable", 2),
+            (Err(Failure::Overflow), None, "unavailable", 2),
+            (Err(Failure::Io(2)), None, "unavailable", 2),
+            (Ok(Limit::Finite(0)), Some("0"), "finite", 0),
+        ] {
+            let text = encode(&[Snapshot {
+                memory_limit: value,
+                task_limit: value,
+                ..sample()
+            }]);
+            let resource = text.split("\"scopeMetrics\"").next().unwrap();
+            if let Some(ref before) = identity {
+                assert_eq!(resource, before);
+            } else {
+                identity = Some(resource.to_owned());
+            }
+            for (name, unit) in [
+                ("shards.cgroup.memory.limit", "By"),
+                ("shards.cgroup.task.limit", "{task}"),
+            ] {
+                assert_limit_state(&text, name, state);
+                let prefix = format!(
+                    "\"name\":\"{name}\",\"unit\":\"{unit}\",\"gauge\":{{\"dataPoints\":[{{\"timeUnixNano\":\"18446744073709551615\",\"attributes\":[],\"asInt\":\""
+                );
+                if let Some(number) = numeric {
+                    assert!(text.contains(&format!("{prefix}{number}\"")));
+                } else {
+                    assert!(!text.contains(&format!("\"name\":\"{name}\"")));
+                }
+            }
+            assert!(text.contains(&format!("\"name\":\"shards.cgroup.collection.error.count\",\"unit\":\"{{error}}\",\"gauge\":{{\"dataPoints\":[{{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"{errors}\"")));
+            assert!(!text.contains("\"flags\""));
+            assert!(!text.contains("Infinity"));
+        }
     }
 
     struct Ending {
@@ -444,7 +605,7 @@ mod tests {
                 bytes: Vec::new(),
                 after,
             };
-            let error = write(&mut ending, "run", u64::MAX, &[sample()]).unwrap_err();
+            let error = write(&mut ending, "run", "vm", u64::MAX, &[sample()]).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
             assert_eq!(ending.bytes, complete.as_bytes().get(..after).unwrap());
         }
@@ -452,7 +613,7 @@ mod tests {
             bytes: Vec::new(),
             after: complete.len(),
         };
-        write(&mut whole, "run", u64::MAX, &[sample()]).unwrap();
+        write(&mut whole, "run", "vm", u64::MAX, &[sample()]).unwrap();
         assert_eq!(whole.bytes, complete.as_bytes());
     }
 }

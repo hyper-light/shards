@@ -1,0 +1,46 @@
+{
+  "branch_parent": "18d9cc88e70dbaee67419ca7198766d8a87a8b03",
+  "files": {
+    "crates/init/src/metrics/otlp.rs": {
+      "b57_base_sha256": "30fb309612e76d000b9d582829ed535e8f1a6cab569df10d36bbbce6e9c0d339",
+      "branch_before_sha256": "0bb86b2f172e12b8053cf30333ccbabd1a6963a315836a639c79de5a4458f28c",
+      "changed_by_current_base": true
+    },
+    "docs/research/measurements/managed-otel-encoder/check.py": {
+      "b57_base_sha256": "ba56b5a0095012b8ea6e3ffadfb4b37537d6cc00e73b1fec899b3eda48385d25",
+      "branch_before_sha256": "c41fd973feea5c867f08c1865c2b1958e8687ce6d393a17a30af3a303466407b",
+      "changed_by_current_base": true
+    },
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": {
+      "b57_base_sha256": "783d1c5c399dcefe4eb4d255c654b7f1df65b9f1916cba818b514ee4c443cfd6",
+      "branch_before_sha256": "fceed6875c1ce02b1437fedca57778f2e1fafee8a01a87ef0d44e9f05737bf8a",
+      "changed_by_current_base": true
+    },
+    "docs/research/measurements/managed-otel-rust-reference/check.py": {
+      "b57_base_sha256": "9414e220a9760ecf0679364b58168b9c53c869a99096b1bfde5e4f22c1aa7a5d",
+      "branch_before_sha256": "9414e220a9760ecf0679364b58168b9c53c869a99096b1bfde5e4f22c1aa7a5d",
+      "changed_by_current_base": false
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+      "b57_base_sha256": "98d54a60ef233ca15ea0dcbd9483fd48a57b553259993d2ea7b93c6199e85bcf",
+      "branch_before_sha256": "2febc6d4fc9079f3648970ebef1891a25682248c4154bdc1fade4833578869e7",
+      "changed_by_current_base": true
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "b57_base_sha256": "915df9f382e9b13a9ec5bb4b5bc44f8a17a1d6425a5e48a278af70268bd97ada",
+      "branch_before_sha256": "5e16b6cbf87b221b1e061690c23283197e11571b6aa0535b163bf046df07f4ca",
+      "changed_by_current_base": true
+    },
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+      "b57_base_sha256": "d3855af24182e832c406fe4e8254cb74cf9f65ffbc8c358b922c935e0d01443e",
+      "branch_before_sha256": "d3855af24182e832c406fe4e8254cb74cf9f65ffbc8c358b922c935e0d01443e",
+      "changed_by_current_base": false
+    },
+    "docs/research/measurements/managed-otel/profile/src/main.rs": {
+      "b57_base_sha256": "10099203d3b4d7f11cabfb8d9728cd0f755b16516413bf230377a01cc6eb8d64",
+      "branch_before_sha256": "53259fe807e7c9ac5e4fb2c84e65b6f4ae55f4e474802de6cff5a86fa9359dfc",
+      "changed_by_current_base": true
+    }
+  },
+  "owned_current_base": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe"
+}

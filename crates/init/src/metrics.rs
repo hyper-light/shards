@@ -28,12 +28,7 @@ enum Token<'a> {
     Line,
 }
 
-/// The local configured ceiling, not available memory or an admitted entitlement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Limit {
-    Finite(u64),
-    Unbounded,
-}
+pub use otlp::Limit;
 
 /// One actual kernel page, reused across every file and scope in a request.
 pub struct Reader {
@@ -243,6 +238,8 @@ impl Reader {
         let cpu_usec = self.cpu(group);
         let memory_bytes = self.scalar(group, c"memory.current");
         let threads = self.scalar(group, c"pids.current");
+        let memory_limit = self.memory_limit(group);
+        let task_limit = self.task_limit(group);
         let (read_bytes, write_bytes) = match self.io(group) {
             Ok((r, w)) => (Ok(r), Ok(w)),
             Err(e) => (Err(e), Err(e)),
@@ -259,6 +256,8 @@ impl Reader {
             cpu_usec,
             memory_bytes,
             threads,
+            memory_limit,
+            task_limit,
             read_bytes,
             write_bytes,
         })

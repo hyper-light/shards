@@ -1,0 +1,669 @@
+{
+  "admission": {
+    "cpus": 2,
+    "disk_bytes": 4294967296,
+    "memory_bytes": 2147483648,
+    "timeout_seconds": 600
+  },
+  "build_environment": {
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_HOME": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/cargo-home",
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_TARGET_DIR": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target",
+    "RUSTFLAGS": "-C debuginfo=0 -C codegen-units=1",
+    "RUSTUP_AUTO_INSTALL": "0",
+    "TMPDIR": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/tmp"
+  },
+  "commands": [
+    {
+      "argv": [
+        "rustup",
+        "toolchain",
+        "list"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "toolchains",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/toolchains.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustc",
+        "-Vv"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "rustc-version",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/rustc-version.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "-V"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "cargo-version",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/cargo-version.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--version"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "rustfmt-version",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/rustfmt-version.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--version"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "clippy-version",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/clippy-version.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "target",
+        "list",
+        "--installed",
+        "--toolchain",
+        "1.98.1"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "installed-targets",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/installed-targets.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--edition",
+        "2024",
+        "crates/init/src/metrics.rs",
+        "docs/research/measurements/managed-otel-encoder/fixture.rs",
+        "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+        "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "format",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/format.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/init/src/metrics.rs",
+        "docs/research/measurements/managed-otel-encoder/fixture.rs",
+        "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+        "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "format-check",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/format-check.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "docs/research/measurements/managed-otel/profile/src/main.rs"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "profile-format-check-only",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/profile-format-check-only.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-limits/Cargo.toml",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-build-x86_64-unknown-linux-gnu",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-build-x86_64-unknown-linux-gnu.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_limits_light-bc0687f8752e1280",
+        "metrics::",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-codec-tests-x86_64-unknown-linux-gnu",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-codec-tests-x86_64-unknown-linux-gnu.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-limits/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-codec-clippy-x86_64-unknown-linux-gnu",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-codec-clippy-x86_64-unknown-linux-gnu.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-limits/Cargo.toml",
+        "--lib",
+        "--no-run",
+        "--message-format=json",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-build-x86_64-unknown-linux-musl",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-build-x86_64-unknown-linux-musl.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_managed_otel_limits_light-03c1d63829475431",
+        "metrics::",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-codec-tests-x86_64-unknown-linux-musl",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-codec-tests-x86_64-unknown-linux-musl.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-limits/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reader-codec-clippy-x86_64-unknown-linux-musl",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reader-codec-clippy-x86_64-unknown-linux-musl.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "build",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-encoder/Cargo.toml",
+        "--bin",
+        "fixture",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "encoder-build",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/encoder-build.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/fixture"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "encoder-payload",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/encoder-payload.stdout"
+    },
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-otel-encoder/check.py"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "encoder-shape",
+      "stdin": {
+        "bytes": 10150,
+        "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/encoder-payload.stdout",
+        "sha256": "614db829d86ed49806a4c6efb965a99d5fae37442e6790f44c750958d469a62b"
+      },
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/encoder-shape.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-encoder/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "encoder-clippy",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/encoder-clippy.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-rust-reference/Cargo.toml",
+        "--all-targets",
+        "--no-run",
+        "--message-format=json",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reference-build-tests",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reference-build-tests.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_rust_reference-341ab96691f1d549",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reference-tests-0",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reference-tests-0.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/equivalence-729e7f90d951b473",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reference-tests-1",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reference-tests-1.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-rust-reference/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "reference-clippy",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/reference-clippy.stdout"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/shards-managed-otel-rust-reference",
+        "native-stream"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "payload-native-stream",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/payloads/native-stream.json"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/shards-managed-otel-rust-reference",
+        "official-compact-buffer"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "payload-official-compact-buffer",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/payloads/official-compact-buffer.json"
+    },
+    {
+      "argv": [
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/shards-managed-otel-rust-reference",
+        "official-pretty-buffer"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "payload-official-pretty-buffer",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/payloads/official-pretty-buffer.json"
+    },
+    {
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-otel-rust-reference/check.py",
+        "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/payloads"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "complete-semantic-shape",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/complete-semantic-shape.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel/profile/Cargo.toml",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "profile-check-only",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/profile-check-only.stdout"
+    },
+    {
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel/profile/Cargo.toml",
+        "--features",
+        "alloc-count",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "cwd": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/source",
+      "exit_code": 0,
+      "name": "profile-alloc-feature-check-only",
+      "stdout": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/out/profile-alloc-feature-check-only.stdout"
+    }
+  ],
+  "encoder_artifact": {
+    "bytes": 4591400,
+    "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/fixture",
+    "sha256": "60c2ad067cf77bb140ed68a043c2f04aa71a93d9ff963e5c1df5803e85480476"
+  },
+  "environment": [
+    "Linux",
+    "fedora-2",
+    "6.19.10-300.fc44.x86_64",
+    "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "x86_64",
+    ""
+  ],
+  "measurement": false,
+  "outcome": 0,
+  "owned_root": "/home/adalundhe/managed-otel-limits-export-18d-light-v1",
+  "private_tmp_remaining_files": [],
+  "private_wrapper": {
+    "bytes": 101,
+    "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+  },
+  "profiles_executed": false,
+  "reference_artifact": {
+    "bytes": 5681176,
+    "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/shards-managed-otel-rust-reference",
+    "sha256": "3253d05be28e9963ecb0b66180ba697284bb4a2802f63316f3da132e3030e2d8"
+  },
+  "source_files_after_format": {
+    ".cargo/config.toml": {
+      "bytes": 1094,
+      "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+    },
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    "clippy.toml": {
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    "crates/init/src/managed_otel_limits_light.rs": {
+      "bytes": 101,
+      "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+    },
+    "crates/init/src/metrics.rs": {
+      "bytes": 10201,
+      "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 22937,
+      "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+    },
+    "crates/init/src/metrics/tests.rs": {
+      "bytes": 15236,
+      "sha256": "7211b1570c857d374f4ca261755e86cf52f2eca1a4985ff944321c9b4d9141bb"
+    },
+    "crates/testdir/src/lib.rs": {
+      "bytes": 17917,
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    "docs/research/measurements/managed-otel-encoder/Cargo.lock": {
+      "bytes": 177,
+      "sha256": "8d7470b740fcb2a79d478fa4b1c7d80b374d4f1cf17ed3a02815d11ee20db711"
+    },
+    "docs/research/measurements/managed-otel-encoder/Cargo.toml": {
+      "bytes": 430,
+      "sha256": "478de5fd8a5473b5ed38846d0ae3a8434709aa87cca81211ec7b1b8049999ab5"
+    },
+    "docs/research/measurements/managed-otel-encoder/check.py": {
+      "bytes": 4811,
+      "sha256": "1db3356e3651a123c9a9a4fffbbc3769be0eb27e8d76760d18b3f279876fd668"
+    },
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": {
+      "bytes": 1358,
+      "sha256": "8a919b3584a57c46da60981aae070a361977dd4fa765d3a0d16c77009fb08568"
+    },
+    "docs/research/measurements/managed-otel-limits-export/records/current-owned-base.json": {
+      "bytes": 2600,
+      "sha256": "cdd274dfe8faaa30a294997ecd7bf17f3984fc6d4b73a7460c3097911df5c0f5"
+    },
+    "docs/research/measurements/managed-otel-limits-export/run-light.py": {
+      "bytes": 11327,
+      "sha256": "1d5215fb266f7c565181ecb845d8a49d2d25601234b09a0fdd245ae445903e8b"
+    },
+    "docs/research/measurements/managed-otel-limits/Cargo.lock": {
+      "bytes": 496,
+      "sha256": "3c76154b7e5d87f0518803c46299b0187006bc9e9e020f7f6e9facefaa5dab73"
+    },
+    "docs/research/measurements/managed-otel-limits/Cargo.toml": {
+      "bytes": 534,
+      "sha256": "1ac4824e78af91d8b7a52ab20f07920b448d657b02b03960d46ed8a8b0d19847"
+    },
+    "docs/research/measurements/managed-otel-limits/lib.rs": {
+      "bytes": 101,
+      "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+    },
+    "docs/research/measurements/managed-otel-limits/testdir/Cargo.toml": {
+      "bytes": 176,
+      "sha256": "b807658e972e33b7666a6fe6db61439cdc6aa02cac01dae99f7d71791f1dfa48"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/Cargo.lock": {
+      "bytes": 13936,
+      "sha256": "071f738b5e7aa3692743b907665aa6deff80404773d1d6eacd001b47e60b19a1"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/Cargo.toml": {
+      "bytes": 596,
+      "sha256": "4bfc763c75bab28097d53e2590f728eae5b6cdc75fe29fb0de4456efc03235d2"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/check.py": {
+      "bytes": 5865,
+      "sha256": "f848360a10152ffb9992433d2d001f0156be5413996f9d23bf6340de847fbcbb"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs": {
+      "bytes": 3104,
+      "sha256": "8e14eddc2da4548f9aee95d2facfcf07e82acd8fd4f3df72470cc48fa61f8095"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": {
+      "bytes": 11347,
+      "sha256": "16b86e859d799b0b1006f2fb87afa7e022ff83e4d725999784b7f6e6e220d1f9"
+    },
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs": {
+      "bytes": 1709,
+      "sha256": "3db77bd5b7a1b92ac150648a2c0cd0103d20ca70e76da6ad8414a9108d8eda3c"
+    },
+    "docs/research/measurements/managed-otel/profile/Cargo.lock": {
+      "bytes": 13938,
+      "sha256": "a2fdba6d5b9af71207b2debf43270c35b520b31fe789b143779652532f985d84"
+    },
+    "docs/research/measurements/managed-otel/profile/Cargo.toml": {
+      "bytes": 432,
+      "sha256": "92c09b8ef9c6356bd6662c4cf3af9097b6062688a19f7d812581ba3a242115a7"
+    },
+    "docs/research/measurements/managed-otel/profile/src/allocations.rs": {
+      "bytes": 3818,
+      "sha256": "06d8a553c1dece8b0e9c06746970af18a281a9d010033fceb41d4db854db7adf"
+    },
+    "docs/research/measurements/managed-otel/profile/src/main.rs": {
+      "bytes": 5955,
+      "sha256": "f4099923a3a891fa34852ff76b0fd98c9ef6904c6763919b61df3c9b7584086a"
+    },
+    "rustfmt.toml": {
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    }
+  },
+  "test_artifacts": [
+    {
+      "bytes": 7637320,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_limits_light-bc0687f8752e1280",
+      "sha256": "328720fb9514cb22c89fc82ac65ad1eee41aedecc0330a2744328acc5e80a325"
+    },
+    {
+      "bytes": 7935320,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_managed_otel_limits_light-03c1d63829475431",
+      "sha256": "60e53ef4ea57dc83133e54ac6e3b8eb20264f5065436b3ad0866faa26fb7bf2d"
+    },
+    {
+      "bytes": 9475568,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_rust_reference-341ab96691f1d549",
+      "sha256": "2d20980653c553151d9b6147bf3033051c9de34fc091f233b356748280e81bf4"
+    },
+    {
+      "bytes": 9269736,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/equivalence-729e7f90d951b473",
+      "sha256": "c6ab12dc0b72845860fade7ea5ffe73987bf3951f0dbef9f41995ae91c1de8dc"
+    }
+  ],
+  "test_artifacts_after": [
+    {
+      "bytes": 7637320,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_limits_light-bc0687f8752e1280",
+      "sha256": "328720fb9514cb22c89fc82ac65ad1eee41aedecc0330a2744328acc5e80a325"
+    },
+    {
+      "bytes": 7935320,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-musl/debug/deps/shards_managed_otel_limits_light-03c1d63829475431",
+      "sha256": "60e53ef4ea57dc83133e54ac6e3b8eb20264f5065436b3ad0866faa26fb7bf2d"
+    },
+    {
+      "bytes": 9475568,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/shards_managed_otel_rust_reference-341ab96691f1d549",
+      "sha256": "2d20980653c553151d9b6147bf3033051c9de34fc091f233b356748280e81bf4"
+    },
+    {
+      "bytes": 9269736,
+      "path": "/home/adalundhe/managed-otel-limits-export-18d-light-v1/target/x86_64-unknown-linux-gnu/debug/deps/equivalence-729e7f90d951b473",
+      "sha256": "c6ab12dc0b72845860fade7ea5ffe73987bf3951f0dbef9f41995ae91c1de8dc"
+    }
+  ]
+}
