@@ -1,0 +1,26 @@
+[
+  {
+    "url": "https://api.github.com/repos/anthropics/claude-agent-sdk-python/commits/main",
+    "path": "sources/claude-sdk-main-commit.json",
+    "bytes": 4318,
+    "sha256": "2130b347da81ae5c1026de8760578834f3640286d4a37a11ee225d5e1b57b697"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/3cf3446b0fa6c97042e85b245bba07459f22f946/pyproject.toml",
+    "path": "sources/claude-sdk-pyproject.toml",
+    "bytes": 4076,
+    "sha256": "7e441ab98089429886d3361daab7fb43ef44c2e41aaa063ea57394b1e0ced339"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server-protocol/src/capabilities.rs",
+    "path": "sources/codex-capabilities.rs",
+    "bytes": 4573,
+    "sha256": "e38e12786c2d29bfa9863c1ceee59fdafc235fdedc7e1b65d5c9f78677c3b825"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server-protocol/src/environment_config.rs",
+    "path": "sources/codex-environment_config.rs",
+    "bytes": 2023,
+    "sha256": "c463584db6a07c20dc8bce25ca3886f159e7191371dda18a7636fdf6d1856c4e"
+  }
+]

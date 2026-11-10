@@ -1,0 +1,14 @@
+[
+  {
+    "schema": "DynamicToolCallParams.json",
+    "generated_bytes": 519,
+    "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc",
+    "matches_pinned_upstream": true
+  },
+  {
+    "schema": "DynamicToolCallResponse.json",
+    "generated_bytes": 2010,
+    "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02",
+    "matches_pinned_upstream": true
+  }
+]

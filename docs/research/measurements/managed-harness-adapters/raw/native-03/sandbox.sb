@@ -1,0 +1,1 @@
+(version 1)(allow default)(deny network*)(deny mach-lookup (global-name "com.apple.SecurityServer"))(deny file-read* (subpath "/Users/adalundhe/Library/Keychains") (subpath "/Library/Keychains") (subpath "/Users/adalundhe/.claude") (literal "/Users/adalundhe/.claude.json") (subpath "/Users/adalundhe/.codex"))

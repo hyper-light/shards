@@ -1,0 +1,48 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server-protocol/src/protocol.rs",
+    "path": "sources/codex-codex-rs--exec-server-protocol--src--protocol.rs",
+    "bytes": 83700,
+    "sha256": "b34b6e3ddd50841ef15e24b64f582bef790090df9719aca0c9c464030437d6c9"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/DynamicToolCallParams.json",
+    "path": "sources/codex-codex-rs--app-server-protocol--schema--json--DynamicToolCallParams.json",
+    "bytes": 519,
+    "sha256": "401bba20cfbd95762bef0467d840430c46be53369093ad9f26425ba757e34efc"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/DynamicToolCallResponse.json",
+    "path": "sources/codex-codex-rs--app-server-protocol--schema--json--DynamicToolCallResponse.json",
+    "bytes": 2010,
+    "sha256": "abb082cad67f11fcc98ba75f2eff75d7d1723af0c657655329b83ff160451a02"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/src/protocol/v2/item.rs",
+    "path": "sources/codex-codex-rs--app-server-protocol--src--protocol--v2--item.rs",
+    "bytes": 68155,
+    "sha256": "1a2bdd6ae42f6d7e7b423b7c95dfd09b66b2014119b45b7a4ac04e7a49ef9930"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/tools/spec_plan.rs",
+    "path": "sources/codex-codex-rs--core--src--tools--spec_plan.rs",
+    "bytes": 66910,
+    "sha256": "d2bc16c3fb57c9cb7459efff6723f8bd14fa079ab531de2afe0616d28a5bc2ce"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/tools/handlers/mod.rs",
+    "path": "sources/codex-codex-rs--core--src--tools--handlers--mod.rs",
+    "bytes": 25290,
+    "sha256": "b325e8474ffbb3681b6c9b64a79e6c0854fdf5f6e42e7fee77974cbe294d340a"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/tools/runtimes/mod.rs",
+    "path": "sources/codex-codex-rs--core--src--tools--runtimes--mod.rs",
+    "bytes": 32555,
+    "sha256": "fee20c953c32c35c299c30cdbe17c5266c05eeba5dba9cbe1e3ed5836b442183"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/exec/mod.rs",
+    "error": "HTTP Error 404: Not Found"
+  }
+]

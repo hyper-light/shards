@@ -1,0 +1,93 @@
+[
+  {
+    "name": "codex-version",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "--version"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.017660500000000003,
+    "stdout_bytes": 18,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "codex-help",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "--help"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.0148825,
+    "stdout_bytes": 5940,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "codex-app-help",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "--help"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.015168124999999998,
+    "stdout_bytes": 3703,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "codex-schema-help",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "generate-json-schema",
+      "--help"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.01594208300000001,
+    "stdout_bytes": 1075,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "codex-exec-help",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "exec-server",
+      "--help"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.015822333999999993,
+    "stdout_bytes": 4032,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "claude-version",
+    "argv": [
+      "/Users/adalundhe/.local/share/claude/versions/2.1.321",
+      "--version"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.019203666000000008,
+    "stdout_bytes": 22,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "claude-help",
+    "argv": [
+      "/Users/adalundhe/.local/share/claude/versions/2.1.321",
+      "--help"
+    ],
+    "exit": 0,
+    "elapsed_s": 0.05877433300000001,
+    "stdout_bytes": 22344,
+    "stderr_bytes": 0
+  },
+  {
+    "binary": "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+    "sha256": "030316ecfbb41f4e7946e584b0063ef333b7a36cd312ba349f2f6869e39b62cc",
+    "bytes": 270815376
+  },
+  {
+    "binary": "/Users/adalundhe/.local/share/claude/versions/2.1.321",
+    "sha256": "abc9feeeca8091d51b623291e044cf0528c2f6b74e0c1d6ef671d52c73f7cd3c",
+    "bytes": 323686048
+  }
+]

@@ -128,6 +128,7 @@ physical CPU/kernel/memory peak attribution.
 | `raw/codec-03` | Final current codec source after exact known-method matching: named format0, strict compilation0,7passed/0failed/0ignored; one unrelated product JSON test filtered. |
 | `raw/final-light-01` | Final production-mode and test-mode scoped Clippy0 with denied panic/index/output lints and warnings; policy checker0. Source hashes and unchanged product Cargo.lock identity retained;169GiB Mac free. |
 | `raw/codec-04`, `raw/final-light-02` | New request-bound reply-slot API refinement: current7tests0failed/0ignored, named format0, strict production/test Clippy0 and policy0. These current source hashes supersede codec-03/final-light-01 for the amended interface. This is new-work refinement, not a live production defect claim. |
+| `raw/git-checks-01` | Source-only diffcheck0. Entire staged evidence diffcheck2 on authentic raw stdout's blank lines/trailing spaces; original records preserved, no blanket clean-diff claim. |
 | `raw/source-fetch-*` | Exact pinned URLs/lengths/hashes and original404/403 attempts retained. Corrected paths use the fetched immutable Git tree. No inaccessible source is called read. |
 
 All native probes deny network operations and use fresh

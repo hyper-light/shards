@@ -1,0 +1,40 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server-protocol/src/rpc.rs",
+    "path": "sources/codex-codex-rs--exec-server-protocol--src--rpc.rs",
+    "bytes": 8906,
+    "sha256": "67fdd002caa343def5d78d417c944851ef176add634d06410d945603307c3f7c"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server/src/lib.rs",
+    "path": "sources/codex-codex-rs--exec-server--src--lib.rs",
+    "bytes": 10122,
+    "sha256": "3b59ee02ed9e74566e6c277e23fb97790670879730592877a9327d0d2ab2b1c1"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/exec-server/README.md",
+    "path": "sources/codex-codex-rs--exec-server--README.md",
+    "bytes": 18493,
+    "sha256": "d41090e5f935049a7532fba18e8c24f5557b39c11cc8916c534dd8a76397db96"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/src/protocol/v2.rs",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server/README.md",
+    "path": "sources/codex-codex-rs--app-server--README.md",
+    "bytes": 48405,
+    "sha256": "a74bced01a83db7b3d4e88bdba6eb4e6430900893b44ada50e01fc4c9544300b"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/tools/spec.rs",
+    "error": "HTTP Error 404: Not Found"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/core/src/exec_policy.rs",
+    "path": "sources/codex-codex-rs--core--src--exec_policy.rs",
+    "bytes": 43331,
+    "sha256": "e8513758e83d76ecc5b673ef6113cc53a48368c21972fd65e5e7b91672daa3bd"
+  }
+]

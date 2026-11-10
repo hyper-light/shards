@@ -1,0 +1,55 @@
+[
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustfmt",
+      "--edition=2024",
+      "--config",
+      "skip_children=true",
+      "crates/server/src/harness/claude.rs",
+      "crates/server/src/harness/codex.rs",
+      "crates/server/src/harness/mod.rs",
+      "crates/server/src/harness/tests.rs",
+      "crates/server/src/harness/wire.rs",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/fixture.rs"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustfmt",
+      "--edition=2024",
+      "--config",
+      "skip_children=true",
+      "--check",
+      "crates/server/src/harness/claude.rs",
+      "crates/server/src/harness/codex.rs",
+      "crates/server/src/harness/mod.rs",
+      "crates/server/src/harness/tests.rs",
+      "crates/server/src/harness/wire.rs",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/fixture.rs"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustc",
+      "--edition=2024",
+      "--test",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/fixture.rs",
+      "-D",
+      "warnings",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/codec-02/codec-tests"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/codec-02/codec-tests",
+      "harness::tests::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit": 0
+  }
+]

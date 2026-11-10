@@ -1,0 +1,51 @@
+[
+  {
+    "name": "codex-init",
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "--listen",
+      "stdio://",
+      "-c",
+      "cli_auth_credentials_store=\"file\"",
+      "-c",
+      "analytics.enabled=false",
+      "-c",
+      "feedback.enabled=false"
+    ],
+    "exit": 0,
+    "reply_before_eof": true,
+    "elapsed_s": 0.06353441700000001,
+    "stdout_bytes": 583,
+    "stderr_bytes": 0
+  },
+  {
+    "name": "claude-init",
+    "argv": [
+      "/Users/adalundhe/.local/share/claude/versions/2.1.321",
+      "--print",
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--permission-prompt-tool",
+      "stdio",
+      "--setting-sources",
+      "",
+      "--settings",
+      "{}",
+      "--strict-mcp-config",
+      "--mcp-config",
+      "{\"mcpServers\":{}}",
+      "--tools",
+      "",
+      "--no-session-persistence"
+    ],
+    "exit": 0,
+    "reply_before_eof": true,
+    "elapsed_s": 0.751665791,
+    "stdout_bytes": 17300,
+    "stderr_bytes": 0
+  }
+]

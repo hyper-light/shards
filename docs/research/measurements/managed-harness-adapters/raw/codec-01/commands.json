@@ -1,0 +1,22 @@
+[
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustc",
+      "--edition=2024",
+      "--test",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/fixture.rs",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/codec-01/codec-tests"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/codec-01/codec-tests",
+      "harness::tests::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit": 0
+  }
+]

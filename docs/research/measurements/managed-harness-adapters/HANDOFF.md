@@ -1,0 +1,77 @@
+# Harness adapter lane checkpoint
+
+POLICY_READ origin/main0342b85d9c808e3ced041a6c3ef0e9bf70438272,
+docs/development-rules.md SHA256
+df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3,
+role IMPLEMENTER01a1c7677bd47698a852890d0d0653e2. Full current
+AGENTS/rules/evidence/CLAUDE/managed plan and /Users/adalundhe/g121-handoff.md
+read before work. After compaction/resume reread the policy and this handoff.
+ROOT01a148884a4770fdaf0111f3f792a248 owns all shared-span approval, integration,
+audits/profiles/benchmarks/heavy campaigns and main merges. No children or
+goal/plan/resume wrappers.
+
+Owned new `crates/server/src/harness/**` and this evidence directory only.
+Branch `p/managed-harness-adapters-kiln-v1` from0342. Source snapshot at
+`raw/final-light-02/sources.json` identifies every current tested codec file and exact
+unchanged product Cargo.lock. Native executable hashes/schema equality in README.
+
+NEW functionality: borrowed checked Codex0.167.0 dynamic-tool request and
+Claude2.1.321 MCP-control envelope codecs, fixed send/answer/hand mapping,
+typed unsupported version/method/namespace/fallback/shape, no label authority,
+typed canonical completion to native success/isError, exact escaped private
+result text, pre-effect fallible ReplySlot capacity with fixed filling. A slot
+borrows its preparing request, preventing a different packet at completion.
+Full fallbacks/owner ledger is FALLBACKS.md. No native executable/file/input/
+credential/route implementation duplicated. No manifest change, provider rewrite,
+TLS interception, root or installed helper.
+
+Initial signed source checkpoint791a2345d5395621ec7614c9402e1543967f77a6 uses
+codec-03/final-light-01. A following new-work request-bound API refinement uses
+codec-04/final-light-02 at signed0d1b8b25eaafd757dbdf1344d390dc68edc95252;
+do not inherit old checks for that changed interface.
+The signed wrapper reports Kiln verifies signatures against its own root; local
+git cannot independently verify them here. This is not an unsigned-commit claim.
+
+Actual current results: native Mac ARM64, Rust1.98.1; seven codec tests0failed/0ignored;
+strict production-mode and test-mode scoped Clippy0; named scoped format0;
+policy checker0. All local work takes lockf/tmp/g121-mac.lock; >=30GiB floor
+(last169GiB), normal2CPU/2GiB/4GiB<=600s scope. Exact commands/raw in receipts.
+No benchmark/profile, VM, provider call, real sign-in or seven-target gate run.
+
+Both actual installed CLIs initialize with networking+real credential/keychain
+paths/lookup denied, fresh state and no user turn. Claude reports tokenSource
+none.470 installed Codex schemas exported; dynamic request/response bytes exactly
+match pinned086ccc8 official schemas. Current official SDK main resolves3cf3446
+(Python0.2.180). Source404/403s, first early-EOF handshake miss, first format1,
+and reusable-driver Python3.9 file_digest failure are retained. The driver error's
+original standalone stderr was not separately captured; its original Kiln tool
+transcript and exact failing driver are preserved. A documentation apply_patch
+attempt also failed on a mismatched context line before the corrected patch;
+no source changed in that failed attempt. Never call these attempts passing.
+Source-only diffcheck0; entire staged evidence diffcheck2 because authentic raw
+stdout preserves EOF blanks/trailing spaces, retained in raw/git-checks-01.
+Do not normalize or claim a blanket staged diffcheck0.
+
+Shared spans remain UNEDITED and UNAPPROVED: main module registration; server
+native ingress/TOOLS and canonical peer-effect helper/typed outcome retention;
+broker-reserved reply byte bound (including static fallback) exposed before
+effect. Exact proposals ROOT seq7009/7016/7078, consolidated7134. Native ReplySlot
+must receive the actual canonical bound; never estimate from a quota/name or use
+format! after effect. If broker presentation fails, native status must remain
+truthfully uncertain rather than infer completion from text. Ordinary broker
+behavior and audit ownership remain with their owners.
+
+All native effect methods beyond send/answer/hand are explicitly unsupported.
+Native-effect peer confirms no safe actor-view process producer exists yet; its
+held-file first slice is pending exact ROOT/audit registration approval. Input
+peer confirms process/write needs writeId, native signal only Interrupt and no
+invented EOF/resize. Epoch peer owns current generation/admission; no adapter
+counter/replay/retry/cache/tombstones. Peer receipts processed through own
+agents_get.state.queue because queued peer messages do not inject during long
+turns; this is read-only message retrieval, no queue/goals manipulation.
+
+No active build/probe/VM or background job. Other lanes/targets/caches, paused
+WinARM and review-held campaigns remain untouched. Caller/native strict fallback,
+actual forbidden-effect/replay/cleanup, full supplied signed-in HARNESS,
+credential/TTY/generation and cross-target proof remain OPEN. This checkpoint
+is not ready for a P8/G16/G24 completion claim or a main merge.

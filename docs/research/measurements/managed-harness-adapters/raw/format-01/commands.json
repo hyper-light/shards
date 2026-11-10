@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "/Users/adalundhe/.cargo/bin/rustfmt",
+    "--edition=2024",
+    "--check",
+    "crates/server/src/harness/claude.rs",
+    "crates/server/src/harness/codex.rs",
+    "crates/server/src/harness/mod.rs",
+    "crates/server/src/harness/tests.rs",
+    "crates/server/src/harness/wire.rs",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/fixture.rs"
+  ],
+  "exit": 1
+}

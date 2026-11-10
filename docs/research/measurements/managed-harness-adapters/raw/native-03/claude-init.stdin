@@ -1,0 +1,1 @@
+{"type":"control_request","request_id":"shards-local-initialize","request":{"subtype":"initialize","hooks":null}}

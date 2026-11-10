@@ -1,0 +1,40 @@
+[
+  {
+    "url": "https://api.github.com/repos/openai/codex/git/trees/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a?recursive=1",
+    "path": "sources/codex-tree.json",
+    "bytes": 2844047,
+    "sha256": "e4d09a83a472508e2ed22db04201fb8ca66215e1071f0f51636f7702270f015f"
+  },
+  {
+    "url": "https://api.github.com/repos/anthropics/claude-agent-sdk-python/git/trees/3cf3446b0fa6c97042e85b245bba07459f22f946?recursive=1",
+    "path": "sources/claude-sdk-tree.json",
+    "bytes": 47177,
+    "sha256": "f3251a0b24e62fd5aff00184acadd05f93f85fb8f00cd41747a876c58f791252"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/cli-reference.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://code.claude.com/docs/en/permissions.md",
+    "error": "HTTP Error 403: Forbidden"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/3cf3446b0fa6c97042e85b245bba07459f22f946/src/claude_agent_sdk/_internal/client.py",
+    "path": "sources/claude-sdk-client.py",
+    "bytes": 8585,
+    "sha256": "cbc59cdb774a28781245a0cb676543d1914e061657a1e99ec7574143f309948a"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/3cf3446b0fa6c97042e85b245bba07459f22f946/src/claude_agent_sdk/_internal/query.py",
+    "path": "sources/claude-sdk-query.py",
+    "bytes": 58306,
+    "sha256": "e7d9d31d070d55e1f6d94a6b4331ef22ccd8742282e0823e1564aa1c382c8f4c"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/3cf3446b0fa6c97042e85b245bba07459f22f946/src/claude_agent_sdk/types.py",
+    "path": "sources/claude-sdk-types.py",
+    "bytes": 107516,
+    "sha256": "ba555e6b99825b120877f945f80ac7f6a0e00994d70df8d40775b8914e9aa7fd"
+  }
+]

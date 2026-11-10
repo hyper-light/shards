@@ -1,0 +1,22 @@
+[
+  {
+    "argv": [
+      "/Users/adalundhe/.kiln-run/bin/gits",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit": 2
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.kiln-run/bin/gits",
+      "diff",
+      "--check",
+      "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "--",
+      "crates/server/src/harness"
+    ],
+    "exit": 0
+  }
+]

@@ -1,0 +1,661 @@
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:8:
+         return Err(Refusal::Method);
+     }
+     let control_id = text(message, "request_id")?;
+-    let request = object(message.get("request").ok_or(Refusal::Shape("request"))?, "request")?;
++    let request = object(
++        message.get("request").ok_or(Refusal::Shape("request"))?,
++        "request",
++    )?;
+     match text(request, "subtype")? {
+         "mcp_message" => {}
+         "can_use_tool" => return Err(Refusal::Fallback(Fallback::Approval)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:18:
+     if text(request, "server_name")? != "shards" {
+         return Err(Refusal::Namespace);
+     }
+-    let rpc = object(request.get("message").ok_or(Refusal::Shape("message"))?, "message")?;
++    let rpc = object(
++        request.get("message").ok_or(Refusal::Shape("message"))?,
++        "message",
++    )?;
+     let rpc_id = id(rpc, "id")?;
+     if text(rpc, "jsonrpc")? != "2.0" || text(rpc, "method")? != "tools/call" {
+         return Err(Refusal::Method);
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:50:
+     out.write_all(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"isError\":")?;
+-    out.write_all(if completion == Completion::Completed { b"false" } else { b"true" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"false"
++    } else {
++        b"true"
++    })?;
+     out.write_all(b"}}}}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/codex.rs:51:
+     out.write_all(b",\"result\":{\"contentItems\":[{\"type\":\"inputText\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"success\":")?;
+-    out.write_all(if completion == Completion::Completed { b"true" } else { b"false" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"true"
++    } else {
++        b"false"
++    })?;
+     out.write_all(b"}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:8:
+         return Err(Refusal::Method);
+     }
+     let control_id = text(message, "request_id")?;
+-    let request = object(message.get("request").ok_or(Refusal::Shape("request"))?, "request")?;
++    let request = object(
++        message.get("request").ok_or(Refusal::Shape("request"))?,
++        "request",
++    )?;
+     match text(request, "subtype")? {
+         "mcp_message" => {}
+         "can_use_tool" => return Err(Refusal::Fallback(Fallback::Approval)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:18:
+     if text(request, "server_name")? != "shards" {
+         return Err(Refusal::Namespace);
+     }
+-    let rpc = object(request.get("message").ok_or(Refusal::Shape("message"))?, "message")?;
++    let rpc = object(
++        request.get("message").ok_or(Refusal::Shape("message"))?,
++        "message",
++    )?;
+     let rpc_id = id(rpc, "id")?;
+     if text(rpc, "jsonrpc")? != "2.0" || text(rpc, "method")? != "tools/call" {
+         return Err(Refusal::Method);
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/claude.rs:50:
+     out.write_all(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"isError\":")?;
+-    out.write_all(if completion == Completion::Completed { b"false" } else { b"true" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"false"
++    } else {
++        b"true"
++    })?;
+     out.write_all(b"}}}}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/codex.rs:51:
+     out.write_all(b",\"result\":{\"contentItems\":[{\"type\":\"inputText\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"success\":")?;
+-    out.write_all(if completion == Completion::Completed { b"true" } else { b"false" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"true"
++    } else {
++        b"false"
++    })?;
+     out.write_all(b"}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/mod.rs:106:
+             "run" | "exec_command" | "shell" | "Bash" | "PowerShell" => {
+                 Err(Refusal::Fallback(Fallback::LocalExecution))
+             }
+-            "Read" | "Write" | "Edit" | "Glob" | "Grep" => {
+-                Err(Refusal::Fallback(Fallback::FileSystem))
+-            }
++            "Read" | "Write" | "Edit" | "Glob" | "Grep" => Err(Refusal::Fallback(Fallback::FileSystem)),
+             "WebFetch" | "WebSearch" => Err(Refusal::Fallback(Fallback::Network)),
+             _ => Err(Refusal::Fallback(Fallback::ExternalTool)),
+         }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:58:
+         ("mcp", Fallback::ExternalTool),
+         ("native_protocol", Fallback::ExternalTool),
+     ] {
+-        assert!(matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback));
+-        assert!(matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback));
++        assert!(
++            matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
++        assert!(
++            matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
+     }
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:66:
+ #[test]
+ fn hooks_approvals_and_output_notifications_never_become_effects() {
+     for (method, refusal) in [
+-        ("item/commandExecution/requestApproval", Refusal::Fallback(Fallback::Approval)),
+-        ("item/fileChange/requestApproval", Refusal::Fallback(Fallback::Approval)),
++        (
++            "item/commandExecution/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
++        (
++            "item/fileChange/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
+         ("process/start", Refusal::Fallback(Fallback::LocalExecution)),
+         ("fs/writeFile", Refusal::Fallback(Fallback::FileSystem)),
+         ("http/request", Refusal::Fallback(Fallback::Network)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:74:
+         ("item/started", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
++        let message =
++            json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
+         assert!(matches!(Protocol::Codex.receive(&message), Err(got) if got == refusal));
+         assert!(!refusal.kind().is_empty());
+         assert!(!refusal.detail().is_empty());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:83:
+         ("hook_callback", Refusal::Fallback(Fallback::Hook)),
+         ("future_method", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#).as_bytes()).unwrap();
++        let message = json::parse(
++            format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#)
++                .as_bytes(),
++        )
++        .unwrap();
+         assert!(matches!(Protocol::Claude.receive(&message), Err(got) if got == refusal));
+     }
+ }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:111:
+                 Protocol::Codex => {
+                     assert_eq!(response.get("id").and_then(Value::str), Some("request-1"));
+                     let result_body = response.get("result").unwrap();
+-                    assert_eq!(result_body.get("success"), Some(&Value::Bool(completion == Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("success"),
++                        Some(&Value::Bool(completion == Completion::Completed))
++                    );
+                     let item = result_body.get("contentItems").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("type").and_then(Value::str), Some("inputText"));
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:118:
+                 }
+                 Protocol::Claude => {
+-                    assert_eq!(response.get("type").and_then(Value::str), Some("control_response"));
++                    assert_eq!(
++                        response.get("type").and_then(Value::str),
++                        Some("control_response")
++                    );
+                     let control = response.get("response").unwrap();
+                     assert_eq!(control.get("request_id").and_then(Value::str), Some("control-1"));
+                     let rpc = control.get("response").unwrap().get("mcp_response").unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:124:
+                     assert_eq!(rpc.get("id"), Some(&Value::Number("-7".into())));
+                     let result_body = rpc.get("result").unwrap();
+-                    assert_eq!(result_body.get("isError"), Some(&Value::Bool(completion != Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("isError"),
++                        Some(&Value::Bool(completion != Completion::Completed))
++                    );
+                     let item = result_body.get("content").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+                 }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:135:
+ #[test]
+ fn malformed_requests_do_not_guess_missing_identifiers_or_arguments() {
+     for (protocol, message) in [
+-        (Protocol::Codex, r#"{"id":9223372036854775808,"method":"item/tool/call"}"#),
++        (
++            Protocol::Codex,
++            r#"{"id":9223372036854775808,"method":"item/tool/call"}"#,
++        ),
+         (Protocol::Codex, r#"{"id":1.5,"method":"item/tool/call"}"#),
+         (Protocol::Claude, r#"{"type":"control_request","request":{}}"#),
+-        (Protocol::Claude, r#"{"type":"assistant","request_id":"r","request":{}}"#),
++        (
++            Protocol::Claude,
++            r#"{"type":"assistant","request_id":"r","request":{}}"#,
++        ),
+     ] {
+         let message = json::parse(message.as_bytes()).unwrap();
+         assert!(protocol.receive(&message).is_err());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:145:
+     }
+-    assert!(matches!(Protocol::Codex.receive(&codex("send", "shards", "[]")), Err(Refusal::Shape("arguments"))));
++    assert!(matches!(
++        Protocol::Codex.receive(&codex("send", "shards", "[]")),
++        Err(Refusal::Shape("arguments"))
++    ));
+ }
+ 
+ #[test]
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:153:
+         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+             Err(io::ErrorKind::StorageFull.into())
+         }
+-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
++        fn flush(&mut self) -> io::Result<()> {
++            Ok(())
++        }
+     }
+     let message = codex("send", "shards", "{}");
+     let request = Protocol::Codex.receive(&message).unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:160:
+-    assert_eq!(request.respond(&mut Full, Completion::Completed, "actual-result").unwrap_err().kind(), io::ErrorKind::StorageFull);
++    assert_eq!(
++        request
++            .respond(&mut Full, Completion::Completed, "actual-result")
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/wire.rs:12:
+             0..=0x1f => b"",
+             _ => continue,
+         };
+-        out.write_all(value.as_bytes().get(start..at).ok_or(io::ErrorKind::InvalidData)?)?;
++        out.write_all(
++            value
++                .as_bytes()
++                .get(start..at)
++                .ok_or(io::ErrorKind::InvalidData)?,
++        )?;
+         if byte < 0x20 {
+             const HEX: &[u8] = b"0123456789abcdef";
+-            let high = HEX.get(usize::from(byte >> 4)).ok_or(io::ErrorKind::InvalidData)?;
+-            let low = HEX.get(usize::from(byte & 0xf)).ok_or(io::ErrorKind::InvalidData)?;
++            let high = HEX
++                .get(usize::from(byte >> 4))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let low = HEX
++                .get(usize::from(byte & 0xf))
++                .ok_or(io::ErrorKind::InvalidData)?;
+             out.write_all(&[b'\\', b'u', b'0', b'0', *high, *low])?;
+         } else {
+             out.write_all(escaped)?;
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:58:
+         ("mcp", Fallback::ExternalTool),
+         ("native_protocol", Fallback::ExternalTool),
+     ] {
+-        assert!(matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback));
+-        assert!(matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback));
++        assert!(
++            matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
++        assert!(
++            matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
+     }
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:66:
+ #[test]
+ fn hooks_approvals_and_output_notifications_never_become_effects() {
+     for (method, refusal) in [
+-        ("item/commandExecution/requestApproval", Refusal::Fallback(Fallback::Approval)),
+-        ("item/fileChange/requestApproval", Refusal::Fallback(Fallback::Approval)),
++        (
++            "item/commandExecution/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
++        (
++            "item/fileChange/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
+         ("process/start", Refusal::Fallback(Fallback::LocalExecution)),
+         ("fs/writeFile", Refusal::Fallback(Fallback::FileSystem)),
+         ("http/request", Refusal::Fallback(Fallback::Network)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:74:
+         ("item/started", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
++        let message =
++            json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
+         assert!(matches!(Protocol::Codex.receive(&message), Err(got) if got == refusal));
+         assert!(!refusal.kind().is_empty());
+         assert!(!refusal.detail().is_empty());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:83:
+         ("hook_callback", Refusal::Fallback(Fallback::Hook)),
+         ("future_method", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#).as_bytes()).unwrap();
++        let message = json::parse(
++            format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#)
++                .as_bytes(),
++        )
++        .unwrap();
+         assert!(matches!(Protocol::Claude.receive(&message), Err(got) if got == refusal));
+     }
+ }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:111:
+                 Protocol::Codex => {
+                     assert_eq!(response.get("id").and_then(Value::str), Some("request-1"));
+                     let result_body = response.get("result").unwrap();
+-                    assert_eq!(result_body.get("success"), Some(&Value::Bool(completion == Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("success"),
++                        Some(&Value::Bool(completion == Completion::Completed))
++                    );
+                     let item = result_body.get("contentItems").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("type").and_then(Value::str), Some("inputText"));
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:118:
+                 }
+                 Protocol::Claude => {
+-                    assert_eq!(response.get("type").and_then(Value::str), Some("control_response"));
++                    assert_eq!(
++                        response.get("type").and_then(Value::str),
++                        Some("control_response")
++                    );
+                     let control = response.get("response").unwrap();
+                     assert_eq!(control.get("request_id").and_then(Value::str), Some("control-1"));
+                     let rpc = control.get("response").unwrap().get("mcp_response").unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:124:
+                     assert_eq!(rpc.get("id"), Some(&Value::Number("-7".into())));
+                     let result_body = rpc.get("result").unwrap();
+-                    assert_eq!(result_body.get("isError"), Some(&Value::Bool(completion != Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("isError"),
++                        Some(&Value::Bool(completion != Completion::Completed))
++                    );
+                     let item = result_body.get("content").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+                 }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:135:
+ #[test]
+ fn malformed_requests_do_not_guess_missing_identifiers_or_arguments() {
+     for (protocol, message) in [
+-        (Protocol::Codex, r#"{"id":9223372036854775808,"method":"item/tool/call"}"#),
++        (
++            Protocol::Codex,
++            r#"{"id":9223372036854775808,"method":"item/tool/call"}"#,
++        ),
+         (Protocol::Codex, r#"{"id":1.5,"method":"item/tool/call"}"#),
+         (Protocol::Claude, r#"{"type":"control_request","request":{}}"#),
+-        (Protocol::Claude, r#"{"type":"assistant","request_id":"r","request":{}}"#),
++        (
++            Protocol::Claude,
++            r#"{"type":"assistant","request_id":"r","request":{}}"#,
++        ),
+     ] {
+         let message = json::parse(message.as_bytes()).unwrap();
+         assert!(protocol.receive(&message).is_err());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:145:
+     }
+-    assert!(matches!(Protocol::Codex.receive(&codex("send", "shards", "[]")), Err(Refusal::Shape("arguments"))));
++    assert!(matches!(
++        Protocol::Codex.receive(&codex("send", "shards", "[]")),
++        Err(Refusal::Shape("arguments"))
++    ));
+ }
+ 
+ #[test]
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:153:
+         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+             Err(io::ErrorKind::StorageFull.into())
+         }
+-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
++        fn flush(&mut self) -> io::Result<()> {
++            Ok(())
++        }
+     }
+     let message = codex("send", "shards", "{}");
+     let request = Protocol::Codex.receive(&message).unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/tests.rs:160:
+-    assert_eq!(request.respond(&mut Full, Completion::Completed, "actual-result").unwrap_err().kind(), io::ErrorKind::StorageFull);
++    assert_eq!(
++        request
++            .respond(&mut Full, Completion::Completed, "actual-result")
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/crates/server/src/harness/wire.rs:12:
+             0..=0x1f => b"",
+             _ => continue,
+         };
+-        out.write_all(value.as_bytes().get(start..at).ok_or(io::ErrorKind::InvalidData)?)?;
++        out.write_all(
++            value
++                .as_bytes()
++                .get(start..at)
++                .ok_or(io::ErrorKind::InvalidData)?,
++        )?;
+         if byte < 0x20 {
+             const HEX: &[u8] = b"0123456789abcdef";
+-            let high = HEX.get(usize::from(byte >> 4)).ok_or(io::ErrorKind::InvalidData)?;
+-            let low = HEX.get(usize::from(byte & 0xf)).ok_or(io::ErrorKind::InvalidData)?;
++            let high = HEX
++                .get(usize::from(byte >> 4))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let low = HEX
++                .get(usize::from(byte & 0xf))
++                .ok_or(io::ErrorKind::InvalidData)?;
+             out.write_all(&[b'\\', b'u', b'0', b'0', *high, *low])?;
+         } else {
+             out.write_all(escaped)?;
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/claude.rs:8:
+         return Err(Refusal::Method);
+     }
+     let control_id = text(message, "request_id")?;
+-    let request = object(message.get("request").ok_or(Refusal::Shape("request"))?, "request")?;
++    let request = object(
++        message.get("request").ok_or(Refusal::Shape("request"))?,
++        "request",
++    )?;
+     match text(request, "subtype")? {
+         "mcp_message" => {}
+         "can_use_tool" => return Err(Refusal::Fallback(Fallback::Approval)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/claude.rs:18:
+     if text(request, "server_name")? != "shards" {
+         return Err(Refusal::Namespace);
+     }
+-    let rpc = object(request.get("message").ok_or(Refusal::Shape("message"))?, "message")?;
++    let rpc = object(
++        request.get("message").ok_or(Refusal::Shape("message"))?,
++        "message",
++    )?;
+     let rpc_id = id(rpc, "id")?;
+     if text(rpc, "jsonrpc")? != "2.0" || text(rpc, "method")? != "tools/call" {
+         return Err(Refusal::Method);
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/claude.rs:50:
+     out.write_all(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"isError\":")?;
+-    out.write_all(if completion == Completion::Completed { b"false" } else { b"true" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"false"
++    } else {
++        b"true"
++    })?;
+     out.write_all(b"}}}}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/codex.rs:51:
+     out.write_all(b",\"result\":{\"contentItems\":[{\"type\":\"inputText\",\"text\":")?;
+     wire::quoted(out, result)?;
+     out.write_all(b"}],\"success\":")?;
+-    out.write_all(if completion == Completion::Completed { b"true" } else { b"false" })?;
++    out.write_all(if completion == Completion::Completed {
++        b"true"
++    } else {
++        b"false"
++    })?;
+     out.write_all(b"}}")
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/mod.rs:106:
+             "run" | "exec_command" | "shell" | "Bash" | "PowerShell" => {
+                 Err(Refusal::Fallback(Fallback::LocalExecution))
+             }
+-            "Read" | "Write" | "Edit" | "Glob" | "Grep" => {
+-                Err(Refusal::Fallback(Fallback::FileSystem))
+-            }
++            "Read" | "Write" | "Edit" | "Glob" | "Grep" => Err(Refusal::Fallback(Fallback::FileSystem)),
+             "WebFetch" | "WebSearch" => Err(Refusal::Fallback(Fallback::Network)),
+             _ => Err(Refusal::Fallback(Fallback::ExternalTool)),
+         }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:58:
+         ("mcp", Fallback::ExternalTool),
+         ("native_protocol", Fallback::ExternalTool),
+     ] {
+-        assert!(matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback));
+-        assert!(matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback));
++        assert!(
++            matches!(Protocol::Codex.receive(&codex(tool, "shards", "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
++        assert!(
++            matches!(Protocol::Claude.receive(&claude(tool, "{}")), Err(Refusal::Fallback(got)) if got == fallback)
++        );
+     }
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:66:
+ #[test]
+ fn hooks_approvals_and_output_notifications_never_become_effects() {
+     for (method, refusal) in [
+-        ("item/commandExecution/requestApproval", Refusal::Fallback(Fallback::Approval)),
+-        ("item/fileChange/requestApproval", Refusal::Fallback(Fallback::Approval)),
++        (
++            "item/commandExecution/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
++        (
++            "item/fileChange/requestApproval",
++            Refusal::Fallback(Fallback::Approval),
++        ),
+         ("process/start", Refusal::Fallback(Fallback::LocalExecution)),
+         ("fs/writeFile", Refusal::Fallback(Fallback::FileSystem)),
+         ("http/request", Refusal::Fallback(Fallback::Network)),
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:74:
+         ("item/started", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
++        let message =
++            json::parse(format!(r#"{{"id":1,"method":"{method}","params":{{}}}}"#).as_bytes()).unwrap();
+         assert!(matches!(Protocol::Codex.receive(&message), Err(got) if got == refusal));
+         assert!(!refusal.kind().is_empty());
+         assert!(!refusal.detail().is_empty());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:83:
+         ("hook_callback", Refusal::Fallback(Fallback::Hook)),
+         ("future_method", Refusal::Method),
+     ] {
+-        let message = json::parse(format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#).as_bytes()).unwrap();
++        let message = json::parse(
++            format!(r#"{{"type":"control_request","request_id":"r","request":{{"subtype":"{subtype}"}}}}"#)
++                .as_bytes(),
++        )
++        .unwrap();
+         assert!(matches!(Protocol::Claude.receive(&message), Err(got) if got == refusal));
+     }
+ }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:111:
+                 Protocol::Codex => {
+                     assert_eq!(response.get("id").and_then(Value::str), Some("request-1"));
+                     let result_body = response.get("result").unwrap();
+-                    assert_eq!(result_body.get("success"), Some(&Value::Bool(completion == Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("success"),
++                        Some(&Value::Bool(completion == Completion::Completed))
++                    );
+                     let item = result_body.get("contentItems").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("type").and_then(Value::str), Some("inputText"));
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:118:
+                 }
+                 Protocol::Claude => {
+-                    assert_eq!(response.get("type").and_then(Value::str), Some("control_response"));
++                    assert_eq!(
++                        response.get("type").and_then(Value::str),
++                        Some("control_response")
++                    );
+                     let control = response.get("response").unwrap();
+                     assert_eq!(control.get("request_id").and_then(Value::str), Some("control-1"));
+                     let rpc = control.get("response").unwrap().get("mcp_response").unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:124:
+                     assert_eq!(rpc.get("id"), Some(&Value::Number("-7".into())));
+                     let result_body = rpc.get("result").unwrap();
+-                    assert_eq!(result_body.get("isError"), Some(&Value::Bool(completion != Completion::Completed)));
++                    assert_eq!(
++                        result_body.get("isError"),
++                        Some(&Value::Bool(completion != Completion::Completed))
++                    );
+                     let item = result_body.get("content").unwrap().array().first().unwrap();
+                     assert_eq!(item.get("text").and_then(Value::str), Some(result));
+                 }
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:135:
+ #[test]
+ fn malformed_requests_do_not_guess_missing_identifiers_or_arguments() {
+     for (protocol, message) in [
+-        (Protocol::Codex, r#"{"id":9223372036854775808,"method":"item/tool/call"}"#),
++        (
++            Protocol::Codex,
++            r#"{"id":9223372036854775808,"method":"item/tool/call"}"#,
++        ),
+         (Protocol::Codex, r#"{"id":1.5,"method":"item/tool/call"}"#),
+         (Protocol::Claude, r#"{"type":"control_request","request":{}}"#),
+-        (Protocol::Claude, r#"{"type":"assistant","request_id":"r","request":{}}"#),
++        (
++            Protocol::Claude,
++            r#"{"type":"assistant","request_id":"r","request":{}}"#,
++        ),
+     ] {
+         let message = json::parse(message.as_bytes()).unwrap();
+         assert!(protocol.receive(&message).is_err());
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:145:
+     }
+-    assert!(matches!(Protocol::Codex.receive(&codex("send", "shards", "[]")), Err(Refusal::Shape("arguments"))));
++    assert!(matches!(
++        Protocol::Codex.receive(&codex("send", "shards", "[]")),
++        Err(Refusal::Shape("arguments"))
++    ));
+ }
+ 
+ #[test]
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:153:
+         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+             Err(io::ErrorKind::StorageFull.into())
+         }
+-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
++        fn flush(&mut self) -> io::Result<()> {
++            Ok(())
++        }
+     }
+     let message = codex("send", "shards", "{}");
+     let request = Protocol::Codex.receive(&message).unwrap();
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/tests.rs:160:
+-    assert_eq!(request.respond(&mut Full, Completion::Completed, "actual-result").unwrap_err().kind(), io::ErrorKind::StorageFull);
++    assert_eq!(
++        request
++            .respond(&mut Full, Completion::Completed, "actual-result")
++            .unwrap_err()
++            .kind(),
++        io::ErrorKind::StorageFull
++    );
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/../../../../crates/server/src/harness/wire.rs:12:
+             0..=0x1f => b"",
+             _ => continue,
+         };
+-        out.write_all(value.as_bytes().get(start..at).ok_or(io::ErrorKind::InvalidData)?)?;
++        out.write_all(
++            value
++                .as_bytes()
++                .get(start..at)
++                .ok_or(io::ErrorKind::InvalidData)?,
++        )?;
+         if byte < 0x20 {
+             const HEX: &[u8] = b"0123456789abcdef";
+-            let high = HEX.get(usize::from(byte >> 4)).ok_or(io::ErrorKind::InvalidData)?;
+-            let low = HEX.get(usize::from(byte & 0xf)).ok_or(io::ErrorKind::InvalidData)?;
++            let high = HEX
++                .get(usize::from(byte >> 4))
++                .ok_or(io::ErrorKind::InvalidData)?;
++            let low = HEX
++                .get(usize::from(byte & 0xf))
++                .ok_or(io::ErrorKind::InvalidData)?;
+             out.write_all(&[b'\\', b'u', b'0', b'0', *high, *low])?;
+         } else {
+             out.write_all(escaped)?;

@@ -1,0 +1,32 @@
+[
+  {
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "generate-json-schema",
+      "--experimental",
+      "--out",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/native-02/codex-schema"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.nvm/versions/node/v24.14.1/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+      "app-server",
+      "--listen",
+      "stdio://",
+      "-c",
+      "cli_auth_credentials_store=\"file\"",
+      "-c",
+      "analytics.enabled=false",
+      "-c",
+      "feedback.enabled=false"
+    ],
+    "exit": 0,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "provider_request_sent": false,
+    "network": "sandbox denied"
+  }
+]
