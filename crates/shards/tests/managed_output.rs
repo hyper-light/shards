@@ -510,6 +510,11 @@ impl Fixture {
 
     fn observe(&mut self, member: u32, channel: Channel, offered: Option<Scope>, outsider: bool) -> usize {
         let metadata = self.metadata.as_ref().unwrap();
+        let _ = writeln!(
+            std::io::stdout(),
+            "managed-owner subscribe member={member} channel={} outsider={outsider}",
+            channel as u8
+        );
         let stranger = outsider.then(|| Identity::generate().unwrap());
         let observer = Observer::start(
             stranger.as_ref().unwrap_or(&self.owner),
@@ -522,6 +527,7 @@ impl Fixture {
     }
 
     fn main_progress(&self) {
+        let _ = writeln!(std::io::stdout(), "managed-owner main exec");
         let progress = self.command(&[
             "exec",
             "owner-output",
@@ -547,9 +553,16 @@ impl Fixture {
         let expected = payload(label, channel);
         self.observers[observer].exact(&expected);
         self.observers[observer].ack_and_finish(expected.len());
+        let _ = writeln!(
+            std::io::stdout(),
+            "managed-owner consumed member={member} channel={} bytes={}",
+            channel as u8,
+            expected.len()
+        );
     }
 
     fn shutdown(&mut self) -> Result<(), String> {
+        let _ = writeln!(std::io::stdout(), "managed-owner owner stop");
         let stopped = self.command(&["stop", "daemon"]);
         let mut errors = Vec::new();
         if stopped.status != Some(0) {
@@ -640,6 +653,7 @@ fn supplied_owner_output_keeps_bytes_ack_cancel_and_neighbor_progress_independen
             .send(Command::Handler(Ask::Cancel))
             .unwrap();
         fixture.observers[held].join().unwrap();
+        let _ = writeln!(std::io::stdout(), "managed-owner local cancellation complete");
         fixture.main_progress();
         // The sibling receives its first output credit only after observer loss.
         fixture.consume(2, "harness", Channel::Stdout);
