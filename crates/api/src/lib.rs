@@ -38,6 +38,10 @@ mod taken;
 #[cfg(test)]
 mod while_runs;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
+mod proc_allocation;
+
 pub use client::Shards;
 
 /// A guest to boot.

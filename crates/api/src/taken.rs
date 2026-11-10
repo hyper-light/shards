@@ -59,8 +59,11 @@ impl Held {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::io;
+    use std::ffi::OsStr;
+    use std::io::{self, Read as _};
     use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
+    use std::path::Path;
 
     #[cfg(test)]
     mod tests {
@@ -68,18 +71,93 @@ mod linux {
             env!("CARGO_MANIFEST_DIR"),
             "/../../docs/research/measurements/managed-proc-main/repro.rs"
         ));
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/research/measurements/managed-proc-main/reader-tests.rs"
+        ));
     }
 
     pub(super) fn started(pid: u32) -> io::Result<u64> {
-        let at = format!("/proc/{pid}/stat");
-        let stat = std::fs::read_to_string(&at)?;
+        let mut path = [0; STAT_PATH_BYTES];
+        let stat = read_stat(std::fs::File::open(stat_path(pid, &mut path)?)?)?;
+        start_field(&stat)
+    }
+
+    const PREFIX: &[u8] = b"/proc/";
+    const SUFFIX: &[u8] = b"/stat";
+    // procfs uses decimal u32 PID input; zero also needs one digit. No pathname
+    // beyond these literals and u32::MAX's decimal width can be produced here.
+    const STAT_PATH_BYTES: usize = PREFIX.len() + (u32::MAX.ilog10() as usize + 1) + SUFFIX.len();
+
+    fn stat_path(mut pid: u32, bytes: &mut [u8; STAT_PATH_BYTES]) -> io::Result<&Path> {
+        let mut at = bytes.len();
+        for byte in SUFFIX.iter().rev() {
+            at = at.checked_sub(1).ok_or(io::ErrorKind::InvalidData)?;
+            *bytes.get_mut(at).ok_or(io::ErrorKind::InvalidData)? = *byte;
+        }
+        loop {
+            let digit = u8::try_from(pid % 10).map_err(|_| io::ErrorKind::InvalidData)?;
+            at = at.checked_sub(1).ok_or(io::ErrorKind::InvalidData)?;
+            *bytes.get_mut(at).ok_or(io::ErrorKind::InvalidData)? =
+                b'0'.checked_add(digit).ok_or(io::ErrorKind::InvalidData)?;
+            pid /= 10;
+            if pid == 0 {
+                break;
+            }
+        }
+        for byte in PREFIX.iter().rev() {
+            at = at.checked_sub(1).ok_or(io::ErrorKind::InvalidData)?;
+            *bytes.get_mut(at).ok_or(io::ErrorKind::InvalidData)? = *byte;
+        }
+        Ok(Path::new(OsStr::from_bytes(
+            bytes.get(at..).ok_or(io::ErrorKind::InvalidData)?,
+        )))
+    }
+
+    fn read_stat(mut file: std::fs::File) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        loop {
+            // One further byte to observe data/EOF; growth is fallible even for
+            // procfs's zero metadata size, unlike std's initial small probe.
+            bytes
+                .try_reserve(1)
+                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            let used = bytes.len();
+            // Only initialize already-owned capacity; resize cannot grow here.
+            bytes.resize(bytes.capacity(), 0);
+            let count = loop {
+                match file.read(bytes.get_mut(used..).ok_or(io::ErrorKind::InvalidData)?) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    result => break result?,
+                }
+            };
+            let filled = used
+                .checked_add(count)
+                .filter(|filled| *filled <= bytes.len())
+                .ok_or(io::ErrorKind::InvalidData)?;
+            bytes.truncate(filled);
+            if count == 0 {
+                return Ok(bytes);
+            }
+        }
+    }
+
+    fn start_field(stat: &[u8]) -> io::Result<u64> {
         // Its command, field 2, is in parentheses and may hold any byte but NUL, a ')' too:
         // fields 3 on follow the last ')', starttime the 20th of them (field 22).
-        stat.rfind(')')
+        // Only that decimal field needs UTF-8 validation; comm is raw kernel bytes.
+        stat.iter()
+            .rposition(|byte| *byte == b')')
             .and_then(|i| stat.get(i.saturating_add(1)..))
-            .and_then(|fields| fields.split_ascii_whitespace().nth(19))
+            .and_then(|fields| {
+                fields
+                    .split(u8::is_ascii_whitespace)
+                    .filter(|field| !field.is_empty())
+                    .nth(19)
+            })
+            .and_then(|field| std::str::from_utf8(field).ok())
             .and_then(|f| f.parse().ok())
-            .ok_or_else(|| io::Error::other(format!("{at}: no starttime in {stat:?}")))
+            .ok_or_else(|| io::ErrorKind::InvalidData.into())
     }
 
     /// A process held by a pidfd (pidfd_open(2), Linux 5.3), readable once it has exited.
