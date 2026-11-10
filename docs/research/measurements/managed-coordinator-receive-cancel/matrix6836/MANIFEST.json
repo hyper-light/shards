@@ -1,0 +1,37 @@
+[
+  {
+    "path": "checkout.log",
+    "bytes": 165,
+    "sha256": "be4035f5ec9424c93a6647f3ea94df0be9f7b3edc3ec0bd9a97954f4a44c225d"
+  },
+  {
+    "path": "command.txt",
+    "bytes": 121,
+    "sha256": "c54ab20b0e31ea697485438691ca9a264b24134175a5cf80c09b18048d694e11"
+  },
+  {
+    "path": "fetch.log",
+    "bytes": 166,
+    "sha256": "09fd205b39566924c53bfa1642cf69b439e3fe7ac2d1f997c61f372c1ed2be34"
+  },
+  {
+    "path": "lint.exit",
+    "bytes": 2,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+    "path": "lint.log",
+    "bytes": 807,
+    "sha256": "3106d5072094d71b17f7d781155194e4d1b56fa67c8e6d9affd326078883d613"
+  },
+  {
+    "path": "preflight-metadata.json",
+    "bytes": 489,
+    "sha256": "3513f490ef6391a7a86c0b6db90bbdc5b44f433b91bf9e128478a88caf44d3c7"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "84f18584793382f7240374cbd00e292094379d9f14319099b6ed24ab0fc290c4"
+  }
+]

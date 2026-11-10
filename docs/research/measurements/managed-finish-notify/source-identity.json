@@ -1,0 +1,13 @@
+{
+  "base_revision": "096c9c7be1752a5eaf99eda2c7eb4723c2a8f6db",
+  "policy_files": "f5cec365",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "source_sha256": "5782d2f9d9c83cf2db6d4d1baf3152cd1f3daf5aef9856ebce788bdcbf098bab",
+  "evidence_sha256": {
+    "README.md": "c6df7d824bb87d632e0dc7570132a54e00ce9bbdc6d2db1756d60a4743939b8d",
+    "light-result.json": "aae3a0f43ca96f853bc5584f3d0e476c1914e080267dec0d1926249b7fa9ba16"
+  },
+  "production_scope": "Control::finish only; native cfg(test) additions",
+  "unrun": "ROOT original workload/mutations/combined matrix/hardware/profiles; e1cb publication remains conditional"
+}

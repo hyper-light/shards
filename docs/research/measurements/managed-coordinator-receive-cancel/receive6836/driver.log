@@ -1,0 +1,10 @@
+scripted connected destination-only 101 raw retained
+scripted connected fixed-original-peer 0 raw retained
+scripted unconnected destination-only 101 raw retained
+scripted unconnected fixed-original-peer 0 raw retained
+forward connected destination-only 101 raw retained
+forward connected fixed-original-peer 0 raw retained
+forward unconnected destination-only 101 raw retained
+forward unconnected fixed-original-peer 0 raw retained
+cancel connected fixed-original-peer 0 raw retained
+cancel unconnected fixed-original-peer 0 raw retained
