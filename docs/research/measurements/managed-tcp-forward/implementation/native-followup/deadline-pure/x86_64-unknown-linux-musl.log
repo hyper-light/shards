@@ -1,0 +1,16 @@
+
+running 11 tests
+test managed_network::tests::a_zero_deadline_does_not_attempt_io ... ok
+test managed_network::tests::an_unrepresentable_deadline_is_refused ... ok
+test managed_network::tests::borrowed_receive_view_preserves_reported_extent_and_metadata_error ... ok
+test managed_network::tests::cancellation_readiness_failures_never_admit_an_operation_or_mask_as_cancel ... ok
+test managed_network::tests::config_evidence_does_not_treat_missing_symbols_as_enabled ... ok
+test managed_network::tests::hex_is_exact_and_rejects_malformed_inputs ... ok
+test managed_network::tests::interception_commands_keep_explicit_ip_families ... ok
+test managed_network::tests::interrupted_operation_retries_under_the_same_original_deadline ... ok
+test managed_network::tests::original_expiry_precedes_cancel_validation_and_invalid_cancel_stops_before_io ... ok
+test managed_network::tests::probe_commands_are_explicit ... ok
+test managed_network::tests::udp_interception_parser_has_explicit_origins ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 27 filtered out; finished in 0.00s
+

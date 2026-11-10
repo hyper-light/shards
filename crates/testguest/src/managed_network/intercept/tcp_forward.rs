@@ -351,7 +351,12 @@ impl Endpoint {
         self.extra = None;
     }
 
-    fn send(&mut self, stream: &mut TcpStream, mut bytes: &[u8], deadline: &Deadline) -> io::Result<()> {
+    fn send(
+        &mut self,
+        stream: &mut (impl Write + AsRawFd),
+        mut bytes: &[u8],
+        deadline: &Deadline,
+    ) -> io::Result<()> {
         while !bytes.is_empty() {
             let n = deadline.io(stream.as_raw_fd(), libc::POLLOUT, || stream.write(bytes))?;
             if n == 0 {
@@ -398,7 +403,7 @@ impl Endpoint {
         Ok(())
     }
 
-    fn eof(&mut self, stream: &mut TcpStream, deadline: &Deadline) -> io::Result<()> {
+    fn eof(&mut self, stream: &mut (impl Read + AsRawFd), deadline: &Deadline) -> io::Result<()> {
         let mut extra = [0u8; 1];
         let n = deadline.io(stream.as_raw_fd(), libc::POLLIN, || stream.read(&mut extra))?;
         if n != 0 {
@@ -409,10 +414,35 @@ impl Endpoint {
         Ok(())
     }
 
-    fn close_write(&mut self, stream: &TcpStream) -> io::Result<()> {
-        stream.shutdown(Shutdown::Write)?;
+    fn close_write(&mut self, stream: &impl AsRawFd) -> io::Result<()> {
+        // SAFETY: the caller retains this owned native stream for the call.
+        count(unsafe { libc::shutdown(stream.as_raw_fd(), libc::SHUT_WR) } as isize)?;
         self.write_end = End::Closed;
         Ok(())
+    }
+
+    fn receive_to_end(&mut self, stream: &mut (impl Read + AsRawFd), deadline: &Deadline) -> io::Result<()> {
+        loop {
+            if self.read == self.bytes.len() {
+                return self.eof(stream, deadline);
+            }
+            let bytes = self
+                .bytes
+                .get_mut(self.read..)
+                .ok_or_else(|| invalid("endpoint receive envelope"))?;
+            let n = deadline.io(stream.as_raw_fd(), libc::POLLIN, || stream.read(bytes))?;
+            if n == 0 {
+                self.read_end = End::Closed;
+                return Ok(());
+            }
+            if n > bytes.len() {
+                return Err(invalid("endpoint receive count exceeds buffer"));
+            }
+            self.read = self
+                .read
+                .checked_add(n)
+                .ok_or_else(|| invalid("endpoint receive overflow"))?;
+        }
     }
 
     fn record(&self, role: &str, ordinal: usize, tuple: Tuple, result: &io::Result<()>) -> io::Result<()> {
@@ -572,13 +602,14 @@ fn progress_record(out: &mut impl Write, progress: &Progress) -> io::Result<()> 
     }
     write!(
         out,
-        ",\"read\":{},\"written\":{},\"pending\":{},\"extra_consumed\":{},\"partial_writes\":{},\"would_block\":{}}}",
+        ",\"read\":{},\"written\":{},\"pending\":{},\"extra_consumed\":{},\"partial_writes\":{},\"would_block\":{},\"write_would_block\":{}}}",
         progress.read,
         progress.written,
         progress.pending,
         progress.extra_consumed,
         progress.partial_writes,
-        progress.would_block
+        progress.would_block,
+        progress.write_would_block
     )
 }
 
@@ -824,13 +855,298 @@ fn run_owned(input: Inputs) -> io::Result<()> {
     out.flush()
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EngineHalf {
+    ClientFinFirst,
+    HostFinFirst,
+}
+
+#[derive(Debug)]
+pub(in crate::managed_network) struct EngineInputs {
+    half: EngineHalf,
+    within: Duration,
+    path: Vec<u8>,
+    maximum: usize,
+    request: Vec<u8>,
+    suffix: Vec<u8>,
+    late: Vec<u8>,
+}
+
+impl EngineInputs {
+    pub(in crate::managed_network) fn parse(words: &[&str]) -> io::Result<Self> {
+        let [
+            "engine-halfclose",
+            half,
+            millis,
+            path,
+            maximum,
+            request,
+            suffix,
+            late,
+        ] = words
+        else {
+            return Err(invalid(
+                "engine half-close expects mode/time/Unix-path/response-cap/request/suffix/late hex",
+            ));
+        };
+        let mut name = Vec::new();
+        name.try_reserve_exact(path.len()).map_err(io::Error::other)?;
+        name.extend_from_slice(path.as_bytes());
+        let input = Self {
+            half: match *half {
+                "client-fin-first" => EngineHalf::ClientFinFirst,
+                "host-fin-first" => EngineHalf::HostFinFirst,
+                _ => return Err(invalid("unknown engine half-close order")),
+            },
+            within: Duration::from_millis(
+                millis
+                    .parse()
+                    .map_err(|_| invalid("engine deadline is unsigned"))?,
+            ),
+            path: name,
+            maximum: maximum
+                .parse()
+                .map_err(|_| invalid("engine response cap is unsigned"))?,
+            request: unhex(request)?,
+            suffix: unhex(suffix)?,
+            late: unhex(late)?,
+        };
+        if input.maximum == 0
+            || input.request.is_empty()
+            || input.suffix.is_empty()
+            || input.path.is_empty()
+            || input.path.contains(&0)
+            || (input.half == EngineHalf::HostFinFirst && input.late.is_empty())
+            || (input.half == EngineHalf::ClientFinFirst && !input.late.is_empty())
+        {
+            return Err(invalid(
+                "engine half-close needs explicit nonempty finite witnesses",
+            ));
+        }
+        Ok(input)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EnginePhase {
+    Prepared,
+    Connecting,
+    Connected,
+    RequestSent,
+    ClientFin,
+    ResponseEof,
+}
+
+#[derive(Debug)]
+enum LateWrite {
+    NotAttempted,
+    Accepted(usize),
+    Failed(io::ErrorKind, Option<i32>),
+}
+
+fn unix_connect(
+    path: &[u8],
+    deadline: &Deadline,
+    phase: &mut EnginePhase,
+) -> io::Result<std::os::unix::net::UnixStream> {
+    // SAFETY: a fresh owned nonblocking native Unix socket.
+    let fd = unsafe {
+        libc::socket(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+            0,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful socket returned sole ownership of fd.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let stream = std::os::unix::net::UnixStream::from(fd);
+    // SAFETY: all-zero sockaddr_un is a valid initialized address container.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as _;
+    if path.len() >= address.sun_path.len() {
+        return Err(invalid("engine Unix path exceeds native envelope"));
+    }
+    for (out, byte) in address.sun_path.iter_mut().zip(path) {
+        *out = *byte as libc::c_char;
+    }
+    let size = std::mem::offset_of!(libc::sockaddr_un, sun_path)
+        .checked_add(path.len())
+        .and_then(|n| n.checked_add(1))
+        .ok_or_else(|| invalid("engine sockaddr overflow"))?;
+    let size = libc::socklen_t::try_from(size).map_err(|_| invalid("engine sockaddr size overflow"))?;
+    *phase = EnginePhase::Connecting;
+    let result = deadline.io(stream.as_raw_fd(), libc::POLLOUT, || {
+        // SAFETY: initialized pathname address, checked native size; one actual
+        // connect attempt. Native EINTR/EAGAIN are retained, never replayed.
+        Ok(count(
+            unsafe { libc::connect(stream.as_raw_fd(), (&raw const address).cast(), size) } as isize,
+        ))
+    })?;
+    match result {
+        Ok(_) => {}
+        Err(error) if error.raw_os_error() == Some(libc::EINPROGRESS) => {
+            shared::wait(
+                &Control::Until(deadline),
+                -1,
+                0,
+                stream.as_raw_fd(),
+                libc::POLLOUT,
+            )
+            .map_err(|fault| match fault {
+                Fault::Expired => io::ErrorKind::TimedOut.into(),
+                Fault::Cancelled => io::ErrorKind::ConnectionAborted.into(),
+                Fault::Control(kind) => kind.into(),
+                Fault::Native {
+                    errno: Some(errno), ..
+                } => io::Error::from_raw_os_error(errno),
+                Fault::Native {
+                    kind, errno: None, ..
+                } => kind.into(),
+                _ => io::ErrorKind::Other.into(),
+            })?;
+            if let Some(error) = stream.take_error()? {
+                return Err(error);
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    *phase = EnginePhase::Connected;
+    Ok(stream)
+}
+
+pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::Result<()> {
+    let deadline = Deadline::new(input.within)?;
+    let before = descriptor_count()?;
+    let mut endpoint = Endpoint::reserve(input.maximum)?;
+    let mut worker = Worker::spawn(&deadline, move |deadline| {
+        let mut phase = EnginePhase::Prepared;
+        let mut late = LateWrite::NotAttempted;
+        let result = (|| {
+            let mut stream = unix_connect(&input.path, &deadline, &mut phase)?;
+            endpoint.send(&mut stream, &input.request, &deadline)?;
+            phase = EnginePhase::RequestSent;
+            if input.half == EngineHalf::ClientFinFirst {
+                endpoint.close_write(&stream)?;
+                phase = EnginePhase::ClientFin;
+            }
+            endpoint.receive_to_end(&mut stream, &deadline)?;
+            phase = EnginePhase::ResponseEof;
+            if !endpoint
+                .bytes
+                .get(..endpoint.read)
+                .is_some_and(|bytes| bytes.ends_with(&input.suffix))
+            {
+                return Err(invalid("actual engine response suffix differs"));
+            }
+            if input.half == EngineHalf::HostFinFirst {
+                let sent = deadline.io(
+                    stream.as_raw_fd(),
+                    libc::POLLOUT,
+                    || Ok(stream.write(&input.late)),
+                )?;
+                late = match sent {
+                    Ok(n) => LateWrite::Accepted(n),
+                    Err(error) => LateWrite::Failed(error.kind(), error.raw_os_error()),
+                };
+            }
+            Ok(())
+        })();
+        (input.half, phase, late, endpoint, result)
+    })?;
+    let (half, phase, late, endpoint, result) = worker.join()?;
+    drop(worker);
+    let after = descriptor_count()?;
+    let mut out = io::stdout().lock();
+    write!(
+        out,
+        "managed-tcp-forward {{\"type\":\"EngineHalfClose\",\"order\":\"{half:?}\",\"phase\":\"{phase:?}\",\"read\":{},\"written\":{},\"read_end\":\"{:?}\",\"write_end\":\"{:?}\",\"ok\":{},\"read_hex\":\"",
+        endpoint.read,
+        endpoint.written,
+        endpoint.read_end,
+        endpoint.write_end,
+        result.is_ok()
+    )?;
+    for byte in endpoint
+        .bytes
+        .get(..endpoint.read)
+        .ok_or_else(|| invalid("engine retained prefix envelope"))?
+    {
+        write!(out, "{byte:02x}")?;
+    }
+    write!(out, "\",\"late_write\":")?;
+    match late {
+        LateWrite::NotAttempted => write!(out, "{{\"kind\":\"NotAttempted\"}}")?,
+        LateWrite::Accepted(n) => write!(out, "{{\"kind\":\"Accepted\",\"bytes\":{n}}}")?,
+        LateWrite::Failed(kind, errno) => {
+            write!(
+                out,
+                "{{\"kind\":\"Failed\",\"error_kind\":\"{kind:?}\",\"errno\":"
+            )?;
+            match errno {
+                Some(errno) => write!(out, "{errno}")?,
+                None => write!(out, "null")?,
+            }
+            write!(out, "}}")?;
+        }
+    }
+    write!(
+        out,
+        ",\"error_kind\":\"{:?}\",\"fd_before\":{before},\"fd_after\":{after},\"worker_joined\":true,\"kernel_return\":\"Unknown\"}}\n",
+        result.as_ref().err().map(io::Error::kind)
+    )?;
+    out.flush()?;
+    result?;
+    if before != after {
+        return Err(invalid("engine probe descriptors did not return"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod native_tests {
     use super::*;
 
-    #[test]
-    #[ignore = "private native socket campaign supplies release FD and finite byte/time inputs"]
-    fn native_tcp_pump_both_half_closes() {
+    fn supplied_queue(fd: RawFd, option: i32, supplied: i32, role: &str) {
+        assert!(supplied > 0);
+        // SAFETY: this test owns fd; exact initialized socket-option integer.
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    option,
+                    (&raw const supplied).cast(),
+                    size_of_val(&supplied) as _,
+                )
+            },
+            0
+        );
+        let mut actual = 0i32;
+        let mut size = size_of_val(&actual) as libc::socklen_t;
+        // SAFETY: initialized writable native option and its exact size.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    option,
+                    (&raw mut actual).cast(),
+                    &raw mut size,
+                )
+            },
+            0
+        );
+        assert_eq!(size as usize, size_of_val(&actual));
+        assert!(actual > 0);
+        println!(
+            "managed-tcp-forward {{\"type\":\"NativeQueue\",\"role\":\"{role}\",\"option\":{option},\"supplied\":{supplied},\"actual\":{actual}}}"
+        );
+    }
+
+    fn native_inputs() -> (Inputs, Deadline) {
         let supplied = |name| std::env::var(name).expect("explicit native fixture input");
         let words = [
             "intercept-tcp-forward4".to_owned(),
@@ -870,6 +1186,35 @@ mod native_tests {
             .unwrap();
         assert_eq!((n, word), (1, [b'R']));
         drop(release);
+        (input, deadline)
+    }
+
+    fn record_flow(forwarded: &Completion, storage: &str, client: SocketAddr, upstream: SocketAddr) {
+        let mut out = io::stdout().lock();
+        write!(out,"managed-tcp-forward {{\"type\":\"NativeFlow\",\"storage\":\"{storage}\",\"connect\":\"{:?}\",\"end\":",forwarded.connect).unwrap();
+        match &forwarded.result {
+            Ok(end) => write!(out, "\"{end:?}\"").unwrap(),
+            Err(_) => write!(out, "null").unwrap(),
+        }
+        write!(out, ",\"fault\":").unwrap();
+        fault_record(&mut out, &forwarded.result).unwrap();
+        write!(
+            out,
+            ",\"client\":\"{client}\",\"upstream\":\"{upstream}\",\"to_backend\":"
+        )
+        .unwrap();
+        progress_record(&mut out, &forwarded.flow.to_backend).unwrap();
+        write!(out, ",\"to_client\":").unwrap();
+        progress_record(&mut out, &forwarded.flow.to_client).unwrap();
+        writeln!(out, "}}").unwrap();
+        out.flush().unwrap();
+    }
+
+    #[test]
+    #[ignore = "private native socket campaign supplies release FD and finite byte/time inputs"]
+    fn native_tcp_pump_both_half_closes() {
+        let supplied = |name| std::env::var(name).expect("explicit native fixture input");
+        let (input, deadline) = native_inputs();
         let before = descriptor_count().unwrap();
         let [up_size, down_size] = input.slot_sizes;
         let storage = supplied("SHARDS_TCP_STORAGE");
@@ -897,6 +1242,25 @@ mod native_tests {
             )
             .unwrap(),
         );
+        let pressure = std::env::var("SHARDS_NATIVE_WRITE_PRESSURE").ok();
+        if let Some(mode) = &pressure {
+            assert_eq!(mode, "required");
+            let send = supplied("SHARDS_NATIVE_SNDBUF_BYTES").parse().unwrap();
+            let receive = supplied("SHARDS_NATIVE_RCVBUF_BYTES").parse().unwrap();
+            supplied_queue(upstream.as_raw_fd(), libc::SO_SNDBUF, send, "upstream-send");
+            supplied_queue(
+                backend_listener.as_raw_fd(),
+                libc::SO_RCVBUF,
+                receive,
+                "backend-listener-receive",
+            );
+            supplied_queue(
+                relay_listener.as_raw_fd(),
+                libc::SO_RCVBUF,
+                receive,
+                "relay-listener-receive",
+            );
+        }
         let mut backend_worker = Worker::spawn(&deadline, move |deadline| {
             let (mut stream, peer) = deadline
                 .io(backend_listener.as_raw_fd(), libc::POLLIN, || {
@@ -918,6 +1282,14 @@ mod native_tests {
         let mut relay = start(relay_listener, upstream, destination, slots, limits, &deadline).unwrap();
         let mut client = TcpStream::connect_timeout(&relay_at, deadline.left().unwrap()).unwrap();
         client.set_nonblocking(true).unwrap();
+        if pressure.is_some() {
+            supplied_queue(
+                client.as_raw_fd(),
+                libc::SO_SNDBUF,
+                supplied("SHARDS_NATIVE_SNDBUF_BYTES").parse().unwrap(),
+                "client-send",
+            );
+        }
         let client_tuple = Tuple {
             local: client.local_addr().unwrap(),
             peer: client.peer_addr().unwrap(),
@@ -938,6 +1310,10 @@ mod native_tests {
             backend_worker.finish()
         }
         .unwrap();
+        println!(
+            "managed-tcp-forward {{\"type\":\"NativeJoined\",\"relay_joined\":true,\"backend_joined\":true}}"
+        );
+        record_flow(&forwarded, &storage, client_tuple.local, backend.0.peer);
         result.unwrap();
         backend.2.unwrap();
         assert_eq!(*forwarded.result.as_ref().unwrap(), Termination::BothHalvesClosed);
@@ -957,15 +1333,6 @@ mod native_tests {
                 peer: forwarded.upstream.unwrap().local
             }
         );
-        {
-            let mut out = io::stdout().lock();
-            write!(out,"managed-tcp-forward {{\"type\":\"NativeFlow\",\"storage\":\"{storage}\",\"connect\":\"{:?}\",\"end\":\"{:?}\",\"client\":\"{}\",\"upstream\":\"{}\",\"to_backend\":",forwarded.connect,forwarded.result.as_ref().unwrap(),client_tuple.local,backend.0.peer).unwrap();
-            progress_record(&mut out, &forwarded.flow.to_backend).unwrap();
-            write!(out, ",\"to_client\":").unwrap();
-            progress_record(&mut out, &forwarded.flow.to_client).unwrap();
-            writeln!(out, "}}").unwrap();
-            out.flush().unwrap();
-        }
         assert_ne!(backend.0.peer, client_tuple.local);
         assert_eq!(forwarded.flow.to_backend.read, input.request.len());
         assert_eq!(forwarded.flow.to_backend.written, input.request.len());
@@ -975,6 +1342,16 @@ mod native_tests {
             assert_eq!(progress.half, Half::WriteClosed(SourceEnd::Eof));
             assert_eq!(progress.pending, 0);
             assert_eq!(progress.extra_consumed, 0);
+        }
+        if pressure.is_some() {
+            assert!(
+                forwarded.flow.to_backend.partial_writes > 0,
+                "actual short send required"
+            );
+            assert!(
+                forwarded.flow.to_backend.write_would_block > 0,
+                "actual send WouldBlock required"
+            );
         }
         drop(client);
         drop(relay);
@@ -986,6 +1363,121 @@ mod native_tests {
             input.scenario,
             input.request.len(),
             response
+        );
+    }
+
+    #[test]
+    #[ignore = "private finite native prefix/early-backend-completion cancellation campaign"]
+    fn native_tcp_cancel_after_backend_receipt() {
+        let (input, deadline) = native_inputs();
+        assert_eq!(input.scenario, Scenario::ServerFirst);
+        let before = descriptor_count().unwrap();
+        let [up, down] = input.slot_sizes;
+        let slots = Slots::reserve(up, down).unwrap();
+        let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
+        let request = input.request.len();
+        let greeting = input.greeting.len();
+        let backend_input = input.duplicate().unwrap();
+        let mut backend_endpoint = Endpoint::reserve(request).unwrap();
+        let mut client_endpoint = Endpoint::reserve(response).unwrap();
+        let backend_listener =
+            listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+        let destination = backend_listener.local_addr().unwrap();
+        let relay_listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+        let relay_at = relay_listener.local_addr().unwrap();
+        let upstream = TcpStream::from(
+            bound(
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                libc::SOCK_STREAM,
+                SocketMode::Native,
+            )
+            .unwrap(),
+        );
+        let mut backend_worker = Worker::spawn(&deadline, move |deadline| {
+            let (mut stream, peer) = deadline
+                .io(backend_listener.as_raw_fd(), libc::POLLIN, || {
+                    backend_listener.accept()
+                })
+                .unwrap();
+            stream.set_nonblocking(true).unwrap();
+            let tuple = Tuple {
+                local: stream.local_addr().unwrap(),
+                peer,
+            };
+            let result = (|| {
+                backend_endpoint.send(&mut stream, &backend_input.greeting, &deadline)?;
+                backend_endpoint.receive(&mut stream, &backend_input.request, &deadline)?;
+                backend_endpoint.eof(&mut stream, &deadline)
+            })();
+            backend_endpoint
+                .record("NativeBackend", 0, tuple, &result)
+                .unwrap();
+            (stream, tuple, backend_endpoint, result)
+        })
+        .unwrap();
+        let mut relay = start(
+            relay_listener,
+            upstream,
+            destination,
+            slots,
+            [request, response],
+            &deadline,
+        )
+        .unwrap();
+        let mut client = TcpStream::connect_timeout(&relay_at, deadline.left().unwrap()).unwrap();
+        client.set_nonblocking(true).unwrap();
+        let tuple = Tuple {
+            local: client.local_addr().unwrap(),
+            peer: client.peer_addr().unwrap(),
+        };
+        client_endpoint
+            .receive(&mut client, &input.greeting, &deadline)
+            .unwrap();
+        client_endpoint
+            .send(&mut client, &input.request, &deadline)
+            .unwrap();
+        client_endpoint.close_write(&client).unwrap();
+        // Completion returns the actual accepted backend socket still held.
+        // The relay must remain pending for its unsent tail, not infer peer EOF
+        // from a helper thread ending. No sleep or extra deadline is involved.
+        let (backend_stream, backend_tuple, backend_endpoint, backend_result) =
+            backend_worker.join().unwrap();
+        backend_result.unwrap();
+        assert_eq!(backend_endpoint.read, request);
+        assert_eq!(backend_endpoint.write_end, End::Open);
+        let remaining = deadline.left().unwrap();
+        let forwarded = relay.finish().unwrap();
+        println!(
+            "managed-tcp-forward {{\"type\":\"NativeJoined\",\"relay_joined\":true,\"backend_joined\":true,\"original_remaining_ns\":{}}}",
+            remaining.as_nanos()
+        );
+        record_flow(&forwarded, "caller", tuple.local, backend_tuple.peer);
+        let client_result = client_endpoint.eof(&mut client, &deadline);
+        client_endpoint
+            .record("NativeClient", 0, tuple, &client_result)
+            .unwrap();
+        client_result.unwrap();
+        assert!(
+            matches!(forwarded.result, Err(Fault::Cancelled)),
+            "{:?}",
+            forwarded.result
+        );
+        assert_eq!(forwarded.flow.to_backend.read, request);
+        assert_eq!(forwarded.flow.to_backend.written, request);
+        assert_eq!(forwarded.flow.to_backend.half, Half::WriteClosed(SourceEnd::Eof));
+        assert_eq!(forwarded.flow.to_client.read, greeting);
+        assert_eq!(forwarded.flow.to_client.written, greeting);
+        assert_eq!(forwarded.flow.to_client.half, Half::Reading);
+        assert_eq!(forwarded.flow.to_client.pending, 0);
+        assert_eq!(backend_tuple.peer, forwarded.upstream.unwrap().local);
+        drop(backend_stream);
+        drop(client);
+        drop(relay);
+        drop(backend_worker);
+        let after = descriptor_count().unwrap();
+        assert_eq!(after, before);
+        println!(
+            "NATIVE_TCP_CANCEL_EXACT backend_request={request} client_greeting={greeting} fd_before={before} fd_after={after} kernel_return=Unknown"
         );
     }
 }

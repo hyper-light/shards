@@ -12,7 +12,10 @@ import subprocess
 import time
 
 
-FILTER = "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes"
+FILTERS = {
+    "both-half-closes": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+    "receipt-cancel": "managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt",
+}
 PREFIX = "managed-tcp-forward "
 
 
@@ -37,6 +40,7 @@ def main():
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--inputs", type=Path, required=True)
     parser.add_argument("--record", type=Path, required=True)
+    parser.add_argument("--case", choices=FILTERS, default="both-half-closes")
     args = parser.parse_args()
     binary = args.binary.resolve(strict=True)
     inputs = json.loads(args.inputs.read_text())
@@ -57,10 +61,10 @@ def main():
     reader = None
     writer = None
     outcome = {"binary": str(binary), "binary_before_sha256": initial_hash,
-               "filter": FILTER, "fd_before": before,
+               "filter": FILTERS[args.case], "fd_before": before,
                "kernel_return": "Unknown", "pidfd_exit_ready": False,
                "reaped": False, "timeout": False}
-    command = [str(binary), "--exact", FILTER, "--ignored", "--nocapture", "--test-threads=1"]
+    command = [str(binary), "--exact", FILTERS[args.case], "--ignored", "--nocapture", "--test-threads=1"]
     try:
         reader, writer = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         env = os.environ.copy()
@@ -113,17 +117,28 @@ def main():
     flows = [row for row in rows if row.get("type") == "NativeFlow"]
     backend = [row for row in endpoints if row["role"] == "NativeBackend"]
     client = [row for row in endpoints if row["role"] == "NativeClient"]
+    joined = [row for row in rows if row.get("type") == "NativeJoined"]
+    response = payload(env_inputs["SHARDS_TCP_GREETING_HEX"])
+    if args.case == "both-half-closes":
+        response += payload(env_inputs["SHARDS_TCP_TAIL_HEX"])
     outcome["checks"] = {
         "one_actual_test": "1 passed; 0 failed;" in raw and "running 1 test" in raw,
         "child_success": outcome.get("status") == 0 and outcome["pidfd_exit_ready"] and not outcome["timeout"],
         "backend_bytes": len(backend) == 1 and backend[0]["ok"] and bytes.fromhex(backend[0]["read_hex"]) == payload(env_inputs["SHARDS_TCP_REQUEST_HEX"]),
-        "client_bytes": len(client) == 1 and client[0]["ok"] and bytes.fromhex(client[0]["read_hex"]) == payload(env_inputs["SHARDS_TCP_GREETING_HEX"]) + payload(env_inputs["SHARDS_TCP_TAIL_HEX"]),
+        "client_bytes": len(client) == 1 and client[0]["ok"] and bytes.fromhex(client[0]["read_hex"]) == response,
         "both_endpoint_halves": len(endpoints) == 2 and all(row["read_end"] == "Closed" and row["write_end"] == "Closed" and row["extra_hex"] is None for row in endpoints),
         "both_flow_halves": len(flows) == 1 and all(flows[0][key]["half"] == "WriteClosed" and flows[0][key]["source_end"] == "Eof" and flows[0][key]["pending"] == 0 and flows[0][key]["extra_consumed"] == 0 for key in ("to_backend", "to_client")),
         "owned_child_reaped": outcome["reaped"],
         "parent_fd_return": outcome["fd_after"] == before,
         "binary_unchanged": outcome["binary_after_sha256"] == initial_hash,
     }
+    if args.case == "receipt-cancel":
+        outcome["checks"]["both_endpoint_halves"] = len(backend) == len(client) == 1 and backend[0]["read_end"] == "Closed" and backend[0]["write_end"] == "Open" and client[0]["read_end"] == client[0]["write_end"] == "Closed"
+        outcome["checks"]["both_flow_halves"] = len(flows) == 1 and flows[0]["fault"] == {"kind": "Cancelled"} and flows[0]["to_backend"]["half"] == "WriteClosed" and flows[0]["to_backend"]["source_end"] == "Eof" and flows[0]["to_client"]["half"] == "Reading" and flows[0]["to_client"]["pending"] == 0
+        outcome["checks"]["joined_with_original_time_remaining"] = len(joined) == 1 and joined[0]["relay_joined"] and joined[0]["backend_joined"] and joined[0]["original_remaining_ns"] > 0
+    if env_inputs.get("SHARDS_NATIVE_WRITE_PRESSURE") == "required":
+        outcome["checks"]["actual_short_send"] = len(flows) == 1 and flows[0]["to_backend"]["partial_writes"] > 0
+        outcome["checks"]["actual_send_would_block"] = len(flows) == 1 and flows[0]["to_backend"]["write_would_block"] > 0
     outcome["passed"] = all(outcome["checks"].values()) and "launcher_error" not in outcome
     (args.record / "result.json").write_text(json.dumps(outcome, indent=2) + "\n")
     print(json.dumps(outcome), flush=True)

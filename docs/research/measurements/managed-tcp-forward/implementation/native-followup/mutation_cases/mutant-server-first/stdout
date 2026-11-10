@@ -1,0 +1,15 @@
+
+running 1 test
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes ... managed-tcp-forward {"type":"Endpoint","role":"NativeBackend","ordinal":0,"local":"127.0.0.1:35611","peer":"127.0.0.1:34531","read":13,"written":8,"read_end":"Open","write_end":"Open","ok":false,"read_hex":"5345515545535400ff0d0a0102","extra_hex":null,"error_kind":"Some(InvalidInput)","errno":null}
+managed-tcp-forward {"type":"Endpoint","role":"NativeClient","ordinal":0,"local":"127.0.0.1:38822","peer":"127.0.0.1:58643","read":8,"written":13,"read_end":"Closed","write_end":"Closed","ok":false,"read_hex":"53455256455200ff","extra_hex":null,"error_kind":"Some(UnexpectedEof)","errno":null}
+managed-tcp-forward {"type":"NativeJoined","relay_joined":true,"backend_joined":true}
+managed-tcp-forward {"type":"NativeFlow","storage":"caller","connect":"Connected","end":"BothHalvesClosed","fault":null,"client":"127.0.0.1:38822","upstream":"127.0.0.1:34531","to_backend":{"half":"WriteClosed","source_end":"Eof","read":13,"written":13,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":7,"write_would_block":0},"to_client":{"half":"WriteClosed","source_end":"Eof","read":8,"written":8,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":10,"write_would_block":0}}
+FAILED
+
+failures:
+
+failures:
+    managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.00s
+

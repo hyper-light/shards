@@ -1,0 +1,32 @@
+{
+  "binary": "/home/adalundhe/relay-tcp-byte-mutation-v1/artifacts/mutant-musl",
+  "binary_before_sha256": "9a43485875d95324cb78ec13805de644b30be7074f338384ceceaf2087db7307",
+  "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+  "fd_before": 4,
+  "kernel_return": "Unknown",
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 224468,
+  "pidfd_events": [
+    [
+      3,
+      1
+    ]
+  ],
+  "status": 101,
+  "fd_after": 4,
+  "binary_after_sha256": "9a43485875d95324cb78ec13805de644b30be7074f338384ceceaf2087db7307",
+  "checks": {
+    "one_actual_test": false,
+    "child_success": false,
+    "backend_bytes": false,
+    "client_bytes": false,
+    "both_endpoint_halves": false,
+    "both_flow_halves": true,
+    "owned_child_reaped": true,
+    "parent_fd_return": true,
+    "binary_unchanged": true
+  },
+  "passed": false
+}

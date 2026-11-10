@@ -1,0 +1,11 @@
+
+running 1 test
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt ... managed-tcp-forward {"type":"Endpoint","role":"NativeBackend","ordinal":0,"local":"127.0.0.1:39105","peer":"127.0.0.1:33333","read":13,"written":8,"read_end":"Closed","write_end":"Open","ok":true,"read_hex":"5245515545535400ff0d0a0102","extra_hex":null,"error_kind":"None","errno":null}
+managed-tcp-forward {"type":"NativeJoined","relay_joined":true,"backend_joined":true,"original_remaining_ns":29999361581}
+managed-tcp-forward {"type":"NativeFlow","storage":"caller","connect":"Connected","end":null,"fault":{"kind":"Cancelled"},"client":"127.0.0.1:53800","upstream":"127.0.0.1:33333","to_backend":{"half":"WriteClosed","source_end":"Eof","read":13,"written":13,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":7,"write_would_block":0},"to_client":{"half":"Reading","source_end":null,"read":8,"written":8,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":11,"write_would_block":0}}
+managed-tcp-forward {"type":"Endpoint","role":"NativeClient","ordinal":0,"local":"127.0.0.1:53800","peer":"127.0.0.1:39817","read":8,"written":13,"read_end":"Closed","write_end":"Closed","ok":true,"read_hex":"53455256455200ff","extra_hex":null,"error_kind":"None","errno":null}
+NATIVE_TCP_CANCEL_EXACT backend_request=13 client_greeting=8 fd_before=4 fd_after=4 kernel_return=Unknown
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 38 filtered out; finished in 0.00s
+

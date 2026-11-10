@@ -46,6 +46,7 @@ enum Probe<'a> {
     Capabilities(Option<&'a str>),
     Intercept(intercept::Inputs),
     ForwardTcp(intercept::tcp_forward::Inputs),
+    EngineHalfClose(intercept::tcp_forward::EngineInputs),
     InterceptUdp(intercept::udp::Inputs),
     SockAddr(intercept::sock_addr::Inputs),
     Serve(Case, SocketMode),
@@ -110,6 +111,9 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     words.try_reserve_exact(args.len()).map_err(io::Error::other)?;
     words.extend(args.iter().map(String::as_str));
     match words.as_slice() {
+        ["engine-halfclose", ..] => Ok(Probe::EngineHalfClose(
+            intercept::tcp_forward::EngineInputs::parse(&words)?,
+        )),
         ["intercept-tcp-forward4", ..] => {
             Ok(Probe::ForwardTcp(intercept::tcp_forward::Inputs::parse(&words)?))
         }
@@ -223,6 +227,7 @@ fn run(probe: Probe<'_>) -> io::Result<()> {
         Probe::Capabilities(path) => capabilities(path),
         Probe::Intercept(input) => intercept::run(input),
         Probe::ForwardTcp(input) => intercept::tcp_forward::run(input),
+        Probe::EngineHalfClose(input) => intercept::tcp_forward::engine_half_close(input),
         Probe::InterceptUdp(input) => intercept::udp::run(input),
         Probe::SockAddr(input) => intercept::sock_addr::run(input),
         Probe::Serve(case, mode) => {

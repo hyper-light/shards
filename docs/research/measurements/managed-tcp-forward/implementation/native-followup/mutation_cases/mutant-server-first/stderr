@@ -1,0 +1,4 @@
+
+thread 'managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes' (224469) panicked at ../source/crates/testguest/src/managed_network/intercept/tcp_forward.rs:1317:16:
+called `Result::unwrap()` on an `Err` value: Kind(UnexpectedEof)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

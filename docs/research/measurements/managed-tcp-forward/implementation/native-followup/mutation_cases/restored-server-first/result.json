@@ -1,0 +1,32 @@
+{
+  "binary": "/home/adalundhe/relay-tcp-byte-mutation-v1/artifacts/restored-musl",
+  "binary_before_sha256": "02ffb4874cde8da71770c5fcb1e3bbfb4b552e00f47863353236da9fc0465fa2",
+  "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+  "fd_before": 4,
+  "kernel_return": "Unknown",
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 224867,
+  "pidfd_events": [
+    [
+      3,
+      1
+    ]
+  ],
+  "status": 0,
+  "fd_after": 4,
+  "binary_after_sha256": "02ffb4874cde8da71770c5fcb1e3bbfb4b552e00f47863353236da9fc0465fa2",
+  "checks": {
+    "one_actual_test": true,
+    "child_success": true,
+    "backend_bytes": true,
+    "client_bytes": true,
+    "both_endpoint_halves": true,
+    "both_flow_halves": true,
+    "owned_child_reaped": true,
+    "parent_fd_return": true,
+    "binary_unchanged": true
+  },
+  "passed": true
+}

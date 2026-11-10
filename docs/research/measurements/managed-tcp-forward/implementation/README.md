@@ -6,6 +6,11 @@ pidfd/FD/hash witnesses and remaining gates. Production engine wiring is still
 held separately for actual Unix/VSOCK compatibility. The record below describes
 the first signed6ab checkpoint and its then-pending scope.
 
+[Native follow-up](native-followup/README.md) adds actual pressure/short writes,
+early held-backend completion/cancellation and wrong-byte mutation/restoration.
+Its engine Unix/VSOCK compatibility fixture is still unrun while the separate
+normal caller build completes; production consumer wiring remains pending.
+
 Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; reviewed design
 `c584e877f56d97736e325eae2cb9fa2be97fdfc0`. Role: implementer and assigned
 adversarial relay tester, Kiln `01a1c5d2ee0e7248982c95a59f1fd905`; ROOT

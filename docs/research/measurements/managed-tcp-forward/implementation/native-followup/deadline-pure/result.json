@@ -1,0 +1,32 @@
+[
+  {
+    "target": "x86_64-unknown-linux-musl",
+    "command": [
+      "/home/adalundhe/relay-tcp-forward-cbd3-light-v5/target/x86_64-unknown-linux-musl/debug/deps/relay_shared_check-a44ef51830740376",
+      "managed_network::tests::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "status": 0,
+    "log": "/home/adalundhe/relay-tcp-deadline-native-v1/x86_64-unknown-linux-musl.log",
+    "log_sha256": "da014aba74fe6297a1cc70aeed538d27a9c870c5ae5ea4dacc9e84bfae4f2d4b",
+    "binary_before_sha256": "6f32195fd21b60a69e38ca950f45a997d8cab65297d0f592cdec633c915153ef",
+    "binary_after_sha256": "6f32195fd21b60a69e38ca950f45a997d8cab65297d0f592cdec633c915153ef",
+    "eleven_actual_tests": true
+  },
+  {
+    "target": "x86_64-unknown-linux-gnu",
+    "command": [
+      "/home/adalundhe/relay-tcp-forward-cbd3-light-v5/target/x86_64-unknown-linux-gnu/debug/deps/relay_shared_check-f58d226704e7ee28",
+      "managed_network::tests::",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "status": 0,
+    "log": "/home/adalundhe/relay-tcp-deadline-native-v1/x86_64-unknown-linux-gnu.log",
+    "log_sha256": "da014aba74fe6297a1cc70aeed538d27a9c870c5ae5ea4dacc9e84bfae4f2d4b",
+    "binary_before_sha256": "368773742645eef2d46555fee2f13319e3c24b4a9712c3e689d6ce3af858a068",
+    "binary_after_sha256": "368773742645eef2d46555fee2f13319e3c24b4a9712c3e689d6ce3af858a068",
+    "eleven_actual_tests": true
+  }
+]

@@ -381,6 +381,7 @@ pub(crate) struct Progress {
     pub(crate) extra_consumed: usize,
     pub(crate) partial_writes: usize,
     pub(crate) would_block: usize,
+    pub(crate) write_would_block: usize,
 }
 
 impl Progress {
@@ -393,6 +394,7 @@ impl Progress {
             extra_consumed: 0,
             partial_writes: 0,
             would_block: 0,
+            write_would_block: 0,
         }
     }
 }
@@ -452,7 +454,10 @@ impl Direction {
                     })
                 },
             )? {
-                Attempt::WouldBlock => increment(&mut progress.would_block, 1)?,
+                Attempt::WouldBlock => {
+                    increment(&mut progress.would_block, 1)?;
+                    increment(&mut progress.write_would_block, 1)?;
+                }
                 Attempt::Ready(0) => {
                     return Err(native(target, Operation::Write, io::ErrorKind::WriteZero.into()));
                 }
