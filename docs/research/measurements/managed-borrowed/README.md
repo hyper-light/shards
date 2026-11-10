@@ -1,7 +1,9 @@
 # G22 borrowed connector: pre-fix evidence and implementation proposal
 
-Status: live deadline failures reproduced; no production connector/allocation change
-in this checkpoint. This branch starts at combined `cbe3d027`. Coordinator owns
+Current candidate, results and remaining checks: [CANDIDATE.md](CANDIDATE.md).
+The pre-implementation record below describes signed `9a29652d`: live deadline
+failures reproduced before production connector/allocation changes.
+This branch starts at combined `cbe3d027`. Coordinator owns
 profiling, benchmarks, audits, heavy E2E, platform sweeps and final integration;
 this implementer owns `crates/api`, the necessary focused `afunix` adapter/tests,
 and this directory. No frozen RPK artifacts are changed.
@@ -131,7 +133,7 @@ Unix must reuse taken::Held; Windows needs only query+synchronize held-handle RA
 The current Windows afunix local clone converts WSAPROTOCOL_INFOW to Vec; a narrow
 stack-based local duplication path is a candidate, preserving external share APIs.
 
-## Contract and owed checks
+## Pre-implementation contract and owed checks (9a29652d)
 
 One absolute finite deadline covers borrowed connect, request write and all reply
 bytes; expiration/overflow is typed and zero is rejected before held-handle/dial
