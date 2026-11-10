@@ -1,0 +1,75 @@
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys)
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/abi)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/erofs)
+   Compiling shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/template)
+   Compiling shards-image v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/image)
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/cmdline)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/ipc)
+   Compiling shards-agentfile v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/agentfile)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/vmm)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/syscall-filter)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/netring)
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/shards)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/dns)
+   Compiling shards-net v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/net)
+   Compiling shards-build v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/build)
+   Compiling shards-git v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/git)
+   Compiling shards-rego v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/seccomp)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/archive)
+   Compiling shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/user)
+   Compiling shards-tui v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/tui)
+   Compiling shards-flate v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/flate)
+   Compiling shards-ext4 v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/ext4)
+   Compiling shards-gateway v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/gateway)
+   Compiling shards-bus v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/bus)
+   Compiling shards-zstd v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/zstd)
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+   Compiling rustls-webpki v0.103.16
+   Compiling hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling shards-gitsign v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/gitsign)
+   Compiling shards-tuf v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/tuf)
+   Compiling hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/remote)
+   Compiling shards-registry v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/registry)
+   Compiling shards-sigstore v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/sigstore)
+   Compiling rcgen v0.14.10
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/testguest)
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/api)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/testdir)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3m 32s
+     Running tests/managed_limits.rs (/home/adalundhe/managed-limits-cancel-target/test-release/deps/managed_limits-98f9561da5c46fbf)
+
+running 5 tests
+visible actor Process { pid: 935, parent: 933, uid: 200000, threads: 1 }; visible actor+server/helper tasks 3; visible held-child tasks 0. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+
+thread 'fixture_ambiguous_actor_roots_are_rejected' (3753342) panicked at crates/shards/tests/managed_limits.rs:112:9:
+test fixture_actual_r222_rows_do_not_require_an_unlisted_reaper ... expected exactly one visible actor root: [Process { pid: 916, parent: 1, uid: 1000, threads: 1 }, Process { pid: 923, parent: 1, uid: 4394304, threads: 1 }, Process { pid: 929, parent: 923, uid: 4394304, threads: 1 }, Process { pid: 935, parent: 933, uid: 200000, threads: 1 }, Process { pid: 1712, parent: 1, uid: 4394305, threads: 1 }, Process { pid: 1717, parent: 1712, uid: 4394305, threads: 1 }, Process { pid: 1725, parent: 1720, uid: 200001, threads: 1 }, Process { pid: 2000, parent: 1999, uid: 200000, threads: 1 }]ok
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+existing connections rejected original comma request: NETWORK --ingress=7100,7101 on network control: no port, range of ports or Unix socket (8080, 53/udp, 8000-8010/tcp, unix:<name>)
+checked fixture normalized declaration: {"schemaVersion":1,"agents":[{"name":"limited","source":"./limited","to":"/agents/limited","processes":6}],"harnesses":[{"name":"healthy","source":"./healthy","to":"/harness/healthy","processes":null}],"skills":[],"mcp":[],"networks":[{"name":"control","driver":"","ipamDriver":"","attachable":false,"internal":false,"external":false,"dns":false,"ipv4":null,"ipv6":null,"driverOpts":[],"labels":[],"ipamOpts":[],"subnets":[],"ipRanges":[],"gateways":[],"auxAddresses":[],"protocols":["tcp","udp"],"ports":[{"port":"7100","direction":"ingress"},{"port":"7101","direction":"ingress"}],"for":{"kind":null,"names":[]}}],"connections":[{"kind":null,"from":["limited"],"bothWays":true,"to":["limited"],"on":["control"],"ports":[]},{"kind":null,"from":["healthy"],"bothWays":true,"to":["healthy"],"on":["control"],"ports":[]}],"attachments":[],"exposures":[{"ports":["7100"],"direction":"ingress","networks":["control"],"agents":["limited"]},{"ports":["7101"],"direction":"ingress","networks":["control"],"harnesses":["healthy"]}],"volumes":[{"source":null,"paths":["/limits"],"chown":"limited","chmod":"","for":{"kind":null,"names":["limited"]}},{"source":null,"paths":["/healthy"],"chown":"healthy","chmod":"","for":{"kind":null,"names":["healthy"]}}]}
+visible actor Process { pid: 11test fixture_ambiguous_actor_roots_are_rejected - should panic ... , okparent
+: 10, test fixture_connections_rejects_the_original_comma_port_request ... uidok: 
+200000, test fixture_agentfile_preserves_the_finite_task_declaration_and_grants ... threadsok: 
+1 }; visible actor+server/helper tasks 3; visible held-child tasks 1. Reaper row/threads, total tenant tasks and cgroup membership are unobserved.
+test fixture_synthetic_held_children_belong_to_one_visible_actor ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+

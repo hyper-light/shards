@@ -1,0 +1,57 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-limits-cancel-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-sys)
+    Checking shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/abi)
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/template)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/erofs)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/ipc)
+    Checking shards-image v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/image)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/cmdline)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/syscall-filter)
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/vendor/aws-lc-rs)
+    Checking shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/netring)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/vmm)
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/shards)
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/seccomp)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/dns)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/devcgroup)
+    Checking rustls-webpki v0.103.16
+    Checking shards-gitsign v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/gitsign)
+    Checking rcgen v0.14.10
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/agentfile)
+    Checking rustls v0.23.46
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-net v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/net)
+    Checking rustls-platform-verifier v0.7.1
+    Checking shards-registry v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/registry)
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-tuf v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/tuf)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/sigstore)
+    Checking shards-build v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/build)
+    Checking shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/testguest)
+    Checking shards-git v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/git)
+    Checking shards-remote v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/remote)
+    Checking shards-rego v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/rego)
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/api)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/testdir)
+    Checking shards-tui v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/tui)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/gateway)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/ext4)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/user)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/zstd)
+    Checking shards-bus v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/bus)
+    Checking shards-flate v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-limits-cancel-6bb53ef7c2/crates/flate)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 43.97s
