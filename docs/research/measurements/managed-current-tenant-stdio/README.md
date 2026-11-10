@@ -52,8 +52,16 @@ fix is inferred from this compatibility composition.
 Actual r26 unchanged-base preparation completed0: normal full CLI/carried helper
 and matching static guest builds, seven frozen artifact hashes. It has no new A
 leaf/VM pass. Source412,276KiB, target2,067,036KiB, cache19,612KiB and frozen331,868KiB
-are scoped disk observations only. Final composed-source build and both fresh
-selected cases remain pending at this source-freeze checkpoint.
+are scoped disk observations only. The first composed candidate
+417be8ab77a6bf3d9517fd2912fa48ef8e4f0f56 built0 (r28 host/native), then actual
+r29 normal0+A0, each exactly1 passed/23filtered, all strict metadata/cleanup
+assertions and FD11→11. Native Clippy0 at r30, but host Clippy101 found denied
+expect_used in the copied fixture's required TASKS environment reader. These
+originals and all frozen417 binaries are preserved. Only that owned test-helper
+call changes to the existing explicit precondition panic style via unwrap_or_else.
+No lint is relaxed and native/product/shared capture code stays unchanged.
+source-freeze-v2.json precedes the new exact-source build, lints and fresh pair;
+the new revision does not inherit417's passing gates.
 
 ## Bounded actual campaign contract
 
@@ -89,7 +97,8 @@ return stays Unknown unless independently witnessed.
 ## R01–R16 scope and current result
 
 R01/R04/R06/R07/R13: test-only exact assertions and existing typed states; source
-format/policy/diff checks0. No compiled/current live pass yet and no production
+format/policy/diff checks0. First417 full compile/live pair0 and native Clippy0;
+host lint red/fix and revised gates remain explicit above. No production
 panic-proof claim. R02/R03/R05/R12: existing native fixture, current parser and
 owned APIs; prior actual0ea data justify this compatibility integration, no new
 architecture, cache, periodic probe, manager or platform adapter. R08/R14: no

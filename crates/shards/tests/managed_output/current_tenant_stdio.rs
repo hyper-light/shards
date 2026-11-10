@@ -55,7 +55,7 @@ impl InheritedInputs {
     fn read() -> Self {
         let common = Supplied::read();
         let tasks = std::env::var("SHARDS_TENANT_STDIO_TASKS")
-            .expect("supply SHARDS_TENANT_STDIO_TASKS")
+            .unwrap_or_else(|_| panic!("supply SHARDS_TENANT_STDIO_TASKS"))
             .parse::<u32>()
             .unwrap();
         assert!(tasks > 0, "positive u32 matches actual AGENT --processes grammar");

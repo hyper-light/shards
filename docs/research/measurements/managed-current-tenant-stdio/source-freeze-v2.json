@@ -1,0 +1,46 @@
+{
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "role": "assigned adversarial",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "root_authorization": "exact18675B59847ec adapter approved in latest instruction; fixture-only native additions and positive task input with all existing callers None",
+  "files": [
+    {
+      "path": "crates/testguest/src/workload.rs",
+      "bytes": 300038,
+      "sha256": "b548fbee772ae87a822e0603fa0588d326f0829039057235c3460944b06a2315"
+    },
+    {
+      "path": "crates/shards/tests/managed_output.rs",
+      "bytes": 17053,
+      "sha256": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36"
+    },
+    {
+      "path": "crates/shards/tests/managed_output/tenant_exit.rs",
+      "bytes": 16234,
+      "sha256": "5d052c6dea9f41c2b5d214886dcaa59a0923e8675385407d968b93f6c6de18d6"
+    },
+    {
+      "path": "crates/shards/tests/managed_output/tenant_stdio.rs",
+      "bytes": 14285,
+      "sha256": "20ad3cc993b8685ca55918f80c72fbb45e64de115c396269e6caeef3901172a9"
+    },
+    {
+      "path": "crates/shards/tests/managed_output/broker_effects.rs",
+      "bytes": 17570,
+      "sha256": "23c0309e34bfcfea5dea97c759c947060fd11f6edd0b732ef0ac8c8ec68343d9"
+    },
+    {
+      "path": "crates/shards/tests/managed_output/current_tenant_stdio.rs",
+      "bytes": 17379,
+      "sha256": "8f4fe97c2a24780fb1161cb0845c327aeb5e386077cb514ee85b45bb500d4669"
+    },
+    {
+      "path": "crates/shards/tests/common/managed_capture.rs",
+      "bytes": 14831,
+      "sha256": "431fe6da8999d0cd13822a4b59e52312c1ae07ffd7835a0428b07cf78402367d"
+    }
+  ],
+  "shared_capture_unchanged": true,
+  "actual_compile_or_VM_pass": false,
+  "fixture_only_lint_fix": "r30 hostClippy101 expect_used in InheritedInputs::read; explicit precondition panic via unwrap_or_else, same test module lint allowances, no lint relaxation/native/product change"
+}
