@@ -1,0 +1,12 @@
+[
+  {
+    "path": "/home/adalundhe/managed-network-sock-addr-proof-v6/target/debug/deps/sock_addr_pure-fe292d92a69bae8c",
+    "bytes": 10154360,
+    "sha256": "b148c33b0315bfc4bb0b884f985eba3d7a3637615c9d67009cd1fc6d3f453226"
+  },
+  {
+    "path": "/home/adalundhe/managed-network-sock-addr-proof-v6/target/x86_64-unknown-linux-musl/debug/deps/sock_addr_pure-0b73a65b27638189",
+    "bytes": 10273840,
+    "sha256": "09fc16ff0430d5b139229727d107362d1ac82eb1cdc9f90f51ee0f214c14ff72"
+  }
+]

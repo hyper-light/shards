@@ -177,3 +177,6 @@ IPv6/multi-destination/own-address/wildcard/fragment/PMTU/QUIC, forwarding relay
 fail-closed grants/revocation/death, controller/worker/child failures, cgroup placement
 and cleanup/resource return, original endpoint collision solutions, cost and matrix.
 No authority/compatibility requirement is waived by this experiment.
+
+The later fixture-only missing-/tmp reproduction and minimal parent preparation are
+recorded in [MOUNT-PARENT.md](MOUNT-PARENT.md); runtime after-results remain owed.
