@@ -98,14 +98,34 @@ mod linux {
     pub(super) fn started(pid: u32) -> io::Result<u64> {
         let at = crate::channel::message(format_args!("/proc/{pid}/stat"))
             .map_err(|()| io::Error::from(io::ErrorKind::OutOfMemory))?;
-        let stat = std::fs::read_to_string(&at)?;
+        let stat = std::fs::read(&at)?;
+        start_field(&stat)
+    }
+
+    fn start_field(stat: &[u8]) -> io::Result<u64> {
         // Its command, field 2, is in parentheses and may hold any byte but NUL, a ')' too:
         // fields 3 on follow the last ')', starttime the 20th of them (field 22).
-        stat.rfind(')')
+        // Only that decimal field needs text validation; comm is raw kernel bytes.
+        stat.iter()
+            .rposition(|byte| *byte == b')')
             .and_then(|i| stat.get(i.saturating_add(1)..))
-            .and_then(|fields| fields.split_ascii_whitespace().nth(19))
+            .and_then(|fields| {
+                fields
+                    .split(u8::is_ascii_whitespace)
+                    .filter(|field| !field.is_empty())
+                    .nth(19)
+            })
+            .and_then(|field| std::str::from_utf8(field).ok())
             .and_then(|f| f.parse().ok())
             .ok_or_else(|| io::ErrorKind::InvalidData.into())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/research/measurements/managed-borrowed/proc-stat.rs"
+        ));
     }
 
     /// A process held by a pidfd (pidfd_open(2), Linux 5.3), readable once it has exited.
