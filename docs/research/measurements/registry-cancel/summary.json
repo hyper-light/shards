@@ -1,0 +1,2234 @@
+[
+  {
+    "path": "baseline-final/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 0,
+        "latency_ns": 51990022,
+        "voluntary_switches": 8,
+        "thread_cpu_us": 246
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 1,
+        "latency_ns": 100048744,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 84
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 2,
+        "latency_ns": 100051405,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 69
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 3,
+        "latency_ns": 100461415,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 78
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 4,
+        "latency_ns": 100234666,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 49
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 5,
+        "latency_ns": 99711473,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 50
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 6,
+        "latency_ns": 98906058,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 109
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 7,
+        "latency_ns": 100038812,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 70
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 8,
+        "latency_ns": 100039202,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 49
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 9,
+        "latency_ns": 100032205,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 173
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 10,
+        "latency_ns": 100051621,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 77
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 11,
+        "latency_ns": 99843482,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 97
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 12,
+        "latency_ns": 99308858,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 66
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 13,
+        "latency_ns": 100008943,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 74
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 14,
+        "latency_ns": 100442303,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 86
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 15,
+        "latency_ns": 100044586,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 83
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 16,
+        "latency_ns": 100042611,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 73
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 17,
+        "latency_ns": 99866227,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 72
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 18,
+        "latency_ns": 99959005,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 76
+      },
+      {
+        "mode": "dial",
+        "cancelling": null,
+        "sample": 19,
+        "latency_ns": 100067119,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 87
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 100038812,
+        "p90": 100234666,
+        "p99": 100461415,
+        "max": 100461415
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 8,
+        "max": 8
+      },
+      "thread_cpu_us": {
+        "p50": 76,
+        "p90": 109,
+        "p99": 246,
+        "max": 246
+      }
+    }
+  },
+  {
+    "path": "baseline-final/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 0,
+        "latency_ns": 50720326,
+        "voluntary_switches": 8,
+        "thread_cpu_us": 265
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 1,
+        "latency_ns": 100223658,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 76
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 2,
+        "latency_ns": 100037948,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 71
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 3,
+        "latency_ns": 99799194,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 73
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 4,
+        "latency_ns": 100052246,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 92
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 5,
+        "latency_ns": 100065491,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 63
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 6,
+        "latency_ns": 100056628,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 68
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 7,
+        "latency_ns": 99959251,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 87
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 8,
+        "latency_ns": 100172443,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 71
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 9,
+        "latency_ns": 100210222,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 72
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 10,
+        "latency_ns": 100052211,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 101
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 11,
+        "latency_ns": 99876634,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 65
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 12,
+        "latency_ns": 100023762,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 66
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 13,
+        "latency_ns": 100107845,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 67
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 14,
+        "latency_ns": 100054848,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 50
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 15,
+        "latency_ns": 100053410,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 78
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 16,
+        "latency_ns": 100848705,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 55
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 17,
+        "latency_ns": 99962305,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 82
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 18,
+        "latency_ns": 100607837,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 69
+      },
+      {
+        "mode": "resolve",
+        "cancelling": null,
+        "sample": 19,
+        "latency_ns": 100006172,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 55
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 100052246,
+        "p90": 100223658,
+        "p99": 100848705,
+        "max": 100848705
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 8,
+        "max": 8
+      },
+      "thread_cpu_us": {
+        "p50": 71,
+        "p90": 92,
+        "p99": 265,
+        "max": 265
+      }
+    }
+  },
+  {
+    "path": "fixed/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 20763,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 138
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 13063,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 57
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 8150,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 12070,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 20
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 9274,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 29
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 13449,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 59
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 13705,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 49
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 18430,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 45
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 10670,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 53
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 10564,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 18196,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 119
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 10205,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 25
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 7749,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 39
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 12773,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 21
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 10745,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 38
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 23051,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 36
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 11377,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 37
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 8364,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 36
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 9593,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 237332,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 52
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 11377,
+        "p90": 20763,
+        "p99": 237332,
+        "max": 237332
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 2,
+        "max": 2
+      },
+      "thread_cpu_us": {
+        "p50": 39,
+        "p90": 59,
+        "p99": 138,
+        "max": 138
+      }
+    }
+  },
+  {
+    "path": "fixed/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 18589,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 102
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 13691,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 75
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 13379,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 14752,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 11906,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 11525,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 59
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 9471,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 44
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 10022,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 45
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 9391,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 26
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 10109,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 52
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 6783,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 9936,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 15637,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 18122,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 39
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 15769,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 57
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 7628,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 45
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 7270,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 30
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 12905,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 25738,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 33
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 17926,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 44
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 11906,
+        "p90": 18122,
+        "p99": 25738,
+        "max": 25738
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "thread_cpu_us": {
+        "p50": 42,
+        "p90": 59,
+        "p99": 102,
+        "max": 102
+      }
+    }
+  },
+  {
+    "path": "mutations/restored-cancel/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 35979,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 160
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 16786,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 77
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 18130,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 57
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 39626,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 22696,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 35
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 9591,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 53
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 9490,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 23
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 7324,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 23
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 8400,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 37
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 7712,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 29
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 17854,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 22
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 9353,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 48
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 7550,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 21
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 7608,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 17
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 17380,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 23
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 7627,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 37
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 7147,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 29
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 7624,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 32
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 100385,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 114
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 9458,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 9458,
+        "p90": 35979,
+        "p99": 100385,
+        "max": 100385
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 2,
+        "max": 2
+      },
+      "thread_cpu_us": {
+        "p50": 35,
+        "p90": 77,
+        "p99": 160,
+        "max": 160
+      }
+    }
+  },
+  {
+    "path": "mutations/restored-cancel/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 25078,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 114
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 15538,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 69
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 15222,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 65
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 135492,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 37
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 13369,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 38
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 10921,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 22
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 21577,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 39
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 13892,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 29
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 10409,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 60
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 12565,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 64
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 204645,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 45
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 30904,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 81
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 24339,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 60
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 24175,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 35
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 16800,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 62
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 17183,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 37
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 12577,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 16251,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 17238,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 43
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 8432,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 16251,
+        "p90": 30904,
+        "p99": 204645,
+        "max": 204645
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "thread_cpu_us": {
+        "p50": 43,
+        "p90": 69,
+        "p99": 114,
+        "max": 114
+      }
+    }
+  },
+  {
+    "path": "mutations/restored-completion/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 0,
+        "latency_ns": 296863,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 135
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 1,
+        "latency_ns": 709545,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 64
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 2,
+        "latency_ns": 47775,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 61
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 3,
+        "latency_ns": 41730,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 49
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 4,
+        "latency_ns": 37516,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 5,
+        "latency_ns": 34258,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 43
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 6,
+        "latency_ns": 45586,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 32
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 7,
+        "latency_ns": 39680,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 52
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 8,
+        "latency_ns": 28696,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 59
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 9,
+        "latency_ns": 28579,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 30
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 10,
+        "latency_ns": 24190,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 38
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 11,
+        "latency_ns": 29202,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 26
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 12,
+        "latency_ns": 15959,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 27
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 13,
+        "latency_ns": 30649,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 24
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 14,
+        "latency_ns": 26114,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 68
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 15,
+        "latency_ns": 37774,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 16,
+        "latency_ns": 38906,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 53
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 17,
+        "latency_ns": 39061,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 49
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 18,
+        "latency_ns": 38920,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "dial",
+        "cancelling": "false",
+        "sample": 19,
+        "latency_ns": 48001,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 37774,
+        "p90": 48001,
+        "p99": 709545,
+        "max": 709545
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 2,
+        "p99": 2,
+        "max": 2
+      },
+      "thread_cpu_us": {
+        "p50": 49,
+        "p90": 64,
+        "p99": 135,
+        "max": 135
+      }
+    }
+  },
+  {
+    "path": "mutations/restored-completion/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 0,
+        "latency_ns": 113961,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 104
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 1,
+        "latency_ns": 27510,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 84
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 2,
+        "latency_ns": 33892,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 57
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 3,
+        "latency_ns": 27010,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 23
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 4,
+        "latency_ns": 13970,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 18
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 5,
+        "latency_ns": 12602,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 28
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 6,
+        "latency_ns": 25896,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 43
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 7,
+        "latency_ns": 38782,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 24
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 8,
+        "latency_ns": 16864,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 24
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 9,
+        "latency_ns": 14599,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 28
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 10,
+        "latency_ns": 17814,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 58
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 11,
+        "latency_ns": 20646,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 47
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 12,
+        "latency_ns": 40763,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 64
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 13,
+        "latency_ns": 26260,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 44
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 14,
+        "latency_ns": 30761,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 44
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 15,
+        "latency_ns": 22493,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 50
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 16,
+        "latency_ns": 30427,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 17,
+        "latency_ns": 26974,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 50
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 18,
+        "latency_ns": 21181,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 26
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "false",
+        "sample": 19,
+        "latency_ns": 30417,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 63
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 26260,
+        "p90": 38782,
+        "p99": 113961,
+        "max": 113961
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "thread_cpu_us": {
+        "p50": 44,
+        "p90": 64,
+        "p99": 104,
+        "max": 104
+      }
+    }
+  },
+  {
+    "path": "paired/event/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 20420,
+        "voluntary_switches": 2,
+        "thread_cpu_us": 124
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 62708,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 59
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 16646,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 103
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 16195,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 11453,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 25
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 12797,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 43
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 9381,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 22
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 12278,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 10381,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 10368,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 44
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 11235,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 46
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 12711,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 63
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 12057,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 39
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 9533,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 35
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 12444,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 31
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 9818,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 40
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 11478,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 11280,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 9947,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 9074,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 33
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 11453,
+        "p90": 16646,
+        "p99": 62708,
+        "max": 62708
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 2,
+        "max": 2
+      },
+      "thread_cpu_us": {
+        "p50": 40,
+        "p90": 63,
+        "p99": 124,
+        "max": 124
+      }
+    }
+  },
+  {
+    "path": "paired/event/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 34198,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 136
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 12354,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 72
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 10715,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 11375,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 9511,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 35
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 9401,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 12292,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 35
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 13854,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 45
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 13175,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 48
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 9823,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 41
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 10913,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 36
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 9432,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 34
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 9963,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 33
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 9180,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 32
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 15724,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 32
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 12665,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 39
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 10474,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 42
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 10861,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 36
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 9237,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 33
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 9040,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 33
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 10715,
+        "p90": 13854,
+        "p99": 34198,
+        "max": 34198
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 1,
+        "max": 1
+      },
+      "thread_cpu_us": {
+        "p50": 36,
+        "p90": 48,
+        "p99": 136,
+        "max": 136
+      }
+    }
+  },
+  {
+    "path": "paired/legacy/dial.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 50515073,
+        "voluntary_switches": 8,
+        "thread_cpu_us": 189
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 100048678,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 65
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 100050738,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 79
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 100026413,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 64
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 99990839,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 79
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 100045980,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 61
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 100008970,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 76
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 100062146,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 64
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 100053581,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 73
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 100064170,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 55
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 100025142,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 53
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 100060359,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 61
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 100062527,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 47
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 100034583,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 96
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 100065828,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 60
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 100059568,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 69
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 100140705,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 59
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 100044385,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 58
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 100109078,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 43
+      },
+      {
+        "mode": "dial",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 100052514,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 74
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 100050738,
+        "p90": 100065828,
+        "p99": 100140705,
+        "max": 100140705
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 8,
+        "max": 8
+      },
+      "thread_cpu_us": {
+        "p50": 64,
+        "p90": 79,
+        "p99": 189,
+        "max": 189
+      }
+    }
+  },
+  {
+    "path": "paired/legacy/resolve.log",
+    "n": 20,
+    "samples": [
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 0,
+        "latency_ns": 50640677,
+        "voluntary_switches": 8,
+        "thread_cpu_us": 204
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 1,
+        "latency_ns": 100007268,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 98
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 2,
+        "latency_ns": 100037666,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 99
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 3,
+        "latency_ns": 100154286,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 205
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 4,
+        "latency_ns": 99929899,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 185
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 5,
+        "latency_ns": 100123263,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 128
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 6,
+        "latency_ns": 100082486,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 86
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 7,
+        "latency_ns": 100075725,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 88
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 8,
+        "latency_ns": 100102108,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 66
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 9,
+        "latency_ns": 100070821,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 76
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 10,
+        "latency_ns": 100056525,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 70
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 11,
+        "latency_ns": 100064934,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 115
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 12,
+        "latency_ns": 100056733,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 54
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 13,
+        "latency_ns": 100040831,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 119
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 14,
+        "latency_ns": 100024555,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 72
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 15,
+        "latency_ns": 100069071,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 68
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 16,
+        "latency_ns": 100047852,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 93
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 17,
+        "latency_ns": 100058949,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 75
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 18,
+        "latency_ns": 100042740,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 78
+      },
+      {
+        "mode": "resolve",
+        "cancelling": "true",
+        "sample": 19,
+        "latency_ns": 100052774,
+        "voluntary_switches": 1,
+        "thread_cpu_us": 50
+      }
+    ],
+    "distributions": {
+      "latency_ns": {
+        "p50": 100056525,
+        "p90": 100102108,
+        "p99": 100154286,
+        "max": 100154286
+      },
+      "voluntary_switches": {
+        "p50": 1,
+        "p90": 1,
+        "p99": 8,
+        "max": 8
+      },
+      "thread_cpu_us": {
+        "p50": 86,
+        "p90": 185,
+        "p99": 205,
+        "max": 205
+      }
+    }
+  }
+]

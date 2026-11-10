@@ -1,0 +1,12 @@
+$ scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+exit=0
+$ rustfmt --edition 2024 --check crates/registry/src/http.rs
+exit=0
+$ git diff --check
+exit=0
+$ bash -n docs/research/measurements/registry-cancel/run.sh docs/research/measurements/registry-cancel/mutations.sh docs/research/measurements/registry-cancel/paired.sh
+exit=0
+AST parse legacy.py: passed
+AST parse mutations.py: passed
+AST parse summarize.py: passed
