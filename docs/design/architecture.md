@@ -9904,7 +9904,11 @@ estimator's of what was measured (the table below).
   `a_failed_send_resumes_from_what_the_registry_has` (a PUT cut off, 4 bytes in: the next
   PATCH starts at byte 4); and containers.rs' `a_push_climbs_from_one_and_the_next_starts_where_it_got`
   (`shards push image` of forty 2 MiB layers at 4 MiB/s a connection: the first starts at one
-  and climbs; its record in the home; the second starts at the count kept).
+  and tries a doubling; its measured count and variance are recorded in the home; the
+  second starts at the count kept). The real-host test does not require four uploads:
+  an idle-policy launcher on a busy host may gain nothing beyond two, or keep one after
+  trying two. Convergence to four where each doubling pays is the seeded simulation's
+  assertion; the E2E pins the actual decision and its reuse, without imposing a count.
 - **Which input bound each case**: M488's first measurements had all its hosts at 32
   cores and at most 16 transfers, so none was bound by the CPU: one host's rose to 16 (the
   blobs), the LAN's and ttl.sh's were bound by the link. The adaptive push's and pull's own

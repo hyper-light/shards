@@ -11766,7 +11766,11 @@ fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
     let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     assert_eq!(first.first(), Some(&1), "a new path starts at one: {first:?}");
     let most = first.iter().copied().max().unwrap_or(0);
-    assert!(most >= 4.min(cores), "at most {most} uploads at once: {first:?}");
+    // It must try the first doubling. A busy host (in particular a launcher using
+    // SCHED_IDLE) can make more uploads carry no more bytes, so the measured best
+    // count need not reach four, or keep even the first doubling. The seeded climb
+    // simulation checks convergence on a path where each doubling really pays.
+    assert!(most >= 2.min(cores), "no doubling tried: {first:?}");
     // What it got to, kept in the home in its path's one record: the registry's host and
     // port, and the route's address, loopback's.
     let file = home
@@ -11775,7 +11779,10 @@ fn a_push_climbs_from_one_and_the_next_starts_where_it_got() {
         .join(format!("127.0.0.1%3A{port}@127.0.0.1"));
     let record: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
     let count = record["push"]["count"].as_u64().unwrap() as usize;
-    assert!(count >= 2.min(cores), "{record}");
+    assert!((1..=most).contains(&count), "{record}");
+    assert!(count <= cores, "past the host's cores: {record}");
+    // At least two samples: otherwise no variance, and no count has been measured.
+    assert!(record["push"]["rate"]["n"].as_u64().unwrap() >= 2, "{record}");
     let again = format!("127.0.0.1:{port}/team/app:2");
     assert_eq!(shards(&["tag", "image", &source, &again]).status, Some(0));
     let pushed = shards(&["push", "image", &again]);
