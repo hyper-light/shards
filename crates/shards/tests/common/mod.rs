@@ -311,10 +311,27 @@ pub fn kernel_artifact() -> Artifact {
     }
 }
 
-/// `CONFIG_NR_CPUS` of both pinned kernels (resources/kernel/firecracker-*-6.18.config,
-/// which shards.config leaves alone). A guest brings up at most this many vCPUs and refuses
-/// the rest.
-pub const KERNEL_NR_CPUS: u32 = 64;
+/// `CONFIG_NR_CPUS` of this architecture's pinned kernel overlay. Embed the config so
+/// copied E2E executables need no source tree; do not copy a count that a new pin changes.
+/// A guest brings up at most this many vCPUs and refuses the rest.
+pub fn kernel_nr_cpus() -> u32 {
+    let config = match ARCH {
+        "x86_64" => include_str!("../../../../resources/kernel/shards-x86_64.config"),
+        "aarch64" => include_str!("../../../../resources/kernel/shards-aarch64.config"),
+        other => panic!("no pinned kernel config for {other}"),
+    };
+    let mut values = config
+        .lines()
+        .filter_map(|line| line.strip_prefix("CONFIG_NR_CPUS="));
+    let cpus = values
+        .next()
+        .expect("the pinned kernel overlay sets CONFIG_NR_CPUS");
+    assert!(
+        values.next().is_none(),
+        "the pinned kernel overlay sets CONFIG_NR_CPUS once"
+    );
+    cpus.parse().expect("CONFIG_NR_CPUS is a u32")
+}
 
 fn sha256(path: &Path) -> String {
     use sha2::Digest;
