@@ -1,6 +1,8 @@
 # P4 isolated IPv4 TCP interception fixture
 
 **Initial experiment record; no product mechanism adoption.**
+The selected-flow fallback DROP experiment is recorded in [ABSENT-DROP.md](ABSENT-DROP.md);
+its actual guarded guest outcome and any acceptance change remain coordinator-owned.
 The fixture-only missing-listener mode and current policy/light-check checkpoint
 are recorded in [RELAY-ABSENT.md](RELAY-ABSENT.md); its actual guest outcome is
 still owed to the coordinator. The records below describe earlier source.
