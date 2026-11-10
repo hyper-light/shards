@@ -41,6 +41,18 @@ inactive endpoint cache. Original caches and other lanes were not modified.
   excluded from timing statistics. The [stack](results/baseline/allocation-trace/stacks.log)
   attributes a 33,554,432-byte zeroed allocation to Brotli H10 history during TLS
   certificate compression. The earlier handshake-ceiling hypothesis is discarded.
+- r30, source `c679e30b570d5a0a3d43ec8c55efc406341b3d1e`: the direct
+  certificate codec probe passed 1/0. The generated Ed25519 SPKI Certificate body
+  is 53 bytes; Brotli payload is 57 bytes and CompressedCertificate body is
+  65 bytes. Amortized compression requested 34,333,162 Rust bytes; Interactive
+  requested 550,671. These are single diagnostic samples, not distributions.
+  The separate warm reconnect fixture timed out at its external 120-second guard
+  (exit124), after a cold TLS exchange; it is not a cache-hit performance result.
+  [Raw codec and partial reconnect logs](results/certificate/certificate/).
+- Strict Linux clippy passed at `a484f292`, after fixing two harness-only
+  collapsible conditions: `cargo clippy --locked -j4 --profile test-release
+  -p shards-remote --lib --tests -- -D warnings`.
+  [Raw log](results/certificate/harness-clippy-fixed.log).
 
 Exact r9 invocation, within an admitted runner command and the frozen source:
 
@@ -104,16 +116,21 @@ The trace is `alloc_zeroed(33554432)` → `alloc-stdlib::StandardAlloc::alloc_ce
 `compress.rs::BrotliCompressor::compress` → `CompressionCacheInner::compression_for`
 → server TLS 1.3 compressed Certificate emission. Source inspection finds H10
 history nodes initialized as `1 << lgwin`; the existing fixed `lgwin=22` creates
-`2^22 ×2 ×sizeof(u32) = 33,554,432` bytes when the streaming writer is not using
-the one-shot size reduction. This identifies the cost; it is not yet a chosen fix.
+`2^22 ×2 ×sizeof(u32) = 33,554,432` bytes. Further source attribution finds
+`BrotliMakeHasher` initializes H10 with `one_shot=false` and size0, even through
+the official one-shot/size-hint APIs. This identifies the underlying cost.
 
 RFC 8879 §4 permits an ordinary uncompressed Certificate response and explicitly
 covers raw-public-key Certificate encodings. Existing rustls compressors, Brotli
 input size hints, one-shot APIs and input-derived history windows are under
-comparison. No arbitrary size cutoff, compression policy change, cache or upstream
-edit is introduced in this checkpoint. The next certificate probe and existing
-cache reconnect test are present but were admission-refused before compilation;
-their results are **not run**. Wire packet/flight deltas, independent mutation,
+comparison. An isolated upstream input-derived-window experiment is rejected:
+it reduced the small RPK cost but increased peak memory and CPU above the old
+window boundary through the uint24 maximum. Rejection and all four raw boundary
+outcomes are retained on upstream `p/managed-certificate-window` at `bc2bc83`;
+no Shards vendor pin changed. A separate clean pinned-baseline certificate-type
+policy experiment is under review. The reconnect failure is independently owned
+by the quality lane; no cap increase, retry polling or cache masks it here.
+Native wire packet/flight deltas, independent mutation,
 unmodified-allocator calibration, TLS C malloc/copy/slab accounting and stronger
 host isolation remain owed. Any chosen hyper-tls/hyper-quic change must land in
 `~/Projects/hyper-raft` first, then be re-pinned in Shards.
@@ -122,7 +139,7 @@ host isolation remain owed. Any chosen hyper-tls/hyper-quic change must land in
 
 | Rule | Evidence / remaining gap |
 | --- | --- |
-| R01 | Product change is a test-only module hook. Harness setup uses fallible buffer reservations; retained existing Service/Driver APIs are unchanged. Strict clippy for the newest probe is admission-held, not passed. Tests may assert; no new production panic is added. |
+| R01 | Product change is a test-only module hook. Harness setup uses fallible buffer reservations; retained existing Service/Driver APIs are unchanged. Strict Linux clippy passed at a484f292; raw log linked above. Tests may assert; no new production panic is added. |
 | R02 | RFC 9000/8879/7932 and pinned Quinn/quic-go/rustls/Brotli alternatives inspected; real TLS data retained. No production architecture selected; certificate wire/cold-warm comparison remains owed. |
 | R03 | Fixture inputs explicit; bounds derive from channel allowances/protocol framing. No measured value becomes runtime policy. Existing compressor tuning remains under research. |
 | R04 | Existing Subscription/Slot/Ending states and typed Reasons are reused. Shared adapter is private and its connection-wide refusal mismatch is explicit. |

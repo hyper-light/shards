@@ -1,0 +1,435 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-performance-1496391d6e/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-performance-1496391d6e/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-performance-target/release/build/aws-lc-sys-be2e2b34075e8084/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (/home/adalundhe/managed-performance-target/release/deps/shards_remote-7bf651ecd2ac984e)
+
+running 1 test
+test managed::performance::native_certificate_cost ... certificate	algorithm=Brotli	level=Interactive	encoded_bytes=53	compressed_payload_bytes=57	compressed_message_bytes=65	uncompressed_message_bytes=53
+phase	direct_compression	wall_ns=221813	alloc=28	realloc=1	free=28	allocated_bytes=550671	live_bytes=4181	live_delta=4	peak_bytes=554791	minor_faults=276	major_faults=0	user_us=0	system_us=1361
+resource	direct_compression	/proc/self/status	Name:	shards_remote-7
+resource	direct_compression	/proc/self/status	Umask:	0022
+resource	direct_compression	/proc/self/status	State:	S (sleeping)
+resource	direct_compression	/proc/self/status	Tgid:	1763694
+resource	direct_compression	/proc/self/status	Ngid:	0
+resource	direct_compression	/proc/self/status	Pid:	1763694
+resource	direct_compression	/proc/self/status	PPid:	1763492
+resource	direct_compression	/proc/self/status	TracerPid:	0
+resource	direct_compression	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	FDSize:	64
+resource	direct_compression	/proc/self/status	Groups:	10 965 1000 
+resource	direct_compression	/proc/self/status	NStgid:	1763694
+resource	direct_compression	/proc/self/status	NSpid:	1763694
+resource	direct_compression	/proc/self/status	NSpgid:	1763491
+resource	direct_compression	/proc/self/status	NSsid:	1945
+resource	direct_compression	/proc/self/status	Kthread:	0
+resource	direct_compression	/proc/self/status	VmPeak:	  143656 kB
+resource	direct_compression	/proc/self/status	VmSize:	   78136 kB
+resource	direct_compression	/proc/self/status	VmLck:	       0 kB
+resource	direct_compression	/proc/self/status	VmPin:	       0 kB
+resource	direct_compression	/proc/self/status	VmHWM:	    5720 kB
+resource	direct_compression	/proc/self/status	VmRSS:	    5720 kB
+resource	direct_compression	/proc/self/status	RssAnon:	     384 kB
+resource	direct_compression	/proc/self/status	RssFile:	    5336 kB
+resource	direct_compression	/proc/self/status	RssShmem:	       0 kB
+resource	direct_compression	/proc/self/status	VmData:	    2428 kB
+resource	direct_compression	/proc/self/status	VmStk:	     136 kB
+resource	direct_compression	/proc/self/status	VmExe:	    4752 kB
+resource	direct_compression	/proc/self/status	VmLib:	    2376 kB
+resource	direct_compression	/proc/self/status	VmPTE:	      68 kB
+resource	direct_compression	/proc/self/status	VmSwap:	       0 kB
+resource	direct_compression	/proc/self/status	HugetlbPages:	       0 kB
+resource	direct_compression	/proc/self/status	CoreDumping:	0
+resource	direct_compression	/proc/self/status	THP_enabled:	1
+resource	direct_compression	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	direct_compression	/proc/self/status	Threads:	2
+resource	direct_compression	/proc/self/status	SigQ:	1/255424
+resource	direct_compression	/proc/self/status	SigPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	ShdPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	SigBlk:	0000000000000000
+resource	direct_compression	/proc/self/status	SigIgn:	0000000000001000
+resource	direct_compression	/proc/self/status	SigCgt:	0000000100000440
+resource	direct_compression	/proc/self/status	CapInh:	0000000800000000
+resource	direct_compression	/proc/self/status	CapPrm:	0000000000000000
+resource	direct_compression	/proc/self/status	CapEff:	0000000000000000
+resource	direct_compression	/proc/self/status	CapBnd:	000001ffffffffff
+resource	direct_compression	/proc/self/status	CapAmb:	0000000000000000
+resource	direct_compression	/proc/self/status	NoNewPrivs:	0
+resource	direct_compression	/proc/self/status	Seccomp:	0
+resource	direct_compression	/proc/self/status	Seccomp_filters:	0
+resource	direct_compression	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	direct_compression	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	direct_compression	/proc/self/status	Cpus_allowed:	ffffffff
+resource	direct_compression	/proc/self/status	Cpus_allowed_list:	0-31
+resource	direct_compression	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	direct_compression	/proc/self/status	Mems_allowed_list:	0
+resource	direct_compression	/proc/self/status	voluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	nonvoluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	x86_Thread_features:	
+resource	direct_compression	/proc/self/status	x86_Thread_features_locked:	
+resource	direct_compression	/proc/self/smaps_rollup	557519eaf000-7ffefc917000 ---p 00000000 00:00 0                          [rollup]
+resource	direct_compression	/proc/self/smaps_rollup	Rss:                5720 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss:                3603 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Dirty:           384 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Anon:            384 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_File:           3219 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Clean:       2176 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Clean:      3160 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Dirty:       384 kB
+resource	direct_compression	/proc/self/smaps_rollup	Referenced:         5720 kB
+resource	direct_compression	/proc/self/smaps_rollup	Anonymous:           384 kB
+resource	direct_compression	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	direct_compression	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	direct_compression	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	direct_compression	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Locked:                0 kB
+resource	direct_compression	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c43535d97793af26f2b2ce40b21b
+resource	direct_compression	/proc/self/net/sockstat	sockets: used 977
+resource	direct_compression	/proc/self/net/sockstat	TCP: inuse 35 orphan 4 tw 1102 alloc 763 mem 2781
+resource	direct_compression	/proc/self/net/sockstat	UDP: inuse 20 mem 507
+resource	direct_compression	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	RAW: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	direct_compression	/proc/loadavg	15.32 19.56 21.32 13/3222 1763695
+resource	direct_compression	/proc/pressure/cpu	some avg10=0.33 avg60=0.24 avg300=1.03 total=7435056317
+resource	direct_compression	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	direct_compression	fds	9
+resource	direct_compression	tasks	2
+cgroup	direct_compression	cpu.stat	usage_usec 32102795
+cgroup	direct_compression	cpu.stat	user_usec 31302090
+cgroup	direct_compression	cpu.stat	system_usec 800704
+cgroup	direct_compression	cpu.stat	nice_usec 0
+cgroup	direct_compression	cpu.stat	core_sched.force_idle_usec 0
+certificate	algorithm=Brotli	level=Amortized	encoded_bytes=53	compressed_payload_bytes=57	compressed_message_bytes=65	uncompressed_message_bytes=53
+phase	direct_compression	wall_ns=1212661	alloc=51	realloc=1	free=51	allocated_bytes=34333162	live_bytes=4181	live_delta=4	peak_bytes=34267050	minor_faults=454	major_faults=0	user_us=1609	system_us=1617
+resource	direct_compression	/proc/self/status	Name:	shards_remote-7
+resource	direct_compression	/proc/self/status	Umask:	0022
+resource	direct_compression	/proc/self/status	State:	S (sleeping)
+resource	direct_compression	/proc/self/status	Tgid:	1763694
+resource	direct_compression	/proc/self/status	Ngid:	0
+resource	direct_compression	/proc/self/status	Pid:	1763694
+resource	direct_compression	/proc/self/status	PPid:	1763492
+resource	direct_compression	/proc/self/status	TracerPid:	0
+resource	direct_compression	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	FDSize:	64
+resource	direct_compression	/proc/self/status	Groups:	10 965 1000 
+resource	direct_compression	/proc/self/status	NStgid:	1763694
+resource	direct_compression	/proc/self/status	NSpid:	1763694
+resource	direct_compression	/proc/self/status	NSpgid:	1763491
+resource	direct_compression	/proc/self/status	NSsid:	1945
+resource	direct_compression	/proc/self/status	Kthread:	0
+resource	direct_compression	/proc/self/status	VmPeak:	  143656 kB
+resource	direct_compression	/proc/self/status	VmSize:	   78136 kB
+resource	direct_compression	/proc/self/status	VmLck:	       0 kB
+resource	direct_compression	/proc/self/status	VmPin:	       0 kB
+resource	direct_compression	/proc/self/status	VmHWM:	    6780 kB
+resource	direct_compression	/proc/self/status	VmRSS:	    6780 kB
+resource	direct_compression	/proc/self/status	RssAnon:	    1064 kB
+resource	direct_compression	/proc/self/status	RssFile:	    5716 kB
+resource	direct_compression	/proc/self/status	RssShmem:	       0 kB
+resource	direct_compression	/proc/self/status	VmData:	    3004 kB
+resource	direct_compression	/proc/self/status	VmStk:	     136 kB
+resource	direct_compression	/proc/self/status	VmExe:	    4752 kB
+resource	direct_compression	/proc/self/status	VmLib:	    2376 kB
+resource	direct_compression	/proc/self/status	VmPTE:	      68 kB
+resource	direct_compression	/proc/self/status	VmSwap:	       0 kB
+resource	direct_compression	/proc/self/status	HugetlbPages:	       0 kB
+resource	direct_compression	/proc/self/status	CoreDumping:	0
+resource	direct_compression	/proc/self/status	THP_enabled:	1
+resource	direct_compression	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	direct_compression	/proc/self/status	Threads:	2
+resource	direct_compression	/proc/self/status	SigQ:	1/255424
+resource	direct_compression	/proc/self/status	SigPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	ShdPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	SigBlk:	0000000000000000
+resource	direct_compression	/proc/self/status	SigIgn:	0000000000001000
+resource	direct_compression	/proc/self/status	SigCgt:	0000000100000440
+resource	direct_compression	/proc/self/status	CapInh:	0000000800000000
+resource	direct_compression	/proc/self/status	CapPrm:	0000000000000000
+resource	direct_compression	/proc/self/status	CapEff:	0000000000000000
+resource	direct_compression	/proc/self/status	CapBnd:	000001ffffffffff
+resource	direct_compression	/proc/self/status	CapAmb:	0000000000000000
+resource	direct_compression	/proc/self/status	NoNewPrivs:	0
+resource	direct_compression	/proc/self/status	Seccomp:	0
+resource	direct_compression	/proc/self/status	Seccomp_filters:	0
+resource	direct_compression	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	direct_compression	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	direct_compression	/proc/self/status	Cpus_allowed:	ffffffff
+resource	direct_compression	/proc/self/status	Cpus_allowed_list:	0-31
+resource	direct_compression	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	direct_compression	/proc/self/status	Mems_allowed_list:	0
+resource	direct_compression	/proc/self/status	voluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	nonvoluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	x86_Thread_features:	
+resource	direct_compression	/proc/self/status	x86_Thread_features_locked:	
+resource	direct_compression	/proc/self/smaps_rollup	557519eaf000-7ffefc917000 ---p 00000000 00:00 0                          [rollup]
+resource	direct_compression	/proc/self/smaps_rollup	Rss:                6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss:                4524 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Dirty:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Anon:           1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_File:           3460 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Clean:       2356 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Clean:      3360 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Dirty:      1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Referenced:         6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Anonymous:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	direct_compression	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	direct_compression	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	direct_compression	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Locked:                0 kB
+resource	direct_compression	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c43535d97793af26f2b2ce40b21b
+resource	direct_compression	/proc/self/net/sockstat	sockets: used 977
+resource	direct_compression	/proc/self/net/sockstat	TCP: inuse 35 orphan 4 tw 1102 alloc 763 mem 2781
+resource	direct_compression	/proc/self/net/sockstat	UDP: inuse 20 mem 507
+resource	direct_compression	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	RAW: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	direct_compression	/proc/loadavg	15.32 19.56 21.32 17/3228 1763701
+resource	direct_compression	/proc/pressure/cpu	some avg10=0.33 avg60=0.24 avg300=1.03 total=7435056322
+resource	direct_compression	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	direct_compression	fds	9
+resource	direct_compression	tasks	2
+cgroup	direct_compression	cpu.stat	usage_usec 32104660
+cgroup	direct_compression	cpu.stat	user_usec 31303955
+cgroup	direct_compression	cpu.stat	system_usec 800704
+cgroup	direct_compression	cpu.stat	nice_usec 0
+cgroup	direct_compression	cpu.stat	core_sched.force_idle_usec 0
+certificate	algorithm=Zlib	level=Interactive	encoded_bytes=53	compressed_payload_bytes=64	compressed_message_bytes=72	uncompressed_message_bytes=53
+phase	direct_compression	wall_ns=42638	alloc=2	realloc=0	free=2	allocated_bytes=380101	live_bytes=4193	live_delta=16	peak_bytes=34267050	minor_faults=454	major_faults=0	user_us=1903	system_us=1913
+resource	direct_compression	/proc/self/status	Name:	shards_remote-7
+resource	direct_compression	/proc/self/status	Umask:	0022
+resource	direct_compression	/proc/self/status	State:	S (sleeping)
+resource	direct_compression	/proc/self/status	Tgid:	1763694
+resource	direct_compression	/proc/self/status	Ngid:	0
+resource	direct_compression	/proc/self/status	Pid:	1763694
+resource	direct_compression	/proc/self/status	PPid:	1763492
+resource	direct_compression	/proc/self/status	TracerPid:	0
+resource	direct_compression	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	FDSize:	64
+resource	direct_compression	/proc/self/status	Groups:	10 965 1000 
+resource	direct_compression	/proc/self/status	NStgid:	1763694
+resource	direct_compression	/proc/self/status	NSpid:	1763694
+resource	direct_compression	/proc/self/status	NSpgid:	1763491
+resource	direct_compression	/proc/self/status	NSsid:	1945
+resource	direct_compression	/proc/self/status	Kthread:	0
+resource	direct_compression	/proc/self/status	VmPeak:	  143656 kB
+resource	direct_compression	/proc/self/status	VmSize:	   78136 kB
+resource	direct_compression	/proc/self/status	VmLck:	       0 kB
+resource	direct_compression	/proc/self/status	VmPin:	       0 kB
+resource	direct_compression	/proc/self/status	VmHWM:	    6780 kB
+resource	direct_compression	/proc/self/status	VmRSS:	    6780 kB
+resource	direct_compression	/proc/self/status	RssAnon:	    1064 kB
+resource	direct_compression	/proc/self/status	RssFile:	    5716 kB
+resource	direct_compression	/proc/self/status	RssShmem:	       0 kB
+resource	direct_compression	/proc/self/status	VmData:	    3004 kB
+resource	direct_compression	/proc/self/status	VmStk:	     136 kB
+resource	direct_compression	/proc/self/status	VmExe:	    4752 kB
+resource	direct_compression	/proc/self/status	VmLib:	    2376 kB
+resource	direct_compression	/proc/self/status	VmPTE:	      68 kB
+resource	direct_compression	/proc/self/status	VmSwap:	       0 kB
+resource	direct_compression	/proc/self/status	HugetlbPages:	       0 kB
+resource	direct_compression	/proc/self/status	CoreDumping:	0
+resource	direct_compression	/proc/self/status	THP_enabled:	1
+resource	direct_compression	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	direct_compression	/proc/self/status	Threads:	2
+resource	direct_compression	/proc/self/status	SigQ:	1/255424
+resource	direct_compression	/proc/self/status	SigPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	ShdPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	SigBlk:	0000000000000000
+resource	direct_compression	/proc/self/status	SigIgn:	0000000000001000
+resource	direct_compression	/proc/self/status	SigCgt:	0000000100000440
+resource	direct_compression	/proc/self/status	CapInh:	0000000800000000
+resource	direct_compression	/proc/self/status	CapPrm:	0000000000000000
+resource	direct_compression	/proc/self/status	CapEff:	0000000000000000
+resource	direct_compression	/proc/self/status	CapBnd:	000001ffffffffff
+resource	direct_compression	/proc/self/status	CapAmb:	0000000000000000
+resource	direct_compression	/proc/self/status	NoNewPrivs:	0
+resource	direct_compression	/proc/self/status	Seccomp:	0
+resource	direct_compression	/proc/self/status	Seccomp_filters:	0
+resource	direct_compression	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	direct_compression	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	direct_compression	/proc/self/status	Cpus_allowed:	ffffffff
+resource	direct_compression	/proc/self/status	Cpus_allowed_list:	0-31
+resource	direct_compression	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	direct_compression	/proc/self/status	Mems_allowed_list:	0
+resource	direct_compression	/proc/self/status	voluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	nonvoluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	x86_Thread_features:	
+resource	direct_compression	/proc/self/status	x86_Thread_features_locked:	
+resource	direct_compression	/proc/self/smaps_rollup	557519eaf000-7ffefc917000 ---p 00000000 00:00 0                          [rollup]
+resource	direct_compression	/proc/self/smaps_rollup	Rss:                6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss:                4520 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Dirty:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Anon:           1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_File:           3456 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Clean:       2356 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Clean:      3360 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Dirty:      1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Referenced:         6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Anonymous:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	direct_compression	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	direct_compression	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	direct_compression	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Locked:                0 kB
+resource	direct_compression	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c43535d97793af26f2b2ce40b21b
+resource	direct_compression	/proc/self/net/sockstat	sockets: used 977
+resource	direct_compression	/proc/self/net/sockstat	TCP: inuse 35 orphan 4 tw 1102 alloc 763 mem 2781
+resource	direct_compression	/proc/self/net/sockstat	UDP: inuse 20 mem 507
+resource	direct_compression	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	RAW: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	direct_compression	/proc/loadavg	15.32 19.56 21.32 23/3230 1763703
+resource	direct_compression	/proc/pressure/cpu	some avg10=0.33 avg60=0.24 avg300=1.03 total=7435056322
+resource	direct_compression	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	direct_compression	fds	9
+resource	direct_compression	tasks	2
+cgroup	direct_compression	cpu.stat	usage_usec 32105601
+cgroup	direct_compression	cpu.stat	user_usec 31303955
+cgroup	direct_compression	cpu.stat	system_usec 801645
+cgroup	direct_compression	cpu.stat	nice_usec 0
+cgroup	direct_compression	cpu.stat	core_sched.force_idle_usec 0
+certificate	algorithm=Zlib	level=Amortized	encoded_bytes=53	compressed_payload_bytes=64	compressed_message_bytes=72	uncompressed_message_bytes=53
+phase	direct_compression	wall_ns=28767	alloc=2	realloc=0	free=2	allocated_bytes=380101	live_bytes=4193	live_delta=16	peak_bytes=34267050	minor_faults=454	major_faults=0	user_us=1903	system_us=2378
+resource	direct_compression	/proc/self/status	Name:	shards_remote-7
+resource	direct_compression	/proc/self/status	Umask:	0022
+resource	direct_compression	/proc/self/status	State:	S (sleeping)
+resource	direct_compression	/proc/self/status	Tgid:	1763694
+resource	direct_compression	/proc/self/status	Ngid:	0
+resource	direct_compression	/proc/self/status	Pid:	1763694
+resource	direct_compression	/proc/self/status	PPid:	1763492
+resource	direct_compression	/proc/self/status	TracerPid:	0
+resource	direct_compression	/proc/self/status	Uid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	Gid:	1000	1000	1000	1000
+resource	direct_compression	/proc/self/status	FDSize:	64
+resource	direct_compression	/proc/self/status	Groups:	10 965 1000 
+resource	direct_compression	/proc/self/status	NStgid:	1763694
+resource	direct_compression	/proc/self/status	NSpid:	1763694
+resource	direct_compression	/proc/self/status	NSpgid:	1763491
+resource	direct_compression	/proc/self/status	NSsid:	1945
+resource	direct_compression	/proc/self/status	Kthread:	0
+resource	direct_compression	/proc/self/status	VmPeak:	  143656 kB
+resource	direct_compression	/proc/self/status	VmSize:	   78136 kB
+resource	direct_compression	/proc/self/status	VmLck:	       0 kB
+resource	direct_compression	/proc/self/status	VmPin:	       0 kB
+resource	direct_compression	/proc/self/status	VmHWM:	    6780 kB
+resource	direct_compression	/proc/self/status	VmRSS:	    6780 kB
+resource	direct_compression	/proc/self/status	RssAnon:	    1064 kB
+resource	direct_compression	/proc/self/status	RssFile:	    5716 kB
+resource	direct_compression	/proc/self/status	RssShmem:	       0 kB
+resource	direct_compression	/proc/self/status	VmData:	    3004 kB
+resource	direct_compression	/proc/self/status	VmStk:	     136 kB
+resource	direct_compression	/proc/self/status	VmExe:	    4752 kB
+resource	direct_compression	/proc/self/status	VmLib:	    2376 kB
+resource	direct_compression	/proc/self/status	VmPTE:	      68 kB
+resource	direct_compression	/proc/self/status	VmSwap:	       0 kB
+resource	direct_compression	/proc/self/status	HugetlbPages:	       0 kB
+resource	direct_compression	/proc/self/status	CoreDumping:	0
+resource	direct_compression	/proc/self/status	THP_enabled:	1
+resource	direct_compression	/proc/self/status	untag_mask:	0xffffffffffffffff
+resource	direct_compression	/proc/self/status	Threads:	2
+resource	direct_compression	/proc/self/status	SigQ:	1/255424
+resource	direct_compression	/proc/self/status	SigPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	ShdPnd:	0000000000000000
+resource	direct_compression	/proc/self/status	SigBlk:	0000000000000000
+resource	direct_compression	/proc/self/status	SigIgn:	0000000000001000
+resource	direct_compression	/proc/self/status	SigCgt:	0000000100000440
+resource	direct_compression	/proc/self/status	CapInh:	0000000800000000
+resource	direct_compression	/proc/self/status	CapPrm:	0000000000000000
+resource	direct_compression	/proc/self/status	CapEff:	0000000000000000
+resource	direct_compression	/proc/self/status	CapBnd:	000001ffffffffff
+resource	direct_compression	/proc/self/status	CapAmb:	0000000000000000
+resource	direct_compression	/proc/self/status	NoNewPrivs:	0
+resource	direct_compression	/proc/self/status	Seccomp:	0
+resource	direct_compression	/proc/self/status	Seccomp_filters:	0
+resource	direct_compression	/proc/self/status	Speculation_Store_Bypass:	thread vulnerable
+resource	direct_compression	/proc/self/status	SpeculationIndirectBranch:	conditional enabled
+resource	direct_compression	/proc/self/status	Cpus_allowed:	ffffffff
+resource	direct_compression	/proc/self/status	Cpus_allowed_list:	0-31
+resource	direct_compression	/proc/self/status	Mems_allowed:	00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001
+resource	direct_compression	/proc/self/status	Mems_allowed_list:	0
+resource	direct_compression	/proc/self/status	voluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	nonvoluntary_ctxt_switches:	1
+resource	direct_compression	/proc/self/status	x86_Thread_features:	
+resource	direct_compression	/proc/self/status	x86_Thread_features_locked:	
+resource	direct_compression	/proc/self/smaps_rollup	557519eaf000-7ffefc917000 ---p 00000000 00:00 0                          [rollup]
+resource	direct_compression	/proc/self/smaps_rollup	Rss:                6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss:                4519 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Dirty:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Anon:           1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_File:           3455 kB
+resource	direct_compression	/proc/self/smaps_rollup	Pss_Shmem:             0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Clean:       2356 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Dirty:          0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Clean:      3360 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Dirty:      1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	Referenced:         6780 kB
+resource	direct_compression	/proc/self/smaps_rollup	Anonymous:          1064 kB
+resource	direct_compression	/proc/self/smaps_rollup	KSM:                   0 kB
+resource	direct_compression	/proc/self/smaps_rollup	LazyFree:              0 kB
+resource	direct_compression	/proc/self/smaps_rollup	AnonHugePages:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	ShmemPmdMapped:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	FilePmdMapped:         0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Shared_Hugetlb:        0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Private_Hugetlb:       0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Swap:                  0 kB
+resource	direct_compression	/proc/self/smaps_rollup	SwapPss:               0 kB
+resource	direct_compression	/proc/self/smaps_rollup	Locked:                0 kB
+resource	direct_compression	/proc/self/cgroup	0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2272/run-01a1c43535d97793af26f2b2ce40b21b
+resource	direct_compression	/proc/self/net/sockstat	sockets: used 977
+resource	direct_compression	/proc/self/net/sockstat	TCP: inuse 35 orphan 4 tw 1102 alloc 763 mem 2781
+resource	direct_compression	/proc/self/net/sockstat	UDP: inuse 20 mem 507
+resource	direct_compression	/proc/self/net/sockstat	UDPLITE: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	RAW: inuse 0
+resource	direct_compression	/proc/self/net/sockstat	FRAG: inuse 0 memory 0
+resource	direct_compression	/proc/loadavg	15.32 19.56 21.32 17/3235 1763708
+resource	direct_compression	/proc/pressure/cpu	some avg10=0.33 avg60=0.24 avg300=1.03 total=7435056322
+resource	direct_compression	/proc/pressure/cpu	full avg10=0.00 avg60=0.00 avg300=0.00 total=0
+resource	direct_compression	fds	9
+resource	direct_compression	tasks	2
+cgroup	direct_compression	cpu.stat	usage_usec 32105716
+cgroup	direct_compression	cpu.stat	user_usec 31304025
+cgroup	direct_compression	cpu.stat	system_usec 801690
+cgroup	direct_compression	cpu.stat	nice_usec 0
+cgroup	direct_compression	cpu.stat	core_sched.force_idle_usec 0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.00s
+
