@@ -2,8 +2,10 @@
 
 First signed core: `6ab0a06f3594b172f2c667a3dc6f5458562fc7bd`. The
 shared-source/parser/native follow-up now has the eight actual TCP passes in
-[NATIVE.md](NATIVE.md). Production `engine.rs` wiring remains an unsigned
-candidate, uncompiled as the normal init caller and unverified for Unix/VSOCK.
+[NATIVE.md](NATIVE.md). Production `engine.rs` wiring now has a
+[compiled caller checkpoint](engine-consumer/README.md): normal static-musl
+guest build and strict init Clippy pass. Unix/VSOCK runtime compatibility
+remains unverified on that candidate.
 Existing first-checkpoint passes do not cover later changes. Current policy
 cbd392/df2acf applies; renewed readback accepted
 by ROOT at6120. First actual code checkpoint sent at6127, extraction interface
@@ -31,7 +33,7 @@ TCP uses independent halves and finite caller byte limits. The current engine
 copy ends its Unix side when host copying ends; the candidate EndPolicy names
 that difference and distinguishes actual source EOF from peer-driven stop.
 **Actual old Unix/VSOCK half-close observations are still required** to preserve
-or explicitly evolve that behavior. The unsigned wiring candidate is not an
+or explicitly evolve that behavior. The compiled wiring candidate is not an
 assertion of measured equivalence or approved route coverage. HELLO/header/token
 bytes, token verification and grants are unchanged. No authentication material
 is logged.

@@ -15,6 +15,13 @@ mod wire;
 use wire::Netlink;
 
 #[path = "../../../init/src/relay.rs"]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the same module's process-owned engine policy is consumed by init"
+    )
+)]
 pub(super) mod shared;
 
 // RFC5737 documentation networks, with /30 point-to-point fixture links. These

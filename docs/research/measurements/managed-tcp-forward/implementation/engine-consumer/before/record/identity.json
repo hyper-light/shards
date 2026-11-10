@@ -1,0 +1,19 @@
+{
+  "base": "c0807cac94cfb7dd291c82ffab88bdd00b656bfb",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source": [
+    {
+      "path": "crates/init/src/engine.rs",
+      "sha256": "80f0c2035cfd0f74b561bcb7b52cbc7e17ffa2333d4aeb990965df9ac1483147"
+    },
+    {
+      "path": "crates/init/src/relay.rs",
+      "sha256": "ab2ac5712e25dcd7210bdde287f126eda3c8b96ed2101c93c2055629d6fe5951"
+    }
+  ],
+  "scope": "normal init build/clippy only; no native actor or VM launch",
+  "cpu_affinity": [
+    0
+  ]
+}

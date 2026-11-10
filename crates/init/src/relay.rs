@@ -645,10 +645,10 @@ pub(crate) fn pump(
     end: EndPolicy,
     report: &mut Report,
 ) -> Result<Termination, Fault> {
-    if let Control::Until(d) = deadline {
-        if d.cancel.is_none() {
-            return Err(Fault::Control(io::ErrorKind::InvalidInput));
-        }
+    if let Control::Until(d) = deadline
+        && d.cancel.is_none()
+    {
+        return Err(Fault::Control(io::ErrorKind::InvalidInput));
     }
     let [client, backend] = streams;
     let [request, response] = limits;

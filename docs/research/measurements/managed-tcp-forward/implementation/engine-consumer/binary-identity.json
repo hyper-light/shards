@@ -1,0 +1,8 @@
+{
+  "frozen_binary": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/artifacts/shards-init",
+  "bytes": 2099624,
+  "sha256": "af0e18735cf7b76f0a3196ed17ddfbfda045000279e967d777b96c7102684162",
+  "source": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/source",
+  "target": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/target",
+  "scope": "static-musl init build+strict clippy only; no native/KVM runtime from this candidate"
+}

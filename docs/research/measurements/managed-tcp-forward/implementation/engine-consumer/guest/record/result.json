@@ -1,0 +1,57 @@
+[
+  {
+    "name": "policy",
+    "status": 0,
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "log": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/record/policy.log",
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "name": "build",
+    "status": 0,
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "cargo",
+      "build",
+      "-p",
+      "shards-init",
+      "--profile",
+      "guest",
+      "--target",
+      "x86_64-unknown-linux-musl",
+      "-j",
+      "2"
+    ],
+    "log": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/record/build.log",
+    "sha256": "7e98b88f04b6959aee9502dc2ac3d165828b635e71c382fe2bba7cbc37be7028"
+  },
+  {
+    "name": "clippy",
+    "status": 0,
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "cargo",
+      "clippy",
+      "-p",
+      "shards-init",
+      "--bin",
+      "shards-init",
+      "--target",
+      "x86_64-unknown-linux-musl",
+      "-j",
+      "2",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log": "/home/adalundhe/relay-tcp-engine-consumer-2586-guest-v1/record/clippy.log",
+    "sha256": "48a70ec498ba3cad2031b9460290b0c687be428217a248cd51106d57f68a0efe"
+  }
+]

@@ -21,6 +21,10 @@ witnesses and owned descriptor/child return. It changes no production pump bytes
 extra-byte refusal, actual independent extra-byte delivery with only that ceiling
 removed, exact restoration and six restored native controls.
 
+[Production consumer](engine-consumer/README.md) wires the actual init engine
+caller to that single shared source and records normal static-musl guest build
+and strict caller lint. Runtime before/after compatibility remains unverified.
+
 Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; reviewed design
 `c584e877f56d97736e325eae2cb9fa2be97fdfc0`. Role: implementer and assigned
 adversarial relay tester, Kiln `01a1c5d2ee0e7248982c95a59f1fd905`; ROOT

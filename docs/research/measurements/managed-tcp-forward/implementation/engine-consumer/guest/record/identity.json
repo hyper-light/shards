@@ -1,0 +1,24 @@
+{
+  "base": "2586c72ce714b5974f9c5eca52ce9d80cd0d5b92",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source": [
+    {
+      "path": "crates/init/src/engine.rs",
+      "sha256": "77579f5d2ee2f1a465727960aa67e925a2d5051685232b9066be518894c6a8d1"
+    },
+    {
+      "path": "crates/init/src/relay.rs",
+      "sha256": "d1ce87f9f44dca7a2ea9cfb3c2077e2d6fb82796ccd6fb4548374e891f5e96ff"
+    }
+  ],
+  "scope": "normal init build/clippy only; no native actor or VM launch",
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "compiler_rlimit_as_bytes": 8589934592,
+  "envelope_source": "same successful r61 normal guest build AS bound; not a VM launch or runtime/DAX limit"
+}

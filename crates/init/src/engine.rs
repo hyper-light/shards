@@ -10,10 +10,17 @@
 //! refused), and relays the bytes each way until either side ends.
 
 use std::io::{self, Write as _};
-use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use shards_abi::run;
+
+#[path = "relay.rs"]
+#[expect(
+    dead_code,
+    reason = "this path-shared module also serves testguest's bounded TCP/cancellation caller"
+)]
+mod native_relay;
 
 /// The listener's tag on the standby's error channel, as [`crate::hostbind::LISTENER`]
 /// tags its filter's.
@@ -113,26 +120,39 @@ fn serve(listener: &UnixListener, token: &[u8; run::TOKEN]) {
 /// either side ends. The host's end ends the client's both ways, so that a client that
 /// keeps its connection open holds no thread here once the engine has closed it.
 fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
+    // Reserve the two minimum private mapping units before dialing or releasing
+    // HELLO. The kernel supplies the page size; this flow never grows or caches.
+    let slots = match native_relay::Slots::minimum_mapped() {
+        Ok(slots) => slots,
+        Err(error) => {
+            let _ = writeln!(io::stderr(), "shards-init: engine reservation: {error:?}");
+            return;
+        }
+    };
     let Ok(host) = crate::run::dial(run::ENGINE_PORT, true) else {
         return;
     };
-    let mut hello = run::header(run::kind::HELLO, run::TOKEN as u32).to_vec();
-    hello.extend_from_slice(token);
+    let mut hello = [0u8; run::HEADER + run::TOKEN];
+    let header = run::header(run::kind::HELLO, run::TOKEN as u32);
+    for (out, byte) in hello.iter_mut().zip(header.iter().chain(token)) {
+        *out = *byte;
+    }
     if (&host).write_all(&hello).is_err() {
         return;
     }
-    std::thread::scope(|s| {
-        let up = std::thread::Builder::new()
-            .name("engine up".into())
-            .spawn_scoped(s, || {
-                let _ = io::copy(&mut &conn, &mut &host);
-                // SAFETY: shutdown(2) of a descriptor this thread borrows.
-                unsafe { libc::shutdown(host.as_raw_fd(), libc::SHUT_WR) };
-            });
-        if up.is_ok() {
-            let _ = io::copy(&mut &host, &mut &conn);
-        }
-        // Wakes the up thread's read, which then ends (Linux unix_shutdown).
-        let _ = conn.shutdown(std::net::Shutdown::Both);
-    });
+    let mut report = native_relay::Report::new();
+    let result = native_relay::pump(
+        [conn.as_fd(), host.as_fd()],
+        slots,
+        [native_relay::ByteLimit::PeerEnd; 2],
+        native_relay::Control::ProcessOwned,
+        native_relay::EndPolicy::EnginePeerEnd,
+        &mut report,
+    );
+    // Preserve the engine's existing whole-connection end on host EOF. The pump
+    // records a peer-driven stop separately from actual EOF on the Unix source.
+    let _ = conn.shutdown(std::net::Shutdown::Both);
+    if let Err(error) = result {
+        let _ = writeln!(io::stderr(), "shards-init: engine relay: {error:?}");
+    }
 }
