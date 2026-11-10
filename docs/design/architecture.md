@@ -7240,6 +7240,17 @@ host (PM M267), where a container's page cache is its host's to drop. Free page 
   unbudgeted time at every least room from 1 to 16 times this one (a Xeon's three reads at
   8 times, 1.07), and with the buffers kept 1.19 to 1.31 times on the EPYCs and 1.86 on a
   Xeon 8573C, its unbudgeted reads 0.50 to 0.62 times as long.
+- **A template's zero gaps stay anonymous on restore.** Unix maps only the snapshot's
+  recorded runs of data from its RAM file, as Windows does; the gaps keep their reserved
+  anonymous zero memory. Mapping the sparse file whole made a read of a hole allocate a
+  page in a tmpfs file (`mm/shmem.c`, `shmem_fault`), which stayed charged as shmem even
+  after that restore ended. Repeated restores could fill the template's holes and leave
+  a short budget with nothing its host could reclaim, throttling the share's reads at
+  `memory.high`. The file-backed runs keep their private, copy-on-write mappings. A
+  snapshot from before the runs were recorded still maps the file whole. The memory test
+  `a_restores_zero_gaps_do_not_fill_its_templates_sparse_file` checks that reads and private
+  writes leave those holes unallocated and another restore's bytes unchanged; on Fedora's
+  tmpfs it fails before the fix and passes after it.
 - **File pages alone.** A clean page of the page cache the guest drops is one the host
   could only have swapped out, written and read back; dropping it reads none of its data.
   Anonymous memory and the tmpfs layer, the host's own reclaim takes as well as the guest
