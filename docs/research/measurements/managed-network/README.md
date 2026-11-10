@@ -131,6 +131,30 @@ grants/security, record misses and publish actual 4–5× target ratios only if 
 No topology, nft policy, relay or mechanism choice is silently installed by this
 harness. Existing anti-spoofing/grants/conntrack remain independent requirements.
 
+## Coordinator experimental kernel build
+
+`build-experimental-kernel.sh CHECKOUT EXACT_REV NEW_ABSOLUTE_DIRECTORY JOBS MEMORY`
+builds the existing kernel and patches with only the two-symbol experimental
+fragment. The CPU/memory arguments are the coordinator's assigned runner envelope,
+not learned runtime policy. It requires a non-root host UID and verified rootless
+Podman. Its private empty registry/Docker configuration never reads user sign-in.
+Only newly created private inputs/output are bind-mounted; no privileged container,
+host package installation, production pin or crypto change is used.
+
+The builder digest, snapshot packages and Linux source checksum come directly
+from that exact checkout. Two retained script substitutions constrain `make` to
+the assigned jobs and keep the unpacked/patched source on failure. Every input,
+the exact substitutions, builder identity, toolchain, full build log, exit status
+and effective `.config` are retained. Container UID 0 is mapped to the ordinary
+host user by rootless Podman; it is not host root. See the upstream
+[Podman run contract](https://docs.podman.io/en/latest/markdown/podman-run.1.html).
+
+This is a repeatable experiment, not a release build or proof of interception.
+One successful build does not establish reproducible independent builds, arm64,
+boot compatibility, feature-failure behavior, packet mediation or measured cost.
+Runtime source/destination observations and the real-guest comparison remain
+required before selecting any product mechanism. Build result pending.
+
 ## Light validation and rule account
 
 From a Linux checkout, `sh docs/research/measurements/managed-network/light-check.sh`
