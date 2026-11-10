@@ -49,6 +49,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7.0.1
+      - run: python3 scripts/check-development-policy
       - run: scripts/retry 5 30 rustup toolchain install "$TOOLCHAIN" --profile minimal --component rustfmt
       - run: cargo fmt --all --check
 
@@ -127,7 +128,6 @@ jobs:
       matrix:
         include:
           - { target: aarch64-apple-darwin, runner: macos-15, test: true }
-          - { target: x86_64-apple-darwin, runner: macos-15, test: false }
           - { target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, test: true }
           - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, test: true }
           - { target: x86_64-pc-windows-msvc, runner: windows-2025, test: true, tests_minutes: 122, job_minutes: 144 }

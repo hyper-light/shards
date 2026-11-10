@@ -1,0 +1,21 @@
+Development-policy live checks
+Base revision 07564e0681a3c553bc9bab913bd7d000d83d801b
+Policy SHA256 0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936
+macOS-26.4.1-arm64-arm-64bit
+Python 3.9.6 (default, May 22 2026, 11:13:45) [Clang 21.0.0 (clang-2100.1.1.101)]
+baseline: exit=0
+Development policy checks passed; evidence/coordinator review is still required.
+panic-lint-relaxed: exit=1
+production panic-related lint panic must remain denied
+Intel-Mac-restored: exit=1
+ci.yml targets differ from supported-targets.txt: ['aarch64-apple-darwin', 'x86_64-apple-darwin']
+arm64-Windows-dropped: exit=1
+supported targets must retain every R11 platform/architecture/libc
+ci.yml targets differ from supported-targets.txt: ['aarch64-pc-windows-msvc']
+release.yml targets differ from supported-targets.txt: ['aarch64-pc-windows-msvc']
+policy-pointer-removed: exit=1
+CLAUDE.md must require the binding policy
+label-only-edit-remains-valid: exit=0
+Development policy checks passed; evidence/coordinator review is still required.
+rule-omitted: exit=1
+binding policy must contain R01–R16 exactly once, in order

@@ -1,6 +1,6 @@
 # Managed agents and harnesses: implementation plan and gap register
 
-Status: proposed plan, not an implemented management layer. Prepared 2026-11-09
+Status: implementation authorized; phases remain incomplete until their evidence gates pass. Read [the binding development rules](../development-rules.md) before work. Current support excludes Intel Mac; resources/supported-targets.txt defines the seven-target set. Prepared 2026-11-09
 Pacific / 2026-11-10 UTC against integration
 `9d562993503ab94a699b71e680b690a42436fc71`.
 
@@ -71,7 +71,7 @@ enumerate every unrelated Shards defect or certify every existing isolation rule
 | G20 R | New streams, leases, calls and subscriptions lack a defined restore/move/restart generation contract. | P11: quiescence, state ownership, new generation, revalidated grants and explicit uncertain external outcomes. | Stale cursors/tokens/calls fail after restore/move; non-idempotent external requests are never blindly replayed. |
 | G21 R/V | Relay/broker death, hook failure and policy replacement need a fail-closed transition contract. | P2/P6/P7/P11: install denial before actor release, linearize admission/revocation and reject stale policy state. | Kill/disable the mechanism mid-flow: no direct-routing fallback, stale authority or uncontrolled worker survives. |
 | G22 V | Borrowed connector vendor patch currently maps zero/overflow patience to an unbounded wait; pending upstream correction. | P3/P8/P11 integration dependency where that connector is used; finite typed wait semantics and leak tests. | Zero-withheld and overflow/no-dial tests, dribbled-answer deadline and repeated native Windows handle counts pass. This patch is not adopted as-is. |
-| G23 V | Low overhead, fairness, leak freedom and cross-platform behavior of the proposed layer are unmeasured. | P12/P13: adversarial/mutation/fuzz gates and paired measurements on actual supported VM hosts. | Report distributions, resource high-water marks, failures, contention and neighbor impact; pass the eight-target and real-VM matrix. |
+| G23 V | Low overhead, fairness, leak freedom and cross-platform behavior of the proposed layer are unmeasured. | P12/P13: adversarial/mutation/fuzz gates and paired measurements on actual supported VM hosts. | Report distributions, resource high-water marks, failures, contention and neighbor impact; pass the supported seven-target and real-VM matrix. |
 | G24 R/V | Startup support is not yet a complete real Codex harness demonstration or a typed interactive input/TTY contract. | P3/P8/P10: explicit input ownership, actual supplied Linux artifact, provider grants and sign-in behavior. | A real Codex session works from HARNESS-supplied content without RUN/VOLUME installation; raw protocol output is preserved. |
 
 Existing source evidence is concentrated in `init::{domains,run,procevents,links,
@@ -370,7 +370,7 @@ branch is merged merely because it exists or carries an old claimed result.
 | P10 | Credential modes and real supplied Codex example | P3/P6/P8/P9 | G18/G24 | An actual Linux Codex artifact starts via HARNESS with NETWORK/EXPOSE, correct sign-in/grants and private managed output; no RUN/VOLUME installation or embedded secrets. |
 | P11 | Revocation, owner transfer, restore/move/restart | P2/P3/P6/P7/P9 | G08/G20/G21/G22 | New generations reject old handles/cursors; state resumes only after enforcement is ready; ambiguous committed effects are not replayed or misreported. |
 | P12 | Adversarial, fault, mutation and parser/state-machine campaigns | P3/P6/P8/P9/P10/P11 | all | Every promised guard has a real forbidden-effect test and a meaningful mutation check; failures leave bounded resources and continued control progress. |
-| P13 | Cost/compatibility matrix, combined gates, migration docs and examples | P10/P11/P12 | G06/G16/G23/G24 | All relevant real-VM suites and eight host targets pass; cost/noise and untested hardware combinations are reported honestly; the single-binary deliverable and prior compatibility requirements hold. |
+| P13 | Cost/compatibility matrix, combined gates, migration docs and examples | P10/P11/P12 | G06/G16/G23/G24 | All relevant real-VM suites and supported seven host targets pass; cost/noise and untested hardware combinations are reported honestly; the single-binary deliverable and prior compatibility requirements hold. |
 
 After P0, P4 can run alongside P1/P2. After lifecycle/budgets, streams and relay
 implementation can proceed in separate lanes; broker work can proceed beside
@@ -391,7 +391,7 @@ An unresolved proof never licenses a direct fallback or a completeness claim.
 | Restore/move/crypto | Stale generations/tokens/cursors, reconnect races, mid-call move, old snapshot compatibility, broken trust/identity and lost commit replies. No stale authority, blind replay, weakened TLS or secret in ordinary logs. |
 | Mutation | Remove each targeted grant/interception/identity/credit/FD-inheritance/state check independently and observe its corresponding forbidden effect or ownership violation. A test that only loses an alert is insufficient. |
 | Cost | Paired/interleaved same-workload comparisons: baseline isolation, lifecycle/capture, relay, broker and adapters. Record n, p50/p90/p99/max, CPU, allocations/copies, RSS/PSS/kernel charge, retained memory/disk, handles, queue residence, cancellation/reaping and neighbor impact with contention/noise. Existing product targets remain requirements; no invented percentage overhead allowance. |
-| Matrix | Host macOS/Windows/Linux gnu/musl on amd64/arm64; real supported KVM/HVF/WHP guest combinations. Unsupported or unavailable hardware remains explicitly unverified, not a passing skip. Do not resume the paused Windows ARM VM without the user's instruction. |
+| Matrix | Host macOS on arm64; Windows/Linux gnu/musl on amd64/arm64; real supported KVM/HVF/WHP guest combinations. Unsupported or unavailable hardware remains explicitly unverified, not a passing skip. Do not resume the paused Windows ARM VM without the user's instruction. |
 
 Use a real observer at the forbidden destination/file/process to establish whether
 an effect occurred. Count processes/FDs/handles/leases/artifacts after failures,
