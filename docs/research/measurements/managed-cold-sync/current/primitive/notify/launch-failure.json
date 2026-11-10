@@ -1,0 +1,11 @@
+{
+  "failure": {
+    "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+    "output": "Traceback (most recent call last):\n  File \"/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/driver.py\", line 117, in <module>\n    main()\n  File \"/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/driver.py\", line 40, in main\n    raise ValueError(\"one exact readonly libc artifact required\")\nValueError: one exact readonly libc artifact required\n",
+    "running": false,
+    "why": "macos/aarch64 · 30 of 32 cores idle · 47 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk",
+    "exit_code": 1
+  },
+  "classification": "Harness launch failure before compilation/tests; thread-error resume had cleared tool-only store and produced undefined readonly dependency path. Retained artifacts were verified present. command-v2.json uses their exact saved path. No native failure/pass inferred from this launch.",
+  "command_replay": "python3 - <<'PY'\nfrom pathlib import Path\nimport subprocess,json\nroot=Path('/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap')\nargv=['python3',str(root/'driver.py'),'--input',str(root/'input.json'),'--out',str(root/'execution-v2'),'--readonly-deps','/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps','--case-ms','15000','--command-seconds','60']\n(root/'command-v2.json').write_text(json.dumps(argv));p=subprocess.run(argv);raise SystemExit(p.returncode)\nPY"
+}

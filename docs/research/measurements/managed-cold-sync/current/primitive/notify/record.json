@@ -1,0 +1,178 @@
+{
+  "root": "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2",
+  "source_hashes": {
+    "sync.rs": "1685d88186cab60f197a81f26d8b2e82b75b1cb19817fdbfe72d9fa8bfda8ddd",
+    "primitive_case.rs": "93fd65a3ea6fec4532ae186a05fd1d11e1204358587917d6790ba6835163f6ab",
+    "allocation.rs": "e5ba7620f48a1d9cafe2057bc9dd88832ec44f1179e8a7ef080fdf8725e373b8"
+  },
+  "libc": {
+    "path": "/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+    "sha256": "85646a3e267421fc07d236d20e625beaef4018c60b9291405b82f35766985f3a"
+  },
+  "commands": [
+    {
+      "name": "toolchain",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "-vV"
+      ],
+      "exit": 0,
+      "stdout": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: aarch64-apple-darwin\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+      "stderr": ""
+    },
+    {
+      "name": "compile-baseline",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/baseline"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "baseline",
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/baseline",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "stdout": "\nrunning 2 tests\ntest cold_pair_wait_notify_and_timeout_under_refusal ... ok\ntest storage_refusal_returns_the_owned_value ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "stderr": "COLD_REFUSED_BYTES 72\n"
+    },
+    {
+      "name": "compile-notify-mutant",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/notify-mutant"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "notify-mutant",
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/notify-mutant",
+        "cold_pair_wait_notify_and_timeout_under_refusal",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "stdout": "\nrunning 1 test\ntest cold_pair_wait_notify_and_timeout_under_refusal ... FAILED\n\nfailures:\n\nfailures:\n    cold_pair_wait_notify_and_timeout_under_refusal\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 15.11s\n\n",
+      "stderr": "\nthread 'cold_pair_wait_notify_and_timeout_under_refusal' (24853722) panicked at /Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs:98:9:\nassertion `left != right` failed\n  left: TimedOut\n right: TimedOut\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    },
+    {
+      "name": "compile-restored",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/restored"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "name": "restored",
+      "argv": [
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/restored",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "stdout": "\nrunning 2 tests\ntest cold_pair_wait_notify_and_timeout_under_refusal ... ok\ntest storage_refusal_returns_the_owned_value ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+      "stderr": "COLD_REFUSED_BYTES 72\n"
+    },
+    {
+      "name": "negative-guard-send",
+      "argv": [
+        "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+        "--edition=2024",
+        "--test",
+        "-Copt-level=1",
+        "-Ccodegen-units=1",
+        "-Cllvm-args=-threads=1",
+        "--check-cfg",
+        "cfg(test)",
+        "--check-cfg",
+        "cfg(send_guard)",
+        "--extern",
+        "libc=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps/liblibc-fac88ca7613201ed.rlib",
+        "-L",
+        "dependency=/Users/adalundhe/managed-cold-sync-current-cbd-v1-eld3erzq/execution-v3/candidate-d086/target/test-release/deps",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs",
+        "-o",
+        "/Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/negative-guard-send",
+        "--cfg",
+        "send_guard"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": "error[E0277]: `*mut ()` cannot be sent between threads safely\n   --> /Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs:118:19\n    |\n118 |     requires_send(guard);\n    |     ------------- ^^^^^ `*mut ()` cannot be sent between threads safely\n    |     |\n    |     required by a bound introduced by this call\n    |\n    = help: within `Guard<'_, ()>`, the trait `Send` is not implemented for `*mut ()`\nnote: required because it appears within the type `PhantomData<*mut ()>`\n   --> /rustc/48a229ceaefd4985c50990b14116b6d856af0985/library/core/src/marker.rs:811:11\nnote: required because it appears within the type `Guard<'_, ()>`\n   --> /Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/sync.rs:182:19\n    |\n182 | pub(crate) struct Guard<'a, T> {\n    |                   ^^^^^\nnote: required by a bound in `requires_send`\n   --> /Users/adalundhe/managed-cold-sync-notify-v1-q_39inap/execution-v2/primitive_case.rs:117:25\n    |\n117 |     fn requires_send<T: Send>(_: T) {}\n    |                         ^^^^ required by this bound in `requires_send`\nhelp: consider dereferencing here\n    |\n118 |     requires_send(*guard);\n    |                   +\n\nerror: aborting due to 1 previous error\n\nFor more information about this error, try `rustc --explain E0277`.\n"
+    }
+  ],
+  "scope": "standalone native backend only; no API integration, profiling or native errno injection",
+  "admission": "1CPU/1GiB/2GiB; no enforced Darwin RSS/data/aggregate disk quota claim",
+  "binaries": {
+    "baseline": "36536bcd8079d8b38deb5cf7621c5fcd2ce2750e004a48661dfde11a57be3326",
+    "notify-mutant": "d5c8e304d0954886788e8f812635c69b652bb65a79f8ff3c431b9efac6bc3031",
+    "restored": "b87ea314d52581c19f0412189ecbe7ea714e9a666cc06e796b47df45bb5b1a28"
+  },
+  "mutation": {
+    "removed": "let code = unsafe { libc::pthread_cond_broadcast(self.raw.get()) };",
+    "replacement": "let code = 0;",
+    "sha256": "35ec30b3278182b5862538190c4a16b753f1223950141492448302766433eff0",
+    "original_sha256": "1685d88186cab60f197a81f26d8b2e82b75b1cb19817fdbfe72d9fa8bfda8ddd"
+  },
+  "mutation_detected": true,
+  "source_restored_exact": true,
+  "negative_expected": true,
+  "status": "native-backend-only-baseline-mutation-restored"
+}
