@@ -49,13 +49,31 @@ live injected EINTR is owed, not claimed.
 
 ## Light validation and coordinator handoff
 
-Native checks pending. Runnable light command:
+Native Fedora r214 completed exit0 at exact clean
+`6ae7fcdf54ec16dbd17a199bd59fcc0e9bee05ef`. The unchanged4CPU/1GiB/2GiB request
+was admitted once with26/32 idle cores. Four focused tests passed/0failed/0ignored:
+exact unlinked-open-file bytes, empty/directory error, zero/capacity overflow,
+and actual reader OOM at both0 and1 successful allocations before refusal.
+Strict artifact all-target clippy passed0. No compile-resource failure or
+admission rejection occurred; this does not establish a measured peak/hard quota.
+
+Linux6.19.10-300.fc44.x86_64, Rust1.98.1
+`48a229ceaefd4985c50990b14116b6d856af0985`, LLVM22.1.8. New private binary
+`~/managed-proc-blksize-target/release/deps/linux_preferred_reader_probe-e790720d3bc68a6d`,
+SHA256 `85dd8f47ab3313c0374c49a505490106899b1b45feb1f884bb7cbee80a131947`,
+selected compiler artifact `fresh:false`. [raw-linux](raw-linux/) retains exact
+commands/logs/admission/source/lock/helper hashes/compiler/binary identities;
+archive SHA256 `309a0067e7000f7e4bb618789a3420a00ce2bd9460f08654b497eff487414a42`.
+The retained production-api diff is empty. Mechanical rustfmt/bash/policy checks
+also passed; these are not production/matrix/performance gates.
+
+Runnable light command:
 `bash docs/research/measurements/managed-proc-reader-coordinator/prototypes/run-light.sh`.
 This small standalone crate needs only Rust/testdir/libc; requested private Linux
 envelope4CPU/1GiB/2GiB, target ~/managed-proc-blksize-target, evidence
 ~/managed-proc-blksize-evidence/v1. No root clone/cache or local Mac build.
-The request is admission, not a demonstrated hard quota/peak. Any rejection/failure
-is retained; no repeated/lowered guard request. Root can import read_preferred
+The request is admission, not a demonstrated hard quota/peak. No repeated/lowered
+guard request occurred. Root can import read_preferred
 into its own comparison artifact without test-only modules (cfg(test) is off).
 
 R01/R04/R06/R07/R13: test-only checked allocation/metadata/read errors and the
@@ -73,3 +91,15 @@ against exact frozen std/f26 alternatives; supported-input decision for metadata
 errors/zero hints/admission; Linux musl/arm64/distribution and EINTR coverage;
 any combined integration/matrix gates if a method is selected. Frozen f26,
 pthread prototype and full Mac owned-OOM evidence are not altered by this piece.
+
+For a coordinator-private source/target, the focused replay is:
+
+```sh
+CARGO_TARGET_DIR=<root-private-target> cargo test --manifest-path docs/research/measurements/managed-proc-reader-coordinator/prototypes/Cargo.toml --locked -j4 --release -- --test-threads=1 --nocapture
+```
+
+For root's cost comparison, include src/lib.rs from a normal Linux binary
+(cfg(test) off) or use this path crate as a measurement dependency. That avoids
+linking its test-only allocator. Include the File metadata query and actual
+initial reserve in each invocation; the experiment does not precompute/cache a
+hint for the caller. Root alone runs/composes that comparison and selects behavior.
