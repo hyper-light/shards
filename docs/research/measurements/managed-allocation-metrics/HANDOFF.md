@@ -1,5 +1,48 @@
 # Allocation lane handoff
 
+## Current startup checkpoint and resume receipt
+
+Startup implementation is COMPLETE on this lane at source
+`4bc28256ee1285715e5573e9f4ba6b02caf436aa`, with actual private light evidence
+`500282504c05b4dbe4b9fd1249d1829ca4550119` and integration criteria at
+`c9db16548d5403def8719962d766ab26ffcd68f4`. Build0, three shape passes, Clippy0;
+the full real artifact closure/caller and all new-source runtime gates are UNRUN
+here and ROOT-owned. No startup source adoption on main is claimed.
+
+After continuation/context refresh, full required canonical policy/plan and
+global/own handoffs were reread at current canonical HEAD/origin/main
+`f9030566bc227d50770bba879bd1387ebffe410f`. All four policy hashes match this
+checkout; rules SHA256
+`d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242`.
+The last commit touching these policy files is
+`664541da5ec488446b481ff6509b60510912c231`; historical f5cec365 receipts below
+retain their original identities. Source-only policy check passed0. Canonical
+changes since eb5654 contain no policy or cost-fixture diff; own startup fixture
+remains874e8b38 and paired source remainsdcac1f33. Exact hashes, tools, commands,
+readback keys, source identity and owed ROOT gates are retained in
+[startup-resume-f903-policy.json](records/startup-resume-f903-policy.json).
+
+Current scope remains EXACT approved startup snapshot insertions plus own startup
+evidence/records ONLY. Paired14/proof is separate, unreviewed and untouched;
+22-line report proposal is unimplemented/unapproved. No production optimization
+is selected and setup attribution remains Unknown. All own remote jobs completed;
+preserve private sources, Cargo caches, final binaries and raw evidence. ZERO
+active LOCAL targets/caches/builds; no root cache/target/source writes or cleanup.
+The source-only receipt observed34,562,838,528B locally available; future builds
+still require the30GiB floor and current admission, with no local heavy build.
+
+Read-only goal inspection still shows existing plan metadata `plan_big:true` and
+`side_by_side:true`. Reported to ROOT before any possible trigger using key
+`managed-existing-plan-dispatch-metadata-f903-no-trigger-v1`. Do NOT advance or
+expand that plan, create children or mark the sustained lane complete. No goal
+or dispatch mutation occurred. Parent225261e022b28f5c98077e5e00b5d00d and active
+step01a1c5d7160b742f84945d72f396c703 remain preserved. ROOT assigns the next
+finite PURE scope/review follow-up; this checkpoint does not close the lane.
+
+The following historical queue/status notes are preserved as checkpoint history.
+Where they say startup is pending/unapplied, this current section and the
+authorized-implementation/light-result sections supersede them.
+
 Lane `01a1c5be192972d8b05dc7c207cc6fca`; coordinator
 `01a148884a4770fdaf0111f3f792a248`. Branch `p/managed-allocation-metrics`, base
 `24f48ee5ebf198485117aa93bf47685ad7d7d53f`.
