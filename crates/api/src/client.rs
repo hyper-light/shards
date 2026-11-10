@@ -87,10 +87,12 @@ const NOT_ITS_PARENT: &str = "it was taken back, its exit status its parent's, n
 /// it is one this client makes (`PrivateDir::adopt`).
 #[cfg(unix)]
 fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
-    let process = crate::taken::Held::find(identity.pid, identity.started).map_err(|why| Refusal::Gone {
-        pid: identity.pid,
-        why,
-    })?;
+    let process =
+        crate::taken::Held::find(identity.pid, identity.started).map_err(|failure| Refusal::Process {
+            pid: identity.pid,
+            expected_started: identity.started,
+            failure,
+        })?;
     // Shared: its watcher thread waits on it for the guest's life, past this call, as the guest kills it.
     let process = Arc::new(process);
     // Shared: the guest and its watcher thread, which outlives this call, each hold it while either lives.
@@ -1495,7 +1497,7 @@ mod tests {
     /// A guest whose handle its client lost without its drop (a crash, in one process) is
     /// taken back by its identity: it serves its port, names itself as before, stops as
     /// `Stopped`, and is then gone; an identity whose start differs (its pid since given
-    /// another process) is refused `Gone` (D215; Hex's proposal).
+    /// another process) is refused with the observed start (D215; Hex's proposal).
     #[cfg(unix)]
     #[test]
     fn attach_takes_back_a_guest_whose_handle_was_lost() {
@@ -1507,7 +1509,9 @@ mod tests {
             ..identity.clone()
         };
         assert!(
-            matches!(Shards.attach(&other, &spec), Err(Refusal::Gone { .. })),
+            matches!(Shards.attach(&other, &spec), Err(Refusal::Process {
+                pid, expected_started, failure: crate::ProcessFailure::DifferentStart { observed }
+            }) if pid == other.pid && expected_started == other.started && observed == identity.started),
             "another start"
         );
         let back = Shards.attach(&identity, &spec).unwrap();
@@ -1516,7 +1520,16 @@ mod tests {
         back.stop().unwrap();
         assert_eq!(back.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
         let again = Shards.attach(&identity, &spec);
-        assert!(matches!(again, Err(Refusal::Gone { .. })), "{:?}", again.err());
+        assert!(
+            matches!(again, Err(Refusal::Process {
+            pid, expected_started, failure: crate::ProcessFailure::Os {
+                operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit,
+                code: libc::ESRCH,
+            }
+        }) if pid == identity.pid && expected_started == identity.started),
+            "{:?}",
+            again.err()
+        );
     }
 
     /// A guest taken back is its taker's until it drops, which ends it, and with it the
@@ -1648,7 +1661,16 @@ mod tests {
         back.stop().unwrap();
         assert_eq!(back.wait_for(Duration::MAX).unwrap(), Some(End::Stopped));
         let again = Shards.attach(&identity, &spec);
-        assert!(matches!(again, Err(Refusal::Gone { .. })), "{:?}", again.err());
+        assert!(
+            matches!(again, Err(Refusal::Process {
+            pid, expected_started, failure: crate::ProcessFailure::Os {
+                operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit,
+                code: libc::ESRCH,
+            }
+        }) if pid == identity.pid && expected_started == identity.started),
+            "{:?}",
+            again.err()
+        );
         let socket_dir = identity.vsock.parent().unwrap().to_path_buf();
         drop(back);
         assert!(!socket_dir.exists(), "{} is left", socket_dir.display());
