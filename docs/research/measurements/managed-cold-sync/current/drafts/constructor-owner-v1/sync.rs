@@ -1,0 +1,449 @@
+//! Candidate native backend for the reproduced cold owned-control allocation.
+//! Not yet registered in lib.rs: caller/error/stop binding remains under review.
+//! Stable storage is fallible; a rejected value is returned to its exact owner.
+#![cfg(target_vendor = "apple")]
+
+use std::alloc::{Layout, alloc, dealloc};
+use std::cell::UnsafeCell;
+use std::marker::PhantomData;
+use std::mem::{ManuallyDrop, MaybeUninit};
+use std::ops::{Deref, DerefMut};
+use std::ptr::{self, NonNull};
+use std::time::Duration;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Operation {
+    Storage,
+    MutexAttributes,
+    MutexType,
+    MutexInit,
+    MutexLock,
+    MutexUnlock,
+    MutexDestroy,
+    CondvarInit,
+    CondvarWait,
+    CondvarNotify,
+    CondvarDestroy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Failure {
+    pub operation: Operation,
+    /// None denotes allocation refusal; native failures retain their actual code.
+    pub code: Option<i32>,
+    pub cleanup_code: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WaitStatus {
+    NotifiedOrSpurious,
+    TimedOut,
+}
+
+impl Failure {
+    fn native(operation: Operation, code: i32) -> Self {
+        Self {
+            operation,
+            code: Some(code),
+            cleanup_code: None,
+        }
+    }
+}
+
+/// A failed preparation keeps both the value and any unresolved native resource
+/// with its caller. This is resource ownership, not a guest lifecycle copy.
+pub(crate) struct Rejected<T> {
+    pub value: T,
+    pub failure: Failure,
+    pub residual: Option<UnpublishedMutex>,
+}
+
+impl<T> Rejected<T> {
+    fn ordinary(value: T, failure: Failure) -> Self {
+        Self {
+            value,
+            failure,
+            residual: None,
+        }
+    }
+}
+
+impl<T> std::fmt::Debug for Rejected<T> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Rejected")
+            .field("failure", &self.failure)
+            .field("has_residual", &self.residual.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+enum UnpublishedState {
+    Live {
+        raw: NonNull<libc::pthread_mutex_t>,
+        allocation: NonNull<u8>,
+        layout: Layout,
+    },
+    Closed,
+}
+
+pub(crate) struct UnpublishedMutex {
+    state: UnpublishedState,
+}
+
+impl UnpublishedMutex {
+    pub(crate) fn close(&mut self) -> Result<(), Failure> {
+        let (raw, allocation, layout) = match &self.state {
+            UnpublishedState::Closed => return Ok(()),
+            UnpublishedState::Live {
+                raw,
+                allocation,
+                layout,
+            } => (*raw, *allocation, *layout),
+        };
+        // SAFETY: initialized but never published or locked; no T was moved in.
+        let code = unsafe { libc::pthread_mutex_destroy(raw.as_ptr()) };
+        if code != 0 {
+            return Err(Failure::native(Operation::MutexDestroy, code));
+        }
+        // SAFETY: destroyed native object; exact original allocation/layout,
+        // with no initialized T requiring a destructor.
+        unsafe { dealloc(allocation.as_ptr(), layout) };
+        self.state = UnpublishedState::Closed;
+        Ok(())
+    }
+}
+
+impl Drop for UnpublishedMutex {
+    fn drop(&mut self) {
+        // Explicit close reports an error and retains this owner. Destructor
+        // failure preserves native memory; callers must retain unresolved owners.
+        let _ = self.close();
+    }
+}
+
+struct Inner<T> {
+    raw: UnsafeCell<libc::pthread_mutex_t>,
+    value: UnsafeCell<T>,
+}
+
+pub(crate) struct Mutex<T> {
+    inner: ManuallyDrop<Box<Inner<T>>>,
+}
+
+impl<T> std::fmt::Debug for Mutex<T> {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str("Mutex { .. }")
+    }
+}
+
+// SAFETY: value is accessed only under the native exclusive guard; moving this
+// wrapper does not move the initialized native mutex allocation.
+unsafe impl<T: Send> Send for Mutex<T> {}
+// SAFETY: concurrent access to T requires the same native exclusive mutex.
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
+impl<T> Mutex<T> {
+    pub(crate) fn new(value: T) -> Result<Self, Rejected<T>> {
+        let layout = Layout::new::<Inner<T>>();
+        // SAFETY: nonzero correctly aligned layout (native mutex is nonzero).
+        let memory = unsafe { alloc(layout) }.cast::<Inner<T>>();
+        let Some(memory) = NonNull::new(memory) else {
+            return Err(Rejected::ordinary(
+                value,
+                Failure {
+                    operation: Operation::Storage,
+                    code: None,
+                    cleanup_code: None,
+                },
+            ));
+        };
+        // SAFETY: only the allocated field's address is formed; no uninitialized
+        // value is read. pthread initialization occurs at the final stable address.
+        let raw = unsafe { ptr::addr_of_mut!((*memory.as_ptr()).raw).cast::<libc::pthread_mutex_t>() };
+        // SAFETY: initialize every opaque Rust byte before native init, as Rust
+        // PAL does. Native init need not write every byte of an opaque C object.
+        unsafe { raw.write(libc::PTHREAD_MUTEX_INITIALIZER) };
+        let mut attributes = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
+        // SAFETY: writable attribute storage supplied for initialization.
+        let attr = unsafe { libc::pthread_mutexattr_init(attributes.as_mut_ptr()) };
+        let initialized = if attr == 0 {
+            // SAFETY: attributes were initialized above. NORMAL prevents the
+            // DEFAULT recursive-lock UB described by the pinned Rust PAL source.
+            let kind = unsafe {
+                libc::pthread_mutexattr_settype(attributes.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL)
+            };
+            let init = if kind == 0 {
+                // SAFETY: stable allocated native storage and live attributes.
+                unsafe { libc::pthread_mutex_init(raw, attributes.as_ptr()) }
+            } else {
+                kind
+            };
+            // SAFETY: attributes are initialized and no longer needed by init.
+            let cleaned = unsafe { libc::pthread_mutexattr_destroy(attributes.as_mut_ptr()) };
+            if init != 0 {
+                let mut failure = Failure::native(
+                    if kind == 0 {
+                        Operation::MutexInit
+                    } else {
+                        Operation::MutexType
+                    },
+                    init,
+                );
+                failure.cleanup_code = (cleaned != 0).then_some(cleaned);
+                Err(failure)
+            } else if cleaned != 0 {
+                // SAFETY: successfully initialized but unpublished, never locked.
+                let destroyed = unsafe { libc::pthread_mutex_destroy(raw) };
+                let mut failure = Failure::native(Operation::MutexAttributes, cleaned);
+                failure.cleanup_code = (destroyed != 0).then_some(destroyed);
+                if destroyed != 0 {
+                    // Return the live native resource too: no failed cleanup
+                    // silently loses its allocation's owner or consumes T.
+                    return Err(Rejected {
+                        value,
+                        failure,
+                        residual: Some(UnpublishedMutex {
+                            state: UnpublishedState::Live {
+                                // SAFETY: field address within checked nonnull
+                                // allocation, successfully initialized above.
+                                raw: unsafe { NonNull::new_unchecked(raw) },
+                                allocation: memory.cast(),
+                                layout,
+                            },
+                        }),
+                    });
+                }
+                Err(failure)
+            } else {
+                Ok(())
+            }
+        } else {
+            Err(Failure::native(Operation::MutexAttributes, attr))
+        };
+        if let Err(failure) = initialized {
+            // SAFETY: native init failed or its unpublished object was destroyed;
+            // T remains owned by the caller and was never written into memory.
+            unsafe { dealloc(memory.as_ptr().cast(), layout) };
+            return Err(Rejected::ordinary(value, failure));
+        }
+        // SAFETY: mutex is initialized at its final address. Initialize the last
+        // field before constructing Box, with exactly the allocator/layout used.
+        unsafe {
+            ptr::addr_of_mut!((*memory.as_ptr()).value).write(UnsafeCell::new(value));
+            Ok(Self {
+                inner: ManuallyDrop::new(Box::from_raw(memory.as_ptr())),
+            })
+        }
+    }
+
+    pub(crate) fn lock(&self) -> Result<Guard<'_, T>, Failure> {
+        // SAFETY: initialized stable mutex retained by self and guarded lifetime.
+        let code = unsafe { libc::pthread_mutex_lock(self.inner.raw.get()) };
+        if code != 0 {
+            return Err(Failure::native(Operation::MutexLock, code));
+        }
+        Ok(Guard {
+            owner: self,
+            held: true,
+            not_send: PhantomData,
+        })
+    }
+}
+
+impl<T> Drop for Mutex<T> {
+    fn drop(&mut self) {
+        // SAFETY: no unforgotten guard outlives self. A forgotten guard may leave
+        // it locked; in that case preserve the allocation, as std also does.
+        let code = unsafe { libc::pthread_mutex_destroy(self.inner.raw.get()) };
+        if code == 0 {
+            // SAFETY: native object is quiescent and successfully destroyed.
+            unsafe { ManuallyDrop::drop(&mut self.inner) };
+        }
+    }
+}
+
+pub(crate) struct Guard<'a, T> {
+    owner: &'a Mutex<T>,
+    /// Owns only this native acquisition, not a duplicate guest lifecycle fact.
+    held: bool,
+    not_send: PhantomData<*mut ()>,
+}
+
+impl<T> Guard<'_, T> {
+    pub(crate) fn release(mut self) -> Result<(), Failure> {
+        // SAFETY: Guard is not Send and only constructed after successful lock.
+        let code = unsafe { libc::pthread_mutex_unlock(self.owner.inner.raw.get()) };
+        self.held = false;
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(Failure::native(Operation::MutexUnlock, code))
+        }
+    }
+}
+
+impl<T> Deref for Guard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: this guard owns the native mutex's exclusive acquisition.
+        unsafe { &*self.owner.inner.value.get() }
+    }
+}
+
+impl<T> DerefMut for Guard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: mutable guard access and native acquisition exclude aliases.
+        unsafe { &mut *self.owner.inner.value.get() }
+    }
+}
+
+impl<T> Drop for Guard<'_, T> {
+    fn drop(&mut self) {
+        if self.held {
+            // SAFETY: lifetime/thread ownership as in release. Explicit release
+            // reports native errors; this unwind/forgotten-release path is best
+            // effort and does not claim native cleanup/error propagation proof.
+            let _ = unsafe { libc::pthread_mutex_unlock(self.owner.inner.raw.get()) };
+        }
+    }
+}
+
+pub(crate) struct Condvar {
+    raw: ManuallyDrop<Box<UnsafeCell<libc::pthread_cond_t>>>,
+}
+
+// SAFETY: initialized stable condition variable supports concurrent wait/notify.
+unsafe impl Send for Condvar {}
+// SAFETY: native calls synchronize; Rust never independently mutates its bytes.
+unsafe impl Sync for Condvar {}
+
+impl Condvar {
+    pub(crate) fn new() -> Result<Self, Failure> {
+        let layout = Layout::new::<UnsafeCell<libc::pthread_cond_t>>();
+        // SAFETY: nonzero aligned native object storage.
+        let memory = unsafe { alloc(layout) }.cast::<UnsafeCell<libc::pthread_cond_t>>();
+        let Some(memory) = NonNull::new(memory) else {
+            return Err(Failure {
+                operation: Operation::Storage,
+                code: None,
+                cleanup_code: None,
+            });
+        };
+        // SAFETY: all opaque bytes have a valid initialized Rust representation
+        // before pthread_cond_init writes its implementation-specific fields.
+        unsafe {
+            memory
+                .as_ptr()
+                .write(UnsafeCell::new(libc::PTHREAD_COND_INITIALIZER))
+        };
+        // SAFETY: stable writable native storage; default native attributes.
+        let code = unsafe { libc::pthread_cond_init(memory.as_ptr().cast(), ptr::null()) };
+        if code != 0 {
+            // SAFETY: failed init did not construct a native object.
+            unsafe { dealloc(memory.as_ptr().cast(), layout) };
+            return Err(Failure::native(Operation::CondvarInit, code));
+        }
+        // SAFETY: initialized same-allocation native object, no relocation.
+        Ok(Self {
+            raw: ManuallyDrop::new(unsafe { Box::from_raw(memory.as_ptr()) }),
+        })
+    }
+
+    pub(crate) fn notify_all(&self) -> Result<(), Failure> {
+        // SAFETY: initialized condition variable retained by self.
+        let code = unsafe { libc::pthread_cond_broadcast(self.raw.get()) };
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(Failure::native(Operation::CondvarNotify, code))
+        }
+    }
+
+    /// Private caller pairs this CV with the same mutex for all overlapping waits.
+    /// Returns its still-owned guard along with the native result; no error creates
+    /// a guard for an acquisition that never succeeded.
+    /// # Safety
+    /// The private caller uses this CV with one mutex for all overlapping waits.
+    pub(crate) unsafe fn wait<'a, T>(
+        &self,
+        guard: Guard<'a, T>,
+        timeout: Option<Duration>,
+    ) -> (Guard<'a, T>, Result<WaitStatus, Failure>) {
+        // Darwin's relative timed wait is monotonic. Cap only to its u64
+        // nanosecond representation, as pinned Rust PAL does; caller retains its
+        // original deadline and predicate loop, not a reset timeout policy.
+        let code = unsafe {
+            // SAFETY: the guard holds the native mutex; both objects are pinned
+            // by allocations and private caller pairing is a required precondition.
+            if let Some(duration) = timeout {
+                let duration = duration.min(Duration::from_nanos(u64::MAX));
+                let timespec = libc::timespec {
+                    tv_sec: duration.as_secs() as libc::time_t,
+                    tv_nsec: duration.subsec_nanos().into(),
+                };
+                libc::pthread_cond_timedwait_relative_np(
+                    self.raw.get(),
+                    guard.owner.inner.raw.get(),
+                    &timespec,
+                )
+            } else {
+                libc::pthread_cond_wait(self.raw.get(), guard.owner.inner.raw.get())
+            }
+        };
+        let result = if code == 0 {
+            Ok(WaitStatus::NotifiedOrSpurious)
+        } else if code == libc::ETIMEDOUT {
+            Ok(WaitStatus::TimedOut)
+        } else {
+            Err(Failure::native(Operation::CondvarWait, code))
+        };
+        (guard, result)
+    }
+}
+
+impl Drop for Condvar {
+    fn drop(&mut self) {
+        // SAFETY: native object is initialized. Preserve allocation if native
+        // destruction refuses; no leak-free claim follows from this destructor.
+        let code = unsafe { libc::pthread_cond_destroy(self.raw.get()) };
+        if code == 0 {
+            // SAFETY: successful native destruction proves no active waiters.
+            unsafe { ManuallyDrop::drop(&mut self.raw) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unpublished_owner_closes_once_at_its_exact_allocation() {
+        // Explicit fixture alignment, not a production layout/default. The raw
+        // native field and the allocation base are retained separately.
+        #[repr(align(128))]
+        struct Aligned;
+        let layout = Layout::new::<Inner<Aligned>>();
+        // SAFETY: valid layout; fixture checks allocation before use.
+        let memory = NonNull::new(unsafe { alloc(layout) }.cast::<Inner<Aligned>>()).unwrap();
+        // SAFETY: form only field address inside allocated, uninitialized storage.
+        let raw = unsafe { ptr::addr_of_mut!((*memory.as_ptr()).raw).cast::<libc::pthread_mutex_t>() };
+        // SAFETY: initialize opaque bytes and native object at stable storage;
+        // no value field is initialized or accessed in this prefix-owner case.
+        unsafe {
+            raw.write(libc::PTHREAD_MUTEX_INITIALIZER);
+            assert_eq!(libc::pthread_mutex_init(raw, ptr::null()), 0);
+        }
+        let mut owner = UnpublishedMutex {
+            state: UnpublishedState::Live {
+                // SAFETY: native field within nonnull allocated storage.
+                raw: unsafe { NonNull::new_unchecked(raw) },
+                allocation: memory.cast(),
+                layout,
+            },
+        };
+        owner.close().unwrap();
+        owner.close().unwrap();
+        assert!(matches!(owner.state, UnpublishedState::Closed));
+    }
+}
