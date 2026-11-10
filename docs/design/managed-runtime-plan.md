@@ -13,6 +13,28 @@ keeps the gaps explicit and maps every one to work and proof. It extends the
 four primary-source reviews and a [checked evidence ledger](../research/managed-runtime-evidence.md).
 The proposed tests below are acceptance criteria, not claims that they passed.
 
+### Current implementation checkpoint
+
+The coordinator's combined branch contains partial lifecycle/capture work and
+an experimental owner-output endpoint; these pieces have not landed on main or
+closed P0–P13. [Central real-VM records](../research/measurements/managed-central-vm/README.md)
+retain separate-channel/neighbor cases, repeated orphan reaping, thirteen native
+socket boots and the independently reproduced/fixed x86 init-argv bug.
+[Platform records](../research/measurements/managed-central-platform/README.md)
+name the exact seven-target revision and native Windows pipe check. Later source
+does not inherit an earlier revision's passing gate.
+
+The per-channel endpoint design remains an experiment: aggregate parent/kernel
+budgets and the final topology are not established. Native TCP/UDP byte matches
+are not interception evidence; the new isolated IPv4 TPROXY fixture still needs
+its coordinator runtime/mutation proof. The borrowed API candidate has focused
+native Mac/Windows passes but is not adopted. Its complete Mac library gate
+exposes [MR-OOM-MAC-1](../research/measurements/managed-sync-coordinator/README.md):
+an actual fatal64-byte lazy std Mutex allocation in owned Guest::connect. No
+warming, skipped test or larger timing guard closes that defect. Hard resources,
+mandatory routes, effect brokerage, real harness adapters/credentials and
+generation-safe restore/move remain required work, not optional contract limits.
+
 ## 1. Result to build
 
 An AGENT or HARNESS starts through one native Shards management path. Before its
