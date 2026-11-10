@@ -32,3 +32,28 @@ and verified182-original raw-v2. All Rust/helper bytes remain frozen cba. Next
 guest-expiry shape/T is proposal-only6862; no actors or implementation until ROOT
 approves that separate contract and supplies finite T. No independent approved
 compatibility path was left idle while preparing that proposal.
+
+
+## Approved expiry continuation: actual RED
+
+Current canonical policy0342b85d9c808e3ced041a6c3ef0e9bf70438272/df2 fully read;
+readback6889. New branch p/managed-tenant-expiry-cba-v1 from preserved d5a. Exact
+Rust source bbd3f22caee7d4429d1d8459e16f88b27b692bfb changes only current leaf;
+all native/parent/parser/production bytes remain cba lineage. r76 matching build
+and host strict Clippy0, six old helper hashes unchanged; r78 exact readback6908.
+
+ONE actual r79 selected case fails101/104.70s before the120s host-durationpoint,
+first expected canonical member record before terminal at existing Capture.receive.
+InitialOpen68/62 verified/no challenge; non-Record Event variant/cause was discarded
+by that existing parser. No End/newneighbor/main or final metadata pass. History
+retains both child argv SAMEexpiry121447870959ns; direct waits/population Unknown.
+Cleanup complete/false0/privateRM/join, FD11->11, protocol_completefalse.
+
+No retry/enlargement/mutation/production diagnostic edit. Actor marker consumed.
+See EXPIRY-RESULT.md and selected actual r81 readback. All complete originals and
+frozen remain on private runner records/expiry-v1. Complete raw archive export
+has been refused at exact2CPU4GiB24GiB, idle1/0/0cores; no command execution or
+reduced ask. Export/hashverification remains owed when admitted, not passed.
+No active owned VM/build; private source/target/cache/frozen/raw remain reserved.
+ROOT has actualRED receipt6912; missing typed event/cause and any fresh diagnostic
+campaign require ROOT's next authorization. No overall lane/management closure.

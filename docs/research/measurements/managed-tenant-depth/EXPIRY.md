@@ -1,5 +1,9 @@
 # One approved D2 guest-expiry case
 
+Actual single-case result: [EXPIRY-RESULT.md](EXPIRY-RESULT.md), strict RED before
+canonical End. No retry or timing change. Full remote originals are retained;
+complete archive export is temporarily held by exact CPU headroom.
+
 POLICY_READ assigned adversarial/implementer01a1c5d28cea74a5b0241200190d6c54,
 canonical0342b85d9c808e3ced041a6c3ef0e9bf70438272, rules SHA256
 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3, receipt6889.

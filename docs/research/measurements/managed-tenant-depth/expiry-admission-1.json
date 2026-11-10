@@ -1,0 +1,15 @@
+{
+  "purpose": "pre-actor inputs only",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "request": {
+    "cpus": 2,
+    "memory_gib": 4,
+    "disk_gib": 24
+  },
+  "running": false,
+  "admitted": false,
+  "actual_reason": "1 of 32 cores idle, under 2 CPUs",
+  "command_executed": false,
+  "actual_expiry_cases_started": 0,
+  "scope_or_ask_reduced": false
+}
