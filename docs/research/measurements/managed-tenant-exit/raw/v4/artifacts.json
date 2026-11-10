@@ -1,0 +1,21 @@
+{
+  "scope": "cargo check metadata only; no executable or fixture run",
+  "artifacts": {
+    "target/debug/deps/libmanaged_tenant_exit_compile_only-173e80de9cdb14e5.rmeta": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "target/debug/deps/libmanaged_tenant_exit_compile_only-28a25c8e8f9f819c.rmeta": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "target/x86_64-unknown-linux-musl/debug/deps/libmanaged_tenant_exit_compile_only-8ced5b34f1cfe29f.rmeta": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "target/x86_64-unknown-linux-musl/debug/deps/libmanaged_tenant_exit_compile_only-c61dea6c740090c5.rmeta": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}
