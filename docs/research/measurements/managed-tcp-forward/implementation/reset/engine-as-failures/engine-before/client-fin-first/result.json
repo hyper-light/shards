@@ -1,0 +1,22 @@
+{
+  "mode": "client-fin-first",
+  "command": [
+    "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/target/test-release/deps/__relay_tcp-893de95f6204be53",
+    "--exact",
+    "tcp_forward::managed_engine_half_close_records_actual_host_finish",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "fd_before": 9,
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 340339,
+  "status": 101,
+  "fd_after": 9,
+  "one_test_passed": false,
+  "binary_unchanged": true,
+  "kernel_population_return": "Unknown",
+  "passed": false
+}

@@ -1,0 +1,11 @@
+
+running 1 test
+test tcp_forward::managed_engine_half_close_records_actual_host_finish ... FAILED
+
+failures:
+
+failures:
+    tcp_forward::managed_engine_half_close_records_actual_host_finish
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 19 filtered out; finished in 0.37s
+

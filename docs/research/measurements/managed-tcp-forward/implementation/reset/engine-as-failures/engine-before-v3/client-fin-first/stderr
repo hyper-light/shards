@@ -1,0 +1,23 @@
+
+thread 'tcp_forward::managed_engine_half_close_records_actual_host_finish' (347092) panicked at crates/shards/tests/managed_network/tcp_forward.rs:200:5:
+assertion `left == right` failed: 
+shards: VM 347139 ended before it was ready; its process ended with status 125 (0x7d)
+
+Run 'shards run --help' for more information
+
+  left: Some(125)
+ right: Some(0)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+--- /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0/daemon.log, its last 5 lines
+shards daemon 347098: the default bridge is 172.22.0.0/16
+shards daemon 347098: serving /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0 through /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0/requests, with up to 524288 descriptors open
+shards daemon 347098: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2308/run-01a1c6b9d81e761b8ac9c2ecc13e977b/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards: guest RAM: Out of memory (os error 12)
+shards daemon 347098: VM 347139 ended with Ok(125)
+--- /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0/daemon.log, its last 792 of 792 bytes
+shards daemon 347098: the default bridge is 172.22.0.0/16
+shards daemon 347098: serving /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0 through /home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v3/client-fin-first/tmp/shards-tests/347091/relay-eng-0/requests, with up to 524288 descriptors open
+shards daemon 347098: watching the host's memory pressure: /proc/pressure/memory and /sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a14c4f-01a1576c-01a1b969.service/kiln/kiln-agents-2308/run-01a1c6b9d81e761b8ac9c2ecc13e977b/memory.pressure: some task stalled on memory 140 ms in 2 s
+shards: guest RAM: Out of memory (os error 12)
+shards daemon 347098: VM 347139 ended with Ok(125)
+

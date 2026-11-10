@@ -8,8 +8,10 @@ the first signed6ab checkpoint and its then-pending scope.
 
 [Native follow-up](native-followup/README.md) adds actual pressure/short writes,
 early held-backend completion/cancellation and wrong-byte mutation/restoration.
-Its engine Unix/VSOCK compatibility fixture is still unrun while the separate
-normal caller build completes; production consumer wiring remains pending.
+That checkpoint's engine compatibility case was still unrun. The
+[reset/engine follow-up](reset/README.md) now records the actual native reset
+mismatch/correction/mutation and first old-engine client-FIN-first KVM pass.
+Old host-finish and production consumer wiring remain pending.
 
 Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; reviewed design
 `c584e877f56d97736e325eae2cb9fa2be97fdfc0`. Role: implementer and assigned

@@ -1,0 +1,15 @@
+{
+  "source_base": "6b8d0279230df5e8d18326abccf9f132272d0879",
+  "binary": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/target/test-release/deps/__relay_tcp-893de95f6204be53",
+  "binary_sha256": "d5c841652c3f163d9e5f32f1b0e15bf35d2ead3c260cc50d00580405840b487e",
+  "guest": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/target/x86_64-unknown-linux-musl/guest/shards-testguest",
+  "guest_sha256": "e86945f444a7c10d6264aaec8970550d4cbd68961f66fd9737c7238d5f1f0465",
+  "engine_source_sha256": "e2e4e6e6ae014ddb82aba96362801bd14bf4a69a2955ac44941bd481f6563eea",
+  "shared_source_sha256": "d2d62359ef054e321e7e742b964a6267f77086ccd8b9f8cbe30012d33423feb2",
+  "kernel_sha256": "97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae",
+  "config_sha256": "fb1a17c68b211c72fddec827313bbad0019b1165d43cc311ca2582ff91af0f8d",
+  "cpu_affinity": [
+    0
+  ],
+  "requested_resource_scope": "ROOT approved one ordinary finitecase: Kiln2CPU/4GiB/24GiB headroom, no RLIMIT_AS (normal sparse nativeRAM/DAX), physical/kernel hard limits unverified"
+}

@@ -1,0 +1,6 @@
+
+thread 'managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer' (482634) panicked at ../source/crates/testguest/src/managed_network/intercept/tcp_forward.rs:1622:9:
+assertion `left == right` failed: direct and mediated native reset must agree
+  left: [Some(ConnectionReset), None]
+ right: [Some(ConnectionReset), Some(ConnectionReset)]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

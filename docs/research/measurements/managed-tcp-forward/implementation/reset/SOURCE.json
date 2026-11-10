@@ -1,0 +1,12 @@
+{
+  "repository": "gregkh/linux",
+  "ref": "v6.18.48",
+  "path": "net/ipv4/tcp.c",
+  "blob": "db80b81a74cbb759791949ce34f1088ca8c54671",
+  "url": "https://github.com/gregkh/linux/blob/v6.18.48/net/ipv4/tcp.c",
+  "lines": [
+    3040,
+    3290
+  ],
+  "used": "__tcp_close selects abortive close for zero SO_LINGER; normal drained close selects FIN. No production timer/size/default imported."
+}

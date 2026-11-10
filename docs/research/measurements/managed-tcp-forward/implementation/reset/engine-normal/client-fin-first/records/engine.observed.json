@@ -1,0 +1,21 @@
+[
+  {
+    "error_kind": "None",
+    "fd_after": 4,
+    "fd_before": 4,
+    "kernel_return": "Unknown",
+    "late_write": {
+      "kind": "NotAttempted"
+    },
+    "ok": true,
+    "order": "ClientFinFirst",
+    "phase": "ResponseEof",
+    "read": 242,
+    "read_end": "Closed",
+    "read_hex": "485454502f312e3120323030204f4b0d0a4170692d56657273696f6e3a20312e35360d0a4f73747970653a206c696e75780d0a5365727665723a207368617264732f302e372e3020286c696e7578290d0a43616368652d436f6e74726f6c3a206e6f2d63616368652c206e6f2d73746f72652c206d7573742d726576616c69646174650d0a446f636b65722d4578706572696d656e74616c3a20747275650d0a507261676d613a206e6f2d63616368650d0a436f6e74656e742d547970653a20746578742f706c61696e3b20636861727365743d7574662d380d0a436f6e74656e742d4c656e6774683a20320d0a0d0a4f4b",
+    "type": "EngineHalfClose",
+    "worker_joined": true,
+    "write_end": "Closed",
+    "written": 56
+  }
+]

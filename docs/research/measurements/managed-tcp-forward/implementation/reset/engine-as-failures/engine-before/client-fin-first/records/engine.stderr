@@ -1,0 +1,3 @@
+shards: VM 340390 ended before it was ready; its process ended with status 125 (0x7d)
+
+Run 'shards run --help' for more information

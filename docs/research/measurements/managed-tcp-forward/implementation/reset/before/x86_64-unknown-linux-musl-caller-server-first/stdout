@@ -1,0 +1,20 @@
+
+running 1 test
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer ... managed-tcp-forward {"type":"Endpoint","role":"ResetBackend","ordinal":0,"local":"127.0.0.1:51921","peer":"127.0.0.1:53802","read":13,"written":8,"read_end":"Closed","write_end":"Open","ok":true,"read_hex":"5245515545535400ff0d0a0102","extra_hex":null,"error_kind":"None","errno":null}
+managed-tcp-forward {"type":"Endpoint","role":"ResetClient","ordinal":0,"local":"127.0.0.1:53802","peer":"127.0.0.1:51921","read":8,"written":13,"read_end":"Open","write_end":"Closed","ok":false,"read_hex":"53455256455200ff","extra_hex":null,"error_kind":"Some(ConnectionReset)","errno":104}
+managed-tcp-forward {"type":"NativeReset","ordinal":0,"client_error_kind":"Some(ConnectionReset)","backend_joined":true,"relay_joined":false,"native_fault_retained":true}
+managed-tcp-forward {"type":"NativeResetCleanup","ordinal":0,"fd_before":4,"fd_after":4,"kernel_return":"Unknown"}
+managed-tcp-forward {"type":"Endpoint","role":"ResetBackend","ordinal":1,"local":"127.0.0.1:45521","peer":"127.0.0.1:48363","read":13,"written":8,"read_end":"Closed","write_end":"Open","ok":true,"read_hex":"5245515545535400ff0d0a0102","extra_hex":null,"error_kind":"None","errno":null}
+managed-tcp-forward {"type":"NativeFlow","storage":"caller","connect":"Connected","end":null,"fault":{"kind":"Native","leg":"Backend","operation":"Read","error_kind":"ConnectionReset","errno":104},"client":"127.0.0.1:42686","upstream":"127.0.0.1:48363","to_backend":{"half":"WriteClosed","source_end":"Eof","read":13,"written":13,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":4,"write_would_block":0},"to_client":{"half":"Reading","source_end":null,"read":8,"written":8,"pending":0,"extra_consumed":0,"partial_writes":0,"would_block":8,"write_would_block":0}}
+managed-tcp-forward {"type":"Endpoint","role":"ResetClient","ordinal":1,"local":"127.0.0.1:42686","peer":"127.0.0.1:59223","read":8,"written":13,"read_end":"Closed","write_end":"Closed","ok":true,"read_hex":"53455256455200ff","extra_hex":null,"error_kind":"None","errno":null}
+managed-tcp-forward {"type":"NativeReset","ordinal":1,"client_error_kind":"None","backend_joined":true,"relay_joined":true,"native_fault_retained":true}
+managed-tcp-forward {"type":"NativeResetCleanup","ordinal":1,"fd_before":4,"fd_after":4,"kernel_return":"Unknown"}
+FAILED
+
+failures:
+
+failures:
+    managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+

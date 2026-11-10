@@ -16,12 +16,26 @@ pub(super) enum Connect {
 }
 
 #[derive(Debug)]
+pub(super) enum Abort {
+    NotRequired,
+    Requested {
+        leg: Leg,
+    },
+    Failed {
+        leg: Leg,
+        kind: io::ErrorKind,
+        errno: Option<i32>,
+    },
+}
+
+#[derive(Debug)]
 pub(super) struct Completion {
     pub(super) accepted: usize,
     pub(super) downstream: Option<Tuple>,
     pub(super) upstream: Option<Tuple>,
     pub(super) connect: Connect,
     pub(super) flow: shared::Report,
+    pub(super) abort: Abort,
     pub(super) result: Result<Termination, Fault>,
 }
 
@@ -103,6 +117,7 @@ pub(super) fn forward(
         upstream: None,
         connect: Connect::NotAttempted,
         flow: shared::Report::new(),
+        abort: Abort::NotRequired,
         result: Ok(Termination::BothHalvesClosed),
     };
     let admission = Control::Until(&deadline);
@@ -184,14 +199,78 @@ fn run_accepted(
             .peer_addr()
             .map_err(|e| native(Leg::Backend, Operation::Connect, e))?,
     });
-    shared::pump(
+    let result = shared::pump(
         [downstream.as_fd(), upstream.as_fd()],
         slots,
         limits.map(ByteLimit::Bytes),
         Control::Until(deadline),
         EndPolicy::Independent,
         &mut report.flow,
-    )
+    );
+    report.abort = reset_peer(&result, [&downstream, &upstream]);
+    result
+}
+
+fn reset_peer(result: &Result<Termination, Fault>, streams: [&TcpStream; 2]) -> Abort {
+    let Err(Fault::Native {
+        leg,
+        kind: io::ErrorKind::ConnectionReset,
+        ..
+    }) = result
+    else {
+        return Abort::NotRequired;
+    };
+    let [client, backend] = streams;
+    let (socket, leg) = match leg {
+        Leg::Client => (backend, Leg::Backend),
+        Leg::Backend => (client, Leg::Client),
+    };
+    // Linux6.18.48 __tcp_close: zero SO_LINGER selects abortive close rather
+    // than FIN. This is TCP-owner finalization after an actual peer reset;
+    // setsockopt acceptance is a request, not proof its peer received RST.
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    // SAFETY: this caller still owns both sockets, with an exact initialized
+    // native option. They close on return; no new application I/O is admitted.
+    if unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&raw const linger).cast(),
+            size_of_val(&linger) as _,
+        )
+    } < 0
+    {
+        let error = io::Error::last_os_error();
+        Abort::Failed {
+            leg,
+            kind: error.kind(),
+            errno: error.raw_os_error(),
+        }
+    } else {
+        Abort::Requested { leg }
+    }
+}
+
+fn abort_record(out: &mut impl Write, abort: &Abort) -> io::Result<()> {
+    match abort {
+        Abort::NotRequired => write!(out, "{{\"kind\":\"NotRequired\"}}"),
+        Abort::Requested { leg } => write!(out, "{{\"kind\":\"Requested\",\"leg\":\"{leg:?}\"}}"),
+        Abort::Failed { leg, kind, errno } => {
+            write!(
+                out,
+                "{{\"kind\":\"Failed\",\"leg\":\"{leg:?}\",\"error_kind\":\"{kind:?}\",\"errno\":"
+            )?;
+            match errno {
+                Some(errno) => write!(out, "{errno}")?,
+                None => write!(out, "null")?,
+            }
+            write!(out, "}}")
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -805,6 +884,8 @@ fn run_owned(input: Inputs) -> io::Result<()> {
             relay.result.is_ok()
         )?;
         fault_record(&mut out, &relay.result)?;
+        write!(out, ",\"abort\":")?;
+        abort_record(&mut out, &relay.abort)?;
         write!(out, ",\"to_backend\":")?;
         progress_record(&mut out, &relay.flow.to_backend)?;
         write!(out, ",\"to_client\":")?;
@@ -1198,6 +1279,8 @@ mod native_tests {
         }
         write!(out, ",\"fault\":").unwrap();
         fault_record(&mut out, &forwarded.result).unwrap();
+        write!(out, ",\"abort\":").unwrap();
+        abort_record(&mut out, &forwarded.abort).unwrap();
         write!(
             out,
             ",\"client\":\"{client}\",\"upstream\":\"{upstream}\",\"to_backend\":"
@@ -1478,6 +1561,154 @@ mod native_tests {
         assert_eq!(after, before);
         println!(
             "NATIVE_TCP_CANCEL_EXACT backend_request={request} client_greeting={greeting} fd_before={before} fd_after={after} kernel_return=Unknown"
+        );
+    }
+
+    #[test]
+    #[ignore = "finite native direct/mediated reset compatibility with independent prefix receipts"]
+    fn native_tcp_reset_matches_direct_peer() {
+        let (input, deadline) = native_inputs();
+        assert_eq!(input.scenario, Scenario::ServerFirst);
+        let mut received_errors = Vec::new();
+        let mut native_faults = Vec::new();
+        for ordinal in [0, 1] {
+            let before = descriptor_count().unwrap();
+            let backend_input = input.duplicate().unwrap();
+            let mut backend_endpoint = Endpoint::reserve(input.request.len()).unwrap();
+            let mut client_endpoint = Endpoint::reserve(input.greeting.len()).unwrap();
+            let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+            let destination = listener.local_addr().unwrap();
+            let mut backend = Worker::spawn(&deadline, move |deadline| {
+                let (mut stream, peer) = deadline
+                    .io(listener.as_raw_fd(), libc::POLLIN, || listener.accept())
+                    .unwrap();
+                stream.set_nonblocking(true).unwrap();
+                let tuple = Tuple {
+                    local: stream.local_addr().unwrap(),
+                    peer,
+                };
+                let result = (|| {
+                    backend_endpoint.send(&mut stream, &backend_input.greeting, &deadline)?;
+                    backend_endpoint.receive(&mut stream, &backend_input.request, &deadline)?;
+                    backend_endpoint.eof(&mut stream, &deadline)
+                })();
+                backend_endpoint
+                    .record("ResetBackend", ordinal, tuple, &result)
+                    .unwrap();
+                (stream, tuple, backend_endpoint, result)
+            })
+            .unwrap();
+            let (target, mut relay) = if ordinal == 0 {
+                (destination, None)
+            } else {
+                let listener =
+                    listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+                let at = listener.local_addr().unwrap();
+                let upstream = TcpStream::from(
+                    bound(
+                        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                        libc::SOCK_STREAM,
+                        SocketMode::Native,
+                    )
+                    .unwrap(),
+                );
+                let [up, down] = input.slot_sizes;
+                let slots = Slots::reserve(up, down).unwrap();
+                let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
+                (
+                    at,
+                    Some(
+                        start(
+                            listener,
+                            upstream,
+                            destination,
+                            slots,
+                            [input.request.len(), response],
+                            &deadline,
+                        )
+                        .unwrap(),
+                    ),
+                )
+            };
+            let mut client = TcpStream::connect_timeout(&target, deadline.left().unwrap()).unwrap();
+            client.set_nonblocking(true).unwrap();
+            let tuple = Tuple {
+                local: client.local_addr().unwrap(),
+                peer: client.peer_addr().unwrap(),
+            };
+            client_endpoint
+                .receive(&mut client, &input.greeting, &deadline)
+                .unwrap();
+            client_endpoint
+                .send(&mut client, &input.request, &deadline)
+                .unwrap();
+            client_endpoint.close_write(&client).unwrap();
+            let (stream, backend_tuple, backend_endpoint, result) = backend.join().unwrap();
+            result.unwrap();
+            assert_eq!(backend_endpoint.read, input.request.len());
+            assert_eq!(backend_endpoint.write_end, End::Open);
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: this fixture owns the accepted socket; zero linger is the
+            // native abortive close being compared, never a host policy change.
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_LINGER,
+                        (&raw const linger).cast(),
+                        size_of_val(&linger) as _,
+                    )
+                },
+                0
+            );
+            drop(stream);
+            let native_reset = if let Some(worker) = &mut relay {
+                let forwarded = worker.join().unwrap();
+                record_flow(&forwarded, "caller", tuple.local, backend_tuple.peer);
+                matches!(
+                    forwarded.result,
+                    Err(Fault::Native {
+                        leg: Leg::Backend,
+                        operation: Operation::Read,
+                        kind: io::ErrorKind::ConnectionReset,
+                        errno: Some(libc::ECONNRESET)
+                    })
+                )
+            } else {
+                true
+            };
+            native_faults.push(native_reset);
+            let result = client_endpoint.eof(&mut client, &deadline);
+            client_endpoint
+                .record("ResetClient", ordinal, tuple, &result)
+                .unwrap();
+            let kind = result.as_ref().err().map(io::Error::kind);
+            received_errors.push(kind);
+            println!(
+                "managed-tcp-forward {{\"type\":\"NativeReset\",\"ordinal\":{ordinal},\"client_error_kind\":\"{kind:?}\",\"backend_joined\":true,\"relay_joined\":{},\"native_fault_retained\":{native_reset}}}",
+                relay.is_some()
+            );
+            drop(client);
+            drop(relay);
+            drop(backend);
+            let after = descriptor_count().unwrap();
+            assert_eq!(after, before);
+            println!(
+                "managed-tcp-forward {{\"type\":\"NativeResetCleanup\",\"ordinal\":{ordinal},\"fd_before\":{before},\"fd_after\":{after},\"kernel_return\":\"Unknown\"}}"
+            );
+        }
+        assert_eq!(native_faults, [true, true]);
+        assert_eq!(
+            received_errors,
+            [
+                Some(io::ErrorKind::ConnectionReset),
+                Some(io::ErrorKind::ConnectionReset)
+            ],
+            "direct and mediated native reset must agree"
         );
     }
 }

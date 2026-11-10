@@ -1,0 +1,19 @@
+{
+  "TMPDIR": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v4/client-fin-first/tmp",
+  "XDG_CACHE_HOME": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v4/client-fin-first/helper-cache",
+  "SHARDS_TEST_GUESTS": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/prefabs",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_NETWORK_EFFECTIVE_CONFIG": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/config-6.18.48-x86_64-managed-tproxy",
+  "SHARDS_NETWORK_CONFIG_PROVENANCE": "ROOT retained experimental6.18.48 TPROXY kernel/config; no product pin change",
+  "SHARDS_NETWORK_RECORDS": "/home/adalundhe/relay-tcp-engine-compat-6b8-v1/engine-before-v4/client-fin-first/records",
+  "SHARDS_NETWORK_BOOT_MS": "120000",
+  "SHARDS_NETWORK_CASE_MS": "30000",
+  "SHARDS_NETWORK_MEMORY_MIB": "256",
+  "SHARDS_NETWORK_CPUS": "1",
+  "SHARDS_ENGINE_HALF_MODE": "client-fin-first",
+  "SHARDS_ENGINE_REQUEST_HEX": "474554202f5f70696e6720485454502f312e310d0a486f73743a20656e67696e650d0a436f6e6e656374696f6e3a20636c6f73650d0a0d0a",
+  "SHARDS_ENGINE_SUFFIX_HEX": "4f4b",
+  "SHARDS_ENGINE_LATE_HEX": "",
+  "SHARDS_ENGINE_RESPONSE_BYTES": "4096"
+}

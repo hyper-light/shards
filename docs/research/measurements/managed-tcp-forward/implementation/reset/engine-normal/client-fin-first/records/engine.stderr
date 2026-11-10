@@ -1,0 +1,1 @@
+shards-timing {"client_rss_kib":9752,"client_us":403535,"released_us":60260,"entry_us":60261,"exit_us":0,"request_us":370119,"answered_us":375560,"prefetched":0,"rss_kib":236536,"footprint_kib":232364,"peak_commit_kib":0,"hotplug_held_kib":0,"reported_kib":0,"markers":[[1,142855],[3,370650],[4,373325],[5,375385]]}
