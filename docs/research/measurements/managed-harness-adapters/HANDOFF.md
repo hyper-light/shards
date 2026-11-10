@@ -1,5 +1,15 @@
 # Harness adapter lane checkpoint
 
+Signed pushed current product codec590882ecce0f29ed2ee29c544e7b11865c636cf7;
+framingd2994e3a1b8f4c57d40b177c398619f432c04518; selector DATA candidate
+19b8a946282c99ca2a47c7e56f9c1c58d3359f95. Branch clean before this handoff edit.
+Current exact dependencies are in PENDING-CALLER.md. Audit signed branch still
+11249adf6 at last read; its new bound/Presented/catalog APIs are applied but not
+in a signed consumable checkpoint. ROOT exact canonical reservation-helper
+proposal seq7699 and capture/parser scope request7601 remain pending. Parent
+source-consumption permission is not a claim of additional ROOT shared-span GO.
+Do not copy another worktree's uncommitted files or manufacture an owner grant.
+
 Current owned codec source additionally distinguishes borrowed reported owner
 Reply/Notice from Tool/Mcp. Actual captured Claude order includes native MCP
 initialize BEFORE owner initialize response; version key claude_code_version.
