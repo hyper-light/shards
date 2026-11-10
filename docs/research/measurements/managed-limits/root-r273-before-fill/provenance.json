@@ -1,0 +1,8 @@
+{
+  "run": "root r273",
+  "source": "02542f434f083e0f72253f7944b48c9e9bab3a86",
+  "original": "/home/adalundhe/managed-limits-0254-v1/campaign.log",
+  "campaign_sha256": "96bd6c07eaaf913bc88662e137f7ae283d2e61ac0ab264ccff88adf1d6251ade",
+  "role": "coordinator real KVM; copied read-only by implementer",
+  "result": "Ready/visible tree pass; no published fixture control port panic before Fill; no exhaustion/recovery evidence"
+}
