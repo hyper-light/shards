@@ -192,3 +192,13 @@ This is a fixture assertion defect, not a production observation failure. Root
 requested a subsequent two-assertion-only correction and owns the full rerun;
 no whole-corpus or main readiness claim is made here. Root raw log remains
 `~/root-main-native-api-bf25-v1/lib.log`; its clone/target are not modified.
+
+The subsequent test-only correction is now recorded separately: root345's actual
+Exited observation led to exact matching Exited; [focused r231](records/typed-attach-red/README.md)
+then observed ReadStat+ESRCH and failed1/1. Root approved that exact additional
+stage/code under the unchanged PID/expected-start guards. Source82a6b7fda plus
+4cb508131 changes only those two assertions; production and conformance stay
+unchanged. [Focused r234](records/typed-attach-green/README.md) at eb034c571 passed
+both ordinary tests2/0. Root full-corpus rerun remains owed; these records retain
+the causal migration rationale and do not turn a generic observation failure into
+proof of gone.

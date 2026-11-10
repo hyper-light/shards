@@ -1,0 +1,46 @@
+{
+  "source": "eb034c5710ce5e493872f9e0463cb10a39b10ad4",
+  "scope": "format/shell/policy/source-only diff; no additional runtime",
+  "results": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "a9aa9b",
+        "wall_time_seconds": 4.103344958,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "bac96a",
+        "wall_time_seconds": 0.000006,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "16c06f",
+        "wall_time_seconds": 0.000004833,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "10614a",
+        "wall_time_seconds": 0.000006416,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ]
+}
