@@ -10,7 +10,7 @@ Base: combined `5d231e1b36ad37f9de7451bce1207a4fc859153b`. Policy: canonical
 `c921a0b12b06d495b354907162e991376edffd41`, rules SHA-256
 `1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`.
 Role: implementer. Source:
-[`managed_output.rs`](../../../../../crates/shards/tests/managed_output.rs).
+[`managed_output.rs`](../../../../crates/shards/tests/managed_output.rs).
 
 ## Contract and actual seam
 
@@ -30,10 +30,14 @@ the existing public `managed::client_config` and `net::Driver` APIs over real UD
 TLS. The test-only hyper-quic dependency is exactly the already-pinned source
 `f116ac276d2d53296de24c2a43837baf66ed1cbd`, needed to name public callback types.
 
-The positive case leaves AGENT stdout unacknowledged while the other three
-channels deliver their own exact bytes and return application credit. It then
-closes the held observer locally and executes a new main-workload command before
-and after cancellation. Each command's stdout/stderr must remain exact. Owner
+The positive case leaves AGENT stdout unacknowledged while that member's stderr
+delivers its exact bytes and returns application credit. It then closes the held
+observer locally and executes a new main-workload command before and after
+cancellation. Both HARNESS channels receive their first subscription/credit only
+after local observer completion, and must then deliver and acknowledge their own
+exact bytes. This tests sibling capture progress after the local cancellation;
+it does not infer a server retirement event from client completion.
+Each main command's stdout/stderr must remain exact. Owner
 revocation must complete and durable terminal metadata must distinguish the held
 channel's accepted-but-unconsumed bytes from the other channels' consumed bytes.
 This proves only the effects actually observed when the coordinator runs it; the
@@ -85,8 +89,40 @@ test workload values nor old retirement measurements enlarge admitted authority.
 ## Commands and owed coordinator proof
 
 Light implementer checks are limited to formatting/policy, selected cargo check/
-clippy and the pure metadata parser test. Actual outcomes and exact source/log
-paths will be appended after those commands run. No VM campaign has run here.
+clippy and the pure metadata parser test. No VM campaign has run here.
+
+| Source / kiln run | Actual result |
+| --- | --- |
+| `e3e2a517` / r23 | Selected cargo check exit0, 72 seconds. |
+| `e3e2a517` / r25 | Strict selected clippy exit101: four test-helper `expect_used` errors and one array-chunk preference. Retained, not a passing gate. |
+| `b22ea508` / r26 | Corrected strict clippy exit0; pure parser1 passed/0 failed. First test-profile build247 seconds; parser itself0.00s. |
+| `842460aa` / r29 | Strict clippy exit0; pure parser1 passed/0 failed,3 unrelated tests filtered out. Rebuilt selected test in1.81s. Neither VM case executed. |
+| `3752fc9f` / r31 | Final fixture cleanup handling: strict clippy exit0; pure parser1 passed/0 failed. Selected test rebuilt in1.80s. VM/helper-failure cleanup remains unverified. |
+
+Final fixture source SHA-256:
+`4551ae4c605e35e8f18616373712803eb9f205636ce0deb73ff2ab88179fae2c`.
+Fedora host `fedora.attlocal.net`, Linux6.19.10-300.fc44.x86_64, glibc2.43,
+Rust1.98.1 (`48a229cea`), LLVM22.1.8. All requests retained4CPU/8GiB/10GiB.
+Logs, actual exit files, environment and hashes for all four source checkpoints
+are retained under [`owner-output-checks/`](owner-output-checks/); its SHA256SUMS
+covers20 raw files plus the command record. Local named-file rustfmt, diff and
+policy checks passed.
+The original failed lint result is preserved alongside the corrected source.
+
+Exact light invocations are in
+[`owner-output-checks/commands.txt`](owner-output-checks/commands.txt). The private
+compiler target is `~/managed-owner-output-target`, evidence outside it at
+`~/managed-owner-output-evidence`; the original endpoint reflink source was not
+modified. No job remains active at this checkpoint. Mac actual free space at the
+final check was45,840,860KiB, above the30GiB floor. The wrapper signature header
+and required attribution are present; no certificate trust-chain claim is made.
+
+Composition note: root's newer combined `cbe3d027` aligns the remote transport to
+tested hyper-quic `233b7fcef7a363327c5439b191724a38065062cd`. This fixture remains
+at the assigned 5d base for its light checks. On composition, root must align the
+new **dev-dependency** revision with that same remote/lock source; two different
+hyper-quic sources would give incompatible callback `StreamId`/`ClientConfig`
+types. No second version or new workspace abstraction is intended.
 
 The coordinator must use a private clone/target with actual carried helpers and
 guest binaries; `SHARDS_HELPERS=skip` is valid only for the light compile check.
@@ -122,7 +158,7 @@ the real daemon/VM remain owed. No mutation result is claimed here.
 
 | Rule | Evidence / remaining gap |
 | --- | --- |
-| R01 | Production source unchanged. Assertions are test-only; panic cleanup is caught and joined. Compile/clippy results pending. |
+| R01 | Production source unchanged. Assertions are test-only; panic cleanup is caught before shutdown. Selected check, final strict clippy and parser pass as above; actual VM cleanup remains unverified. |
 | R02 | Existing daemon metadata/control source, pinned transport and RFC ordered-stream/FIN contract inspected. No production architectural choice is made. |
 | R03 | Published capacity and protocol bounds select windows; patience and synthetic values are documented test inputs only. |
 | R04 | Existing typed scope/channel/reasons/commands are used; no string control inference. Public Driver TLS-cause erasure remains an explicit limit. |
@@ -131,7 +167,7 @@ the real daemon/VM remain owed. No mutation result is claimed here.
 | R07 | Comments explain ordering, ownership and limitations; payload content stays out of new diagnostics. |
 | R08 | No speed/resource advantage or 4–5× achievement claimed; comparative work is coordinator-owned and unrun. |
 | R09 | This adds observation fixtures, not a speculative product fix. Earlier native immediate-refusal red stays recorded separately. VM behavior is unverified. |
-| R10 | Exact root invocations and guard mutation obligations above. Real red/green/mutation/resource logs remain owed. |
+| R10 | Light-check commands/source/environment/raw logs/hashes and the corrected lint failure retained. Exact root invocations and guard mutation obligations above. Real VM red/green/mutation/resource logs remain owed. |
 | R11 | Initial fixture is Linux-only. All real VM hosts, other six target builds and libc/distribution variants remain unverified; Intel Mac unsupported and paused WinARM untouched. |
 | R12 | Public shared transport/identity seams, same existing pinned dependency. No new installed binary, host root or crypto change. |
 | R13 | Test/dev-only scope; no production manager, cache, duplicated authority or endpoint-policy change. |
