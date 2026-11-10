@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "test", "--offline", "--manifest-path", "/home/adalundhe/managed-relay-compose-all-light-v1/host/Cargo.toml", "--lib", "cancel::notification_expiry_record_cannot_claim_cancellation_or_hide_a_sent_datagram", "--", "--exact"]

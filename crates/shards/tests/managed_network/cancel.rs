@@ -121,6 +121,280 @@ fn cancelled_before_send(record: &Value) -> bool {
         .iter()
         .all(|field| record[*field] == 0)
 }
+fn expired_before_send(record: &Value, error: &Value) -> bool {
+    record["type"] == "ForwardCompletion"
+        && record["joined"] == true
+        && record["terminal"] == "Error"
+        && record["step"] == "Binary"
+        && record["stage"] == "BeforeUpstreamSend"
+        && record["upstream_progress"] == "NotAttempted"
+        && record["ingress_received"] == 1
+        && [
+            "upstream_sent",
+            "upstream_received",
+            "client_sent",
+            "empty_ingress",
+            "empty_reply",
+        ]
+        .iter()
+        .all(|field| record[*field] == 0)
+        && error["type"] == "ForwardError"
+        && error["stage"] == "BeforeUpstreamSend"
+        && error["progress"] == "NotAttempted"
+        && error["cause"] == "Io"
+        && error["kind"] == "TimedOut"
+}
+#[test]
+fn notification_expiry_record_cannot_claim_cancellation_or_hide_a_sent_datagram() {
+    let mut record = json!({"type":"ForwardCompletion","joined":true,"terminal":"Error","step":"Binary","stage":"BeforeUpstreamSend","upstream_progress":"NotAttempted","ingress_received":1,"upstream_sent":0,"upstream_received":0,"client_sent":0,"empty_ingress":0,"empty_reply":0});
+    let mut error = json!({"type":"ForwardError","stage":"BeforeUpstreamSend","progress":"NotAttempted","cause":"Io","kind":"TimedOut"});
+    assert!(expired_before_send(&record, &error));
+    assert!(!cancelled_before_send(&record));
+    error["kind"] = json!("InvalidInput");
+    assert!(!expired_before_send(&record, &error));
+    error["kind"] = json!("TimedOut");
+    record["terminal"] = json!("Cancelled");
+    assert!(!expired_before_send(&record, &error));
+    record["terminal"] = json!("Error");
+    record["upstream_sent"] = json!(1);
+    assert!(!expired_before_send(&record, &error));
+    assert_eq!(record["upstream_sent"], 1);
+}
+
+#[test]
+#[ignore = "coordinator alone executes real duplicate/missing notification and original-expiry cleanup"]
+fn direct_guest_udp4_notification_failure_retains_ingress_until_original_expiry() {
+    let input = Inputs::supplied();
+    let mode = required("SHARDS_SOCK_ADDR_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let case = required("SHARDS_BOUNDARY_NOTICE");
+    let (notice, kind, word, write) = match case.as_str() {
+        "duplicate-ready" => ("Duplicate", "InvalidInput", json!(2), "Completed"),
+        "missing-ready" => ("Missing", "TimedOut", Value::Null, "Omitted"),
+        _ => panic!("supply duplicate-ready or missing-ready"),
+    };
+    let budget = positive("SHARDS_SOCK_ADDR_BUFFER_BYTES");
+    let millis = input.case_ms.to_string();
+    let bytes = budget.to_string();
+    let run = input.boot(
+        &format!("sock-addr-boundary4-{mode}-{case}"),
+        &["sock-addr-boundary4", &mode, &millis, &bytes, &case],
+    );
+    let records = sock_addr_records(&run.stdout);
+    let select = |kind: &str| -> Vec<&Value> { records.iter().filter(|r| r["type"] == kind).collect() };
+    let one = |kind: &str| {
+        let found = select(kind);
+        assert_eq!(found.len(), 1, "{kind}: {run}");
+        found[0]
+    };
+    let target = one("Target");
+    let flow = one("ForwardTarget");
+    assert_eq!(target["operation"], "BoundaryNotification");
+    assert_eq!(target["profile"], "FixedOriginalPeer");
+    assert_eq!(flow["backend"], target["backend"]);
+    assert_eq!(flow["ingress"], target["responder"]);
+    assert_eq!(flow["upstream_peer"], target["backend"]);
+    let slots = one("PayloadSlots");
+    assert_eq!(slots["provided"], budget);
+    assert!(
+        slots["request_capacity"]
+            .as_u64()
+            .unwrap()
+            .checked_add(slots["reply_capacity"].as_u64().unwrap())
+            .unwrap()
+            <= budget
+    );
+    assert_eq!(slots["charge_scope"], "PayloadCapacityOnly");
+    assert_eq!(slots["allocator_kernel_console"], "Unaccounted");
+    let identities = select("ClientIdentity");
+    assert_eq!(identities.len(), 2);
+    let identity = |role: &str| {
+        let found: Vec<_> = identities.iter().copied().filter(|r| r["role"] == role).collect();
+        assert_eq!(found.len(), 1);
+        found[0]
+    };
+    let baseline = identity("BaselineBackend");
+    let client = identity("ForwardedBackend");
+    assert_ne!(baseline["pid"], client["pid"]);
+    for identity in [baseline, client] {
+        assert_eq!(identity["namespace"], target["namespace"]);
+        assert_eq!(identity["requested"], target["backend"]);
+        let raw = identity["cgroup_hex"].as_str().unwrap();
+        let bytes: Vec<_> = raw
+            .as_bytes()
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert!(String::from_utf8(bytes).unwrap().contains("/sock-addr-client\n"));
+        if mode == "connected" {
+            assert_eq!(identity["peer"], target["backend"]);
+        } else {
+            assert!(identity["peer"].is_null());
+            assert_eq!(identity["peer_error"], "NotConnected");
+        }
+    }
+    let arrivals = |role: &str| -> Vec<&Value> {
+        records
+            .iter()
+            .filter(|r| r["type"] == "UdpArrival" && r["role"] == role)
+            .collect()
+    };
+    let check = |r: &Value, step: &str, hex: &str, peer: &Value, original: &Value| {
+        assert_eq!(r["step"], step);
+        assert_eq!(r["copied_hex"], hex);
+        assert_eq!(r["reported"], hex.len() / 2);
+        assert_eq!(r["flags"].as_i64().unwrap() & 0x28, 0);
+        assert_eq!(r["metadata"], "Known");
+        assert_eq!(&r["peer"], peer);
+        assert_eq!(&r["original"], original);
+    };
+    let backend = arrivals("Backend");
+    let baseline_replies = arrivals("SockAddrBaselineClient");
+    assert_eq!(
+        backend.len(),
+        2,
+        "independent actual baseline-only backend receipts: {run}"
+    );
+    assert_eq!(baseline_replies.len(), 2);
+    for (index, step, request, response) in [
+        (0, "Binary", "5245515545535400ff", "4241434b454e4400ff"),
+        (1, "Empty", "", ""),
+    ] {
+        check(
+            backend[index],
+            step,
+            request,
+            &baseline["local"],
+            &target["backend"],
+        );
+        check(
+            baseline_replies[index],
+            step,
+            response,
+            &target["backend"],
+            &baseline["local"],
+        );
+    }
+    let ingress = arrivals("ForwardIngress");
+    assert_eq!(ingress.len(), 1);
+    check(
+        ingress[0],
+        "Binary",
+        "5245515545535400ff",
+        &client["local"],
+        &flow["ingress"],
+    );
+    let issued = one("BoundaryNoticeIssued");
+    assert_eq!(issued["notice"], notice);
+    assert_eq!(issued["word"], word);
+    assert_eq!(issued["write"], write);
+    let observed = one("BoundaryObservation");
+    assert_eq!(observed["notice"], notice);
+    assert_eq!(observed["state"], "Rejected");
+    assert_eq!(observed["kind"], kind);
+    assert_eq!(observed["release"], "WithheldUntilOriginalDeadline");
+    let outcome = one("BoundaryOutcome");
+    assert_eq!(outcome["notice"], notice);
+    assert_eq!(outcome["observed"], "Rejected");
+    assert_eq!(outcome["kind"], kind);
+    assert_eq!(outcome["worker"], "ExpiredBeforeSend");
+    assert_eq!(outcome["deadline"], "Original");
+    assert!(
+        expired_before_send(one("ForwardCompletion"), one("ForwardError")),
+        "{run}"
+    );
+    let worker = one("UdpWorkerCompletion");
+    assert_eq!(worker["role"], "Backend");
+    assert_eq!(worker["joined"], true);
+    assert_eq!(worker["stage"], "ReceiveDatagram");
+    assert_eq!(worker["arrivals"], 2);
+    assert_eq!(worker["matched"], 2);
+    assert_eq!(worker["empty"], 1);
+    assert_eq!(worker["replies_sent"], 2);
+    let faults = select("UdpError");
+    match worker["terminal"].as_str() {
+        Some("Cancelled") => assert!(faults.is_empty()),
+        Some("Error") => {
+            assert_eq!(faults.len(), 1);
+            assert_eq!(faults[0]["role"], "Backend");
+            assert_eq!(faults[0]["cause"], "Io");
+            assert_eq!(faults[0]["kind"], "TimedOut");
+            assert_eq!(faults[0]["stage"], "ReceiveDatagram");
+        }
+        _ => panic!("backend terminal differs: {run}"),
+    }
+    let errors = select("Error");
+    assert_eq!(
+        errors
+            .iter()
+            .filter(|r| r["stage"] == "AwaitCancellationBoundary" && r["kind"] == kind)
+            .count(),
+        1
+    );
+    assert!(errors.iter().all(
+        |r| (r["stage"] == "AwaitCancellationBoundary" && r["kind"] == kind)
+            || (matches!(r["stage"].as_str(), Some("WaitChild" | "Receive")) && r["kind"] == "TimedOut")
+    ));
+    let reaped = select("ChildReaped");
+    assert_eq!(reaped.len(), 2);
+    assert_eq!(reaped[0]["role"], "Backend");
+    assert_eq!(reaped[0]["success"], true);
+    assert_eq!(reaped[0]["code"], 0);
+    assert!(reaped[0]["signal"].is_null());
+    assert_eq!(reaped[1]["role"], "ForwardedBackend");
+    assert_eq!(reaped[1]["success"], false);
+    assert!(
+        (reaped[1]["signal"] == 9 && reaped[1]["code"].is_null())
+            || (reaped[1]["code"] == 1 && reaped[1]["signal"].is_null())
+    );
+    assert!(reaped.iter().all(|r| r["reaped"] == true));
+    let children = select("ClientCompletion");
+    assert!(
+        children
+            .iter()
+            .any(|r| r["role"] == "BaselineBackend" && r["success"] == true && r["exchanges"] == 2)
+    );
+    if reaped[1]["code"] == 1 {
+        assert!(children.iter().any(|r| r["role"] == "ForwardedBackend"
+            && r["success"] == false
+            && r["stage"] == "Receive"
+            && r["exchanges"] == 0));
+        assert!(
+            errors
+                .iter()
+                .any(|r| r["stage"] == "Receive" && r["kind"] == "TimedOut")
+        );
+    }
+    assert_eq!(one("ChildCancellation")["role"], "ForwardedBackend");
+    assert_eq!(one("ChildCancellation")["requested"], true);
+    for absent in [
+        "CancelBoundary",
+        "PreSendRelease",
+        "ForwardExchange",
+        "HeldReply",
+        "ReceiveStageEntered",
+        "HookError",
+        "PayloadRefusal",
+    ] {
+        assert!(select(absent).is_empty(), "{absent}: {run}");
+    }
+    for absent in [
+        "ForwardUpstreamReply",
+        "SockAddrForwardedClient",
+        "BackendUnexpected",
+    ] {
+        assert!(arrivals(absent).is_empty());
+    }
+    assert_sock_addr_hooks_and_cleanup(
+        &records,
+        target,
+        SockAddrPresentation::FixedOriginalPeer.hooks(&mode),
+        &run,
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+}
 #[test]
 fn precommit_record_rejects_an_actual_upstream_send() {
     let mut record = json!({"type":"ForwardCompletion","joined":true,"terminal":"Cancelled","step":"Binary","stage":"UpstreamSend","upstream_progress":"NotAttempted","ingress_received":1,"upstream_sent":0,"upstream_received":0,"client_sent":0,"empty_ingress":0,"empty_reply":0});

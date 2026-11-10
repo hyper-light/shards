@@ -44,11 +44,25 @@ enum HookSetup {
 #[derive(Clone, Copy, Debug)]
 enum ControllerKind {
     ScriptedResponder,
-    BufferedRelay { buffer_bytes: usize },
-    CancelUpstreamReceive { buffer_bytes: usize },
-    CancelBeforeUpstreamSend { buffer_bytes: usize },
-    CompleteBackend { buffer_bytes: usize },
-    UnexpectedBackend { buffer_bytes: usize },
+    BufferedRelay {
+        buffer_bytes: usize,
+    },
+    CancelUpstreamReceive {
+        buffer_bytes: usize,
+    },
+    CancelBeforeUpstreamSend {
+        buffer_bytes: usize,
+    },
+    CompleteBackend {
+        buffer_bytes: usize,
+    },
+    UnexpectedBackend {
+        buffer_bytes: usize,
+    },
+    BoundaryNotification {
+        buffer_bytes: usize,
+        notice: udp::BoundaryNotice,
+    },
 }
 enum Cancellation {
     Receive {
@@ -69,6 +83,12 @@ enum Cancellation {
         receipt: OwnedFd,
         completed: OwnedFd,
     },
+    Notification {
+        ready: OwnedFd,
+        release: OwnedFd,
+        receipt: OwnedFd,
+        notice: udp::BoundaryNotice,
+    },
 }
 impl Cancellation {
     fn ready(&self) -> &OwnedFd {
@@ -76,14 +96,16 @@ impl Cancellation {
             Self::Receive { entered, .. }
             | Self::BackendComplete { entered, .. }
             | Self::ExtraDatagram { entered, .. } => entered,
-            Self::BeforeSend { ready, .. } => ready,
+            Self::BeforeSend { ready, .. } | Self::Notification { ready, .. } => ready,
         }
     }
     fn receipt(&self) -> &OwnedFd {
         match self {
-            Self::Receive { receipt, .. } | Self::BeforeSend { receipt, .. } => receipt,
+            Self::Receive { receipt, .. }
+            | Self::BeforeSend { receipt, .. }
+            | Self::ExtraDatagram { receipt, .. }
+            | Self::Notification { receipt, .. } => receipt,
             Self::BackendComplete { completed, .. } => completed,
-            Self::ExtraDatagram { receipt, .. } => receipt,
         }
     }
     fn control(&self) -> io::Result<udp::forward::Control> {
@@ -98,6 +120,17 @@ impl Cancellation {
             Self::BeforeSend { ready, release, .. } => Ok(udp::forward::Control::BeforeUpstreamSend {
                 ready: ready.try_clone()?,
                 release: release.try_clone()?,
+                notice: udp::BoundaryNotice::Once,
+            }),
+            Self::Notification {
+                ready,
+                release,
+                notice,
+                ..
+            } => Ok(udp::forward::Control::BeforeUpstreamSend {
+                ready: ready.try_clone()?,
+                release: release.try_clone()?,
+                notice: *notice,
             }),
         }
     }
@@ -133,6 +166,24 @@ impl FixtureInjection {
         }
         // This one-use owned clone drops before waiting for work return.
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BoundaryObservation {
+    Unobserved,
+    Accepted,
+    Rejected(io::ErrorKind),
+}
+impl BoundaryObservation {
+    fn observe(result: &io::Result<()>) -> Self {
+        match result {
+            Ok(()) => Self::Accepted,
+            Err(error) => Self::Rejected(error.kind()),
+        }
+    }
+    fn matches(self, notice: udp::BoundaryNotice) -> bool {
+        matches!(self, Self::Rejected(kind) if Some(kind) == notice.rejection())
     }
 }
 
@@ -248,6 +299,21 @@ impl Inputs {
                     buffer_bytes: budget
                         .parse()
                         .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                },
+                presentation: Presentation::FixedOriginalPeer,
+                mode: mode(how)?,
+                within: within(millis)?,
+            }),
+            ["sock-addr-boundary4", how, millis, budget, notice] => Ok(Role::Controller {
+                kind: ControllerKind::BoundaryNotification {
+                    buffer_bytes: budget
+                        .parse()
+                        .map_err(|_| invalid("buffer envelope must be usize decimal bytes"))?,
+                    notice: match *notice {
+                        "duplicate-ready" => udp::BoundaryNotice::Duplicate,
+                        "missing-ready" => udp::BoundaryNotice::Missing,
+                        _ => return Err(invalid("expected duplicate-ready or missing-ready")),
+                    },
                 },
                 presentation: Presentation::FixedOriginalPeer,
                 mode: mode(how)?,
@@ -851,7 +917,8 @@ fn controller(
         | ControllerKind::CancelUpstreamReceive { buffer_bytes }
         | ControllerKind::CancelBeforeUpstreamSend { buffer_bytes }
         | ControllerKind::CompleteBackend { buffer_bytes }
-        | ControllerKind::UnexpectedBackend { buffer_bytes } => {
+        | ControllerKind::UnexpectedBackend { buffer_bytes }
+        | ControllerKind::BoundaryNotification { buffer_bytes, .. } => {
             let slots = at(
                 Stage::ReservePayload,
                 udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
@@ -887,6 +954,7 @@ fn controller(
         ControllerKind::CancelBeforeUpstreamSend { .. } => "CancelBeforeUpstreamSend",
         ControllerKind::CompleteBackend { .. } => "CompleteBackend",
         ControllerKind::UnexpectedBackend { .. } => "UnexpectedBackend",
+        ControllerKind::BoundaryNotification { .. } => "BoundaryNotification",
     };
     record(format_args!(
         "{{\"type\":\"Target\",\"mode\":\"{mode:?}\",\"namespace\":{},\"cgroup_inode\":{},\"backend\":\"{destination}\",\"responder\":\"{rewritten}\",\"profile\":\"{presentation:?}\",\"operation\":\"{operation}\"}}",
@@ -906,7 +974,8 @@ fn controller(
         | ControllerKind::CancelUpstreamReceive { .. }
         | ControllerKind::CancelBeforeUpstreamSend { .. }
         | ControllerKind::CompleteBackend { .. }
-        | ControllerKind::UnexpectedBackend { .. } => ClientRole::ForwardedBackend,
+        | ControllerKind::UnexpectedBackend { .. }
+        | ControllerKind::BoundaryNotification { .. } => ClientRole::ForwardedBackend,
     };
     let cancellation = match kind {
         ControllerKind::CancelUpstreamReceive { .. } => Some(Cancellation::Receive {
@@ -926,6 +995,12 @@ fn controller(
             entered: udp::notification()?,
             receipt: udp::notification()?,
             completed: udp::notification()?,
+        }),
+        ControllerKind::BoundaryNotification { notice, .. } => Some(Cancellation::Notification {
+            ready: udp::notification()?,
+            release: udp::notification()?,
+            receipt: udp::notification()?,
+            notice,
         }),
         _ => None,
     };
@@ -1015,6 +1090,7 @@ fn controller(
     };
     let mut backend = DatagramWorker::start(backend_work, &deadline)?;
     let mut relay = None;
+    let mut notification_observation = BoundaryObservation::Unobserved;
     let result = (|| {
         if !at(
             Stage::Baseline,
@@ -1080,10 +1156,25 @@ fn controller(
                         ))?;
                     }
                 }
-                at(
+                let observed = at(
                     Stage::AwaitCancellationBoundary,
                     udp::notified(cancellation.ready(), &deadline),
-                )?;
+                );
+                if let Cancellation::Notification { notice, .. } = cancellation {
+                    notification_observation = BoundaryObservation::observe(&observed);
+                    match &observed {
+                        Ok(()) => record(format_args!(
+                            "{{\"type\":\"BoundaryObservation\",\"notice\":\"{notice:?}\",\"state\":\"Accepted\",\"kind\":null,\"release\":\"WithheldUntilOriginalDeadline\"}}"
+                        )),
+                        Err(error) => record(format_args!(
+                            "{{\"type\":\"BoundaryObservation\",\"notice\":\"{notice:?}\",\"state\":\"Rejected\",\"kind\":\"{:?}\",\"release\":\"WithheldUntilOriginalDeadline\"}}",
+                            error.kind()
+                        )),
+                    }?;
+                    observed?;
+                    return Err(invalid("faulty boundary notification was unexpectedly accepted"));
+                }
+                observed?;
                 if let Cancellation::ExtraDatagram { completed, .. } = cancellation {
                     injection.send(&deadline)?;
                     at(
@@ -1106,14 +1197,19 @@ fn controller(
                     Cancellation::ExtraDatagram { .. } => {
                         ("UpstreamReceive", "ConsumedUnexpectedBackendDatagram")
                     }
+                    Cancellation::Notification { .. } => {
+                        return Err(invalid(
+                            "notification case cannot request successful cancellation",
+                        ));
+                    }
                 };
                 record(format_args!(
                     "{{\"type\":\"CancelBoundary\",\"state\":\"Requested\",\"stage\":\"{stage}\",\"receipt\":\"{receipt}\",\"work_remaining_ns\":{},\"kernel_sleep\":\"Unobserved\"}}",
                     left.as_nanos()
                 ))
             })();
-            // The trusted gate is always released, including a failed request or
-            // record; its wait cannot retain this worker beyond the original deadline.
+            // The ordinary pre-send case releases even after a failed request.
+            // Notification negatives keep the gate unreleased until original expiry.
             let released = match cancellation {
                 Cancellation::BeforeSend { release, .. } => udp::notify(release, &deadline).and_then(|()| {
                     if boundary.is_ok() {
@@ -1126,7 +1222,8 @@ fn controller(
                 }),
                 Cancellation::Receive { .. }
                 | Cancellation::BackendComplete { .. }
-                | Cancellation::ExtraDatagram { .. } => Ok(()),
+                | Cancellation::ExtraDatagram { .. }
+                | Cancellation::Notification { .. } => Ok(()),
             };
             // Even a failed boundary/cancel report ends and reaps this owned child
             // before the existing worker/link/cgroup cleanup path proceeds.
@@ -1151,7 +1248,7 @@ fn controller(
         "{{\"type\":\"Cleanup\",\"state\":\"Pending\",\"stage\":\"JoinWorkers\"}}"
     ));
     let (backend, relay, backend_witness) = match &cancellation {
-        Some(Cancellation::BeforeSend { receipt, .. }) => {
+        Some(Cancellation::BeforeSend { receipt, .. } | Cancellation::Notification { receipt, .. }) => {
             let relay = relay.as_mut().map(DatagramWorker::finish);
             // On a red, retain the independent actual backend effect before
             // cancelling its observer. A send count is not a delivery receipt.
@@ -1217,6 +1314,41 @@ fn controller(
         detach_failure.is_none(),
         removed.is_ok()
     ))?;
+    if let ControllerKind::BoundaryNotification { notice, .. } = kind {
+        pending?;
+        reports?;
+        backend_witness?;
+        if !notification_observation.matches(notice)
+            || !matches!(&result, Err(error) if Some(error.kind()) == notice.rejection())
+        {
+            return Err(invalid("boundary notification rejection differs"));
+        }
+        let backend = backend?.scripted()?;
+        if !backend.ended_after_baseline() {
+            return Err(invalid("notification backend baseline/terminal differs"));
+        }
+        match relay.ok_or_else(|| invalid("notification worker not started"))?? {
+            udp::Completion::Forwarded(done) if done.expired_before_upstream_send() => {}
+            _ => {
+                return Err(invalid(
+                    "notification worker did not retain ingress through original expiry",
+                ));
+            }
+        }
+        if let Some(error) = detach_report_failure {
+            return Err(error);
+        }
+        if let Some(failure) = detach_failure {
+            return Err(failure.cause);
+        }
+        removed?;
+        return record(format_args!(
+            "{{\"type\":\"BoundaryOutcome\",\"notice\":\"{notice:?}\",\"observed\":\"Rejected\",\"kind\":\"{:?}\",\"worker\":\"ExpiredBeforeSend\",\"deadline\":\"Original\"}}",
+            notice
+                .rejection()
+                .ok_or_else(|| invalid("negative notice required"))?
+        ));
+    }
     result?;
     pending?;
     reports?;
@@ -1232,7 +1364,7 @@ fn controller(
                     .len()
                     .checked_add(1)
                     .ok_or_else(|| invalid("held backend count overflow"))?,
-                Cancellation::BeforeSend { .. } => Exchange::SCRIPT.len(),
+                Cancellation::BeforeSend { .. } | Cancellation::Notification { .. } => Exchange::SCRIPT.len(),
             },
             Exchange::SCRIPT
                 .into_iter()
@@ -1493,6 +1625,44 @@ mod tests {
             FixtureInjection::ForwardOnly.send(&deadline).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+    }
+    #[test]
+    fn notification_cases_are_explicit_and_cannot_accept_success_or_other_errors() {
+        use udp::BoundaryNotice::*;
+        for mode in ["connected", "unconnected"] {
+            for (word, notice) in [("duplicate-ready", Duplicate), ("missing-ready", Missing)] {
+                let input = Inputs::parse(&["sock-addr-boundary4", mode, "1000", "18", word]).unwrap();
+                assert!(matches!(input.0, Role::Controller {
+                    kind: ControllerKind::BoundaryNotification { buffer_bytes: 18, notice: actual },
+                    presentation: Presentation::FixedOriginalPeer,
+                    ..
+                } if actual == notice));
+            }
+        }
+        for words in [
+            vec!["sock-addr-boundary4", "connected", "1000", "18"],
+            vec!["sock-addr-boundary4", "connected", "1000", "18", "once"],
+            vec!["sock-addr-boundary4", "connected", "1000", "bad", "missing-ready"],
+        ] {
+            assert_eq!(
+                Inputs::parse(&words).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        let duplicate = BoundaryObservation::observe(&Err(io::ErrorKind::InvalidInput.into()));
+        let missing = BoundaryObservation::observe(&Err(io::ErrorKind::TimedOut.into()));
+        assert!(duplicate.matches(Duplicate));
+        assert!(missing.matches(Missing));
+        assert!(!duplicate.matches(Missing));
+        assert!(!missing.matches(Duplicate));
+        for observed in [
+            BoundaryObservation::Unobserved,
+            BoundaryObservation::observe(&Ok(())),
+            BoundaryObservation::observe(&Err(io::ErrorKind::ConnectionAborted.into())),
+        ] {
+            assert!(!observed.matches(Duplicate));
+            assert!(!observed.matches(Missing));
+        }
     }
     #[test]
     fn finite_hook_plans_are_explicit_and_mode_specific() {

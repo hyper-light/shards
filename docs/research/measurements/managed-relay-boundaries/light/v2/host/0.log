@@ -1,0 +1,16 @@
+     Locking 11 packages to latest Rust 1.98.1 compatible versions
+      Adding serde_json v1.0.151 (available: v1.0.154)
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling memchr v2.8.3
+   Compiling itoa v1.0.18
+   Compiling sock-addr-host-pure v0.0.0 (/home/adalundhe/managed-relay-boundaries-light-v2/host)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.03s
+     Running unittests fixture.rs (/home/adalundhe/managed-relay-boundaries-light-v2/host/target/debug/deps/sock_addr_host_pure-54cbe5d1127ece41)
+
+running 1 test
+test cancel::notification_expiry_record_cannot_claim_cancellation_or_hide_a_sent_datagram ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+

@@ -1,0 +1,17 @@
+   Compiling libc v0.2.189
+    Checking shards-devcgroup v0.0.0 (/home/adalundhe/managed-relay-boundaries-light-v1/guest/devcgroup)
+    Checking sock-addr-pure v0.0.0 (/home/adalundhe/managed-relay-boundaries-light-v1/guest/helper)
+error: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+   --> /home/adalundhe/managed-relay-boundaries-light-v1/guest/source/crates/testguest/src/managed_network/intercept/udp.rs:291:5
+    |
+291 | /     match notice.word() {
+292 | |         Some(word) => notify_word(fd, word, deadline)?,
+293 | |         None => {}
+294 | |     }
+    | |_____^ help: try: `if let Some(word) = notice.word() { notify_word(fd, word, deadline)? }`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#single_match
+    = note: `-D clippy::single-match` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_match)]`
+
+error: could not compile `sock-addr-pure` (lib) due to 1 previous error

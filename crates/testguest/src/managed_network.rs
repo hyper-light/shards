@@ -114,7 +114,8 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             | "sock-addr-cancel4"
             | "sock-addr-precommit4"
             | "sock-addr-backend-end4"
-            | "sock-addr-extra4",
+            | "sock-addr-extra4"
+            | "sock-addr-boundary4",
             ..,
         ] => Ok(Probe::SockAddr(intercept::sock_addr::Inputs::parse(&words)?)),
         ["capabilities"] => Ok(Probe::Capabilities(None)),

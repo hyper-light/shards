@@ -93,7 +93,11 @@ pub(in super::super) struct Inputs {
 pub(in super::super) enum Control {
     Ordinary,
     ReceiveEntry(OwnedFd),
-    BeforeUpstreamSend { ready: OwnedFd, release: OwnedFd },
+    BeforeUpstreamSend {
+        ready: OwnedFd,
+        release: OwnedFd,
+        notice: BoundaryNotice,
+    },
 }
 #[derive(Clone, Copy, Debug)]
 enum Stage {
@@ -149,6 +153,18 @@ pub(in super::super) struct Completion {
     pub(in super::super) result: Result<Terminal, Fault>,
 }
 impl Completion {
+    pub(in super::super) fn expired_before_upstream_send(&self) -> bool {
+        matches!(&self.result, Err(Fault::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+            && matches!(self.step, Exchange::Binary)
+            && matches!(self.stage, Stage::BeforeUpstreamSend)
+            && matches!(self.progress, UpstreamProgress::NotAttempted)
+            && self.report.ingress == 1
+            && self.report.upstream_sent == 0
+            && self.report.upstream_received == 0
+            && self.report.client_sent == 0
+            && self.report.empty_ingress == 0
+            && self.report.empty_reply == 0
+    }
     pub(in super::super) fn cancelled_before_upstream_send(&self) -> bool {
         matches!(self.result, Ok(Terminal::Cancelled))
             && matches!(self.step, Exchange::Binary)
@@ -229,16 +245,21 @@ pub(super) fn run(mut input: Inputs, deadline: &Deadline, cancel: &OwnedFd) -> C
             stage = Stage::ValidateIngress;
             let metadata = validate_received(received, &input.slots.request, step.request(), local, None)?;
             peer.observe(metadata.peer)?;
-            if let Control::BeforeUpstreamSend { ready, release } = &input.control {
+            if let Control::BeforeUpstreamSend {
+                ready,
+                release,
+                notice,
+            } = &input.control
+            {
                 stage = Stage::BeforeUpstreamSend;
                 let mut out = io::stdout().lock();
                 writeln!(out, "managed-intercept {{\"type\":\"IngressValidated\",\"stage\":\"{stage:?}\",\"step\":\"{step:?}\",\"upstream_progress\":\"{progress:?}\",\"ingress_received\":{}}}", report.ingress).map_err(Fault::Io)?;
                 out.flush().map_err(Fault::Io)?;
                 drop(out);
-                notify(ready, deadline).map_err(Fault::Io)?;
-                // Only this trusted fixture barrier excludes cancellation: the
-                // pending cancel must reach the unchanged next real send path.
-                // It retains the original absolute deadline, with no grace.
+                notify_boundary(ready, *notice, deadline).map_err(Fault::Io)?;
+                // This trusted barrier retains the original deadline. Ordinary
+                // pre-send control delivers pending cancel to the real send;
+                // negative notices leave release unwritten until original expiry.
                 let barrier_deadline = Deadline {
                     at: deadline.at,
                     cancel: None,
@@ -413,6 +434,32 @@ mod tests {
         done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
         assert!(!done.cancelled_before_upstream_send());
         assert_eq!(done.report.ingress, 1);
+    }
+    #[test]
+    fn notification_expiry_keeps_ingress_and_is_not_successful_cancellation() {
+        let mut done = Completion {
+            report: Report {
+                ingress: 1,
+                ..Report::default()
+            },
+            step: Exchange::Binary,
+            stage: Stage::BeforeUpstreamSend,
+            progress: UpstreamProgress::NotAttempted,
+            result: Err(Fault::Io(io::ErrorKind::TimedOut.into())),
+        };
+        assert!(done.expired_before_upstream_send());
+        assert!(!done.cancelled_before_upstream_send());
+        done.result = Ok(Terminal::Cancelled);
+        assert!(!done.expired_before_upstream_send());
+        done.result = Err(Fault::Io(io::ErrorKind::InvalidInput.into()));
+        assert!(!done.expired_before_upstream_send());
+        done.result = Err(Fault::Io(io::ErrorKind::TimedOut.into()));
+        done.progress = UpstreamProgress::Attempted;
+        assert!(!done.expired_before_upstream_send());
+        done.progress = UpstreamProgress::NotAttempted;
+        done.report.upstream_sent = 1;
+        assert!(!done.expired_before_upstream_send());
+        assert_eq!((done.report.ingress, done.report.upstream_sent), (1, 1));
     }
     #[test]
     fn cancellation_witness_keeps_send_facts_and_rejects_expiry_or_wrong_stage() {

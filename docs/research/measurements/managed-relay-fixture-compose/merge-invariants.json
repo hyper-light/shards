@@ -1,0 +1,32 @@
+{
+  "Deadline": {
+    "path": "crates/testguest/src/managed_network.rs",
+    "identical_to": "cd5d7212cc61e9196b5afe7a3e2891ba60a74529",
+    "sha256": "abbbe85b66394ebed88bc8c1edbc2ec18985bccce90d8af3d37cdc15c59e2599"
+  },
+  "cancelled_receive": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_to": "200089e47bc125037a350e0a3954863a86bb6d47",
+    "sha256": "90b7009441801383950bdd478aa8fefd77036b1ae4fcfe81ec5c91b26f4ad2b8"
+  },
+  "cancelled_before_send": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_to": "200089e47bc125037a350e0a3954863a86bb6d47",
+    "sha256": "605e117d687c3f769185499ecd5dba46b9cb288fa0d2ee0c1dcbd5127d91ff3c"
+  },
+  "expired_before_send": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_to": "f8d643c59b85f19f4a7ad1fd6adf1f5bd91a8f79",
+    "sha256": "2ea10a98856185e07a8a5e12beee83af6fc5ac3096eedbf0daa9c7a5d635604e"
+  },
+  "backend_work_returned": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_to": "a343f772d35520ede462dd45e69c3460127146ca",
+    "sha256": "497bddbbe319e6dc2337d3482923d5c8d9ecc3c4ded61c7b8f9b7e621335aa6d"
+  },
+  "unexpected_backend_work": {
+    "path": "crates/shards/tests/managed_network/cancel.rs",
+    "identical_to": "a343f772d35520ede462dd45e69c3460127146ca",
+    "sha256": "f7993ced54142c724fcc08b0a679da3c8fa76d1d3e02c3858c7659e8e46f08a4"
+  }
+}

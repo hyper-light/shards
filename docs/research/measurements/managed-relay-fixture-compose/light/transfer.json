@@ -1,0 +1,8 @@
+{
+  "bytes": 13408,
+  "sha256": "01721acb16bff584693229826d5b8beae28f6dc275f4d7c4db43c0beb9a9ae96",
+  "files": 50,
+  "all_member_hashes_verified": true,
+  "transport": "compressed in-memory text JSON; no local archive/executable",
+  "originals": "Fedora ~/managed-relay-compose-all-light-v1 retained"
+}

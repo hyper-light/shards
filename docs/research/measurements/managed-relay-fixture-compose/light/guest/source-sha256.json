@@ -1,0 +1,13 @@
+{
+  "crates/devcgroup/src/lib.rs": "75a58692ea29228f71d435f0a6e7accce6ee0b3a13efe7c20e7e00431e22b68c",
+  "crates/devcgroup/src/oracle.rs": "9da638770c14ff983755639d006302c6154d0799b62650cf61237969e0791d13",
+  "crates/testguest/src/managed_network/intercept/sock_addr/bpf.rs": "9aad0283c896f1a192f204a99537fd7804dffe30d25a1227560e8fc201ffde01",
+  "crates/testguest/src/managed_network/intercept/sock_addr.rs": "ae3446ebc6552a85bb577356ae512393f3d090040f58c1c1eb1e1e6dbfe4ad00",
+  "crates/testguest/src/managed_network/intercept/udp/forward.rs": "973492d8242f4db4c7564d4a54ba2348e7f33d3330231262c2b0d27c355b8942",
+  "crates/testguest/src/managed_network/intercept/udp.rs": "341d27774f102609c1945258d98505226dab4f69d8a85ad74d7abe7a86a9f57f",
+  "crates/testguest/src/managed_network/intercept/wire.rs": "05461b491ba32ee357b353beeb383438c8ba1aec8c27bbeacb6e1c51b36b9b93",
+  "crates/testguest/src/managed_network/intercept.rs": "cd699813c5b41c595c7ea000b56d8a757a7fabc12d736a04852d77cd54bf675b",
+  "crates/testguest/src/managed_network/mod.rs": "f48ef4e7d1cdcf0dc0f4115336329caf084ce7ffdd9a98629e1f06504a73d94d",
+  "crates/testguest/src/managed_network.rs": "f48ef4e7d1cdcf0dc0f4115336329caf084ce7ffdd9a98629e1f06504a73d94d",
+  "docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex": "637e2c05b8256410af49939f40b6a4739f8956ee8728719948e8336004fd56ba"
+}
