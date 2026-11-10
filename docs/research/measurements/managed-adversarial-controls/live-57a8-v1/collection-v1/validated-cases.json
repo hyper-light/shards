@@ -1,0 +1,498 @@
+[
+  {
+    "case": "ack-partial",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "5fdbde2fbc88d58f56ce90677797537b7a089aef38ba8d33b16f2d3fae4ca558",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-partial",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "28096a2efa6f031da654bed8d7787a44657d8853ec0a4f1b9e85e7b044547488",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-replay",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 58 consumed 28 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "fb85c8285ee5f40a92703f6d525284cabfb138359ca790d457903ab1fe1359ed",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-replay",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 58 consumed 28 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "2ea531e9040bc670cc7bea754df4ca944b146c6669482600c90e89eb65f34ba4",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-forward",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "d8c04c26d40388739f2bfc674c623aaa4b1b60323d81cd285785c0b73782afb1",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "ack-forward",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "3fad11e02d72e7bbbf929d5183afec32bbd9bdf1ce87544133ec17c1a56d8c62",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "control-unknown-tag",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "cdcbf2637278e3d2a7a21b4ca286b7be7ac9120f2ca65b64bacb8da5e36f1365",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-unknown-tag",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "e91db67791ad151abfb1009d6ab632ed66c4d48c0b611cb51c9d90bd9b412fbc",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-wrong-tag",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "d07605f399bb6faa066ce47eb5805baa8069caff1e29f9f73e369151e041bfd0",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-wrong-tag",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "0b6b016f2e6612cea026a9e533d0be96b18a0e27bbabd3154746bdf671c733ad",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-overdeclared",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "b26143474c2d908b86404b6e994b66a9df14fa0e16953e9fdf563d5df834ac28",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-overdeclared",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "2ca10ec868444ec08596027664087c5182a975a60d8c4ffa438c55e177f51908",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 5,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 5
+    }
+  },
+  {
+    "case": "control-ack-length",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "bda4e7edc54e6768389fc27df61b9b4fbe47e3ab9a5d525381831da6497738b2",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-ack-length",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "b4b3ba8bf69910b53c95c96d43e221d7098a5d56b4b31f6d2cdb3ba4d719e315",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": false,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-short-header",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "4f8e9a2a55f647b1bd52ae0c1c5bb16177c42a7bb90a658a4fdef9008c8e91d7",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 4,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 4
+    }
+  },
+  {
+    "case": "control-short-header",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "97ca2e35c966db46d40d68b1c6c094c1200ca354e65a5b39a4b97c6a2410a1db",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 4,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 4
+    }
+  },
+  {
+    "case": "control-short-ack",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 1 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "a6a0c94ad1c91714a4349b7096ca89ea8fe24cb40549ee45d93de94c298e8678",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "control-short-ack",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Closed",
+    "target_row": "member 1 channel 2 state aborted accepted 28 consumed 0 tail unknown",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "2e097c87918ef02a608514dac2df878f4ad7b4c0462afe4373d40d65145e177e",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": {
+      "actual": [
+        {
+          "accepted": 12,
+          "kind": "Write",
+          "pending": 0
+        },
+        {
+          "error": null,
+          "kind": "Finish"
+        }
+      ],
+      "driver_joined": true,
+      "finish_requested": true,
+      "meaning": "local transport write/read/FIN receipts; peer consumption proved only by actual typed refusal and final metadata",
+      "submitted_bytes": 12
+    }
+  },
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "4ac6b6078a949e8e03c8ea28db7031c208230cd29914a7626c3102e8fa00f42e",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-duplicate",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "5d6b0cc8999932b2330589a2cdefdde70a8be5b2c3f6a4cb695782789f27cad3",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "760398e41cd9e086888adc4189343471a52e50e6ba88802661982ad295396bb9",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-forward",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "22f0d18b433ab4fea4576b9225060f14b6c0171947817c98b2b4c4575eb1bb6b",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stdout",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 1 state ended accepted 102 consumed 102 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "0b590730a166ea986c3519a2bd231b60727f35a967b69fa73c6cd59628780a4a",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  },
+  {
+    "case": "terminal-end-finish",
+    "channel": "stderr",
+    "exit": 0,
+    "executed_tests": 1,
+    "typed_close": "Protocol",
+    "target_row": "member 1 channel 2 state ended accepted 99 consumed 99 tail complete",
+    "fd_before": 7,
+    "fd_after": 7,
+    "run": "f8c90582abd149b79f240e011ccb8f933f199c85c690c8836e567862b4889d81",
+    "progress": "runtime strict checks + actual records",
+    "main_raw_bytes": "not separately retained in57a8; existing strict helper asserted actualstdout/stderr",
+    "io_receipts": null
+  }
+]

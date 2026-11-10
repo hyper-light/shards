@@ -1,0 +1,1 @@
+["cargo", "+1.98.1", "build", "--locked", "-p", "shards-testguest", "--profile", "guest", "--target", "x86_64-unknown-linux-musl", "--target-dir", "/home/adalundhe/managed-adversarial-controls-live-v1/target/guest", "-j2"]

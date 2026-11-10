@@ -1,0 +1,42 @@
+python3 - <<'PY'
+import pathlib,os,subprocess,json,hashlib,shutil,time
+base=pathlib.Path.home()/'managed-adversarial-controls-live-v1'
+assert not base.exists(), 'fresh private campaign base required'
+assert shutil.disk_usage(pathlib.Path.home()).free>16*1024**3
+base.mkdir(); records=base/'records';records.mkdir();target=base/'target';target.mkdir();home=base/'cargo-home';home.mkdir();source=base/'source'
+revision='57a8cdb3edefe0a363534ad5e2c2676d9f3dc886'
+def run(name,args,env=None,bound=180):
+ (records/(name+'-command.json')).write_text(json.dumps(args)+'\n')
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:
+  result=subprocess.run(['timeout','--signal=TERM','--kill-after=10s',str(bound)+'s',*args],cwd=source if source.exists() else base,env=env,stdout=out,stderr=err,timeout=bound+30)
+ (records/(name+'-exit')).write_text(str(result.returncode)+'\n')
+ print(json.dumps({'phase':name,'exit':result.returncode,'stdout_tail':(records/(name+'-stdout')).read_text(errors='replace')[-1800:],'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-5000:]}),flush=True)
+ if result.returncode:raise SystemExit(result.returncode)
+run('clone',['git','clone','--depth=1','--single-branch','--branch','p/managed-adversarial-controls-v1','--filter=blob:none','git@github.com:hyper-light/shards.git',str(source)],bound=180)
+actual=subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip();assert actual==revision,actual
+(source/'target').symlink_to(target,target_is_directory=True)
+patchbase=source/'docs/research/measurements/managed-adversarial-controls'
+expected={'raw-control.patch':'0178601648d07a27eff18f944eb03ac775c121190bc059cb88fb86bbda8923ee','register.patch':'41e04e2d0b1099aae02d698bb1f8cb7c635c99e90bda76549412014a4e090489'}
+for name,digest in expected.items():
+ assert hashlib.sha256((patchbase/name).read_bytes()).hexdigest()==digest
+ run(name+'-check',['git','apply','--check',str(patchbase/name)])
+ run(name+'-apply',['git','apply',str(patchbase/name)])
+status=subprocess.check_output(['git','status','--porcelain=v1'],cwd=source,text=True);(records/'source-status.txt').write_text(status)
+assert set(line[3:] for line in status.splitlines())=={'crates/shards/tests/managed_output.rs','crates/shards/tests/managed_output/tenant_exit.rs'},status
+run('policy',['sh','scripts/check-development-policy'])
+preflight={'source':revision,'patches':expected,'uname':os.uname().release,'disk_free':shutil.disk_usage(base).free,'kvm_rw':os.access('/dev/kvm',os.R_OK|os.W_OK),'tool_zig':shutil.which('zig'),'tool_rustc':shutil.which('rustc'),'owned_paths':[str(base),str(target),str(home)],'bounds':{'cpu':2,'mem_gib':4,'disk_gib':16,'build_s':1800,'outer_s':2100}}
+(records/'preflight.json').write_text(json.dumps(preflight,indent=2)+'\n');print(json.dumps(preflight),flush=True)
+assert preflight['tool_zig'] and preflight['kvm_rw']
+env=os.environ.copy();env.update({'CARGO_HOME':str(home),'CARGO_TARGET_DIR':str(target),'CARGO_BUILD_JOBS':'2','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1'})
+for key in ['SHARDS_HELPERS','SHARDS_HELPERS_DIR','SHARDS_INIT_BINARY','SHARDS_SERVER_BINARY','SHARDS_VM_BINARY','SHARDS_ABI_IDENTITY','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS']:env.pop(key,None)
+run('toolchain',['rustc','+1.98.1','--version','--verbose'],env)
+run('full-caller-build',['cargo','+1.98.1','test','--locked','-p','shards','--test','managed_output','--profile','test-release','--no-run','-j2','--message-format=json'],env,bound=1800)
+artifacts=[]
+for line in (records/'full-caller-build-stdout').read_text().splitlines():
+ try:item=json.loads(line)
+ except ValueError:continue
+ if item.get('reason')=='compiler-artifact' and item.get('target',{}).get('name')=='managed_output' and item.get('executable'):artifacts.append(item['executable'])
+assert len(artifacts)==1,artifacts
+binary=pathlib.Path(artifacts[0]);(records/'fixture.json').write_text(json.dumps({'path':str(binary),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest()},indent=2)+'\n')
+print(json.dumps({'fixture':str(binary),'target_disk_bytes':sum(p.stat().st_size for p in target.rglob('*') if p.is_file()),'records':str(records)}),flush=True)
+PY

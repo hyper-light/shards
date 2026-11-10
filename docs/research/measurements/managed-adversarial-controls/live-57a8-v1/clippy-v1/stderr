@@ -1,0 +1,145 @@
+    Checking typenum v1.20.1
+    Checking cfg-if v1.0.5
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/managed-adversarial-controls-live-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/managed-adversarial-controls-live-v1/source/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking libc v0.2.189
+    Checking hybrid-array v0.4.15
+    Checking zeroize v1.9.0
+    Checking cpufeatures v0.3.1
+    Checking memchr v2.8.3
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/vendor/aws-lc-sys)
+    Checking const-oid v0.10.2
+    Checking digest v0.11.3
+    Checking serde_core v1.0.229
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/managed-adversarial-controls-live-v1/source/vendor/aws-lc-rs)
+    Checking zlib-rs v0.6.8
+    Checking zmij v1.0.23
+    Checking sha2 v0.11.0
+    Checking aho-corasick v1.1.5
+    Checking rustls-pki-types v1.15.1
+    Checking regex-syntax v0.8.11
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/abi)
+    Checking itoa v1.0.18
+    Checking serde_json v1.0.151
+    Checking num-traits v0.2.19
+    Checking regex-automata v0.4.18
+    Checking once_cell v1.21.4
+    Checking serde v1.0.229
+    Checking num-integer v0.1.47
+    Checking untrusted v0.9.0
+    Checking base64 v0.23.1
+    Checking rustls-webpki v0.103.16
+    Checking regex v1.13.1
+    Checking num-bigint v0.4.8
+    Checking flate2 v1.1.10
+    Checking twox-hash v2.1.4
+    Checking subtle v2.6.1
+    Checking ruzstd v0.9.1
+    Checking generic-array v0.14.7
+    Checking alloc-no-stdlib v2.0.4
+    Checking shards-erofs v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/erofs)
+    Checking shards-template v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/template)
+    Checking rand_core v0.10.1
+    Checking foldhash v0.2.0
+    Checking shards-image v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/image)
+    Checking alloc-stdlib v0.2.4
+    Checking log v0.4.34
+    Checking brotli-decompressor v5.0.3
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/cmdline)
+    Checking block-buffer v0.10.4
+    Checking crypto-common v0.1.7
+    Checking shards-ipc v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/ipc)
+    Checking keccak v0.2.2
+    Checking time-core v0.1.9
+    Checking num-conv v0.2.2
+    Checking powerfmt v0.2.0
+    Checking tinyvec v1.13.3
+    Checking deranged v0.5.8
+    Checking sha3 v0.11.0
+    Checking shards-agentfile v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/agentfile)
+    Checking time v0.3.55
+    Checking digest v0.10.7
+    Checking brotli v8.0.4
+    Checking portable-atomic v1.15.0
+    Checking rustls v0.23.46
+    Checking getrandom v0.4.3
+    Checking libm v0.2.16
+    Checking chacha20 v0.10.2
+    Checking tracing-core v0.1.36
+    Checking siphasher v1.0.4
+    Checking pin-project-lite v0.2.17
+    Checking cpufeatures v0.2.17
+    Checking openssl-probe v0.2.1
+    Checking rustls-native-certs v0.8.4
+    Checking sha1 v0.10.7
+    Checking tracing v0.1.44
+    Checking fastbloom v0.17.0
+    Checking thiserror v2.0.21
+    Checking rand v0.10.3
+    Checking hyper-tls v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking shards-gitsign v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/gitsign)
+    Checking hashbrown v0.17.1
+    Checking rand_pcg v0.10.2
+    Checking shards-netring v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/netring)
+    Checking shards-syscall-filter v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/syscall-filter)
+    Checking libbz2-rs-sys v0.2.5
+    Checking lru-slab v0.1.3
+    Checking bytes v1.12.1
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/vmm)
+    Checking rustc-hash v2.1.3
+    Checking slab v0.4.12
+    Checking percent-encoding v2.3.2
+    Checking form_urlencoded v1.2.2
+    Checking hyper-quic v0.1.0 (https://github.com/hyper-light/hyper-raft?rev=233b7fcef7a363327c5439b191724a38065062cd#233b7fce)
+    Checking bzip2 v0.6.1
+    Checking hashlink v0.12.2
+    Checking shards-tuf v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/tuf)
+    Checking httparse v1.10.1
+    Checking sha1-checked v0.10.0
+   Compiling shards v0.7.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/shards)
+    Checking rustls-platform-verifier v0.7.1
+    Checking yasna v0.6.0
+    Checking unicode-normalization v0.1.25
+    Checking pem v4.0.0
+    Checking shards-seccomp v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/seccomp)
+    Checking lzma-rust2 v0.21.0
+    Checking encoding_rs v0.8.35
+    Checking arraydeque v0.5.1
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/devcgroup)
+    Checking iri-string v0.7.14
+    Checking shards-dns v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/dns)
+    Checking shards-net v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/net)
+    Checking yaml-rust2 v0.13.0
+    Checking shards-testguest v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/testguest)
+    Checking shards-registry v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/registry)
+    Checking shards-build v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/build)
+    Checking rcgen v0.14.10
+    Checking shards-remote v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/remote)
+    Checking shards-git v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/git)
+    Checking shards-sigstore v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/sigstore)
+    Checking shards-rego v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/rego)
+    Checking shards-api v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/api)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/testdir)
+    Checking shards-archive v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/archive)
+    Checking shards-ext4 v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/ext4)
+    Checking shards-tui v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/tui)
+    Checking shards-bus v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/bus)
+    Checking shards-gateway v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/gateway)
+    Checking shards-flate v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/flate)
+    Checking shards-user v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/user)
+    Checking shards-zstd v0.1.0 (/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/zstd)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 3m 50s

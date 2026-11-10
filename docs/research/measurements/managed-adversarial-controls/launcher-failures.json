@@ -1,0 +1,41 @@
+{
+  "firstLauncher": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "{\"phase\": \"clone\", \"exit\": 0, \"stdout_tail\": \"\", \"stderr_tail\": \"Cloning into '/home/adalundhe/managed-adversarial-controls-live-v1/source'...\\nUpdating files:   0% (1/12590)\\nUpdating files:   1% (126/12590)\\nUpdating files:   2% (252/12590)\\nUpdating files:   3% (378/12590)\\nUpdating files:   4% (504/12590)\\nUpdating files:   5% (630/12590)\\nUpdating files:   6% (756/12590)\\nUpdating files:   7% (882/12590)\\nUpdating files:   8% (1008/12590)\\nUpdating files:   9% (1134/12590)\\nUpdating files:  10% (1259/12590)\\nUpdating files:  11% (1385/12590)\\nUpdating files:  12% (1511/12590)\\nUpdating files:  13% (1637/12590)\\nUpdating files:  14% (1763/12590)\\nUpdating files:  15% (1889/12590)\\nUpdating files:  16% (2015/12590)\\nUpdating files:  17% (2141/12590)\\nUpdating files:  18% (2267/12590)\\nUpdating files:  19% (2393/12590)\\nUpdating files:  20% (2518/12590)\\nUpdating files:  21% (2644/12590)\\nUpdating files:  22% (2770/12590)\\nUpdating files:  23% (2896/12590)\\nUpdating files:  24% (3022/12590)\\nUpdating files:  25% (3148/12590)\\nUpdating files:  26% (3274/12590)\\nUpdating files:  27% (3400/12590)\\nUpdating files:  28% (3526/12590)\\nUpdating files:  29% (3652/12590)\\nUpdating files:  30% (3777/12590)\\nUpdating files:  31% (3903/12590)\\nUpdating files:  32% (4029/12590)\\nUpdating files:  33% (4155/12590)\\nUpdating files:  34% (4281/12590)\\nUpdating files:  35% (4407/12590)\\nUpdating files:  36% (4533/12590)\\nUpdating files:  37% (4659/12590)\\nUpdating files:  38% (4785/12590)\\nUpdating files:  39% (4911/12590)\\nUpdating files:  40% (5036/12590)\\nUpdating files:  41% (5162/12590)\\nUpdating files:  42% (5288/12590)\\nUpdating files:  43% (5414/12590)\\nUpdating files:  44% (5540/12590)\\nUpdating files:  45% (5666/12590)\\nUpdating files:  46% (5792/12590)\\nUpdating files:  47% (5918/12590)\\nUpdating files:  48% (6044/12590)\\nUpdating files:  49% (6170/12590)\\nUpdating files:  50% (6295/12590)\\nUpdating files:  51% (6421/12590)\\nUpdating files:  52% (6547/12590)\\nUpdating files:  53% (6673/12590)\\nUpdating files:  54% (6799/12590)\\nUpdating files:  55% (6925/12590)\\nUpdating files:  56% (7051/12590)\\nUpdating files:  57% (7177/12590)\\nUpdating files:  58% (7303/12590)\\nUpdating files:  59% (7429/12590)\\nUpdating files:  60% (7554/12590)\\nUpdating files:  61% (7680/12590)\\nUpdating files:  62% (7806/12590)\\nUpdating files:  63% (7932/12590)\\nUpdating files:  64% (8058/12590)\\nUpdating files:  65% (8184/12590)\\nUpdating files:  66% (8310/12590)\\nUpdating files:  66% (8411/12590)\\nUpdating files:  67% (8436/12590)\\nUpdating files:  68% (8562/12590)\\nUpdating files:  69% (8688/12590)\\nUpdating files:  70% (8813/12590)\\nUpdating files:  71% (8939/12590)\\nUpdating files:  72% (9065/12590)\\nUpdating files:  73% (9191/12590)\\nUpdating files:  74% (9317/12590)\\nUpdating files:  75% (9443/12590)\\nUpdating files:  76% (9569/12590)\\nUpdating files:  77% (9695/12590)\\nUpdating files:  78% (9821/12590)\\nUpdating files:  79% (9947/12590)\\nUpdating files:  80% (10072/12590)\\nUpdating files:  81% (10198/12590)\\nUpdating files:  82% (10324/12590)\\nUpdating files:  83% (10450/12590)\\nUpdating files:  84% (10576/12590)\\nUpdating files:  85% (10702/12590)\\nUpdating files:  86% (10828/12590)\\nUpdating files:  87% (10954/12590)\\nUpdating files:  88% (11080/12590)\\nUpdating files:  89% (11206/12590)\\nUpdating files:  90% (11331/12590)\\nUpdating files:  91% (11457/12590)\\nUpdating files:  92% (11583/12590)\\nUpdating files:  93% (11709/12590)\\nUpdating files:  94% (11835/12590)\\nUpdating files:  95% (11961/12590)\\nUpdating files:  96% (12087/12590)\\nUpdating files:  97% (12213/12590)\\nUpdating files:  98% (12339/12590)\\nUpdating files:  99% (12465/12590)\\nUpdating files: 100% (12590/12590)\\nUpdating files: 100% (12590/12590), done.\\n\"}\n{\"phase\": \"raw-control.patch-check\", \"exit\": 0, \"stdout_tail\": \"\", \"stderr_tail\": \"\"}\n{\"phase\": \"raw-control.patch-apply\", \"exit\": 0, \"stdout_tail\": \"\", \"stderr_tail\": \"\"}\n{\"phase\": \"register.patch-check\", \"exit\": 0, \"stdout_tail\": \"\", \"stderr_tail\": \"\"}\n{\"phase\": \"register.patch-apply\", \"exit\": 0, \"stdout_tail\": \"\", \"stderr_tail\": \"\"}\n{\"phase\": \"policy\", \"exit\": 2, \"stdout_tail\": \"\", \"stderr_tail\": \"scripts/check-development-policy: line 2: Check the mechanical parts of the binding development policy.: command not found\\nscripts/check-development-policy: line 4: from: command not found\\nimport: unable to open X server `' @ error/import.c/ImportImageCommand/348.\\nimport: unable to open X server `' @ error/import.c/ImportImageCommand/348.\\nscripts/check-development-policy: line 9: syntax error near unexpected token `('\\nscripts/check-development-policy: line 9: `def check(root):'\\n\"}\n",
+      "running": false,
+      "exit_code": 2
+    },
+    "calls": [
+      {
+        "name": "machines.output",
+        "ok": true
+      }
+    ]
+  },
+  "BLauncher": {
+    "result": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 4, in <module>\n  File \"/usr/lib64/python3.14/pathlib/__init__.py\", line 787, in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors, newline=newline) as f:\n         ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/lib64/python3.14/pathlib/__init__.py\", line 771, in open\n    return io.open(self, mode, buffering, encoding, errors, newline)\n           ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFileNotFoundError: [Errno 2] No such file or directory: '/home/adalundhe/managed-adversarial-controls-live-v1/cases/ack-partial-stdout-v1/records/io-receipts.json'\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 23 of 32 cores idle \u00b7 30 GB free \u00b7 room for 2 CPUs, 4 GiB of memory, 16 GiB of disk \u00b7 1 CI jobs",
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.start",
+        "ok": true
+      }
+    ]
+  },
+  "headroom": {
+    "error": "no runner suits 8fadc1ec213332e16cb0d915a3fb913f, 2 CPUs, 4 GiB of memory, 16 GiB of disk, os == linux, arch == x86_64: adacachy2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio-3.local: not 8fadc1ec213332e16cb0d915a3fb913f; adacachy: not 8fadc1ec213332e16cb0d915a3fb913f; adalundhe-macbook-pro: not 8fadc1ec213332e16cb0d915a3fb913f; kiln-a094a12d.attlocal.net: 0 of 32 cores idle, under 2 CPUs; adas-mac-studio-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-mac-studio.local-2: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro-2.local: not 8fadc1ec213332e16cb0d915a3fb913f; adas-macbook-pro.local: not 8fadc1ec213332e16cb0d915a3fb913f; jupiter: not 8fadc1ec213332e16cb0d915a3fb913f; fedora.attlocal.net: not 8fadc1ec213332e16cb0d915a3fb913f\n    at __kiln_settle (eval_script:20:40)\n    at <eval> (eval_script:1:1)\n",
+    "code": "program",
+    "calls": [
+      {
+        "name": "machines.start",
+        "ok": false
+      }
+    ]
+  }
+}

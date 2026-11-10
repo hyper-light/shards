@@ -1,0 +1,37 @@
+python3 - <<'PY'
+import pathlib,os,subprocess,json,hashlib,shutil
+base=pathlib.Path.home()/'managed-adversarial-controls-live-v1';source=base/'source';target=base/'target';records=base/'prepare-first-v1';records.mkdir();artifacts=base/'artifacts';artifacts.mkdir()
+assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()=='57a8cdb3edefe0a363534ad5e2c2676d9f3dc886'
+for name,digest in json.loads((base/'build-v2/source-hashes.json').read_text()).items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_') or key in ['RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS','RUSTC_WRAPPER','SCCACHE_DIR']:env.pop(key,None)
+env.update({'CARGO_HOME':str(base/'cargo-home'),'CARGO_TARGET_DIR':str(target),'CARGO_BUILD_JOBS':'2','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1','ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache'),'XDG_CACHE_HOME':str(base/'runtime-cache'),'CC_x86_64_unknown_linux_musl':str(source/'scripts/zig-cc'),'AR_x86_64_unknown_linux_musl':str(source/'scripts/zig-ar'),'ZIG_TARGET':'x86_64-linux-musl'})
+for key in ['ZIG_GLOBAL_CACHE_DIR','ZIG_LOCAL_CACHE_DIR','XDG_CACHE_HOME']:pathlib.Path(env[key]).mkdir()
+def run(name,args,bound,where=records,extra=None):
+ (where/(name+'-command.json')).write_text(json.dumps(args)+'\n')
+ runenv=env.copy();runenv.update(extra or {})
+ with (where/(name+'-stdout')).open('wb') as out,(where/(name+'-stderr')).open('wb') as err:
+  result=subprocess.run(['timeout','--signal=TERM','--kill-after=10s',str(bound)+'s',*args],cwd=source,env=runenv,stdout=out,stderr=err,timeout=bound+30)
+ (where/(name+'-exit')).write_text(str(result.returncode)+'\n')
+ print(json.dumps({'phase':name,'exit':result.returncode,'stdout_tail':(where/(name+'-stdout')).read_text(errors='replace')[-6000:],'stderr_tail':(where/(name+'-stderr')).read_text(errors='replace')[-7000:]}),flush=True)
+ return result.returncode
+code=run('testguest-build',['cargo','+1.98.1','build','--locked','-p','shards-testguest','--profile','guest','--target','x86_64-unknown-linux-musl','--target-dir',str(target/'guest'),'-j2'],900)
+if code:raise SystemExit(code)
+(artifacts/'guest').mkdir();shutil.copy2(target/'guest/x86_64-unknown-linux-musl/guest/shards-testguest',artifacts/'guest/shards-testguest')
+fixture=json.loads((base/'build-v2/fixture.json').read_text());binary=pathlib.Path(fixture['path']);assert hashlib.sha256(binary.read_bytes()).hexdigest()==fixture['sha256']
+shutil.copy2(binary,artifacts/'fixture-57a8');shutil.copy2(target/'test-release/shards',artifacts/'shards-57a8')
+kernel=pathlib.Path.home()/'managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy'; expected='97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae'
+assert hashlib.sha256(kernel.read_bytes()).hexdigest()==expected
+shutil.copy2(kernel,artifacts/'experimental-kernel');assert hashlib.sha256((artifacts/'experimental-kernel').read_bytes()).hexdigest()==expected
+manifest={str(p):{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size} for p in artifacts.rglob('*') if p.is_file()}
+(records/'artifacts.json').write_text(json.dumps(manifest,indent=2)+'\n');print(json.dumps({'artifacts':manifest,'kernel_scope':'existing experimental TPROXY kernel; not a product-pin gate'}),flush=True)
+code=run('full-caller-owned-pure',[str(binary),'tenant_exit::adversarial_controls::','--nocapture','--test-threads=1'],90)
+if code:raise SystemExit(code)
+casebase=base/'cases'/'ack-partial-stdout-v1';casebase.mkdir(parents=True);tmp=casebase/'tmp';tmp.mkdir()
+extra={'SHARDS_TEST_GUESTS':str(artifacts),'SHARDS_TEST_KERNEL':str(artifacts/'experimental-kernel'),'SHARDS_KERNEL':str(artifacts/'experimental-kernel'),'TMPDIR':str(tmp),'SHARDS_ADVERSARIAL_CASE':'ack-partial','SHARDS_ADVERSARIAL_CHANNEL':'stdout','SHARDS_ADVERSARIAL_PORT':'32197','SHARDS_ADVERSARIAL_PHASE_MS':'300000','SHARDS_ADVERSARIAL_WORK_MS':'240000','SHARDS_ADVERSARIAL_CLEANUP_MS':'120000','SHARDS_ADVERSARIAL_OUTER_MS':'480000','SHARDS_ADVERSARIAL_SOURCE_REVISION':'57a8cdb3edefe0a363534ad5e2c2676d9f3dc886','SHARDS_ADVERSARIAL_RECORDS':str(casebase/'records')}
+(casebase/'environment.json').write_text(json.dumps(extra,indent=2)+'\n')
+code=run('actual-case',[str(binary),'--ignored','--exact','tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main','--nocapture','--test-threads=1'],480,casebase,extra)
+print(json.dumps({'case':'ack-partial/stdout','exit':code,'records':str(casebase),'case_files':[str(p.relative_to(casebase)) for p in sorted(casebase.rglob('*')) if p.is_file() and 'tmp' not in p.relative_to(casebase).parts]}),flush=True)
+raise SystemExit(code)
+PY

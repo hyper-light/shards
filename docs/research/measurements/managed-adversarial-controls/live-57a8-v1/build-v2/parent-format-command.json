@@ -1,0 +1,1 @@
+["rustfmt", "+1.98.1", "--edition", "2024", "--config-path", "/home/adalundhe/managed-adversarial-controls-live-v1/source/rustfmt.toml", "--config", "skip_children=true", "/home/adalundhe/managed-adversarial-controls-live-v1/source/crates/shards/tests/managed_output.rs"]

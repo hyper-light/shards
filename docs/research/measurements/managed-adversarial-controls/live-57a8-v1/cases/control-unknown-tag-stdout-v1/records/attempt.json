@@ -1,0 +1,15 @@
+{
+  "authentication": "existing owner; actual record already observed",
+  "case": "Control(UnknownTag)",
+  "channel": 1,
+  "control_bytes": 5,
+  "endpoint_reuse": false,
+  "expected_reason": "Protocol",
+  "expected_target": "Held { accepted: 28, consumed: 0 }",
+  "finish": false,
+  "last_valid_ack": 0,
+  "member": 1,
+  "observed_cursor_before_attempt": 28,
+  "observed_wire_end": 28,
+  "observed_wire_start": 0
+}

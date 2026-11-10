@@ -1,0 +1,18 @@
+{
+  "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/fixture-57a8": {
+    "sha256": "28f3f24a5b153607bb88e6151130f34390e05a87f2cd2ada2feb83e0709187b0",
+    "bytes": 60631528
+  },
+  "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/shards-57a8": {
+    "sha256": "5cd44adca10f3964cfbe7bed6cbb717aadaf0fe3002a61821146061eed9e2b91",
+    "bytes": 270562920
+  },
+  "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/experimental-kernel": {
+    "sha256": "97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae",
+    "bytes": 27760784
+  },
+  "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/guest/shards-testguest": {
+    "sha256": "0b7b3cca41317c9c67e9ff1c8a318772b786beafe2a9493ca02ec9fa268103ad",
+    "bytes": 3301880
+  }
+}

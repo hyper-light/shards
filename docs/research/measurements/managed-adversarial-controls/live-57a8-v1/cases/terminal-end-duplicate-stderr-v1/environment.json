@@ -1,0 +1,18 @@
+{
+  "ZIG_GLOBAL_CACHE_DIR": "/home/adalundhe/managed-adversarial-controls-live-v1/zig-global-cache",
+  "ZIG_LOCAL_CACHE_DIR": "/home/adalundhe/managed-adversarial-controls-live-v1/zig-local-cache",
+  "XDG_CACHE_HOME": "/home/adalundhe/managed-adversarial-controls-live-v1/runtime-cache",
+  "SHARDS_TEST_GUESTS": "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts",
+  "SHARDS_TEST_KERNEL": "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/experimental-kernel",
+  "SHARDS_KERNEL": "/home/adalundhe/managed-adversarial-controls-live-v1/artifacts/experimental-kernel",
+  "SHARDS_ADVERSARIAL_PORT": "32197",
+  "SHARDS_ADVERSARIAL_PHASE_MS": "300000",
+  "SHARDS_ADVERSARIAL_WORK_MS": "240000",
+  "SHARDS_ADVERSARIAL_CLEANUP_MS": "120000",
+  "SHARDS_ADVERSARIAL_OUTER_MS": "480000",
+  "SHARDS_ADVERSARIAL_SOURCE_REVISION": "57a8cdb3edefe0a363534ad5e2c2676d9f3dc886",
+  "SHARDS_ADVERSARIAL_CASE": "terminal-end-duplicate",
+  "SHARDS_ADVERSARIAL_CHANNEL": "stderr",
+  "SHARDS_ADVERSARIAL_RECORDS": "/home/adalundhe/managed-adversarial-controls-live-v1/cases/terminal-end-duplicate-stderr-v1/records",
+  "TMPDIR": "/home/adalundhe/managed-adversarial-controls-live-v1/cases/terminal-end-duplicate-stderr-v1/tmp"
+}

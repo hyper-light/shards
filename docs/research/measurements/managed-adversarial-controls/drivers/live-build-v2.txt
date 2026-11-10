@@ -1,0 +1,33 @@
+python3 - <<'PY'
+import pathlib,os,subprocess,json,hashlib,shutil
+base=pathlib.Path.home()/'managed-adversarial-controls-live-v1';source=base/'source';target=base/'target';home=base/'cargo-home';records=base/'build-v2';records.mkdir()
+revision='57a8cdb3edefe0a363534ad5e2c2676d9f3dc886';assert subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()==revision
+status=subprocess.check_output(['git','status','--porcelain=v1'],cwd=source,text=True);assert set(line[3:] for line in status.splitlines())=={'crates/shards/tests/managed_output.rs','crates/shards/tests/managed_output/tenant_exit.rs'},status
+preflight={'source':revision,'uname':os.uname().release,'disk_free':shutil.disk_usage(base).free,'kvm_rw':os.access('/dev/kvm',os.R_OK|os.W_OK),'zig':shutil.which('zig'),'owned_paths':[str(source),str(target),str(home)],'bounds':{'cpu':2,'mem_gib':4,'disk_gib':16,'build_s':1800,'outer_s':2100},'earlier_launcher':'records/policy-exit2 before Cargo; exact originals preserved'}
+(records/'preflight.json').write_text(json.dumps(preflight,indent=2)+'\n');print(json.dumps(preflight),flush=True)
+assert preflight['zig'] and preflight['kvm_rw'] and preflight['disk_free']>16*1024**3
+env=os.environ.copy();env.update({'CARGO_HOME':str(home),'CARGO_TARGET_DIR':str(target),'CARGO_BUILD_JOBS':'2','CARGO_INCREMENTAL':'0','RUSTUP_TOOLCHAIN':'1.98.1'})
+for key in ['SHARDS_HELPERS','SHARDS_HELPERS_DIR','SHARDS_INIT_BINARY','SHARDS_SERVER_BINARY','SHARDS_VM_BINARY','SHARDS_ABI_IDENTITY','RUSTFLAGS','CARGO_ENCODED_RUSTFLAGS']:env.pop(key,None)
+def run(name,args,bound=60):
+ (records/(name+'-command.json')).write_text(json.dumps(args)+'\n')
+ with (records/(name+'-stdout')).open('wb') as out,(records/(name+'-stderr')).open('wb') as err:
+  result=subprocess.run(['timeout','--signal=TERM','--kill-after=10s',str(bound)+'s',*args],cwd=source,env=env,stdout=out,stderr=err,timeout=bound+30)
+ (records/(name+'-exit')).write_text(str(result.returncode)+'\n')
+ print(json.dumps({'phase':name,'exit':result.returncode,'stdout_tail':(records/(name+'-stdout')).read_text(errors='replace')[-1200:],'stderr_tail':(records/(name+'-stderr')).read_text(errors='replace')[-5000:]}),flush=True)
+ if result.returncode:raise SystemExit(result.returncode)
+run('policy',['python3','scripts/check-development-policy'])
+run('toolchain',['rustc','+1.98.1','--version','--verbose'])
+run('parent-format',['rustfmt','+1.98.1','--edition','2024','--config-path',str(source/'rustfmt.toml'),'--config','skip_children=true',str(source/'crates/shards/tests/managed_output.rs')])
+(records/'actual-source.diff').write_text(subprocess.check_output(['git','diff'],cwd=source,text=True))
+paths=[source/'crates/shards/tests/managed_output.rs',source/'crates/shards/tests/managed_output/tenant_exit.rs',source/'crates/shards/tests/managed_output/adversarial_controls.rs',*sorted((source/'crates/shards/tests/managed_output/adversarial_controls').glob('*.rs'))]
+(records/'source-hashes.json').write_text(json.dumps({str(p.relative_to(source)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},indent=2)+'\n')
+run('full-caller-build',['cargo','+1.98.1','test','--locked','-p','shards','--test','managed_output','--profile','test-release','--no-run','-j2','--message-format=json'],1800)
+artifacts=[]
+for line in (records/'full-caller-build-stdout').read_text().splitlines():
+ try:item=json.loads(line)
+ except ValueError:continue
+ if item.get('reason')=='compiler-artifact' and item.get('target',{}).get('name')=='managed_output' and item.get('executable'):artifacts.append(item['executable'])
+assert len(artifacts)==1,artifacts
+binary=pathlib.Path(artifacts[0]);(records/'fixture.json').write_text(json.dumps({'path':str(binary),'sha256':hashlib.sha256(binary.read_bytes()).hexdigest()},indent=2)+'\n')
+print(json.dumps({'fixture':str(binary),'target_disk_bytes':sum(p.stat().st_size for p in target.rglob('*') if p.is_file()),'records':str(records)}),flush=True)
+PY

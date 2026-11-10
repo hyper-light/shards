@@ -1,0 +1,18 @@
+{
+  "source": "57a8cdb3edefe0a363534ad5e2c2676d9f3dc886",
+  "private_root": "/home/adalundhe/managed-adversarial-controls-live-v1",
+  "actual_full_caller_build": {
+    "run": "r2",
+    "exit": 0,
+    "elapsed_cargo": "16m16s",
+    "fixture": "target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "fresh": false,
+    "target_bytes": 2592513061
+  },
+  "matching_testguest_and_first_case": {
+    "started": false,
+    "why": "next exact2CPU/4GiB/16GiB admission refused because0idle; no reduced envelope"
+  },
+  "kernel_scope": "planned copy of handoff experimental TPROXY kernel, not stock product-pin gate",
+  "local_active_targets_caches": []
+}

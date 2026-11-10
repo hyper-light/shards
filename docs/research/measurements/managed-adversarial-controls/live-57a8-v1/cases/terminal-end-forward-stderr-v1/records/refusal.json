@@ -1,0 +1,10 @@
+{
+  "assertion_failure": null,
+  "borrowed_driver_join": {
+    "complete": true,
+    "error": null
+  },
+  "matched_expected_refusal": true,
+  "post_join_records": 0,
+  "remote_connection_drained": "Unknown; endpoint is never reused"
+}

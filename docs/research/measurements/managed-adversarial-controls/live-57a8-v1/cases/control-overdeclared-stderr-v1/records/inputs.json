@@ -1,0 +1,12 @@
+{
+  "caller_declared_source": "57a8cdb3edefe0a363534ad5e2c2676d9f3dc886",
+  "case": "Control(Overdeclared)",
+  "channel": 2,
+  "cleanup_ms": 120000,
+  "outer_enforcement": "admitted caller enforces supplied OUTER_MS on the fixture process",
+  "outer_ms": 480000,
+  "owner": "fresh retained Fixture; one target subscription; no endpoint reuse",
+  "phase_ms": 300000,
+  "port": 32197,
+  "work_ms": 240000
+}

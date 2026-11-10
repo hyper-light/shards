@@ -1,0 +1,20 @@
+{
+  "source": "57a8cdb3edefe0a363534ad5e2c2676d9f3dc886",
+  "uname": "6.19.10-300.fc44.x86_64",
+  "disk_free": 1925374930944,
+  "kvm_rw": true,
+  "zig": "/home/adalundhe/.local/bin/zig",
+  "owned_paths": [
+    "/home/adalundhe/managed-adversarial-controls-live-v1/source",
+    "/home/adalundhe/managed-adversarial-controls-live-v1/target",
+    "/home/adalundhe/managed-adversarial-controls-live-v1/cargo-home"
+  ],
+  "bounds": {
+    "cpu": 2,
+    "mem_gib": 4,
+    "disk_gib": 16,
+    "build_s": 1800,
+    "outer_s": 2100
+  },
+  "earlier_launcher": "records/policy-exit2 before Cargo; exact originals preserved"
+}

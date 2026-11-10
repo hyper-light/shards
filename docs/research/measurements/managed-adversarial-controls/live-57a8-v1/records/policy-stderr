@@ -1,0 +1,6 @@
+scripts/check-development-policy: line 2: Check the mechanical parts of the binding development policy.: command not found
+scripts/check-development-policy: line 4: from: command not found
+import: unable to open X server `' @ error/import.c/ImportImageCommand/348.
+import: unable to open X server `' @ error/import.c/ImportImageCommand/348.
+scripts/check-development-policy: line 9: syntax error near unexpected token `('
+scripts/check-development-policy: line 9: `def check(root):'

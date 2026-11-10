@@ -1,0 +1,1 @@
+["/home/adalundhe/managed-adversarial-controls-live-v1/target/test-release/deps/managed_output-27c7f5b2529c465b", "--ignored", "--exact", "tenant_exit::adversarial_controls::invalid_application_ack_after_record_preserves_credit_neighbor_and_main", "--nocapture", "--test-threads=1"]
