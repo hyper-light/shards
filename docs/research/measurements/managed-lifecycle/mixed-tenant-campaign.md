@@ -107,6 +107,13 @@ transport or an interception/authorization claim. The reduced reliability campai
 also records only the exiting actor's PID; the separate protected-reaper access
 fixture is not invoked by this filtered run.
 
+Run r12 at `075421d7` failed 0/1 in26.87s, exit101. Quarantine, fresh main execution,
+the exact16byte TCP answer and identical private synced answer all succeeded before
+the process-list assertion. Its `top -o comm` omitted the PID field required by the
+existing process-list adapter; the fixture now requests `pid,comm`. This is another
+fixture failure, not a failed healthy response. Unique artifacts remain
+`~/managed-tenant-fault-granted-tcp-v1-green.{log,exit,identity,source.patch}`.
+
 Native light checks, actual KVM/HVF/WHP runs, mutation outcomes and resource counts
 must be appended by the coordinator after running. This campaign does not prove
 full pressure fairness, checkpoint consistency, all syscall tamper routes,

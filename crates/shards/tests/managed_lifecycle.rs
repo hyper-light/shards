@@ -133,8 +133,9 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
     socket.read_exact(&mut reply).unwrap();
     assert_eq!(reply, challenge);
     assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
-    assert!(faulty.join("result").exists(), "faulty actor never ran");
-    let top = run_shards_env(&["top"], &["tenant-fault", "-o", "comm"], &env, TIMEOUT);
+    let facts = std::fs::read_to_string(faulty.join("result")).expect("faulty actor never ran");
+    eprintln!("post-quarantine exact challenge answered; exiting actor facts:\n{facts}");
+    let top = run_shards_env(&["top"], &["tenant-fault", "-o", "pid,comm"], &env, TIMEOUT);
     assert_eq!(top.status, Some(0), "{top}");
     assert!(
         top.stdout.contains("testguest") && top.stdout.contains("lifecycle-ready"),
@@ -151,7 +152,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
 
 fn published(directory: &std::path::Path, name: &str) -> Vec<u8> {
     let root = shards_vmm::platform::open_dir(directory).unwrap();
-    let mut changed = shards_vmm::platform::FileWatch::new(&root).unwrap();
+    let changed = shards_vmm::platform::FileWatch::new(&root).unwrap();
     let deadline = std::time::Instant::now() + TIMEOUT;
     loop {
         changed.clear();
