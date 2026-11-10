@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use rustls::pki_types::ServerName;
@@ -44,8 +44,6 @@ use crate::{Error, ErrorKind};
 /// Go's dialer's, as containerd's transport gives it.
 const CONNECT: Duration = Duration::from_secs(30);
 const RACE: Duration = Duration::from_millis(300);
-/// How often a dial waiting on its attempts looks for a cancel.
-const DIAL_POLL: Duration = Duration::from_millis(100);
 /// How long a client that does not learn its waits gives a TLS handshake: Go's
 /// transport's `TLSHandshakeTimeout`, as containerd's gives it.
 const HANDSHAKE: Duration = Duration::from_secs(10);
@@ -146,8 +144,8 @@ struct Cancelling {
     cancelled: AtomicBool,
     /// The connections in use, by number, and the next number.
     live: Mutex<(u64, HashMap<u64, TcpStream>)>,
-    /// Rung once, under `live`'s lock, as the cancel is made: what waits on it before
-    /// asking a registry again ([`Client::pause`]) waits no more.
+    /// Cancel and DNS/dial completion share this event, always paired with `live`.
+    /// Retry pauses and workers' callers recheck their own authoritative state.
     rung: std::sync::Condvar,
     /// The credential helpers asked for this client's registry, by number, and the next
     /// number: a cancel ends each, and so a wait for its answer (credentials.rs).
@@ -1378,19 +1376,99 @@ impl Failure {
     }
 }
 
-/// Connects to `url`'s host, racing its addresses as RFC 8305 §5 describes: families
-/// interleaved, the next attempt started 300 ms after the last or as soon as it fails.
-/// Gives up at once if `cancel` is cancelled; the attempts under way end on their own.
-/// The addresses `url`'s host names: at once for an address, and for a name looked up on a
-/// thread of its own, waited for until `deadline` or a cancel. getaddrinfo(3) takes no
-/// deadline; a lookup given up on ends on its own, its answer unread.
-/// `url`'s host's addresses at its port, looked up by `deadline` unless `cancel` is
-/// cancelled first.
+/// A worker's answer wakes its caller even if the worker exits without answering.
+/// The weak reference cannot keep a dropped client's sockets or helpers alive.
+struct Reply<T> {
+    sender: Option<mpsc::Sender<T>>,
+    cancel: Option<Weak<Cancelling>>,
+}
+
+impl<T> Reply<T> {
+    fn new(sender: mpsc::Sender<T>, cancel: Option<&Cancel>) -> Self {
+        Self {
+            sender: Some(sender),
+            cancel: cancel.map(|c| Arc::downgrade(&c.0)),
+        }
+    }
+
+    fn send(self, answer: T) {
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(answer);
+        }
+    }
+}
+
+impl<T> Drop for Reply<T> {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.as_ref().and_then(Weak::upgrade) {
+            // Completion/disconnection precedes the notification. Taking the same
+            // lock as wait_reply prevents a send between its check and its sleep
+            // from losing the wake (Rust 1.98.1 Condvar::wait_timeout; D222).
+            let _live = cancel.live.lock().unwrap_or_else(PoisonError::into_inner);
+            self.sender.take();
+            cancel.rung.notify_all();
+        }
+    }
+}
+
+/// Each wake rechecks cancellation, then the real deadline, then the answer.
+/// A racing cancellation therefore wins a completion not yet consumed.
+enum Replied<T> {
+    Answer(T),
+    Cancelled,
+    Deadline,
+    Disconnected,
+}
+
+fn wait_reply<T>(receiver: &mpsc::Receiver<T>, cancel: Option<&Cancel>, deadline: Instant) -> Replied<T> {
+    let Some(cancel) = cancel else {
+        let Some(left) = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|d| !d.is_zero())
+        else {
+            return Replied::Deadline;
+        };
+        return match receiver.recv_timeout(left) {
+            Ok(answer) => Replied::Answer(answer),
+            Err(mpsc::RecvTimeoutError::Timeout) => Replied::Deadline,
+            Err(mpsc::RecvTimeoutError::Disconnected) => Replied::Disconnected,
+        };
+    };
+    let mut live = cancel.0.live.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if cancel.is_cancelled() {
+            return Replied::Cancelled;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Replied::Deadline;
+        }
+        match receiver.try_recv() {
+            Ok(answer) => return Replied::Answer(answer),
+            Err(mpsc::TryRecvError::Disconnected) => return Replied::Disconnected,
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        live = cancel
+            .0
+            .rung
+            .wait_timeout(live, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+}
+
+/// The addresses `url`'s host names: at once for an address, and for a name looked
+/// up on a worker, waited for until `deadline` or cancellation. getaddrinfo takes no
+/// deadline; an abandoned lookup retains its worker until libc returns, not a
+/// client/connection owner or a cancellation listener (D222).
 pub(crate) fn resolve(
     url: &Url,
     deadline: Instant,
     cancel: Option<&Cancel>,
 ) -> Result<Vec<SocketAddr>, Error> {
+    if let Some(cancel) = cancel {
+        cancel.check()?;
+    }
     let host = url.host().trim_start_matches('[').trim_end_matches(']');
     let port = url.port();
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -1398,38 +1476,26 @@ pub(crate) fn resolve(
     }
     let resolving = |e: &dyn std::fmt::Display| Error::new(format!("{}: resolving: {e}", url.host()));
     let (tx, rx) = mpsc::channel();
+    let reply = Reply::new(tx, cancel);
     let name = host.to_string();
     std::thread::Builder::new()
         .name("shards-resolve".into())
         .spawn(move || {
-            let _ = tx.send(
+            reply.send(
                 (name.as_str(), port)
                     .to_socket_addrs()
                     .map(Iterator::collect::<Vec<_>>),
             );
         })
         .map_err(|e| resolving(&e))?;
-    loop {
-        let left = deadline
-            .checked_duration_since(Instant::now())
-            .filter(|d| !d.is_zero())
-            .ok_or_else(|| {
-                Error::of(
-                    ErrorKind::Transient,
-                    format!("{}: resolving: timed out", url.host()),
-                )
-            })?;
-        match rx.recv_timeout(left.min(DIAL_POLL)) {
-            Ok(found) => return found.map_err(|e| resolving(&e)),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if let Some(cancel) = cancel {
-                    cancel.check()?;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(resolving(&"the lookup ended unanswered"));
-            }
-        }
+    match wait_reply(&rx, cancel, deadline) {
+        Replied::Answer(found) => found.map_err(|e| resolving(&e)),
+        Replied::Cancelled => Err(Error::of(ErrorKind::Cancelled, "cancelled")),
+        Replied::Deadline => Err(Error::of(
+            ErrorKind::Transient,
+            format!("{}: resolving: timed out", url.host()),
+        )),
+        Replied::Disconnected => Err(resolving(&"the lookup ended unanswered")),
     }
 }
 
@@ -1454,6 +1520,8 @@ fn unreachable(url: &Url) -> Error {
     ))
 }
 
+/// Races interleaved addresses, starting the next after RACE or a failure
+/// (RFC 8305 §5). Cancellation ends the caller; pending attempts end themselves.
 fn dial(
     url: &Url,
     cancel: Option<&Cancel>,
@@ -1473,26 +1541,37 @@ fn dial(
     let (tx, rx) = mpsc::channel();
     let mut pending = 0usize;
     let mut last = None;
-    let wait =
-        |pending: &mut usize, last: &mut Option<io::Error>, limit: Duration| match rx.recv_timeout(limit) {
-            Ok(Ok(stream)) => Some(stream),
-            Ok(Err(e)) => {
-                *pending = pending.saturating_sub(1);
-                *last = Some(e);
-                None
-            }
-            Err(_) => None,
-        };
+    let wait = |pending: &mut usize, last: &mut Option<io::Error>, until: Instant| match wait_reply(
+        &rx, cancel, until,
+    ) {
+        Replied::Answer(Ok(stream)) => Ok(Some(stream)),
+        Replied::Answer(Err(e)) => {
+            *pending = pending.saturating_sub(1);
+            *last = Some(e);
+            Ok(None)
+        }
+        Replied::Cancelled => Err(Error::of(ErrorKind::Cancelled, "cancelled")),
+        Replied::Deadline => Ok(None),
+        Replied::Disconnected => {
+            *pending = 0;
+            *last = Some(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the dial workers ended unanswered",
+            ));
+            Ok(None)
+        }
+    };
     for addr in addrs {
+        if let Some(cancel) = cancel {
+            cancel.check()?;
+        }
         let Some(left) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
-        let tx = tx.clone();
+        let reply = Reply::new(tx.clone(), cancel);
         let spawned = std::thread::Builder::new()
             .name("shards-dial".into())
-            .spawn(move || {
-                let _ = tx.send(TcpStream::connect_timeout(&addr, left));
-            });
+            .spawn(move || reply.send(TcpStream::connect_timeout(&addr, left)));
         match spawned {
             Ok(_) => pending += 1,
             Err(e) => {
@@ -1500,14 +1579,11 @@ fn dial(
                 continue;
             }
         }
-        let started = Instant::now();
-        while let Some(limit) = RACE.checked_sub(started.elapsed()) {
+        let next_attempt = after(RACE).min(deadline);
+        while Instant::now() < next_attempt {
             let before = pending;
-            if let Some(stream) = wait(&mut pending, &mut last, limit.min(DIAL_POLL)) {
+            if let Some(stream) = wait(&mut pending, &mut last, next_attempt)? {
                 return Ok(stream);
-            }
-            if let Some(cancel) = cancel {
-                cancel.check()?;
             }
             // An attempt failed: start the next one now.
             if pending < before {
@@ -1515,15 +1591,10 @@ fn dial(
             }
         }
     }
-    while pending > 0 {
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-            break;
-        };
-        if let Some(stream) = wait(&mut pending, &mut last, left.min(DIAL_POLL)) {
+    drop(tx);
+    while pending > 0 && Instant::now() < deadline {
+        if let Some(stream) = wait(&mut pending, &mut last, deadline)? {
             return Ok(stream);
-        }
-        if let Some(cancel) = cancel {
-            cancel.check()?;
         }
     }
     Err(match last {
@@ -2423,6 +2494,65 @@ mod tests {
         assert!(listener.accept().is_err(), "a cancelled client connected");
     }
 
+    #[test]
+    fn worker_replies_keep_completion_cancel_deadline_and_disconnect_distinct() {
+        let cancel = Cancel::new();
+        let (tx, rx) = mpsc::channel();
+        Reply::new(tx, Some(&cancel)).send(7);
+        assert!(matches!(
+            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            Replied::Answer(7)
+        ));
+        assert!(matches!(
+            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            Replied::Disconnected
+        ));
+        let (tx, rx) = mpsc::channel::<()>();
+        assert!(matches!(
+            wait_reply(&rx, Some(&cancel), Instant::now()),
+            Replied::Deadline
+        ));
+        drop(Reply::new(tx, Some(&cancel)));
+        assert!(matches!(
+            wait_reply(&rx, Some(&cancel), after(Duration::from_secs(1))),
+            Replied::Disconnected
+        ));
+        cancel.cancel();
+        assert!(matches!(
+            wait_reply(&rx, Some(&cancel), Instant::now()),
+            Replied::Cancelled
+        ));
+    }
+
+    #[test]
+    fn a_worker_reply_does_not_retain_its_client_owner() {
+        let cancel = Cancel::new();
+        let owner = Arc::downgrade(&cancel.0);
+        let (tx, rx) = mpsc::channel();
+        let reply = Reply::new(tx, Some(&cancel));
+        drop(cancel);
+        assert!(owner.upgrade().is_none());
+        reply.send(7);
+        assert_eq!(rx.recv().unwrap(), 7);
+    }
+
+    #[test]
+    fn simultaneous_worker_waits_receive_their_own_answers_and_cancel_together() {
+        let cancel = Cancel::new();
+        std::thread::scope(|scope| {
+            let (one, first) = mpsc::channel();
+            let (two, second) = mpsc::channel();
+            let a = scope.spawn(|| wait_reply(&first, Some(&cancel), after(Duration::from_secs(2))));
+            let b = scope.spawn(|| wait_reply(&second, Some(&cancel), after(Duration::from_secs(2))));
+            Reply::new(two, Some(&cancel)).send(2);
+            assert!(matches!(b.join().unwrap(), Replied::Answer(2)));
+            cancel.cancel();
+            assert!(matches!(a.join().unwrap(), Replied::Cancelled));
+            drop(one);
+        });
+        assert!(cancel.0.live.lock().unwrap().1.is_empty());
+    }
+
     /// Controlled Linux libc fixture; see measurements/registry-cancel/run.sh.
     /// The worker remains blocked after cancellation, then demonstrably closes its
     /// control socket once released. This does not claim getaddrinfo is cancellable.
@@ -2438,6 +2568,7 @@ mod tests {
         // starting any worker; the fixture reads this value but nobody changes it.
         unsafe { std::env::set_var("SHARDS_CANCEL_FIXTURE_SOCKET", &socket) };
         let mode = std::env::var("SHARDS_CANCEL_MODE").unwrap();
+        let cancelling = std::env::var("SHARDS_CANCEL_ACTION").as_deref() != Ok("complete");
         let count: usize = std::env::var("SHARDS_CANCEL_SAMPLES").unwrap().parse().unwrap();
         let mut samples = Vec::new();
         for sample in 0..count {
@@ -2493,12 +2624,18 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(750));
             }
             let began = Instant::now();
-            cancel.cancel();
+            if cancelling {
+                cancel.cancel();
+            } else {
+                held.write_all(b"x").unwrap();
+            }
             let result = done_rx.recv_timeout(Duration::from_secs(1));
             let elapsed = began.elapsed().as_nanos();
             // Release before asserting: even a broken cancellation guard must leave
             // the test's actual resolver/connect worker able to return and clean up.
-            held.write_all(b"x").unwrap();
+            if cancelling {
+                held.write_all(b"x").unwrap();
+            }
             assert_eq!(
                 held.read(&mut marker).unwrap(),
                 0,
@@ -2507,9 +2644,13 @@ mod tests {
             asked.join().unwrap();
             let (result, switches, cpu_us) = result.expect("cancel did not wake the waiting request");
             let error = result.unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+            if cancelling {
+                assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
+            } else {
+                assert_ne!(error.kind(), ErrorKind::Cancelled, "{error}");
+            }
             println!(
-                "REGISTRY_CANCEL mode={mode} sample={sample} cancel_ns={elapsed} voluntary_switches={switches} thread_cpu_us={cpu_us}"
+                "REGISTRY_CANCEL mode={mode} cancelling={cancelling} sample={sample} cancel_ns={elapsed} voluntary_switches={switches} thread_cpu_us={cpu_us}"
             );
             samples.push(elapsed);
         }
