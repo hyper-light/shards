@@ -1,4 +1,5 @@
 //! Private native measurement harness; no installed product or delegated authority.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::error::Error;
@@ -9,6 +10,8 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+use crate as shards_remote;
 use hyper_quic::{ClientConfig, StreamId};
 use shards_abi::run::managed::Channel;
 use shards_remote::frame::{self, Tag};
@@ -17,6 +20,8 @@ use shards_remote::managed::{self, Admitted, Control, Endpoint, Producer, RunId,
 use shards_remote::net::{Close, Command, ConnKey, Driver, DriverLimits, Handler, Io, Read, Sender};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
+#[cfg(test)]
+mod shared;
 
 struct Count;
 static ALLOCS: AtomicU64 = AtomicU64::new(0);
@@ -68,9 +73,28 @@ unsafe impl GlobalAlloc for Count {
     }
 }
 
-#[cfg(feature = "count-alloc")]
+#[cfg(not(test))]
+mod instrumented {
+    #[cfg(feature = "count-alloc")]
+    #[global_allocator]
+    static ALLOCATOR: super::Count = super::Count;
+    pub(super) fn enabled() -> bool {
+        cfg!(feature = "count-alloc")
+    }
+}
+#[cfg(test)]
 #[global_allocator]
 static ALLOCATOR: Count = Count;
+fn instrumented() -> bool {
+    #[cfg(test)]
+    {
+        true
+    }
+    #[cfg(not(test))]
+    {
+        instrumented::enabled()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct Counts {
@@ -90,6 +114,43 @@ fn counts() -> Counts {
         total: TOTAL.load(Relaxed),
         peak: PEAK.load(Relaxed),
     }
+}
+#[cfg(target_os = "linux")]
+fn socket_memory(name: &str) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir("/proc/self/fd")? {
+        let entry = entry?;
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
+        let Some(target) = target.to_str().filter(|s| s.starts_with("socket:[")) else {
+            continue;
+        };
+        if !seen.insert(target.to_owned()) {
+            continue;
+        }
+        let fd: libc::c_int = entry.file_name().to_str().ok_or("fd name")?.parse()?;
+        // Linux v6.19 include/uapi/linux/sock_diag.h defines nine SK_MEMINFO
+        // fields. Print fields separately: counters/limits overlap and must not
+        // be summed into a fictitious total kernel-memory attribution.
+        let mut values = [0_u32; 9];
+        let mut len = libc::socklen_t::try_from(std::mem::size_of_val(&values))?;
+        // SAFETY: this process owns fd; output points to the bounded uapi array.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_MEMINFO,
+                values.as_mut_ptr().cast(),
+                &raw mut len,
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        println!("socket_memory\t{name}\t{target}\tlen={len}\t{values:?}");
+    }
+    Ok(())
 }
 fn phase(name: &str, before: Counts, elapsed: Duration) -> Result<()> {
     let end = counts();
@@ -138,6 +199,7 @@ fn phase(name: &str, before: Counts, elapsed: Duration) -> Result<()> {
             "resource\t{name}\ttasks\t{}",
             std::fs::read_dir("/proc/self/task")?.count()
         );
+        socket_memory(name)?;
         let cgroup = std::fs::read_to_string("/proc/self/cgroup")?;
         if let Some(group) = cgroup.lines().find_map(|l| l.strip_prefix("0::")) {
             let directory = std::path::Path::new("/sys/fs/cgroup").join(group.trim_start_matches('/'));
@@ -163,8 +225,6 @@ enum Event {
 #[derive(Debug)]
 enum Ask {
     Connect(SocketAddr),
-    Subscribe,
-    Close,
 }
 
 struct Client {
@@ -308,17 +368,6 @@ impl Handler for Client {
                     Err(e) => self.fail(e),
                 }
             }
-            Ask::Subscribe => {
-                if let Some(conn) = self.conn {
-                    let _ = self.connected(io, conn, &[]);
-                }
-            }
-            Ask::Close => {
-                if let Some(conn) = self.conn {
-                    io.close(conn, 0, "measurement complete");
-                }
-                self.done = true;
-            }
         }
     }
     fn done(&self) -> bool {
@@ -332,9 +381,37 @@ impl Handler for Client {
     }
 }
 
+enum OutputControl {
+    Endpoint(Control),
+    #[cfg(test)]
+    Shared(shared::ChannelControl),
+}
+impl OutputControl {
+    fn abort(&self) {
+        match self {
+            Self::Endpoint(control) => control.abort(),
+            #[cfg(test)]
+            Self::Shared(control) => control.abort(),
+        }
+    }
+    fn stop_owner(&self) {
+        match self {
+            Self::Endpoint(control) => control.abort(),
+            #[cfg(test)]
+            Self::Shared(control) => control.stop_owner(),
+        }
+    }
+    fn progress(&self) -> managed::Progress {
+        match self {
+            Self::Endpoint(control) => control.progress(),
+            #[cfg(test)]
+            Self::Shared(control) => control.progress(),
+        }
+    }
+}
 struct Live {
     producer: Option<Producer>,
-    control: Control,
+    control: OutputControl,
     server: Option<JoinHandle<Result<()>>>,
     client: Option<JoinHandle<Result<()>>>,
     sender: Option<Sender<Ask>>,
@@ -344,7 +421,7 @@ struct Live {
 }
 impl Drop for Live {
     fn drop(&mut self) {
-        self.control.abort();
+        self.control.stop_owner();
         if let Some(sender) = &self.sender {
             sender.request_stop();
         }
@@ -394,7 +471,7 @@ impl Live {
         Ok(())
     }
     fn end(&mut self) -> Result<()> {
-        self.control.abort();
+        self.control.stop_owner();
         if let Some(sender) = self.sender.take() {
             sender.request_stop();
         }
@@ -441,8 +518,7 @@ fn worker(
     Ok(samples)
 }
 
-fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+pub(super) fn run_with(args: Vec<String>) -> Result<()> {
     if args.len() != 7 {
         return Err(
             "usage: managed-performance TENANTS RECORDS BYTES PATIENCE_MS normal|stall endpoint".into(),
@@ -457,7 +533,7 @@ fn run() -> Result<()> {
         || records == 0
         || bytes == 0
         || patience.is_zero()
-        || args.get(6).is_none_or(|s| s != "endpoint")
+        || args.get(6).is_none_or(|s| s != "endpoint" && s != "shared")
     {
         return Err("invalid workload".into());
     }
@@ -477,9 +553,10 @@ fn run() -> Result<()> {
         patience,
     };
     println!(
-        "config\ttenants={tenants}\tchannels={channels}\trecords={records}\tbytes={bytes}\tmode={}\tvariant=endpoint\tcount_alloc={}",
+        "config\ttenants={tenants}\tchannels={channels}\trecords={records}\tbytes={bytes}\tmode={}\tvariant={}\tcount_alloc={}",
         if stall { "stall" } else { "normal" },
-        cfg!(feature = "count-alloc")
+        args.get(6).ok_or("variant")?,
+        instrumented()
     );
     let empty = counts();
     phase("initial", empty, Duration::ZERO)?;
@@ -489,46 +566,60 @@ fn run() -> Result<()> {
     let owner = Identity::generate()?;
     let mut live = Vec::new();
     live.try_reserve_exact(channels)?;
-    for index in 0..channels {
-        let scope = Scope {
-            run: RunId([0; 32]),
-            generation: 1,
-            member: u32::try_from(index / 2)?,
-            channel: if index % 2 == 0 {
-                Channel::Stdout
-            } else {
-                Channel::Stderr
-            },
-        };
-        let (endpoint, producer, control) = Endpoint::bind(&identity, owner.fingerprint(), scope, admitted)?;
-        let address = endpoint.address;
-        let queues = endpoint
-            .kernel_buffer_bytes()?
-            .checked_add(control.kernel_buffer_bytes()?)
-            .ok_or("socket accounting overflow")?;
-        println!("server_socket_allowance\tchannel={index}\tbytes={queues}");
-        let server = thread::Builder::new()
-            .name("measured-server".into())
-            .spawn(move || {
-                endpoint.run()?;
-                Ok(())
-            })?;
-        live.push(Live {
-            producer: Some(producer),
-            control,
-            server: Some(server),
-            client: None,
-            sender: None,
-            events: None,
-            address,
-            scope,
-        });
+    let multiplexed = args.get(6).is_some_and(|s| s == "shared");
+    if multiplexed {
+        #[cfg(test)]
+        shared::bind(&mut live, channels, &identity, &owner, admitted)?;
+        #[cfg(not(test))]
+        return Err("shared prototype runs only through the in-crate test harness".into());
+    } else {
+        for index in 0..channels {
+            let scope = Scope {
+                run: RunId([0; 32]),
+                generation: 1,
+                member: u32::try_from(index / 2)?,
+                channel: if index % 2 == 0 {
+                    Channel::Stdout
+                } else {
+                    Channel::Stderr
+                },
+            };
+            let (endpoint, producer, control) =
+                Endpoint::bind(&identity, owner.fingerprint(), scope, admitted)?;
+            let address = endpoint.address;
+            let queues = endpoint
+                .kernel_buffer_bytes()?
+                .checked_add(control.kernel_buffer_bytes()?)
+                .ok_or("socket accounting overflow")?;
+            println!("server_socket_allowance\tchannel={index}\tbytes={queues}");
+            let server = thread::Builder::new()
+                .name("measured-server".into())
+                .spawn(move || {
+                    endpoint.run()?;
+                    Ok(())
+                })?;
+            live.push(Live {
+                producer: Some(producer),
+                control: OutputControl::Endpoint(control),
+                server: Some(server),
+                client: None,
+                sender: None,
+                events: None,
+                address,
+                scope,
+            });
+        }
     }
     phase("servers_bound", before, start.elapsed())?;
     let start = Instant::now();
     let before = counts();
-    for (index, channel) in live.iter_mut().enumerate() {
-        channel.client(&owner, &identity, admitted, !(stall && index == 0))?;
+    if multiplexed {
+        #[cfg(test)]
+        shared::connect(&mut live, &owner, &identity, admitted, stall)?;
+    } else {
+        for (index, channel) in live.iter_mut().enumerate() {
+            channel.client(&owner, &identity, admitted, !(stall && index == 0))?;
+        }
     }
     for channel in &live {
         channel.producer.as_ref().ok_or("producer")?.wait_capacity()?;
@@ -614,8 +705,9 @@ fn run() -> Result<()> {
     println!("result\tpass");
     Ok(())
 }
+#[cfg(not(test))]
 fn main() {
-    if let Err(error) = run() {
+    if let Err(error) = run_with(std::env::args().collect()) {
         eprintln!("measurement failed: {error}");
         std::process::exit(1);
     }

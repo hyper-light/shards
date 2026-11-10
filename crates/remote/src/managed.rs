@@ -92,6 +92,10 @@ const SUBSCRIBE_BYTES: usize = SCOPE_BYTES + OFFSET_BYTES;
 pub const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
 pub const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../../docs/research/measurements/managed-performance/in_crate.rs"]
+mod performance;
+
 /// A run and its current management generation, minted by the trusted owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunId(pub [u8; 32]);
