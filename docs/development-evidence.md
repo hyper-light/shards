@@ -1,15 +1,19 @@
 # Required development evidence
 
 Use this checklist with [R01–R16](development-rules.md) for each implementation
-batch. Link existing records rather than duplicate them. The coordinator owns the
-heavy/live/performance review; a subagent returns only its scoped implementation
-and light-test evidence. Keep unknown or unrun results explicit.
+batch. Link existing records rather than duplicate them. The coordinator owns
+evidence review and final combined gates; agents return their scoped implementation,
+audit, live-test or measurement evidence under R15. Keep unrun results explicit.
 
 - **Identity:** task/gap IDs, Git revision, policy SHA-256, coordinator/implementer,
   owned paths, environment/toolchain/kernel/architecture and supported target scope.
 - **Decision (R02/R03/R05/R12):** primary sources and revisions; established
   alternatives; compatibility/security/cost comparison; live method/data; chosen
   interface; every literal's source/derivation and cold-start/failure behavior.
+- **Wait/cache review (R05):** affected waits/caches, authoritative state,
+  notifications versus repeated probes, cache keys/invalidation/bounds, measured
+  cost and retain/replace/remove decision; completed refactor and live proof for
+  confirmed problems, with remaining work explicit.
 - **Live example (R09/R10):** exact repeatable invocation; expected and observed
   symptom; baseline red logs/traces; fixed green result; guard-removal mutation
   that fails for the relevant reason; actual forbidden effect/cleanup observed.

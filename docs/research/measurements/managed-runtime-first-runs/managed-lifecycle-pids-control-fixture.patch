@@ -1,0 +1,42 @@
+diff --git a/crates/shards/tests/managed_lifecycle.rs b/crates/shards/tests/managed_lifecycle.rs
+index 4536d851f..bcfd3403c 100644
+--- a/crates/shards/tests/managed_lifecycle.rs
++++ b/crates/shards/tests/managed_lifecycle.rs
+@@ -10,6 +10,15 @@ const TIMEOUT: Duration = Duration::from_secs(120);
+ 
+ #[test]
+ fn a_supplied_agent_runs_below_a_protected_native_reaper() {
++    protected_reaper(None);
++}
++
++#[test]
++fn a_supplied_agent_keeps_its_one_process_allowance() {
++    protected_reaper(Some(1));
++}
++
++fn protected_reaper(processes: Option<u64>) {
+     if cannot_run_vms() {
+         return;
+     }
+@@ -29,9 +38,12 @@ fn a_supplied_agent_runs_below_a_protected_native_reaper() {
+         br#"{"entrypoint":"probe","options":["managed-lifecycle","/probe/result"]}"#,
+     )
+     .unwrap();
++    let process_limit = processes.map_or(String::new(), |n| format!("--processes={n} "));
+     std::fs::write(
+         ctx.join("Agentfile"),
+-        format!("FROM {image}\nAGENT probe FROM ./agent\nVOLUME --chown=probe /probe FOR probe\n"),
++        format!(
++            "FROM {image}\nAGENT {process_limit}probe FROM ./agent\nVOLUME --chown=probe /probe FOR probe\n"
++        ),
+     )
+     .unwrap();
+     let built = run_shards_env(
+@@ -63,6 +75,7 @@ fn a_supplied_agent_runs_below_a_protected_native_reaper() {
+     );
+     assert_eq!(ran.status, Some(0), "{ran}");
+     let report = std::fs::read_to_string(reports.join("result")).unwrap();
++    eprintln!("managed lifecycle facts:\n{report}");
+     let field = |name: &str| {
+         report
+             .lines()

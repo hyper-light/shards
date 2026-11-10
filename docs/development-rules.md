@@ -52,6 +52,9 @@ Represent meaningful lifecycle/protocol states, events, legal transitions, termi
 outcomes and error/cancel paths explicitly. Record and exercise transitions and
 invariants. Do not encode a state machine as an undocumented combination of booleans,
 sentinel values, incidental ordering or disconnected callbacks.
+Keep new refusals, errors, rejections and responses typed through control and wire
+handling. Callers match variants; presentation renders text. Preserve affected
+identity, cause, retry and uncertainty semantics without logging private tokens.
 
 ## R05 — Abstractions are deliberate
 
@@ -59,6 +62,15 @@ Justify an interface by the behavior and real callers/variants it serves. Prefer
 small interface hiding substantial implementation at an existing seam. Avoid
 speculative traits, generic frameworks, pass-through layers and parallel managers.
 Apply R02 to broader choices; do not create architecture merely to enable a test.
+
+Audit affected waits and caches when implementing or reviewing a path. Prefer
+completion/readiness notifications and one authoritative state owner. Distinguish
+event waits and required protocol deadlines from periodic state probes. Improve
+the underlying algorithm, I/O and ownership before adding a cache. For any cache
+retained or proposed, record its measured benefit, authoritative source, keys,
+invalidation, resource/lifetime bounds and consistency proof. Existing use is not
+justification. Refactor or remove confirmed unnecessary polling/duplicate cached
+state with live before/after and mutation evidence; an inventory alone is unfinished.
 
 ## R06 — Control complexity
 
@@ -122,19 +134,26 @@ required behavior, evidence or error path in the name of brevity.
 
 ## R14 — Profile allocations and faults
 
-The coordinator profiles and minimizes allocations, reallocations, copies, retained
-memory and page faults, alongside CPU, latency and throughput. Count induced parent
+The coordinator assigns, reviews and integrates profiling and optimization of
+allocations, reallocations, copies, retained memory and page faults, alongside CPU,
+latency and throughput. Count induced parent
 and kernel costs, not just child RSS. Compare equivalent live workloads, retain raw
 results and report n, p50/p90/p99/max, contention and uncertainty. Do not call a path
 fast, allocation-free or leak-free without the relevant evidence.
 
 ## R15 — Roles, adversarial validation and merges
 
-Use scoped subagents for parallel implementation, targeted unit tests and light
-integration. The main coordinator owns all audits, profiling, benchmarking, heavy
-real E2E, deadlock/livelock testing, chaos/failure/boundary/break campaigns and sweeps.
-Agents return small tested signed commits plus evidence and owed runs, then stop;
-they do not keep launching heavy work or merge themselves to main. The coordinator
+Use scoped subagents for parallel implementation, tests and integration. The
+coordinator assigns validation and resource envelopes, reviews evidence and owns
+the final combined gates and merges. Ada explicitly authorized recurring agent
+lanes for live E2E/break/stress testing, constants/research, implementation quality,
+resource/performance optimization and adversarial multi-tenant VM testing.
+Delegate those campaigns with exact source/path/runner ownership, policy readback
+and evidence requirements. Preserve implementing agents; completed batches receive
+the next scoped assignment as capacity permits. Runtime concurrency and runner
+headroom remain binding; never report queued work as running.
+Agents return small tested signed commits, evidence and remaining work at each
+checkpoint. They do not merge themselves to main. The coordinator
 reviews and batches finished work, validates the combined revision, and merges to
 main. Never force-push or disable signing. Use the session's signed `gits` command
 and named paths; preserve the required commit attribution. Record pending checks

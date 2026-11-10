@@ -40,6 +40,55 @@ It cannot universally identify a function inside that binary as a semantic tool
 call. Exact tool authorization therefore requires broker-owned effects and refusal
 of alternate effect routes. Merely enabling a harness hook does not close that gap.
 
+### Multi-tenant VM contract
+
+One microVM intentionally hosts multiple AGENTs, HARNESSes or any mixture. The
+microVM is a shared boundary; each declared member is a distinct tenant inside it.
+Run identity alone is insufficient for capture, control, grants or accounting.
+Keep run/generation → stable declared member → execution/channel/flow identity.
+An inactive files-only declaration keeps its identity; runnable members are not
+renumbered when another declaration has no program. Determine activation from the
+verified normalized image with guest-equivalent path resolution, including legal
+parent and final symlinks, then check the active mapping before actor release.
+
+Credit, retained offsets, subscriptions, revocation and terminal outcomes belong
+to each tenant and channel. A blocked stdout subscriber cannot block its tenant's
+stderr, another tenant, the main workload or stop/reap control. Admission charges
+the aggregate run as well as the tenant; opening more channels/flows cannot create
+more entitlement. Learned throughput changes only already-authorized capacity.
+
+Contain an ordinary tenant failure within that tenant. An observer disconnect
+loses observation/credit, not lifecycle ownership. A population observation error
+may quarantine its tenant only after held population/leader control succeeds;
+unknown population, handles and charges remain represented. Whole-VM escalation
+requires a typed failure to maintain the shared containment/control boundary.
+Quarantine is neither proven emptiness nor checkpoint readiness. Revalidate save
+eligibility and preserve explicit uncertainty; the full freeze/restore cut remains
+P11 work. Existing D59 aggregate memory victim selection is a separate unresolved
+G12 entitlement question, not a stronger fairness guarantee established here.
+
+Every relevant campaign therefore includes mixed runnable/files-only members,
+AGENT/HARNESS mixtures, two tenants emitting concurrently, independent stdout/
+stderr stalls, cross-tenant subscriber/control attempts, one tenant exiting or
+faulting, and surviving-neighbor progress demonstrated after the failure.
+
+### Typed outcomes
+
+New management APIs and wire messages represent refusals, errors, rejections,
+responses and terminal outcomes with checked types. Preserve the cause, affected
+run/member/channel/generation and relevant retry/uncertainty semantics. Callers
+match variants; they do not infer authority, retry or failure scope from message
+text, errno alone, or sentinel values. Unknown versions/tags/reasons are explicit
+protocol errors, never a success or a default grant. A rejected owned payload is
+returned to its caller rather than silently dropped.
+
+Render human-readable text at presentation boundaries. Existing outer String
+interfaces may be bridged narrowly while migrating a seam, with that limit
+recorded; do not add a parallel string-based internal control protocol. Typed
+outcomes still require live effect/cleanup evidence and do not establish success
+merely because an enum variant exists. Tokens, credentials and private content
+never enter Debug/Display or ordinary telemetry as a side effect of typing them.
+
 ## 2. Complete gap register for this management effort
 
 Labels: **C** = confirmed source behavior; **R** = new requirement not implemented;
