@@ -1,0 +1,28 @@
+[
+  {
+    "origin": "local",
+    "removed_exit": 101,
+    "actual_joined": [
+      {
+        "type": "Joined",
+        "backend_accepted": 2,
+        "relay_accepted": 0,
+        "joined": true
+      }
+    ],
+    "actual_backend_accepts": 2
+  },
+  {
+    "origin": "forward",
+    "removed_exit": 101,
+    "actual_joined": [
+      {
+        "type": "Joined",
+        "backend_accepted": 2,
+        "relay_accepted": 0,
+        "joined": true
+      }
+    ],
+    "actual_backend_accepts": 2
+  }
+]
