@@ -541,4 +541,227 @@ mod tests {
         );
         assert!(open.encode(&mut [0; HEADER]).is_err());
     }
+
+    fn accept_encoded(state: &mut StreamState, record: Record<'_>) -> Result<(), Error> {
+        let mut bytes = [0; HEADER + size_of::<i32>()];
+        let n = record.encode(&mut bytes)?;
+        state.accept(Record::decode(&bytes[..n])?)
+    }
+
+    #[test]
+    fn wire_offset_overflow_preserves_state_and_exact_boundary_can_end() {
+        let payload = [0; size_of::<u16>()];
+        let offset = u64::MAX - payload.len() as u64;
+        let data = Record {
+            member: u32::MAX,
+            channel: Channel::Stdout,
+            offset,
+            event: Event::Data(&payload),
+        };
+        // Seed a resumed offset so the u64 boundary needs only a stack payload.
+        let mut state = StreamState::Open { offset };
+        let before = state;
+        let mut bytes = [0; HEADER + size_of::<u16>()];
+        let n = data.encode(&mut bytes).unwrap();
+        bytes[HEADER - size_of::<u64>()..HEADER].copy_from_slice(&(offset + 1).to_be_bytes());
+        assert_eq!(
+            Record::decode(&bytes[..n]).and_then(|record| state.accept(record)),
+            Err(Error::Offset)
+        );
+        assert_eq!(state, before);
+        assert_eq!(
+            Record {
+                offset: offset + 1,
+                ..data
+            }
+            .encode(&mut bytes),
+            Err(Error::Offset)
+        );
+        accept_encoded(&mut state, data).unwrap();
+        assert_eq!(state, StreamState::Open { offset: u64::MAX });
+        accept_encoded(
+            &mut state,
+            Record {
+                offset: u64::MAX,
+                event: Event::End,
+                ..data
+            },
+        )
+        .unwrap();
+        assert_eq!(state, StreamState::Ended { offset: u64::MAX });
+    }
+
+    #[test]
+    fn decoded_transition_rejections_allow_the_next_valid_record() {
+        let payload = b"x";
+        let offset = payload.len() as u64;
+        let open = Record {
+            member: u32::MAX,
+            channel: Channel::Stderr,
+            offset: 0,
+            event: Event::Open("x"),
+        };
+        let data = Record {
+            event: Event::Data(payload),
+            ..open
+        };
+        let mut state = StreamState::New;
+        assert_eq!(accept_encoded(&mut state, data), Err(Error::State));
+        assert_eq!(state, StreamState::New);
+        accept_encoded(&mut state, open).unwrap();
+        assert_eq!(state, StreamState::Open { offset: 0 });
+
+        for (rejected, error) in [
+            (open, Error::State),
+            (Record { offset, ..data }, Error::Offset),
+            (
+                Record {
+                    offset,
+                    event: Event::End,
+                    ..open
+                },
+                Error::Offset,
+            ),
+            (
+                Record {
+                    offset,
+                    event: Event::Aborted(i32::MAX),
+                    ..open
+                },
+                Error::Offset,
+            ),
+        ] {
+            let mut state = StreamState::New;
+            accept_encoded(&mut state, open).unwrap();
+            let before = state;
+            assert_eq!(accept_encoded(&mut state, rejected), Err(error));
+            assert_eq!(state, before);
+            accept_encoded(&mut state, data).unwrap();
+            assert_eq!(state, StreamState::Open { offset });
+        }
+    }
+
+    #[test]
+    fn decoded_terminals_reject_subsequent_well_formed_data() {
+        let payload = b"x";
+        let offset = payload.len() as u64;
+        let open = Record {
+            member: u32::MAX,
+            channel: Channel::Stdout,
+            offset: 0,
+            event: Event::Open("x"),
+        };
+        for (event, terminal) in [
+            (Event::End, StreamState::Ended { offset }),
+            (
+                Event::Aborted(i32::MAX),
+                StreamState::Aborted {
+                    offset,
+                    errno: i32::MAX,
+                },
+            ),
+        ] {
+            let mut state = StreamState::New;
+            accept_encoded(&mut state, open).unwrap();
+            accept_encoded(
+                &mut state,
+                Record {
+                    event: Event::Data(payload),
+                    ..open
+                },
+            )
+            .unwrap();
+            accept_encoded(
+                &mut state,
+                Record {
+                    offset,
+                    event,
+                    ..open
+                },
+            )
+            .unwrap();
+            assert_eq!(state, terminal);
+            assert!(state.terminal());
+            assert_eq!(
+                accept_encoded(
+                    &mut state,
+                    Record {
+                        offset,
+                        event: Event::Data(payload),
+                        ..open
+                    }
+                ),
+                Err(Error::State)
+            );
+            assert_eq!(state, terminal);
+        }
+    }
+
+    #[test]
+    fn malformed_wire_boundaries_leave_an_open_stream_usable() {
+        let payload = b"x";
+        let open = Record {
+            member: u32::MAX,
+            channel: Channel::Stderr,
+            offset: 0,
+            event: Event::Open("x"),
+        };
+        let data = Record {
+            event: Event::Data(payload),
+            ..open
+        };
+        let check = |bytes: &[u8], error| {
+            let mut state = StreamState::New;
+            accept_encoded(&mut state, open).unwrap();
+            let before = state;
+            assert_eq!(
+                Record::decode(bytes).and_then(|record| state.accept(record)),
+                Err(error)
+            );
+            assert_eq!(state, before);
+            accept_encoded(&mut state, data).unwrap();
+            assert_eq!(
+                state,
+                StreamState::Open {
+                    offset: payload.len() as u64
+                }
+            );
+        };
+        let mut bytes = [0; HEADER + size_of::<i32>() + size_of::<u8>()];
+        let n = data.encode(&mut bytes).unwrap();
+        check(&bytes[..HEADER - size_of::<u8>()], Error::Header);
+        check(&bytes[..HEADER], Error::Payload);
+        let tags = HEADER - size_of::<u32>() - size_of::<u64>();
+        for (field, value, error) in [
+            (0, VERSION.wrapping_add(1), Error::Version),
+            (tags - size_of::<u8>(), u8::MAX, Error::Reserved),
+        ] {
+            let mut bad = bytes;
+            bad[field] = value;
+            check(&bad[..n], error);
+        }
+        let n = open.encode(&mut bytes).unwrap();
+        bytes[HEADER] = u8::MAX;
+        check(&bytes[..n], Error::Payload);
+        let n = Record {
+            event: Event::End,
+            ..open
+        }
+        .encode(&mut bytes)
+        .unwrap();
+        check(&bytes[..n + size_of::<u8>()], Error::Payload);
+        let n = Record {
+            event: Event::Aborted(i32::MAX),
+            ..open
+        }
+        .encode(&mut bytes)
+        .unwrap();
+        for len in [HEADER, n - size_of::<u8>(), n + size_of::<u8>()] {
+            check(&bytes[..len], Error::Payload);
+        }
+        for errno in [0i32, i32::MIN] {
+            bytes[HEADER..n].copy_from_slice(&errno.to_be_bytes());
+            check(&bytes[..n], Error::Payload);
+        }
+    }
 }

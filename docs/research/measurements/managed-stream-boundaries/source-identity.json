@@ -1,0 +1,11 @@
+{
+  "base_revision": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "source_before_sha256": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01",
+  "source_after_sha256": "12cb5220b60ddd80bccd197310a127070ba2ed92d09ebb78f41abd49b8ba0786",
+  "unchanged_production_prefix_sha256": "d6475f27aac50f0b09c62ba926c52faba0604a25245b17098acfc6e59c4cc079",
+  "existing_source_unchanged_except_test_module_closing_brace": true,
+  "new_test_functions": 4,
+  "build_rs_hash_recomputed_before": "0x99b4d607a9dc2b2f",
+  "build_rs_hash_recomputed_after": "0xeef37258a52f4b5e",
+  "actual_gnu_and_musl_generated_identity": "0xeef37258a52f4b5e"
+}
