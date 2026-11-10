@@ -11,10 +11,11 @@ mode = sys.argv[1]
 if mode == "early":
     raise SystemExit(7)
 if mode == "partial":
-    sys.stdout.write("rea")
-    sys.stdout.flush()
+    sys.stdout.buffer.write(b"rea")
+    sys.stdout.buffer.flush()
 elif mode == "normal":
-    print("ready", flush=True)
+    sys.stdout.buffer.write(b"ready\n")
+    sys.stdout.buffer.flush()
 elif mode != "silent":
     raise SystemExit("unknown controlled child mode")
 if stdin_control:
@@ -22,4 +23,5 @@ if stdin_control:
         raise SystemExit(8)
 else:
     signal.sigwait({signal.SIGUSR1})
-print("released", flush=True)
+sys.stdout.buffer.write(b"released\n")
+sys.stdout.buffer.flush()

@@ -22,6 +22,7 @@ guest = root / "crates/testguest/src/cleanup.rs"
 original = source.read_bytes()
 identity = {"source_ref": args.source_ref, "source_sha256": hashlib.sha256(original).hexdigest(),
             "guest_sha256": hashlib.sha256(guest.read_bytes()).hexdigest(),
+            "child_sha256": hashlib.sha256(pathlib.Path(__file__).with_name("readiness-child.py").read_bytes()).hexdigest(),
             "cwd": str(root), "platform": platform.platform(), "host": platform.node(),
             "rustc": subprocess.check_output(["rustc", "-Vv"], cwd=root, text=True),
             "target_dir": os.environ["CARGO_TARGET_DIR"], "patience_ms": args.patience_ms}
