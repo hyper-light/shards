@@ -84,7 +84,7 @@ enum Accepted {
 
 fn accept(
     capture: &mut Capture,
-    observer: &Observer,
+    identity: (u32, Channel),
     offset: u64,
     bytes: &[u8],
     expected: &[u8],
@@ -92,16 +92,13 @@ fn accept(
     assert!(!bytes.is_empty(), "nonempty canonical record");
     assert_eq!(offset, capture.wire, "actual contiguous transport cursor");
     let record = Record::decode(bytes).unwrap();
-    assert_eq!(record.member, observer.scope.member, "declared member identity");
-    assert_eq!(
-        record.channel, observer.scope.channel,
-        "separate fd1/fd2 identity"
-    );
+    assert_eq!(record.member, identity.0, "declared member identity");
+    assert_eq!(record.channel, identity.1, "separate fd1/fd2 identity");
     capture.state.accept(record).unwrap();
     capture.wire = offset.checked_add(u64::try_from(bytes.len()).unwrap()).unwrap();
     match record.event {
         CaptureEvent::Open(label) => {
-            assert_eq!(label, declared_label(observer.scope.member));
+            assert_eq!(label, declared_label(identity.0));
             Accepted::Open
         }
         CaptureEvent::Data(data) => {
@@ -138,7 +135,13 @@ fn receive(
         let Event::Record(offset, bytes) = trace.next(observer, "capture", until) else {
             panic!("canonical record required")
         };
-        let accepted = accept(capture, observer, offset, &bytes, expected);
+        let accepted = accept(
+            capture,
+            (observer.scope.member, observer.scope.channel),
+            offset,
+            &bytes,
+            expected,
+        );
         if matches!(accepted, Accepted::End) {
             assert!(
                 matches!(goal, ReadGoal::CanonicalEnd),
@@ -178,7 +181,13 @@ fn hold_initial(observer: &Observer, expected: &[u8], trace: &mut Trace<'_>, unt
             panic!("initial member record")
         };
         let before = observed.state;
-        match accept(&mut observed, observer, offset, &bytes, expected) {
+        match accept(
+            &mut observed,
+            (observer.scope.member, observer.scope.channel),
+            offset,
+            &bytes,
+            expected,
+        ) {
             Accepted::End => panic!("surviving member ended before observer disconnect"),
             Accepted::Data if observed.bytes == expected => {
                 let witness = RetainedRecord::hold(
@@ -359,4 +368,110 @@ fn observer_disconnect_replays_retained_record_without_losing_owner() {
     stopped.unwrap();
     let metadata = removed.unwrap_or_else(|error| std::panic::resume_unwind(error));
     assert_terminal_metadata(&metadata, &result.unwrap());
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    fn encoded(channel: Channel, offset: u64, event: CaptureEvent<'_>) -> Vec<u8> {
+        let record = Record {
+            member: 2,
+            channel,
+            offset,
+            event,
+        };
+        let mut bytes = vec![0; record.encoded_len().unwrap()];
+        assert_eq!(record.encode(&mut bytes).unwrap(), bytes.len());
+        bytes
+    }
+
+    fn consume(capture: &mut Capture, channel: Channel, bytes: &[u8], expected: &[u8]) -> Accepted {
+        let wire = capture.wire;
+        accept(capture, (2, channel), wire, bytes, expected)
+    }
+
+    #[test]
+    fn fragmented_initial_replay_then_new_data_preserves_exact_capture_and_distinct_wire_tail() {
+        for channel in [Channel::Stdout, Channel::Stderr] {
+            let initial = payload("harness", channel);
+            let suffix = payload("harness-after-exit", channel);
+            let expected = [initial.as_slice(), suffix.as_slice()].concat();
+            let (head, tail) = initial.split_at(initial.len() / 2);
+            let mut capture = Capture::default();
+            let open = encoded(channel, 0, CaptureEvent::Open("harness driver"));
+            assert!(matches!(
+                consume(&mut capture, channel, &open, &initial),
+                Accepted::Open
+            ));
+            let first = encoded(channel, 0, CaptureEvent::Data(head));
+            assert!(matches!(
+                consume(&mut capture, channel, &first, &initial),
+                Accepted::Data
+            ));
+            let start = capture.wire;
+            let before = capture.state;
+            let last = encoded(
+                channel,
+                u64::try_from(head.len()).unwrap(),
+                CaptureEvent::Data(tail),
+            );
+            assert!(matches!(
+                consume(&mut capture, channel, &last, &initial),
+                Accepted::Data
+            ));
+            let held = RetainedRecord::hold(2, channel, start, last.clone(), before).unwrap();
+            let (wire, state) = held.replay(start, &last).unwrap();
+            assert_eq!((wire, state), (capture.wire, capture.state));
+            assert_eq!(
+                capture.bytes, initial,
+                "replayed record remains one logical payload copy"
+            );
+            assert_ne!(
+                wire,
+                u64::try_from(initial.len()).unwrap(),
+                "wire cursor includes canonical framing"
+            );
+            let later = encoded(
+                channel,
+                u64::try_from(initial.len()).unwrap(),
+                CaptureEvent::Data(&suffix),
+            );
+            assert!(matches!(
+                consume(&mut capture, channel, &later, &expected),
+                Accepted::Data
+            ));
+            let ended = encoded(channel, u64::try_from(expected.len()).unwrap(), CaptureEvent::End);
+            assert!(matches!(
+                consume(&mut capture, channel, &ended, &expected),
+                Accepted::End
+            ));
+            assert_eq!(capture.bytes, expected);
+            let wire_len = [&open, &first, &last, &later, &ended]
+                .into_iter()
+                .map(|bytes| u64::try_from(bytes.len()).unwrap())
+                .sum::<u64>();
+            assert_eq!(capture.wire, wire_len);
+        }
+    }
+
+    #[test]
+    fn shifted_observed_wire_start_refuses_before_changing_capture_state_or_payload() {
+        let channel = Channel::Stdout;
+        let initial = payload("harness", channel);
+        let mut capture = Capture::default();
+        let open = encoded(channel, 0, CaptureEvent::Open("harness driver"));
+        consume(&mut capture, channel, &open, &initial);
+        let before = (capture.wire, capture.state, capture.bytes.clone());
+        let data = encoded(channel, 0, CaptureEvent::Data(&initial));
+        let shifted = capture.wire.checked_add(1).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            accept(&mut capture, (2, channel), shifted, &data, &initial)
+        }));
+        assert!(
+            result.is_err(),
+            "a shifted transport cursor cannot advance the fixture"
+        );
+        assert_eq!((capture.wire, capture.state, capture.bytes), before);
+    }
 }

@@ -1,5 +1,10 @@
 # Observer reconnect body candidate: parent seam and actual gates remain open
 
+This is the historical8a13515e7 body/hash record. The subsequent
+[reader boundary checkpoint](READER-CHECKPOINT.md) exercises the new reader itself
+with five selected pure tests per libc. Parent-input authority and all actual
+endpoint/VM gates remain open in both records.
+
 IMPLEMENTER `01a1c5d28cea74a5b0241200190d6c54`, ROOT coordinator
 `01a148884a4770fdaf0111f3f792a248`. Full canonical policy/CLAUDE/plan/evidence/
 handoff re-read at `1d0588b28f839fd0fec049e4bcb00e261e28c3aa`, unchanged rules
