@@ -1,0 +1,24 @@
+cargo.exe :     Checking typenum v1.20.1
+At C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-borrowed-c5f6175fcc\docs\research\measurements\m
+anaged-borrowed\run-windows.ps1:22 char:9
++         & $Executable @ToolArgs *> (Join-Path $Evidence ($Name + '.lo ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking typenum v1.20.1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+   Compiling shards-abi v0.1.0 (C:\Users\corph\managed-borrowed-windows-check\crates\abi)
+    Checking windows-link v0.2.1
+    Checking const-oid v0.10.2
+    Checking windows-sys v0.61.2
+    Checking hybrid-array v0.4.15
+    Checking cfg-if v1.0.5
+    Checking cpufeatures v0.3.1
+    Checking block-buffer v0.12.1
+    Checking crypto-common v0.2.2
+    Checking shards-testdir v0.1.0 (C:\Users\corph\managed-borrowed-windows-check\crates\testdir)
+    Checking triomphe v0.1.17
+    Checking digest v0.11.3
+    Checking sha2 v0.11.0
+    Checking shards-afunix v0.1.0 (C:\Users\corph\managed-borrowed-windows-check\crates\afunix)
+    Checking shards-api v0.1.0 (C:\Users\corph\managed-borrowed-windows-check\crates\api)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.97s

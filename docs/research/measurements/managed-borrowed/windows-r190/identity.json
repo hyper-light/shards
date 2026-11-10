@@ -1,0 +1,9 @@
+{
+    "source":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "powershell":  "5.1.26100.9711",
+    "evidence":  "C:\\Users\\corph\\managed-borrowed-windows-evidence\\12233203-powershell",
+    "head":  "122332036eb689c33fd52b4a065c53c7dc5e4530",
+    "architecture":  "AMD64",
+    "target":  "C:\\Users\\corph\\managed-borrowed-windows-target",
+    "os":  "Microsoft Windows NT 10.0.26200.0"
+}

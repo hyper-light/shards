@@ -1,0 +1,12 @@
+{
+    "args":  [
+                 "C:\\Program Files\\Git\\ucrt64\\bin\\git.exe",
+                 "clone",
+                 "--no-hardlinks",
+                 "--no-checkout",
+                 "C:\\Users\\corph\\.kiln\\reach\\e30189ea29182644fe5a4b2e06c7dac2\\managed-borrowed-c5f6175fcc",
+                 "C:\\Users\\corph\\managed-borrowed-windows-check"
+             ],
+    "cwd":  "C:\\Users\\corph\\.kiln\\reach\\e30189ea29182644fe5a4b2e06c7dac2\\managed-borrowed-c5f6175fcc",
+    "exit":  0
+}

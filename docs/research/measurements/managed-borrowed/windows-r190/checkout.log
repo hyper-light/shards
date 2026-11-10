@@ -1,0 +1,8 @@
+git.exe : HEAD is now at 12233203 docs(api): retain native Mac passes and owned-OOM abort separately
+At C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-borrowed-c5f6175fcc\docs\research\measurements\m
+anaged-borrowed\run-windows.ps1:22 char:9
++         & $Executable @ToolArgs *> (Join-Path $Evidence ($Name + '.lo ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (HEAD is now at ...bort separately:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

@@ -1,0 +1,33 @@
+cargo.exe :     Finished `test-release` profile [optimized + debuginfo] target(s) in 0.14s
+At C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-borrowed-c5f6175fcc\docs\research\measurements\m
+anaged-borrowed\run-windows.ps1:22 char:9
++         & $Executable @ToolArgs *> (Join-Path $Evidence ($Name + '.lo ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Finished `t...get(s) in 0.14s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     Running unittests src\lib.rs 
+(C:\Users\corph\managed-borrowed-windows-target\test-release\deps\shards_api-d7d07df9356ba62a.exe)
+
+running 13 tests
+test borrowed::tests::changed_identity_is_rejected_before_dial ... stale_identity_actual_CONNECT=false
+ok
+test borrowed::tests::dribbled_reply_does_not_renew_deadline ... ok
+test borrowed::tests::dropping_borrowed_stream_leaves_process_alive_and_responsive ... borrowed_drop_child_alive_and_actual_reply=true
+ok
+test borrowed::tests::exact_bytes_clone_half_close_and_resource_return ... ok
+test borrowed::tests::malformed_or_closed_replies_remain_typed ... ok
+test borrowed::tests::overflow_with_withheld_muxer_never_dials ... patience=18446744073709551615.999999999s actual_CONNECT=false
+ok
+test borrowed::tests::private_refcounts_are_bounded_by_retained_socket_storage ... ok
+test borrowed::tests::process_exit_before_or_during_handshake_is_rejected ... actual_process_reaped_before_OK=true returned_stream=false
+ok
+test borrowed::tests::process_role ... ignored, private child role, launched only by focused borrowed tests
+test borrowed::tests::shared_state_and_stream_box_oom_return_without_allocating_errors ... ok
+test borrowed::tests::withheld_reply_expires_without_fixture_release ... ok
+test borrowed::tests::zero_and_overflow_are_typed_before_any_io ... ok
+test borrowed::tests::zero_with_withheld_muxer_never_dials ... patience=0ns actual_CONNECT=false
+ok
+
+test result: ok. 12 passed; 0 failed; 1 ignored; 0 measured; 25 filtered out; finished in 0.74s
+

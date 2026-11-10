@@ -1,0 +1,8 @@
+{
+    "args":  [
+                 "C:\\Users\\corph\\.cargo\\bin\\rustc.exe",
+                 "-Vv"
+             ],
+    "cwd":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "exit":  0
+}

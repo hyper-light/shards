@@ -8,6 +8,8 @@ merge or adoption claim. Exact53535 Linux light rerun is pending: kiln rejected 
 The ask was not reduced and the runner guard was not bypassed. Root subsequently
 authorized native Mac light checks: independent passes and the full-library RED
 are recorded in [MAC.md](MAC.md). No ready-main/whole-library panic-free claim.
+Native Windowsamd64 focused light results on exact12233203 subsequently passed
+without production changes: [WINDOWS.md](WINDOWS.md). Mac full-library RED remains.
 
 Policy: implementer receipt renewed for canonical c921a0b1 / rules SHA256
 `1ed0b1ad00e9228d813d1892d6f55cf330a5485647aff19527843ff8bf616b3d`; full AGENTS,
@@ -126,6 +128,7 @@ untouched. The subsequently authorized private Mac build is recorded separately.
 | 11913786 / r185 | Six independent local guard mutations each cargo101 for actual forbidden effect/allocator abort; each restored focused test0, restored library corpus0 and strict clippy0. No VM/profile sweep |
 | 389e823e / r186 | Additional candidate regression actually reproduced: queued byte with1ns wait incorrectly returns WouldBlock before initial I/O |
 | 53535ab6 production / c5c8e4c6 source | Mac borrowed12/0, Stream11/0 (including ready-I/O regression), sim15/0, scoped clippy0; full lib RED via owned-OOM64B SIGABRT. Latest Linux complete rerun still held/unverified |
+| 12233203 / r190 | Native Windowsamd64 compile0, borrowed12/0/1 child ignored, Stream9/0, strict API+afunix all-targets clippy0. Two earlier launcher setup failures retained separately; no production change |
 
 The r184 corpus includes exact binary payload with u32::MAX port, clone and
 half-close; withheld and dribbled reply deadlines; malformed/closed reply typing;
@@ -176,7 +179,9 @@ retrieve/preserve remaining raw runner evidence when admission returns. Then roo
 review of the narrow source/diagnostic text changes, D215 integration note,
 seven-target check/lint and remaining macOSarm64/Windows behavior. The Mac full-lib
 owned-OOM abort remains RED; root owns isolated cold-primitive confirmation before
-any broader synchronization remedy. No warming/skip is used to call it green. Native repeated
+any broader synchronization remedy. Root subsequently confirmed the actual
+OnceBox→ShardsGuest::connect stack in separate coordinator tracing; no warming/skip
+is used to call it green. Native repeated
 Windows success/zero/overflow/identity/error handle counts, live VM borrowed
 attach/drop/lifetime, large/dribbled/interrupt/connect boundary cases and aggregate
 resource behavior are not passed. Root owns those platform/heavy gates plus any
@@ -195,8 +200,9 @@ modules, resource and unsafe/precondition comments; no speculative manager.
 R08/R14: performance work remains root-owned and unclaimed. R09: pre-fix native
 red and candidate regression red retained. R10: reproducible fixtures/raw records,
 actual-effect mutation/removal and restored runs; latest source gaps explicit.
-R11: Linuxamd64 and Macarm64 scoped native checks recorded, with exact-source/red
-limits above; Windows/Linuxarm64/musl and real VM hosts remain unverified here.
+R11: Linuxamd64, Macarm64 and Windowsamd64 scoped native checks recorded, with
+exact-source/red limits above; Windows/Linuxarm64/musl and real VM hosts remain
+unverified here.
 R12: shared handshake/stream + minimal Unix held reuse/Windows adapter, rootless,
 one installed binary, no security bypass. R13: concrete API and real failure causes,
 no generic allocation framework. R15: signed isolated checkpoints, no children,

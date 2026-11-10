@@ -1,0 +1,19 @@
+{
+    "args":  [
+                 "C:\\Users\\corph\\.cargo\\bin\\cargo.exe",
+                 "test",
+                 "--locked",
+                 "-j4",
+                 "--profile",
+                 "test-release",
+                 "-p",
+                 "shards-api",
+                 "--lib",
+                 "borrowed::tests",
+                 "--",
+                 "--test-threads=1",
+                 "--nocapture"
+             ],
+    "cwd":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "exit":  0
+}

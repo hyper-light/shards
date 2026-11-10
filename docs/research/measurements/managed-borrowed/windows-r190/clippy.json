@@ -1,0 +1,18 @@
+{
+    "args":  [
+                 "C:\\Users\\corph\\.cargo\\bin\\cargo.exe",
+                 "clippy",
+                 "--locked",
+                 "-j4",
+                 "-p",
+                 "shards-api",
+                 "-p",
+                 "shards-afunix",
+                 "--all-targets",
+                 "--",
+                 "-D",
+                 "warnings"
+             ],
+    "cwd":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "exit":  0
+}

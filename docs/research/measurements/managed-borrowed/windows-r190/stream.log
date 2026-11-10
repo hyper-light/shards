@@ -1,0 +1,26 @@
+cargo.exe :     Finished `test-release` profile [optimized + debuginfo] target(s) in 0.12s
+At C:\Users\corph\.kiln\reach\e30189ea29182644fe5a4b2e06c7dac2\managed-borrowed-c5f6175fcc\docs\research\measurements\m
+anaged-borrowed\run-windows.ps1:22 char:9
++         & $Executable @ToolArgs *> (Join-Path $Evidence ($Name + '.lo ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Finished `t...get(s) in 0.12s:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+     Running unittests src\lib.rs 
+(C:\Users\corph\managed-borrowed-windows-target\test-release\deps\shards_api-d7d07df9356ba62a.exe)
+
+running 9 tests
+test stream::tests::a_clone_is_the_same_connection ... ok
+test stream::tests::a_connection_reports_its_buffer_sizes ... buffer_sizes: send 65536, receive 65536
+buffer_sizes: send 65536, receive 65536
+ok
+test stream::tests::a_nonblocking_read_fails_at_once_and_its_handle_says_when_to_read ... ok
+test stream::tests::a_pair_carries_bytes_both_ways_and_a_half_close ... ok
+test stream::tests::a_read_a_clone_raced_ends_at_its_timeout ... ok
+test stream::tests::a_read_times_out_and_the_connection_goes_on ... ok
+test stream::tests::a_timeout_is_kept_as_given ... ok
+test stream::tests::a_write_to_a_peer_that_stops_reading_ends_at_its_timeout ... ok
+test stream::tests::already_queued_data_is_read_before_waiting_out_a_timeout ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 29 filtered out; finished in 0.29s
+

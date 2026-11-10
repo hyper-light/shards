@@ -1,0 +1,10 @@
+{
+    "args":  [
+                 "C:\\Program Files\\Git\\ucrt64\\bin\\git.exe",
+                 "checkout",
+                 "--detach",
+                 "122332036eb689c33fd52b4a065c53c7dc5e4530"
+             ],
+    "cwd":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "exit":  0
+}

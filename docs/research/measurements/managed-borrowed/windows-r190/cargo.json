@@ -1,0 +1,8 @@
+{
+    "args":  [
+                 "C:\\Users\\corph\\.cargo\\bin\\cargo.exe",
+                 "-Vv"
+             ],
+    "cwd":  "C:\\Users\\corph\\managed-borrowed-windows-check",
+    "exit":  0
+}
