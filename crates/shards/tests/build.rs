@@ -8990,6 +8990,74 @@ fn oci_layout_contexts_are_the_images_they_hold() {
     );
 }
 
+/// Supplied agent/harness descriptors start their own binaries, from a directory and
+/// a tar archive, with no OCI metadata and no RUN or VOLUME installation (D54).
+#[test]
+fn supplied_agents_and_harness_archives_start_their_declared_entrypoints() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("supplied-startup-home");
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let ctx = context("supplied-startup", &format!("FROM {image}\n"));
+    std::fs::create_dir(ctx.join("agent")).unwrap();
+    std::fs::copy(common::test_guest(), ctx.join("agent/agent-bin")).unwrap();
+    chmod(&ctx.join("agent/agent-bin"), 0o755);
+    std::fs::write(
+        ctx.join("agent/agent.json"),
+        r#"{"entrypoint":"agent-bin","options":["confined"]}"#,
+    )
+    .unwrap();
+    let binary = std::fs::read(common::test_guest()).unwrap();
+    let descriptor = br#"{"entrypoint":"codex","options":["confined"]}"#;
+    std::fs::write(
+        ctx.join("harness.tar"),
+        common::tar(&[
+            ("bin", 0o755, 0, None),
+            ("bin/codex", 0o755, 0, Some(&binary)),
+            ("harness.json", 0o644, 0, Some(descriptor)),
+        ]),
+    )
+    .unwrap();
+    std::fs::write(
+        ctx.join("Agentfile"),
+        format!("FROM {image}\nAGENT helper FROM ./agent\nHARNESS codex FROM ./harness.tar\n"),
+    )
+    .unwrap();
+    let built = run_shards_env(
+        &["build", "image"],
+        &["-t", "supplied-startup:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{}", built.stderr);
+    // The existing handshake observes each domain process from init, then releases the
+    // workload. It needs no access from one domain to another and no stdout routing.
+    let ran = common::run_awaiting(
+        &env,
+        &[
+            "run",
+            "vm",
+            "--rm",
+            "--name",
+            "supplied-startup",
+            "supplied-startup:1",
+            "await",
+            "confined-ready",
+            "2",
+        ],
+        "supplied-startup",
+        ("confined-ready", 2),
+        TIMEOUT,
+    );
+    assert_eq!(ran.status, Some(0), "{}{}", ran.stdout, ran.stderr);
+}
+
 /// An Agentfile's `AGENT`, `HARNESS`, `MCP` and `SKILL` lay out what they bring, each a
 /// layer of its own (D54): an agent's directory at `/agents/<name>`, a harness's archive
 /// unpacked at `/harness/<name>`, an MCP server over stdio at its grantee's

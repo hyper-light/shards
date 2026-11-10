@@ -227,7 +227,7 @@ reproducibly by CI ([resources/kernel](resources/kernel/README.md)):
 ```sh
 arch=$(uname -m | sed s/arm64/aarch64/)
 file=$([ $arch = x86_64 ] && echo vmlinux || echo Image)-6.18.48-$arch
-curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-f7cd54dd57a5/$file
+curl -fLo vmlinux https://github.com/hyper-light/shards/releases/download/kernel-6.18.48-17c3ba205400/$file
 shasum -a 256 vmlinux
 ```
 

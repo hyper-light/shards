@@ -54,6 +54,15 @@ impl Kind {
             .find(|k| k.artifact_type() == artifact_type)
     }
 
+    /// A local artifact's descriptor, the same file `shards build` reads.
+    pub fn config_file(self) -> &'static str {
+        match self {
+            Kind::Agent => "agent.json",
+            Kind::Harness => "harness.json",
+            Kind::Mcp => "mcp.json",
+        }
+    }
+
     pub fn word(self) -> &'static str {
         match self {
             Kind::Agent => "agent",

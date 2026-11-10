@@ -1200,6 +1200,15 @@ pub fn op_json(op: &shards_agentfile::llb::Op) -> Json {
                 Json::obj(vec![("name", Json::s(String::from_utf8_lossy(name)))]),
             )]
         }
+        OpKind::DomainConfig { kind, name } => {
+            vec![(
+                "domainConfig",
+                Json::obj(vec![
+                    ("kind", Json::s(String::from_utf8_lossy(kind))),
+                    ("name", Json::s(String::from_utf8_lossy(name))),
+                ]),
+            )]
+        }
         // A frontend's input, given whole, which shards build plans none of: its digest.
         OpKind::Raw { bytes, .. } => vec![(
             "raw",

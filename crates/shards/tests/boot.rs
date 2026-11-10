@@ -11,7 +11,7 @@ use shards_api::Guests as _;
 use shards_api::conformance;
 
 use common::{
-    KERNEL_NR_CPUS, cannot_run_vms, cannot_snapshot, guest_init, kernel, run_shards, run_shards_env,
+    cannot_run_vms, cannot_snapshot, guest_init, kernel, kernel_nr_cpus, run_shards, run_shards_env,
     test_guest, vm_run,
 };
 
@@ -350,7 +350,8 @@ fn boots_the_hosts_maximum_vcpu_count() {
         "--cmdline".as_ref(),
         "console=ttyS0 panic=-1".as_ref(),
     ]);
-    let up = max.min(KERNEL_NR_CPUS);
+    let configured = kernel_nr_cpus();
+    let up = max.min(configured);
     let plural = if up == 1 { "" } else { "s" };
     let brought = format!("smp: Brought up 1 node, {up} CPU{plural}");
     // A count other than the one asked for fails at once, with what the guest said. Past
@@ -360,12 +361,12 @@ fn boots_the_hosts_maximum_vcpu_count() {
     vm.kill();
     let seen = vm.seen.join("\n");
     assert!(said.contains(&brought), "{seen}");
-    if max > KERNEL_NR_CPUS {
+    if max > configured {
         let refused = match common::ARCH {
             // arch/x86/kernel/cpu/topology.c
-            "x86_64" => format!("CPU topo: Rejected CPUs {}", max - KERNEL_NR_CPUS),
+            "x86_64" => format!("CPU topo: Rejected CPUs {}", max - configured),
             // arch/arm64/kernel/smp.c
-            _ => format!("Number of cores ({max}) exceeds configured maximum of {KERNEL_NR_CPUS}"),
+            _ => format!("Number of cores ({max}) exceeds configured maximum of {configured}"),
         };
         assert!(seen.contains(&refused), "{seen}");
     }

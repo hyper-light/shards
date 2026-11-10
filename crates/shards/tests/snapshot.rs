@@ -525,7 +525,7 @@ mod storm {
     /// before any snapshot, and lost no interrupt (M427); the guest's watchdog gives the
     /// kernel's account of a stall only once it has lasted `STREAM_QUIET`.
     fn storm_cpus() -> Vec<u32> {
-        let max = shards_vmm::vm::max_vcpus().unwrap().min(common::KERNEL_NR_CPUS);
+        let max = shards_vmm::vm::max_vcpus().unwrap().min(common::kernel_nr_cpus());
         if let Ok(only) = std::env::var("SHARDS_STORM_CPUS") {
             return vec![only.parse().unwrap()];
         }
