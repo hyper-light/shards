@@ -311,8 +311,9 @@ impl Native {
             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
         );
         if let Some(backpressure) = backpressure {
-            backpressure
-                .expect("actual nonempty write0, owned writable and resumed positive acceptance required");
+            backpressure.unwrap_or_else(|error| {
+                panic!("actual nonempty write0, owned writable and resumed positive acceptance required: {error:?}")
+            });
         }
     }
 

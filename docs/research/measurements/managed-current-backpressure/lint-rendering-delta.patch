@@ -1,0 +1,16 @@
+diff --git a/crates/shards/tests/managed_output/current_controls/native_terminal.rs b/crates/shards/tests/managed_output/current_controls/native_terminal.rs
+index dd9421231..a5399e280 100644
+--- a/crates/shards/tests/managed_output/current_controls/native_terminal.rs
++++ b/crates/shards/tests/managed_output/current_controls/native_terminal.rs
+@@ -311,8 +311,9 @@ impl Native {
+             matches!(worker.control.state(), State::Finished(at) if at.accepted==cursor && at.consumed==cursor)
+         );
+         if let Some(backpressure) = backpressure {
+-            backpressure
+-                .expect("actual nonempty write0, owned writable and resumed positive acceptance required");
++            backpressure.unwrap_or_else(|error| {
++                panic!("actual nonempty write0, owned writable and resumed positive acceptance required: {error:?}")
++            });
+         }
+     }
+ 
