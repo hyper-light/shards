@@ -206,8 +206,7 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
                     "exec",
                     name,
                     "/bin/testguest",
-                    "confined",
-                    "cat",
+                    "slurp",
                     "/proc/sys/kernel/random/boot_id",
                 ],
                 WITHIN,
@@ -218,7 +217,7 @@ fn a_joiners_metrics_distinguish_its_run_from_the_shared_microvm() {
             let value = run
                 .stdout
                 .lines()
-                .find_map(|line| line.strip_prefix("confined cat /proc/sys/kernel/random/boot_id: "))
+                .find_map(|line| line.strip_prefix("slurp /proc/sys/kernel/random/boot_id: "))
                 .unwrap();
             assert!(!value.is_empty() && !value.starts_with("errno"));
             value.to_owned()
