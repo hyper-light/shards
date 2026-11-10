@@ -1,0 +1,7 @@
+
+running 2 tests
+test tests::exact_tags_and_names_never_guess_an_adapter_version ... ok
+test tests::literal_modes_preserve_args_and_refuse_conflicting_or_non_native_forms ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

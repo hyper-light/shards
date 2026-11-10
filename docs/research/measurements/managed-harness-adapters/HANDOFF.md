@@ -33,6 +33,12 @@ input owns Execution data/queue/rights, epoch owns same durable mint, native own
 actor view, audit owns protected startup/dispatch. NativeAdapter shared ABI module
 and public owner CLI syntax proposed seq7419/7420 are pending ROOT, unedited.
 Implementation does not discover protocol mode from ordinary output or alter argv.
+Pending selector choice is concrete in owned docs/native-selector.rs, a core-only
+candidate with2standalone tests and production/test scoped Clippy0 at
+raw/selector-candidate-01. No shared ABI/public flag/Run/Spec source was changed.
+Its necessary literal-mode checks do not prove actual SDK config, binary honesty,
+owner rights or full CLI parser parity. Typed unsupported forms leave ordinary
+launches unchanged. Proposed local wiretags1/2 are not final until ROOT approves.
 
 POLICY_READ origin/main0342b85d9c808e3ced041a6c3ef0e9bf70438272,
 docs/development-rules.md SHA256

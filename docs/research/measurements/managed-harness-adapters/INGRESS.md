@@ -142,3 +142,32 @@ manifest fields or public commands changed. Remaining P8/G16/G24 includes actual
 private owner endpoint activation/current epoch/input rights, canonical dispatch,
 real supplied signed-in CLI tool effects, all builtin/local/external fallbacks,
 raw byte/cancel/cleanup/restore proof and ROOT's VM/mutation/matrix/cost gates.
+
+The proposed DATA selector and literal mode checks are now concrete, but remain
+unregistered: `native-selector.rs` in this owned measurement directory. It has
+two exact closed versions, one-byte proposed local discriminants1/2 under the
+parent's critical version1 record, exact-length/unknown-tag/name errors, and
+borrowed iterator argv checks without a heap allocation or argv mutation. This
+iterator serves the existing verified byte-vector/CString views; it is not an
+execution callback or new launcher. Scope/grant/lease constructors are absent.
+
+Source: pinned Codex CLI AppServerCommand and actually installed help, and the
+Claude2.1.321 native help/SDK driver. Codex absent listen means that pinned native
+stdio protocol, not a guessed resource/admission default. Known contradictory
+transport/format flags refuse. Claude public permission-mode spelling is
+`manual` in this installed help; internal initialize reports `default`, a distinct
+wire observation. The selector does not silently substitute one for the other.
+Dangerous permission flags remain literal data, never Shards authority.
+
+These checks deliberately validate only the inspected direct command forms;
+unrecognized options/global-before-subcommand/variadic config combinations are
+typed unsupported, not a claim of full upstream CLI parser parity. A nonempty
+SDK configuration argument is only a necessary literal-shape check: the checked
+configuration object, actual expected native initialization and every right
+remain independently required. A successful check is no attestation of a binary
+or proof of configured server availability. Bare ordinary launches are unchanged.
+
+`raw/selector-candidate-01` records standalone candidate compilation, scoped
+production/test Clippy0 and two tests0failed/0ignored. It is NOT a product ABI or
+real caller gate. The local discriminants and proposed owner CLI spelling require
+ROOT's shared module/token/public syntax approval before any ABI/Run/Spec/CLI edit.

@@ -1,0 +1,103 @@
+[
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustfmt",
+      "--edition=2024",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/native-selector.rs"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.cargo/bin/rustc",
+      "--edition=2024",
+      "--test",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/native-selector.rs",
+      "-D",
+      "warnings",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/selector-candidate-01/selector-tests"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/clippy-driver",
+      "--edition=2024",
+      "--crate-type=lib",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/native-selector.rs",
+      "--emit=metadata",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/selector-candidate-01/production.rmeta",
+      "-D",
+      "warnings",
+      "-D",
+      "clippy::unwrap_used",
+      "-D",
+      "clippy::expect_used",
+      "-D",
+      "clippy::panic",
+      "-D",
+      "clippy::panic_in_result_fn",
+      "-D",
+      "clippy::todo",
+      "-D",
+      "clippy::unimplemented",
+      "-D",
+      "clippy::unreachable",
+      "-D",
+      "clippy::indexing_slicing",
+      "-D",
+      "clippy::string_slice",
+      "-D",
+      "clippy::print_stdout",
+      "-D",
+      "clippy::print_stderr"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/clippy-driver",
+      "--edition=2024",
+      "--test",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/native-selector.rs",
+      "--emit=metadata",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/selector-candidate-01/tests.rmeta",
+      "-D",
+      "warnings",
+      "-D",
+      "clippy::unwrap_used",
+      "-D",
+      "clippy::expect_used",
+      "-D",
+      "clippy::panic",
+      "-D",
+      "clippy::panic_in_result_fn",
+      "-D",
+      "clippy::todo",
+      "-D",
+      "clippy::unimplemented",
+      "-D",
+      "clippy::unreachable",
+      "-D",
+      "clippy::indexing_slicing",
+      "-D",
+      "clippy::string_slice",
+      "-D",
+      "clippy::print_stdout",
+      "-D",
+      "clippy::print_stderr"
+    ],
+    "exit": 0
+  },
+  {
+    "argv": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-harness-adapters-kiln/docs/research/measurements/managed-harness-adapters/raw/selector-candidate-01/selector-tests",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit": 0
+  }
+]
