@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j", "4", "--profile", "test-release", "-p", "shards", "--test", "build", "code_mode_runs_a_program_with_the_callers_grants", "--", "--exact", "--nocapture"]

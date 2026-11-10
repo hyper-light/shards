@@ -1,0 +1,2 @@
+Previous HEAD position was 3b1967838 fix(api): use the shared absolute connector in Unix tests
+HEAD is now at c1ec443d1 test(server): observe rejected native helper readiness setup

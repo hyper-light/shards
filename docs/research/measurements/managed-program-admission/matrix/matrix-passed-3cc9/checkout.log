@@ -1,0 +1,2 @@
+Previous HEAD position was 3b1967838 fix(api): use the shared absolute connector in Unix tests
+HEAD is now at 3cc9f6dba feat(server): keep native helper admission failures typed

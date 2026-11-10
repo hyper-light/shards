@@ -1,0 +1,118 @@
+{
+  "reason": "actual staged whitespace check rejects original libtest EOF, compiler warning spaces, patch context and Windows CRLF; preserve exact original bytes compressed; archives/manifests unchanged",
+  "files": [
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/linux-api/api-alloc-refusal.log",
+      "original_bytes": 380,
+      "original_sha256": "ffd079b610856f52f4d4cfe190e74ff0c8b3140958eb51dd24438695f3056afd",
+      "compressed_path": "docs/research/measurements/managed-program-admission/linux-api/api-alloc-refusal.log.gz",
+      "compressed_sha256": "9f09f5ffb7a28ffec86d4c0387bff15e7e41b91ed5994e3e7d4478de2e7393f3"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/linux-api/api-native.log",
+      "original_bytes": 6051,
+      "original_sha256": "2c39dabbe548bf5de9dda844ca23b8f5e813dddbca63c8cc507d50d10f54bca7",
+      "compressed_path": "docs/research/measurements/managed-program-admission/linux-api/api-native.log.gz",
+      "compressed_sha256": "508d650ab407ad495287afe292fd2615524c1b3829944f65f92e1603ea9d6430"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/matrix/matrix-failed-e640/lint.log",
+      "original_bytes": 16755,
+      "original_sha256": "3d916bef45804d2e02a318b0b6099b9602ed42aedfb13f73ede93316be650139",
+      "compressed_path": "docs/research/measurements/managed-program-admission/matrix/matrix-failed-e640/lint.log.gz",
+      "compressed_sha256": "13c506e39c4eeb3b104cc967940fd0ac2f44af20ad60f97248c479368458b3ca"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/lint.log",
+      "original_bytes": 29405,
+      "original_sha256": "d48b39a2e8096d61b100f2e11f041e5d3e16cf1d82048577c658894c9f2fd963",
+      "compressed_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/lint.log.gz",
+      "compressed_sha256": "710654bb7cf958c3a324b09b24b2a84322fe7e5f9562983549019417d91232e1"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/native.log",
+      "original_bytes": 3187,
+      "original_sha256": "d5dde7ff1073416e644e657d2bcd22aa97f13b926bfef57486e7d12ef7986dce",
+      "compressed_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/native.log.gz",
+      "compressed_sha256": "ea6319115fb4724bbd228c288531e476ecb2336b5faabb5390018b3ce7019873"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/lint.log",
+      "original_bytes": 27600,
+      "original_sha256": "638b2cb9fc5f4ee743b4c8b57cf2527df10c31ee5fbec4e97cb2397d975acad0",
+      "compressed_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/lint.log.gz",
+      "compressed_sha256": "53d9ce4158da6ef440691466f301cb9354e8d0030a62d8ae1c95196e4a18ba3e"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/native.log",
+      "original_bytes": 3187,
+      "original_sha256": "d5dde7ff1073416e644e657d2bcd22aa97f13b926bfef57486e7d12ef7986dce",
+      "compressed_path": "docs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/native.log.gz",
+      "compressed_sha256": "ea6319115fb4724bbd228c288531e476ecb2336b5faabb5390018b3ce7019873"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/native-control/after/server-tests.log",
+      "original_bytes": 4546,
+      "original_sha256": "1d49fc5eeb1dfea9e139c60ab2c92a2a6b3ec855ef385933d4bcd1d4f6e123cf",
+      "compressed_path": "docs/research/measurements/managed-program-admission/native-control/after/server-tests.log.gz",
+      "compressed_sha256": "777b1064617d5d8c6ac7572d283ad2e50e1d2f8f8984ef0e77d590cad565ec4c"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/native-control/mutation/display-guard-removed.diff",
+      "original_bytes": 567,
+      "original_sha256": "db2ceb8159044face5ab49fa4c68567eb0bbef6d8207b67e95a88fa21489116b",
+      "compressed_path": "docs/research/measurements/managed-program-admission/native-control/mutation/display-guard-removed.diff.gz",
+      "compressed_sha256": "f6e15b34ece85522a69b38bb3df706d13da42961b4c52d7cc8d2c851976e1ec2"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/native-control/mutation/restored-server.log",
+      "original_bytes": 4546,
+      "original_sha256": "14171807bf3c1de6d7d6f5994930fde0387903a87d27a61a679eb98a4c855606",
+      "compressed_path": "docs/research/measurements/managed-program-admission/native-control/mutation/restored-server.log.gz",
+      "compressed_sha256": "a225c2e5ab3188ac68268738abcca4c18e79d4df199b2daa0545f22efebdb8eb"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/native/after/server-tests.log",
+      "original_bytes": 4300,
+      "original_sha256": "8fc1524e17c729e49cdab2a12e32a4c5a81478768a5ca784c83f1930bb9580e9",
+      "compressed_path": "docs/research/measurements/managed-program-admission/native/after/server-tests.log.gz",
+      "compressed_sha256": "786c889c8e0ebe5b44e051be52d4a83a0e6a3228386c2c063af98219f9dd7d87"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/native/mutation/restored-server.log",
+      "original_bytes": 4300,
+      "original_sha256": "7fa891d5c3dac0c41d409844f7bdd458e2ce8b81e278e31d490002541b8d69b0",
+      "compressed_path": "docs/research/measurements/managed-program-admission/native/mutation/restored-server.log.gz",
+      "compressed_sha256": "f99969b3ec3e13260c8516edd85a4c56f6520a15d189095ae1b540a07fcc2b0d"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/windows/native-passed/command.json",
+      "original_bytes": 170,
+      "original_sha256": "260aed8ba2529d423399b1207bf4a18945eaa704e1a5110b0ccaf1117c8c3236",
+      "compressed_path": "docs/research/measurements/managed-program-admission/windows/native-passed/command.json.gz",
+      "compressed_sha256": "d2f992b103585c1ce30f3ad156558522ce9d3f87475bbb47b9657915f5437c14"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/windows/native-passed/native.exit",
+      "original_bytes": 3,
+      "original_sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "compressed_path": "docs/research/measurements/managed-program-admission/windows/native-passed/native.exit.gz",
+      "compressed_sha256": "f0fecc48e63e2073c970070087f3b44e0e9e2940f4efdf918edb74710f5e4a72"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/windows/native-passed/native.log",
+      "original_bytes": 2745,
+      "original_sha256": "ccf4e06ec25f1ebcc60a9f363d030d9db274a070ecd123c9ff7a525ae81d1ac4",
+      "compressed_path": "docs/research/measurements/managed-program-admission/windows/native-passed/native.log.gz",
+      "compressed_sha256": "25224f982c137f457a4b3dbc3ccf88eb5b7e1981c09ee5396c802d7af633eb6e"
+    },
+    {
+      "original_path": "docs/research/measurements/managed-program-admission/windows/native-passed/source.txt",
+      "original_bytes": 42,
+      "original_sha256": "d5613aba2db968c35e8f2a6a214c2a2a23f4c482787a4edf79d60812d8b2357f",
+      "compressed_path": "docs/research/measurements/managed-program-admission/windows/native-passed/source.txt.gz",
+      "compressed_sha256": "f0f1dd569b07897f94cf574ba9b3ca4ee5fe94d68333766b70f97ef164cc275e"
+    }
+  ],
+  "original_check_output": "docs/research/measurements/managed-program-admission/linux-api/api-alloc-refusal.log:8: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/linux-api/api-native.log:76: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/matrix/matrix-failed-e640/lint.log:159: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/lint.log:150: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/lint.log:351: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3b196/native.log:35: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/lint.log:149: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/lint.log:334: trailing whitespace.\n+warning: aws-lc-sys@0.45.0: \ndocs/research/measurements/managed-program-admission/matrix/matrix-passed-3cc9/native.log:35: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/native-control/after/server-tests.log:58: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/native-control/mutation/display-guard-removed.diff:6: trailing whitespace.\n+ \ndocs/research/measurements/managed-program-admission/native-control/mutation/display-guard-removed.diff:13: trailing whitespace.\n+ \ndocs/research/measurements/managed-program-admission/native-control/mutation/display-guard-removed.diff:13: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/native-control/mutation/restored-server.log:58: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/native/after/server-tests.log:54: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/native/mutation/restored-server.log:54: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:1: trailing whitespace.\n+[\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:2: trailing whitespace.\n+    \"cargo\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:3: trailing whitespace.\n+    \"test\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:4: trailing whitespace.\n+    \"--locked\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:5: trailing whitespace.\n+    \"-j\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:6: trailing whitespace.\n+    \"2\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:7: trailing whitespace.\n+    \"-p\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:8: trailing whitespace.\n+    \"shards-api\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:9: trailing whitespace.\n+    \"--lib\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:10: trailing whitespace.\n+    \"--\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:11: trailing whitespace.\n+    \"--test-threads=1\",\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:12: trailing whitespace.\n+    \"--nocapture\"\ndocs/research/measurements/managed-program-admission/windows/native-passed/command.json:13: trailing whitespace.\n+]\ndocs/research/measurements/managed-program-admission/windows/native-passed/native.exit:1: trailing whitespace.\n+0\ndocs/research/measurements/managed-program-admission/windows/native-passed/native.log:42: new blank line at EOF.\ndocs/research/measurements/managed-program-admission/windows/native-passed/source.txt:1: trailing whitespace.\n+3b1967838b140466ff3367637541492a77be0459\n"
+}

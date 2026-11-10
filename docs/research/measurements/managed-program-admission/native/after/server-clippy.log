@@ -1,0 +1,50 @@
+   Compiling libc v0.2.189
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.14
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling pkg-config v0.3.34
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/managed-capture-check/vendor/aws-lc-rs)
+   Compiling jobserver v0.1.35
+    Checking zeroize v1.9.0
+   Compiling cc v1.5.1
+   Compiling rustls v0.23.46
+    Checking rustls-pki-types v1.15.1
+    Checking num-conv v0.2.2
+    Checking time-core v0.1.9
+   Compiling cmake v0.1.58
+    Checking foldhash v0.2.0
+    Checking equivalent v1.0.2
+    Checking allocator-api2 v0.2.21
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/managed-capture-check/vendor/aws-lc-sys)
+   Compiling rquickjs-sys v0.14.0 (/home/adalundhe/managed-capture-check/vendor/rquickjs-sys)
+    Checking deranged v0.5.8
+    Checking powerfmt v0.2.0
+    Checking time v0.3.55
+    Checking hashbrown v0.17.1
+    Checking untrusted v0.9.0
+    Checking base64 v0.23.1
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking yasna v0.6.0
+    Checking subtle v2.6.1
+    Checking once_cell v1.21.4
+    Checking shards-testdir v0.1.0 (/home/adalundhe/managed-capture-check/crates/testdir)
+    Checking rquickjs v0.14.0
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/debug/build/aws-lc-sys-49c74eddde01fa24/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/debug/build/aws-lc-sys-49c74eddde01fa24/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/debug/build/aws-lc-sys-49c74eddde01fa24/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-capture-check/target/debug/build/aws-lc-sys-49c74eddde01fa24/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking rustls-webpki v0.103.16
+    Checking rcgen v0.14.10
+    Checking shards-server v0.1.0 (/home/adalundhe/managed-capture-check/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.04s

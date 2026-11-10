@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j", "2", "-p", "shards-api", "--profile", "test-release", "--lib", "--", "--ignored", "--exact", "client::borrowed_tests::shared_state_box_and_clone_oom_return_without_error_allocation", "--nocapture"]

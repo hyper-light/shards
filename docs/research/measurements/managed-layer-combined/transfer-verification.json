@@ -1,0 +1,16 @@
+{
+  "linux": {
+    "archive": "raw/linux-originals-v1.tar.gz",
+    "bytes": 53353,
+    "sha256": "5335caabd11f8c6a38495c483909c4c76ce0df98782caf4cf5b1f4cd18438f55",
+    "original_members_verified": 107,
+    "regular_members": 108
+  },
+  "mac": {
+    "archive": "raw/mac-originals-v1.tar.gz",
+    "bytes": 11169,
+    "sha256": "b6bc9251874f498e6d11397ebba7c0d26749e76ae86e176ad1a5195154356b5f",
+    "original_members_verified": 39,
+    "regular_members": 40
+  }
+}

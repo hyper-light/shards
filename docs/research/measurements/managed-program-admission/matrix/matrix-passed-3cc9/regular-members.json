@@ -1,0 +1,74 @@
+{
+  "files": [
+    {
+      "path": "cargo.txt",
+      "bytes": 36,
+      "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6"
+    },
+    {
+      "path": "checkout.log",
+      "bytes": 178,
+      "sha256": "9fed3167c9bf43a598976db505ad9970bf6b8bff7218e265b573bc709d066bf9"
+    },
+    {
+      "path": "command.json",
+      "bytes": 54,
+      "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+    },
+    {
+      "path": "fetch.log",
+      "bytes": 130,
+      "sha256": "84308b6fa7a2c54c1525d2412bc1604124909bb6fef455f560b53c003a472948"
+    },
+    {
+      "path": "free.post.json",
+      "bytes": 28,
+      "sha256": "d744568d7a7d598edfdfcab74441c95ebd8b190265f8f7ec2fe753b8dab96795"
+    },
+    {
+      "path": "lint.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "lint.log",
+      "bytes": 27600,
+      "sha256": "638b2cb9fc5f4ee743b4c8b57cf2527df10c31ee5fbec4e97cb2397d975acad0"
+    },
+    {
+      "path": "native.command.json",
+      "bytes": 144,
+      "sha256": "adf57b7c25fd31fd1de6cb7e1a252cf5e52dff3c4362f118b42adf64905bd0d5"
+    },
+    {
+      "path": "native.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native.log",
+      "bytes": 3187,
+      "sha256": "d5dde7ff1073416e644e657d2bcd22aa97f13b926bfef57486e7d12ef7986dce"
+    },
+    {
+      "path": "policy.txt",
+      "bytes": 89,
+      "sha256": "ba2c0eab0d98204f9a9bfe5d51bcda5809908a1ff9d853058ca4e1cb95de7eac"
+    },
+    {
+      "path": "rustc.txt",
+      "bytes": 192,
+      "sha256": "e003fd3d385fcd0de16bc6b049124efb20207831dd810fd4ab39ff079bbb12a5"
+    },
+    {
+      "path": "source.txt",
+      "bytes": 41,
+      "sha256": "a1f0154f1ba1858550dc61bc52d15684ade4cb7a5bda5fab773245910f0ddb07"
+    },
+    {
+      "path": "untracked-preserved.json",
+      "bytes": 809,
+      "sha256": "da52ecd0f1eb8944fd908263326ca4ffaa36a8fc807479c23da06a4025a37b4e"
+    }
+  ]
+}

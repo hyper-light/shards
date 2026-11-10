@@ -1,0 +1,1 @@
+["cargo", "clippy", "-p", "shards-server", "--all-targets", "-j", "2", "--", "-D", "warnings"]

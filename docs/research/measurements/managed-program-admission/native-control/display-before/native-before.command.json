@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j", "2", "-p", "shards-server", "--profile", "test-release", "--", "--exact", "server::tests::a_typed_program_refusal_formats_without_requesting_storage", "--nocapture"]

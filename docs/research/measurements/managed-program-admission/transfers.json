@@ -1,0 +1,50 @@
+[
+  {
+    "label": "native",
+    "archive": "program-admission-native-originals-v1.tar.gz",
+    "bytes": 10838,
+    "sha256": "14674655203ff5eb8b491b10f5651eccae89564bf9e0c9829900c529cc489b1d",
+    "regular_members": 46,
+    "original_members_verified": 45
+  },
+  {
+    "label": "matrix",
+    "archive": "program-admission-matrix-originals-v1.tar.gz",
+    "bytes": 8879,
+    "sha256": "db29442b1e98d69cd048f2fb33a3776afaceeb0027fa6fa28f4678b3ca93831a",
+    "regular_members": 26,
+    "original_members_verified": 25
+  },
+  {
+    "label": "windows",
+    "archive": "program-admission-windows-originals-v1.zip",
+    "bytes": 3243,
+    "sha256": "6069cf1d0708960460c8ebf57f808e9c3c589e735b3afc8a14ea46000ffa9d40",
+    "regular_members": 9,
+    "original_members_verified": 8
+  },
+  {
+    "label": "linux-api",
+    "archive": "borrowed-linux-originals-v1.tar.gz",
+    "bytes": 3236,
+    "sha256": "4ce0cd14ddd2fec3bcf8eeb62a82501d37567c26d4d095507e6d810fee14832a",
+    "original_members_verified": 7,
+    "regular_members": 8
+  },
+  {
+    "label": "matrix-3cc9",
+    "archive": "seven-3cc9-originals-v1.tar.gz",
+    "bytes": 5418,
+    "sha256": "e876744a9b8fa0753596284fe235c5c8e6b96b2e0ad7d2a12ce6c455c4da22f5",
+    "original_members_verified": 14,
+    "regular_members": 15
+  },
+  {
+    "label": "native-control",
+    "archive": "native-control-originals-v1.tar.gz",
+    "bytes": 9849,
+    "sha256": "6e468ee2c056290c89b92dfe5e08f3199d6cd0af90e26c270c7682daedcca399",
+    "regular_members": 62,
+    "original_members_verified": 61
+  }
+]

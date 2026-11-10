@@ -1,0 +1,13 @@
+diff --git a/crates/server/src/server.rs b/crates/server/src/server.rs
+index 98870a675..da41e6686 100644
+--- a/crates/server/src/server.rs
++++ b/crates/server/src/server.rs
+@@ -328,7 +328,7 @@ impl Programs {
+                 ));
+             }
+             // SAFETY: preserve native status flags while enabling readiness-based control.
+-            if unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
++            if unsafe { libc::fcntl(control.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 && false {
+                 return Err(HelperFailure::io(
+                     HelperOperation::SetNonblocking,
+                     io::Error::last_os_error(),

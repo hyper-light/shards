@@ -1,0 +1,12 @@
+{
+  "stage": "local generated transfer summary",
+  "error": "Extra data: line 26 column 2 (char 777)",
+  "original_sha256": "4052b851b745113276d6182f8c486982decd229186c43c98080df5c5b702e294",
+  "original_escaped_suffix": [
+    10,
+    93,
+    92,
+    110
+  ],
+  "original_archives_unchanged": true
+}

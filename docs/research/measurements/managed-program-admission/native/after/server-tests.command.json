@@ -1,0 +1,1 @@
+["cargo", "test", "-p", "shards-server", "--profile", "test-release", "-j", "2", "--", "--nocapture"]

@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-p", "shards-server", "--profile", "test-release", "-j", "2", "--", "--exact", "server::tests::an_unusable_helper_control_is_not_admitted", "--nocapture"]

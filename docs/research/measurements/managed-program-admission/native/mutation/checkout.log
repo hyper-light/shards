@@ -1,0 +1,2 @@
+Previous HEAD position was e640e32f0 feat(api): compose reviewed borrowed connector on current main
+HEAD is now at 3b1967838 fix(api): use the shared absolute connector in Unix tests

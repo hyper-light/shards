@@ -1,0 +1,1 @@
+["cargo", "test", "-p", "shards-server", "--profile", "test-release", "-j", "2", "--", "--exact", "server::tests::an_exhausted_program_identity_cannot_release_another_worker", "--nocapture"]

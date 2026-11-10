@@ -1,0 +1,110 @@
+{
+  "after-0219/actual-kvm/native/cleanup.json": {
+    "body_passed": true,
+    "listener": "kept through parent FD comparison then dropped; Drop close result unobserved",
+    "owner_stop_observer_join_and_parent_fd_check": {
+      "Ok": null
+    },
+    "uncertainty": "failed deadline/stop/join retains unknown resources; outer caller owns final process-group bound"
+  },
+  "after-0219/actual-kvm/native/helper-results.json": {
+    "abandon_receipt": "client dropped connection only; kernel snapshot below checks visible worker absence",
+    "cancel_helper_delay_ms": 300,
+    "state": "ActualCanonicalHelperResultsVerified",
+    "worker_modes": [
+      "success",
+      "throw",
+      "timeout",
+      "stranger-cancel-ineffective",
+      "own-cancel",
+      "session-abandon",
+      "success-after-abandon"
+    ]
+  },
+  "after-0219/actual-kvm/native/observation-cut.json": {
+    "channels": [
+      {
+        "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+        "channel": 1,
+        "generation": 1,
+        "member": 1,
+        "payload_received": 947,
+        "scope": "authenticated parent Observer subscription; raw wire retained",
+        "stream_state": "Open { offset: 947 }",
+        "terminal_observed": false,
+        "wire_ack_enqueued": 1279
+      },
+      {
+        "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+        "channel": 2,
+        "generation": 1,
+        "member": 1,
+        "payload_received": 0,
+        "scope": "authenticated parent Observer subscription; raw wire retained",
+        "stream_state": "Open { offset: 0 }",
+        "terminal_observed": false,
+        "wire_ack_enqueued": 28
+      },
+      {
+        "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+        "channel": 1,
+        "generation": 1,
+        "member": 2,
+        "payload_received": 488,
+        "scope": "authenticated parent Observer subscription; raw wire retained",
+        "stream_state": "Open { offset: 488 }",
+        "terminal_observed": false,
+        "wire_ack_enqueued": 758
+      },
+      {
+        "absence_limit": "no future stderr/EOF/complete kernel return inferred",
+        "channel": 2,
+        "generation": 1,
+        "member": 2,
+        "payload_received": 0,
+        "scope": "authenticated parent Observer subscription; raw wire retained",
+        "stream_state": "Open { offset: 0 }",
+        "terminal_observed": false,
+        "wire_ack_enqueued": 30
+      }
+    ],
+    "full_kernel_resource_return": "Unverified; point process snapshot and later host FD check only",
+    "state": "ResultsAndNeighborMainProgressThenKernelProcessSnapshot",
+    "visible_ready": 2,
+    "visible_workers": 0
+  },
+  "after-0219/actual-kvm/native/recipient-witness.json": {
+    "cut": "host released hear after helper results and main exec",
+    "held_peer": "ATTACH helper FOR driver creates real bidirectional channel; send permission only driver to helper",
+    "limitations": "not a sender-only mutation proof; receiver independently filters unauthorized request kinds",
+    "state": "ActualRecipientInboxEmptyAfterDeniedHelperAttempt"
+  },
+  "after-0219/actual-kvm/result.json": {
+    "exit_code": 0,
+    "outer_timeout": false,
+    "signals": [],
+    "elapsed_seconds": 13.25620917599997,
+    "passed": true,
+    "cleanup_limit": "process-group bound only; private daemon/VM return requires native cleanup receipt; timeout leaves unknowns"
+  },
+  "after-0219/frozen-associations.json": [
+    {
+      "original": "/home/adalundhe/managed-capture-check/target/test-release/deps/managed_output-87d4844abdafeb5c",
+      "frozen": "/home/adalundhe/root-managed-layer-combined-0219-v1/frozen/0-managed_output-87d4844abdafeb5c",
+      "bytes": 60392880,
+      "sha256": "de936ab6ed937d738552cdcf68744388252d3c1b0911a7d348fb63ba42036c9f"
+    },
+    {
+      "original": "/home/adalundhe/managed-capture-check/target/test-release/shards",
+      "frozen": "/home/adalundhe/root-managed-layer-combined-0219-v1/frozen/1-shards",
+      "bytes": 270490576,
+      "sha256": "5b3dfc4350ea698ec6eac0c00090c1ee24399e852b0eeb2d7ef0713b1cd178e8"
+    },
+    {
+      "original": "/home/adalundhe/root-managed-layer-combined-0219-v1/guests/guest/shards-testguest",
+      "frozen": "/home/adalundhe/root-managed-layer-combined-0219-v1/frozen/2-shards-testguest",
+      "bytes": 3671968,
+      "sha256": "6f64c91fb994ab07275429779261645ffadeacf4f3cbfd26798d8d1a37857cb7"
+    }
+  ]
+}

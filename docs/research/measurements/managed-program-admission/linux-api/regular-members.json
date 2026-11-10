@@ -1,0 +1,37 @@
+[
+  {
+    "path": "api-alloc-refusal.command.json",
+    "bytes": 234,
+    "sha256": "a8e3913892aca3eb48febfa83b137c77ecb64377a62a066e2d6a93481a8d49d7"
+  },
+  {
+    "path": "api-alloc-refusal.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "api-alloc-refusal.log",
+    "bytes": 380,
+    "sha256": "ffd079b610856f52f4d4cfe190e74ff0c8b3140958eb51dd24438695f3056afd"
+  },
+  {
+    "path": "api-native.command.json",
+    "bytes": 140,
+    "sha256": "7494e866e119fdc8d51bb0ceea0b7c23711300740d8e456bd1cf4ed8730f2d72"
+  },
+  {
+    "path": "api-native.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "api-native.log",
+    "bytes": 6051,
+    "sha256": "2c39dabbe548bf5de9dda844ca23b8f5e813dddbca63c8cc507d50d10f54bca7"
+  },
+  {
+    "path": "source.txt",
+    "bytes": 41,
+    "sha256": "f769fbb080fdca61e1de80a4030ce014c094f7050a1b930046e156b1f684f443"
+  }
+]
