@@ -1,0 +1,8 @@
+{
+  "name": "root-managed-notify-bafc-v1.tar.gz",
+  "bytes": 13015,
+  "sha256": "1c7ccb504121a85855103be95caa8dc98166e2cef0ce11856c0f4c552aeb17e0",
+  "regular_files": 34,
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "driver_provenance": "Local script retained before native execution; this exact body was the tool payload, copied here afterward. Not claimed executed as a remote file."
+}

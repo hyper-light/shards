@@ -1,0 +1,27 @@
+{
+  "uname": [
+    "Linux",
+    "fedora.attlocal.net",
+    "6.19.10-300.fc44.x86_64",
+    "#1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026",
+    "x86_64",
+    ""
+  ],
+  "affinity": [
+    0
+  ],
+  "filesystem": [
+    4096,
+    4096,
+    1952828416,
+    480519374,
+    475046734,
+    0,
+    0,
+    0,
+    4096,
+    255
+  ],
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "ROOT coordinator native regularfile framing only; not pressure/OOM or VM proof"
+}

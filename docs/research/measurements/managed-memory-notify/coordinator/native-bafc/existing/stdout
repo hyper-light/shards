@@ -1,0 +1,3 @@
+config deadline_monotonic_ns=119620688677822 header_bytes=16 writes=1 read_bytes=17
+paths_retained ownership=Absent
+terminal result=Err(Io { operation: "create_new_directory", errno: Some(17) }) cleanup=Ok(()) passed=false

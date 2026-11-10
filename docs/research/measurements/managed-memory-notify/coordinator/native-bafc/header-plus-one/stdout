@@ -1,0 +1,24 @@
+config deadline_monotonic_ns=119620680669629 header_bytes=16 writes=3 read_bytes=17
+directory_created path="/home/adalundhe/root-managed-notify-bafc-v1/header-plus-one/owned-artifact" mode_requested=0700
+file_created path="/home/adalundhe/root-managed-notify-bafc-v1/header-plus-one/owned-artifact/watched" dev=36 ino=570443342 read_bytes=17 writes_requested=3
+watch_active fd=4 wd=1 mask=2
+write index=0 rc=1 errno=None
+write index=1 rc=1 errno=None
+write index=2 rc=1 errno=None
+readback bytes=3 matched=true eof=true dev=36 ino=570443342
+poll timeout_ms=30000 rc=1 revents=1 errno=None
+read requested=15 rc=-1 errno=Some(22)
+poll timeout_ms=30000 rc=1 revents=1 errno=None
+remove_watch wd=1 rc=0 errno=None
+read requested=17 rc=16 errno=None
+frame wd=1 mask=2 cookie=0 name_len=0 raw=[1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+poll timeout_ms=30000 rc=1 revents=1 errno=None
+retention_witness=true short_positive=true still_ready_after_prefix=true
+read requested=16 rc=16 errno=None
+frame wd=1 mask=32768 cookie=0 name_len=0 raw=[1, 0, 0, 0, 0, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+read requested=17 rc=-1 errno=Some(11)
+drained_witness=EAGAIN writes=3 modify_frames=1 coalescing_possible=true exact_header_read=true
+close_notify fd=4 rc=0 errno=None watch=Ignored(1)
+close_writer fd=3 rc=0 errno=None
+paths_retained ownership=FileCreated
+terminal result=Ok(()) cleanup=Ok(()) passed=true

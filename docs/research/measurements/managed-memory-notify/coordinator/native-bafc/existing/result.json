@@ -1,0 +1,17 @@
+{
+  "name": "existing",
+  "argv": [
+    "/home/adalundhe/root-managed-notify-bafc-v1/target/release/managed-memory-notify-fixture",
+    "/home/adalundhe/root-managed-notify-bafc-v1/existing/owned-artifact",
+    "119620688677822",
+    "1",
+    "17"
+  ],
+  "exit": 1,
+  "expected": 1,
+  "held_child_exit_ready": true,
+  "parent_fds_before": 9,
+  "parent_fds_after": 9,
+  "child_kernel_charge_return": "UNVERIFIED; not inferred from parent FD count or exit",
+  "sentinel_unchanged": true
+}

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "header",
+    "argv": [
+      "/home/adalundhe/root-managed-notify-bafc-v1/target/release/managed-memory-notify-fixture",
+      "/home/adalundhe/root-managed-notify-bafc-v1/header/owned-artifact",
+      "119620672575457",
+      "1",
+      "16"
+    ],
+    "exit": 0,
+    "expected": 0,
+    "held_child_exit_ready": true,
+    "parent_fds_before": 9,
+    "parent_fds_after": 9,
+    "child_kernel_charge_return": "UNVERIFIED; not inferred from parent FD count or exit",
+    "independent_final_readback": true,
+    "observed_drain_eagain": true,
+    "actual_closes": true
+  },
+  {
+    "name": "header-plus-one",
+    "argv": [
+      "/home/adalundhe/root-managed-notify-bafc-v1/target/release/managed-memory-notify-fixture",
+      "/home/adalundhe/root-managed-notify-bafc-v1/header-plus-one/owned-artifact",
+      "119620680669629",
+      "3",
+      "17"
+    ],
+    "exit": 0,
+    "expected": 0,
+    "held_child_exit_ready": true,
+    "parent_fds_before": 9,
+    "parent_fds_after": 9,
+    "child_kernel_charge_return": "UNVERIFIED; not inferred from parent FD count or exit",
+    "independent_final_readback": true,
+    "observed_drain_eagain": true,
+    "actual_closes": true
+  },
+  {
+    "name": "existing",
+    "argv": [
+      "/home/adalundhe/root-managed-notify-bafc-v1/target/release/managed-memory-notify-fixture",
+      "/home/adalundhe/root-managed-notify-bafc-v1/existing/owned-artifact",
+      "119620688677822",
+      "1",
+      "17"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "held_child_exit_ready": true,
+    "parent_fds_before": 9,
+    "parent_fds_after": 9,
+    "child_kernel_charge_return": "UNVERIFIED; not inferred from parent FD count or exit",
+    "sentinel_unchanged": true
+  },
+  {
+    "name": "expired",
+    "argv": [
+      "/home/adalundhe/root-managed-notify-bafc-v1/target/release/managed-memory-notify-fixture",
+      "/home/adalundhe/root-managed-notify-bafc-v1/expired/owned-artifact",
+      "119590690234547",
+      "1",
+      "17"
+    ],
+    "exit": 1,
+    "expected": 1,
+    "held_child_exit_ready": true,
+    "parent_fds_before": 9,
+    "parent_fds_after": 9,
+    "child_kernel_charge_return": "UNVERIFIED; not inferred from parent FD count or exit",
+    "no_new_path": true
+  }
+]
