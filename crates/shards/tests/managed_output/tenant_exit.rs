@@ -157,6 +157,7 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         &["managed-capture", "agent", "exit"],
         &["managed-capture", "harness", "step", &port, &deadline],
         &directives,
+        Some(inputs.port),
         until,
     );
     std::fs::copy(
