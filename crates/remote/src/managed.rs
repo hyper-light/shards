@@ -905,6 +905,90 @@ mod tests {
     mod terminal_controls {
         use super::*;
 
+        // Version1 frame/managed layout: Exec=1, Stdin=16, u32 payload
+        // length, then fixed scope fields/cursor in network byte order.
+        const GOLDEN_SUBSCRIPTION: [u8; CONTROL_BYTES] = [
+            0x01, 0x00, 0x00, 0x00, 0x35, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
+            0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a,
+            0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0xa1, 0xb2, 0xc3,
+            0xd4, 0x02, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+        ];
+        const GOLDEN_ACK: [u8; FRAME_HEAD + OFFSET_BYTES] = [
+            0x10, 0x00, 0x00, 0x00, 0x08, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+        ];
+
+        fn golden_scope() -> Scope {
+            Scope {
+                run: RunId([
+                    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+                    0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+                    0x1e, 0x1f,
+                ]),
+                generation: 0x8182_8384_8586_8788,
+                member: 0xa1b2_c3d4,
+                channel: Channel::Stderr,
+            }
+        }
+
+        #[test]
+        fn version_one_golden_controls_check_layout_independently_of_round_trip() {
+            let scope = golden_scope();
+            let cursor = 0x9192_9394_9596_9798;
+            assert_eq!(ALPN, b"shards-managed-output/1");
+            assert_eq!(subscribe(scope, cursor), GOLDEN_SUBSCRIPTION);
+            assert_eq!(
+                input(&GOLDEN_SUBSCRIPTION).unwrap(),
+                Some((Input::Subscribe(scope, cursor), GOLDEN_SUBSCRIPTION.len()))
+            );
+            assert_eq!(consumed(cursor), GOLDEN_ACK);
+            assert_eq!(
+                input(&GOLDEN_ACK).unwrap(),
+                Some((Input::Consumed(cursor), GOLDEN_ACK.len()))
+            );
+        }
+
+        #[test]
+        fn decoded_scope_mismatch_keeps_its_refusal_when_generation_also_differs() {
+            let mut service = service(Slot::Waiting(0));
+            service.scope = golden_scope();
+            let generation_at = FRAME_HEAD + size_of::<RunId>() + size_of::<u64>() - 1;
+            let member_at = FRAME_HEAD + size_of::<RunId>() + size_of::<u64>();
+            let channel_at = member_at + size_of::<u32>();
+            for (field, replacement) in [
+                (FRAME_HEAD, 0xff),
+                (member_at, 0xff),
+                (channel_at, Channel::Stdout as u8),
+            ] {
+                for stale in [false, true] {
+                    let mut wire = GOLDEN_SUBSCRIPTION;
+                    *wire.get_mut(field).unwrap() = replacement;
+                    if stale {
+                        *wire.get_mut(generation_at).unwrap() ^= 1;
+                    }
+                    let (Input::Subscribe(scope, _), _) = input(&wire).unwrap().unwrap() else {
+                        panic!("expected decoded foreign scope");
+                    };
+                    assert_eq!(service.check_scope(scope), Err(Reason::Scope));
+                }
+            }
+            let mut wire = GOLDEN_SUBSCRIPTION;
+            *wire.get_mut(generation_at).unwrap() ^= 1;
+            let (Input::Subscribe(scope, _), _) = input(&wire).unwrap().unwrap() else {
+                panic!("expected decoded stale generation");
+            };
+            assert_eq!(service.check_scope(scope), Err(Reason::Stale));
+            for length in [SUBSCRIBE_BYTES - 1, SUBSCRIBE_BYTES + 1] {
+                let mut wire = GOLDEN_SUBSCRIPTION;
+                wire.get_mut(1..FRAME_HEAD)
+                    .unwrap()
+                    .copy_from_slice(&u32::try_from(length).unwrap().to_be_bytes());
+                assert!(matches!(
+                    input(&wire),
+                    Err(Error::Protocol(ProtocolError::Length))
+                ));
+            }
+        }
+
         fn decoded_ack(cursor: u64) -> u64 {
             let wire = consumed(cursor);
             let (Input::Consumed(at), end) = input(&wire).unwrap().unwrap() else {

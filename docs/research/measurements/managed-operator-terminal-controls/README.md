@@ -1,5 +1,9 @@
 # Decoded terminal/replay control boundaries
 
+This record pins the original three-case checkpoint61a55b60. The later
+[golden-wire continuation](golden/README.md) adds two independent layout/refusal
+cases and retains its separate five-case result and source identity.
+
 Three additional pure tests exercise existing remote Service contracts without
 changing production code: a Finished cursor may resubscribe at its exact tail
 but cannot accept another ACK; Aborted cannot reopen even when accepted equals

@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+    "output": "{\"argv\": [\"git\", \"clone\", \"--filter=blob:none\", \"--sparse\", \"--no-checkout\", \"--single-branch\", \"--branch\", \"p/managed-operator-terminal-boundaries\", \"git@github.com:hyper-light/shards.git\", \"/home/adalundhe/managed-operator-golden-light-61a5-v1/source\"], \"cwd\": \"/home/adalundhe/managed-operator-golden-light-61a5-v1\", \"exit_code\": 0, \"log\": \"clone.log\", \"sha256\": \"dc831e555e9e1a4a12bc2325d9ea2972b99e92a294e6930e387c808159c3be22\"}\nCloning into '/home/adalundhe/managed-operator-golden-light-61a5-v1/source'...\n\n{\"argv\": [\"git\", \"sparse-checkout\", \"set\", \"--no-cone\", \"/Cargo.toml\", \"/Cargo.lock\", \"/AGENTS.md\", \"/CLAUDE.md\", \"/clippy.toml\", \"/rustfmt.toml\", \"/.cargo/\", \"/scripts/check-development-policy\", \"/scripts/lint\", \"/resources/supported-targets.txt\", \"/.github/workflows/ci.yml\", \"/.github/workflows/release.yml\", \"/docs/development-rules.md\", \"/docs/development-evidence.md\", \"/crates/abi/\", \"/crates/ipc/\", \"/crates/remote/\", \"/crates/testdir/\", \"/vendor/aws-lc-rs/\", \"/vendor/aws-lc-sys/\", \"/vendor/rquickjs-sys/\"], \"cwd\": \"/home/adalundhe/managed-operator-golden-light-61a5-v1/source\", \"exit_code\": 0, \"log\": \"sparse.log\", \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}\n\n",
+    "running": true,
+    "id": "r30",
+    "why": "linux/x86_64 · 25 of 32 cores idle · 46 GB free · room for 1 CPU, 1 GiB of memory, 2 GiB of disk"
+  },
+  "calls": [
+    {
+      "name": "machines.start",
+      "ok": true
+    }
+  ]
+}

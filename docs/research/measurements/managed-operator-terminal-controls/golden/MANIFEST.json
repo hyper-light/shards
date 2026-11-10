@@ -1,0 +1,87 @@
+[
+  {
+    "path": "commands.json",
+    "bytes": 5086,
+    "sha256": "b96f3ce3a2bb7d4f2c6016630cbf1bd64ed82ea879db0afb0f82ebc55258e56a"
+  },
+  {
+    "path": "clone.log",
+    "bytes": 79,
+    "sha256": "dc831e555e9e1a4a12bc2325d9ea2972b99e92a294e6930e387c808159c3be22"
+  },
+  {
+    "path": "sparse.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "checkout.log",
+    "bytes": 91,
+    "sha256": "d567e4fc2b5356d0740d56bc118814819b38eaeeb183d845543af25b839c45dc"
+  },
+  {
+    "path": "rustc.log",
+    "bytes": 196,
+    "sha256": "f22d5e4e9ced367e774ce5bc140d9e6b1235c1882fec80d011044851f3ae6369"
+  },
+  {
+    "path": "cargo.log",
+    "bytes": 327,
+    "sha256": "b34517738faa19529c4b0853bf39cf77fa13ddca3c98a50809b4b2373406baf3"
+  },
+  {
+    "path": "uname.log",
+    "bytes": 119,
+    "sha256": "5ecbc48e8d19c31f0b7f8fac6641d33832c8ff3cab1c400b74a4d0be3c21602a"
+  },
+  {
+    "path": "pure-tests.log",
+    "bytes": 5642,
+    "sha256": "370e2331bae61d48421fe9e7d85adc9fd5c41600b10e2ecfbc98d63ed58697ff"
+  },
+  {
+    "path": "clippy.log",
+    "bytes": 4373,
+    "sha256": "84539a2633922db3211b66eff0cf6459933bcd496f06eebc12ffb3bbf47ec277"
+  },
+  {
+    "path": "format.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "policy.log",
+    "bytes": 81,
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  {
+    "path": "diff-check.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "storage.log",
+    "bytes": 61,
+    "sha256": "51786569df9ed01979e9902796193d9d5bb2dda4f6c3c2de703068c81a9e3edb"
+  },
+  {
+    "path": "source.json",
+    "bytes": 366,
+    "sha256": "9a4eb5184fba1f2bdf543cf2c6e15ef1b721e37e15fd0321ed973e294d85abc3"
+  },
+  {
+    "path": "original-Cargo.toml",
+    "bytes": 3885,
+    "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+  },
+  {
+    "path": "private-Cargo.toml",
+    "bytes": 2353,
+    "sha256": "5de5808cd666061ae8d4860906645a2dd4906f8914212122de37e89086a41e14"
+  },
+  {
+    "path": "private-Cargo.lock",
+    "bytes": 16968,
+    "sha256": "80f1121858b0e3a6e0bb8ea531c944e6781d2c0ea4b774bace18806e7877f1ec"
+  }
+]
