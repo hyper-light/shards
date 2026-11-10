@@ -1,0 +1,10 @@
+{
+  "packet_sha256": "cd4e5554d1e929ce3ec16f302403c398fddd3ee4a33ff48dde3b2c6076698bf6",
+  "source": "ROOT Fedora root-managed-normal-e180-v1",
+  "files": {
+    "source.txt": "5d6c896fa13ca25dbe753ececd0190fd36da45afbaac25ac01d0817b50ca3167",
+    "normal-tenant-exit/test.exit": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c",
+    "normal-tenant-exit/records/release.json": "3a19ae7daab18d29f4ea4d0fac1e14459585758265391c2d611688fef680b2c3",
+    "normal-tenant-exit/records/protocol-failure-observations.json": "ec38ed76b7aea114c4d601fc92b314a2bc54449172c23381f859844186638284"
+  }
+}

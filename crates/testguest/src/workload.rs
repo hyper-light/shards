@@ -484,7 +484,13 @@ pub fn main() -> ! {
             }
         }
         "confined" => confined(args.get(1..).unwrap_or_default()),
-        "managed-capture" => managed_capture(arg(1)),
+        "managed-capture" => match arg(2) {
+            "" => managed_capture(arg(1)),
+            "exit" => i32::from(managed_capture_bytes(arg(1)).is_err()),
+            "step" => managed_capture_step(arg(1), arg(3), arg(4)),
+            "close-stdio" => managed_capture_close_stdio(arg(1), arg(3), arg(4), arg(5), arg(6)),
+            _ => 1,
+        },
         "managed-capture-main" => {
             let code = await_process("capture-ready", 2, "");
             if code != 0 {
@@ -5440,19 +5446,25 @@ fn offered_command(json: &str, name: &str) -> Option<Vec<String>> {
     }
 }
 
-fn managed_capture(member: &str) -> i32 {
+fn managed_capture_bytes(member: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     let mut err = io::stderr().lock();
-    let sent = out
-        .write_all(member.as_bytes())
+    out.write_all(member.as_bytes())
         .and_then(|()| out.write_all(b"\0stdout\n\xff\x1b[2Jout-tail"))
         .and_then(|()| out.flush())
         .and_then(|()| err.write_all(member.as_bytes()))
         .and_then(|()| err.write_all(b"\0stderr\n\x80\xfeerr-tail"))
-        .and_then(|()| err.flush());
-    if sent.is_err() {
+        .and_then(|()| err.flush())
+}
+
+fn managed_capture(member: &str) -> i32 {
+    if managed_capture_bytes(member).is_err() {
         return 1;
     }
+    managed_capture_hold()
+}
+
+fn managed_capture_hold() -> i32 {
     // SAFETY: prctl names this thread with a NUL-terminated name shorter than TASK_COMM_LEN.
     if unsafe { libc::prctl(libc::PR_SET_NAME, c"capture-ready".as_ptr()) } < 0 {
         return 1;
@@ -5463,6 +5475,205 @@ fn managed_capture(member: &str) -> i32 {
     }
 }
 
+fn managed_capture_ready(fd: i32, until: std::time::Instant) -> io::Result<()> {
+    managed_capture_ready_for(fd, libc::POLLIN, until)
+}
+
+fn managed_capture_ready_for(fd: i32, events: i16, until: std::time::Instant) -> io::Result<()> {
+    loop {
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        let timeout = libc::timespec {
+            tv_sec: left.as_secs().try_into().map_err(io::Error::other)?,
+            tv_nsec: left.subsec_nanos().into(),
+        };
+        let mut event = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        // SAFETY: ppoll borrows one held descriptor and a local timeout. No signal mask changes.
+        let result = unsafe { libc::ppoll(&raw mut event, 1, &timeout, std::ptr::null()) };
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if event.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if event.revents & (events | libc::POLLHUP) != 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn managed_capture_control_read(
+    peer: &mut std::net::TcpStream,
+    mut bytes: &mut [u8],
+    until: std::time::Instant,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    while !bytes.is_empty() {
+        managed_capture_ready(peer.as_raw_fd(), until)?;
+        match peer.read(bytes) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => bytes = bytes.get_mut(n..).ok_or(io::ErrorKind::InvalidData)?,
+            Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn managed_capture_control_write(
+    peer: &mut std::net::TcpStream,
+    mut bytes: &[u8],
+    until: std::time::Instant,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+    while !bytes.is_empty() {
+        managed_capture_ready_for(peer.as_raw_fd(), libc::POLLOUT, until)?;
+        match peer.write(bytes) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = bytes.get(n..).ok_or(io::ErrorKind::InvalidData)?,
+            Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+#[repr(i32)]
+enum ManagedStdioPhase {
+    Inputs = 1,
+    Listening,
+    StdoutClosed,
+    StdioClosed,
+    OwnerConnected,
+    ChallengeReceived,
+    Replied,
+}
+
+fn managed_capture_close_stdio(
+    member: &str,
+    port: &str,
+    work_ms: &str,
+    challenge_bytes: &str,
+    report_bytes: &str,
+) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    let mut phase = ManagedStdioPhase::Inputs;
+    let result = (|| -> io::Result<()> {
+        let port = port.parse::<u16>().map_err(io::Error::other)?;
+        let work_ms = work_ms.parse::<u64>().map_err(io::Error::other)?;
+        let count = challenge_bytes.parse::<u32>().map_err(io::Error::other)?;
+        let report_bytes = report_bytes.parse::<u64>().map_err(io::Error::other)?;
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(work_ms))
+            .filter(|_| port > 0 && work_ms > 0 && count > 0)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let prefix = member
+            .len()
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(b"\0stdout\n\xff\x1b[2Jout-tail".len()))
+            .and_then(|n| n.checked_add(b"\0stderr\n\x80\xfeerr-tail".len()))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        // One tagged length/challenge request and matching response, plus initial capture bytes.
+        let required = u64::from(count)
+            .checked_add(u64::try_from(size_of::<u8>() + size_of::<u32>()).map_err(io::Error::other)?)
+            .and_then(|n| n.checked_mul(2))
+            .and_then(|n| n.checked_add(u64::try_from(prefix).ok()?))
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        if required > report_bytes {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let len = usize::try_from(count).map_err(io::Error::other)?;
+        let mut challenge = Vec::new();
+        challenge.try_reserve_exact(len).map_err(io::Error::other)?;
+        challenge.resize(len, 0);
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+        listener.set_nonblocking(true)?;
+        phase = ManagedStdioPhase::Listening;
+        managed_capture_bytes(member)?;
+        // SAFETY: these are only this actor's own capture writers; no stdio is used afterward.
+        if unsafe { libc::close(libc::STDOUT_FILENO) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        phase = ManagedStdioPhase::StdoutClosed;
+        // SAFETY: fd2 is this actor's own remaining capture writer and is never used again.
+        if unsafe { libc::close(libc::STDERR_FILENO) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        phase = ManagedStdioPhase::StdioClosed;
+        managed_capture_ready(listener.as_raw_fd(), until)?;
+        let (mut peer, _) = listener.accept()?;
+        drop(listener);
+        peer.set_nonblocking(true)?;
+        phase = ManagedStdioPhase::OwnerConnected;
+        let mut tag = [0];
+        let mut size = [0; size_of::<u32>()];
+        managed_capture_control_read(&mut peer, &mut tag, until)?;
+        managed_capture_control_read(&mut peer, &mut size, until)?;
+        if tag != [1] || u32::from_be_bytes(size) != count {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        managed_capture_control_read(&mut peer, &mut challenge, until)?;
+        phase = ManagedStdioPhase::ChallengeReceived;
+        managed_capture_control_write(&mut peer, &[1], until)?;
+        managed_capture_control_write(&mut peer, &size, until)?;
+        managed_capture_control_write(&mut peer, &challenge, until)?;
+        phase = ManagedStdioPhase::Replied;
+        drop(peer);
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            let stopped = managed_capture_hold();
+            if stopped == 0 { 0 } else { phase as i32 }
+        }
+        // No diagnostics can safely target fd1/fd2 after closure: accept may reuse their numbers.
+        // The exit status presents the last explicit phase; the IO cause remains Unknown remotely.
+        Err(_) => phase as i32,
+    }
+}
+
+fn managed_capture_step(member: &str, port: &str, patience: &str) -> i32 {
+    use std::os::fd::AsRawFd as _;
+    let run = || -> io::Result<()> {
+        let port = port.parse::<u16>().map_err(io::Error::other)?;
+        let patience = patience.parse::<u64>().map_err(io::Error::other)?;
+        let until = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(patience))
+            .filter(|_| port != 0 && patience != 0)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, port))?;
+        listener.set_nonblocking(true)?;
+        managed_capture_bytes(member)?;
+        managed_capture_ready(listener.as_raw_fd(), until)?;
+        let (mut release, _) = listener.accept()?;
+        release.set_nonblocking(true)?;
+        managed_capture_ready(release.as_raw_fd(), until)?;
+        let mut byte = [0];
+        release.read_exact(&mut byte)?;
+        if byte != [1] {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        managed_capture_bytes(&format!("{member}-after-exit"))
+    };
+    match run() {
+        Ok(()) => managed_capture_hold(),
+        Err(error) => {
+            let _ = writeln!(io::stderr(), "managed capture step: {error}");
+            1
+        }
+    }
+}
 /// Set by SIGUSR1's handler: the host's go-ahead came before [`await_process`] blocked it.
 static GONE_AHEAD: AtomicBool = AtomicBool::new(false);
 

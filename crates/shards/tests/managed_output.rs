@@ -4,6 +4,9 @@
 
 mod common;
 
+#[path = "managed_output/tenant_exit.rs"]
+mod tenant_exit;
+
 #[path = "common/managed_alloc.rs"]
 mod managed_alloc;
 
@@ -485,6 +488,33 @@ impl Fixture {
     }
 
     fn start(&mut self) {
+        self.start_with_options(
+            &["managed-capture", "agent"],
+            &["managed-capture", "harness"],
+            "",
+            None,
+            Instant::now() + WITHIN,
+        );
+    }
+
+    fn start_with_options(
+        &mut self,
+        agent: &[&str],
+        harness: &[&str],
+        directives: &str,
+        publish_ports: Option<&[u16]>,
+        until: Instant,
+    ) {
+        let publication = publish_ports.map(|ports| {
+            assert!(!ports.is_empty(), "explicit guest fixture ports required");
+            ports
+                .iter()
+                .map(|port| {
+                    assert_ne!(*port, 0, "explicit guest fixture port required");
+                    format!("127.0.0.1::{port}")
+                })
+                .collect::<Vec<_>>()
+        });
         let (image, _) = common::served();
         std::fs::create_dir(self.context.join("files")).unwrap();
         std::fs::write(self.context.join("files/asset"), b"files-only").unwrap();
@@ -498,21 +528,22 @@ impl Fixture {
         .unwrap();
         std::fs::write(
             self.context.join("agent/agent.json"),
-            br#"{"entrypoint":"member","options":["managed-capture","agent"]}"#,
+            serde_json::to_vec(&serde_json::json!({"entrypoint":"member","options":agent})).unwrap(),
         )
         .unwrap();
         let binary = std::fs::read(common::test_guest()).unwrap();
-        let manifest = br#"{"entrypoint":"member","options":["managed-capture","harness"]}"#;
+        let manifest =
+            serde_json::to_vec(&serde_json::json!({"entrypoint":"member","options":harness})).unwrap();
         std::fs::write(
             self.context.join("harness.tar"),
             common::tar(&[
                 ("bin", 0o755, 0, None),
                 ("bin/member", 0o755, 0, Some(&binary)),
-                ("harness.json", 0o644, 0, Some(manifest)),
+                ("harness.json", 0o644, 0, Some(&manifest)),
             ]),
         )
         .unwrap();
-        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n")).unwrap();
+        std::fs::write(self.context.join("Agentfile"), format!("FROM {image}\nAGENT assets FROM ./files\nAGENT helper FROM ./agent\nHARNESS driver FROM ./harness.tar\n{directives}")).unwrap();
         let built = self.command(
             &[
                 "build",
@@ -521,11 +552,20 @@ impl Fixture {
                 "owner-output:1",
                 self.context.to_str().unwrap(),
             ],
-            WITHIN,
+            until.saturating_duration_since(Instant::now()),
         );
         assert_eq!(built.status, Some(0), "{built}");
-        let started = self.command(
-            &[
+        let run = |args: &[&str]| self.command(args, until.saturating_duration_since(Instant::now()));
+        let started = match publication.as_ref() {
+            Some(bindings) => {
+                let mut args = vec!["run", "vm", "-d", "--name", "owner-output"];
+                for binding in bindings {
+                    args.extend(["-p", binding.as_str()]);
+                }
+                args.extend(["owner-output:1", "sleep"]);
+                run(&args)
+            }
+            None => run(&[
                 "run",
                 "vm",
                 "-d",
@@ -533,9 +573,8 @@ impl Fixture {
                 "owner-output",
                 "owner-output:1",
                 "sleep",
-            ],
-            WITHIN,
-        );
+            ]),
+        };
         assert_eq!(started.status, Some(0), "{started}");
         let id = started.stdout.trim();
         assert!(
