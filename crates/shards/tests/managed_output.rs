@@ -270,7 +270,7 @@ impl Observer {
                     bytes.extend_from_slice(&chunk);
                     assert!(
                         expected.starts_with(&bytes),
-                        "member bytes differ at offset {offset}; lengths actual={} expected={}",
+                        "member bytes differ at offset {offset}; lengths actual={} expected={}; controlled_fixture_bytes={bytes:02x?}",
                         bytes.len(),
                         expected.len()
                     );
