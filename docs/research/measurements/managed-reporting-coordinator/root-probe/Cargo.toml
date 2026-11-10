@@ -1,0 +1,11 @@
+[package]
+name = "root-reporting-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+managed-reporting-prototype = { path = "../prototype" }
+libc = "=0.2.189"
