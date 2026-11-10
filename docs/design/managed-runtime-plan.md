@@ -15,6 +15,18 @@ The proposed tests below are acceptance criteria, not claims that they passed.
 
 ### Current implementation checkpoint
 
+Main `0e024f8ed615eadfda70f9192ea79cd851977e55` adds the reviewed worker
+admission, typed peer-effect broker, atomic helper ownership, checked declared
+domain caps and borrowed connector corrections. The
+[combined closing record](../research/measurements/managed-layer-combined/README.md)
+retains the actual seven-target/GPU/format gate, normal carried-helper KVM case,
+36 native server tests, broker guard-removal effect and exact restored pass at
+byte-identical code `0219ab2eb`. These are narrow accepted pieces; hard parent
+entitlements, mandatory route coverage, native executors, durable audit, real
+harness adapters and the remaining P0–P13 obligations stay open. The old
+main-stderr code-mode fixture has an actual retained failure and is being migrated
+to the same canonical observer without dropping its original effect assertions.
+
 Main now contains partial lifecycle/capture work and an experimental owner-output
 endpoint. These pieces have not closed P0–P13. The
 [receive-cancellation closing record](../research/measurements/managed-coordinator-receive-cancel/README.md)
@@ -52,9 +64,10 @@ typed propagation and its caller validation are being implemented separately.
 Seven-target37a checks and reader/prototype measurements in that record do not
 establish later source gates or production adoption. Native IPv6 fixture source
 is composed; its actual guest/mutation results will be recorded by the coordinator.
-The borrowed API candidate has focused native Mac/Windows passes but is not
-adopted. Its complete Mac library gate
-exposes [MR-OOM-MAC-1](../research/measurements/managed-sync-coordinator/README.md):
+The corrected borrowed API is now adopted in that main checkpoint with
+[revision-specific native and platform evidence](../research/measurements/managed-borrowed-combined/README.md).
+The earlier complete Mac library gate exposed
+[MR-OOM-MAC-1](../research/measurements/managed-sync-coordinator/README.md):
 an actual fatal64-byte lazy std Mutex allocation in owned Guest::connect. No
 warming, skipped test or larger timing guard closes that defect. Hard resources,
 mandatory routes, effect brokerage, real harness adapters/credentials and
@@ -166,7 +179,7 @@ enumerate every unrelated Shards defect or certify every existing isolation rule
 | G19 R/V | Complete durable pre-action audit cannot be inferred from lossy connector/BPF history or a TCP ACK. | P7/P9: reserve required audit before committing broker effects; explicit gap/loss/uncertain states elsewhere. | Full sink/ENOSPC/collector failure cannot silently admit an unaudited mandatory effect; cancellation still progresses. |
 | G20 R | New streams, leases, calls and subscriptions lack a defined restore/move/restart generation contract. | P11: quiescence, state ownership, new generation, revalidated grants and explicit uncertain external outcomes. | Stale cursors/tokens/calls fail after restore/move; non-idempotent external requests are never blindly replayed. |
 | G21 R/V | Relay/broker death, hook failure and policy replacement need a fail-closed transition contract. | P2/P6/P7/P11: install denial before actor release, linearize admission/revocation and reject stale policy state. | Kill/disable the mechanism mid-flow: no direct-routing fallback, stale authority or uncontrolled worker survives. |
-| G22 V | Borrowed connector vendor patch currently maps zero/overflow patience to an unbounded wait; pending upstream correction. | P3/P8/P11 integration dependency where that connector is used; finite typed wait semantics and leak tests. | Zero-withheld and overflow/no-dial tests, dribbled-answer deadline and repeated native Windows handle counts pass. This patch is not adopted as-is. |
+| G22 V | Original vendor patch mapped zero/overflow patience to unbounded waits. The corrected finite/immediate contract is adopted on main0e024f8ed with native Linux/Mac and Windows API evidence; native Windows zero-withheld and final handle attribution remain unverified. | P3/P8/P11 integration dependency: retain owning-Guest compatibility, close the remaining native Windows contract/handle gates and current cold Mac allocation fault. | Revision-specific zero-withheld, overflow/no-dial, dribbled-answer deadline and native handle/cleanup evidence; ordinary compilation/passes do not close unrun fault or handle attribution. |
 | G23 V | Low overhead, fairness, leak freedom and cross-platform behavior of the proposed layer are unmeasured. | P12/P13: adversarial/mutation/fuzz gates and paired measurements on actual supported VM hosts. | Report distributions, resource high-water marks, failures, contention and neighbor impact; pass the supported seven-target and real-VM matrix. |
 | G24 R/V | Startup support is not yet a complete real Codex harness demonstration or a typed interactive input/TTY contract. | P3/P8/P10: explicit input ownership, actual supplied Linux artifact, provider grants and sign-in behavior. | A real Codex session works from HARNESS-supplied content without RUN/VOLUME installation; raw protocol output is preserved. |
 
@@ -174,8 +187,9 @@ Existing source evidence is concentrated in `init::{domains,run,procevents,links
 netplan,inroot,frames}`, `server::{server,sandbox}`, `net::{lib,tcp,poll,ring}`,
 `shards::{agentfile,setup,grant,confine,volumes}`, and `abi::run`. The supporting
 research links the exact inspected revisions. New network prerequisites are cited
-in section 6. G22 is a review of the isolated Hex patch, not a defect introduced
-into main. G12 is a deliberate existing policy plus an inference to test.
+in section 6. G22 began as a review of the isolated Hex patch; the adopted
+correction and remaining gates are now recorded above. G12 is a deliberate
+existing policy plus an inference to test.
 
 ## 3. Modules to build or deepen
 
