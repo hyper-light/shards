@@ -1,0 +1,58 @@
+{
+  "status": "SourcePreparationOnly_NoBuildOrActor",
+  "parent_checkpoint": "b59b180f04c55360e25b4acaef5171b552b60068",
+  "role": "implementer/assigned adversarial",
+  "policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "policy_receipt_root_delivery_seq": 8141,
+  "handoff_sha256": "dd06dcece06cf9f07ad2039c87ba77f042c68bb3e54efb62a758e01b46e27061",
+  "created_utc": "2026-11-10T23:57:02.920016+00:00",
+  "owned_paths": [
+    "docs/research/measurements/managed-audit-wire-adversarial/"
+  ],
+  "read_sources": {
+    "crates/ipc/src/unix.rs": {
+      "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+      "bytes": 100444,
+      "sha256": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37"
+    },
+    "crates/testdir/src/lib.rs": {
+      "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+      "bytes": 17917,
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+    },
+    "crates/vmm/src/devices/virtio/fs/mod.rs": {
+      "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+      "bytes": 97233,
+      "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+    },
+    "crates/vmm/src/devices/virtio/fs/server.rs": {
+      "revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+      "bytes": 245948,
+      "sha256": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64"
+    }
+  },
+  "native_cases_run": 0,
+  "builds_run": 0,
+  "runner": null,
+  "target": null,
+  "corpus_generated_or_received": false,
+  "corpus_bounds": "Symbolic; ROOT assigned audit owner same real private encoder/Count/shape emission; no alternate serializer",
+  "proposed_selected_request_count": 24,
+  "registration_applied": false,
+  "constructor_selection_applied": false,
+  "common_helper_source_observation": "TempDir first use sweeps ended-process temp dirs and prepares process soft descriptor limit. Future fresh private TMPDIR required; no change/execution here; disclosed to ROOT before actors.",
+  "local_free_bytes": 139522379776,
+  "active_local_targets_or_caches": [],
+  "policy_check": {
+    "command": "python3 scripts/check-development-policy",
+    "exit_code": 0
+  },
+  "runtime_claims": [],
+  "owed_root": [
+    "Exact corpus source/input/raw/bounds verification",
+    "Review literal frame/body/byte-region/TempDir/cleanup contract before execution",
+    "Any stronger actual duplicate-I/O syscall count",
+    "VM/stalled I/O/ENOSPC/crash/mutations/profiles/integration/main merge"
+  ]
+}

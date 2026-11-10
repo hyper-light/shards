@@ -27,6 +27,9 @@ refusal. No fixture/source registration, build, mount or actor ran.
   diff-check reports2 for one original context-space line123 in the exact
   constructor patch; excluding only that preserved patch reports0. No raw patch
   was rewritten to conceal this formatting warning.
+- [FRAME-AND-CLEANUP.md](FRAME-AND-CLEANUP.md): fixed24-request ordinary sequence,
+  full FUSE bodies, exact byte-region comparisons, actual cleanup receipts and
+  source-disclosed common TempDir sweep/soft-FD-limit behavior. No native run.
 
 ROOT review precedes implementation/registration/build/actors. Later intended
 native-only ARM Mac envelope is2CPU/2GiB/4GiB/600s/j2, build180s, case30s plus15s
