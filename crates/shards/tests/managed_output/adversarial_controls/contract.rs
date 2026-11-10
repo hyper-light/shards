@@ -50,12 +50,13 @@ pub(crate) enum TerminalCase {
     Duplicate,
     Forward,
     Finish,
+    Resubscribe,
 }
 
 impl TerminalCase {
     pub(crate) fn cursor(self, end: u64) -> Result<u64, Invalid> {
         match self {
-            Self::Duplicate | Self::Finish => Ok(end),
+            Self::Duplicate | Self::Finish | Self::Resubscribe => Ok(end),
             Self::Forward => end.checked_add(1).ok_or(Invalid::Overflow),
         }
     }
@@ -98,6 +99,7 @@ impl Selection {
             "terminal-end-duplicate" => Ok(Self::Terminal(TerminalCase::Duplicate)),
             "terminal-end-forward" => Ok(Self::Terminal(TerminalCase::Forward)),
             "terminal-end-finish" => Ok(Self::Terminal(TerminalCase::Finish)),
+            "terminal-end-resubscribe" => Ok(Self::Terminal(TerminalCase::Resubscribe)),
             _ => ControlCase::parse(value)
                 .map(Self::Control)
                 .map(Ok)
@@ -248,11 +250,16 @@ mod tests {
         let end = 102;
         assert_eq!(TerminalCase::Duplicate.cursor(end), Ok(end));
         assert_eq!(TerminalCase::Finish.cursor(end), Ok(end));
+        assert_eq!(TerminalCase::Resubscribe.cursor(end), Ok(end));
         assert_eq!(TerminalCase::Forward.cursor(end), Ok(end + 1));
         assert_eq!(TerminalCase::Forward.cursor(u64::MAX), Err(Invalid::Overflow));
         assert_eq!(
             Selection::parse("terminal-end-finish"),
             Ok(Selection::Terminal(TerminalCase::Finish))
+        );
+        assert_eq!(
+            Selection::parse("terminal-end-resubscribe"),
+            Ok(Selection::Terminal(TerminalCase::Resubscribe))
         );
         assert_eq!(
             Selection::parse("ack-replay"),

@@ -185,8 +185,8 @@ impl Attempt {
         }
     }
 
-    fn raw(target: ExpectedTarget, case: ControlCase, wire: u64) -> Self {
-        let (bytes, finish, reason) = case.wire(wire);
+    fn raw(target: ExpectedTarget, bytes: Vec<u8>, finish: bool, reason: Reason) -> Self {
+        assert!(!bytes.is_empty() && bytes.len() <= managed::CONTROL_BYTES);
         let (sender, receipts) = mpsc::channel();
         Self {
             target,
@@ -334,14 +334,18 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
                 false,
             )
         }
-        Selection::Control(case) => Attempt::raw(
-            ExpectedTarget::Held {
-                accepted: wire,
-                consumed: 0,
-            },
-            case,
-            wire,
-        ),
+        Selection::Control(case) => {
+            let (bytes, finish, reason) = case.wire(wire);
+            Attempt::raw(
+                ExpectedTarget::Held {
+                    accepted: wire,
+                    consumed: 0,
+                },
+                bytes,
+                finish,
+                reason,
+            )
+        }
         Selection::Terminal(case) => {
             observer.sender.send(Command::Handler(Ask::Ack(wire))).unwrap();
             let mut capture = Capture {
@@ -362,11 +366,18 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
                 base.records.join("managed-output.target-ended"),
             )
             .unwrap();
-            Attempt::ack(
-                ExpectedTarget::Ended { wire: capture.wire },
-                case.cursor(capture.wire).unwrap(),
-                case == TerminalCase::Finish,
-            )
+            let target = ExpectedTarget::Ended { wire: capture.wire };
+            if case == TerminalCase::Resubscribe {
+                let bytes = managed::subscribe(observer.scope, capture.wire).to_vec();
+                assert_eq!(bytes.len(), managed::CONTROL_BYTES);
+                Attempt::raw(target, bytes, false, Reason::Protocol)
+            } else {
+                Attempt::ack(
+                    target,
+                    case.cursor(capture.wire).unwrap(),
+                    case == TerminalCase::Finish,
+                )
+            }
         }
     };
     let target = attempt.target;
