@@ -1,0 +1,39 @@
+{
+  "source_revision": "200089e47bc125037a350e0a3954863a86bb6d47",
+  "branch": "p/managed-relay-boundaries",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "implementer": "01a1c5d2ee0e7248982c95a59f1fd905",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "admission": "Kiln1CPU1GiB2GiB; admission is not hard cgroup budget",
+  "run_exit": 0,
+  "proof": "/home/adalundhe/managed-relay-boundary-docs-v1",
+  "command": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "exit": 0,
+  "output": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "source_sha256": {
+    "AGENTS.md": "5fd5c2bc14079994c7390926c8f3865efdfedf066faa9c33d7dc361697aeea28",
+    "CLAUDE.md": "54c3ad93162608248419fe54c42d14bd00ed3cf6aebaf99b78a1c4d83acd28a1",
+    "docs/development-rules.md": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+    "docs/development-evidence.md": "a84c60f20e3a06a294bd5b091c1f43cfd5cc4b33ef1bd22a50cd94cea07bb97b",
+    "scripts/check-development-policy": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac",
+    "resources/supported-targets.txt": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a",
+    ".github/workflows/ci.yml": "0707e0d998f93686ddec2974c1f1dead655108190370b29437d8e685aeed02ce",
+    ".github/workflows/release.yml": "27a09295956b66534bd0bdda08eeb8dd262c1645b8d42b7b777fd93ee9ab2415",
+    "scripts/lint": "5db1b68bc06218d1df6ed032759f4b39aa78bc0bb9f549bfdf37d831c956d040",
+    "Cargo.toml": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f",
+    "docs/research/measurements/managed-relay-precommit/BOUNDARY-DESIGN.md": "aec281c9f55f29f74ea29fbcb64a6055b74098e19ca5833ba0597fb0453eb5a8"
+  },
+  "scope": "docs-only mechanical policy check; no compiler/test/socket/eventfd/VM/profile executed",
+  "prior_attempt": {
+    "exit_code": null,
+    "stage": "command spawn",
+    "error": "spawn \"/usr/bin/bash\": Argument list too long (os error 7)",
+    "execution": "No command/source setup/test executed; retry sent compressed in-memory source payload; no local archive."
+  },
+  "scope_note": "The checked design snapshot predates only addition of this result/evidence paragraph. Mechanical policy inputs are unchanged. No runtime source or compiler/test result claimed."
+}
