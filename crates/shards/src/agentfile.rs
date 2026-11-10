@@ -177,17 +177,9 @@ impl Agentfile {
 /// reads it), checked against `digest`, the image's `vnd.osi.agentfile.digest`, read back
 /// into its directives, and checked again as its build checks them (a crafted image's
 /// passed no build): its volumes and grants derived from those, never from its labels,
-/// which an image sets as it likes. Read once for each root and digest a process meets.
+/// which an image sets as it likes. Each lookup verifies the root it opens.
 pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, String> {
     use shards_agentfile::agentfile::{self as af, Directive};
-    use std::sync::{Mutex, OnceLock, PoisonError};
-    type Read = BTreeMap<(std::path::PathBuf, String), Agentfile>;
-    static READ: OnceLock<Mutex<Read>> = OnceLock::new();
-    let read = READ.get_or_init(Mutex::default);
-    let key = (rootfs.to_path_buf(), digest.to_string());
-    if let Some(a) = read.lock().unwrap_or_else(PoisonError::into_inner).get(&key) {
-        return Ok(a.clone());
-    }
     let fail = |why: String| format!("the image's Agentfile ({digest}): {why}");
     let mut image = std::fs::File::open(rootfs).map_err(|e| fail(format!("{}: {e}", rootfs.display())))?;
     let json = match shards_image::erofs::read_file(&mut image, af::SPEC_PATH, AGENTFILE_MOST)
@@ -257,9 +249,6 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
         domains: u32::try_from(domains).map_err(|_| fail("more agents and harnesses than uids".into()))?,
         receivers,
     };
-    read.lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(key, agentfile.clone());
     Ok(agentfile)
 }
 
