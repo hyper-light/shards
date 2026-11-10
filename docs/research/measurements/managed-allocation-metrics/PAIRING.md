@@ -124,6 +124,9 @@ nonnegative and less than 2^64. This is a representation bound, not a measured
 fault limit or assurance against native wrap/reset/lossy fallback. No native
 fault categories are equated across operating systems. This Linux cost caller
 does not establish macOS/Windows host results.
+Native width and both identity components must also have JSON integer types;
+real-number and Boolean substitutions remain Unknown even if Python compares
+their numeric values equal to the expected integers.
 
 Raw proc observations remain available for separate root analysis. CPU/copies,
 foreign C/direct-System allocators, daemon/VM/guest allocations, kernel/parent

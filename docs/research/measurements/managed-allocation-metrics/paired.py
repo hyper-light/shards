@@ -273,8 +273,10 @@ def allocation_metrics(data):
         value = native.get(role, {})
         native_identity = value.get("identity")
         expected_identity = [data["snapshots"][role]["pid"], data["snapshots"][role]["expected_start"]]
+        # JSON real numbers and booleans can compare equal to integer IDs.
+        typed_identity_matches = native_identity == expected_identity and all(integer(part) for part in native_identity)
         # The accepted producer's Delta::ConditionalDifference carries a u64.
-        if value.get("state") == "ConditionalDifference" and integer(value.get("value")) and value["value"] < (1 << 64) and value.get("source") == "LinuxMinfltPlusMajfltViaPlatformUsage" and value.get("native_bits") == 64 and native_identity == expected_identity:
+        if value.get("state") == "ConditionalDifference" and integer(value.get("value")) and value["value"] < (1 << 64) and value.get("source") == "LinuxMinfltPlusMajfltViaPlatformUsage" and integer(value.get("native_bits")) and value["native_bits"] == 64 and typed_identity_matches:
             result[f"native_faults.{role}.start_to_ready"] = value | {"state": "Conditional"}
         else:
             result[f"native_faults.{role}.start_to_ready"] = unknown(value.get("reason", "NativeFaultPhaseUnavailable"))
