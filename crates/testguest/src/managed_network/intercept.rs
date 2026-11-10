@@ -14,6 +14,9 @@ pub(super) mod udp;
 mod wire;
 use wire::Netlink;
 
+#[path = "../../../init/src/relay.rs"]
+pub(super) mod shared;
+
 // RFC5737 documentation networks, with /30 point-to-point fixture links. These
 // are semantic test addresses, not allocated production subnets or runtime policy.
 const ROUTER_BACKEND: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
@@ -339,6 +342,10 @@ impl<T> Worker<T> {
     }
     fn finish(&mut self) -> io::Result<T> {
         self.wake();
+        self.join()
+    }
+
+    fn join(&mut self) -> io::Result<T> {
         match std::mem::replace(&mut self.state, WorkerState::Joined) {
             WorkerState::Running(thread) => thread
                 .join()

@@ -1,5 +1,11 @@
 # TCP pump implementation checkpoints
 
+Current follow-up: [NATIVE.md](NATIVE.md) records the single shared extraction
+and first eight actual native GNU/static-musl TCP passes, exact bytes/half-close/
+pidfd/FD/hash witnesses and remaining gates. Production engine wiring is still
+held separately for actual Unix/VSOCK compatibility. The record below describes
+the first signed6ab checkpoint and its then-pending scope.
+
 Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; reviewed design
 `c584e877f56d97736e325eae2cb9fa2be97fdfc0`. Role: implementer and assigned
 adversarial relay tester, Kiln `01a1c5d2ee0e7248982c95a59f1fd905`; ROOT

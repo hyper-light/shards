@@ -1,0 +1,144 @@
+{
+  "old_revision": "6ab0a06f3594b172f2c667a3dc6f5458562fc7bd",
+  "old_status": "",
+  "old_engine_sha256": "e2e4e6e6ae014ddb82aba96362801bd14bf4a69a2955ac44941bd481f6563eea",
+  "old_engine_test_binaries": [
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/deps/engine-188b1aa3d8119d00",
+      "sha256": "4833debdb810735c27e82711acbf212b1e9f655512187d23f668bea8a7302249"
+    }
+  ],
+  "locks": [
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/helpers/test-release/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/helpers/x86_64-unknown-linux-musl/test-release/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/build/shards-530092e3dcf4aac9/out/server/guest-test/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/build/shards-530092e3dcf4aac9/out/server/x86_64-unknown-linux-musl/guest-test/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/build/shards-530092e3dcf4aac9/out/init/guest-test/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-v1/target/test-release/build/shards-530092e3dcf4aac9/out/init/x86_64-unknown-linux-musl/guest-test/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v3/target/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v3/target/x86_64-unknown-linux-musl/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v3/target/x86_64-unknown-linux-gnu/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v4/target/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v4/target/x86_64-unknown-linux-gnu/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v4/target/x86_64-unknown-linux-musl/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v5/target/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v5/target/x86_64-unknown-linux-gnu/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-forward-cbd3-light-v5/target/x86_64-unknown-linux-musl/debug/.cargo-lock",
+      "exclusive_lock_available": true
+    }
+  ],
+  "native_children": [
+    {
+      "name": "x86_64-unknown-linux-musl-caller-server-first",
+      "pid": 40640,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-musl-caller-backend-fin-first",
+      "pid": 40703,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-musl-minimum-mapped-server-first",
+      "pid": 40744,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-musl-minimum-mapped-backend-fin-first",
+      "pid": 40796,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-caller-server-first",
+      "pid": 40830,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-caller-backend-fin-first",
+      "pid": 40850,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-minimum-mapped-server-first",
+      "pid": 40889,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    },
+    {
+      "name": "x86_64-unknown-linux-gnu-minimum-mapped-backend-fin-first",
+      "pid": 40899,
+      "pidfd_exit_ready": true,
+      "reaped": true,
+      "parent_fd_before": 4,
+      "parent_fd_after": 4
+    }
+  ],
+  "limit": "owned build-lock/held-pidfd facts; no all-host or kernel-population proof"
+}
