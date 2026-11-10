@@ -61,9 +61,56 @@ fn snapshot(phase: &str) -> Result<()> {
     if std::env::var_os("MANAGED_PROCESS_RESOURCES").is_none() {
         return Ok(());
     }
-    for name in ["status", "smaps_rollup", "cgroup", "net/sockstat"] {
+    for name in [
+        "status",
+        "stat",
+        "statm",
+        "smaps_rollup",
+        "cgroup",
+        "net/sockstat",
+    ] {
         for line in std::fs::read_to_string(Path::new("/proc/self").join(name))?.lines() {
             emit(format_args!("process_resource\t{phase}\t{name}\t{line}"));
+        }
+    }
+    let mut inodes = std::collections::BTreeSet::new();
+    for fd in std::fs::read_dir("/proc/self/fd")? {
+        if let Ok(target) = std::fs::read_link(fd?.path()) {
+            if let Some(inode) = target
+                .to_str()
+                .and_then(|s| s.strip_prefix("socket:["))
+                .and_then(|s| s.strip_suffix(']'))
+            {
+                inodes.insert(inode.to_owned());
+            }
+        }
+    }
+    for table in ["/proc/net/udp", "/proc/net/udp6"] {
+        for line in std::fs::read_to_string(table)?.lines().skip(1) {
+            if line
+                .split_whitespace()
+                .nth(9)
+                .is_some_and(|inode| inodes.contains(inode))
+            {
+                emit(format_args!("process_udp_queue\t{phase}\t{line}"));
+            }
+        }
+    }
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup")?;
+    if let Some(group) = cgroup.lines().find_map(|line| line.strip_prefix("0::")) {
+        let path = Path::new("/sys/fs/cgroup").join(group.trim_start_matches('/'));
+        for file in ["memory.current", "memory.stat", "cpu.stat"] {
+            match std::fs::read_to_string(path.join(file)) {
+                Ok(text) => {
+                    for line in text.lines() {
+                        emit(format_args!("process_cgroup\t{phase}\t{file}\t{line}"));
+                    }
+                }
+                Err(error) => emit(format_args!(
+                    "process_cgroup\t{phase}\t{file}\tunknown={:?}",
+                    error.kind()
+                )),
+            }
         }
     }
     emit(format_args!("process_handles\t{phase}\t{:?}", handles()));
@@ -86,6 +133,26 @@ fn publish(p: Producer, control: &Control, notice: &mpsc::SyncSender<Notice>, in
     control.finish()?;
     notice.send(Notice::Finished(index))?;
     Ok(())
+}
+fn owner_end(end: mpsc::SyncSender<Notice>) {
+    // EOF of private inherited fixture stdin is owner cancellation, not product input.
+    let mut byte = [0];
+    assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
+    end.send(Notice::OwnerEnd).unwrap();
+}
+fn check_progress(mode: &str, index: usize, result: Result<()>, progress: managed::Progress) {
+    if mode == "normal" || (mode == "stall" && index != 0) {
+        result.unwrap();
+        assert_eq!(progress.consumed, (BYTES * RECORDS) as u64);
+    } else if mode.starts_with("wrong") {
+        assert_eq!(progress.accepted, 0);
+        assert_eq!(progress.consumed, 0);
+        assert!(result.is_err());
+    } else {
+        assert_eq!(progress.accepted, BYTES as u64);
+        assert_eq!(progress.consumed, 0);
+        assert!(result.is_err());
+    }
 }
 fn server(root: &Path, channels: usize, mode: &str) -> Result<()> {
     let identity = Identity::load_or_create(&root.join("server.key"))?;
@@ -131,12 +198,7 @@ fn server(root: &Path, channels: usize, mode: &str) -> Result<()> {
     let end = notice.clone();
     let input = thread::Builder::new()
         .name("fixture-owner-control".into())
-        .spawn(move || {
-            // EOF of this private fixture's inherited stdin is owner cancellation.
-            let mut byte = [0];
-            assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
-            end.send(Notice::OwnerEnd).unwrap();
-        })?;
+        .spawn(move || owner_end(end))?;
     drop(notice);
     let mut subscribed = 0;
     let mut finished = 0;
@@ -171,21 +233,7 @@ fn server(root: &Path, channels: usize, mode: &str) -> Result<()> {
             progress.consumed,
             result.is_ok()
         ));
-        if mode == "normal" {
-            result?;
-            assert_eq!(progress.consumed, (BYTES * RECORDS) as u64);
-        } else if mode.starts_with("wrong") {
-            assert_eq!(progress.accepted, 0);
-            assert_eq!(progress.consumed, 0);
-            assert!(result.is_err());
-        } else if index == 0 {
-            assert_eq!(progress.accepted, BYTES as u64);
-            assert_eq!(progress.consumed, 0);
-            assert!(result.is_err());
-        } else {
-            result?;
-            assert_eq!(progress.consumed, (BYTES * RECORDS) as u64);
-        }
+        check_progress(mode, index, result, progress);
     }
     for driver in drivers {
         driver.join().map_err(|_| "server driver panicked")??;
@@ -440,7 +488,9 @@ pub(super) fn run() -> Result<()> {
     }
     snapshot("closed")?;
     let after = handles();
-    assert_eq!(before, after);
+    if before != after {
+        return Err(format!("handle/task return mismatch {before:?} -> {after:?}").into());
+    }
     emit(format_args!(
         "managed_process_return\t{role}\tbefore={before:?}\tafter={after:?}"
     ));
