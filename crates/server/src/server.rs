@@ -2356,6 +2356,39 @@ mod tests {
         assert_eq!(stops, [want]);
     }
 
+    #[test]
+    fn an_exhausted_program_identity_cannot_release_another_worker() {
+        let (instance, helper) = std::os::unix::net::UnixDatagram::pair().unwrap();
+        helper.set_nonblocking(true).unwrap();
+        let mut programs = Programs::new(Ok(OwnedFd::from(instance)));
+        programs.next = u64::MAX;
+        let result = programs.start("return 1;", None, 7, Some("owner"), "2".into(), false);
+        let received = sandbox::recv_control(helper.as_raw_fd());
+        let released = match &received {
+            Ok(Some((bytes, passed))) => {
+                eprintln!(
+                    "actual control bytes={bytes:?} passed_descriptor={}",
+                    passed.is_some()
+                );
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => false,
+            other => panic!("unexpected native helper receipt: {other:?}"),
+        };
+        eprintln!(
+            "start_refused={} worker_released={released} owned_programs={}",
+            result.is_err(),
+            programs.running.len()
+        );
+        assert!(
+            !released,
+            "an exhausted identity released a worker with a reused identity"
+        );
+        assert!(result.is_err());
+        assert!(programs.running.is_empty());
+        assert_eq!(programs.next, u64::MAX);
+    }
+
     /// A program's call is made as its caller's MCP call is: its value, or why it failed.
     #[test]
     fn a_programs_call_is_its_callers() {
