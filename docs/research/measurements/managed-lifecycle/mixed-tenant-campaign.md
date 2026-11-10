@@ -13,6 +13,7 @@ Apply that patch only in an isolated validation checkout and restore it afterwar
 
 ```sh
 git apply docs/research/measurements/managed-lifecycle/tenant-events-directory.patch
+git apply docs/research/measurements/managed-lifecycle/tenant-console-observation.patch
 cargo test -j 4 -p shards --profile test-release --test managed_lifecycle \
   a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive \
   -- --ignored --exact --nocapture
@@ -30,6 +31,14 @@ The independent tenant-observation-fatal-mutation.patch restores whole-boundary
 failure for that same pread error. The same test must then observe actual refusal
 of post-fault main execution, rather than merely miss an alert. This mutation
 does not corrupt the control handles or manufacture a different I/O error.
+
+First KVM attempt e6558222b/r68 failed0/1 after145.24s: the test waited for a
+diagnostic which is written to init's console, while warm VMs deliberately discard
+that console and keep main stdout/stderr private. This is an observation-seam
+failure, not evidence that quarantine failed. The separate retained console patch
+enables warm boot/restore console only in this isolated campaign. It is not a
+production output-policy change and cannot be used as raw-output independence
+evidence. Production typed control/metadata observation is separate capture work.
 
 Native light checks, actual KVM/HVF/WHP runs, mutation outcomes and resource counts
 must be appended by the coordinator after running. This campaign does not prove
