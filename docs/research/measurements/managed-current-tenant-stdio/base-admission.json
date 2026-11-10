@@ -1,0 +1,22 @@
+{
+  "main": "33df95b08ad8f95bddeaa1c48acf0c64386e0eac",
+  "base": "28e147c4dda846ca023020e03bc9b00eb2e58e94",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "phase": "unchanged-base build only; newleaf/currentA not compiled or run",
+  "receipt": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"runner\": \"8fadc1ec213332e16cb0d915a3fb913f\",\n  \"output\": \"\",\n  \"running\": true,\n  \"id\": \"r26\",\n  \"why\": \"linux/x86_64 \u00b7 22 of 32 cores idle \u00b7 56 GB free \u00b7 room for 2 CPUs, 4 GiB of memory, 24 GiB of disk\"\n}"
+      }
+    ],
+    "structuredContent": {
+      "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+      "output": "",
+      "running": true,
+      "id": "r26",
+      "why": "linux/x86_64 \u00b7 22 of 32 cores idle \u00b7 56 GB free \u00b7 room for 2 CPUs, 4 GiB of memory, 24 GiB of disk"
+    },
+    "isError": false
+  }
+}
