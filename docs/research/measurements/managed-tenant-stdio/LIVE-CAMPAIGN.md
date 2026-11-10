@@ -199,6 +199,49 @@ R01–R16 accounting above now adds actual A positive/refusal witnesses; it stil
 does not claim mutation closure, full population/kernel return, the seven-target
 matrix, profiling/performance or the full managed-runtime plan.
 
+## Caption validation and close-omission fixture witness
+
+r57 rebuilt exact `0ea38a52aa534bf665516c239c4bf122149f8554` and ran fresh normal
+and inherited A tests: each selected one actual test passed0, 20 filtered. Both
+retained strict metadata, causal bytes and owned cleanup with FD11→11. Both actual
+release records now report OwnerReleasedNeighborAfterGateEof. The private Linux
+record is `records/caption-v4`; its full source/caller/logs remain preserved.
+
+Mutation-only signed branch `p/managed-tenant-close-negative-v1`, exact
+`10091363ce72f50e595312437ae8ffc07f7b9803`, omits only the parent's own stdout close
+and retains the F_GETFD/EBADF prerequisite, held Child/pidfd, private handoff and
+original cleanup. r58 rebuilt matching native guest and caller0, then the actual
+test failed101 as expected before inherited-ready. Retained process history
+identifies the actor exiting stage5, CloseStdout. The ready record was absent;
+stop/remove/owner and observer joins completed with FD11→11. This is a fixture
+validity witness. It is not a product ownership guard proof, permission-isolation
+proof, full population/reaping proof or hard resource return guarantee.
+
+Exact source restoration to0ea and caller/guest binary comparison against frozen
+baseline artifacts is pending admission. Repeated full 4 CPU / 8 GiB / 40 GiB
+requests were refused with zero admitted idle cores, including handle r60 which
+ended as a refusal before any command ran. No smaller build ask or guard bypass
+was used. Remote source remains the preserved close mutation; its VM cleanup was
+already complete. Local source is the positive branch; no local build/cache is
+active. Current proof must not be reported as a restored passing campaign.
+
+The next finite source is mutation-only
+`2a9ade8302935fb7636bf01b3e1ba7e1d094b622` on
+`p/managed-tenant-suffix-negative-v1`: one same-width ASCII byte changes in the
+owned child's existing suffix. The report bound is unchanged. Its prepared
+[command](live-cbd-v1/suffix-negative-v7.command) requires the completed exact
+restoration result before building/running. Expected evidence is actual wrong-byte
+capture after successful child challenge and prior sibling/main progress, strict
+test failure and owned cleanup, followed by another exact restoration. This
+candidate is signed source only, not a run or a correction for integration.
+
+After the user reported a thread/inventory error, current origin/main AGENTS,
+rules, evidence and handoff were reread in full. Main remains cbd392849 and policy
+hash remains df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3.
+The assigned adversarial role and same private/full-resource scope were read back
+to ROOT. No source/evidence/final binary was deleted, and the paused ARM VM and
+protected ROOT scopes were untouched.
+
 ## R01–R16 at this checkpoint
 
 | Rule | Evidence and remaining limit |
