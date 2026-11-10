@@ -1,0 +1,8 @@
+diff --git a/crates/shards/tests/managed_network.rs b/crates/shards/tests/managed_network.rs
+--- a/crates/shards/tests/managed_network.rs
++++ b/crates/shards/tests/managed_network.rs
+@@ -13 +13,4 @@
++#[path = "managed_network/tcp_forward.rs"]
++mod tcp_forward;
++
+ use serde_json::json;
