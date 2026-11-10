@@ -1,5 +1,18 @@
 # Harness adapter lane checkpoint
 
+Current policy refreshed FULL at origin/mainca3ab10c151aa5539e757f1cc76029746ccbb561,
+same df2 hash, implementer readback ROOT7806. NEW native control encoder in
+harness/control.rs writes only pinned plaintext Turn/Interrupt into caller's
+initialized region with exact JSONL pre-count; EOF/resize/rawbytes typedunsupported.
+Current light-native-control-01:17tests0failed/0ignored/1unrelatedfiltered,
+scoped prod/test strict0/fmt/policy0, no native/provider/login/VM invocation.
+CONTROL.md records API/source delta, full TurnStart schema mismatch (9optional
+experimental fields only; required plaintext fields equal), failedfirstfetch
+metadata and honest immutable re-read09, all R01–R16 limits. Input owns collision
+gate TargetRaw/Native fromprotectedmember; generic Pipe/Tty SESSION cannot write
+same native protocolstdin. Exact actual gate/caller delta is pending peer, no
+duplicate manager/queue/rights from our codec. Supplied literalargv unchanged.
+
 Epoch owner now explicitly confirms that no real current admission closure/
 classification/access-check API exists yet: only signed Epoch DATA and parent
 Context schema. Do not treat the pending API as an implemented dependency or

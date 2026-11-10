@@ -1,0 +1,100 @@
+{
+  "source_base": "26b57c4feda46dd53e5b12f98a1192e9652a34cd",
+  "policy": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "checked_source": "light-native-control-01/sources.json",
+  "prior_unchanged_payloads": 194,
+  "raw_payloads": 18,
+  "bytes": 15525,
+  "files": [
+    {
+      "path": "light-native-control-01/admission.json",
+      "bytes": 251,
+      "sha256": "c92e6b1847b1ba0909c58549df44757eecc981d9df05f3c514ce69b41a81130d"
+    },
+    {
+      "path": "light-native-control-01/build.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/build.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/commands.json",
+      "bytes": 4113,
+      "sha256": "2245836529d283f43d6990a6f961c773d6501e5f9361149aa188ef379da62636"
+    },
+    {
+      "path": "light-native-control-01/format.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/format.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/policy.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/policy.stdout",
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "path": "light-native-control-01/production.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/production.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/receipt.json",
+      "bytes": 322,
+      "sha256": "6e253a20215d06db87dd155f7d5b78402fe14d498496695df22ec8808460e90b"
+    },
+    {
+      "path": "light-native-control-01/sources.json",
+      "bytes": 1799,
+      "sha256": "fd92f838b3abda5cec39571b3fab28804559e2ddcf2fda8dd235390823db3d9b"
+    },
+    {
+      "path": "light-native-control-01/test-clippy.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/test-clippy.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/tests.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "light-native-control-01/tests.stdout",
+      "bytes": 1713,
+      "sha256": "cd7c4a9f59d559d181b9aabe907fe674e28f39a7ab2dd1db0c657985b7c871f5"
+    },
+    {
+      "path": "source-fetch-08.json",
+      "bytes": 2338,
+      "sha256": "c5960a932c189327829739e9c178369df1dc742ea183baa070c7a300dfd6021f"
+    },
+    {
+      "path": "source-fetch-09.json",
+      "bytes": 4908,
+      "sha256": "5dc4d179d0e7bdfa4899ab6d35bff1de8e3eb85b40334679690761fd1fd4e257"
+    }
+  ]
+}

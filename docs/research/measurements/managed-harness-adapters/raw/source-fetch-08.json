@@ -1,0 +1,46 @@
+[
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json",
+    "revision": "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
+    "git_blob": "d299d318ded151f436f19eb6445f47fedeae2867",
+    "path": "schemas/codex-0.167.0/TurnStartParams.json",
+    "status": 200,
+    "bytes": 24058,
+    "sha256": "4e25cd48986f73e600d9949a055ddb994a75b4a38790e935274646f0fece00ad",
+    "actual_git_blob": "d299d318ded151f436f19eb6445f47fedeae2867",
+    "installed_generated_equal": false,
+    "failure": "ValueError: installed schema mismatch"
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/v2/TurnInterruptParams.json",
+    "revision": "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
+    "git_blob": "9181428a10e17186272d2cdd74fc2c4f07c76504",
+    "path": "schemas/codex-0.167.0/TurnInterruptParams.json",
+    "status": 200,
+    "bytes": 278,
+    "sha256": "6dff382dae73d1dbc58406ed045605f647e7a49660e2540fbd2c6c24d60c5f2b",
+    "actual_git_blob": "9181428a10e17186272d2cdd74fc2c4f07c76504",
+    "installed_generated_equal": true
+  },
+  {
+    "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/v2/TurnInterruptResponse.json",
+    "revision": "086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a",
+    "git_blob": "5d8a0f9ce22e0387218fd390c362de6a61247b8c",
+    "path": "schemas/codex-0.167.0/TurnInterruptResponse.json",
+    "status": 200,
+    "bytes": 114,
+    "sha256": "531de6be06fe979b5963f249bab82498a175e614bf65ac12fb2e849dfe60bcf1",
+    "actual_git_blob": "5d8a0f9ce22e0387218fd390c362de6a61247b8c",
+    "installed_generated_equal": true
+  },
+  {
+    "url": "https://raw.githubusercontent.com/anthropics/claude-agent-sdk-python/3cf3446b0fa6c97042e85b245bba07459f22f946/src/claude_agent_sdk/client.py",
+    "revision": "3cf3446b0fa6c97042e85b245bba07459f22f946",
+    "git_blob": "a9c11f0cd93cb7420510e58c12dec5fda6af7bbd",
+    "path": "sources/claude-sdk-public-client.py",
+    "status": 200,
+    "bytes": 26948,
+    "sha256": "980f956d963338b39f4fd5224e69594eb513bfda37e5b215cf94bb0499ea047c",
+    "actual_git_blob": "a9c11f0cd93cb7420510e58c12dec5fda6af7bbd"
+  }
+]

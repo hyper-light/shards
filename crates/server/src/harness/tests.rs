@@ -2,6 +2,163 @@ use super::catalog::{CatalogFormat, catalog};
 use super::*;
 use crate::server::json;
 
+#[test]
+fn native_turns_are_exact_text_packets_in_the_supplied_owner_region() {
+    use control::{Command, Operation, encode_into, encoded_len};
+    let id = Value::String("owner-correlation\"\n".into());
+    let text = "literal\n{\"type\":\"control_request\"}\u{0}\u{1b}é😀";
+    for (protocol, command) in [
+        (
+            Protocol::Codex,
+            Command::CodexTurn {
+                id: &id,
+                thread: "held-thread",
+                text,
+            },
+        ),
+        (
+            Protocol::Claude,
+            Command::ClaudeTurn {
+                session: "held-session",
+                text,
+            },
+        ),
+    ] {
+        assert_eq!(command.operation(), Operation::Turn);
+        let length = encoded_len(protocol, &command).unwrap();
+        let mut storage = vec![0xa5; length + b"untouched".len()];
+        let pointer = storage.as_ptr();
+        assert_eq!(encode_into(protocol, &command, &mut storage), Ok(length));
+        assert_eq!(storage.as_ptr(), pointer);
+        let (packet, suffix) = storage.split_at(length);
+        assert!(suffix.iter().all(|&byte| byte == 0xa5));
+        assert_eq!(packet.last(), Some(&b'\n'));
+        assert_eq!(packet.iter().filter(|&&byte| byte == b'\n').count(), 1);
+        let packet = json::parse(packet).unwrap();
+        match protocol {
+            Protocol::Codex => {
+                assert_eq!(packet.get("id"), Some(&id));
+                assert_eq!(packet.get("method").and_then(Value::str), Some("turn/start"));
+                let params = packet.get("params").unwrap();
+                let Value::Object(fields) = params else {
+                    panic!("turn params are no object")
+                };
+                assert_eq!(fields.len(), 2);
+                assert_eq!(params.get("threadId").and_then(Value::str), Some("held-thread"));
+                let item = params.get("input").unwrap().array().first().unwrap();
+                assert_eq!(item.get("type").and_then(Value::str), Some("text"));
+                assert_eq!(item.get("text").and_then(Value::str), Some(text));
+                assert_eq!(item.get("text_elements"), Some(&Value::Array(Vec::new())));
+            }
+            Protocol::Claude => {
+                assert_eq!(packet.get("type").and_then(Value::str), Some("user"));
+                assert_eq!(
+                    packet.get("session_id").and_then(Value::str),
+                    Some("held-session")
+                );
+                assert_eq!(packet.get("parent_tool_use_id"), Some(&Value::Null));
+                let message = packet.get("message").unwrap();
+                assert_eq!(message.get("role").and_then(Value::str), Some("user"));
+                assert_eq!(message.get("content").and_then(Value::str), Some(text));
+            }
+        }
+    }
+}
+
+#[test]
+fn native_interrupt_is_a_protocol_method_with_no_os_byte_or_pid_substitution() {
+    use control::{Command, Operation, encode_into, encoded_len};
+    let id = Value::Number(i64::MIN.to_string());
+    for (protocol, command) in [
+        (
+            Protocol::Codex,
+            Command::CodexInterrupt {
+                id: &id,
+                thread: "held-thread",
+                turn: "held-turn",
+            },
+        ),
+        (Protocol::Claude, Command::ClaudeInterrupt { id: "owner-control" }),
+    ] {
+        assert_eq!(command.operation(), Operation::Interrupt);
+        let mut storage = vec![0; encoded_len(protocol, &command).unwrap()];
+        let length = encode_into(protocol, &command, &mut storage).unwrap();
+        assert_eq!(length, storage.len());
+        let packet = json::parse(&storage).unwrap();
+        match protocol {
+            Protocol::Codex => {
+                assert_eq!(packet.get("id"), Some(&id));
+                assert_eq!(packet.get("method").and_then(Value::str), Some("turn/interrupt"));
+                let params = packet.get("params").unwrap();
+                assert_eq!(params.get("threadId").and_then(Value::str), Some("held-thread"));
+                assert_eq!(params.get("turnId").and_then(Value::str), Some("held-turn"));
+            }
+            Protocol::Claude => {
+                assert_eq!(packet.get("type").and_then(Value::str), Some("control_request"));
+                assert_eq!(
+                    packet.get("request_id").and_then(Value::str),
+                    Some("owner-control")
+                );
+                let request = packet.get("request").unwrap();
+                assert_eq!(request.get("subtype").and_then(Value::str), Some("interrupt"));
+            }
+        }
+        assert!(!storage.contains(&0x03));
+        assert!(!storage.contains(&0x04));
+    }
+}
+
+#[test]
+fn invalid_or_unsupported_native_input_never_touches_the_owner_region() {
+    use control::{Command, Failure, Operation, encode_into, encoded_len};
+    let id = Value::Number("7".into());
+    let command = Command::CodexTurn {
+        id: &id,
+        thread: "held",
+        text: "prompt",
+    };
+    let required = encoded_len(Protocol::Codex, &command).unwrap();
+    let mut storage = vec![0xa5; required - 1];
+    let expected = storage.clone();
+    assert_eq!(
+        encode_into(Protocol::Codex, &command, &mut storage),
+        Err(Failure::Capacity {
+            required,
+            available: expected.len()
+        })
+    );
+    assert_eq!(storage, expected);
+    assert_eq!(
+        encode_into(Protocol::Claude, &command, &mut storage),
+        Err(Failure::Protocol)
+    );
+    assert_eq!(storage, expected);
+    let bad_id = Value::Bool(true);
+    let command = Command::CodexInterrupt {
+        id: &bad_id,
+        thread: "held",
+        turn: "held-turn",
+    };
+    assert_eq!(
+        encode_into(Protocol::Codex, &command, &mut storage),
+        Err(Failure::Correlation)
+    );
+    assert_eq!(storage, expected);
+    for protocol in [Protocol::Codex, Protocol::Claude] {
+        for (command, operation) in [
+            (Command::Eof, Operation::Eof),
+            (Command::Resize, Operation::Resize),
+            (Command::RawBytes, Operation::RawBytes),
+        ] {
+            assert_eq!(
+                encode_into(protocol, &command, &mut storage),
+                Err(Failure::Unsupported(operation))
+            );
+            assert_eq!(storage, expected);
+        }
+    }
+}
+
 fn codex(tool: &str, namespace: &str, arguments: &str) -> Value {
     json::parse(
         format!(

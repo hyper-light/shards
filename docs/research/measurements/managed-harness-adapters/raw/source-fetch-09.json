@@ -1,0 +1,143 @@
+{
+  "url": "https://raw.githubusercontent.com/openai/codex/086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a/codex-rs/app-server-protocol/schema/json/v2/TurnStartParams.json",
+  "source_fetch_08_first_bytes_retained": false,
+  "source_fetch_08_first_metadata_retained": true,
+  "immutable_reread_sha256_equals_original_metadata": true,
+  "upstream": {
+    "bytes": 24058,
+    "sha256": "4e25cd48986f73e600d9949a055ddb994a75b4a38790e935274646f0fece00ad"
+  },
+  "installed": {
+    "bytes": 27411,
+    "sha256": "d13cb408b906669e8d3e8694b42148a75180d4dcd0eeac6867271add8dfa1864"
+  },
+  "json_semantically_equal": false,
+  "changes": [
+    {
+      "path": "/properties/additionalContext",
+      "kind": "installed_only",
+      "installed": {
+        "additionalProperties": {
+          "$ref": "#/definitions/AdditionalContextEntry"
+        },
+        "description": "Optional client-provided context fragments keyed by an opaque source identifier.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    {
+      "path": "/properties/collaborationMode",
+      "kind": "installed_only",
+      "installed": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CollaborationMode"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "EXPERIMENTAL - Set a pre-set collaboration mode. Takes precedence over model, reasoning_effort, and developer instructions if set.\n\nFor `collaboration_mode.settings.developer_instructions`, `null` means \"use the built-in instructions for the selected mode\"."
+      }
+    },
+    {
+      "path": "/properties/cyberAccessProgram",
+      "kind": "installed_only",
+      "installed": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/CyberAccessProgram"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "EXPERIMENTAL - Request an authorized cyber program for this turn. Omission preserves automatic behavior. This does not grant access."
+      }
+    },
+    {
+      "path": "/properties/environments",
+      "kind": "installed_only",
+      "installed": {
+        "description": "Optional environments for this turn and subsequent turns.\n\nOmitted uses the thread sticky environments. Empty disables environment access for this turn. Non-empty selects the first environment as the current turn environment for this turn.",
+        "items": {
+          "$ref": "#/definitions/TurnEnvironmentParams"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    },
+    {
+      "path": "/properties/multiAgentMode",
+      "kind": "installed_only",
+      "installed": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/MultiAgentMode"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "@deprecated Ignored. Use `effort: \"ultra\"` for proactive multi-agent behavior."
+      }
+    },
+    {
+      "path": "/properties/permissions",
+      "kind": "installed_only",
+      "installed": {
+        "description": "Select a named permissions profile id for this turn and subsequent turns. Cannot be combined with `sandboxPolicy`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    {
+      "path": "/properties/responsesapiClientMetadata",
+      "kind": "installed_only",
+      "installed": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Optional metadata to enrich Codex's ResponsesAPI turn metadata. Replaces unprotected client-provided entries when supplied; an empty map clears them.\n\nEntries are flattened into the JSON string sent as `client_metadata[\"x-codex-turn-metadata\"]` on ResponsesAPI HTTP and websocket requests.\n\nThey are not sent as top-level ResponsesAPI `client_metadata` keys, and reserved keys such as `session_id`, `thread_id`, `turn_id`, and `window_id` cannot be overridden.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    {
+      "path": "/properties/responsesapiClientMetadataPatch",
+      "kind": "installed_only",
+      "installed": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Merge entries into the ResponsesAPI turn metadata without removing existing entries. Applied after `responsesapiClientMetadata` if both are provided; reserved keys remain protected.",
+        "type": [
+          "object",
+          "null"
+        ]
+      }
+    },
+    {
+      "path": "/properties/runtimeWorkspaceRoots",
+      "kind": "installed_only",
+      "installed": {
+        "description": "Replace the thread's runtime workspace roots for this turn and subsequent turns. Paths must be absolute.",
+        "items": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      }
+    }
+  ]
+}
