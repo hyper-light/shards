@@ -7,6 +7,7 @@ use std::io::Write as _;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::mpsc;
+use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -497,6 +498,7 @@ fn worker(
     records: usize,
     bytes: usize,
     patience: Duration,
+    checkpoint: Option<Arc<Barrier>>,
 ) -> Result<Vec<(u128, u128)>> {
     let mut samples = Vec::new();
     samples.try_reserve_exact(records)?;
@@ -523,6 +525,12 @@ fn worker(
             received.duration_since(start).as_nanos(),
             start.elapsed().as_nanos(),
         ));
+        if record == 0 {
+            if let Some(checkpoint) = &checkpoint {
+                checkpoint.wait();
+                checkpoint.wait();
+            }
+        }
     }
     Ok(samples)
 }
@@ -542,6 +550,8 @@ pub(super) fn run_with(args: Vec<String>) -> Result<()> {
         || records == 0
         || bytes == 0
         || patience.is_zero()
+        || (stall && records < 2)
+        || args.get(5).is_none_or(|s| s != "normal" && s != "stall")
         || args.get(6).is_none_or(|s| s != "endpoint" && s != "shared")
     {
         return Err("invalid workload".into());
@@ -639,6 +649,7 @@ pub(super) fn run_with(args: Vec<String>) -> Result<()> {
     let mut workers = Vec::new();
     workers.try_reserve_exact(channels)?;
     let mut blocked = None;
+    let checkpoint = stall.then(|| Arc::new(Barrier::new(channels)));
     for (index, channel) in live.iter_mut().enumerate() {
         let producer = channel.producer.take().ok_or("producer")?;
         let events = channel.events.take().ok_or("events")?;
@@ -662,13 +673,45 @@ pub(super) fn run_with(args: Vec<String>) -> Result<()> {
                     .spawn(move || producer.wait_capacity())?,
             );
         } else {
+            let checkpoint = checkpoint.clone();
             workers.push((
                 index,
                 thread::Builder::new()
                     .name("publisher".into())
-                    .spawn(move || worker(producer, events, records, bytes, patience))?,
+                    .spawn(move || worker(producer, events, records, bytes, patience, checkpoint))?,
             ));
         }
+    }
+    if let Some(checkpoint) = checkpoint {
+        checkpoint.wait();
+        let channel = live.first().ok_or("stall channel")?;
+        let progress = channel.control.progress();
+        if progress.accepted != bytes as u64 || progress.consumed != 0 {
+            return Err("stall progress changed".into());
+        }
+        let start = Instant::now();
+        channel.control.abort();
+        if blocked
+            .take()
+            .ok_or("blocked publisher")?
+            .join()
+            .map_err(|_| "blocked publisher panicked")?
+            .is_ok()
+        {
+            return Err("abort returned credit".into());
+        }
+        println!(
+            "cancel\twaiter_ns={}\taccepted={}\tconsumed={}\tneighbor_records_before={}\tneighbor_records_after={}",
+            start.elapsed().as_nanos(),
+            progress.accepted,
+            progress.consumed,
+            channels.saturating_sub(1),
+            records
+                .saturating_sub(1)
+                .checked_mul(channels.saturating_sub(1))
+                .ok_or("count overflow")?
+        );
+        checkpoint.wait();
     }
     let mut all = Vec::new();
     all.try_reserve_exact(workers.len())?;
@@ -680,27 +723,6 @@ pub(super) fn run_with(args: Vec<String>) -> Result<()> {
         for (record, (received, acked)) in samples.into_iter().enumerate() {
             println!("sample\tchannel={index}\trecord={record}\treceive_ns={received}\tapp_ack_ns={acked}");
         }
-    }
-    if let Some(blocked) = blocked {
-        let channel = live.first().ok_or("stall channel")?;
-        let progress = channel.control.progress();
-        if progress.accepted != bytes as u64 || progress.consumed != 0 {
-            return Err("stall progress changed".into());
-        }
-        let start = Instant::now();
-        channel.control.abort();
-        if blocked.join().map_err(|_| "blocked publisher panicked")?.is_ok() {
-            return Err("abort returned credit".into());
-        }
-        println!(
-            "cancel\twaiter_ns={}\taccepted={}\tconsumed={}\tneighbor_records={}",
-            start.elapsed().as_nanos(),
-            progress.accepted,
-            progress.consumed,
-            records
-                .checked_mul(channels.saturating_sub(1))
-                .ok_or("count overflow")?
-        );
     }
     let start = Instant::now();
     let before = counts();
