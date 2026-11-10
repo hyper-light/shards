@@ -317,6 +317,7 @@ enum Admission {
 }
 
 fn supplied_agent(processes: Option<u64>, admission: Admission) {
+    use std::io::Write as _;
     if cannot_run_vms() {
         return;
     }
@@ -388,7 +389,7 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
     }
     assert_eq!(ran.status, Some(0), "{ran}");
     let report = std::fs::read_to_string(reports.join("result")).unwrap();
-    eprintln!("managed lifecycle facts:\n{report}");
+    let _ = writeln!(std::io::stderr(), "managed lifecycle facts:\n{report}");
     let field = |name: &str| {
         report
             .lines()
@@ -416,7 +417,7 @@ fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path
         .unwrap()
         .as_nanos()
         .to_be_bytes();
-    assert_eq!(published(&reports, "ready", TIMEOUT), b"ready");
+    assert_eq!(published(reports, "ready", TIMEOUT), b"ready");
     let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env, TIMEOUT);
     assert_eq!(ports.status, Some(0), "{ports}");
     let host_port: u16 = ports
