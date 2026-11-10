@@ -62,7 +62,7 @@ fn exchange_inherited(fixture: &Fixture, input: &Supplied, until: Instant) {
     );
     assert_ne!(address.port(), 0, "actual OS-assigned host port");
     let frame = [
-        &[1][..],
+        &[0][..],
         &u32::try_from(input.challenge.len()).unwrap().to_be_bytes(),
         &input.challenge,
     ]
