@@ -11,6 +11,8 @@ use crate::value::Value;
 mod collections;
 mod encoding;
 mod regex;
+#[cfg(test)]
+pub(crate) use regex::experiment;
 mod strings;
 mod time;
 
@@ -58,6 +60,8 @@ impl BuiltinError {
 /// query's time, its seed for random numbers, and caches that live for one query.
 #[derive(Debug, Default)]
 pub struct Context {
+    #[cfg(test)]
+    pub(crate) regex_experiment: experiment::Binding,
     /// Nanoseconds since the epoch, fixed for the query (`time.now_ns`).
     pub time_ns: i64,
     /// Bytes read for randomness, in order, as OPA reads its `Seed`.

@@ -1,0 +1,4791 @@
+{
+  "status": "isolated cfg(test) experiment, not adopted",
+  "base_revision": "593fe5d7eb6e8f7465414213ef23c527bb37cf9f",
+  "campaigns": {
+    "fresh-profiled": {
+      "equivalent_comparisons": [
+        {
+          "workload": "constant_hot",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.680198895934178
+        },
+        {
+          "workload": "constant_hot",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.31455390176022374
+        },
+        {
+          "workload": "constant_hot",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.6965588044722821
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.2599615312148298
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.310487965651779
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.3121821205777575
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.6550520322528123
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.7731017683463742
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.8692031891837617
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 1.5600911883159254
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 1.5970400090199524
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 1.5582162849925585
+        }
+      ],
+      "shards_mixed": [
+        {
+          "first": "ordinary",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "ordinary",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "ordinary",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        }
+      ],
+      "opa_mixed": [
+        {
+          "first": "angle",
+          "second": "square",
+          "values": [
+            true,
+            true
+          ]
+        },
+        {
+          "first": "ordinary",
+          "second": "template",
+          "values": [
+            true,
+            true
+          ]
+        },
+        {
+          "first": "square",
+          "second": "angle",
+          "values": [
+            false,
+            false
+          ]
+        },
+        {
+          "first": "template",
+          "second": "ordinary",
+          "values": [
+            false,
+            false
+          ]
+        }
+      ],
+      "concurrent": [
+        {
+          "independent": true,
+          "owners": [
+            {
+              "failed": 0,
+              "ready": 1,
+              "slots": 4
+            },
+            {
+              "failed": 0,
+              "ready": 1,
+              "slots": 4
+            }
+          ]
+        }
+      ],
+      "error_order": [
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 0
+          }
+        },
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          }
+        },
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "program",
+          "retained": {
+            "failed": 2,
+            "ready": 0,
+            "slots": 2
+          }
+        }
+      ],
+      "opa_error_order": [
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 152686,
+            "reallocations": 0,
+            "retained_delta": -150670
+          },
+          "drop_ns": 42947,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 103635,
+            "allocations": 641,
+            "freed_bytes": 82139,
+            "reallocations": 109,
+            "retained_delta": 21496
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 185206,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 2
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3490719,
+            "allocations": 24476,
+            "freed_bytes": 2477520,
+            "reallocations": 112,
+            "retained_delta": 1013199
+          },
+          "setup_ns": 2193510,
+          "state_after_first": {
+            "legacy_entries": 2
+          },
+          "workload": "constant_hot",
+          "log": "current-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 6.82568,
+              "p90": 7.83708,
+              "p99": 8.2834,
+              "max": 8.2834
+            },
+            "allocated_bytes_per_query": {
+              "p50": 19725.0,
+              "p90": 19725.0,
+              "p99": 19725.0,
+              "max": 19725.0
+            },
+            "allocations_per_query": {
+              "p50": 161.0,
+              "p90": 161.0,
+              "p99": 161.0,
+              "max": 161.0
+            },
+            "reallocations_per_query": {
+              "p50": 23.0,
+              "p90": 23.0,
+              "p99": 23.0,
+              "max": 23.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 6.82,
+              "p90": 7.84,
+              "p99": 8.27,
+              "max": 8.27
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 153582,
+            "reallocations": 0,
+            "retained_delta": -151566
+          },
+          "drop_ns": 35378,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 59408,
+            "allocations": 412,
+            "freed_bytes": 49746,
+            "reallocations": 53,
+            "retained_delta": 9662
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 159897,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 1
+          },
+          "semantic_mismatches": 1000,
+          "setup_allocation": {
+            "allocated_bytes": 3478707,
+            "allocations": 24388,
+            "freed_bytes": 2464612,
+            "reallocations": 89,
+            "retained_delta": 1014095
+          },
+          "setup_ns": 2695440,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_delimiter",
+          "log": "current-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 6.12042,
+              "p90": 6.19108,
+              "p99": 6.28329,
+              "max": 6.28329
+            },
+            "allocated_bytes_per_query": {
+              "p50": 19856.0,
+              "p90": 19856.0,
+              "p99": 19856.0,
+              "max": 19856.0
+            },
+            "allocations_per_query": {
+              "p50": 146.0,
+              "p90": 146.0,
+              "p99": 146.0,
+              "max": 146.0
+            },
+            "reallocations_per_query": {
+              "p50": 14.0,
+              "p90": 14.0,
+              "p99": 14.0,
+              "max": 14.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 6.11,
+              "p90": 6.17,
+              "p99": 6.31,
+              "max": 6.31
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151446,
+            "reallocations": 0,
+            "retained_delta": -150006
+          },
+          "drop_ns": 40289,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 27845,
+            "allocations": 224,
+            "freed_bytes": 22919,
+            "reallocations": 31,
+            "retained_delta": 4926
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 126874,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 100
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3461945,
+            "allocations": 24304,
+            "freed_bytes": 2449410,
+            "reallocations": 78,
+            "retained_delta": 1012535
+          },
+          "setup_ns": 1925127,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_regex",
+          "log": "current-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 9.92493,
+              "p90": 11.15073,
+              "p99": 11.52387,
+              "max": 11.52387
+            },
+            "allocated_bytes_per_query": {
+              "p50": 27159.4,
+              "p90": 28243.0,
+              "p99": 28243.0,
+              "max": 28243.0
+            },
+            "allocations_per_query": {
+              "p50": 225.01,
+              "p90": 228.0,
+              "p99": 228.0,
+              "max": 228.0
+            },
+            "reallocations_per_query": {
+              "p50": 29.0,
+              "p90": 30.0,
+              "p99": 30.0,
+              "max": 30.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.54,
+              "p99": 4669.98,
+              "max": 4669.98
+            },
+            "process_cpu_us_per_query": {
+              "p50": 9.9,
+              "p90": 11.14,
+              "p99": 11.5,
+              "max": 11.5
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151646,
+            "reallocations": 0,
+            "retained_delta": -150206
+          },
+          "drop_ns": 45369,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 53934,
+            "allocations": 307,
+            "freed_bytes": 38271,
+            "reallocations": 55,
+            "retained_delta": 15663
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 153968,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 2000
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3468547,
+            "allocations": 24326,
+            "freed_bytes": 2455812,
+            "reallocations": 81,
+            "retained_delta": 1012735
+          },
+          "setup_ns": 2529249,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_template",
+          "log": "current-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 23.52291,
+              "p90": 24.34807,
+              "p99": 28.70666,
+              "max": 28.70666
+            },
+            "allocated_bytes_per_query": {
+              "p50": 54744.0,
+              "p90": 54863.08,
+              "p99": 56095.84,
+              "max": 56095.84
+            },
+            "allocations_per_query": {
+              "p50": 307.01,
+              "p90": 310.0,
+              "p99": 310.01,
+              "max": 310.01
+            },
+            "reallocations_per_query": {
+              "p50": 55.0,
+              "p90": 56.0,
+              "p99": 56.0,
+              "max": 56.0
+            },
+            "retained_delta_per_query": {
+              "p50": 15758.0,
+              "p90": 15813.96,
+              "p99": 16433.84,
+              "max": 16433.84
+            },
+            "process_cpu_us_per_query": {
+              "p50": 23.49,
+              "p90": 24.28,
+              "p99": 28.58,
+              "max": 28.58
+            },
+            "minor_faults_per_query": {
+              "p50": 4.1,
+              "p90": 4.12,
+              "p99": 4.26,
+              "max": 4.26
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 152540,
+            "reallocations": 0,
+            "retained_delta": -151100
+          },
+          "drop_ns": 38511,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 13051,
+            "allocations": 113,
+            "freed_bytes": 12955,
+            "reallocations": 6,
+            "retained_delta": 96
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 22402,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3496103,
+            "allocations": 24592,
+            "freed_bytes": 2482474,
+            "reallocations": 86,
+            "retained_delta": 1013629
+          },
+          "setup_ns": 1803857,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "failed_compilation",
+          "log": "current-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 4.81202,
+              "p90": 4.9345799999999995,
+              "p99": 5.0357899999999995,
+              "max": 5.0357899999999995
+            },
+            "allocated_bytes_per_query": {
+              "p50": 14468.5,
+              "p90": 14468.5,
+              "p99": 14470.11,
+              "max": 14470.11
+            },
+            "allocations_per_query": {
+              "p50": 127.0,
+              "p90": 127.0,
+              "p99": 127.01,
+              "max": 127.01
+            },
+            "reallocations_per_query": {
+              "p50": 10.0,
+              "p90": 10.0,
+              "p99": 10.03,
+              "max": 10.03
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.91,
+              "max": 0.91
+            },
+            "process_cpu_us_per_query": {
+              "p50": 4.79,
+              "p90": 4.91,
+              "p99": 5.01,
+              "max": 5.01
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.03,
+              "max": 0.03
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 5576,
+            "allocations": 7,
+            "freed_objects": 20739,
+            "retained_delta": -1224160
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 832706,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 22952,
+            "allocations": 284,
+            "freed_objects": 27,
+            "retained_delta": 22952
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 141841,
+          "first_value": [
+            false,
+            true
+          ],
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 156888,
+            "allocations": 3091,
+            "freed_objects": 82,
+            "retained_delta": 156888
+          },
+          "setup_ns": 472298,
+          "workload": "constant_hot",
+          "log": "opa-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 11.4685,
+              "p90": 15.20209,
+              "p99": 18.557599999999997,
+              "max": 18.557599999999997
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6856.0,
+              "p90": 6958.56,
+              "p99": 7358.24,
+              "max": 7358.24
+            },
+            "allocations_per_query": {
+              "p50": 119.0,
+              "p90": 119.43,
+              "p99": 120.07,
+              "max": 120.07
+            },
+            "retained_delta_per_query": {
+              "p50": 6856.0,
+              "p90": 6958.56,
+              "p99": 7358.24,
+              "max": 7358.24
+            },
+            "process_cpu_us_per_query": {
+              "p50": 12.49,
+              "p90": 23.12,
+              "p99": 27.6,
+              "max": 27.6
+            },
+            "minor_faults_per_query": {
+              "p50": 0.48,
+              "p90": 2.31,
+              "p99": 2.61,
+              "max": 2.61
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.26,
+              "p90": 0.33,
+              "p99": 0.43,
+              "max": 0.43
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 78285,
+            "retained_delta": -4592144
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 741182,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 17720,
+            "allocations": 223,
+            "freed_objects": 18,
+            "retained_delta": 17720
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 57350,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 1000,
+          "setup_allocation": {
+            "allocated_bytes": 149008,
+            "allocations": 2918,
+            "freed_objects": 57,
+            "retained_delta": 149008
+          },
+          "setup_ns": 291115,
+          "workload": "dynamic_delimiter",
+          "log": "opa-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 10.55599,
+              "p90": 15.29602,
+              "p99": 16.05963,
+              "max": 16.05963
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6628.8,
+              "p90": 6685.44,
+              "p99": 7125.92,
+              "max": 7125.92
+            },
+            "allocations_per_query": {
+              "p50": 118.01,
+              "p90": 118.36,
+              "p99": 119.07,
+              "max": 119.07
+            },
+            "retained_delta_per_query": {
+              "p50": 6624.0,
+              "p90": 6677.6,
+              "p99": 7125.92,
+              "max": 7125.92
+            },
+            "process_cpu_us_per_query": {
+              "p50": 11.15,
+              "p90": 21.31,
+              "p99": 27.88,
+              "max": 27.88
+            },
+            "minor_faults_per_query": {
+              "p50": 0.11,
+              "p90": 2.43,
+              "p99": 2.83,
+              "max": 2.83
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.24,
+              "p90": 0.31,
+              "p99": 0.37,
+              "max": 0.37
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 18401,
+            "retained_delta": -1536568
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 671442,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 51888,
+            "allocations": 166,
+            "freed_objects": 4,
+            "retained_delta": 51888
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 76165,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 142760,
+            "allocations": 2772,
+            "freed_objects": 47,
+            "retained_delta": 142760
+          },
+          "setup_ns": 444434,
+          "workload": "dynamic_regex",
+          "log": "opa-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 12.505030000000001,
+              "p90": 18.4425,
+              "p99": 19.48375,
+              "max": 19.48375
+            },
+            "allocated_bytes_per_query": {
+              "p50": 9372.0,
+              "p90": 10615.44,
+              "p99": 10660.08,
+              "max": 10660.08
+            },
+            "allocations_per_query": {
+              "p50": 132.96,
+              "p90": 133.15,
+              "p99": 133.27,
+              "max": 133.27
+            },
+            "retained_delta_per_query": {
+              "p50": 8945.76,
+              "p90": 10233.12,
+              "p99": 10660.08,
+              "max": 10660.08
+            },
+            "process_cpu_us_per_query": {
+              "p50": 13.81,
+              "p90": 28.04,
+              "p99": 33.27,
+              "max": 33.27
+            },
+            "minor_faults_per_query": {
+              "p50": 0.56,
+              "p90": 2.76,
+              "p99": 3.39,
+              "max": 3.39
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.3,
+              "p90": 0.4,
+              "p99": 0.44,
+              "max": 0.44
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 5576,
+            "allocations": 7,
+            "freed_objects": 101671,
+            "retained_delta": -6684800
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 2173756,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 17088,
+            "allocations": 205,
+            "freed_objects": 19,
+            "retained_delta": 17088
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 58086,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 146216,
+            "allocations": 2834,
+            "freed_objects": 54,
+            "retained_delta": 146216
+          },
+          "setup_ns": 299920,
+          "workload": "dynamic_template",
+          "log": "opa-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 15.40873,
+              "p90": 20.24699,
+              "p99": 26.577669999999998,
+              "max": 26.577669999999998
+            },
+            "allocated_bytes_per_query": {
+              "p50": 12760.8,
+              "p90": 13197.52,
+              "p99": 13306.24,
+              "max": 13306.24
+            },
+            "allocations_per_query": {
+              "p50": 179.56,
+              "p90": 180.06,
+              "p99": 180.17,
+              "max": 180.17
+            },
+            "retained_delta_per_query": {
+              "p50": 12760.0,
+              "p90": 12983.44,
+              "p99": 13306.24,
+              "max": 13306.24
+            },
+            "process_cpu_us_per_query": {
+              "p50": 16.25,
+              "p90": 36.05,
+              "p99": 44.02,
+              "max": 44.02
+            },
+            "minor_faults_per_query": {
+              "p50": 2.57,
+              "p90": 3.85,
+              "p99": 4.99,
+              "max": 4.99
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.47,
+              "p90": 0.67,
+              "p99": 0.88,
+              "max": 0.88
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 16,
+            "allocations": 1,
+            "freed_objects": 78934,
+            "retained_delta": -4622752
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 1429517,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 11992,
+            "allocations": 146,
+            "freed_objects": 4,
+            "retained_delta": 11992
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 53773,
+          "first_value": false,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 155512,
+            "allocations": 2979,
+            "freed_objects": 68,
+            "retained_delta": 155512
+          },
+          "setup_ns": 305740,
+          "workload": "failed_compilation",
+          "log": "opa-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 7.50719,
+              "p90": 11.21352,
+              "p99": 12.7465,
+              "max": 12.7465
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6901.76,
+              "p90": 7005.6,
+              "p99": 7308.96,
+              "max": 7308.96
+            },
+            "allocations_per_query": {
+              "p50": 121.01,
+              "p90": 121.3,
+              "p99": 121.91,
+              "max": 121.91
+            },
+            "retained_delta_per_query": {
+              "p50": 6900.0,
+              "p90": 7005.6,
+              "p99": 7308.96,
+              "max": 7308.96
+            },
+            "process_cpu_us_per_query": {
+              "p50": 8.24,
+              "p90": 18.34,
+              "p99": 25.3,
+              "max": 25.3
+            },
+            "minor_faults_per_query": {
+              "p50": 0.34,
+              "p90": 2.08,
+              "p99": 2.75,
+              "max": 2.75
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.2,
+              "p90": 0.25,
+              "p99": 0.29,
+              "max": 0.29
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 175214,
+            "reallocations": 0,
+            "retained_delta": -173198
+          },
+          "drop_ns": 41304,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 103459,
+            "allocations": 638,
+            "freed_bytes": 82139,
+            "reallocations": 109,
+            "retained_delta": 21320
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 266150,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 2
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3492748,
+            "allocations": 24489,
+            "freed_bytes": 2478101,
+            "reallocations": 118,
+            "retained_delta": 1014647
+          },
+          "setup_ns": 2497909,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 2
+          },
+          "workload": "constant_hot",
+          "log": "program-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 6.75986,
+              "p90": 10.31857,
+              "p99": 10.71991,
+              "max": 10.71991
+            },
+            "allocated_bytes_per_query": {
+              "p50": 19725.0,
+              "p90": 19725.0,
+              "p99": 19725.0,
+              "max": 19725.0
+            },
+            "allocations_per_query": {
+              "p50": 161.0,
+              "p90": 161.0,
+              "p99": 161.0,
+              "max": 161.0
+            },
+            "reallocations_per_query": {
+              "p50": 23.0,
+              "p90": 23.0,
+              "p99": 23.0,
+              "max": 23.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 6.76,
+              "p90": 10.21,
+              "p99": 10.64,
+              "max": 10.64
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 153582,
+            "reallocations": 0,
+            "retained_delta": -151566
+          },
+          "drop_ns": 35656,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 59256,
+            "allocations": 410,
+            "freed_bytes": 59152,
+            "reallocations": 53,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 314812,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3479306,
+            "allocations": 24398,
+            "freed_bytes": 2465163,
+            "reallocations": 93,
+            "retained_delta": 1014143
+          },
+          "setup_ns": 2619434,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_delimiter",
+          "log": "program-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 16.06046,
+              "p90": 16.413439999999998,
+              "p99": 18.2102,
+              "max": 18.2102
+            },
+            "allocated_bytes_per_query": {
+              "p50": 48408.5,
+              "p90": 48408.5,
+              "p99": 48408.5,
+              "max": 48408.5
+            },
+            "allocations_per_query": {
+              "p50": 331.5,
+              "p90": 331.5,
+              "p99": 331.5,
+              "max": 331.5
+            },
+            "reallocations_per_query": {
+              "p50": 42.5,
+              "p90": 42.5,
+              "p99": 42.5,
+              "max": 42.5
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 16.02,
+              "p90": 16.35,
+              "p99": 18.13,
+              "max": 18.13
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151446,
+            "reallocations": 0,
+            "retained_delta": -150006
+          },
+          "drop_ns": 35440,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 27684,
+            "allocations": 222,
+            "freed_bytes": 27580,
+            "reallocations": 31,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 109069,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3462263,
+            "allocations": 24312,
+            "freed_bytes": 2449680,
+            "reallocations": 81,
+            "retained_delta": 1012583
+          },
+          "setup_ns": 1652174,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_regex",
+          "log": "program-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 9.529950000000001,
+              "p90": 9.68762,
+              "p99": 10.23017,
+              "max": 10.23017
+            },
+            "allocated_bytes_per_query": {
+              "p50": 27045.0,
+              "p90": 28211.0,
+              "p99": 28211.0,
+              "max": 28211.0
+            },
+            "allocations_per_query": {
+              "p50": 223.0,
+              "p90": 226.0,
+              "p99": 226.0,
+              "max": 226.0
+            },
+            "reallocations_per_query": {
+              "p50": 29.0,
+              "p90": 30.0,
+              "p99": 30.0,
+              "max": 30.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 9.48,
+              "p90": 9.68,
+              "p99": 10.15,
+              "max": 10.15
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151646,
+            "reallocations": 0,
+            "retained_delta": -150206
+          },
+          "drop_ns": 36705,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 53773,
+            "allocations": 305,
+            "freed_bytes": 53669,
+            "reallocations": 55,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 131782,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3468890,
+            "allocations": 24334,
+            "freed_bytes": 2456107,
+            "reallocations": 84,
+            "retained_delta": 1012783
+          },
+          "setup_ns": 1703408,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_template",
+          "log": "program-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 17.72742,
+              "p90": 17.95924,
+              "p99": 19.4545,
+              "max": 19.4545
+            },
+            "allocated_bytes_per_query": {
+              "p50": 54510.0,
+              "p90": 54728.0,
+              "p99": 54728.0,
+              "max": 54728.0
+            },
+            "allocations_per_query": {
+              "p50": 306.0,
+              "p90": 309.0,
+              "p99": 309.0,
+              "max": 309.0
+            },
+            "reallocations_per_query": {
+              "p50": 55.0,
+              "p90": 56.0,
+              "p99": 56.0,
+              "max": 56.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 17.68,
+              "p90": 17.94,
+              "p99": 19.35,
+              "max": 19.35
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 153448,
+            "reallocations": 0,
+            "retained_delta": -152008
+          },
+          "drop_ns": 41696,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 13051,
+            "allocations": 113,
+            "freed_bytes": 12955,
+            "reallocations": 6,
+            "retained_delta": 96
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 20977,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 1,
+            "ready": 0,
+            "slots": 1
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3497261,
+            "allocations": 24600,
+            "freed_bytes": 2482728,
+            "reallocations": 89,
+            "retained_delta": 1014533
+          },
+          "setup_ns": 2146832,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 1
+          },
+          "workload": "failed_compilation",
+          "log": "program-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 4.817810000000001,
+              "p90": 4.93426,
+              "p99": 4.9831,
+              "max": 4.9831
+            },
+            "allocated_bytes_per_query": {
+              "p50": 14464.5,
+              "p90": 14464.5,
+              "p99": 14466.63,
+              "max": 14466.63
+            },
+            "allocations_per_query": {
+              "p50": 127.0,
+              "p90": 127.0,
+              "p99": 127.02,
+              "max": 127.02
+            },
+            "reallocations_per_query": {
+              "p50": 10.0,
+              "p90": 10.0,
+              "p99": 10.03,
+              "max": 10.03
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 1.43,
+              "max": 1.43
+            },
+            "process_cpu_us_per_query": {
+              "p50": 4.82,
+              "p90": 4.92,
+              "p99": 4.98,
+              "max": 4.98
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.03,
+              "max": 0.03
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 152686,
+            "reallocations": 0,
+            "retained_delta": -150670
+          },
+          "drop_ns": 42240,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 103459,
+            "allocations": 638,
+            "freed_bytes": 103267,
+            "reallocations": 109,
+            "retained_delta": 192
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 172932,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3490719,
+            "allocations": 24476,
+            "freed_bytes": 2477520,
+            "reallocations": 112,
+            "retained_delta": 1013199
+          },
+          "setup_ns": 1744949,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "constant_hot",
+          "log": "uncached-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 36.45957,
+              "p90": 36.74235,
+              "p99": 36.9551,
+              "max": 36.9551
+            },
+            "allocated_bytes_per_query": {
+              "p50": 102720.0,
+              "p90": 102720.0,
+              "p99": 102720.0,
+              "max": 102720.0
+            },
+            "allocations_per_query": {
+              "p50": 635.0,
+              "p90": 635.0,
+              "p99": 635.0,
+              "max": 635.0
+            },
+            "reallocations_per_query": {
+              "p50": 108.0,
+              "p90": 108.0,
+              "p99": 108.0,
+              "max": 108.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 36.38,
+              "p90": 36.68,
+              "p99": 36.87,
+              "max": 36.87
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 2016,
+            "allocations": 7,
+            "freed_bytes": 153582,
+            "reallocations": 0,
+            "retained_delta": -151566
+          },
+          "drop_ns": 41127,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 59256,
+            "allocations": 410,
+            "freed_bytes": 59152,
+            "reallocations": 53,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 134778,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3478707,
+            "allocations": 24388,
+            "freed_bytes": 2464612,
+            "reallocations": 89,
+            "retained_delta": 1014095
+          },
+          "setup_ns": 1651695,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_delimiter",
+          "log": "uncached-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 18.0888,
+              "p90": 19.40741,
+              "p99": 20.7046,
+              "max": 20.7046
+            },
+            "allocated_bytes_per_query": {
+              "p50": 48408.5,
+              "p90": 48408.5,
+              "p99": 48408.5,
+              "max": 48408.5
+            },
+            "allocations_per_query": {
+              "p50": 331.5,
+              "p90": 331.5,
+              "p99": 331.5,
+              "max": 331.5
+            },
+            "reallocations_per_query": {
+              "p50": 42.5,
+              "p90": 42.5,
+              "p99": 42.5,
+              "max": 42.5
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 18.07,
+              "p90": 19.38,
+              "p99": 20.67,
+              "max": 20.67
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151446,
+            "reallocations": 0,
+            "retained_delta": -150006
+          },
+          "drop_ns": 35368,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 27684,
+            "allocations": 222,
+            "freed_bytes": 27580,
+            "reallocations": 31,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 123251,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3461945,
+            "allocations": 24304,
+            "freed_bytes": 2449410,
+            "reallocations": 78,
+            "retained_delta": 1012535
+          },
+          "setup_ns": 1692725,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_regex",
+          "log": "uncached-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 9.54227,
+              "p90": 10.695739999999999,
+              "p99": 10.91953,
+              "max": 10.91953
+            },
+            "allocated_bytes_per_query": {
+              "p50": 27045.0,
+              "p90": 28211.0,
+              "p99": 28211.0,
+              "max": 28211.0
+            },
+            "allocations_per_query": {
+              "p50": 223.0,
+              "p90": 226.0,
+              "p99": 226.0,
+              "max": 226.0
+            },
+            "reallocations_per_query": {
+              "p50": 29.0,
+              "p90": 30.0,
+              "p99": 30.0,
+              "max": 30.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 9.5,
+              "p90": 10.58,
+              "p99": 10.88,
+              "max": 10.88
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 151646,
+            "reallocations": 0,
+            "retained_delta": -150206
+          },
+          "drop_ns": 40950,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 53773,
+            "allocations": 305,
+            "freed_bytes": 53669,
+            "reallocations": 55,
+            "retained_delta": 104
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 142759,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3468547,
+            "allocations": 24326,
+            "freed_bytes": 2455812,
+            "reallocations": 81,
+            "retained_delta": 1012735
+          },
+          "setup_ns": 1927941,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_template",
+          "log": "uncached-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 19.93105,
+              "p90": 20.73237,
+              "p99": 22.863529999999997,
+              "max": 22.863529999999997
+            },
+            "allocated_bytes_per_query": {
+              "p50": 54510.0,
+              "p90": 54728.0,
+              "p99": 54728.0,
+              "max": 54728.0
+            },
+            "allocations_per_query": {
+              "p50": 306.0,
+              "p90": 309.0,
+              "p99": 309.0,
+              "max": 309.0
+            },
+            "reallocations_per_query": {
+              "p50": 55.0,
+              "p90": 56.0,
+              "p99": 56.0,
+              "max": 56.0
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "process_cpu_us_per_query": {
+              "p50": 19.91,
+              "p90": 20.69,
+              "p99": 22.79,
+              "max": 22.79
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": true,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 1440,
+            "allocations": 5,
+            "freed_bytes": 152540,
+            "reallocations": 0,
+            "retained_delta": -151100
+          },
+          "drop_ns": 39461,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 13051,
+            "allocations": 113,
+            "freed_bytes": 12955,
+            "reallocations": 6,
+            "retained_delta": 96
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 18661,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 3496103,
+            "allocations": 24592,
+            "freed_bytes": 2482474,
+            "reallocations": 86,
+            "retained_delta": 1013629
+          },
+          "setup_ns": 1661503,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "failed_compilation",
+          "log": "uncached-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 4.70069,
+              "p90": 4.829899999999999,
+              "p99": 4.96071,
+              "max": 4.96071
+            },
+            "allocated_bytes_per_query": {
+              "p50": 14468.5,
+              "p90": 14468.5,
+              "p99": 14470.11,
+              "max": 14470.11
+            },
+            "allocations_per_query": {
+              "p50": 127.0,
+              "p90": 127.0,
+              "p99": 127.01,
+              "max": 127.01
+            },
+            "reallocations_per_query": {
+              "p50": 10.0,
+              "p90": 10.0,
+              "p99": 10.03,
+              "max": 10.03
+            },
+            "retained_delta_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.91,
+              "max": 0.91
+            },
+            "process_cpu_us_per_query": {
+              "p50": 4.7,
+              "p90": 4.82,
+              "p99": 4.94,
+              "max": 4.94
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.03,
+              "max": 0.03
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        }
+      ]
+    },
+    "fresh-unprofiled": {
+      "equivalent_comparisons": [
+        {
+          "workload": "constant_hot",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.5086996899272402
+        },
+        {
+          "workload": "constant_hot",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.2729213973768812
+        },
+        {
+          "workload": "constant_hot",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.490359309414754
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.8835372579918955
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.9104489990024823
+        },
+        {
+          "workload": "dynamic_regex",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.637931610127227
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.6126356374207739
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 0.8382392612669997
+        },
+        {
+          "workload": "dynamic_template",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 0,
+          "opa_over_shards_wall_p50": 1.3882212641504679
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "current",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 1.9577874539084839
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "uncached",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 1.802148005885141
+        },
+        {
+          "workload": "failed_compilation",
+          "mode": "program",
+          "first_values_equal": true,
+          "first_error_text_equal": true,
+          "error_count": 1000,
+          "opa_over_shards_wall_p50": 3.349146607741182
+        }
+      ],
+      "shards_mixed": [
+        {
+          "first": "ordinary",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": false,
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 1
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "ordinary",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": true,
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "ordinary",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "template",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "template",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "ordinary",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        },
+        {
+          "first": "angle",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "square",
+          "values": [
+            [
+              "true"
+            ],
+            [
+              "false"
+            ]
+          ]
+        },
+        {
+          "first": "square",
+          "matches_independent_calls": true,
+          "mode": "program",
+          "retained": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 4
+          },
+          "second": "angle",
+          "values": [
+            [
+              "false"
+            ],
+            [
+              "true"
+            ]
+          ]
+        }
+      ],
+      "opa_mixed": [
+        {
+          "first": "angle",
+          "second": "square",
+          "values": [
+            true,
+            true
+          ]
+        },
+        {
+          "first": "ordinary",
+          "second": "template",
+          "values": [
+            true,
+            true
+          ]
+        },
+        {
+          "first": "square",
+          "second": "angle",
+          "values": [
+            false,
+            false
+          ]
+        },
+        {
+          "first": "template",
+          "second": "ordinary",
+          "values": [
+            false,
+            false
+          ]
+        }
+      ],
+      "concurrent": [
+        {
+          "independent": true,
+          "owners": [
+            {
+              "failed": 0,
+              "ready": 1,
+              "slots": 4
+            },
+            {
+              "failed": 0,
+              "ready": 1,
+              "slots": 4
+            }
+          ]
+        }
+      ],
+      "error_order": [
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "current",
+          "retained": {
+            "legacy_entries": 0
+          }
+        },
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "uncached",
+          "retained": {
+            "legacy_entries": 0
+          }
+        },
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ],
+          "mode": "program",
+          "retained": {
+            "failed": 2,
+            "ready": 0,
+            "slots": 2
+          }
+        }
+      ],
+      "opa_error_order": [
+        {
+          "errors": [
+            "probe.rego:2: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+            "probe.rego:3: eval_builtin_error: regex.template_match: unbalanced braces in \"a<\""
+          ]
+        }
+      ],
+      "rows": [
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 90274,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 338458,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 2
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 3132823,
+          "state_after_first": {
+            "legacy_entries": 2
+          },
+          "workload": "constant_hot",
+          "log": "current-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 10.42336,
+              "p90": 10.8668,
+              "p99": 10.98423,
+              "max": 10.98423
+            },
+            "process_cpu_us_per_query": {
+              "p50": 10.4,
+              "p90": 10.85,
+              "p99": 10.95,
+              "max": 10.95
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 74366,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 262391,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 1
+          },
+          "semantic_mismatches": 1000,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 2954282,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_delimiter",
+          "log": "current-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 5.6833100000000005,
+              "p90": 6.20411,
+              "p99": 15.10769,
+              "max": 15.10769
+            },
+            "process_cpu_us_per_query": {
+              "p50": 5.62,
+              "p90": 6.07,
+              "p99": 9.93,
+              "max": 9.93
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 48835,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 150907,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 100
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 2891571,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_regex",
+          "log": "current-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 17.768,
+              "p90": 19.76404,
+              "p99": 20.56377,
+              "max": 20.56377
+            },
+            "process_cpu_us_per_query": {
+              "p50": 17.7,
+              "p90": 19.61,
+              "p99": 20.47,
+              "max": 20.47
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 143134,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 250621,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 2000
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 3066210,
+          "state_after_first": {
+            "legacy_entries": 1
+          },
+          "workload": "dynamic_template",
+          "log": "current-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 44.93782,
+              "p90": 48.136739999999996,
+              "p99": 56.46707,
+              "max": 56.46707
+            },
+            "process_cpu_us_per_query": {
+              "p50": 44.76,
+              "p90": 47.88,
+              "p99": 56.14,
+              "max": 56.14
+            },
+            "minor_faults_per_query": {
+              "p50": 4.1,
+              "p90": 4.11,
+              "p99": 4.27,
+              "max": 4.27
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 106317,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 31045,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "current",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 3305470,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "failed_compilation",
+          "log": "current-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 7.82682,
+              "p90": 8.2153,
+              "p99": 8.80502,
+              "max": 8.80502
+            },
+            "process_cpu_us_per_query": {
+              "p50": 7.8,
+              "p90": 8.19,
+              "p99": 8.77,
+              "max": 8.77
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.04,
+              "max": 0.04
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 57121,
+            "retained_delta": -5004224
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 1319673,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 22840,
+            "allocations": 283,
+            "freed_objects": 27,
+            "retained_delta": 22840
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 107897,
+          "first_value": [
+            false,
+            true
+          ],
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 156936,
+            "allocations": 3092,
+            "freed_objects": 82,
+            "retained_delta": 156936
+          },
+          "setup_ns": 554788,
+          "workload": "constant_hot",
+          "log": "opa-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 15.725719999999999,
+              "p90": 19.30417,
+              "p99": 31.2268,
+              "max": 31.2268
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6857.12,
+              "p90": 6914.4,
+              "p99": 7358.88,
+              "max": 7358.88
+            },
+            "allocations_per_query": {
+              "p50": 119.01,
+              "p90": 119.24,
+              "p99": 120.08,
+              "max": 120.08
+            },
+            "retained_delta_per_query": {
+              "p50": 6856.0,
+              "p90": 6914.4,
+              "p99": 7358.88,
+              "max": 7358.88
+            },
+            "process_cpu_us_per_query": {
+              "p50": 17.09,
+              "p90": 28.59,
+              "p99": 62.43,
+              "max": 62.43
+            },
+            "minor_faults_per_query": {
+              "p50": 0.13,
+              "p90": 2.16,
+              "p99": 2.53,
+              "max": 2.53
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.33,
+              "p90": 0.47,
+              "p99": 0.65,
+              "max": 0.65
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 74702,
+            "retained_delta": -4383208
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 1226010,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 17560,
+            "allocations": 222,
+            "freed_objects": 18,
+            "retained_delta": 17560
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 67141,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 1000,
+          "setup_allocation": {
+            "allocated_bytes": 149008,
+            "allocations": 2918,
+            "freed_objects": 57,
+            "retained_delta": 149008
+          },
+          "setup_ns": 373600,
+          "workload": "dynamic_delimiter",
+          "log": "opa-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 13.579030000000001,
+              "p90": 32.10342,
+              "p99": 39.927800000000005,
+              "max": 39.927800000000005
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6625.12,
+              "p90": 6801.6,
+              "p99": 7025.44,
+              "max": 7025.44
+            },
+            "allocations_per_query": {
+              "p50": 118.01,
+              "p90": 118.37,
+              "p99": 118.86,
+              "max": 118.86
+            },
+            "retained_delta_per_query": {
+              "p50": 6624.0,
+              "p90": 6801.6,
+              "p99": 7025.44,
+              "max": 7025.44
+            },
+            "process_cpu_us_per_query": {
+              "p50": 20.14,
+              "p90": 37.93,
+              "p99": 70.52,
+              "max": 70.52
+            },
+            "minor_faults_per_query": {
+              "p50": 0.53,
+              "p90": 2.41,
+              "p99": 2.48,
+              "max": 2.48
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.42,
+              "p90": 0.55,
+              "p99": 0.68,
+              "max": 0.68
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 5576,
+            "allocations": 7,
+            "freed_objects": 32989,
+            "retained_delta": -2649544
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 1314894,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 51888,
+            "allocations": 166,
+            "freed_objects": 4,
+            "retained_delta": 51888
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 113866,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 142744,
+            "allocations": 2771,
+            "freed_objects": 47,
+            "retained_delta": 142744
+          },
+          "setup_ns": 575694,
+          "workload": "dynamic_regex",
+          "log": "opa-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 15.698690000000001,
+              "p90": 23.52592,
+              "p99": 23.732400000000002,
+              "max": 23.732400000000002
+            },
+            "allocated_bytes_per_query": {
+              "p50": 9658.32,
+              "p90": 10233.44,
+              "p99": 10652.08,
+              "max": 10652.08
+            },
+            "allocations_per_query": {
+              "p50": 132.81,
+              "p90": 133.01,
+              "p99": 133.29,
+              "max": 133.29
+            },
+            "retained_delta_per_query": {
+              "p50": 8978.24,
+              "p90": 10232.0,
+              "p99": 10233.44,
+              "max": 10233.44
+            },
+            "process_cpu_us_per_query": {
+              "p50": 16.83,
+              "p90": 38.91,
+              "p99": 43.73,
+              "max": 43.73
+            },
+            "minor_faults_per_query": {
+              "p50": 0.21,
+              "p90": 3.02,
+              "p99": 3.61,
+              "max": 3.61
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.36,
+              "p90": 0.48,
+              "p99": 0.52,
+              "max": 0.52
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 26118,
+            "retained_delta": -1733584
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 1913499,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 17200,
+            "allocations": 206,
+            "freed_objects": 19,
+            "retained_delta": 17200
+          },
+          "first_error": "",
+          "first_errors": [],
+          "first_ns": 101574,
+          "first_value": true,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 146232,
+            "allocations": 2835,
+            "freed_objects": 54,
+            "retained_delta": 146232
+          },
+          "setup_ns": 549621,
+          "workload": "dynamic_template",
+          "log": "opa-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 27.53051,
+              "p90": 41.14775,
+              "p99": 61.04752,
+              "max": 61.04752
+            },
+            "allocated_bytes_per_query": {
+              "p50": 12760.8,
+              "p90": 13186.56,
+              "p99": 13343.28,
+              "max": 13343.28
+            },
+            "allocations_per_query": {
+              "p50": 179.46,
+              "p90": 180.05,
+              "p99": 180.38,
+              "max": 180.38
+            },
+            "retained_delta_per_query": {
+              "p50": 12760.0,
+              "p90": 12928.16,
+              "p99": 13306.24,
+              "max": 13306.24
+            },
+            "process_cpu_us_per_query": {
+              "p50": 34.39,
+              "p90": 54.25,
+              "p99": 154.23,
+              "max": 154.23
+            },
+            "minor_faults_per_query": {
+              "p50": 1.47,
+              "p90": 4.32,
+              "p99": 4.59,
+              "max": 4.59
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.72,
+              "p90": 1.24,
+              "p99": 1.33,
+              "max": 1.33
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.02,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_objects": 28317,
+            "retained_delta": -1660272
+          },
+          "drop_method": "last prepared reference removed followed by runtime.GC; global regex cache remains",
+          "drop_ns": 2798862,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 12152,
+            "allocations": 147,
+            "freed_objects": 4,
+            "retained_delta": 12152
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 101193,
+          "first_value": false,
+          "implementation": "opa-v1.14.1",
+          "mode": "opa",
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 155576,
+            "allocations": 2980,
+            "freed_objects": 68,
+            "retained_delta": 155576
+          },
+          "setup_ns": 620710,
+          "workload": "failed_compilation",
+          "log": "opa-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 15.32325,
+              "p90": 18.23661,
+              "p99": 35.13632,
+              "max": 35.13632
+            },
+            "allocated_bytes_per_query": {
+              "p50": 6900.0,
+              "p90": 6981.6,
+              "p99": 7410.08,
+              "max": 7410.08
+            },
+            "allocations_per_query": {
+              "p50": 121.0,
+              "p90": 121.47,
+              "p99": 122.12,
+              "max": 122.12
+            },
+            "retained_delta_per_query": {
+              "p50": 6900.0,
+              "p90": 6981.6,
+              "p99": 7410.08,
+              "max": 7410.08
+            },
+            "process_cpu_us_per_query": {
+              "p50": 18.02,
+              "p90": 29.2,
+              "p99": 81.22,
+              "max": 81.22
+            },
+            "minor_faults_per_query": {
+              "p50": 0.36,
+              "p90": 2.47,
+              "p99": 2.97,
+              "max": 2.97
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.3,
+              "p90": 0.43,
+              "p99": 0.53,
+              "max": 0.53
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 108614,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 320371,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 2
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 3005047,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 2,
+            "slots": 2
+          },
+          "workload": "constant_hot",
+          "log": "program-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 10.55163,
+              "p90": 11.0877,
+              "p99": 11.22719,
+              "max": 11.22719
+            },
+            "process_cpu_us_per_query": {
+              "p50": 10.53,
+              "p90": 11.06,
+              "p99": 11.17,
+              "max": 11.17
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 48892,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 182303,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 1832458,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_delimiter",
+          "log": "program-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 18.159689999999998,
+              "p90": 18.87734,
+              "p99": 19.383580000000002,
+              "max": 19.383580000000002
+            },
+            "process_cpu_us_per_query": {
+              "p50": 18.08,
+              "p90": 18.64,
+              "p99": 19.17,
+              "max": 19.17
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 48493,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 144871,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 1880976,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_regex",
+          "log": "program-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 9.58446,
+              "p90": 11.59409,
+              "p99": 12.321219999999999,
+              "max": 12.321219999999999
+            },
+            "process_cpu_us_per_query": {
+              "p50": 9.57,
+              "p90": 11.43,
+              "p99": 12.27,
+              "max": 12.27
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 43050,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 180190,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 1669376,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 0
+          },
+          "workload": "dynamic_template",
+          "log": "program-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 19.8315,
+              "p90": 40.92061,
+              "p99": 42.62191000000001,
+              "max": 42.62191000000001
+            },
+            "process_cpu_us_per_query": {
+              "p50": 19.78,
+              "p90": 37.4,
+              "p99": 42.3,
+              "max": 42.3
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 70572,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 24453,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "program",
+          "program_owner_released": true,
+          "retained_state": {
+            "failed": 1,
+            "ready": 0,
+            "slots": 1
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 1818689,
+          "state_after_first": {
+            "failed": 0,
+            "ready": 0,
+            "slots": 1
+          },
+          "workload": "failed_compilation",
+          "log": "program-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 4.575270000000001,
+              "p90": 7.23708,
+              "p99": 25.97538,
+              "max": 25.97538
+            },
+            "process_cpu_us_per_query": {
+              "p50": 4.52,
+              "p90": 7.17,
+              "p99": 8.05,
+              "max": 8.05
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.03,
+              "max": 0.03
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 45997,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 223682,
+          "first_values": [
+            "[false,true]"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 2030172,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "constant_hot",
+          "log": "uncached-constant_hot.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 57.61996,
+              "p90": 71.73303999999999,
+              "p99": 87.2644,
+              "max": 87.2644
+            },
+            "process_cpu_us_per_query": {
+              "p50": 57.02,
+              "p90": 71.33,
+              "p99": 86.77,
+              "max": 86.77
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "upstream_history_deviation",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 45317,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 201834,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 1850187,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_delimiter",
+          "log": "uncached-dynamic_delimiter.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 16.11825,
+              "p90": 32.24543,
+              "p99": 33.08511,
+              "max": 33.08511
+            },
+            "process_cpu_us_per_query": {
+              "p50": 16.09,
+              "p90": 32.11,
+              "p99": 32.84,
+              "max": 32.84
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 84573,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 224984,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 2862704,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_regex",
+          "log": "uncached-dynamic_regex.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 17.2428,
+              "p90": 18.01124,
+              "p99": 30.1235,
+              "max": 30.1235
+            },
+            "process_cpu_us_per_query": {
+              "p50": 17.12,
+              "p90": 17.9,
+              "p99": 18.19,
+              "max": 18.19
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.01,
+              "p99": 0.02,
+              "max": 0.02
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "equivalent",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 68469,
+          "error_count": 0,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": null,
+          "first_errors": [],
+          "first_ns": 232780,
+          "first_values": [
+            "true"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 2684578,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "dynamic_template",
+          "log": "uncached-dynamic_template.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 32.84326,
+              "p90": 34.07426,
+              "p99": 44.21083,
+              "max": 44.21083
+            },
+            "process_cpu_us_per_query": {
+              "p50": 32.61,
+              "p90": 33.86,
+              "p99": 34.34,
+              "max": 34.34
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.01,
+              "max": 0.01
+            }
+          }
+        },
+        {
+          "allocation_profiled": false,
+          "comparison": "errors",
+          "drop_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "drop_ns": 123126,
+          "error_count": 1000,
+          "first_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "first_error": "probe.rego:3: eval_builtin_error: regex.match: error parsing regexp: missing closing ]: `[`",
+          "first_errors": [],
+          "first_ns": 30237,
+          "first_values": [
+            "false"
+          ],
+          "implementation": "shards",
+          "mode": "uncached",
+          "program_owner_released": true,
+          "retained_state": {
+            "legacy_entries": 0
+          },
+          "semantic_mismatches": 0,
+          "setup_allocation": {
+            "allocated_bytes": 0,
+            "allocations": 0,
+            "freed_bytes": 0,
+            "reallocations": 0,
+            "retained_delta": 0
+          },
+          "setup_ns": 3058533,
+          "state_after_first": {
+            "legacy_entries": 0
+          },
+          "workload": "failed_compilation",
+          "log": "uncached-failed_compilation.log",
+          "statistics": {
+            "wall_us_per_query": {
+              "p50": 8.50277,
+              "p90": 11.726959999999998,
+              "p99": 11.94425,
+              "max": 11.94425
+            },
+            "process_cpu_us_per_query": {
+              "p50": 8.47,
+              "p90": 11.64,
+              "p99": 11.91,
+              "max": 11.91
+            },
+            "minor_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.04,
+              "max": 0.04
+            },
+            "major_faults_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "voluntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            },
+            "involuntary_switches_per_query": {
+              "p50": 0.0,
+              "p90": 0.0,
+              "p99": 0.0,
+              "max": 0.0
+            }
+          }
+        }
+      ]
+    }
+  },
+  "cel_error_phase": {
+    "baseline_unexecuted_value": false,
+    "planned_creation_error": "error parsing regexp: missing closing ]: `[`"
+  },
+  "cel_alternative": {
+    "module": {
+      "Path": "github.com/google/cel-go",
+      "Version": "v0.27.0",
+      "Info": "/home/adalundhe/managed-rego-cache-experiment-go-mod/cache/download/github.com/google/cel-go/@v/v0.27.0.info",
+      "GoMod": "/home/adalundhe/managed-rego-cache-experiment-go-mod/cache/download/github.com/google/cel-go/@v/v0.27.0.mod",
+      "Zip": "/home/adalundhe/managed-rego-cache-experiment-go-mod/cache/download/github.com/google/cel-go/@v/v0.27.0.zip",
+      "Dir": "/home/adalundhe/managed-rego-cache-experiment-go-mod/github.com/google/cel-go@v0.27.0",
+      "Sum": "h1:e7ih85+4qVrBuqQWTW4FKSqZYokVuc3HnhH5keboFTo=",
+      "GoModSum": "h1:tTJ11FWqnhw5KKpnWpvW9CJC3Y9GK4EIS0WXnBbebzw=",
+      "Origin": {
+        "VCS": "git",
+        "URL": "https://github.com/google/cel-go",
+        "Hash": "450089b38d4c77840bae9ef4b284bb4b96d41ac8",
+        "Ref": "refs/tags/v0.27.0"
+      }
+    },
+    "rows": [
+      {
+        "factory_calls": 0,
+        "heap_after_drop": 896944,
+        "heap_before": 875672,
+        "heap_owner_held": 897360,
+        "mode": "baseline",
+        "setup_ns": 61837,
+        "workload": "constant_hot",
+        "statistics": {
+          "elapsed_ns_per_query": {
+            "p50": 3152.58,
+            "p90": 3543.35,
+            "p99": 7173.12,
+            "max": 7173.12
+          },
+          "allocated_bytes_per_query": {
+            "p50": 2728.0,
+            "p90": 2739.44,
+            "p99": 2740.4,
+            "max": 2740.4
+          },
+          "allocations_per_query": {
+            "p50": 37.0,
+            "p90": 37.05,
+            "p99": 37.07,
+            "max": 37.07
+          }
+        }
+      },
+      {
+        "factory_calls": 0,
+        "heap_after_drop": 898264,
+        "heap_before": 897512,
+        "heap_owner_held": 1015256,
+        "mode": "baseline",
+        "setup_ns": 23728,
+        "workload": "dynamic_regex",
+        "statistics": {
+          "elapsed_ns_per_query": {
+            "p50": 2497.97,
+            "p90": 3959.75,
+            "p99": 6848.28,
+            "max": 6848.28
+          },
+          "allocated_bytes_per_query": {
+            "p50": 2589.76,
+            "p90": 3626.48,
+            "p99": 4367.44,
+            "max": 4367.44
+          },
+          "allocations_per_query": {
+            "p50": 22.09,
+            "p90": 23.03,
+            "p99": 23.1,
+            "max": 23.1
+          }
+        }
+      },
+      {
+        "factory_calls": 1,
+        "heap_after_drop": 898296,
+        "heap_before": 897592,
+        "heap_owner_held": 905624,
+        "mode": "planned",
+        "setup_ns": 58562,
+        "workload": "constant_hot",
+        "statistics": {
+          "elapsed_ns_per_query": {
+            "p50": 298.85,
+            "p90": 335.96,
+            "p99": 346.06,
+            "max": 346.06
+          },
+          "allocated_bytes_per_query": {
+            "p50": 64.0,
+            "p90": 64.0,
+            "p99": 76.08,
+            "max": 76.08
+          },
+          "allocations_per_query": {
+            "p50": 3.0,
+            "p90": 3.0,
+            "p99": 3.07,
+            "max": 3.07
+          }
+        }
+      },
+      {
+        "factory_calls": 0,
+        "heap_after_drop": 903616,
+        "heap_before": 897400,
+        "heap_owner_held": 983640,
+        "mode": "planned",
+        "setup_ns": 19695,
+        "workload": "dynamic_regex",
+        "statistics": {
+          "elapsed_ns_per_query": {
+            "p50": 2555.93,
+            "p90": 4120.88,
+            "p99": 5463.77,
+            "max": 5463.77
+          },
+          "allocated_bytes_per_query": {
+            "p50": 2589.76,
+            "p90": 3626.48,
+            "p99": 3997.04,
+            "max": 3997.04
+          },
+          "allocations_per_query": {
+            "p50": 22.09,
+            "p90": 23.03,
+            "p99": 23.07,
+            "max": 23.07
+          }
+        }
+      }
+    ],
+    "comparability": "CEL internal alternative only; different expression/language, no equivalent OPA/Shards speed claim"
+  }
+}

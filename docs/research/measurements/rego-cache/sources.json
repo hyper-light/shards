@@ -46,5 +46,35 @@
     "url": "https://www.openpolicyagent.org/docs/policy-reference/builtins/regex",
     "bytes": 145796,
     "sha256": "07c9ca70d4f26127aa427279467ad1b319eae0a1def1bdce2ed572ff7f455e89"
+  },
+  {
+    "name": "opa-prepared-rego-api-v1.14.1",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/rego/rego.go",
+    "bytes": 85893,
+    "sha256": "53403c3e06f0b7e48d167692234fe88b0eef7bf8dc20ba42361df5c9ecf8c79d"
+  },
+  {
+    "name": "go-memstats-go1.26.1",
+    "url": "https://raw.githubusercontent.com/golang/go/go1.26.1/src/runtime/mstats.go",
+    "bytes": 34711,
+    "sha256": "4a33458ef51ba74a46f63d66244c55d93356cdad9a2eafe7062c1f1800710ed4"
+  },
+  {
+    "name": "rust-system-allocator-1.98.1",
+    "url": "https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/alloc.rs",
+    "bytes": 18666,
+    "sha256": "2d22c4f49121716ba9eda233d097746c11e51b387a868f5fce83d6f1e52becf6"
+  },
+  {
+    "name": "cel-program-options-v0.27.0",
+    "url": "https://raw.githubusercontent.com/google/cel-go/v0.27.0/cel/options.go",
+    "bytes": 31859,
+    "sha256": "751108d3919a767bf32ad5ac793da5ef29461ffc80a0ec55c53c760ce1f43c20"
+  },
+  {
+    "name": "cel-string-dynamic-regex-v0.27.0",
+    "url": "https://raw.githubusercontent.com/google/cel-go/v0.27.0/common/types/string.go",
+    "bytes": 6177,
+    "sha256": "a6b56c14c0844c200464f9997b551c61c5fe0c62c01fea1742d773f008662d1d"
   }
 ]

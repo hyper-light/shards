@@ -1,0 +1,22 @@
+Static checkpoint validation; no Mac compiler/test execution.
+COMMAND ['scripts/check-development-policy']
+Development policy checks passed; evidence/coordinator review is still required.
+
+EXIT 0
+COMMAND ['rustfmt', '--check', '--edition', '2024', 'crates/rego/src/eval.rs', 'crates/rego/src/funcs/mod.rs', 'crates/rego/src/funcs/regex.rs', 'docs/research/measurements/rego-cache/experiment.rs']
+
+EXIT 0
+COMMAND ['git', 'diff', '--check']
+
+EXIT 0
+COMMAND ['bash', '-n', 'docs/research/measurements/rego-cache/run-experiment.sh', 'docs/research/measurements/rego-cache/mutate-experiment.sh', 'docs/research/measurements/rego-cache/run-cel.sh']
+
+EXIT 0
+COMMAND ['gofmt', '-l', 'docs/research/measurements/rego-cache/cache_perf_test.go', 'docs/research/measurements/rego-cache/cel_probe_test.go']
+
+EXIT 0
+Python AST parsed make-workloads.py
+Python AST parsed summarize-experiment.py
+Python AST parsed mutate-experiment.py
+Both archive hashes and every file hash verified.
+All six final profiled source hashes match current checkpoint bytes.

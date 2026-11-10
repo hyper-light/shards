@@ -161,6 +161,8 @@ impl TreeNode {
 /// Compiled modules, ready to evaluate.
 #[derive(Debug)]
 pub struct Program {
+    #[cfg(test)]
+    regex_experiment: funcs::experiment::Owner,
     pub root: TreeNode,
     host_names: Vec<String>,
     /// Comprehensions evaluated once and indexed by these variables
@@ -206,6 +208,8 @@ impl Program {
             }
         }
         Program {
+            #[cfg(test)]
+            regex_experiment: funcs::experiment::Owner::Current,
             root,
             host_names,
             compr_index,
@@ -828,6 +832,12 @@ fn is_other_ref(t: &Term) -> bool {
 
 impl<'p> Machine<'p> {
     pub fn new(p: &'p Program, host: &'p mut dyn Host, ctx: funcs::Context) -> Machine<'p> {
+        #[cfg(test)]
+        let ctx = {
+            let mut ctx = ctx;
+            ctx.regex_experiment = p.regex_experiment.binding();
+            ctx
+        };
         Machine {
             p,
             bindings: Vec::new(),
@@ -4742,4 +4752,12 @@ mod tests {
             .join()
             .unwrap();
     }
+}
+
+#[cfg(test)]
+mod regex_cache_experiment {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../docs/research/measurements/rego-cache/experiment.rs"
+    ));
 }

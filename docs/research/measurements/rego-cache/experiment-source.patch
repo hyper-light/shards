@@ -1,0 +1,439 @@
+diff --git a/crates/rego/src/eval.rs b/crates/rego/src/eval.rs
+index 6d528385..29df364d 100644
+--- a/crates/rego/src/eval.rs
++++ b/crates/rego/src/eval.rs
+@@ -161,6 +161,8 @@ impl TreeNode {
+ /// Compiled modules, ready to evaluate.
+ #[derive(Debug)]
+ pub struct Program {
++    #[cfg(test)]
++    regex_experiment: funcs::experiment::Owner,
+     pub root: TreeNode,
+     host_names: Vec<String>,
+     /// Comprehensions evaluated once and indexed by these variables
+@@ -206,6 +208,8 @@ impl Program {
+             }
+         }
+         Program {
++            #[cfg(test)]
++            regex_experiment: funcs::experiment::Owner::Current,
+             root,
+             host_names,
+             compr_index,
+@@ -828,6 +832,12 @@ fn is_other_ref(t: &Term) -> bool {
+ 
+ impl<'p> Machine<'p> {
+     pub fn new(p: &'p Program, host: &'p mut dyn Host, ctx: funcs::Context) -> Machine<'p> {
++        #[cfg(test)]
++        let ctx = {
++            let mut ctx = ctx;
++            ctx.regex_experiment = p.regex_experiment.binding();
++            ctx
++        };
+         Machine {
+             p,
+             bindings: Vec::new(),
+@@ -4743,3 +4753,11 @@ mod tests {
+             .unwrap();
+     }
+ }
++
++#[cfg(test)]
++mod regex_cache_experiment {
++    include!(concat!(
++        env!("CARGO_MANIFEST_DIR"),
++        "/../../docs/research/measurements/rego-cache/experiment.rs"
++    ));
++}
+diff --git a/crates/rego/src/funcs/mod.rs b/crates/rego/src/funcs/mod.rs
+index 26e6cc66..02512e99 100644
+--- a/crates/rego/src/funcs/mod.rs
++++ b/crates/rego/src/funcs/mod.rs
+@@ -11,6 +11,8 @@ use crate::value::Value;
+ mod collections;
+ mod encoding;
+ mod regex;
++#[cfg(test)]
++pub(crate) use regex::experiment;
+ mod strings;
+ mod time;
+ 
+@@ -58,6 +60,8 @@ impl BuiltinError {
+ /// query's time, its seed for random numbers, and caches that live for one query.
+ #[derive(Debug, Default)]
+ pub struct Context {
++    #[cfg(test)]
++    pub(crate) regex_experiment: experiment::Binding,
+     /// Nanoseconds since the epoch, fixed for the query (`time.now_ns`).
+     pub time_ns: i64,
+     /// Bytes read for randomness, in order, as OPA reads its `Seed`.
+diff --git a/crates/rego/src/funcs/regex.rs b/crates/rego/src/funcs/regex.rs
+index 3ca21135..e0ba8f58 100644
+--- a/crates/rego/src/funcs/regex.rs
++++ b/crates/rego/src/funcs/regex.rs
+@@ -89,7 +89,14 @@ fn cache(pattern: &str, re: &Rc<Regexp>, evict: bool) {
+ }
+ 
+ /// getRegexp.
+-fn get_regexp(pattern: &str) -> Result<Rc<Regexp>, BuiltinError> {
++fn get_regexp(_ctx: &mut Context, pattern: &str) -> Result<Rc<Regexp>, BuiltinError> {
++    #[cfg(test)]
++    if let Some(result) = _ctx
++        .regex_experiment
++        .compiled(experiment::Kind::Ordinary, pattern)
++    {
++        return result;
++    }
+     if let Some(re) = cached(pattern) {
+         return Ok(re);
+     }
+@@ -110,10 +117,10 @@ fn is_valid(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinErr
+     Ok(Some(Value::Bool(valid)))
+ }
+ 
+-fn regex_match(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn regex_match(ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let pattern = string_operand(arg(args, 0)?, 1)?;
+     let s = string_operand(arg(args, 1)?, 2)?;
+-    let re = get_regexp(pattern)?;
++    let re = get_regexp(ctx, pattern)?;
+     Ok(Some(Value::Bool(re.re.is_match(s))))
+ }
+ 
+@@ -162,11 +169,11 @@ fn slice(s: &str, g: Option<(usize, usize)>) -> &str {
+     g.and_then(|(a, b)| s.get(a..b)).unwrap_or("")
+ }
+ 
+-fn find_n(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn find_n(ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let pattern = string_operand(arg(args, 0)?, 1)?;
+     let s = string_operand(arg(args, 1)?, 2)?;
+     let n = int_operand(arg(args, 2)?, 3)?;
+-    let re = get_regexp(pattern)?;
++    let re = get_regexp(ctx, pattern)?;
+     let found = all_matches(&re, s, n);
+     Ok(Some(strings(
+         found
+@@ -176,11 +183,11 @@ fn find_n(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError
+     )))
+ }
+ 
+-fn find_all_string_submatch_n(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn find_all_string_submatch_n(ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let pattern = string_operand(arg(args, 0)?, 1)?;
+     let s = string_operand(arg(args, 1)?, 2)?;
+     let n = int_operand(arg(args, 2)?, 3)?;
+-    let re = get_regexp(pattern)?;
++    let re = get_regexp(ctx, pattern)?;
+     let found = all_matches(&re, s, n);
+     Ok(Some(Value::array(
+         found
+@@ -190,10 +197,10 @@ fn find_all_string_submatch_n(_: &mut Context, args: &[Value]) -> Result<Option<
+     )))
+ }
+ 
+-fn split(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn split(ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let pattern = string_operand(arg(args, 0)?, 1)?;
+     let s = string_operand(arg(args, 1)?, 2)?;
+-    let re = get_regexp(pattern)?;
++    let re = get_regexp(ctx, pattern)?;
+     // regexp.Split(s, -1).
+     if !re.empty_expr && s.is_empty() {
+         return Ok(Some(strings(vec![""])));
+@@ -216,11 +223,11 @@ fn split(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError>
+     Ok(Some(strings(out)))
+ }
+ 
+-fn replace(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn replace(ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let base = string_operand(arg(args, 0)?, 1)?;
+     let pattern = string_operand(arg(args, 1)?, 2)?;
+     let value = string_operand(arg(args, 2)?, 3)?;
+-    let re = get_regexp(pattern)?;
++    let re = get_regexp(ctx, pattern)?;
+     let res = replace_all_string(&re, base, value);
+     if res == base {
+         return Ok(Some(arg(args, 0)?.clone()));
+@@ -411,7 +418,7 @@ fn compile_template(tpl: &str, start: u8, end: u8) -> Result<Regexp, String> {
+     compile(&pattern)
+ }
+ 
+-fn template_match(_: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
++fn template_match(_ctx: &mut Context, args: &[Value]) -> Result<Option<Value>, BuiltinError> {
+     let pattern = string_operand(arg(args, 0)?, 1)?;
+     let s = string_operand(arg(args, 1)?, 2)?;
+     let start = string_operand(arg(args, 2)?, 3)?;
+@@ -429,6 +436,14 @@ fn template_match(_: &mut Context, args: &[Value]) -> Result<Option<Value>, Buil
+             start.len()
+         )));
+     };
++    #[cfg(test)]
++    if let Some(result) = _ctx
++        .regex_experiment
++        .compiled(experiment::Kind::Template(ds, de), pattern)
++    {
++        let re = result?;
++        return Ok(Some(Value::Bool(re.re.is_match(s))));
++    }
+     // getRegexpTemplate: the cache is keyed by the pattern alone, without the
+     // delimiters, and shared with getRegexp.
+     let re = match cached(pattern) {
+@@ -485,6 +500,257 @@ fn glob_quote_meta(_: &mut Context, args: &[Value]) -> Result<Option<Value>, Bui
+     Ok(Some(Value::string(glob::quote_meta(pattern))))
+ }
+ 
++/// Test-only candidate: a program owns a fixed set of compilation identities taken
++/// from its AST. Dynamic misses compile without inserting any retained history.
++#[cfg(test)]
++pub(crate) mod experiment {
++    use super::*;
++    use crate::ast::{Body, Expr, ExprTerms, Head, Module, Rule, TemplatePart, Term, TermValue};
++    use std::collections::BTreeMap;
++    use std::rc::Weak;
++
++    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++    pub(crate) enum Kind {
++        Ordinary,
++        Template(u8, u8),
++    }
++    #[derive(Debug)]
++    enum State {
++        Uncompiled,
++        Ready(Rc<Regexp>),
++        Failed(BuiltinError),
++    }
++    #[derive(Debug, Default)]
++    pub(crate) struct Pool {
++        entries: RefCell<BTreeMap<Kind, BTreeMap<Rc<str>, State>>>,
++    }
++    #[derive(Debug, Default)]
++    pub(crate) enum Owner {
++        #[default]
++        Current,
++        Uncached,
++        Program(Rc<Pool>),
++    }
++    #[derive(Debug, Default)]
++    pub(crate) enum Binding {
++        #[default]
++        Current,
++        Uncached,
++        Program(Weak<Pool>),
++    }
++    impl Owner {
++        pub(crate) fn binding(&self) -> Binding {
++            match self {
++                Self::Current => Binding::Current,
++                Self::Uncached => Binding::Uncached,
++                Self::Program(p) => Binding::Program(Rc::downgrade(p)),
++            }
++        }
++    }
++    fn fresh(kind: Kind, pattern: &str) -> Result<Rc<Regexp>, BuiltinError> {
++        match kind {
++            Kind::Ordinary => compile(pattern),
++            Kind::Template(start, end) => compile_template(pattern, start, end),
++        }
++        .map(Rc::new)
++        .map_err(BuiltinError::Other)
++    }
++    impl Binding {
++        pub(super) fn compiled(&self, kind: Kind, pattern: &str) -> Option<Result<Rc<Regexp>, BuiltinError>> {
++            match self {
++                Self::Current => None,
++                Self::Uncached => Some(fresh(kind, pattern)),
++                Self::Program(owner) => Some(match owner.upgrade() {
++                    Some(pool) => pool.compiled(kind, pattern),
++                    None => Err(BuiltinError::Other("experimental compilation owner ended".into())),
++                }),
++            }
++        }
++    }
++    impl Pool {
++        fn compiled(&self, kind: Kind, pattern: &str) -> Result<Rc<Regexp>, BuiltinError> {
++            let mut entries = self
++                .entries
++                .try_borrow_mut()
++                .map_err(|_| BuiltinError::Other("experimental compilation pool is borrowed".into()))?;
++            let Some(state) = entries
++                .get_mut(&kind)
++                .and_then(|patterns| patterns.get_mut(pattern))
++            else {
++                return fresh(kind, pattern);
++            };
++            if matches!(state, State::Uncompiled) {
++                *state = match fresh(kind, pattern) {
++                    Ok(re) => State::Ready(re),
++                    Err(error) => State::Failed(error),
++                };
++            }
++            match state {
++                State::Ready(re) => Ok(Rc::clone(re)),
++                State::Failed(error) => Err(error.clone()),
++                State::Uncompiled => Err(BuiltinError::Other(
++                    "experimental compilation did not transition".into(),
++                )),
++            }
++        }
++        pub(crate) fn counts(&self) -> (usize, usize, usize) {
++            let entries = self.entries.borrow();
++            let mut count = (0, 0, 0);
++            for state in entries.values().flat_map(BTreeMap::values) {
++                count.0 += 1;
++                match state {
++                    State::Ready(_) => count.1 += 1,
++                    State::Failed(_) => count.2 += 1,
++                    State::Uncompiled => {}
++                }
++            }
++            count
++        }
++        pub(crate) fn from_modules<'a>(modules: impl Iterator<Item = &'a Module>) -> Rc<Self> {
++            enum Node<'a> {
++                Rule(&'a Rule),
++                Head(&'a Head),
++                Body(&'a Body),
++                Expr(&'a Expr),
++                Term(&'a Term),
++            }
++            let mut work = Vec::new();
++            for module in modules {
++                for rule in &module.rules {
++                    work.push(Node::Rule(rule));
++                }
++            }
++            let mut entries: BTreeMap<Kind, BTreeMap<Rc<str>, State>> = BTreeMap::new();
++            let mut call = |terms: &[Term]| {
++                let Some(op) = terms.first().and_then(Term::as_ref) else {
++                    return;
++                };
++                let name = crate::compile::text_of_ref(op);
++                let (kind, at) = match name.as_str() {
++                    "regex.template_match" => {
++                        let (Some(TermValue::String(start)), Some(TermValue::String(end))) =
++                            (terms.get(3).map(|t| &t.value), terms.get(4).map(|t| &t.value))
++                        else {
++                            return;
++                        };
++                        let (&[start], &[end]) = (start.as_bytes(), end.as_bytes()) else {
++                            return;
++                        };
++                        (Kind::Template(start, end), 1)
++                    }
++                    "regex.replace" => (Kind::Ordinary, 2),
++                    "regex.match"
++                    | "re_match"
++                    | "regex.find_n"
++                    | "regex.find_all_string_submatch_n"
++                    | "regex.split" => (Kind::Ordinary, 1),
++                    _ => return,
++                };
++                if let Some(TermValue::String(pattern)) = terms.get(at).map(|t| &t.value) {
++                    entries
++                        .entry(kind)
++                        .or_default()
++                        .entry(Rc::clone(pattern))
++                        .or_insert(State::Uncompiled);
++                }
++            };
++            while let Some(node) = work.pop() {
++                match node {
++                    Node::Rule(rule) => {
++                        for branch in rule.branches() {
++                            work.push(Node::Head(&branch.head));
++                            work.push(Node::Body(&branch.body));
++                        }
++                    }
++                    Node::Head(head) => {
++                        for term in &head.reference {
++                            work.push(Node::Term(term));
++                        }
++                        for term in &head.args {
++                            work.push(Node::Term(term));
++                        }
++                        if let Some(term) = &head.key {
++                            work.push(Node::Term(term));
++                        }
++                        if let Some(term) = &head.value {
++                            work.push(Node::Term(term));
++                        }
++                    }
++                    Node::Body(body) => work.extend(body.iter().map(Node::Expr)),
++                    Node::Expr(expr) => {
++                        for with in &expr.with {
++                            work.push(Node::Term(&with.target));
++                            work.push(Node::Term(&with.value));
++                        }
++                        match &expr.terms {
++                            ExprTerms::Term(term) => work.push(Node::Term(term)),
++                            ExprTerms::Call(terms) => {
++                                call(terms);
++                                work.extend(terms.iter().map(Node::Term));
++                            }
++                            ExprTerms::Some(decl) => work.extend(decl.symbols.iter().map(Node::Term)),
++                            ExprTerms::Every(every) => {
++                                if let Some(key) = &every.key {
++                                    work.push(Node::Term(key));
++                                }
++                                work.push(Node::Term(&every.value));
++                                work.push(Node::Term(&every.domain));
++                                work.push(Node::Body(&every.body));
++                            }
++                        }
++                    }
++                    Node::Term(term) => match &term.value {
++                        TermValue::Call(terms) => {
++                            call(terms);
++                            work.extend(terms.iter().map(Node::Term));
++                        }
++                        TermValue::Ref(terms) | TermValue::Array(terms) | TermValue::Set(terms) => {
++                            work.extend(terms.iter().map(Node::Term))
++                        }
++                        TermValue::Object(pairs) => {
++                            for (key, value) in pairs {
++                                work.push(Node::Term(key));
++                                work.push(Node::Term(value));
++                            }
++                        }
++                        TermValue::ArrayCompr(term, body) | TermValue::SetCompr(term, body) => {
++                            work.push(Node::Term(term));
++                            work.push(Node::Body(body));
++                        }
++                        TermValue::ObjectCompr(key, value, body) => {
++                            work.push(Node::Term(key));
++                            work.push(Node::Term(value));
++                            work.push(Node::Body(body));
++                        }
++                        TermValue::TemplateString { parts, .. } => {
++                            for part in parts {
++                                match part {
++                                    TemplatePart::Term(term) => work.push(Node::Term(term)),
++                                    TemplatePart::Expr(expr) => work.push(Node::Expr(expr)),
++                                }
++                            }
++                        }
++                        TermValue::Null
++                        | TermValue::Bool(_)
++                        | TermValue::Number(_)
++                        | TermValue::String(_)
++                        | TermValue::Var(_) => {}
++                    },
++                }
++            }
++            Rc::new(Self {
++                entries: RefCell::new(entries),
++            })
++        }
++    }
++    pub(crate) fn clear_current() {
++        CACHE.with(|cache| cache.borrow_mut().clear());
++    }
++    pub(crate) fn current_entries() -> usize {
++        CACHE.with(|cache| cache.borrow().len())
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
