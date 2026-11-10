@@ -1,0 +1,219 @@
+{
+  "parity": true,
+  "semantic_cases": [
+    {
+      "name": "ordinary_then_template",
+      "opa": [
+        true,
+        true
+      ],
+      "shards": [
+        true,
+        true
+      ],
+      "expected_pure": [
+        true,
+        false
+      ],
+      "matches_pure_contract": false,
+      "entries_after_context_drop": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "template_then_ordinary",
+      "opa": [
+        false,
+        false
+      ],
+      "shards": [
+        false,
+        false
+      ],
+      "expected_pure": [
+        false,
+        true
+      ],
+      "matches_pure_contract": false,
+      "entries_after_context_drop": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "angle_then_square_delimiters",
+      "opa": [
+        true,
+        true
+      ],
+      "shards": [
+        true,
+        true
+      ],
+      "expected_pure": [
+        true,
+        false
+      ],
+      "matches_pure_contract": false,
+      "entries_after_context_drop": [
+        1,
+        1
+      ]
+    },
+    {
+      "name": "square_then_angle_delimiters",
+      "opa": [
+        false,
+        false
+      ],
+      "shards": [
+        false,
+        false
+      ],
+      "expected_pure": [
+        false,
+        true
+      ],
+      "matches_pure_contract": false,
+      "entries_after_context_drop": [
+        1,
+        1
+      ]
+    }
+  ],
+  "retention": [
+    {
+      "opa": {
+        "calls": 100,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "heap_alloc_after_gc": 773208,
+        "heap_alloc_before": 667600,
+        "implementation": "opa-v1.14.1",
+        "kind": "ordinary",
+        "mallocs_delta": 2918,
+        "total_alloc_delta": 281008
+      },
+      "shards": {
+        "calls": 100,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "implementation": "shards",
+        "kind": "ordinary"
+      }
+    },
+    {
+      "opa": {
+        "calls": 200,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "heap_alloc_after_gc": 781936,
+        "heap_alloc_before": 670440,
+        "implementation": "opa-v1.14.1",
+        "kind": "ordinary",
+        "mallocs_delta": 5819,
+        "total_alloc_delta": 522464
+      },
+      "shards": {
+        "calls": 200,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "implementation": "shards",
+        "kind": "ordinary"
+      }
+    },
+    {
+      "opa": {
+        "calls": 400,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "heap_alloc_after_gc": 781936,
+        "heap_alloc_before": 679104,
+        "implementation": "opa-v1.14.1",
+        "kind": "ordinary",
+        "mallocs_delta": 11753,
+        "total_alloc_delta": 983464
+      },
+      "shards": {
+        "calls": 400,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "implementation": "shards",
+        "kind": "ordinary"
+      }
+    },
+    {
+      "opa": {
+        "calls": 100,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "heap_alloc_after_gc": 943088,
+        "heap_alloc_before": 679104,
+        "implementation": "opa-v1.14.1",
+        "kind": "template",
+        "mallocs_delta": 8178,
+        "total_alloc_delta": 643144
+      },
+      "shards": {
+        "calls": 100,
+        "declared_max": 100,
+        "entries_after_context_drop": 100,
+        "entries_after_ordinary_extra": 100,
+        "implementation": "shards",
+        "kind": "template"
+      }
+    },
+    {
+      "opa": {
+        "calls": 200,
+        "declared_max": 100,
+        "entries_after_context_drop": 200,
+        "entries_after_ordinary_extra": 200,
+        "heap_alloc_after_gc": 1254560,
+        "heap_alloc_before": 679120,
+        "implementation": "opa-v1.14.1",
+        "kind": "template",
+        "mallocs_delta": 16675,
+        "total_alloc_delta": 1309304
+      },
+      "shards": {
+        "calls": 200,
+        "declared_max": 100,
+        "entries_after_context_drop": 200,
+        "entries_after_ordinary_extra": 200,
+        "implementation": "shards",
+        "kind": "template"
+      }
+    },
+    {
+      "opa": {
+        "calls": 400,
+        "declared_max": 100,
+        "entries_after_context_drop": 400,
+        "entries_after_ordinary_extra": 400,
+        "heap_alloc_after_gc": 1883728,
+        "heap_alloc_before": 679120,
+        "implementation": "opa-v1.14.1",
+        "kind": "template",
+        "mallocs_delta": 33823,
+        "total_alloc_delta": 2657080
+      },
+      "shards": {
+        "calls": 400,
+        "declared_max": 100,
+        "entries_after_context_drop": 400,
+        "entries_after_ordinary_extra": 400,
+        "implementation": "shards",
+        "kind": "template"
+      }
+    }
+  ]
+}

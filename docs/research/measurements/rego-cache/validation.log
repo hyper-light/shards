@@ -1,0 +1,12 @@
+Production prefix byte-identical to c921a0b1; SHA256=02bb35dfef1948e778fee44f249cfee9978007fd7f4bcc36a56026a6025fb838
+$ scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+exit=0
+$ rustfmt --edition 2024 --check crates/rego/src/funcs/regex.rs
+exit=0
+$ git diff --check
+exit=0
+$ bash -n docs/research/measurements/rego-cache/run.sh
+exit=0
+compare.py AST parse passed
+Local compare.py rechecked pinned parity and actual cold-call controls; exit=0

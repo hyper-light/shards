@@ -1,0 +1,34 @@
+[
+  {
+    "name": "ordinary_then_template",
+    "calls": [
+      {"name":"regex.match", "args":["a.b","axb"]},
+      {"name":"regex.template_match", "args":["a.b","axb","<",">"]}
+    ],
+    "expected_pure": [true,false]
+  },
+  {
+    "name": "template_then_ordinary",
+    "calls": [
+      {"name":"regex.template_match", "args":["a.b","axb","<",">"]},
+      {"name":"regex.match", "args":["a.b","axb"]}
+    ],
+    "expected_pure": [false,true]
+  },
+  {
+    "name": "angle_then_square_delimiters",
+    "calls": [
+      {"name":"regex.template_match", "args":["a<b>","ab","<",">"]},
+      {"name":"regex.template_match", "args":["a<b>","ab","[","]"]}
+    ],
+    "expected_pure": [true,false]
+  },
+  {
+    "name": "square_then_angle_delimiters",
+    "calls": [
+      {"name":"regex.template_match", "args":["a<b>","ab","[","]"]},
+      {"name":"regex.template_match", "args":["a<b>","ab","<",">"]}
+    ],
+    "expected_pure": [false,true]
+  }
+]

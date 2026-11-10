@@ -489,6 +489,137 @@ fn glob_quote_meta(_: &mut Context, args: &[Value]) -> Result<Option<Value>, Bui
 mod tests {
     use super::*;
 
+    /// Diagnostic only: no production cache behavior is changed. The exact same
+    /// synthetic calls run against pinned OPA in measurements/rego-cache/run.sh.
+    #[test]
+    #[ignore = "explicit cache semantics/retention measurement"]
+    fn rego_cache_probe() {
+        let cases: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/research/measurements/rego-cache/cases.json"
+        ))
+        .unwrap();
+        let strict = std::env::var("SHARDS_REGO_CACHE_STRICT").as_deref() == Ok("1");
+        let mut pure = true;
+        let count = || CACHE.with(|c| c.borrow().len());
+        let clear = || CACHE.with(|c| c.borrow_mut().clear());
+        let call = |name: &str, args: &[Value]| {
+            let mut context = Context::default();
+            let result = lookup(name).unwrap()(&mut context, args).unwrap().unwrap();
+            drop(context);
+            match result {
+                Value::Bool(answer) => answer,
+                other => panic!("non-bool: {other:?}"),
+            }
+        };
+        for case in cases.as_array().unwrap() {
+            clear();
+            let mut answers = Vec::new();
+            let mut retained = Vec::new();
+            for instruction in case["calls"].as_array().unwrap() {
+                let args: Vec<_> = instruction["args"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|a| Value::string(a.as_str().unwrap()))
+                    .collect();
+                answers.push(call(instruction["name"].as_str().unwrap(), &args));
+                retained.push(count());
+            }
+            let expected: Vec<_> = case["expected_pure"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_bool().unwrap())
+                .collect();
+            pure &= answers == expected;
+            println!(
+                "REGOCACHE_CASE {}",
+                serde_json::json!({"implementation":"shards", "name":case["name"], "answers":answers, "expected_pure":expected, "entries_after_context_drop":retained})
+            );
+        }
+        for kind in ["ordinary", "template"] {
+            for multiple in [1, 2, 4] {
+                clear();
+                let n = CACHE_MAX * multiple;
+                let mut last = String::new();
+                for i in 0..n {
+                    last = format!("cache-probe-{i}");
+                    let mut args = vec![Value::string(last.as_str()), Value::string(last.as_str())];
+                    if kind == "template" {
+                        args.extend([Value::string("<"), Value::string(">")]);
+                    }
+                    assert!(call(
+                        if kind == "template" {
+                            "regex.template_match"
+                        } else {
+                            "regex.match"
+                        },
+                        &args
+                    ));
+                }
+                let re = cached(&last).unwrap();
+                let object = Rc::downgrade(&re);
+                drop(re);
+                assert!(
+                    object.upgrade().is_some(),
+                    "cache did not retain compiled object after context drop"
+                );
+                let before_extra = count();
+                let extra = [
+                    Value::string("cache-probe-extra"),
+                    Value::string("cache-probe-extra"),
+                ];
+                assert!(call("regex.match", &extra));
+                let after_extra = count();
+                println!(
+                    "REGOCACHE_RETAIN {}",
+                    serde_json::json!({"implementation":"shards", "kind":kind, "calls":n, "declared_max":CACHE_MAX, "entries_after_context_drop":before_extra, "entries_after_ordinary_extra":after_extra})
+                );
+                clear();
+                assert!(
+                    object.upgrade().is_none(),
+                    "compiled object survived removal of its only owner"
+                );
+            }
+        }
+        clear();
+        let held = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            let (sent, received) = std::sync::mpsc::channel();
+            for _ in 0..2 {
+                let held = &held;
+                let sent = sent.clone();
+                scope.spawn(move || {
+                    for i in 0..CACHE_MAX {
+                        let pattern = format!("cache-probe-thread-{i}");
+                        let args = [
+                            Value::string(pattern.as_str()),
+                            Value::string(pattern.as_str()),
+                            Value::string("<"),
+                            Value::string(">"),
+                        ];
+                        let mut context = Context::default();
+                        assert_eq!(template_match(&mut context, &args), Ok(Some(Value::Bool(true))));
+                    }
+                    sent.send(CACHE.with(|c| c.borrow().len())).unwrap();
+                    held.wait();
+                });
+            }
+            let first = received.recv().unwrap();
+            let second = received.recv().unwrap();
+            println!(
+                "REGOCACHE_THREADS {}",
+                serde_json::json!({"implementation":"shards","threads":2,"entries_each":[first,second],"simultaneous_total":first+second,"same_patterns":true})
+            );
+            held.wait();
+        });
+        assert_eq!(count(), 0);
+        assert!(
+            !strict || pure,
+            "regex results depend on prior compilation kind or delimiter choice"
+        );
+    }
+
     fn glob(pattern: &str, s: &str) -> Result<Option<Value>, BuiltinError> {
         let args = [Value::string(pattern), Value::array(Vec::new()), Value::string(s)];
         glob_match(&mut Context::default(), &args)

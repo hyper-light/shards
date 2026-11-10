@@ -1,0 +1,50 @@
+[
+  {
+    "name": "opa-regex-v1.14.1",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/topdown/regex.go",
+    "bytes": 8300,
+    "sha256": "523fe8e4dc0c9520e78c868ef7b0d04b8a9dd330cc8dff0ed1090aa0b4df00b6"
+  },
+  {
+    "name": "opa-template-v1.14.1",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/topdown/regex_template.go",
+    "bytes": 4129,
+    "sha256": "facfde2d0b659a15e283bbcf3b0555f541eaf3c788cd75de51d636b51f778885"
+  },
+  {
+    "name": "opa-ast-builtins-v1.14.1",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/ast/builtins.go",
+    "bytes": 121217,
+    "sha256": "70dfe0e1a7dd1236b8b918925bae8e4606531e12581e53ec213fd8d25e442d6f"
+  },
+  {
+    "name": "opa-query-context-v1.14.1",
+    "url": "https://raw.githubusercontent.com/open-policy-agent/opa/v1.14.1/v1/topdown/builtins.go",
+    "bytes": 8563,
+    "sha256": "92a04b4474701e437dce8ad93cce79740f7e15c1a8ce82862ea3b79a944b3030"
+  },
+  {
+    "name": "cel-regex-optimization-v0.27.0",
+    "url": "https://raw.githubusercontent.com/google/cel-go/v0.27.0/interpreter/optimizations.go",
+    "bytes": 1583,
+    "sha256": "78c749d928d386f2c91a92a25483b64a826cbcdf1d95015f03353c20117970d2"
+  },
+  {
+    "name": "cel-program-planner-v0.27.0",
+    "url": "https://raw.githubusercontent.com/google/cel-go/v0.27.0/interpreter/interpreter.go",
+    "bytes": 11106,
+    "sha256": "17d697754aebd36723b7ea3c804a3fbdebcad0cc89967c83c095a1559953b71d"
+  },
+  {
+    "name": "regex-v1.13.1-docs",
+    "url": "https://docs.rs/regex/1.13.1/regex/",
+    "bytes": 112708,
+    "sha256": "d564e629ec1a308e965d4756006bcd176d1f1f0902a973c197e0cae14413eecd"
+  },
+  {
+    "name": "opa-regex-docs-retrieved-2026-11-10",
+    "url": "https://www.openpolicyagent.org/docs/policy-reference/builtins/regex",
+    "bytes": 145796,
+    "sha256": "07c9ca70d4f26127aa427279467ad1b319eae0a1def1bdce2ed572ff7f455e89"
+  }
+]
