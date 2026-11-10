@@ -4251,6 +4251,17 @@ fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
     None
 }
 
+fn apply_lifecycle(domain: &mut crate::domains::Started, update: crate::managed::Update) {
+    if let crate::managed::Update::Quarantined { errno } = update {
+        domain.abort_output(errno);
+        let _ = writeln!(
+            io::stderr(),
+            "shards-init: {}: quarantined after population observation errno {errno}; emptiness unknown",
+            domain.label
+        );
+    }
+}
+
 /// Whose a polled descriptor is.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -4407,7 +4418,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.out.is_none() && d.lifecycle.ended())
+                    .all(|d| d.out.is_none() && d.lifecycle.settled())
             {
                 if oom_killed() {
                     let facts = oom_facts(WORKLOAD_CGROUP);
@@ -4452,7 +4463,7 @@ impl Workload {
                 && self
                     .domains
                     .iter()
-                    .all(|d| d.out.is_none() && d.lifecycle.ended())
+                    .all(|d| d.out.is_none() && d.lifecycle.settled())
                 && (host.is_none()
                     || self
                         .procs
@@ -4522,9 +4533,7 @@ impl Workload {
                 Owner::Stderr,
             );
             for (i, d) in self.domains.iter().enumerate() {
-                if !d.lifecycle.ended() {
-                    poll(Some(d.lifecycle.events()), libc::POLLPRI, Owner::DomainLife(i));
-                }
+                poll(d.lifecycle.events(), libc::POLLPRI, Owner::DomainLife(i));
                 poll(
                     d.out.as_ref().map(AsRawFd::as_raw_fd),
                     out_events,
@@ -4608,10 +4617,16 @@ impl Workload {
                         reap(&self.sigchld, |pid, code| {
                             if let Some(d) =
                                 self.domains.iter_mut().find(|d| d.lifecycle.awaiting_status(pid))
-                                && let Err(e) = d.lifecycle.reaped(code)
                             {
-                                fatal =
-                                    Some(setup_failed(format!("{}: ending its population: {e}", d.label)));
+                                match d.lifecycle.reaped(code) {
+                                    Ok(update) => apply_lifecycle(d, update),
+                                    Err(fault) => {
+                                        fatal = Some(setup_failed(format!(
+                                            "{}: shared boundary: {fault}",
+                                            d.label
+                                        )))
+                                    }
+                                }
                             }
                             if Some(pid) == hosts_pid {
                                 hosts_pid = None;
@@ -4900,17 +4915,24 @@ impl Workload {
                     Owner::Stdout => drain_into(&mut self.stdout, kind::STDOUT, &mut buf, &mut to_host),
                     Owner::Stderr => drain_into(&mut self.stderr, kind::STDERR, &mut buf, &mut to_host),
                     Owner::DomainLife(i) => {
-                        if let Some(d) = self.domains.get_mut(i)
-                            && let Err(e) = d.lifecycle.changed()
-                        {
-                            fatal = Some(setup_failed(format!("{}: its population: {e}", d.label)));
-                            break 'relay;
+                        if let Some(d) = self.domains.get_mut(i) {
+                            match d.lifecycle.changed() {
+                                Ok(update) => apply_lifecycle(d, update),
+                                Err(fault) => {
+                                    fatal =
+                                        Some(setup_failed(format!("{}: shared boundary: {fault}", d.label)));
+                                    break 'relay;
+                                }
+                            }
                         }
                     }
                     Owner::Domain(i) => {
                         let Some(d) = self.domains.get_mut(i) else {
                             continue;
                         };
+                        if d.lifecycle.quarantined() {
+                            continue;
+                        }
                         let (data, eof) = match read(fd, &mut buf) {
                             Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
                             Ok(0) | Err(_) => (&[][..], true),
@@ -4935,11 +4957,14 @@ impl Workload {
                         }
                     }
                     Owner::Memory => {
-                        if let Some(m) = self.memory.as_ref() {
-                            m.relieve(&mut self.domains, |line| {
+                        if let Some(m) = self.memory.as_ref()
+                            && let Err(fault) = m.relieve(&mut self.domains, |line| {
                                 let len = u32::try_from(line.len()).unwrap_or(u32::MAX);
                                 to_host.extend(&[&run::header(kind::STDERR, len), line]);
-                            });
+                            })
+                        {
+                            fatal = Some(setup_failed(format!("shared boundary: {fault}")));
+                            break 'relay;
                         }
                     }
                     Owner::Exec(i, part) => {

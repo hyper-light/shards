@@ -10,6 +10,20 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 
 #[test]
 fn a_supplied_agent_runs_below_a_protected_native_reaper() {
+    supplied_agent(None, Admission::ProtectedActor);
+}
+
+#[test]
+fn a_scope_below_its_required_task_budget_is_refused() {
+    supplied_agent(Some(1), Admission::Refused);
+}
+
+enum Admission {
+    ProtectedActor,
+    Refused,
+}
+
+fn supplied_agent(processes: Option<u64>, admission: Admission) {
     if cannot_run_vms() {
         return;
     }
@@ -29,9 +43,12 @@ fn a_supplied_agent_runs_below_a_protected_native_reaper() {
         br#"{"entrypoint":"probe","options":["managed-lifecycle","/probe/result"]}"#,
     )
     .unwrap();
+    let process_limit = processes.map_or(String::new(), |n| format!("--processes={n} "));
     std::fs::write(
         ctx.join("Agentfile"),
-        format!("FROM {image}\nAGENT probe FROM ./agent\nVOLUME --chown=probe /probe FOR probe\n"),
+        format!(
+            "FROM {image}\nAGENT {process_limit}probe FROM ./agent\nVOLUME --chown=probe /probe FOR probe\n"
+        ),
     )
     .unwrap();
     let built = run_shards_env(
@@ -61,8 +78,24 @@ fn a_supplied_agent_runs_below_a_protected_native_reaper() {
         ("lifecycle-ready", 1),
         TIMEOUT,
     );
+    if matches!(admission, Admission::Refused) {
+        assert_eq!(ran.status, Some(125), "{ran}");
+        assert!(
+            ran.stderr.contains("starting agent probe")
+                && ran
+                    .stderr
+                    .contains("Resource temporarily unavailable (os error 11)"),
+            "{ran}"
+        );
+        assert!(
+            !reports.join("result").exists(),
+            "actor ran beyond its task budget"
+        );
+        return;
+    }
     assert_eq!(ran.status, Some(0), "{ran}");
     let report = std::fs::read_to_string(reports.join("result")).unwrap();
+    eprintln!("managed lifecycle facts:\n{report}");
     let field = |name: &str| {
         report
             .lines()
