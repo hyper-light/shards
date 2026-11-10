@@ -72,12 +72,49 @@ launcher. Root owns the broader established-alternative research and decision.
 
 ## Light checks and owed work
 
-Native results pending. Exact runnable launcher: `run-light.sh`; requested remote
-Mac d1324CPU/8GiB/20GiB, private ~/managed-pthread-probe-check and
-~/managed-pthread-probe-target, lockf /tmp/g121-mac.lock. Local Mac builds are
-held near31GiB; b24 root clone/target are untouched. The launcher records source,
-compiler/SDK/header, fresh artifact/binary hash, two focused invocation logs and
-strict clippy. It neither sweeps/exhausts resources nor profiles costs.
+Native d132 run r210 completed exit0 at exact clean source
+`bce20df21335db49f03cbbe9386e0b925789845b`. It was admitted once at4CPU/8GiB/20GiB
+with29/32 cores idle; actual df remained above30GiB. macOS26.4 build25E246,
+Darwin25.4.0 arm64, Rust1.98.1
+`48a229ceaefd4985c50990b14116b6d856af0985`, LLVM22.1.8. Exact launcher:
+
+```sh
+lockf /tmp/g121-mac.lock bash docs/research/measurements/managed-sync-coordinator/prototypes/run-light.sh
+```
+
+- Fresh standalone release build0; selected artifact `fresh:false`.
+- Separate fresh `allocation-refused` invocation0:
+  `pinned_storage=Allocation native_init_not_entered=true`.
+- Separate fresh `native-under-rust-refusal` invocation0:
+  `native=Ok(()) expired_wait_typed=Some(Pthread { call: Wait, code: 60 }) cleanup=Ok(()) retained_unknown=false`.
+  Thus checked init/lock/wait/signal/join/destroy completed and the expired wait
+  returned actual Darwin ETIMEDOUT60. No native initialization failure was injected
+  or proven, and native malloc/kernel behavior was not observed by this injector.
+- Strict artifact all-target clippy0; mechanical rustfmt/bash/policy checks0.
+
+Private copied source lives at
+`~/managed-pthread-probe-check/docs/research/measurements/managed-sync-coordinator/prototypes`;
+binary `~/managed-pthread-probe-target/release/darwin-pthread-probe`, SHA256
+`3103771dc1f431b5ff97d84e1710fa311e118a19faa79d34d0b266212ad12616`.
+SDK `/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`; opaque pthread type
+header SHA256 `741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b`.
+Existing cold PATIENCE input was268323834ns; it was a liveness budget only.
+[raw-d132](raw-d132/) retains exact commands/logs/compiler/SDK/source/binary
+manifests and admission/final status. Archive SHA256
+`36f100aafb979ec45df13ea37f0ee9e2f21965da7101100dcf2c8b3700732fc9`.
+
+Before completion the API repeatedly reported running/empty output while the
+script evidence directory was absent. A scoped read proved selected exact source
+files had arrived. An initial possible-lock interpretation was withdrawn; no
+lock cause was established. The accepted job/lock/source were preserved and no
+duplicate writer was launched by this agent. Eventually actual native logs were
+returned; the earlier delay remains unattributed, not a startup/performance
+measurement. [setup-observation.txt](raw-d132/setup-observation.txt) records this.
+Root separately authorized a coordinator-owned unchanged-source b24 check with
+distinct prefixes; its results are not counted here.
+
+Local Mac builds remained held near31GiB; b24 root clone/target were untouched.
+No sweep/exhaustion/cost measurement or production synchronization choice occurred.
 
 R01/R04/R06/R07/R13: test-only pinned storage, explicit init/exchange/destroy/error
 states and comments. R02/R03/R05/R12: native interface evidence, no architecture

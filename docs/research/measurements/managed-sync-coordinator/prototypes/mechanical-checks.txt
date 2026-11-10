@@ -1,0 +1,14 @@
+Native tested source bce20df21335db49f03cbbe9386e0b925789845b.
+Evidence-only followup leaves source/Cargo/launcher bytes unchanged.
+
+rustfmt +1.98.1 --edition 2024 --check docs/research/measurements/managed-sync-coordinator/prototypes/src/main.rs
+exit0
+
+bash -n docs/research/measurements/managed-sync-coordinator/prototypes/run-light.sh
+exit0
+
+git diff --check
+exit0
+
+Current f5 development-policy checker check(Path.cwd()) applied to this worktree:
+exit0; evidence/coordinator review still required.

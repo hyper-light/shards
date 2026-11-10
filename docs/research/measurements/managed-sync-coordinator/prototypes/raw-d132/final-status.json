@@ -1,0 +1,7 @@
+{
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+  "output": "build: exit=0\nallocation-refused: exit=0\nnative-under-rust-refusal: exit=0\nclippy: exit=0\n",
+  "running": false,
+  "exit_code": 0,
+  "observed_at": "2026-11-10 09:56:30 UTC"
+}
