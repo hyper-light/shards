@@ -203,6 +203,7 @@ fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
         ],
         &env_text,
     );
+    assert_eq!(published(&reports, "result.started"), b"started");
     let report = String::from_utf8(published(&reports, "result")).unwrap();
     eprintln!("actual orphan-reaping results:\n{report}");
     assert!(!report.contains("failure"), "{report}");

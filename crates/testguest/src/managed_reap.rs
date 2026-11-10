@@ -8,7 +8,7 @@ pub fn run(path: &str, rounds: &str, milliseconds: &str) -> i32 {
     let result = (|| {
         let pending = format!("{path}.pending");
         let mut report = std::fs::File::create(&pending)?;
-        let result = exercise(&mut report, rounds, milliseconds);
+        let result = exercise(&mut report, path, rounds, milliseconds);
         if let Err(error) = &result {
             writeln!(
                 report,
@@ -30,13 +30,16 @@ pub fn run(path: &str, rounds: &str, milliseconds: &str) -> i32 {
     }
 }
 
-fn exercise(report: &mut std::fs::File, rounds: &str, milliseconds: &str) -> io::Result<()> {
+fn exercise(report: &mut std::fs::File, path: &str, rounds: &str, milliseconds: &str) -> io::Result<()> {
     let rounds = rounds.parse::<usize>().map_err(io::Error::other)?;
     let milliseconds = milliseconds.parse::<u64>().map_err(io::Error::other)?;
     let deadline = Instant::now()
         .checked_add(Duration::from_millis(milliseconds))
         .filter(|_| rounds != 0 && milliseconds != 0)
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let starting = format!("{path}.started.pending");
+    std::fs::write(&starting, b"started")?;
+    std::fs::rename(starting, format!("{path}.started"))?;
     let descriptors = || {
         std::fs::read_dir("/proc/self/fd")?.try_fold(0usize, |n, entry| {
             entry?;
