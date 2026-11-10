@@ -222,6 +222,15 @@ enum Event {
     Lost(Option<u64>),
     Failure(String),
 }
+impl Event {
+    fn failure(self) -> String {
+        match self {
+            Self::Lost(code) => format!("connection lost: {code:?}"),
+            Self::Failure(reason) => reason,
+            Self::Record(next, _) => format!("unexpected record cursor {next}"),
+        }
+    }
+}
 #[derive(Debug)]
 enum Ask {
     Connect(SocketAddr),
@@ -507,7 +516,7 @@ fn worker(
             {
                 at
             }
-            other => return Err(format!("unexpected event {other:?}").into()),
+            other => return Err(other.failure().into()),
         };
         producer.wait_capacity()?;
         samples.push((
@@ -642,7 +651,7 @@ pub(super) fn run_with(args: Vec<String>) -> Result<()> {
                 .map_err(|e| format!("stall submit {e:?}"))?;
             match events.recv_timeout(patience)? {
                 Event::Record(_, _) => {}
-                other => return Err(format!("stall {other:?}").into()),
+                other => return Err(other.failure().into()),
             }
             if producer.capacity() != 0 || channel.control.progress().consumed != 0 {
                 return Err("unacknowledged channel acquired credit".into());
