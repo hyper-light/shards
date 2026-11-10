@@ -294,6 +294,7 @@ fn run(fixture: &mut Fixture, input: &Supplied, until: Instant) -> Outcome {
         &["managed-capture", "agent", "exit"],
         &["managed-capture", "harness", "step", &port, &work],
         &directives,
+        None,
         Some(&[base.port]),
         until,
     );
