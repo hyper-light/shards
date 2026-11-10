@@ -37,6 +37,8 @@ pub fn main() -> ! {
         "managed-lifecycle" => crate::managed_lifecycle::probe(arg(1)),
         "managed-lifecycle-exit" => crate::managed_lifecycle::exit_after_report(arg(1)),
         "managed-lifecycle-challenge" => crate::managed_lifecycle::challenge(arg(1), arg(2)),
+        "managed-reap" => crate::managed_reap::run(arg(1), arg(2), arg(3)),
+        "managed-reap-child" => crate::managed_reap::child(arg(1), arg(2)),
         "cat" => cat(),
         // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154):
         // its group's, or its own device node's and iommufd.

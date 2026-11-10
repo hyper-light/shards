@@ -12,7 +12,6 @@ const TIMEOUT: Duration = Duration::from_secs(120);
 #[test]
 #[ignore = "requires the retained tenant-events-directory source patch"]
 fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
-    use std::io::{Read as _, Write as _};
     if cannot_run_vms() {
         return;
     }
@@ -107,32 +106,7 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         observed.contains("agent faulty: quarantined after population observation errno 21"),
         "{observed}"
     );
-    let challenge = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_be_bytes();
-    assert_eq!(published(&reports, "ready"), b"ready");
-    let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], &env, TIMEOUT);
-    assert_eq!(ports.status, Some(0), "{ports}");
-    let host_port: u16 = ports
-        .stdout
-        .lines()
-        .find(|line| line.starts_with(&format!("{port}/tcp")))
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|address| address.rsplit(':').next())
-        .and_then(|port| port.parse().ok())
-        .unwrap_or_else(|| panic!("no published challenge port: {ports}"));
-    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
-    let mut socket = std::net::TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
-    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
-    socket.set_write_timeout(Some(TIMEOUT)).unwrap();
-    socket.write_all(&challenge).unwrap();
-    socket.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut reply = [0u8; size_of::<u128>()];
-    socket.read_exact(&mut reply).unwrap();
-    assert_eq!(reply, challenge);
-    assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
+    challenge_healthy(&env, &reports, port);
     let facts = std::fs::read_to_string(faulty.join("result")).expect("faulty actor never ran");
     eprintln!("post-quarantine exact challenge answered; exiting actor facts:\n{facts}");
     let top = run_shards_env(&["top"], &["tenant-fault", "-o", "pid,comm"], &env, TIMEOUT);
@@ -145,6 +119,106 @@ fn a_tenant_observation_fault_leaves_a_mixed_sibling_and_workload_alive() {
         "post-quarantine challenge answered; remaining processes:\n{}",
         top.stdout
     );
+    let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
+    assert_eq!(stopped.status, Some(0), "{stopped}");
+    vm.wait_exit_following(TIMEOUT);
+}
+
+#[test]
+fn repeated_orphan_crashes_are_reaped_while_a_mixed_neighbor_progresses() {
+    if cannot_run_vms() {
+        return;
+    }
+    let (image, _) = served();
+    let home = TempDir::new("reaping-home");
+    let reports = TempDir::new("reaping-report");
+    let healthy = TempDir::new("reaping-healthy");
+    let ctx = TempDir::new("reaping-context");
+    let port = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let env = [
+        ("SHARDS_HOME", home.as_os_str()),
+        ("SHARDS_KERNEL", kernel().as_os_str()),
+        ("SHARDS_INIT", guest_init().as_os_str()),
+    ];
+    let rounds = 20;
+    for (kind, name, options) in [
+        (
+            "agent",
+            "reaper",
+            serde_json::json!([
+                "managed-reap",
+                "/probe/result",
+                rounds.to_string(),
+                TIMEOUT.as_millis().to_string()
+            ]),
+        ),
+        (
+            "harness",
+            "healthy",
+            serde_json::json!(["managed-lifecycle-challenge", "/healthy", port.to_string()]),
+        ),
+    ] {
+        std::fs::create_dir(ctx.join(name)).unwrap();
+        common::program_copy(common::test_guest(), &ctx.join(name).join("probe"));
+        let manifest = serde_json::json!({"entrypoint": "probe", "options": options});
+        std::fs::write(ctx.join(name).join(format!("{kind}.json")), manifest.to_string()).unwrap();
+    }
+    std::fs::write(ctx.join("Agentfile"), format!(
+        "FROM {image}\nAGENT reaper FROM ./reaper\nHARNESS healthy FROM ./healthy\nVOLUME --chown=reaper /probe FOR reaper\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={port} challenge\nEXPOSE --harnesses=healthy {port} AS ingress FOR challenge\nCONNECT healthy WITH healthy ON challenge\n"
+    )).unwrap();
+    let built = run_shards_env(
+        &["build", "image"],
+        &["-t", "reaping:1", ctx.to_str().unwrap()],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(built.status, Some(0), "{built}");
+    let report_bind = format!("{}:/probe", reports.display());
+    let healthy_bind = format!("{}:/healthy", healthy.display());
+    let publish = format!("127.0.0.1::{port}");
+    let env_text = [
+        ("SHARDS_HOME", home.to_str().unwrap()),
+        ("SHARDS_KERNEL", kernel().to_str().unwrap()),
+        ("SHARDS_INIT", guest_init().to_str().unwrap()),
+    ];
+    let mut vm = common::Vm::spawn_env(
+        &[
+            "run",
+            "vm",
+            "--rm",
+            "--name",
+            "tenant-fault",
+            "-v",
+            &report_bind,
+            "-v",
+            &healthy_bind,
+            "-p",
+            &publish,
+            "reaping:1",
+            "sleep",
+        ],
+        &env_text,
+    );
+    let report = String::from_utf8(published(&reports, "result")).unwrap();
+    eprintln!("actual orphan-reaping results:\n{report}");
+    assert!(!report.contains("failure"), "{report}");
+    assert_eq!(report.lines().count(), rounds, "{report}");
+    for (round, line) in report.lines().enumerate() {
+        assert!(line.starts_with(&format!("round {round} pid ")), "{report}");
+        assert!(line.contains(" adopted 1 reaped true fds "), "{report}");
+    }
+    let after = run_shards_env(
+        &["exec", "vm"],
+        &["tenant-fault", "/bin/testguest", "report"],
+        &env,
+        TIMEOUT,
+    );
+    assert_eq!(after.status, Some(0), "{after}");
+    challenge_healthy(&env, &healthy, port);
     let stopped = run_shards_env(&["stop", "vm"], &["-t", "0", "tenant-fault"], &env, TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
     vm.wait_exit_following(TIMEOUT);
@@ -327,4 +401,34 @@ fn supplied_agent(processes: Option<u64>, admission: Admission) {
     ] {
         assert!(matches!(field(name), 1 | 13), "{report}");
     }
+}
+
+fn challenge_healthy(env: &[(&str, &std::ffi::OsStr)], reports: &std::path::Path, port: u16) {
+    use std::io::{Read as _, Write as _};
+    let challenge = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_be_bytes();
+    assert_eq!(published(&reports, "ready"), b"ready");
+    let ports = run_shards_env(&["read", "ports"], &["tenant-fault"], env, TIMEOUT);
+    assert_eq!(ports.status, Some(0), "{ports}");
+    let host_port: u16 = ports
+        .stdout
+        .lines()
+        .find(|line| line.starts_with(&format!("{port}/tcp")))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|address| address.rsplit(':').next())
+        .and_then(|port| port.parse().ok())
+        .unwrap_or_else(|| panic!("no published challenge port: {ports}"));
+    let address = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, host_port));
+    let mut socket = std::net::TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
+    socket.set_read_timeout(Some(TIMEOUT)).unwrap();
+    socket.set_write_timeout(Some(TIMEOUT)).unwrap();
+    socket.write_all(&challenge).unwrap();
+    socket.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut reply = [0u8; size_of::<u128>()];
+    socket.read_exact(&mut reply).unwrap();
+    assert_eq!(reply, challenge);
+    assert_eq!(std::fs::read(reports.join("answer")).unwrap(), challenge);
 }
