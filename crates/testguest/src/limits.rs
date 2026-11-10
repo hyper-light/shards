@@ -14,6 +14,7 @@ pub enum Invalid {
     Version,
     Phase,
     Cause,
+    Command,
 }
 
 impl Budget {
@@ -35,6 +36,30 @@ pub enum Phase {
     Refused,
     Recovered,
     Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Command {
+    Fill,
+    Release,
+    Finish,
+}
+impl Command {
+    pub fn encode(self) -> [u8; 1] {
+        [match self {
+            Self::Fill => 1,
+            Self::Release => 2,
+            Self::Finish => 3,
+        }]
+    }
+    pub fn decode(bytes: [u8; 1]) -> Result<Self, Invalid> {
+        match bytes {
+            [1] => Ok(Self::Fill),
+            [2] => Ok(Self::Release),
+            [3] => Ok(Self::Finish),
+            _ => Err(Invalid::Command),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,5 +230,9 @@ mod tests {
         let mut bad = bytes;
         bad[3] = 2;
         assert_eq!(Report::decode(&bad), Err(Invalid::Version));
+        let mut bad = bytes;
+        bad[59] = 255;
+        assert_eq!(Report::decode(&bad), Err(Invalid::Cause));
+        assert_eq!(Command::decode([0]), Err(Invalid::Command));
     }
 }

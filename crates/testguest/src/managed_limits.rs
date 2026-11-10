@@ -1,4 +1,4 @@
-use shards_testguest::limits::{Budget, Cause, Phase, Report};
+use shards_testguest::limits::{Budget, Cause, Command, Phase, Report};
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -308,7 +308,8 @@ pub fn actor(root: &str, tasks: &str, reserved: &str, children: &str, patience: 
             publish(root, "ready", &report.encode())?;
             let mut control = accept(&listener, until)?;
             let baseline = descriptors()?;
-            if receive::<1>(&mut control, until)? != [1] {
+            if Command::decode(receive(&mut control, until)?).map_err(|_| Failure::Protocol)? != Command::Fill
+            {
                 return Err(Failure::Protocol);
             }
             let mut held = Vec::new();
@@ -334,7 +335,9 @@ pub fn actor(root: &str, tasks: &str, reserved: &str, children: &str, patience: 
             report.errno = libc::EAGAIN;
             publish(root, "refused", &report.encode())?;
             send(&mut control, &report.encode(), until)?;
-            if receive::<1>(&mut control, until)? != [2] {
+            if Command::decode(receive(&mut control, until)?).map_err(|_| Failure::Protocol)?
+                != Command::Release
+            {
                 return Err(Failure::Protocol);
             }
             for child in held {
@@ -355,7 +358,9 @@ pub fn actor(root: &str, tasks: &str, reserved: &str, children: &str, patience: 
             publish(root, "recovered", &report.encode())?;
             send(&mut control, &report.encode(), until)?;
             // Stay alive for host cancellation; this wait cannot consume another task.
-            if receive::<1>(&mut control, until)? != [3] {
+            if Command::decode(receive(&mut control, until)?).map_err(|_| Failure::Protocol)?
+                != Command::Finish
+            {
                 return Err(Failure::Protocol);
             }
             Ok(())
@@ -382,7 +387,7 @@ pub fn healthy(root: &str, patience: &str, port: &str) -> i32 {
             let nonce = receive::<16>(&mut control, until)?;
             send(&mut control, &nonce, until)?;
         }
-        if receive::<1>(&mut control, until)? != [3] {
+        if Command::decode(receive(&mut control, until)?).map_err(|_| Failure::Protocol)? != Command::Finish {
             return Err(Failure::Protocol);
         }
         Ok(())

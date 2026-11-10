@@ -3,7 +3,7 @@
 mod common;
 
 use common::{TempDir, run_shards_env};
-use shards_testguest::limits::{Budget, Cause, Phase, Report};
+use shards_testguest::limits::{Budget, Cause, Command, Phase, Report};
 use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -338,7 +338,7 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     run.snapshot("before fill", budget, 0);
     let mut actor_control = connect(&run, actor_port, until);
     let mut healthy_control = connect(&run, healthy_port, until);
-    actor_control.write_all(&[1]).unwrap();
+    actor_control.write_all(&Command::Fill.encode()).unwrap();
     let refused = report(&actor, "refused", Phase::Refused, budget, until);
     assert_eq!(
         (refused.held, refused.reaped, refused.cause, refused.errno),
@@ -350,7 +350,7 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
     );
     run.snapshot("after actual EAGAIN", budget, budget.children);
     neighbor(&run, &mut healthy_control, "refused", until);
-    actor_control.write_all(&[2]).unwrap();
+    actor_control.write_all(&Command::Release.encode()).unwrap();
     let recovered = report(&actor, "recovered", Phase::Recovered, budget, until);
     assert_eq!(
         (recovered.held, recovered.reaped, recovered.cause, recovered.errno),
@@ -361,8 +361,14 @@ fn a_finite_tenant_task_refusal_recovers_without_blocking_its_neighbors() {
         Report::decode(&receive::<{ Report::BYTES }>(&mut actor_control, until)).unwrap(),
         recovered
     );
-    assert_eq!(recovered.descriptors, refused.descriptors);
-    assert_eq!(refused.descriptors, ready.descriptors.checked_add(1).unwrap());
+    assert_eq!(recovered.descriptors, ready.descriptors.checked_add(1).unwrap());
+    assert_eq!(
+        refused.descriptors,
+        recovered
+            .descriptors
+            .checked_add(budget.children.checked_mul(2).unwrap())
+            .unwrap()
+    );
     run.snapshot("after replacement reaped", budget, 0);
     neighbor(&run, &mut healthy_control, "recovered", until);
     let stopped = run.command(&["stop", "vm", "-t", "0", "managed-limits"]);
