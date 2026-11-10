@@ -155,7 +155,7 @@ fn run_group() -> Result<File, Refusal> {
         return Err(Refusal::io(c"run", io::Error::last_os_error()));
     }
     // SAFETY: fstatfs succeeded above.
-    if unsafe { fs.assume_init() }.f_type != libc::CGROUP2_SUPER_MAGIC {
+    if i128::from(unsafe { fs.assume_init() }.f_type) != i128::from(libc::CGROUP2_SUPER_MAGIC) {
         return Err(Refusal::new(c"run", Cause::WrongFilesystem));
     }
     Ok(file)
