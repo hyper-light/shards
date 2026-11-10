@@ -12,11 +12,11 @@ must acknowledge it before edits. After compaction/resume, re-read the policy an
 the current handoff. An older checkout, skill, task brief or handoff cannot waive it.
 
 Use [docs/development-evidence.md](docs/development-evidence.md) for the mandatory
-decision/reproduction/validation record. Under R15, subagents implement scoped
-pieces and run targeted unit/light integration tests. The main coordinator owns
-all audits, profiling, benchmarking, heavy real E2E, chaos and sweeps, reviews
-evidence, validates the combined revision and merges reviewed work to main.
-Subagents do not merge themselves to main.
+decision/reproduction/validation record. Under R15, implementation agents build
+scoped pieces and run targeted light checks; assigned adversarial agents also
+run bounded live E2E/fault/chaos/stress/mutation campaigns in owned scopes.
+The main coordinator owns audits, profiling, benchmarking, integration validation,
+evidence review and main merges. Subagents do not merge themselves to main.
 
 Supported targets are [resources/supported-targets.txt](resources/supported-targets.txt).
 macOS is arm64 only; Intel Mac is unsupported. Run `scripts/check-development-policy`

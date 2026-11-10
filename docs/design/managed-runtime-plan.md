@@ -447,8 +447,10 @@ have an explicit outcome contract rather than a false rollback claim.
 ## 9. Dependency-ordered implementation slices
 
 Each slice lands as a reviewed, signed piece on integration. Compile/unit checks
-belong with its implementation; heavy integration tests and measurements run
-centrally on the combined tree. Audits remain with the coordinator. No straggler
+belong with its implementation. Assigned adversarial agents also run bounded
+live E2E/fault/chaos/stress/mutation campaigns against exact owned revisions.
+The coordinator implements missing mechanisms and owns audits, profiling,
+benchmarking, combined validation, evidence review and main merges. No straggler
 branch is merged merely because it exists or carries an old claimed result.
 
 | Phase | Deliverable | Needs | Gaps | Done when |

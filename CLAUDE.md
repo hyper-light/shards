@@ -34,7 +34,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   - Every performance claim comes from a committed benchmark.
   - Benchmarks report n, p50, p90, p99 and max, with host, OS and revision.
 - **Lean code.** Write only what the current milestone needs. Match the surrounding style.
-- **Implementation and merges:** scoped agents return tested signed commits and owed runs; the main coordinator audits, runs all heavy validation/profiling, batches reviewed work and merges to main (R15).
+- **Implementation and merges:** scoped implementers return tested signed commits; assigned adversarial agents run bounded live campaigns. The main coordinator audits, profiles/benchmarks, validates integration, reviews evidence and merges to main (R15).
 
 ## Commands and gotchas
 

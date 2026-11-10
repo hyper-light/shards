@@ -9,7 +9,7 @@ repository instructions; agents cannot invent exceptions or weaken a rule to shi
 
 Before edits/builds/tests/delegation, read this whole file and the current task's
 plan/handoff. Record `POLICY_READ` with the Git revision, this file's SHA-256, your
-role (`coordinator` or `implementer`), task and owned paths. A receipt identifies
+role (`coordinator`, `implementer` or assigned `adversarial` tester), task and owned paths. A receipt identifies
 the instructions loaded; it is not proof of compliance. Re-read after a policy
 change or context loss. If an old checkout lacks this file, read it from current
 `origin/main` before proceeding; fetch that ref if necessary.
@@ -145,12 +145,22 @@ fast, allocation-free or leak-free without the relevant evidence.
 ## R15 — Roles, adversarial validation and merges
 
 Use scoped subagents for parallel implementation and targeted unit/light
-integration tests. The main coordinator owns **all audits, profiling,
-benchmarking, heavy real E2E, chaos, stress campaigns and sweeps**, including
-adversarial multi-tenant validation. These are not delegated campaigns. Agents
-return owed coordinator runs when their implementation/light checks finish.
-This role split follows Ada's current policy bootstrap and supersedes older
-instructions permitting broader agent campaigns.
+integration tests. Ada's current management-layer instruction also authorizes
+assigned adversarial agents to execute bounded live E2E, fault, chaos, stress and
+mutation campaigns against their owned fixtures. Give each campaign exact
+source, runner, build/target ownership, resource and time bounds, cleanup and
+forbidden-effect witnesses. Start actors only inside those assigned disposable
+scopes; retain failures and uncertainty. Passing a stub or pure test never
+substitutes for the assigned live campaign.
+
+The main coordinator owns all audits, profiling, benchmarking, cross-lane
+integration validation, evidence review and final main merges. It implements
+remaining management-layer mechanisms while adversarial agents exercise them.
+Implementation-only agents keep their light-test scope unless explicitly
+assigned a campaign. Assigned adversarial agents continue their scoped queue
+between signed checkpoints rather than waiting idle for coordinator sweeps.
+This current authorization supersedes the earlier coordinator-only restriction
+on adversarial testing; all isolation, permission and evidence rules still apply.
 
 Delegate implementation with exact source/path/runner ownership, resource
 envelopes, policy readback, light-test scope and evidence-return requirements.
