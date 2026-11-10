@@ -1,0 +1,77 @@
+use super::{Completion, Envelope, Fallback, Refusal, Reported, Request, Tool, id, object, text, wire};
+use crate::server::json::Value;
+use std::io::{self, Write};
+
+pub(super) fn receive(message: &Value) -> Result<Request<'_>, Refusal> {
+    object(message, "message")?;
+    let id = id(message, "id")?;
+    match text(message, "method")? {
+        "item/tool/call" => {}
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
+            return Err(Refusal::Fallback(Fallback::Approval));
+        }
+        "process/start" | "process/read" | "process/write" | "process/signal" | "process/terminate" => {
+            return Err(Refusal::Fallback(Fallback::LocalExecution));
+        }
+        "fs/readFile"
+        | "fs/open"
+        | "fs/readBlock"
+        | "fs/writeBlock"
+        | "fs/close"
+        | "fs/writeFile"
+        | "fs/createDirectory"
+        | "fs/getMetadata"
+        | "fs/watchMissing"
+        | "fs/canonicalize"
+        | "fs/readDirectory"
+        | "fs/walk"
+        | "fs/remove"
+        | "fs/copy"
+        | "capabilityRoots/discoverV1"
+        | "capabilities/discoverV2" => {
+            return Err(Refusal::Fallback(Fallback::FileSystem));
+        }
+        "http/request" => return Err(Refusal::Fallback(Fallback::Network)),
+        _ => return Err(Refusal::Method),
+    }
+    let params = object(message.get("params").ok_or(Refusal::Shape("params"))?, "params")?;
+    match params.get("namespace") {
+        Some(Value::String(namespace)) if namespace == "shards" => {}
+        None | Some(Value::Null | Value::String(_)) => return Err(Refusal::Namespace),
+        _ => return Err(Refusal::Shape("namespace")),
+    }
+    let tool = Tool::receive(text(params, "tool")?)?;
+    let arguments = object(
+        params.get("arguments").ok_or(Refusal::Shape("arguments"))?,
+        "arguments",
+    )?;
+    let reported = Reported {
+        thread: text(params, "threadId")?,
+        turn: text(params, "turnId")?,
+        call: text(params, "callId")?,
+    };
+    Ok(Request {
+        tool,
+        arguments,
+        envelope: Envelope::Codex { id, reported },
+    })
+}
+
+pub(super) fn respond(
+    out: &mut impl Write,
+    id: &Value,
+    completion: Completion,
+    result: &str,
+) -> io::Result<()> {
+    out.write_all(b"{\"id\":")?;
+    wire::id(out, id)?;
+    out.write_all(b",\"result\":{\"contentItems\":[{\"type\":\"inputText\",\"text\":")?;
+    wire::quoted(out, result)?;
+    out.write_all(b"}],\"success\":")?;
+    out.write_all(if completion == Completion::Completed {
+        b"true"
+    } else {
+        b"false"
+    })?;
+    out.write_all(b"}}")
+}

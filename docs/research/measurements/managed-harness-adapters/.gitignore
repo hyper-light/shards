@@ -1,0 +1,7 @@
+/sources/
+/raw/**/disposable-state/
+/raw/**/codex-schema/
+/raw/codec-*/codec-tests
+/raw/codec-*/codec-tests.dSYM/
+/raw/clippy-*/codec-tests.rmeta
+/raw/final-light-*/*.rmeta
