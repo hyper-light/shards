@@ -61,6 +61,49 @@ fn zero_and_overflow_are_typed_before_any_io() {
     assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
 }
 
+fn bounds_without_dial(patience: Duration) {
+    let dir = shards_testdir::TempDir::new("borrow-boundio").unwrap();
+    let listener = UnixListener::bind(dir.join("v")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let id = identity(dir.join("v"));
+    let (send, receive) = mpsc::sync_channel(1);
+    let worker = std::thread::spawn(move || send.send(connect_borrowed(&id, 1234, patience)).unwrap());
+    // Fixture release budget only. If the guard is removed, observe the actual
+    // CONNECT independently, close that withheld peer, and join without an orphan.
+    let first = receive.recv_timeout(crate::conformance::UNSERVED_PATIENCE);
+    let actual_dial = match listener.accept() {
+        Ok((mut stream, _)) => {
+            request(&mut stream, 1234);
+            true
+        }
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+        Err(e) => panic!("{e}"),
+    };
+    let result = match first {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => receive.recv().unwrap(),
+        Err(e) => panic!("{e}"),
+    };
+    worker.join().unwrap();
+    println!("patience={patience:?} actual_CONNECT={actual_dial}");
+    assert!(!actual_dial);
+    assert!(match result {
+        Err(BorrowError::Expired) => patience.is_zero(),
+        Err(BorrowError::DeadlineOverflow) => patience == Duration::MAX,
+        _ => false,
+    });
+}
+
+#[test]
+fn zero_with_withheld_muxer_never_dials() {
+    bounds_without_dial(Duration::ZERO);
+}
+
+#[test]
+fn overflow_with_withheld_muxer_never_dials() {
+    bounds_without_dial(Duration::MAX);
+}
+
 #[test]
 fn changed_identity_is_rejected_before_dial() {
     let dir = shards_testdir::TempDir::new("borrow-id").unwrap();
@@ -117,7 +160,11 @@ fn exact_bytes_clone_half_close_and_resource_return() {
     server.join().unwrap();
     drop(dir);
     #[cfg(target_os = "linux")]
-    assert_eq!(resources(), before);
+    {
+        let after = resources();
+        println!("borrowed_resources_before={before:?} after={after:?}");
+        assert_eq!(after, before);
+    }
 }
 
 #[test]
