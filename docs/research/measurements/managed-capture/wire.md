@@ -36,6 +36,21 @@ Adaptive issued credit must fit the caller's actual admitted lease and protocol
 ceiling; it cannot expand authority. Full tenant/channel slots must not block the
 reader serving other admitted records or main/control progress.
 
+Files-only declarations keep their declared identity without starting an output
+service. `managed-active=` carries a nonempty sorted unique list of u32BE declared
+IDs below `managed-members`; its checked parser borrows fixed-width entries.
+The daemon derives the active plan from authoritative image files using the
+existing EROFS/VFS resolution seam; trusted init verifies its actual runnable
+ordinals match before release. IDs remain the existing `Domain.id - DOMAIN_FIRST_ID`
+(agents then harnesses, including gaps); scheduling positions are separate.
+
+Normal duplex management closure uses empty `MANAGED_CONTROL_END` (wire ordinal47,
+46 reserved by lifecycle for quiesce refusal). It follows independent reserved
+control records before Signal closure; an EOF without that terminal is not a
+successful scope end. No subscriber acknowledgement is required to end the owner
+run. This new-path contract still needs the coordinator's real layer-save/order
+and control-death mutation checks.
+
 `shards_abi::run::managed::Record` borrows its payload. It allocates nothing and
 checks version, reserved/tag values, exact variant payload shape and arithmetic.
 `StreamState::accept` enforces New → Open → Data* → End|Aborted with contiguous
