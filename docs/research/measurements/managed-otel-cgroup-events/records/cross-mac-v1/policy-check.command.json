@@ -1,0 +1,9 @@
+{
+  "argv": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "exit_code": 0,
+  "policy_main": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "scope": "local nonbuild required policy check; not a Rust/target/runtime test"
+}

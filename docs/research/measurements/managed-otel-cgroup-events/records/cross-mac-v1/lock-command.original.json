@@ -1,0 +1,1 @@
+{"argv": ["lockf", "-t", "0", "/tmp/g121-mac.lock", "python3", "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/run-cross.py"], "free_before_bytes": 81266696192, "scope": "ARM Mac cross-only2CPU2GiB4GiB600/j2; no project executable invocation"}\n

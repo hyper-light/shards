@@ -1,0 +1,15 @@
+{
+  "name": "clippy-version",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "cargo",
+    "clippy",
+    "--version"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81266102272,
+  "exit_code": 0,
+  "free_after_bytes": 81266057216
+}

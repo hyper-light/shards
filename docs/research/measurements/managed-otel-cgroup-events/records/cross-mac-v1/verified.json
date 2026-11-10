@@ -1,0 +1,221 @@
+{
+  "archive_bytes": 8168,
+  "archive_sha256": "bb5a176fe3a891f6bce0d6c86716fab99fdf12d81c1704750c3a4318fa4a7e88",
+  "original_payloads": 40,
+  "embedded_manifests": 1,
+  "inventory_rows": 41,
+  "all_unique_safe_regular_member_lengths_hashes_verified": true,
+  "outcome": 0,
+  "commands": [
+    {
+      "name": "toolchains",
+      "argv": [
+        "rustup",
+        "toolchain",
+        "list"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "rustc-version",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustc",
+        "-Vv"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "cargo-version",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "-V"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "rustfmt-version",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--version"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "clippy-version",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--version"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "installed-targets",
+      "argv": [
+        "rustup",
+        "target",
+        "list",
+        "--installed",
+        "--toolchain",
+        "1.98.1"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "format-check-only",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "crates/init/src/metrics.rs",
+        "docs/research/measurements/managed-otel-encoder/fixture.rs",
+        "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+        "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs",
+        "docs/research/measurements/managed-otel/profile/src/main.rs"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "reader-codec-strict-x86_64-unknown-linux-gnu",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-cgroup-events/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "reader-codec-strict-x86_64-unknown-linux-musl",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-cgroup-events/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "encoder-cross-strict",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-encoder/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "official-reference-cross-strict",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel-rust-reference/Cargo.toml",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "profile-default-cross-check-only",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel/profile/Cargo.toml",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "exit_code": 0
+    },
+    {
+      "name": "profile-feature-cross-check-only",
+      "argv": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "check",
+        "--locked",
+        "--manifest-path",
+        "docs/research/measurements/managed-otel/profile/Cargo.toml",
+        "--features",
+        "alloc-count",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "-j2"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "original_source_files_unchanged": true,
+  "free_before_bytes": 81266143232,
+  "free_after_bytes": 80948748288,
+  "native_Linux_units": "UNRUN",
+  "official_reference_execution": "UNRUN",
+  "project_or_profile_executables_invoked": false
+}

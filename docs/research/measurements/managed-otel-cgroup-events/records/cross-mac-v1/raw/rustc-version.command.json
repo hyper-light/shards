@@ -1,0 +1,14 @@
+{
+  "name": "rustc-version",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "rustc",
+    "-Vv"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81266126848,
+  "exit_code": 0,
+  "free_after_bytes": 81266118656
+}

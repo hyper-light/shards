@@ -1,0 +1,15 @@
+{
+  "name": "installed-targets",
+  "argv": [
+    "rustup",
+    "target",
+    "list",
+    "--installed",
+    "--toolchain",
+    "1.98.1"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81266053120,
+  "exit_code": 0,
+  "free_after_bytes": 81265889280
+}

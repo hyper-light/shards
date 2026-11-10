@@ -1,0 +1,22 @@
+{
+  "name": "profile-feature-cross-check-only",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "cargo",
+    "check",
+    "--locked",
+    "--manifest-path",
+    "docs/research/measurements/managed-otel/profile/Cargo.toml",
+    "--features",
+    "alloc-count",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 80948817920,
+  "exit_code": 0,
+  "free_after_bytes": 80948752384
+}

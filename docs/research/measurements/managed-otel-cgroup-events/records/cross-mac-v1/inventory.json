@@ -1,0 +1,231 @@
+{
+  "result": {
+    "me": "e30189ea29182644fe5a4b2e06c7dac2",
+    "want": "2 CPUs, 2 GiB of memory, 4 GiB of disk, os == macos, arch == aarch64",
+    "runners": [
+      {
+        "runner": {
+          "name": "e30189ea29182644fe5a4b2e06c7dac2",
+          "hostname": "Adas-MacBook-Pro-2.local",
+          "label": "adas-macbook-pro-2.local",
+          "os": "macos",
+          "arch": "aarch64",
+          "labels": [
+            "baremetal",
+            "macos",
+            "aarch64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "e9d203179d06a808c9a9c8cff11857446f7c2423c60969853d5e4c2f2c1f8825",
+          "reach_version": 2,
+          "cpus": 18,
+          "cpu_pct": 11.520730018615724,
+          "load1": 3.14404296875,
+          "mem_total": 137438953472,
+          "mem_used": 62518214656,
+          "slots": 4,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex",
+            "devin",
+            "gemini",
+            "antigravity"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 1000052.9375,
+        "why": "macos/aarch64 · 15 of 18 cores idle · 70 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+      },
+      {
+        "runner": {
+          "name": "b24c5c951260dcdfd0972f2aeaf3cf51",
+          "hostname": "Adas-Mac-Studio-2.local",
+          "label": "adas-mac-studio-2.local",
+          "was": [
+            "adas-mac-studio-2.local"
+          ],
+          "os": "macos",
+          "arch": "aarch64",
+          "labels": [
+            "baremetal",
+            "macos",
+            "aarch64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "05f1bf1b9cd6bcc0c585e740af84cb4caa6fbd679c2dfa732938691830b9c223",
+          "reach_version": 2,
+          "cpus": 14,
+          "cpu_pct": 9.438223838806152,
+          "load1": 2.18408203125,
+          "mem_total": 38654705664,
+          "mem_used": 4560519168,
+          "slots": 3,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 70.11370086669922,
+        "why": "macos/aarch64 · 12 of 14 cores idle · 32 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+      },
+      {
+        "runner": {
+          "name": "cec37f60f22c5a60d27f08f4d2e5daa8",
+          "hostname": "Adas-Mac-Studio-3.local",
+          "label": "adas-mac-studio.local",
+          "os": "macos",
+          "arch": "aarch64",
+          "labels": [
+            "baremetal",
+            "macos",
+            "aarch64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "af9a2725932940a6fe7c613a0a69e4ce1bcd3ddc3cf42777dc599529491f1ab1",
+          "reach_version": 2,
+          "cpus": 14,
+          "cpu_pct": 7.832757472991943,
+          "load1": 2.23779296875,
+          "mem_total": 38654705664,
+          "mem_used": 3731456000,
+          "slots": 3,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 69.73004913330078,
+        "why": "macos/aarch64 · 12 of 14 cores idle · 33 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+      },
+      {
+        "runner": {
+          "name": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "hostname": "Adas-Mac-Studio.local",
+          "label": "adas-mac-studio.local-2",
+          "was": [
+            "adas-mac-studio.local-2"
+          ],
+          "os": "macos",
+          "arch": "aarch64",
+          "labels": [
+            "baremetal",
+            "macos",
+            "aarch64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "c05364176c7942050dcd7ac3422442c81c228f05e9f880dc633fd24739b6b5d5",
+          "reach_version": 2,
+          "cpus": 32,
+          "cpu_pct": 5.187506198883057,
+          "load1": 2.6728515625,
+          "mem_total": 103079215104,
+          "mem_used": 40074035200,
+          "slots": 8,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 59.03973388671875,
+        "why": "macos/aarch64 · 29 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+      },
+      {
+        "runner": {
+          "name": "75694786916abd6207b67832b9b1e85e",
+          "hostname": "adalundhe-MacBook-Pro",
+          "label": "adalundhe-macbook-pro",
+          "os": "macos",
+          "arch": "aarch64",
+          "labels": [
+            "baremetal",
+            "macos",
+            "aarch64"
+          ],
+          "connected": true,
+          "reach": true,
+          "fingerprint": "e42f6cba2b9b0ead237fdaf1888d0225eb420aa6437396f7316ff1e67bdee4ff",
+          "reach_version": 2,
+          "cpus": 18,
+          "cpu_pct": 7.918001174926758,
+          "load1": 3.03759765625,
+          "mem_total": 68719476736,
+          "mem_used": 34875670528,
+          "slots": 4,
+          "busy": 0,
+          "draining": false,
+          "harnesses": [
+            "claude",
+            "codex"
+          ],
+          "via": "",
+          "facts": null
+        },
+        "score": 46.12422180175781,
+        "why": "macos/aarch64 · 15 of 18 cores idle · 32 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+      }
+    ],
+    "passed": [
+      [
+        "2768d0d5d2974f1e21d348edadff9d1b",
+        "4 GB of disk free, under 4 GB"
+      ],
+      [
+        "451397fcc585f7f7cb9aaf00e42064bb",
+        "linux is not macos"
+      ],
+      [
+        "8fadc1ec213332e16cb0d915a3fb913f",
+        "linux is not macos"
+      ],
+      [
+        "f3f618f29b31df31a1f52482b39578c2",
+        "offline"
+      ],
+      [
+        "f766f09294f2e17e3b8a631ffd4e6a4b",
+        "windows is not macos"
+      ],
+      [
+        "fedora.attlocal.net",
+        "linux is not macos"
+      ]
+    ],
+    "labels": {
+      "2768d0d5d2974f1e21d348edadff9d1b": "adas-mac-studio-3.local",
+      "451397fcc585f7f7cb9aaf00e42064bb": "adacachy",
+      "75694786916abd6207b67832b9b1e85e": "adalundhe-macbook-pro",
+      "8fadc1ec213332e16cb0d915a3fb913f": "kiln-a094a12d.attlocal.net",
+      "b24c5c951260dcdfd0972f2aeaf3cf51": "adas-mac-studio-2.local",
+      "cec37f60f22c5a60d27f08f4d2e5daa8": "adas-mac-studio.local",
+      "d1323898b255a3ed435eb83fa0f7b0cf": "adas-mac-studio.local-2",
+      "e30189ea29182644fe5a4b2e06c7dac2": "adas-macbook-pro-2.local",
+      "f3f618f29b31df31a1f52482b39578c2": "adas-macbook-pro.local",
+      "f766f09294f2e17e3b8a631ffd4e6a4b": "jupiter"
+    }
+  },
+  "calls": [
+    {
+      "name": "machines.list",
+      "ok": true
+    }
+  ]
+}

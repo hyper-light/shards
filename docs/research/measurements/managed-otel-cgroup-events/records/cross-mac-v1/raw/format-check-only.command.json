@@ -1,0 +1,21 @@
+{
+  "name": "format-check-only",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--check",
+    "crates/init/src/metrics.rs",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs",
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+    "docs/research/measurements/managed-otel-rust-reference/tests/equivalence.rs",
+    "docs/research/measurements/managed-otel/profile/src/main.rs"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81265881088,
+  "exit_code": 0,
+  "free_after_bytes": 81265913856
+}

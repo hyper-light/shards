@@ -1,0 +1,23 @@
+{
+  "current_main_product_lock_byte_equal": true,
+  "embedded_source_manifest": 1,
+  "full_required_files_read": {
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+    "docs/design/managed-runtime-plan.md": "26d29c598856b132d97ddb3fea8c33f80ce23f36d4d191f70dad3a28c56f6a82",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+  },
+  "handoff_sha256": "533894e63b4c5b70fdc87e3fd2a75113c9e3e63b07f315e148d9e5e7bd6029f7",
+  "native_Linux_units_and_reference": "UNRUN",
+  "policy_main": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "product_lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+  "project_executable_execution_authorized": false,
+  "receipt_sequence": 7847,
+  "role": "implementer; cross-validation only",
+  "source_archive": "../light-v2/source.tar.gz",
+  "source_archive_sha256": "a2fdebd9f18bc002cb521eb00cbbaca77a61b474332ad18e317beda92a8d486a",
+  "source_changes": false,
+  "source_commit": "67a0cdadee0479c0998041b84f77df344730d24d",
+  "source_payloads": 32
+}

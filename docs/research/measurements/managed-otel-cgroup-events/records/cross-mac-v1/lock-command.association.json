@@ -1,0 +1,23 @@
+{
+  "original_path": "lock-command.original.json",
+  "original_bytes": 253,
+  "original_sha256": "68fdd5ee53abc22b7206e69140cb3d21a76169d95a5401bff62d692ad223fedc",
+  "original_parse_outcome": "Extra data: line 1 column 252 (char 251)",
+  "mechanical_metadata_failure": "bootstrap appended literal backslash-n bytes, not LF",
+  "suffix_hex": "5c6e",
+  "parsed_complete_original_JSON_body": {
+    "argv": [
+      "lockf",
+      "-t",
+      "0",
+      "/tmp/g121-mac.lock",
+      "python3",
+      "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/run-cross.py"
+    ],
+    "free_before_bytes": 81266696192,
+    "scope": "ARM Mac cross-only2CPU2GiB4GiB600/j2; no project executable invocation"
+  },
+  "original_bytes_rewritten": false,
+  "source_or_build_rerun": false,
+  "actual_lock_command_exit_from_original_kiln_output": 0
+}

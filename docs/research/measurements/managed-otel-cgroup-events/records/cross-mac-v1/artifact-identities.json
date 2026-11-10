@@ -1,0 +1,172 @@
+{
+  "archive": {
+    "bytes": 8168,
+    "sha256": "bb5a176fe3a891f6bce0d6c86716fab99fdf12d81c1704750c3a4318fa4a7e88"
+  },
+  "lock_command_original": {
+    "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/lock-command.json",
+    "bytes": 253,
+    "sha256": "68fdd5ee53abc22b7206e69140cb3d21a76169d95a5401bff62d692ad223fedc"
+  },
+  "driver": {
+    "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/run-cross.py",
+    "bytes": 8372,
+    "sha256": "03242bce9a3031bddd3683ad52bcdf52c9eebff3c7ba69efea836f42b0570a77"
+  },
+  "source_archive": {
+    "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source.tar.gz",
+    "bytes": 91262,
+    "sha256": "a2fdebd9f18bc002cb521eb00cbbaca77a61b474332ad18e317beda92a8d486a"
+  },
+  "metadata_artifacts": [
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libfixture-264cfef1a9fca820.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libfixture-279cfa61866b3d85.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_encoder_check-15990ebc7da404fd.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_encoder_check-8a1420278ce2eeef.rmeta",
+      "bytes": 45210,
+      "sha256": "e93d0af88e10d43f712e74d5f3feab9e5556aedf05ac54f739157da4bd85a331"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_encoder_check-dc76191460ec1bc5.rmeta",
+      "bytes": 45099,
+      "sha256": "e243ba3670531ff5c2f51c2833b2063d102060f0f9f80c91ca2901c0910f942c"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_events_light-62671b23fab0928e.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_events_light-8a16753fae4a9f5e.rmeta",
+      "bytes": 64271,
+      "sha256": "8d5b3e6ac7a7d5548f4b3c9cbf30d02574e149a0fd5783a38bf3068f82ae3b38"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_profile-3428f3e2395b2e6c.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_profile-dd68547860ab7d38.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_rust_reference-0d75b5ca51d5de53.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-gnu",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-gnu/debug/deps/libshards_managed_otel_rust_reference-f710885f1a1e882d.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-musl",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-musl/debug/deps/libshards_managed_otel_events_light-485f48cf97786d0c.rmeta",
+      "bytes": 64272,
+      "sha256": "2a345599cc69ee4652d96f0cf2623c9584ec8d58ce53f25a6aa82524a5756e98"
+    },
+    {
+      "kind": "Rust metadata, not executable",
+      "target": "x86_64-unknown-linux-musl",
+      "path": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/target/x86_64-unknown-linux-musl/debug/deps/libshards_managed_otel_events_light-f11b0659db0fab86.rmeta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "tool_binaries": [
+    {
+      "query": [
+        "rustup",
+        "which",
+        "--toolchain",
+        "1.98.1",
+        "rustc"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "path": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustc",
+      "bytes": 412504,
+      "sha256": "766eda9d8f53afd6fc7f27b3cd2e444dd22afacb5afa710a5625fc8e45b8c941"
+    },
+    {
+      "query": [
+        "rustup",
+        "which",
+        "--toolchain",
+        "1.98.1",
+        "cargo"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "path": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/cargo",
+      "bytes": 31960040,
+      "sha256": "6e17e865f3a20dd55a1d212f849f58b77124179f0de7c52973096d84ba34118d"
+    },
+    {
+      "query": [
+        "rustup",
+        "which",
+        "--toolchain",
+        "1.98.1",
+        "rustfmt"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "path": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+      "bytes": 4455400,
+      "sha256": "98e8da71078a8b5710f1818c98da25d92de162a122bd9a6db222ca929e545468"
+    },
+    {
+      "query": [
+        "rustup",
+        "which",
+        "--toolchain",
+        "1.98.1",
+        "clippy-driver"
+      ],
+      "exit_code": 0,
+      "stderr": "",
+      "path": "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/clippy-driver",
+      "bytes": 13065024,
+      "sha256": "3e43a13a5b341ce6ceaf90addfd94bd7958c0e1988cf44d357fe07c6383ce3e9"
+    }
+  ]
+}

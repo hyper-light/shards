@@ -32,30 +32,35 @@ seq7281, ROOT GO acknowledged seq7297. No children/goals/automatic dispatch.
   found adacachy0idle, no fitting Linux runner. No alternate-access/guard bypass,
   local compilation, resource change or active-cache deletion follows this hold.
 
-Targeted GNU/musl compilation/tests/strict lint, fixture shape and complete
-official request equivalence are **PENDING**, not passed. Profile two-feature
-checks are pending and execution remains forbidden. New native event reads have
-not run; no pressure/fault generation is part of this scope.
+The above original statuses are retained. A subsequent explicitly authorized
+ARM Mac [cross-validation](CROSS.md), against the SAME corrected source and
+current-main-identical product lock, completes strict Reader/codec GNU+musl,
+encoder/reference GNU and both profile compile configurations0. All40 raw
+payloads+manifest are verified; no source changed or project executable ran.
+Native Linux compilation/test invocation, fixture shape execution and complete
+official decoded-request equivalence remain **PENDING**, not passed. Profile
+execution remains forbidden. New native event reads have not run; no pressure/
+fault generation is part of this scope.
 
 ## R01–R16 accounting
 
 | Rule | Applicable evidence and remaining gap |
 | --- | --- |
-| R01 | Checked existing decimal parser, fixed enum/array widths, get/get_mut access, typed per-field outcomes, RAII fixed-name files and fallible existing page. No production assertion or panicking unwrap/expect added. Denied-lint and actual caller compilation pending; no whole-path panic proof claimed. |
+| R01 | Checked existing decimal parser, fixed enum/array widths, get/get_mut access, typed per-field outcomes, RAII fixed-name files and fallible existing page. No production assertion or panicking unwrap/expect added. Cross GNU/musl denied-lint0; native unit execution and actual caller compilation pending. No whole-path panic proof claimed. |
 | R02 | Pinned Linux docs/renderers/storage/propagation, OTel proto/spec/semconv and actual cAdvisor/OCI/Collector source compared in PROPOSAL/primary-sources. ROOT selected exact contract before broader codec edits. Actual kernel/consumer validation owed. |
 | R03 | Every added production literal/width/attribute documented in D229.md. No learned threshold, cadence, picked cap, default0 or overhead allowance. |
 | R04 | Key/Value/End/Other parser states; selected result Missing/Invalid/Overflow/Io or observed count. No error grants admission. Existing limit states/identities unchanged; kernel reset continuity unproved. |
 | R05 | Two actual file callers through SAME held Reader/page/tokenizer/Snapshot/encoder; no new sensor/store/cache/polling/parent walk. No wait or retained cache introduced. |
-| R06 | One focused private parser, source-derived fixed slots, iterator through existing native codec; focused diff review. Strict light results pending. |
+| R06 | One focused private parser, source-derived fixed slots, iterator through existing native codec; focused diff review and scoped cross strict0. Actual native behavior remains unverified. |
 | R07 | Comments explain configured aggregation, incomplete-file/field semantics and bounds. No explanatory logging or tracing layer. |
 | R08 | No performance claim. ROOT comparison/cost distributions remain owed; no benchmark executed. |
 | R09 | New requested observation behavior, not a claimed reproduced production fix. Original native ENOENT and first formatter failure retained without guessed cause or mechanism correction. |
 | R10 | Source archives, original results/raw hashes, safe unique regular-member verification and failures retained here. No raw normalization. Actual ROOT caller/kernel-reset/mutation/consumer proofs remain open. |
-| R11 | Shared guest code; private GNU/musl tests pending. All seven targets and actual supported VM combinations remain ROOT gates; MacARM64 only and paused WinARM untouched. |
+| R11 | Shared guest code; ARM Mac to GNU/musl x86-64 static strict0. Native GNU/musl tests remain pending. All seven targets and actual supported VM combinations remain ROOT gates; MacARM64 only and paused WinARM untouched. |
 | R12 | Shared existing Linux guest Reader across hosts, no OS adapter/dependency/installed deliverable or duplicated native encoder. Official Rust reference is encoding baseline only. |
 | R13 | Exact two files/seven streams, no generic sensor/authority/export endpoint. Parent issuer is a separate assigned actor. |
 | R14 | ROOT owns all allocator/fault/CPU/copy/latency/retention/parent/kernel profiling and accounting. No zero-allocation/leak-free/syscall claim from this source or light checks. |
-| R15 | Role/path/resource receipts and ROOT GO retained; named-path signed IN-PROGRESS source checkpoint explicitly lacks Rust validation and is not ready for adoption. Scoped light results remain pending normal admission. No main merge/children/VM/Collector/mutation/heavy sweeps. ROOT owes composition and full actual caller. |
+| R15 | Role/path/resource receipts and ROOT GO retained. Source checkpoint67a plus separately scoped static cross proof remains IN-PROGRESS, without native/runtime validation and not ready for adoption. Native checks remain pending normal Linux admission. No main merge/children/VM/Collector/mutation/heavy sweeps. ROOT owes composition and full actual caller. |
 | R16 | New private sources/target/Cargo home/tmp only; original v1 and all historical c298/81632 data protected. No local Rust build/full worktree/root cache/paused VM or cleanup. Refused ordinary admission preserved. |
 
 ROOT owes current actual caller/host assertions, kernel/reset/mode behavior,

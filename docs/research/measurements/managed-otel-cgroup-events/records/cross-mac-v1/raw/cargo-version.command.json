@@ -1,0 +1,14 @@
+{
+  "name": "cargo-version",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "cargo",
+    "-V"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81266139136,
+  "exit_code": 0,
+  "free_after_bytes": 81266135040
+}

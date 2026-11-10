@@ -1,0 +1,30 @@
+{
+  "input": {
+    "command": "python3 - <<'PY'\nimport base64,hashlib,json,pathlib,subprocess\nbase=pathlib.Path.home()/'managed-otel-events-cross-67a0-b24-v1'\ndef identity(p):\n h=hashlib.sha256()\n with p.open('rb') as f:\n  for b in iter(lambda:f.read(1024*1024),b''):h.update(b)\n return {'path':str(p),'bytes':p.stat().st_size,'sha256':h.hexdigest()}\np=base/'raw.tar.gz'; b=p.read_bytes()\nmetadata=[]\nfor target in ['x86_64-unknown-linux-gnu','x86_64-unknown-linux-musl']:\n for p in sorted((base/'target'/target/'debug/deps').glob('*.rmeta')):\n  if any(n in p.name for n in ['shards_managed_otel','fixture']): metadata.append({'kind':'Rust metadata, not executable','target':target,**identity(p)})\ntools=[]\nfor name in ['rustc','cargo','rustfmt','clippy-driver']:\n cmd=['rustup','which','--toolchain','1.98.1',name];r=subprocess.run(cmd,stdout=subprocess.PIPE,stderr=subprocess.PIPE,check=False)\n row={'query':cmd,'exit_code':r.returncode,'stderr':r.stderr.decode(errors='replace')}\n if r.returncode==0:row.update(identity(pathlib.Path(r.stdout.decode().strip())))\n tools.append(row)\nlock=(base/'lock-command.json').read_bytes()\nprint(json.dumps({'archive':{'bytes':len(b),'sha256':hashlib.sha256(b).hexdigest(),'base64':base64.b64encode(b).decode()},'lock_command_original':{'base64':base64.b64encode(lock).decode(),**identity(base/'lock-command.json')},'driver':identity(base/'run-cross.py'),'source_archive':identity(base/'source.tar.gz'),'metadata_artifacts':metadata,'tool_binaries':tools}))\nPY",
+    "on": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "needs": "macos/aarch64,cpus=1,mem=256m,disk=1g",
+    "sync": false,
+    "timeout_s": 60,
+    "reuse": false
+  },
+  "result": {
+    "result": {
+      "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+      "output": {
+        "archive": "raw.tar.gz",
+        "original_lock_metadata": "lock-command.original.json",
+        "identities": "artifact-identities.json",
+        "note": "base64 decoded without altering original bytes; receipt retains these associated files"
+      },
+      "running": false,
+      "why": "macos/aarch64 · 7 of 14 cores idle · 32 GB free · room for 1 CPU, 256 MiB of memory, 1 GiB of disk",
+      "exit_code": 0
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  }
+}

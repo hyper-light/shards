@@ -1,0 +1,24 @@
+{
+  "name": "official-reference-cross-strict",
+  "argv": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "cargo",
+    "clippy",
+    "--locked",
+    "--manifest-path",
+    "docs/research/measurements/managed-otel-rust-reference/Cargo.toml",
+    "--all-targets",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/adalundhe/managed-otel-events-cross-67a0-b24-v1/source",
+  "free_before_bytes": 81233379328,
+  "exit_code": 0,
+  "free_after_bytes": 80949248000
+}
