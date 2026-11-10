@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "lockf",
+    "-k",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "cargo",
+    "clippy",
+    "--locked",
+    "-j4",
+    "--manifest-path",
+    "/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-reporting-prototype-09e1efdc11/docs/research/measurements/managed-reporting-coordinator/prototype/Cargo.toml",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "cwd": "/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-reporting-prototype-09e1efdc11",
+  "CARGO_TARGET_DIR": "/Users/adalundhe/managed-reporting-prototype-target"
+}

@@ -1,0 +1,30 @@
+{
+  "commit": "71bbe350ab79eef58113991d817ccc6165061a64",
+  "files": [
+    {
+      "path": "include/stdio.h",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/Libc/71bbe350ab79eef58113991d817ccc6165061a64/include/stdio.h",
+      "sha256": "d2220614f42d3cb678ae0de176ba0ab3256e15fb45b3efdb5d17b8ac1f6a4b54"
+    },
+    {
+      "path": "stdio/FreeBSD/findfp.c",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/Libc/71bbe350ab79eef58113991d817ccc6165061a64/stdio/FreeBSD/findfp.c",
+      "sha256": "220c213e509122c4ef1200d659532dad4422141f4870d7b37c8f9ab02985d11e"
+    },
+    {
+      "path": "stdio/FreeBSD/local.h",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/Libc/71bbe350ab79eef58113991d817ccc6165061a64/stdio/FreeBSD/local.h",
+      "sha256": "88526319ee5d11f374ba3e4da8c59ea3b6a5aee803700574a1dfd21e66b13705"
+    },
+    {
+      "path": "stdio/FreeBSD/_flock_stub.c",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/Libc/71bbe350ab79eef58113991d817ccc6165061a64/stdio/FreeBSD/_flock_stub.c",
+      "sha256": "9bc78e2a871139a3a9f23811d396814cf8d1ae9d65d10864668ef494361e6d59"
+    },
+    {
+      "path": "stdio/FreeBSD/flockfile.3",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/Libc/71bbe350ab79eef58113991d817ccc6165061a64/stdio/FreeBSD/flockfile.3",
+      "sha256": "ae59a047c4d95c5e3f81a2e2da536dea10c587302920e5b589490f64c6093f28"
+    }
+  ]
+}

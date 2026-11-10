@@ -1,0 +1,32 @@
+   Compiling libc v0.2.189
+   Compiling managed-reporting-prototype v0.0.0 (/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-reporting-prototype-09e1efdc11/docs/research/measurements/managed-reporting-coordinator/prototype)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.28s
+     Running unittests src/lib.rs (/Users/adalundhe/managed-reporting-prototype-target/debug/deps/managed_reporting_prototype-ace20c69fc8e4e7f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/Users/adalundhe/managed-reporting-prototype-target/debug/deps/managed_reporting_prototype-420e08b4c17712dc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/native.rs (/Users/adalundhe/managed-reporting-prototype-target/debug/deps/native-7b648753d8f2d917)
+
+running 5 tests
+test closed_fd2_returns_the_actual_io_error_in_an_owned_child ... ok
+test formatter_failure_is_distinct_and_adds_no_fallback ... ok
+test same_thread_recursive_display_uses_the_c_stream_lock ... ok
+test static_message_keeps_exact_prefix_and_newline ... ok
+test unicode_and_numeric_formatting_preserve_exact_bytes ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+   Doc-tests managed_reporting_prototype
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,11 @@
+{
+  "prototype_binary": "/Users/adalundhe/managed-reporting-prototype-target/debug/managed-reporting-prototype",
+  "frozen_binary": "/Users/adalundhe/managed-reporting-prototype-evidence/frozen-binaries/managed-reporting-prototype",
+  "bytes": 552080,
+  "sha256": "60445ab3cc418239780579fa8562d49e4beea0e6d56bb1b09db0809aef2c5c39",
+  "last_native_job": "r80 ended0",
+  "active_own_jobs": [],
+  "source_identity": "dirty8e snapshot; final checked source hashes retained; not a committed-source pass claim",
+  "clone": "/Users/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-reporting-prototype-09e1efdc11",
+  "target": "/Users/adalundhe/managed-reporting-prototype-target"
+}

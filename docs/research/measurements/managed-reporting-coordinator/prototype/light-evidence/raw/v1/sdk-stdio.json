@@ -1,0 +1,18 @@
+{
+  "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/_stdio.h",
+  "sha256": "8417242466f6df6890587974393e97bb0aeac8caeb80cdf82a4e03a97e6d4660",
+  "declarations": [
+    {
+      "line": 169,
+      "text": "extern FILE *__stderrp __swift_nonisolated_unsafe;"
+    },
+    {
+      "line": 391,
+      "text": "void\t flockfile(FILE *);"
+    },
+    {
+      "line": 393,
+      "text": "void\t funlockfile(FILE *);"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "source_checkpoint": "3c223e7595c6faae09dfa82d79ba5f685a916eda",
+  "base": "8e76824a400200b50cc514ebbb74bea78a89bc77",
+  "policy_revision": "f5cec365d2e435afae5e6f613c92d9d3759ef60f",
+  "policy_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "role": "implementer",
+  "native_job": "r80",
+  "ordinary_native_cases": 5,
+  "ordinary_native_failures": 0,
+  "format_exit": 0,
+  "strict_clippy_exit": 0,
+  "policy_exit": 0,
+  "source_sha256": {
+    "Cargo.toml": "d657412be6597aa36eedc8fd52032605b7257787e3c543cd6e822d1c4d436f2e",
+    "Cargo.lock": "a1c49be163187a6a725b51b1a7893ac547f752a3cdbf1fa04b3d2c6ac87e1f5f",
+    "src/lib.rs": "a89cb8f9402af4080ac8339e06696b0225fc738086a121caaceb2ab0feabb629",
+    "src/main.rs": "915245d37c74015408b3fd532a5f2200b9b9ae850acac462f4de8a6650c60f99",
+    "tests/native.rs": "56caa11af3d16892edaf7a603cc3a1e6457efa338898f0b2d7318003ec129431"
+  },
+  "raw_transfer_sha256": "086c74b60f9c5b2a9c74316e8b832db0226fe2409639249aefc914a470787895",
+  "source_signature_header_present": true,
+  "required_trailer_present": true,
+  "certificate_chain_verified": false,
+  "adopted": false,
+  "product_files_changed": [],
+  "root_open": [
+    "cold Rust and native allocation refusal",
+    "actual product caller/report integration",
+    "mixed Rust/C writers and lock ordering",
+    "native lock status unobservable through void APIs",
+    "FILE lifetime and arbitrary close/reopen",
+    "partial write/EINTR outcome proof",
+    "blocking/cancellation, mutations/restoration, induced resource cost",
+    "platform and adoption review"
+  ],
+  "active_own_jobs": []
+}
