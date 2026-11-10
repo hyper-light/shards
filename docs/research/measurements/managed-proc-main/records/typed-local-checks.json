@@ -1,0 +1,52 @@
+{
+  "source": "73c85d039bd72d1867d28fb2b155cee1fef3879e",
+  "scope": "format/shell/policy/source-only diff; no local build",
+  "commands": [
+    "cargo fmt --all -- --check",
+    "bash -n docs/research/measurements/managed-proc-main/run-typed-light.sh",
+    "python3 scripts/check-development-policy",
+    "git diff --check 657474c5..73c85d039 -- selected source paths"
+  ],
+  "results": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "1ad356",
+        "wall_time_seconds": 4.098677917,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "febde9",
+        "wall_time_seconds": 0.000005875,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "e3b11a",
+        "wall_time_seconds": 0.000004958,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "391d86",
+        "wall_time_seconds": 0.000006667,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ]
+}

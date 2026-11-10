@@ -1,0 +1,24 @@
+
+running 11 tests
+test taken::linux::tests::actual_reader_and_started_return_initial_and_later_oom ... actual_reader_and_started_successful_allocations_before_refusal=0 returned_CapacityUnavailable=true
+actual_reader_and_started_successful_allocations_before_refusal=1 returned_CapacityUnavailable=true
+ok
+test taken::linux::tests::field_boundaries_and_raw_comm_are_independent_of_text_encoding ... ok
+test taken::linux::tests::held_find_returns_error_when_start_allocation_is_refused ... own_tgid=169713 precomputed_start=10348889 successful_allocations_before_refusal=0
+held_find_returned_error=Some(CapacityUnavailable) fds_before=9 fds_after=9
+ok
+test taken::linux::tests::held_identity_child ... ignored, private owned child awaiting stdin EOF
+test taken::linux::tests::legal_raw_comm_preserves_held_process_start ... own_tgid_raw_comm=[6f, 77, 6e, 20, ff, 29, 20, 29, 20, fe] held_alive=true observed_start=Ok(10348889)
+own_name_restored=true original_start_unchanged=true child_exit=Some(0) reader_joined=true
+ok
+test taken::linux::tests::public_attach_returns_scoped_capacity_failure_before_success_setup ... public_attach_refusal=Some(Process { pid: 169713, expected_started: 10348889, failure: CapacityUnavailable }) fds_before=9 fds_after=9
+ok
+test taken::linux::tests::raw_comm_child ... ignored, private own-child role for raw process-name regression
+test taken::linux::tests::read_bytes_empty_eof_and_file_error ... ok
+test taken::linux::tests::stack_path_covers_u32_decimal_boundaries_under_allocation_refusal ... ok
+test taken::linux::tests::typed_display_clone_and_unknown_observation_survive_refusal ... ok
+test taken::linux::tests::wrong_start_and_unreaped_exit_keep_exact_identity_and_return_fds ... own_child=169726 start=10348889 wrong=Some(DifferentStart { observed: 10348889 }) ended=Some(Exited) child_exit=Some(0) fds_initial=9 wrong_before=11 wrong_after=11 ended_before=10 ended_after=10 fds_final=9
+ok
+
+test result: ok. 9 passed; 0 failed; 2 ignored; 0 measured; 36 filtered out; finished in 0.00s
+

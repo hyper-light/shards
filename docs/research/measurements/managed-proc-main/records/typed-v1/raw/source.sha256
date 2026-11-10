@@ -1,0 +1,8 @@
+7653c2cd4e1a629227a1d766ae79b82efbbfde636217dd290fe01b5cece5eeed  crates/api/src/taken.rs
+7ad2b10333749ea943038b00995a010aa8c7fd418b5f72e5d79f5ad3fc95cf5a  crates/api/src/lib.rs
+9c4ecb5a41c85f16130d677f7fe4931172ebcc710f6c9f0fb9d822a0f08c1032  crates/api/src/client.rs
+aaa3c49a4c142614aed1562fae57fd8d762f95b128736648f298c53c12758d5b  crates/api/src/conformance.rs
+638e6f6599e683d8ffec09f6abf76992b0023e7ae42dad71576ac0f881eaab37  docs/research/measurements/managed-proc-main/allocation.rs
+410610c4e000443061b220e6fe681031e5381ef391b10838e6f8c9339942dac0  docs/research/measurements/managed-proc-main/reader-tests.rs
+680f0e9807b88ad626aff5054af3b797d4c63b8d60023ecc56a006e0cf0fa01a  docs/research/measurements/managed-proc-main/repro.rs
+fb03cadb0782712b81526dd450aace38f15b506d5fa9ca0c0a56b1e620593a2c  docs/research/measurements/managed-proc-main/run-typed-light.sh
