@@ -664,6 +664,21 @@ fn controller(
         return Err(invalid("controller requires direct guest PID1"));
     }
     let deadline = Deadline::new(within)?;
+    enum Payload {
+        Scripted,
+        Buffered(udp::forward::Slots),
+    }
+    let payload = match kind {
+        ControllerKind::ScriptedResponder => Payload::Scripted,
+        ControllerKind::BufferedRelay { buffer_bytes } => {
+            let slots = at(
+                Stage::ReservePayload,
+                udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
+            )?;
+            slots.record()?;
+            Payload::Buffered(slots)
+        }
+    };
     let namespace = at(Stage::Namespace, Namespace::new(&deadline))?;
     let cgroup = at(Stage::Cgroup, Cgroup::new())?;
     let socket = |stage| {
@@ -704,19 +719,14 @@ fn controller(
         ControllerKind::ScriptedResponder => ClientRole::ScriptedResponder,
         ControllerKind::BufferedRelay { .. } => ClientRole::ForwardedBackend,
     };
-    let work = match kind {
-        ControllerKind::ScriptedResponder => Work::Scripted {
+    let work = match payload {
+        Payload::Scripted => Work::Scripted {
             receiver: responder.try_clone()?,
             sender: responder,
             destination: rewritten.into(),
             role: Reply::Relay,
         },
-        ControllerKind::BufferedRelay { buffer_bytes } => {
-            let slots = at(
-                Stage::ReservePayload,
-                udp::forward::Slots::reserve(buffer_bytes).map_err(udp::forward::ReserveError::into_io),
-            )?;
-            slots.record()?;
+        Payload::Buffered(slots) => {
             let upstream = socket(Stage::BindUpstream)?;
             at(Stage::BindUpstream, upstream.connect(destination))?;
             record(format_args!(
