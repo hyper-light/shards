@@ -10,6 +10,10 @@ and light-test evidence. Keep unknown or unrun results explicit.
 - **Decision (R02/R03/R05/R12):** primary sources and revisions; established
   alternatives; compatibility/security/cost comparison; live method/data; chosen
   interface; every literal's source/derivation and cold-start/failure behavior.
+- **Wait/cache review (R05):** affected waits/caches, authoritative state,
+  notifications versus repeated probes, cache keys/invalidation/bounds, measured
+  cost and retain/replace/remove decision; completed refactor and live proof for
+  confirmed problems, with remaining work explicit.
 - **Live example (R09/R10):** exact repeatable invocation; expected and observed
   symptom; baseline red logs/traces; fixed green result; guard-removal mutation
   that fails for the relevant reason; actual forbidden effect/cleanup observed.

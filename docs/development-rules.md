@@ -60,6 +60,15 @@ small interface hiding substantial implementation at an existing seam. Avoid
 speculative traits, generic frameworks, pass-through layers and parallel managers.
 Apply R02 to broader choices; do not create architecture merely to enable a test.
 
+Audit affected waits and caches when implementing or reviewing a path. Prefer
+completion/readiness notifications and one authoritative state owner. Distinguish
+event waits and required protocol deadlines from periodic state probes. Improve
+the underlying algorithm, I/O and ownership before adding a cache. For any cache
+retained or proposed, record its measured benefit, authoritative source, keys,
+invalidation, resource/lifetime bounds and consistency proof. Existing use is not
+justification. Refactor or remove confirmed unnecessary polling/duplicate cached
+state with live before/after and mutation evidence; an inventory alone is unfinished.
+
 ## R06 — Control complexity
 
 Keep code concise and locally understandable. Use explicit transitions and focused
@@ -133,6 +142,8 @@ fast, allocation-free or leak-free without the relevant evidence.
 Use scoped subagents for parallel implementation, targeted unit tests and light
 integration. The main coordinator owns all audits, profiling, benchmarking, heavy
 real E2E, deadlock/livelock testing, chaos/failure/boundary/break campaigns and sweeps.
+The user may explicitly delegate a scoped audit; record that authorization and
+its scope. Heavy validation and profiling remain with the coordinator.
 Agents return small tested signed commits plus evidence and owed runs, then stop;
 they do not keep launching heavy work or merge themselves to main. The coordinator
 reviews and batches finished work, validates the combined revision, and merges to
