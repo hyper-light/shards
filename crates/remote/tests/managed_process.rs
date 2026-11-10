@@ -3,6 +3,7 @@
 mod fixture;
 
 #[test]
+#[allow(clippy::expect_used)]
 #[ignore = "explicit admitted separate-process compatibility fixture"]
 fn managed_process_role() {
     fixture::run().expect("managed process role");

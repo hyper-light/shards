@@ -133,9 +133,8 @@ fn server(root: &Path, channels: usize, mode: &str) -> Result<()> {
         .name("fixture-owner-control".into())
         .spawn(move || {
             // EOF of this private fixture's inherited stdin is owner cancellation.
-            let mut bytes = Vec::new();
-            std::io::stdin().read_to_end(&mut bytes).unwrap();
-            assert!(bytes.is_empty());
+            let mut byte = [0];
+            assert_eq!(std::io::stdin().read(&mut byte).unwrap(), 0);
             end.send(Notice::OwnerEnd).unwrap();
         })?;
     drop(notice);
