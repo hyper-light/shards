@@ -1410,6 +1410,7 @@ fn call(
             principal: &p.label,
             scratch: p.scratch.as_ref().map(std::os::fd::AsFd::as_fd),
             evidence: broker::Evidence::MemoryOnly,
+            journal: None,
         };
         let terminal = match request
             .authorize(context, peer)

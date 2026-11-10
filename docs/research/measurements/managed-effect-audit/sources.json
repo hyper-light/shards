@@ -1,0 +1,20 @@
+[
+  {
+    "repository": "sqlite/sqlite",
+    "tag": "version-3.51.0",
+    "revision": "c2aa8e3875907d84540af7624534e326b26b82ee",
+    "url": "https://raw.githubusercontent.com/sqlite/sqlite/c2aa8e3875907d84540af7624534e326b26b82ee/src/os_unix.c",
+    "bytes": 295124,
+    "sha256": "78637e7e2a75ca5b3b170f109ad8cb13b09a3cc8114396db33784d0edb351ea8",
+    "symbol": "static int full_fsync("
+  },
+  {
+    "repository": "postgres/postgres",
+    "tag": "REL_18_0",
+    "revision": "3d6a828938a5fa0444275d3d2f67b64ec3199eb7",
+    "url": "https://raw.githubusercontent.com/postgres/postgres/3d6a828938a5fa0444275d3d2f67b64ec3199eb7/src/backend/access/transam/xlog.c",
+    "bytes": 312816,
+    "sha256": "328fb419dda966b439bf3dc7ffbd2e01bcff9b7d8f1bc1325618f82e3663a419",
+    "symbol": "issue_xlog_fsync(int fd"
+  }
+]

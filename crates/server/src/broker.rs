@@ -3,6 +3,8 @@ use crate::server::json::Value;
 use std::fmt;
 use std::os::fd::{AsRawFd as _, BorrowedFd};
 
+mod audit;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
     Received,
@@ -32,6 +34,7 @@ pub(crate) struct Context<'a> {
     pub principal: &'a str,
     pub scratch: Option<BorrowedFd<'a>>,
     pub evidence: Evidence,
+    pub journal: Option<&'a mut audit::Journal>,
 }
 /// A borrowed view of the one actual peer and its owned request ledger.
 pub(crate) struct Peer<'a> {
@@ -52,6 +55,7 @@ pub(crate) enum Reason {
     IdExhausted,
     Capacity,
     DurableEvidenceUnavailable,
+    Audit(audit::Failure),
     NoScratch,
     Path,
     PathNul,
@@ -93,6 +97,7 @@ pub(crate) struct Receipt<'a> {
     pub operation: Operation,
     pub request: u64,
     pub effect: Effect,
+    pub audit: audit::Status,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Outcome {
@@ -235,7 +240,7 @@ impl<'a> Request<'a> {
         {
             return Err(denied(Reason::RequestNotOwned));
         }
-        if context.evidence == Evidence::RequiredDurable {
+        if context.evidence == Evidence::RequiredDurable && context.journal.is_none() {
             return Err(denied(Reason::DurableEvidenceUnavailable));
         }
         if matches!(self.body, Body::Hand(_)) && context.scratch.is_none() {
@@ -255,15 +260,16 @@ pub(crate) struct Authorized<'a, 'b> {
 }
 /// This token owns the actual packet, success/error reply and pending-ID capacity.
 pub(crate) struct Reserved<'a, 'b> {
-    body: ReservedBody<'a, 'b>,
+    body: ReservedBody<'a>,
     peer: Peer<'b>,
     packet: Vec<u8>,
     response: ResponseSlot,
     receipt: Receipt<'b>,
+    audit: Option<AuditReservation<'b>>,
 }
-enum ReservedBody<'a, 'b> {
+enum ReservedBody<'a> {
     Text(&'a str),
-    Hand(Hand<'a, 'b>),
+    Hand(Hand<'a>),
 }
 fn capacity(phase: Phase) -> Refusal {
     Refusal::at(phase, Reason::Capacity)
@@ -277,16 +283,6 @@ impl<'a, 'b> Authorized<'a, 'b> {
                 .last
                 .checked_add(1)
                 .ok_or(Refusal::at(Phase::Authorized, Reason::IdExhausted))?,
-        };
-        let body = match self.request.body {
-            Body::Hand(path) => ReservedBody::Hand(Hand::prepare(
-                self.context
-                    .scratch
-                    .ok_or(Refusal::at(Phase::Authorized, Reason::NoScratch))?,
-                path,
-                self.peer.most,
-            )?),
-            Body::Text(text) => ReservedBody::Text(text),
         };
         let packet_bytes = match self.request.body {
             Body::Text(text) => crate::server::MESSAGE_HEAD
@@ -309,12 +305,34 @@ impl<'a, 'b> Authorized<'a, 'b> {
                 .try_reserve(1)
                 .map_err(|_| capacity(Phase::Authorized))?;
         }
-        let receipt = Receipt {
+        let mut receipt = Receipt {
             principal: self.context.principal,
             peer: self.peer.label,
             operation: self.request.operation,
             request: id,
             effect: Effect::NotStarted,
+            audit: audit::Status::MemoryOnly,
+        };
+        let audit = match self.context.evidence {
+            Evidence::MemoryOnly => None,
+            Evidence::RequiredDurable => {
+                let journal = self
+                    .context
+                    .journal
+                    .ok_or(Refusal::at(Phase::Authorized, Reason::DurableEvidenceUnavailable))?;
+                receipt.audit = audit::Status::Reserved;
+                Some(AuditReservation::reserve(journal, &receipt)?)
+            }
+        };
+        let body = match self.request.body {
+            Body::Hand(path) => ReservedBody::Hand(Hand::prepare(
+                self.context
+                    .scratch
+                    .ok_or(Refusal::at(Phase::Authorized, Reason::NoScratch))?,
+                path,
+                self.peer.most,
+            )?),
+            Body::Text(text) => ReservedBody::Text(text),
         };
         let response = ResponseSlot::reserve(format, &receipt)?;
         // Reserved IDs are consumed even on later local failure; never wrap or reuse.
@@ -327,6 +345,7 @@ impl<'a, 'b> Authorized<'a, 'b> {
             packet,
             response,
             receipt,
+            audit,
         })
     }
 }
@@ -474,6 +493,12 @@ impl Format {
                 "{{\"kind\":\"uncertain\",\"accepted\":{accepted},\"expected\":{expected}}}"
             )?,
         }
+        if let Some(receipt) = receipt
+            && receipt.audit != audit::Status::MemoryOnly
+        {
+            out.write_str(",\"audit\":")?;
+            receipt.audit.write(out)?;
+        }
         out.write_str(",\"phase\":")?;
         quoted(
             out,
@@ -529,6 +554,9 @@ fn quoted(out: &mut impl fmt::Write, value: &str) -> fmt::Result {
 }
 impl Reason {
     fn write(self, out: &mut impl fmt::Write) -> fmt::Result {
+        if let Self::Audit(error) = self {
+            return error.write(out);
+        }
         out.write_str("{\"kind\":")?;
         quoted(
             out,
@@ -539,6 +567,7 @@ impl Reason {
                 Self::IdExhausted => "identity_exhausted",
                 Self::Capacity => "capacity",
                 Self::DurableEvidenceUnavailable => "durable_evidence_unavailable",
+                Self::Audit(_) => "audit",
                 Self::NoScratch => "no_scratch",
                 Self::Path => "path",
                 Self::PathNul => "path_nul",
@@ -588,6 +617,10 @@ impl fmt::Display for Human<'_> {
             Reason::DurableEvidenceUnavailable => {
                 out.write_str("required durable evidence is unavailable; no effect was admitted")
             }
+            Reason::Audit(error) => write!(
+                out,
+                "required evidence failed ({error:?}); consult the effect state before retrying"
+            ),
             Reason::NoScratch => out.write_str("its caller has no scratch, /tmp, to hand files from"),
             Reason::Path => out.write_str("a handed file must be beneath the caller's /tmp scratch"),
             Reason::PathNul => out.write_str("a handed file path contains NUL"),
@@ -610,53 +643,22 @@ struct ResponseSlot {
 }
 impl ResponseSlot {
     fn reserve(format: Format, receipt: &Receipt<'_>) -> Result<Self, Refusal> {
-        let partial = Reason::Partial {
-            accepted: usize::MAX,
-            expected: usize::MAX,
-        };
         let mut bound = 0;
         // Count complete real outcome shapes, actual escaped identities and maximum
         // native integer representations with the same encoder used after the effect.
-        for (outcome, effect) in [
-            (Outcome::Completed, Effect::KernelAccepted { bytes: usize::MAX }),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::Capacity)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileKind)),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileIo(Some(i32::MIN)))),
-                Effect::NotStarted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::PeerFull)),
-                Effect::NotAccepted,
-            ),
-            (
-                Outcome::Failed(Refusal::at(Phase::Executing, Reason::PeerIo(Some(i32::MIN)))),
-                Effect::NotAccepted,
-            ),
-            (
-                Outcome::Uncertain(Refusal::at(Phase::Executing, partial)),
-                Effect::Uncertain {
-                    accepted: usize::MAX,
-                    expected: usize::MAX,
-                },
-            ),
-        ] {
-            let sample = Receipt { effect, ..*receipt };
-            let mut count = Count(0);
-            format
-                .response(&mut count, sample.principal, sample.peer, Some(&sample), outcome)
-                .map_err(|_| capacity(Phase::Authorized))?;
-            bound = bound.max(count.0);
+        for (outcome, effect) in terminal_shapes() {
+            for audit in audit_shapes() {
+                let sample = Receipt {
+                    effect,
+                    audit,
+                    ..*receipt
+                };
+                let mut count = Count(0);
+                format
+                    .response(&mut count, sample.principal, sample.peer, Some(&sample), outcome)
+                    .map_err(|_| capacity(Phase::Authorized))?;
+                bound = bound.max(count.0);
+            }
         }
         let mut bytes = String::new();
         bytes
@@ -678,14 +680,203 @@ impl ResponseSlot {
     }
 }
 
-struct Hand<'a, 'b> {
-    root: BorrowedFd<'b>,
-    path: std::ffi::CString,
+fn terminal_shapes() -> impl Iterator<Item = (Outcome, Effect)> {
+    let partial = Reason::Partial {
+        accepted: usize::MAX,
+        expected: usize::MAX,
+    };
+    [
+        (Outcome::Completed, Effect::KernelAccepted { bytes: usize::MAX }),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::Capacity)),
+            Effect::NotStarted,
+        ),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong)),
+            Effect::NotStarted,
+        ),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileKind)),
+            Effect::NotStarted,
+        ),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::FileIo(Some(i32::MIN)))),
+            Effect::NotStarted,
+        ),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::PeerFull)),
+            Effect::NotAccepted,
+        ),
+        (
+            Outcome::Failed(Refusal::at(Phase::Executing, Reason::PeerIo(Some(i32::MIN)))),
+            Effect::NotAccepted,
+        ),
+        (
+            Outcome::Uncertain(Refusal::at(Phase::Executing, partial)),
+            Effect::Uncertain {
+                accepted: usize::MAX,
+                expected: usize::MAX,
+            },
+        ),
+    ]
+    .into_iter()
+    .chain(audit_failures().flat_map(|failure| {
+        [
+            Effect::NotStarted,
+            Effect::NotAccepted,
+            Effect::KernelAccepted { bytes: usize::MAX },
+            Effect::Uncertain {
+                accepted: usize::MAX,
+                expected: usize::MAX,
+            },
+        ]
+        .map(|effect| {
+            (
+                audit_failed(Refusal::at(Phase::Executing, Reason::Audit(failure)), effect),
+                effect,
+            )
+        })
+    }))
+}
+fn audit_failed(error: Refusal, effect: Effect) -> Outcome {
+    match effect {
+        Effect::NotStarted | Effect::NotAccepted => Outcome::Failed(error),
+        Effect::KernelAccepted { .. } | Effect::Uncertain { .. } => Outcome::Uncertain(error),
+    }
+}
+fn audit_failure() -> audit::Failure {
+    audit::Failure::Append {
+        stage: audit::Stage::Terminal,
+        accepted: usize::MAX,
+        expected: usize::MAX,
+        code: Some(i32::MIN),
+    }
+}
+fn audit_failures() -> impl Iterator<Item = audit::Failure> {
+    [
+        audit::Failure::Exhausted {
+            needed: u64::MAX,
+            remaining: u64::MAX,
+        },
+        audit::Failure::Closed,
+        audit_failure(),
+        audit::Failure::Flush {
+            stage: audit::Stage::Terminal,
+            bytes: usize::MAX,
+            code: Some(i32::MIN),
+        },
+    ]
+    .into_iter()
+}
+fn audit_shapes() -> impl Iterator<Item = audit::Status> {
+    [
+        audit::Status::MemoryOnly,
+        audit::Status::Reserved,
+        audit::Status::IntentSynced,
+        audit::Status::TerminalSynced,
+    ]
+    .into_iter()
+    .chain(audit_failures().map(audit::Status::Failed))
+}
+
+struct AuditReservation<'a> {
+    token: audit::Reservation<'a>,
+    intent: String,
+    terminal: String,
+}
+impl<'a> AuditReservation<'a> {
+    fn reserve(journal: &'a mut audit::Journal, receipt: &Receipt<'_>) -> Result<Self, Refusal> {
+        let mut intent_size = Count(0);
+        intent_record(&mut intent_size, receipt, usize::MAX, Some((u64::MAX, u64::MAX)))
+            .map_err(|_| capacity(Phase::Authorized))?;
+        let mut terminal_size = 0;
+        for (outcome, effect) in terminal_shapes() {
+            let sample = Receipt {
+                effect,
+                audit: audit::Status::IntentSynced,
+                ..*receipt
+            };
+            let mut count = Count(0);
+            terminal_record(&mut count, &sample, outcome).map_err(|_| capacity(Phase::Authorized))?;
+            terminal_size = terminal_size.max(count.0);
+        }
+        let bytes = intent_size
+            .0
+            .checked_add(terminal_size)
+            .and_then(|n| u64::try_from(n).ok())
+            .ok_or_else(|| capacity(Phase::Authorized))?;
+        let token = journal
+            .reserve(bytes)
+            .map_err(|e| Refusal::at(Phase::Authorized, Reason::Audit(e)))?;
+        let mut intent = String::new();
+        let mut terminal = String::new();
+        intent
+            .try_reserve_exact(intent_size.0)
+            .map_err(|_| capacity(Phase::Authorized))?;
+        terminal
+            .try_reserve_exact(terminal_size)
+            .map_err(|_| capacity(Phase::Authorized))?;
+        Ok(Self {
+            token,
+            intent,
+            terminal,
+        })
+    }
+    fn begin(
+        &mut self,
+        receipt: &Receipt<'_>,
+        packet_limit: usize,
+        object: Option<(u64, u64)>,
+    ) -> Result<(), Refusal> {
+        intent_record(&mut Fixed(&mut self.intent), receipt, packet_limit, object)
+            .map_err(|_| capacity(Phase::Executing))?;
+        self.token
+            .intent(self.intent.as_bytes())
+            .map_err(|e| Refusal::at(Phase::Executing, Reason::Audit(e)))
+    }
+    fn finish(mut self, receipt: &Receipt<'_>, outcome: Outcome) -> Result<audit::Status, Refusal> {
+        terminal_record(&mut Fixed(&mut self.terminal), receipt, outcome)
+            .map_err(|_| capacity(Phase::Executing))?;
+        self.token
+            .terminal(self.terminal.as_bytes())
+            .map_err(|e| Refusal::at(Phase::Executing, Reason::Audit(e)))
+    }
+}
+fn intent_record(
+    out: &mut impl fmt::Write,
+    receipt: &Receipt<'_>,
+    packet_limit: usize,
+    object: Option<(u64, u64)>,
+) -> fmt::Result {
+    out.write_str("{\"event\":\"intent\",\"principal\":")?;
+    quoted(out, receipt.principal)?;
+    out.write_str(",\"peer\":")?;
+    quoted(out, receipt.peer)?;
+    write!(
+        out,
+        ",\"operation\":\"{:?}\",\"request\":{},\"packet_limit\":{packet_limit},\"object\":",
+        receipt.operation, receipt.request
+    )?;
+    match object {
+        Some((device, inode)) => write!(out, "{{\"device\":{device},\"inode\":{inode}}}")?,
+        None => out.write_str("null")?,
+    }
+    out.write_str("}\n")
+}
+fn terminal_record(out: &mut impl fmt::Write, receipt: &Receipt<'_>, outcome: Outcome) -> fmt::Result {
+    out.write_str("{\"event\":\"terminal\",\"receipt\":")?;
+    Format::Program.response(out, receipt.principal, receipt.peer, Some(receipt), outcome)?;
+    out.write_str("}\n")
+}
+
+struct Hand<'a> {
+    file: std::fs::File,
+    object: (u64, u64),
     name: &'a str,
     limit: usize,
 }
-impl<'a, 'b> Hand<'a, 'b> {
-    fn prepare(root: BorrowedFd<'b>, path: &'a str, message: usize) -> Result<Self, Refusal> {
+impl<'a> Hand<'a> {
+    fn prepare(root: BorrowedFd<'_>, path: &'a str, message: usize) -> Result<Self, Refusal> {
         let denied = |reason| Refusal::at(Phase::Authorized, reason);
         let rel = path
             .strip_prefix("/tmp/")
@@ -708,18 +899,9 @@ impl<'a, 'b> Hand<'a, 'b> {
         bytes.extend_from_slice(rel.as_bytes());
         bytes.push(0);
         let path = std::ffi::CString::from_vec_with_nul(bytes).map_err(|_| denied(Reason::PathNul))?;
-        Ok(Self {
-            root,
-            path,
-            name,
-            limit,
-        })
-    }
-
-    fn read(&self, packet: &mut Vec<u8>) -> Result<(), Refusal> {
-        use std::io::Read as _;
         use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
-        let failed = |reason| Refusal::at(Phase::Executing, reason);
+        use std::os::unix::fs::MetadataExt as _;
+        let failed = denied;
         // Existing open_how layout and held-scratch resolution policy (D139).
         let how: [u64; 3] = [
             (libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOCTTY | libc::O_CLOEXEC) as u64,
@@ -733,8 +915,8 @@ impl<'a, 'b> Hand<'a, 'b> {
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_openat2,
-                self.root.as_raw_fd(),
-                self.path.as_ptr(),
+                root.as_raw_fd(),
+                path.as_ptr(),
                 how.as_ptr(),
                 std::mem::size_of_val(&how),
             )
@@ -746,16 +928,28 @@ impl<'a, 'b> Hand<'a, 'b> {
         }
         let fd = RawFd::try_from(fd).map_err(|_| failed(Reason::FileIo(None)))?;
         // SAFETY: the successful native open transferred this descriptor here alone.
-        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
         let meta = file
             .metadata()
             .map_err(|e| failed(Reason::FileIo(e.raw_os_error())))?;
         if !meta.is_file() {
             return Err(failed(Reason::FileKind));
         }
-        if meta.len() > u64::try_from(self.limit).map_err(|_| failed(Reason::TooLong))? {
+        if meta.len() > u64::try_from(limit).map_err(|_| failed(Reason::TooLong))? {
             return Err(failed(Reason::TooLong));
         }
+        let object = (meta.dev(), meta.ino());
+        Ok(Self {
+            file,
+            object,
+            name,
+            limit,
+        })
+    }
+
+    fn read(&mut self, packet: &mut Vec<u8>) -> Result<(), Refusal> {
+        use std::io::Read as _;
+        let failed = |reason| Refusal::at(Phase::Executing, reason);
         let len = u16::try_from(self.name.len()).map_err(|_| failed(Reason::TooLong))?;
         append(packet, &len.to_be_bytes())?;
         append(packet, self.name.as_bytes())?;
@@ -772,7 +966,7 @@ impl<'a, 'b> Hand<'a, 'b> {
         let mut used = head;
         loop {
             let target = packet.get_mut(used..end).ok_or_else(|| failed(Reason::TooLong))?;
-            match file.read(target) {
+            match self.file.read(target) {
                 Ok(0) => break,
                 Ok(n) => {
                     used = used.checked_add(n).ok_or_else(|| failed(Reason::TooLong))?;
@@ -804,6 +998,16 @@ fn append(packet: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Refusal> {
 impl<'a, 'b> Reserved<'a, 'b> {
     pub fn execute(mut self) -> Terminal<'b> {
         let id = self.receipt.request;
+        if let Some(audit) = &mut self.audit {
+            let object = match &mut self.body {
+                ReservedBody::Text(_) => None,
+                ReservedBody::Hand(hand) => Some(hand.object),
+            };
+            if let Err(error) = audit.begin(&self.receipt, self.peer.most, object) {
+                return self.failed(error, Effect::NotStarted);
+            }
+            self.receipt.audit = audit::Status::IntentSynced;
+        }
         let kind = match self.receipt.operation {
             Operation::Send => crate::server::REQUEST,
             Operation::Answer => crate::server::ANSWER,
@@ -812,7 +1016,7 @@ impl<'a, 'b> Reserved<'a, 'b> {
         };
         let prepared = append(&mut self.packet, &[kind])
             .and_then(|()| append(&mut self.packet, &id.to_be_bytes()))
-            .and_then(|()| match &self.body {
+            .and_then(|()| match &mut self.body {
                 ReservedBody::Text(s) => append(&mut self.packet, s.as_bytes()),
                 ReservedBody::Hand(hand) => hand.read(&mut self.packet),
             });
@@ -868,20 +1072,29 @@ impl<'a, 'b> Reserved<'a, 'b> {
                 },
             );
         }
-        self.receipt.effect = Effect::KernelAccepted { bytes: sent };
-        Terminal {
-            receipt: self.receipt,
-            outcome: Outcome::Completed,
-            response: self.response,
-        }
+        self.terminal(Outcome::Completed, Effect::KernelAccepted { bytes: sent })
     }
-    fn failed(mut self, error: Refusal, effect: Effect) -> Terminal<'b> {
-        self.receipt.effect = effect;
+    fn failed(self, error: Refusal, effect: Effect) -> Terminal<'b> {
         let outcome = if matches!(effect, Effect::Uncertain { .. }) {
             Outcome::Uncertain(error)
         } else {
             Outcome::Failed(error)
         };
+        self.terminal(outcome, effect)
+    }
+    fn terminal(mut self, mut outcome: Outcome, effect: Effect) -> Terminal<'b> {
+        self.receipt.effect = effect;
+        if let Some(audit) = self.audit.take() {
+            match audit.finish(&self.receipt, outcome) {
+                Ok(status) => self.receipt.audit = status,
+                Err(error) => {
+                    if let Reason::Audit(error) = error.reason {
+                        self.receipt.audit = audit::Status::Failed(error);
+                    }
+                    outcome = audit_failed(error, effect);
+                }
+            }
+        }
         Terminal {
             receipt: self.receipt,
             outcome,
@@ -897,7 +1110,7 @@ pub(crate) fn read_for_test(
     message: usize,
 ) -> Result<(String, Vec<u8>), Refusal> {
     let root = root.ok_or(Refusal::at(Phase::Authorized, Reason::NoScratch))?;
-    let hand = Hand::prepare(root, path, message)?;
+    let mut hand = Hand::prepare(root, path, message)?;
     let mut packet = Vec::new();
     packet
         .try_reserve_exact(
@@ -988,6 +1201,7 @@ mod tests {
             principal: "agent caller",
             scratch: None,
             evidence: Evidence::MemoryOnly,
+            journal: None,
         }
     }
     fn parse_args(bytes: &[u8]) -> Value {
@@ -1204,6 +1418,7 @@ mod tests {
             principal: "agent caller",
             scratch: Some(root.as_fd()),
             evidence: Evidence::RequiredDurable,
+            journal: None,
         };
         let error = Request::receive("hand", Some(&args))
             .unwrap()
@@ -1215,6 +1430,207 @@ mod tests {
         assert_eq!(ledger.last, 0);
         empty(&other);
         assert!(!tmp.join("does-not-exist").exists());
+    }
+
+    fn journal(path: &std::path::Path, bytes: u64) -> audit::Journal {
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        audit::Journal::for_test(file, bytes)
+    }
+
+    #[test]
+    fn broker_native_journal_barrier_precedes_peer_acceptance_and_omits_content() {
+        let (fd, other) = pair();
+        let tmp = shards_testdir::TempDir::new("broker-audit").unwrap();
+        let path = tmp.join("journal");
+        let mut journal = journal(&path, 16 * 1024);
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        let args =
+            parse_args(br#"{"to":"agent peer","text":"PRIVATE-CONTENT","credentials":"PRIVATE-TOKEN"}"#);
+        let reserved = Request::receive("send", Some(&args))
+            .unwrap()
+            .unwrap()
+            .authorize(
+                Context {
+                    principal: "agent caller",
+                    scratch: None,
+                    evidence: Evidence::RequiredDurable,
+                    journal: Some(&mut journal),
+                },
+                Some(ledger.peer(&fd)),
+            )
+            .unwrap()
+            .reserve(Format::Program)
+            .unwrap();
+        assert_eq!(reserved.receipt.audit, audit::Status::Reserved);
+        empty(&other);
+        assert!(std::fs::read(&path).unwrap().is_empty());
+        let terminal = reserved.execute();
+        assert_eq!(terminal.outcome, Outcome::Completed);
+        assert_eq!(terminal.receipt.audit, audit::Status::TerminalSynced);
+        assert_eq!(
+            &received(&other)[crate::server::MESSAGE_HEAD..],
+            b"PRIVATE-CONTENT"
+        );
+        let records = std::fs::read_to_string(&path).unwrap();
+        assert!(!records.contains("PRIVATE-CONTENT"));
+        assert!(!records.contains("PRIVATE-TOKEN"));
+        let records: Vec<Value> = records.lines().map(|line| parse_args(line.as_bytes())).collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].get("event").and_then(Value::str), Some("intent"));
+        let receipt = records[1].get("receipt").unwrap().get("broker").unwrap();
+        assert_eq!(receipt.get("outcome").and_then(Value::str), Some("completed"));
+        // A record cannot claim that its own subsequent flush already succeeded.
+        assert_eq!(
+            receipt.get("audit").unwrap().get("kind").and_then(Value::str),
+            Some("intent_synced")
+        );
+        let reply = parse_args(terminal.present().as_bytes());
+        assert_eq!(
+            reply
+                .get("broker")
+                .unwrap()
+                .get("audit")
+                .unwrap()
+                .get("kind")
+                .and_then(Value::str),
+            Some("terminal_synced")
+        );
+    }
+
+    #[test]
+    fn broker_native_audit_exhaustion_and_append_failure_admit_no_peer_effect() {
+        let (fd, other) = pair();
+        let tmp = shards_testdir::TempDir::new("broker-audit").unwrap();
+        let path = tmp.join("journal");
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        let args = parse_args(br#"{"to":"agent peer","text":"x"}"#);
+        let mut exhausted = journal(&path, 0);
+        let error = Request::receive("send", Some(&args))
+            .unwrap()
+            .unwrap()
+            .authorize(
+                Context {
+                    principal: "agent caller",
+                    scratch: None,
+                    evidence: Evidence::RequiredDurable,
+                    journal: Some(&mut exhausted),
+                },
+                Some(ledger.peer(&fd)),
+            )
+            .unwrap()
+            .reserve(Format::Mcp)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            error.reason,
+            Reason::Audit(audit::Failure::Exhausted { remaining: 0, .. })
+        ));
+        assert_eq!(ledger.last, 0);
+        empty(&other);
+        let mut readonly = audit::Journal::for_test(std::fs::File::open(&path).unwrap(), 16 * 1024);
+        for _ in 0..2 {
+            let call = Request::receive("send", Some(&args))
+                .unwrap()
+                .unwrap()
+                .authorize(
+                    Context {
+                        principal: "agent caller",
+                        scratch: None,
+                        evidence: Evidence::RequiredDurable,
+                        journal: Some(&mut readonly),
+                    },
+                    Some(ledger.peer(&fd)),
+                )
+                .unwrap()
+                .reserve(Format::Mcp);
+            let error = match call {
+                Ok(reserved) => {
+                    let terminal = reserved.execute();
+                    assert_eq!(terminal.receipt.effect, Effect::NotStarted);
+                    assert!(matches!(terminal.receipt.audit, audit::Status::Failed(_)));
+                    let Outcome::Failed(error) = terminal.outcome else {
+                        panic!("{terminal:?}")
+                    };
+                    error
+                }
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error.reason,
+                Reason::Audit(audit::Failure::Append {
+                    stage: audit::Stage::Intent,
+                    accepted: 0,
+                    code: Some(libc::EBADF),
+                    ..
+                })
+            ));
+            empty(&other);
+        }
+        assert_eq!(ledger.last, 1);
+        assert!(ledger.sent.is_empty());
+        assert!(std::fs::read(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn broker_hand_reserves_the_actual_object_before_path_replacement() {
+        use std::os::unix::fs::MetadataExt as _;
+        let (fd, other) = pair();
+        let tmp = shards_testdir::TempDir::new("broker-held").unwrap();
+        let scratch = tmp.join("scratch");
+        std::fs::create_dir(&scratch).unwrap();
+        let path = scratch.join("private-name");
+        std::fs::write(&path, b"held content").unwrap();
+        let original = std::fs::metadata(&path).unwrap();
+        let root = std::fs::File::open(&scratch).unwrap();
+        let journal_path = tmp.join("journal");
+        let mut journal = journal(&journal_path, 16 * 1024);
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        let args = parse_args(br#"{"to":"agent peer","path":"/tmp/private-name"}"#);
+        let reserved = Request::receive("hand", Some(&args))
+            .unwrap()
+            .unwrap()
+            .authorize(
+                Context {
+                    principal: "agent caller",
+                    scratch: Some(root.as_fd()),
+                    evidence: Evidence::RequiredDurable,
+                    journal: Some(&mut journal),
+                },
+                Some(ledger.peer(&fd)),
+            )
+            .unwrap()
+            .reserve(Format::Program)
+            .unwrap();
+        std::fs::rename(&path, scratch.join("old")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        empty(&other);
+        let terminal = reserved.execute();
+        assert_eq!(terminal.outcome, Outcome::Completed);
+        let packet = received(&other);
+        assert!(packet.ends_with(b"held content"));
+        let records = std::fs::read_to_string(journal_path).unwrap();
+        assert!(!records.contains("private-name"));
+        assert!(!records.contains("held content"));
+        let intent = parse_args(records.lines().next().unwrap().as_bytes());
+        let object = intent.get("object").unwrap();
+        assert_eq!(object.get("device").and_then(Value::u64), Some(original.dev()));
+        assert_eq!(object.get("inode").and_then(Value::u64), Some(original.ino()));
     }
 
     #[test]
@@ -1238,6 +1654,7 @@ mod tests {
                     operation: Operation::HandRequest,
                     request: u64::MAX,
                     effect: Effect::NotStarted,
+                    audit: audit::Status::MemoryOnly,
                 };
                 let slot = ResponseSlot::reserve(format, &receipt).unwrap();
                 let outcome = match reason {
@@ -1280,6 +1697,51 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn broker_prebuilt_audit_failure_retains_the_uncertain_accepted_effect() {
+        for format in [Format::Program, Format::Mcp] {
+            let error = Refusal::at(Phase::Executing, Reason::Audit(audit_failure()));
+            let mut receipt = Receipt {
+                principal: "caller\"\n\\\u{0}",
+                peer: "peer世界\"\n",
+                operation: Operation::HandAnswer,
+                request: u64::MAX,
+                effect: Effect::NotStarted,
+                audit: audit::Status::Reserved,
+            };
+            let slot = ResponseSlot::reserve(format, &receipt).unwrap();
+            receipt.effect = Effect::Uncertain {
+                accepted: usize::MAX,
+                expected: usize::MAX,
+            };
+            receipt.audit = audit::Status::Failed(audit_failure());
+            let reply = slot.render(&receipt, Outcome::Uncertain(error));
+            let json = parse_args(reply.as_bytes());
+            let metadata = json
+                .get(match format {
+                    Format::Program => "broker",
+                    Format::Mcp => "structuredContent",
+                })
+                .unwrap();
+            assert_eq!(
+                metadata.get("effect").unwrap().get("kind").and_then(Value::str),
+                Some("uncertain")
+            );
+            assert_eq!(
+                metadata
+                    .get("effect")
+                    .unwrap()
+                    .get("accepted")
+                    .and_then(Value::u64),
+                Some(usize::MAX as u64)
+            );
+            assert_eq!(
+                metadata.get("audit").unwrap().get("kind").and_then(Value::str),
+                Some("failed")
+            );
         }
     }
 }

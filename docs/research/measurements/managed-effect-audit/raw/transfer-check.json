@@ -1,0 +1,9 @@
+{
+  "archive_bytes": 589721,
+  "archive_sha256": "9565790e4b51660a1906c3ba8fcd7d8d3c74d749cdc4d214f2d14899f2b642ce",
+  "payloads": 197,
+  "members_including_manifest": 198,
+  "all_unique_safe_regular_members_match_manifest": true,
+  "final_product_files_match_both_native_records": true,
+  "role": "implementer transport/source check; ROOT review remains owed"
+}

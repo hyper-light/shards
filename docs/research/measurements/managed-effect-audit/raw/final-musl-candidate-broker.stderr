@@ -1,0 +1,34 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/aws-lc-sys-15f597c6035a2f11/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_unknown_linux_musl': '/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_unknown_linux_musl: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/aws-lc-sys-15f597c6035a2f11/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/aws-lc-sys-15f597c6035a2f11/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/aws-lc-sys-15f597c6035a2f11/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: rquickjs-sys@0.14.0: /home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/rquickjs-sys-1f87719ca88800fb/out/quickjs.c:7237:17: warning: variable 's' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  7237 |     JSMapState *s;
+warning: rquickjs-sys@0.14.0:       |                 ^
+warning: rquickjs-sys@0.14.0: /home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/rquickjs-sys-1f87719ca88800fb/out/quickjs.c:9481:10: warning: variable 'atom1_is_integer' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  9481 |     bool atom1_is_integer, atom2_is_integer;
+warning: rquickjs-sys@0.14.0:       |          ^
+warning: rquickjs-sys@0.14.0: /home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/rquickjs-sys-1f87719ca88800fb/out/quickjs.c:9481:28: warning: variable 'atom2_is_integer' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  9481 |     bool atom1_is_integer, atom2_is_integer;
+warning: rquickjs-sys@0.14.0:       |                            ^
+warning: rquickjs-sys@0.14.0: /home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/build/rquickjs-sys-1f87719ca88800fb/out/quickjs.c:44432:43: warning: variable 'last' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  44432 |     JSValue arr, obj, ret, *arrp, *pval, *last;
+warning: rquickjs-sys@0.14.0:        |                                           ^
+warning: rquickjs-sys@0.14.0: 4 warnings generated.
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/crates/server)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 5.14s
+     Running unittests src/main.rs (/home/adalundhe/managed-effect-audit-native-v1/target/x86_64-unknown-linux-musl/test-release/deps/shards_server-161667e67598de9a)
+BROKER_EXHAUSTED last=18446744073709551615 actual_packet_id=None caller_reply={"error":"request IDs for agent peer are exhausted","broker":{"principal":"agent t","peer":"agent peer","operation":null,"request":null,"outcome":"refused","effect":{"kind":"not_started"},"phase":"authorized","cause":{"kind":"identity_exhausted"}}}
+BROKER_CALLER program_id=1 http_id=2 hand_id=3 answer_id=9 duplicate=no_packet malformed=no_packet exhausted=no_packet local_kernel_acceptance_only=true

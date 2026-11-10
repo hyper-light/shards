@@ -1,0 +1,25 @@
+
+running 15 tests
+test broker::audit::tests::broker_audit_native_partial_write_closes_instead_of_retrying ... ok
+test broker::audit::tests::broker_audit_native_sync_error_is_not_a_durable_receipt ... ok
+test broker::audit::tests::broker_audit_unused_reservations_return_but_unfinished_intents_close ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_hand_reserves_the_actual_object_before_path_replacement ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::broker_native_audit_exhaustion_and_append_failure_admit_no_peer_effect ... ok
+test broker::tests::broker_native_journal_barrier_precedes_peer_acceptance_and_omits_content ... ok
+test broker::tests::broker_prebuilt_audit_failure_retains_the_uncertain_accepted_effect ... FAILED
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+
+failures:
+
+failures:
+    broker::tests::broker_prebuilt_audit_failure_retains_the_uncertain_accepted_effect
+
+test result: FAILED. 14 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s
+

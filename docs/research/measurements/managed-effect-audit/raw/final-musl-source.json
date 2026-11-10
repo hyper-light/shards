@@ -1,0 +1,11 @@
+{
+  "base": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "candidate_broker_sha256": "41ba3b420c2be8dff14ab627b6edd3d4cba0773fc21788c5b08b74265c3be5c3",
+  "candidate_audit_sha256": "b817575c57916bd0d0bea1e827dd066eab329707c3025426bd921e853300249f",
+  "candidate_server_sha256": "5a46b1a5ce364dcd378334e36e19f2f59eda110129b9b31c29311f63e81df8b7",
+  "baseline_broker_sha256": "dd8636601f9210315254ab9c77c9526cfcf2f07ff7d6aef81ce496b14f61eb01",
+  "uname": "Linux fedora-2 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux",
+  "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "scope": "/home/adalundhe/managed-effect-audit-native-v1",
+  "source": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee"
+}

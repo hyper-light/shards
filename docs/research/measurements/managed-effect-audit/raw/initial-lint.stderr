@@ -1,0 +1,121 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-effect-audit-native-v1/target/test-release/build/aws-lc-sys-c7e4942cb8663607/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Checking zeroize v1.9.0
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/aws-lc-sys)
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/aws-lc-rs)
+    Checking rustls-pki-types v1.15.1
+    Checking equivalent v1.0.2
+    Checking foldhash v0.2.0
+    Checking time-core v0.1.9
+    Checking powerfmt v0.2.0
+    Checking deranged v0.5.8
+    Checking num-conv v0.2.2
+    Checking allocator-api2 v0.2.21
+    Checking hashbrown v0.17.1
+    Checking time v0.3.55
+    Checking rquickjs-sys v0.14.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/vendor/rquickjs-sys)
+    Checking untrusted v0.9.0
+    Checking base64 v0.23.1
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking rustls-webpki v0.103.16
+    Checking yasna v0.6.0
+    Checking libc v0.2.189
+    Checking once_cell v1.21.4
+    Checking subtle v2.6.1
+    Checking rustls v0.23.46
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/crates/testdir)
+    Checking rcgen v0.14.10
+    Checking rquickjs v0.14.0
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-effect-audit-v1-19f216d7ee/crates/server)
+error: type `broker::audit::Journal` is more private than the item `broker::Evidence::RequiredDurable::0`
+  --> crates/server/src/broker.rs:29:21
+   |
+29 |     RequiredDurable(Option<&'a mut audit::Journal>),
+   |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `broker::Evidence::RequiredDurable::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `broker::audit::Journal` is only usable at visibility `pub(in crate::broker)`
+  --> crates/server/src/broker/audit.rs:47:1
+   |
+47 | pub(super) struct Journal {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `-D private-interfaces` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(private_interfaces)]`
+
+error: type `broker::audit::Failure` is more private than the item `broker::Reason::Audit::0`
+  --> crates/server/src/broker.rs:56:11
+   |
+56 |     Audit(audit::Failure),
+   |           ^^^^^^^^^^^^^^ field `broker::Reason::Audit::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `broker::audit::Failure` is only usable at visibility `pub(in crate::broker)`
+  --> crates/server/src/broker/audit.rs:12:1
+   |
+12 | pub(super) enum Failure {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: type `broker::audit::Status` is more private than the item `broker::Receipt::audit`
+  --> crates/server/src/broker.rs:98:5
+   |
+98 |     pub audit: audit::Status,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^ field `broker::Receipt::audit` is reachable at visibility `pub(crate)`
+   |
+note: but type `broker::audit::Status` is only usable at visibility `pub(in crate::broker)`
+  --> crates/server/src/broker/audit.rs:31:1
+   |
+31 | pub(super) enum Status {
+   | ^^^^^^^^^^^^^^^^^^^^^^
+
+error: items after a test module
+   --> crates/server/src/broker/audit.rs:224:1
+    |
+224 | mod tests {
+    | ^^^^^^^^^
+...
+265 | fn write_stage(out: &mut impl std::fmt::Write, stage: Stage) -> std::fmt::Result {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+275 | fn write_code(out: &mut impl std::fmt::Write, code: Option<i32>) -> std::fmt::Result {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#items_after_test_module
+    = note: `-D clippy::items-after-test-module` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::items_after_test_module)]`
+    = help: move the items to before the test module was defined
+
+error: could not compile `shards-server` (bin "shards-server" test) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: variant `RequiredDurable` is never constructed
+  --> crates/server/src/broker.rs:29:5
+   |
+27 | pub(crate) enum Evidence<'a> {
+   |                 -------- variant in this enum
+28 |     MemoryOnly,
+29 |     RequiredDurable(Option<&'a mut audit::Journal>),
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: variant `Ready` is never constructed
+  --> crates/server/src/broker/audit.rs:39:5
+   |
+38 | enum State {
+   |      ----- variant in this enum
+39 |     Ready,
+   |     ^^^^^
+
+error: could not compile `shards-server` (bin "shards-server") due to 5 previous errors
