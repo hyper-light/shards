@@ -25,6 +25,11 @@ removed, exact restoration and six restored native controls.
 caller to that single shared source and records normal static-musl guest build
 and strict caller lint. Runtime before/after compatibility remains unverified.
 
+[Native engine EOF](engine-native/README.md) records actual original-body versus
+shared Unix late-write red, its existing-policy correction, GNU/musl close-order
+passes, a meaningful guard removal/restoration and normal corrected init build.
+Actual VSOCK/KVM before/after and mandatory-route coverage remain open.
+
 Base `cbd39284937d024640c56db6f8d8ef2bd9b0ee24`; reviewed design
 `c584e877f56d97736e325eae2cb9fa2be97fdfc0`. Role: implementer and assigned
 adversarial relay tester, Kiln `01a1c5d2ee0e7248982c95a59f1fd905`; ROOT

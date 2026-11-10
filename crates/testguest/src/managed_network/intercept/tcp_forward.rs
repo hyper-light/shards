@@ -452,7 +452,12 @@ impl Endpoint {
         Ok(())
     }
 
-    fn receive(&mut self, stream: &mut TcpStream, expected: &[u8], deadline: &Deadline) -> io::Result<()> {
+    fn receive(
+        &mut self,
+        stream: &mut (impl Read + AsRawFd),
+        expected: &[u8],
+        deadline: &Deadline,
+    ) -> io::Result<()> {
         let end = self
             .read
             .checked_add(expected.len())
@@ -1173,9 +1178,9 @@ pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::
             write!(out, "}}")?;
         }
     }
-    write!(
+    writeln!(
         out,
-        ",\"error_kind\":\"{:?}\",\"fd_before\":{before},\"fd_after\":{after},\"worker_joined\":true,\"kernel_return\":\"Unknown\"}}\n",
+        ",\"error_kind\":\"{:?}\",\"fd_before\":{before},\"fd_after\":{after},\"worker_joined\":true,\"kernel_return\":\"Unknown\"}}",
         result.as_ref().err().map(io::Error::kind)
     )?;
     out.flush()?;
@@ -1190,10 +1195,30 @@ pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::
 mod native_tests {
     use super::*;
 
+    mod original_engine {
+        include!(
+            "../../../../../docs/research/measurements/managed-tcp-forward/implementation/engine-native/original_body.rs"
+        );
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum EnginePath {
+        Original,
+        Shared,
+    }
+
+    enum EngineRun {
+        Original,
+        Shared {
+            result: Result<Termination, Fault>,
+            report: shared::Report,
+        },
+    }
+
     fn supplied_queue(fd: RawFd, option: i32, supplied: i32, role: &str) {
         assert!(supplied > 0);
-        // SAFETY: this test owns fd; exact initialized socket-option integer.
         assert_eq!(
+            // SAFETY: this test owns fd; exact initialized socket-option integer.
             unsafe {
                 libc::setsockopt(
                     fd,
@@ -1207,8 +1232,8 @@ mod native_tests {
         );
         let mut actual = 0i32;
         let mut size = size_of_val(&actual) as libc::socklen_t;
-        // SAFETY: initialized writable native option and its exact size.
         assert_eq!(
+            // SAFETY: initialized writable native option and its exact size.
             unsafe {
                 libc::getsockopt(
                     fd,
@@ -1265,7 +1290,7 @@ mod native_tests {
                 count(unsafe { libc::read(release.as_raw_fd(), word.as_mut_ptr().cast(), word.len()) })
             })
             .unwrap();
-        assert_eq!((n, word), (1, [b'R']));
+        assert_eq!((n, word), (1, *b"R"));
         drop(release);
         (input, deadline)
     }
@@ -1291,6 +1316,175 @@ mod native_tests {
         progress_record(&mut out, &forwarded.flow.to_client).unwrap();
         writeln!(out, "}}").unwrap();
         out.flush().unwrap();
+    }
+
+    #[test]
+    #[ignore = "finite Unix-only old engine body/shared-pump half-close comparison; not VSOCK"]
+    fn native_engine_unix_half_close_matches_original_body() {
+        use std::os::unix::net::UnixStream;
+        let (input, deadline) = native_inputs();
+        let half = match std::env::var("SHARDS_ENGINE_HALF").unwrap().as_str() {
+            "client-fin-first" => EngineHalf::ClientFinFirst,
+            "host-fin-first" => EngineHalf::HostFinFirst,
+            _ => panic!("explicit engine half-close order required"),
+        };
+        let late = payload(&std::env::var("SHARDS_TCP_EXTRA_HEX").unwrap()).unwrap();
+        assert_eq!(late.len(), 1);
+        let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
+        let mut late_outcomes = Vec::new();
+        for path in [EnginePath::Original, EnginePath::Shared] {
+            let before = descriptor_count().unwrap();
+            let (mut client, downstream) = UnixStream::pair().unwrap();
+            let (upstream, mut backend) = UnixStream::pair().unwrap();
+            let unnamed = client.local_addr().unwrap().is_unnamed()
+                && client.peer_addr().unwrap().is_unnamed()
+                && backend.local_addr().unwrap().is_unnamed()
+                && backend.peer_addr().unwrap().is_unnamed();
+            client.set_nonblocking(true).unwrap();
+            backend.set_nonblocking(true).unwrap();
+            let mut worker = Worker::spawn(&deadline, move |_| match path {
+                EnginePath::Original => {
+                    let fd: OwnedFd = upstream.into();
+                    original_engine::relay(downstream, std::fs::File::from(fd));
+                    EngineRun::Original
+                }
+                EnginePath::Shared => {
+                    let mut report = shared::Report::new();
+                    let result = shared::pump(
+                        [downstream.as_fd(), upstream.as_fd()],
+                        Slots::minimum_mapped().unwrap(),
+                        [ByteLimit::PeerEnd; 2],
+                        Control::ProcessOwned,
+                        EndPolicy::EnginePeerEnd,
+                        &mut report,
+                    );
+                    if result.is_err() {
+                        let _ = downstream.shutdown(std::net::Shutdown::Both);
+                    }
+                    EngineRun::Shared { result, report }
+                }
+            })
+            .unwrap();
+            let mut client_endpoint = Endpoint::reserve(response).unwrap();
+            let mut backend_endpoint = Endpoint::reserve(input.request.len()).unwrap();
+            client_endpoint
+                .send(&mut client, &input.request, &deadline)
+                .unwrap();
+            if half == EngineHalf::ClientFinFirst {
+                client_endpoint.close_write(&client).unwrap();
+            }
+            backend_endpoint
+                .receive(&mut backend, &input.request, &deadline)
+                .unwrap();
+            if half == EngineHalf::ClientFinFirst {
+                backend_endpoint.eof(&mut backend, &deadline).unwrap();
+            }
+            backend_endpoint
+                .send(&mut backend, &input.greeting, &deadline)
+                .unwrap();
+            backend_endpoint
+                .send(&mut backend, &input.tail, &deadline)
+                .unwrap();
+            backend_endpoint.close_write(&backend).unwrap();
+            let client_result = client_endpoint.receive_to_end(&mut client, &deadline);
+            let late_result = if half == EngineHalf::HostFinFirst {
+                let actual = deadline
+                    .io(client.as_raw_fd(), libc::POLLOUT, || Ok(client.write(&late)))
+                    .unwrap();
+                Some(match actual {
+                    Ok(n) => {
+                        client_endpoint.written = client_endpoint.written.checked_add(n).unwrap();
+                        Ok(n)
+                    }
+                    Err(error) => Err((error.kind(), error.raw_os_error())),
+                })
+            } else {
+                None
+            };
+            let backend_result = if half == EngineHalf::HostFinFirst {
+                backend_endpoint.eof(&mut backend, &deadline)
+            } else {
+                Ok(())
+            };
+            let completion = worker.join().unwrap();
+            {
+                let mut out = io::stdout().lock();
+                write!(out, "managed-tcp-forward {{\"type\":\"NativeEngineUnix\",\"path\":\"{path:?}\",\"half\":\"{half:?}\",\"unnamed\":{unnamed},\"client_ok\":{},\"backend_ok\":{},\"client_written\":{},\"backend_written\":{},\"client_read_end\":\"{:?}\",\"backend_read_end\":\"{:?}\",\"client_read_hex\":\"", client_result.is_ok(), backend_result.is_ok(), client_endpoint.written, backend_endpoint.written, client_endpoint.read_end, backend_endpoint.read_end).unwrap();
+                for byte in &client_endpoint.bytes[..client_endpoint.read] {
+                    write!(out, "{byte:02x}").unwrap();
+                }
+                write!(out, "\",\"backend_read_hex\":\"").unwrap();
+                for byte in &backend_endpoint.bytes[..backend_endpoint.read] {
+                    write!(out, "{byte:02x}").unwrap();
+                }
+                write!(out, "\",\"backend_extra_hex\":").unwrap();
+                match backend_endpoint.extra {
+                    Some(byte) => write!(out, "\"{byte:02x}\"").unwrap(),
+                    None => write!(out, "null").unwrap(),
+                }
+                write!(out, ",\"late_write\":").unwrap();
+                match &late_result {
+                    None => write!(out, "{{\"kind\":\"NotAttempted\"}}").unwrap(),
+                    Some(Ok(n)) => write!(out, "{{\"kind\":\"Accepted\",\"bytes\":{n}}}").unwrap(),
+                    Some(Err((kind, errno))) => write!(
+                        out,
+                        "{{\"kind\":\"Failed\",\"error_kind\":\"{kind:?}\",\"errno\":{}}}",
+                        errno.map_or_else(|| "null".to_owned(), |n| n.to_string())
+                    )
+                    .unwrap(),
+                }
+                if let EngineRun::Shared { result, report } = &completion {
+                    write!(out, ",\"fault\":").unwrap();
+                    fault_record(&mut out, result).unwrap();
+                    write!(out, ",\"to_backend\":").unwrap();
+                    progress_record(&mut out, &report.to_backend).unwrap();
+                    write!(out, ",\"to_client\":").unwrap();
+                    progress_record(&mut out, &report.to_client).unwrap();
+                }
+                writeln!(out, "}}").unwrap();
+                out.flush().unwrap();
+            }
+            drop(client);
+            drop(backend);
+            drop(worker);
+            let after = descriptor_count().unwrap();
+            let remaining = deadline.at.saturating_duration_since(std::time::Instant::now());
+            println!(
+                "managed-tcp-forward {{\"type\":\"NativeUnixCleanup\",\"path\":\"{path:?}\",\"worker_joined\":true,\"fd_before\":{before},\"fd_after\":{after},\"original_remaining_ns\":{},\"kernel_return\":\"Unknown\"}}",
+                remaining.as_nanos()
+            );
+            assert_eq!(after, before);
+            assert!(!remaining.is_zero());
+            client_result.unwrap();
+            backend_result.unwrap();
+            assert_eq!(
+                &client_endpoint.bytes[..client_endpoint.read],
+                [input.greeting.as_slice(), input.tail.as_slice()].concat()
+            );
+            assert_eq!(&backend_endpoint.bytes[..backend_endpoint.read], &input.request);
+            assert!(unnamed);
+            if let EngineRun::Shared { result, report } = completion {
+                assert_eq!(result.unwrap(), Termination::BackendEnded);
+                assert_eq!(
+                    (report.to_backend.written, report.to_client.written),
+                    (input.request.len(), response)
+                );
+                assert_eq!(
+                    report.to_backend.half,
+                    Half::WriteClosed(if half == EngineHalf::ClientFinFirst {
+                        SourceEnd::Eof
+                    } else {
+                        SourceEnd::PeerEnded
+                    })
+                );
+                assert_eq!(report.to_client.half, Half::WriteClosed(SourceEnd::Eof));
+            }
+            late_outcomes.push(late_result);
+        }
+        assert_eq!(
+            late_outcomes[0], late_outcomes[1],
+            "actual Unix-only post-EOF write outcomes must agree"
+        );
     }
 
     #[test]
@@ -1775,9 +1969,9 @@ mod native_tests {
                 l_onoff: 1,
                 l_linger: 0,
             };
-            // SAFETY: this fixture owns the accepted socket; zero linger is the
-            // native abortive close being compared, never a host policy change.
             assert_eq!(
+                // SAFETY: this fixture owns the accepted socket; zero linger is the
+                // native abortive close being compared, never a host policy change.
                 unsafe {
                     libc::setsockopt(
                         stream.as_raw_fd(),
@@ -1923,8 +2117,8 @@ mod native_tests {
                 l_onoff: 1,
                 l_linger: 0,
             };
-            // SAFETY: abortive close of only this fixture's owned client stream.
             assert_eq!(
+                // SAFETY: abortive close of only this fixture's owned client stream.
                 unsafe {
                     libc::setsockopt(
                         client.as_raw_fd(),

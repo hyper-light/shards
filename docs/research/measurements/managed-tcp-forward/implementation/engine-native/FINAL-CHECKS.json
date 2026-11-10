@@ -1,0 +1,283 @@
+{
+  "scope": "GNU/musl private source projection; exact workspace lint flags and unchanged clippy config; not full testguest caller",
+  "archive_sha256": "b7b7fca1a625317d60acdad3fbbb756ad426ea650b19710387c89e95ed123cad",
+  "regular_members": 120,
+  "native": {
+    "source_sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa",
+    "native": [
+      {
+        "name": "x86_64-unknown-linux-musl-unix-client",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-unix-host",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-tcp-server",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-tcp-backend-fin",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-extra-client",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-cancel",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-backend-reset",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-client-reset",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-unix-client",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-unix-host",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-tcp-server",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-tcp-backend-fin",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-extra-client",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-cancel",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-backend-reset",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-client-reset",
+        "status": 0
+      }
+    ],
+    "source": "/home/adalundhe/relay-engine-unix-clippy-v3/source",
+    "target": "/home/adalundhe/relay-engine-unix-clippy-v3/target"
+  },
+  "projection_clippy": {
+    "scope": "private source projection, not full testguest caller; workspace lint flags and unmodified clippy config",
+    "source_sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa",
+    "workspace_lints": {
+      "rust": {
+        "unsafe_op_in_unsafe_fn": "deny",
+        "missing_debug_implementations": "warn"
+      },
+      "clippy": {
+        "undocumented_unsafe_blocks": "warn",
+        "unwrap_used": "deny",
+        "expect_used": "deny",
+        "panic": "deny",
+        "panic_in_result_fn": "deny",
+        "todo": "deny",
+        "unimplemented": "deny",
+        "unreachable": "deny",
+        "indexing_slicing": "deny",
+        "string_slice": "deny",
+        "print_stdout": "deny",
+        "print_stderr": "deny"
+      }
+    },
+    "results": [
+      {
+        "target": "x86_64-unknown-linux-musl",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "clippy",
+          "--lib",
+          "--all-targets",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1",
+          "--",
+          "--deny",
+          "unsafe_op_in_unsafe_fn",
+          "--warn",
+          "missing_debug_implementations",
+          "--warn",
+          "clippy::undocumented_unsafe_blocks",
+          "--deny",
+          "clippy::unwrap_used",
+          "--deny",
+          "clippy::expect_used",
+          "--deny",
+          "clippy::panic",
+          "--deny",
+          "clippy::panic_in_result_fn",
+          "--deny",
+          "clippy::todo",
+          "--deny",
+          "clippy::unimplemented",
+          "--deny",
+          "clippy::unreachable",
+          "--deny",
+          "clippy::indexing_slicing",
+          "--deny",
+          "clippy::string_slice",
+          "--deny",
+          "clippy::print_stdout",
+          "--deny",
+          "clippy::print_stderr",
+          "-D",
+          "warnings"
+        ],
+        "log": "/home/adalundhe/relay-engine-unix-clippy-v3/x86_64-unknown-linux-musl.log",
+        "sha256": "61f8fa428123c477e51cc75950152a2027907a3e1720beb2a6906b46c9174030"
+      },
+      {
+        "target": "x86_64-unknown-linux-gnu",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "clippy",
+          "--lib",
+          "--all-targets",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1",
+          "--",
+          "--deny",
+          "unsafe_op_in_unsafe_fn",
+          "--warn",
+          "missing_debug_implementations",
+          "--warn",
+          "clippy::undocumented_unsafe_blocks",
+          "--deny",
+          "clippy::unwrap_used",
+          "--deny",
+          "clippy::expect_used",
+          "--deny",
+          "clippy::panic",
+          "--deny",
+          "clippy::panic_in_result_fn",
+          "--deny",
+          "clippy::todo",
+          "--deny",
+          "clippy::unimplemented",
+          "--deny",
+          "clippy::unreachable",
+          "--deny",
+          "clippy::indexing_slicing",
+          "--deny",
+          "clippy::string_slice",
+          "--deny",
+          "clippy::print_stdout",
+          "--deny",
+          "clippy::print_stderr",
+          "-D",
+          "warnings"
+        ],
+        "log": "/home/adalundhe/relay-engine-unix-clippy-v3/x86_64-unknown-linux-gnu.log",
+        "sha256": "260fb703014f292cd496676867791673c097f384034f26c73763813454e2e347"
+      }
+    ]
+  },
+  "native_binaries": [
+    {
+      "source_binary": "/home/adalundhe/relay-engine-unix-clippy-v3/target/x86_64-unknown-linux-musl/debug/deps/relay_shared_check-a44ef51830740376",
+      "frozen": "/home/adalundhe/relay-engine-unix-clippy-v3/artifacts/x86_64-unknown-linux-musl",
+      "bytes": 12886592,
+      "sha256": "e2eb1fe659e1a9845041001b2102cec886f9827052fb0d1c0df4e4612ae15bd1"
+    },
+    {
+      "source_binary": "/home/adalundhe/relay-engine-unix-clippy-v3/target/x86_64-unknown-linux-gnu/debug/deps/relay_shared_check-f58d226704e7ee28",
+      "frozen": "/home/adalundhe/relay-engine-unix-clippy-v3/artifacts/x86_64-unknown-linux-gnu",
+      "bytes": 12582392,
+      "sha256": "d251660f2ae1838b5b0b7d68610ab9d3bd6cd9275b9a2710aef1aac834a505fa"
+    }
+  ],
+  "full_beforecandidate_build": [
+    {
+      "name": "host",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "test",
+        "-p",
+        "shards",
+        "--test",
+        "__relay_tcp",
+        "--profile",
+        "test-release",
+        "--no-run",
+        "-j",
+        "2"
+      ],
+      "log": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/record/host-after-build.log",
+      "sha256": "99aec56aa76de90c626657fe8b3b4dc017c89e7fc47dfd7ed9787bf313f82250"
+    },
+    {
+      "name": "guest",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "build",
+        "-p",
+        "shards-testguest",
+        "--profile",
+        "guest",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j",
+        "2"
+      ],
+      "log": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/record/guest-after-build.log",
+      "sha256": "1a0564e84cd74f6f10e23c2cc482d48f2fb8fb54aeea15821b77ef6e4356434b"
+    }
+  ],
+  "full_beforecandidate_binaries": [
+    {
+      "path": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/target/test-release/deps/__relay_tcp-893de95f6204be53",
+      "frozen": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/artifacts/host-test",
+      "bytes": 32715728,
+      "sha256": "6b98e06e760ac7301137a35a81f1206fae683834359278c6d8e441aa7655cc95"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/target/test-release/shards",
+      "frozen": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/artifacts/shards",
+      "bytes": 268100976,
+      "sha256": "f68a683aa9938e76c4bd196c0bbb6416637cf444e98bc182ab209dddd66b535e"
+    },
+    {
+      "path": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/target/x86_64-unknown-linux-musl/guest/shards-testguest",
+      "frozen": "/home/adalundhe/relay-tcp-engine-after-3bbd-v1/artifacts/guest",
+      "bytes": 3369976,
+      "sha256": "6c5494a2a4b73f1609528c4de334e29b650b7e8a198ec2ca64671d0aad1a85b7"
+    }
+  ],
+  "fixture_sha256": "0e346df4a8e0885aa754e96d0eecfa7730bc75343007bd5aad734fe6773f5efa",
+  "shared_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27"
+}

@@ -149,10 +149,9 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
         native_relay::EndPolicy::EnginePeerEnd,
         &mut report,
     );
-    // Preserve the engine's existing whole-connection end on host EOF. The pump
-    // records a peer-driven stop separately from actual EOF on the Unix source.
-    let _ = conn.shutdown(std::net::Shutdown::Both);
     if let Err(error) = result {
+        // Successful engine EOF already ended both Unix halves in the pump.
+        let _ = conn.shutdown(std::net::Shutdown::Both);
         let _ = writeln!(io::stderr(), "shards-init: engine relay: {error:?}");
     }
 }

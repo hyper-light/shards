@@ -1,0 +1,1200 @@
+{
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "archive_sha256": "43d9f44a8b7f5227cd2fbe853c4715f093de784e63fd9a1bc9ebcee28e8e0829",
+  "regular_members": 152,
+  "before": {
+    "root": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12",
+    "checks": [
+      {
+        "name": "policy",
+        "status": 0,
+        "command": [
+          "python3",
+          "scripts/check-development-policy"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12/policy.log",
+        "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+      },
+      {
+        "name": "x86_64-unknown-linux-musl",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12/x86_64-unknown-linux-musl.log",
+        "sha256": "7298deceb375e32f9ec1f579d9acdb0c0766f12b161d2ac54fdfc2fffe3d531b"
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-test-build",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "test",
+          "--lib",
+          "--no-run",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1",
+          "--message-format=json"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12/x86_64-unknown-linux-musl-test-build.log",
+        "sha256": "403d23c1331ea1d95694c4375a6fdff6967c0abb6fffde018998feb8abb9e127"
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12/x86_64-unknown-linux-gnu.log",
+        "sha256": "f91a26c7ab6ad21273047db61471fa1b84ce62acc62fcbe87bd1c99b71788ea4"
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-test-build",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "test",
+          "--lib",
+          "--no-run",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1",
+          "--message-format=json"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v12/x86_64-unknown-linux-gnu-test-build.log",
+        "sha256": "72cd341fcba91236905cec2ab3a36f7a2a81abf9ffe87636af79a5337db854d8"
+      }
+    ],
+    "native": [
+      {
+        "name": "x86_64-unknown-linux-musl-caller-server-first",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-caller-backend-fin-first",
+        "status": 1
+      }
+    ],
+    "native_execution": true
+  },
+  "after": {
+    "root": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13",
+    "checks": [
+      {
+        "name": "policy",
+        "status": 0,
+        "command": [
+          "python3",
+          "scripts/check-development-policy"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13/policy.log",
+        "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+      },
+      {
+        "name": "x86_64-unknown-linux-musl",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13/x86_64-unknown-linux-musl.log",
+        "sha256": "d0b49423185e7f0e2a54c684ca6781445f7440bdc1bc492ca30c98766997d9dd"
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-test-build",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "test",
+          "--lib",
+          "--no-run",
+          "--target",
+          "x86_64-unknown-linux-musl",
+          "-j",
+          "1",
+          "--message-format=json"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13/x86_64-unknown-linux-musl-test-build.log",
+        "sha256": "818025e91e038ebf8224b534206e1c75f186b73958b63da49be355d1ce16d7c6"
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "check",
+          "--lib",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13/x86_64-unknown-linux-gnu.log",
+        "sha256": "9c0b748b4e8b7053184f1ba7d046d9fef999ee9a60e0b38156d3bfd972163a48"
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-test-build",
+        "status": 0,
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "cargo",
+          "test",
+          "--lib",
+          "--no-run",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-j",
+          "1",
+          "--message-format=json"
+        ],
+        "log": "/home/adalundhe/relay-tcp-forward-cbd3-light-v13/x86_64-unknown-linux-gnu-test-build.log",
+        "sha256": "d7e4952abd6f4b46e09b044bc7da4add7c8d498df3e68e3bf849f2b7f0619faa"
+      }
+    ],
+    "native": [
+      {
+        "name": "x86_64-unknown-linux-musl-caller-server-first",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-musl-caller-backend-fin-first",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-caller-server-first",
+        "status": 0
+      },
+      {
+        "name": "x86_64-unknown-linux-gnu-caller-backend-fin-first",
+        "status": 0
+      }
+    ],
+    "native_execution": true
+  },
+  "mutation": {
+    "root": "/home/adalundhe/relay-engine-unix-eof-mutation-v1",
+    "before_shared_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+    "mutation": "replace only engine-client full shutdown with write-only shutdown at existing EOF drain; owned Unix socketpairs only",
+    "mutant_shared_sha256": "c4c3480adad03562bc6ec5472ac35e95c8c4d5463de42106f80f4d80447ecfd3",
+    "mutant": {
+      "name": "mutant-server-first",
+      "launcher_status": 1,
+      "result": {
+        "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/mutant-musl",
+        "binary_before_sha256": "198eeeb0c96ec63c41fb8c9f8c8d5f36e8e410128f39a16a9b2f4855509d4406",
+        "filter": "managed_network::intercept::tcp_forward::native_tests::native_engine_unix_half_close_matches_original_body",
+        "fd_before": 4,
+        "kernel_return": "Unknown",
+        "pidfd_exit_ready": true,
+        "reaped": true,
+        "timeout": false,
+        "pid": 3668800,
+        "pidfd_events": [
+          [
+            3,
+            1
+          ]
+        ],
+        "status": 101,
+        "fd_after": 4,
+        "binary_after_sha256": "198eeeb0c96ec63c41fb8c9f8c8d5f36e8e410128f39a16a9b2f4855509d4406",
+        "checks": {
+          "one_actual_test": false,
+          "child_success": false,
+          "backend_bytes": true,
+          "client_bytes": true,
+          "both_endpoint_halves": true,
+          "both_flow_halves": false,
+          "owned_child_reaped": true,
+          "parent_fd_return": true,
+          "binary_unchanged": true,
+          "all_owned_descriptor_returns": true
+        },
+        "passed": false
+      },
+      "observed": [
+        {
+          "type": "NativeEngineUnix",
+          "path": "Original",
+          "half": "HostFinFirst",
+          "unnamed": true,
+          "client_ok": true,
+          "backend_ok": true,
+          "client_written": 13,
+          "backend_written": 14,
+          "client_read_end": "Closed",
+          "backend_read_end": "Closed",
+          "client_read_hex": "53455256455200ff5441494c0d0a",
+          "backend_read_hex": "5245515545535400ff0d0a0102",
+          "backend_extra_hex": null,
+          "late_write": {
+            "kind": "Failed",
+            "error_kind": "BrokenPipe",
+            "errno": 32
+          }
+        },
+        {
+          "type": "NativeUnixCleanup",
+          "path": "Original",
+          "worker_joined": true,
+          "fd_before": 4,
+          "fd_after": 4,
+          "original_remaining_ns": 29999787246,
+          "kernel_return": "Unknown"
+        },
+        {
+          "type": "NativeEngineUnix",
+          "path": "Shared",
+          "half": "HostFinFirst",
+          "unnamed": true,
+          "client_ok": true,
+          "backend_ok": true,
+          "client_written": 14,
+          "backend_written": 14,
+          "client_read_end": "Closed",
+          "backend_read_end": "Closed",
+          "client_read_hex": "53455256455200ff5441494c0d0a",
+          "backend_read_hex": "5245515545535400ff0d0a0102",
+          "backend_extra_hex": null,
+          "late_write": {
+            "kind": "Accepted",
+            "bytes": 1
+          },
+          "fault": null,
+          "to_backend": {
+            "half": "WriteClosed",
+            "source_end": "PeerEnded",
+            "read": 13,
+            "written": 13,
+            "pending": 0,
+            "extra_consumed": 0,
+            "partial_writes": 0,
+            "would_block": 4,
+            "write_would_block": 0
+          },
+          "to_client": {
+            "half": "WriteClosed",
+            "source_end": "Eof",
+            "read": 14,
+            "written": 14,
+            "pending": 0,
+            "extra_consumed": 0,
+            "partial_writes": 0,
+            "would_block": 3,
+            "write_would_block": 0
+          }
+        },
+        {
+          "type": "NativeUnixCleanup",
+          "path": "Shared",
+          "worker_joined": true,
+          "fd_before": 4,
+          "fd_after": 4,
+          "original_remaining_ns": 29999660679,
+          "kernel_return": "Unknown"
+        }
+      ]
+    },
+    "meaningful_red": true,
+    "restored_shared_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+    "all_source_differences": [],
+    "named_file_diff_status": 0,
+    "restored_controls": [
+      {
+        "name": "restored-engine-host-fin",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_engine_unix_half_close_matches_original_body",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3673883,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": true
+          },
+          "passed": true
+        },
+        "observed": [
+          {
+            "type": "NativeEngineUnix",
+            "path": "Original",
+            "half": "HostFinFirst",
+            "unnamed": true,
+            "client_ok": true,
+            "backend_ok": true,
+            "client_written": 13,
+            "backend_written": 14,
+            "client_read_end": "Closed",
+            "backend_read_end": "Closed",
+            "client_read_hex": "53455256455200ff5441494c0d0a",
+            "backend_read_hex": "5245515545535400ff0d0a0102",
+            "backend_extra_hex": null,
+            "late_write": {
+              "kind": "Failed",
+              "error_kind": "BrokenPipe",
+              "errno": 32
+            }
+          },
+          {
+            "type": "NativeUnixCleanup",
+            "path": "Original",
+            "worker_joined": true,
+            "fd_before": 4,
+            "fd_after": 4,
+            "original_remaining_ns": 29999795941,
+            "kernel_return": "Unknown"
+          },
+          {
+            "type": "NativeEngineUnix",
+            "path": "Shared",
+            "half": "HostFinFirst",
+            "unnamed": true,
+            "client_ok": true,
+            "backend_ok": true,
+            "client_written": 13,
+            "backend_written": 14,
+            "client_read_end": "Closed",
+            "backend_read_end": "Closed",
+            "client_read_hex": "53455256455200ff5441494c0d0a",
+            "backend_read_hex": "5245515545535400ff0d0a0102",
+            "backend_extra_hex": null,
+            "late_write": {
+              "kind": "Failed",
+              "error_kind": "BrokenPipe",
+              "errno": 32
+            },
+            "fault": null,
+            "to_backend": {
+              "half": "WriteClosed",
+              "source_end": "PeerEnded",
+              "read": 13,
+              "written": 13,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 4,
+              "write_would_block": 0
+            },
+            "to_client": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 14,
+              "written": 14,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 3,
+              "write_would_block": 0
+            }
+          },
+          {
+            "type": "NativeUnixCleanup",
+            "path": "Shared",
+            "worker_joined": true,
+            "fd_before": 4,
+            "fd_after": 4,
+            "original_remaining_ns": 29999683476,
+            "kernel_return": "Unknown"
+          }
+        ]
+      },
+      {
+        "name": "restored-engine-client-fin",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_engine_unix_half_close_matches_original_body",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674082,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": true
+          },
+          "passed": true
+        },
+        "observed": [
+          {
+            "type": "NativeEngineUnix",
+            "path": "Original",
+            "half": "ClientFinFirst",
+            "unnamed": true,
+            "client_ok": true,
+            "backend_ok": true,
+            "client_written": 13,
+            "backend_written": 14,
+            "client_read_end": "Closed",
+            "backend_read_end": "Closed",
+            "client_read_hex": "53455256455200ff5441494c0d0a",
+            "backend_read_hex": "5245515545535400ff0d0a0102",
+            "backend_extra_hex": null,
+            "late_write": {
+              "kind": "NotAttempted"
+            }
+          },
+          {
+            "type": "NativeUnixCleanup",
+            "path": "Original",
+            "worker_joined": true,
+            "fd_before": 4,
+            "fd_after": 4,
+            "original_remaining_ns": 29999796468,
+            "kernel_return": "Unknown"
+          },
+          {
+            "type": "NativeEngineUnix",
+            "path": "Shared",
+            "half": "ClientFinFirst",
+            "unnamed": true,
+            "client_ok": true,
+            "backend_ok": true,
+            "client_written": 13,
+            "backend_written": 14,
+            "client_read_end": "Closed",
+            "backend_read_end": "Closed",
+            "client_read_hex": "53455256455200ff5441494c0d0a",
+            "backend_read_hex": "5245515545535400ff0d0a0102",
+            "backend_extra_hex": null,
+            "late_write": {
+              "kind": "NotAttempted"
+            },
+            "fault": null,
+            "to_backend": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 13,
+              "written": 13,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 0,
+              "write_would_block": 0
+            },
+            "to_client": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 14,
+              "written": 14,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 2,
+              "write_would_block": 0
+            }
+          },
+          {
+            "type": "NativeUnixCleanup",
+            "path": "Shared",
+            "worker_joined": true,
+            "fd_before": 4,
+            "fd_after": 4,
+            "original_remaining_ns": 29999667801,
+            "kernel_return": "Unknown"
+          }
+        ]
+      },
+      {
+        "name": "restored-extra-client-byte",
+        "launcher_status": 1,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674152,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 101,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": false,
+            "child_success": false,
+            "backend_bytes": false,
+            "client_bytes": false,
+            "both_endpoint_halves": false,
+            "both_flow_halves": false,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "local_extra_acceptance": false,
+            "joined_with_original_time_remaining": false,
+            "all_owned_descriptor_returns": false
+          },
+          "passed": false
+        },
+        "observed": []
+      },
+      {
+        "name": "restored-reset",
+        "launcher_status": 1,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674204,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 101,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": false,
+            "child_success": false,
+            "backend_bytes": false,
+            "client_bytes": false,
+            "both_endpoint_halves": false,
+            "both_flow_halves": false,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": false
+          },
+          "passed": false
+        },
+        "observed": []
+      },
+      {
+        "name": "restored-client-reset",
+        "launcher_status": 1,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674229,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 101,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": false,
+            "child_success": false,
+            "backend_bytes": false,
+            "client_bytes": false,
+            "both_endpoint_halves": false,
+            "both_flow_halves": false,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": false
+          },
+          "passed": false
+        },
+        "observed": []
+      },
+      {
+        "name": "restored-server-first",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674383,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true
+          },
+          "passed": true
+        },
+        "observed": [
+          {
+            "type": "Endpoint",
+            "role": "NativeBackend",
+            "ordinal": 0,
+            "local": "127.0.0.1:39569",
+            "peer": "127.0.0.1:57529",
+            "read": 13,
+            "written": 14,
+            "read_end": "Closed",
+            "write_end": "Closed",
+            "ok": true,
+            "read_hex": "5245515545535400ff0d0a0102",
+            "extra_hex": null,
+            "error_kind": "None",
+            "errno": null
+          },
+          {
+            "type": "Endpoint",
+            "role": "NativeClient",
+            "ordinal": 0,
+            "local": "127.0.0.1:47426",
+            "peer": "127.0.0.1:39337",
+            "read": 14,
+            "written": 13,
+            "read_end": "Closed",
+            "write_end": "Closed",
+            "ok": true,
+            "read_hex": "53455256455200ff5441494c0d0a",
+            "extra_hex": null,
+            "error_kind": "None",
+            "errno": null
+          },
+          {
+            "type": "NativeJoined",
+            "relay_joined": true,
+            "backend_joined": true
+          },
+          {
+            "type": "NativeFlow",
+            "storage": "caller",
+            "connect": "Connected",
+            "end": "BothHalvesClosed",
+            "fault": null,
+            "abort": {
+              "kind": "NotRequired"
+            },
+            "client": "127.0.0.1:47426",
+            "upstream": "127.0.0.1:57529",
+            "to_backend": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 13,
+              "written": 13,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 7,
+              "write_would_block": 0
+            },
+            "to_client": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 14,
+              "written": 14,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 11,
+              "write_would_block": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "restored-backend-fin-first",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674497,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true
+          },
+          "passed": true
+        },
+        "observed": [
+          {
+            "type": "Endpoint",
+            "role": "NativeBackend",
+            "ordinal": 0,
+            "local": "127.0.0.1:49109",
+            "peer": "127.0.0.1:46491",
+            "read": 13,
+            "written": 14,
+            "read_end": "Closed",
+            "write_end": "Closed",
+            "ok": true,
+            "read_hex": "5245515545535400ff0d0a0102",
+            "extra_hex": null,
+            "error_kind": "None",
+            "errno": null
+          },
+          {
+            "type": "Endpoint",
+            "role": "NativeClient",
+            "ordinal": 0,
+            "local": "127.0.0.1:60250",
+            "peer": "127.0.0.1:57497",
+            "read": 14,
+            "written": 13,
+            "read_end": "Closed",
+            "write_end": "Closed",
+            "ok": true,
+            "read_hex": "53455256455200ff5441494c0d0a",
+            "extra_hex": null,
+            "error_kind": "None",
+            "errno": null
+          },
+          {
+            "type": "NativeJoined",
+            "relay_joined": true,
+            "backend_joined": true
+          },
+          {
+            "type": "NativeFlow",
+            "storage": "caller",
+            "connect": "Connected",
+            "end": "BothHalvesClosed",
+            "fault": null,
+            "abort": {
+              "kind": "NotRequired"
+            },
+            "client": "127.0.0.1:60250",
+            "upstream": "127.0.0.1:46491",
+            "to_backend": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 13,
+              "written": 13,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 9,
+              "write_would_block": 0
+            },
+            "to_client": {
+              "half": "WriteClosed",
+              "source_end": "Eof",
+              "read": 14,
+              "written": 14,
+              "pending": 0,
+              "extra_consumed": 0,
+              "partial_writes": 0,
+              "would_block": 1,
+              "write_would_block": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "restored-receipt-cancel",
+        "launcher_status": 1,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3674722,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 101,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": false,
+            "child_success": false,
+            "backend_bytes": false,
+            "client_bytes": false,
+            "both_endpoint_halves": false,
+            "both_flow_halves": false,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "joined_with_original_time_remaining": false
+          },
+          "passed": false
+        },
+        "observed": []
+      }
+    ],
+    "passed": false
+  },
+  "resupplied_controls": {
+    "original": "r117 four nonmatching scenario controls retained; new records use required ServerFirst input",
+    "root": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/resupplied-controls-v1",
+    "binary_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+    "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+    "shared_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+    "results": [
+      {
+        "name": "extra-client-byte",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3795459,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "local_extra_acceptance": true,
+            "joined_with_original_time_remaining": true,
+            "all_owned_descriptor_returns": true
+          },
+          "passed": true
+        }
+      },
+      {
+        "name": "backend-reset",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3795779,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": true
+          },
+          "passed": true
+        }
+      },
+      {
+        "name": "client-reset",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3795992,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "all_owned_descriptor_returns": true
+          },
+          "passed": true
+        }
+      },
+      {
+        "name": "receipt-cancel",
+        "launcher_status": 0,
+        "result": {
+          "binary": "/home/adalundhe/relay-engine-unix-eof-mutation-v1/artifacts/restored-musl",
+          "binary_before_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt",
+          "fd_before": 4,
+          "kernel_return": "Unknown",
+          "pidfd_exit_ready": true,
+          "reaped": true,
+          "timeout": false,
+          "pid": 3796331,
+          "pidfd_events": [
+            [
+              3,
+              1
+            ]
+          ],
+          "status": 0,
+          "fd_after": 4,
+          "binary_after_sha256": "222483025120546df6f4a84bd344a5a892fefa8dc70c77a140733c951b0ac7d7",
+          "checks": {
+            "one_actual_test": true,
+            "child_success": true,
+            "backend_bytes": true,
+            "client_bytes": true,
+            "both_endpoint_halves": true,
+            "both_flow_halves": true,
+            "owned_child_reaped": true,
+            "parent_fd_return": true,
+            "binary_unchanged": true,
+            "joined_with_original_time_remaining": true
+          },
+          "passed": true
+        }
+      }
+    ]
+  },
+  "normal": [
+    {
+      "name": "policy",
+      "status": 0,
+      "command": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "log": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/record/policy.log",
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "name": "build",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "build",
+        "-p",
+        "shards-init",
+        "--profile",
+        "guest",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j",
+        "2"
+      ],
+      "log": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/record/build.log",
+      "sha256": "9a729a2dbecb108bcc188bfca1c2a62778c2845620371f51998a4a54889c47a2"
+    },
+    {
+      "name": "clippy",
+      "status": 0,
+      "command": [
+        "rustup",
+        "run",
+        "1.98.1",
+        "cargo",
+        "clippy",
+        "-p",
+        "shards-init",
+        "--bin",
+        "shards-init",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "-j",
+        "2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "log": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/record/clippy.log",
+      "sha256": "bff6c2c1ec9c5a3526c45c6731b0e62fcf6c382a97e30fe0122b83e86922ad5a"
+    }
+  ],
+  "binary": {
+    "frozen_binary": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/artifacts/shards-init",
+    "bytes": 2099624,
+    "sha256": "eadd299957630177bf310783a5f107902171ce103fcd03390e01d68df4d62e57",
+    "source": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/source",
+    "target": "/home/adalundhe/relay-tcp-engine-consumer-3bbd-guest-v2/target",
+    "scope": "corrected normal static-musl init build+strict clippy; no VM/runtime candidate execution"
+  },
+  "final_source": [
+    {
+      "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "sha256": "a534974aba72d006f4766703df2189eb621b60b7014d9c96bdd8575879e0b2a0"
+    },
+    {
+      "path": "crates/init/src/engine.rs",
+      "sha256": "1f32faae6fb63c2beeb5accf0292d90f0608207f32bfe09f9495a0f4edd22de7"
+    },
+    {
+      "path": "crates/init/src/relay.rs",
+      "sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27"
+    },
+    {
+      "path": "crates/testguest/src/managed_network/intercept.rs",
+      "sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773"
+    }
+  ]
+}

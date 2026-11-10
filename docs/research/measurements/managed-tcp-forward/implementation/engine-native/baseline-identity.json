@@ -1,0 +1,8 @@
+{
+  "revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "original_path": "crates/init/src/engine.rs",
+  "original_sha256": "e2e4e6e6ae014ddb82aba96362801bd14bf4a69a2955ac44941bd481f6563eea",
+  "post_hello_body_sha256": "f16c3e2ef3386d4837f362a3fb8977d671819d6de63347dbfda4cebf3eddabfe",
+  "adapter_sha256": "f5d78a8638d209c1ccacda3f0b2bd17f7df8ba992a08d2265b2d45af245961a5",
+  "adapter": "replace dial/HELLO prefix with caller-owned UnixStream and File; exact remaining body bytes preserved"
+}

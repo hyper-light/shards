@@ -18,6 +18,7 @@ FILTERS = {
     "reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer",
     "client-reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer",
     "extra-client-byte": "managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded",
+    "engine-unix": "managed_network::intercept::tcp_forward::native_tests::native_engine_unix_half_close_matches_original_body",
 }
 PREFIX = "managed-tcp-forward "
 
@@ -168,6 +169,16 @@ def main():
         outcome["checks"]["local_extra_acceptance"] = len(extra) == 1 and len(client) == 1 and client[0]["written"] == len(request) + len(extra)
         outcome["checks"]["joined_with_original_time_remaining"] = len(joined) == 1 and joined[0]["relay_joined"] and joined[0]["backend_joined"] and joined[0]["original_remaining_ns"] > 0
         outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 1 and cleanup[0]["fd_before"] == cleanup[0]["fd_after"]
+    if args.case == "engine-unix":
+        engines = [row for row in rows if row.get("type") == "NativeEngineUnix"]
+        cleanup = [row for row in rows if row.get("type") == "NativeUnixCleanup"]
+        request = payload(env_inputs["SHARDS_TCP_REQUEST_HEX"])
+        response = payload(env_inputs["SHARDS_TCP_GREETING_HEX"]) + payload(env_inputs["SHARDS_TCP_TAIL_HEX"])
+        outcome["checks"]["backend_bytes"] = len(engines) == 2 and all(row["backend_ok"] and bytes.fromhex(row["backend_read_hex"]) == request and row["backend_extra_hex"] is None for row in engines)
+        outcome["checks"]["client_bytes"] = len(engines) == 2 and all(row["client_ok"] and bytes.fromhex(row["client_read_hex"]) == response for row in engines)
+        outcome["checks"]["both_endpoint_halves"] = len(engines) == 2 and all(row["unnamed"] and row["client_read_end"] == row["backend_read_end"] == "Closed" for row in engines)
+        outcome["checks"]["both_flow_halves"] = len(engines) == 2 and engines[0]["path"] == "Original" and engines[1]["path"] == "Shared" and engines[0]["late_write"] == engines[1]["late_write"] and engines[1]["fault"] is None and engines[1]["to_backend"]["pending"] == engines[1]["to_client"]["pending"] == 0
+        outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 2 and all(row["worker_joined"] and row["fd_before"] == row["fd_after"] and row["original_remaining_ns"] > 0 for row in cleanup)
     if env_inputs.get("SHARDS_NATIVE_WRITE_PRESSURE") == "required":
         outcome["checks"]["actual_short_send"] = len(flows) == 1 and flows[0]["to_backend"]["partial_writes"] > 0
         outcome["checks"]["actual_send_would_block"] = len(flows) == 1 and flows[0]["to_backend"]["write_would_block"] > 0

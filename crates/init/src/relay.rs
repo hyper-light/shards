@@ -427,6 +427,7 @@ impl Direction {
         destination: BorrowedFd<'_>,
         progress: &mut Progress,
         deadline: &Control<'_>,
+        end_policy: EndPolicy,
     ) -> Result<bool, Fault> {
         let mut changed = false;
         let target = match self.source {
@@ -476,6 +477,12 @@ impl Direction {
             }
         }
         if let (0, Half::Draining(cause)) = (progress.pending, progress.half) {
+            let how = match (end_policy, self.source, cause) {
+                // Engine EOF ends both Unix halves before making EOF observable
+                // to its client; a later caller shutdown leaves a late-write gap.
+                (EndPolicy::EnginePeerEnd, Leg::Backend, SourceEnd::Eof) => libc::SHUT_RDWR,
+                _ => libc::SHUT_WR,
+            };
             match attempt(
                 deadline,
                 destination.as_raw_fd(),
@@ -484,7 +491,7 @@ impl Direction {
                 Operation::Shutdown,
                 || {
                     // SAFETY: shutdown of this owned flow's borrowed socket.
-                    count(unsafe { libc::shutdown(destination.as_raw_fd(), libc::SHUT_WR) } as isize)
+                    count(unsafe { libc::shutdown(destination.as_raw_fd(), how) } as isize)
                 },
             )? {
                 Attempt::Ready(_) => {
@@ -665,8 +672,8 @@ pub(crate) fn pump(
         source: Leg::Backend,
     };
     loop {
-        let up_changed = up.turn(client, backend, &mut report.to_backend, &deadline)?;
-        let down_changed = down.turn(backend, client, &mut report.to_client, &deadline)?;
+        let up_changed = up.turn(client, backend, &mut report.to_backend, &deadline, end)?;
+        let down_changed = down.turn(backend, client, &mut report.to_client, &deadline, end)?;
         if end == EndPolicy::EnginePeerEnd
             && matches!(
                 report.to_client.half,
