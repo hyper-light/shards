@@ -2431,7 +2431,7 @@ mod tests {
     #[ignore = "requires the local libc interposition fixture"]
     fn registry_cancel_blocked_workers() {
         use std::os::unix::net::UnixListener;
-        let dir = shards_testdir::TempDir::new("registry-cancel");
+        let dir = shards_testdir::TempDir::new("registry-cancel").unwrap();
         let socket = dir.path().join("hold.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         // SAFETY: run.sh executes this one filtered test with one test thread, before
@@ -2454,13 +2454,34 @@ mod tests {
                 };
                 let before = usage();
                 let result = if mode == "resolve" {
-                    resolve(&at("http", "shards-cancel.invalid", 9), after(Duration::from_secs(3)), Some(&asked_cancel)).map(|_| ())
+                    resolve(
+                        &at("http", "shards-cancel.invalid", 9),
+                        after(Duration::from_secs(3)),
+                        Some(&asked_cancel),
+                    )
+                    .map(|_| ())
                 } else {
-                    dial(&at("http", "192.0.2.1", 9), Some(&asked_cancel), None, Duration::from_secs(3)).map(|_| ())
+                    dial(
+                        &at("http", "192.0.2.1", 9),
+                        Some(&asked_cancel),
+                        None,
+                        Duration::from_secs(3),
+                    )
+                    .map(|_| ())
                 };
                 let after = usage();
-                let cpu_us = |r: &libc::rusage| (r.ru_utime.tv_sec + r.ru_stime.tv_sec) * 1_000_000 + r.ru_utime.tv_usec + r.ru_stime.tv_usec;
-                done_tx.send((result, after.ru_nvcsw - before.ru_nvcsw, cpu_us(&after) - cpu_us(&before))).unwrap();
+                let cpu_us = |r: &libc::rusage| {
+                    (r.ru_utime.tv_sec + r.ru_stime.tv_sec) * 1_000_000
+                        + r.ru_utime.tv_usec
+                        + r.ru_stime.tv_usec
+                };
+                done_tx
+                    .send((
+                        result,
+                        after.ru_nvcsw - before.ru_nvcsw,
+                        cpu_us(&after) - cpu_us(&before),
+                    ))
+                    .unwrap();
             });
             let (mut held, _) = listener.accept().unwrap();
             held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -2468,7 +2489,9 @@ mod tests {
             held.read_exact(&mut marker).unwrap();
             assert_eq!(marker[0], if mode == "resolve" { b'r' } else { b'd' });
             // The first sample also exposes repeated ordinary wakeups while idle.
-            if sample == 0 { std::thread::sleep(Duration::from_millis(750)); }
+            if sample == 0 {
+                std::thread::sleep(Duration::from_millis(750));
+            }
             let began = Instant::now();
             cancel.cancel();
             let result = done_rx.recv_timeout(Duration::from_secs(1));
@@ -2476,18 +2499,27 @@ mod tests {
             // Release before asserting: even a broken cancellation guard must leave
             // the test's actual resolver/connect worker able to return and clean up.
             held.write_all(b"x").unwrap();
-            assert_eq!(held.read(&mut marker).unwrap(), 0, "worker retained its control socket");
+            assert_eq!(
+                held.read(&mut marker).unwrap(),
+                0,
+                "worker retained its control socket"
+            );
             asked.join().unwrap();
             let (result, switches, cpu_us) = result.expect("cancel did not wake the waiting request");
             let error = result.unwrap_err();
             assert_eq!(error.kind(), ErrorKind::Cancelled, "{error}");
-            println!("REGISTRY_CANCEL mode={mode} sample={sample} cancel_ns={elapsed} voluntary_switches={switches} thread_cpu_us={cpu_us}");
+            println!(
+                "REGISTRY_CANCEL mode={mode} sample={sample} cancel_ns={elapsed} voluntary_switches={switches} thread_cpu_us={cpu_us}"
+            );
             samples.push(elapsed);
         }
         // Half the old cancellation polling period: an experiment threshold that
         // detects timer-bound cancellation, never a production timeout.
         samples.sort_unstable();
-        assert!(samples[samples.len() / 2] < Duration::from_millis(50).as_nanos(), "cancellation still waits on the old 100ms polling timer: {samples:?}");
+        assert!(
+            samples[samples.len() / 2] < Duration::from_millis(50).as_nanos(),
+            "cancellation still waits on the old 100ms polling timer: {samples:?}"
+        );
     }
 
     /// A connection the server has reset takes its timeouts without error, and its reads
