@@ -1,0 +1,2 @@
+FROM 127.0.0.1:44817/test/image:v1
+AGENT assets FROM ./files

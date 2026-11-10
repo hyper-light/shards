@@ -1,0 +1,6 @@
+{
+  "endpoints": 0,
+  "proof": "detached run + main exact progress; managed-output record absent",
+  "run": "c82a15619d4864fbd8b7fe2023ca1e02dc3c11c43e5deb7868a10c07e2250c5f",
+  "state": "NoManagedMembers"
+}

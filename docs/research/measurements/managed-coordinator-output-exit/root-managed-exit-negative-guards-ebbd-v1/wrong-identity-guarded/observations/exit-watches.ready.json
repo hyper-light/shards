@@ -1,0 +1,31 @@
+{
+  "daemon": {
+    "expected_identity": {
+      "expected_started": 11181803,
+      "pid": 2388179
+    },
+    "failure": {
+      "expected": [
+        2388179,
+        11181803
+      ],
+      "observed": [
+        2388179,
+        11181802
+      ],
+      "state": "DifferentIdentity"
+    },
+    "stage": "before_watch",
+    "state": "Unavailable"
+  },
+  "vm": {
+    "identity": {
+      "expected_started": 11181808,
+      "pid": 2388372
+    },
+    "readiness_identity": {
+      "state": "Matched"
+    },
+    "state": "Watching"
+  }
+}

@@ -1,0 +1,10 @@
+--- docs/research/measurements/managed-output-cost/fixture.rs
++++ docs/research/measurements/managed-output-cost/fixture.rs
+@@ -830,6 +830,7 @@
+     // Cleanup is a separate explicitly recorded finite phase, using caller patience.
+     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
+     let stopped = fixture.shutdown(cleanup_until);
++    let _extra_owned_fd = std::fs::File::open("/dev/null").unwrap();
+     let (exit_record, exit_passed, fds) = match exits {
+         Some(proof) => {
+             let (record, passed, fds) = proof.finish(cleanup_until);

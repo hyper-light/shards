@@ -1,0 +1,6 @@
+wrong-identity-guarded actual exit 101 actual identity/descriptor/deadline witness checked; ownerstop complete
+wrong-identity-check-removed actual exit 0 actual identity/descriptor/deadline witness checked; ownerstop complete
+extra-fd-guarded actual exit 101 actual identity/descriptor/deadline witness checked; ownerstop complete
+extra-fd-check-removed actual exit 0 actual identity/descriptor/deadline witness checked; ownerstop complete
+expired-exit-deadline actual exit 101 actual identity/descriptor/deadline witness checked; ownerstop complete
+restored actual exit 0 actual identity/descriptor/deadline witness checked; ownerstop complete

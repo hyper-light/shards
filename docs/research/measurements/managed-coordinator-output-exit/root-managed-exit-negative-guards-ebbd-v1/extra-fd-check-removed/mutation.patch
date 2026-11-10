@@ -1,0 +1,19 @@
+--- docs/research/measurements/managed-output-cost/fixture.rs
++++ docs/research/measurements/managed-output-cost/fixture.rs
+@@ -830,6 +830,7 @@
+     // Cleanup is a separate explicitly recorded finite phase, using caller patience.
+     let cleanup_until = Instant::now().checked_add(inputs.patience).unwrap();
+     let stopped = fixture.shutdown(cleanup_until);
++    let _extra_owned_fd = std::fs::File::open("/dev/null").unwrap();
+     let (exit_record, exit_passed, fds) = match exits {
+         Some(proof) => {
+             let (record, passed, fds) = proof.finish(cleanup_until);
+@@ -845,7 +846,7 @@
+         .map(|fds| fds.record(&released))
+         .unwrap_or_else(|| ObservationFailure::NotPrepared.record());
+     inputs.write("teardown.json", &json!({"owner_stop_and_observer_join":stopped,"protocol_completed":result.is_ok(),"cleanup_phase_deadline_ms":inputs.patience.as_millis(),"host_process_exit":exit_record,"exit_observation_fds":fd_record,"host_process_exit_and_kernel_resource_return":"See held exit readiness proof; kernel/full-population return remain Unverified"}));
+-    assert!(fd_returned, "exit observation exact FD delta/return: {fd_record}");
++    let _ = fd_returned;
+     assert!(
+         exit_passed,
+         "both validated owned exit watches must report readiness before cleanup deadline: {exit_record}"

@@ -1,0 +1,27 @@
+{
+  "cli": {
+    "path": "/home/adalundhe/managed-capture-check/target/e2e/shards-f5009eb19d002d6d/shards",
+    "sha256": "sha256:f5009eb19d002d6dc82327c52c8cb2e9889f3f3d16ea73170bbf873fa8d29bc0"
+  },
+  "fixture": {
+    "path": "/home/adalundhe/managed-capture-target/test-release/deps/managed_output-27c7f5b2529c465b",
+    "sha256": "sha256:232dff9ec2b0ec15fa690efe326c34f6383b4cf7f0217b792f9e5d6050d6febc"
+  },
+  "init": {
+    "path": "/home/adalundhe/managed-capture-target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+    "sha256": "sha256:6065cafeb894bfb7ae9035c041a3fb39562f40a7207d12d05c8798953e931c09"
+  },
+  "kernel": {
+    "path": "/home/adalundhe/managed-kernel-tproxy-5d23-v1/out/vmlinux-6.18.48-x86_64-managed-tproxy",
+    "sha256": "sha256:97819d00fecb5de0cffc4bf292af9c78c5d662336e07226ae58731fd580537ae"
+  },
+  "members": 0,
+  "phase_deadline_ms": 300000,
+  "root_cost_comparison": "not executed by implementer",
+  "source": "ebbda9b3b7b3de9a9143f4d383f60769ec7803b7",
+  "testguest": {
+    "path": "/home/adalundhe/managed-capture-check/target/guest/by-process/2439613/shards-testguest",
+    "sha256": "sha256:1fa4e9ec9a96a174e973b25d6cf9e8389ea10ccbe3894ea0df9cd82deb75f565"
+  },
+  "topology": "EXPERIMENTAL2N; unadopted"
+}

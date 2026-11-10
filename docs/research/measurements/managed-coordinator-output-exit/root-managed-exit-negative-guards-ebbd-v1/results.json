@@ -1,0 +1,305 @@
+[
+  {
+    "name": "wrong-identity-guarded",
+    "actual_exit": 101,
+    "expected_witness": "identity-rejected",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": true,
+        "owned_observation_fds": 3,
+        "with_exit_objects": {
+          "count": 10,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": false,
+        "daemon": {
+          "expected_identity": {
+            "expected_started": 11181803,
+            "pid": 2388179
+          },
+          "failure": {
+            "expected": [
+              2388179,
+              11181803
+            ],
+            "observed": [
+              2388179,
+              11181802
+            ],
+            "state": "DifferentIdentity"
+          },
+          "stage": "before_watch",
+          "state": "Unavailable"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11181808,
+            "pid": 2388372
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  },
+  {
+    "name": "wrong-identity-check-removed",
+    "actual_exit": 0,
+    "expected_witness": "identity-false-accept",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": true,
+        "owned_observation_fds": 5,
+        "with_exit_objects": {
+          "count": 12,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": true,
+        "daemon": {
+          "identity": {
+            "expected_started": 11183223,
+            "pid": 2411706
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11183228,
+            "pid": 2411788
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  },
+  {
+    "name": "extra-fd-guarded",
+    "actual_exit": 101,
+    "expected_witness": "fd-rejected",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 8,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": false,
+        "owned_observation_fds": 5,
+        "with_exit_objects": {
+          "count": 12,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": true,
+        "daemon": {
+          "identity": {
+            "expected_started": 11184667,
+            "pid": 2441030
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11184671,
+            "pid": 2441139
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  },
+  {
+    "name": "extra-fd-check-removed",
+    "actual_exit": 0,
+    "expected_witness": "fd-false-accept",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 8,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": false,
+        "owned_observation_fds": 5,
+        "with_exit_objects": {
+          "count": 12,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": true,
+        "daemon": {
+          "identity": {
+            "expected_started": 11186246,
+            "pid": 2471026
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11186251,
+            "pid": 2471168
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  },
+  {
+    "name": "expired-exit-deadline",
+    "actual_exit": 101,
+    "expected_witness": "deadline-rejected",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": true,
+        "owned_observation_fds": 5,
+        "with_exit_objects": {
+          "count": 12,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": false,
+        "daemon": {
+          "identity": {
+            "expected_started": 11187783,
+            "pid": 2498517
+          },
+          "state": "Deadline"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11187790,
+            "pid": 2498704
+          },
+          "state": "Deadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  },
+  {
+    "name": "restored",
+    "actual_exit": 0,
+    "expected_witness": "restored",
+    "teardown": {
+      "cleanup_phase_deadline_ms": 300000,
+      "exit_observation_fds": {
+        "after_release": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "baseline": {
+          "count": 7,
+          "state": "Observed"
+        },
+        "exact_delta_and_return": true,
+        "owned_observation_fds": 5,
+        "with_exit_objects": {
+          "count": 12,
+          "state": "Observed"
+        }
+      },
+      "host_process_exit": {
+        "both_valid_exit_events": true,
+        "daemon": {
+          "identity": {
+            "expected_started": 11189398,
+            "pid": 2536030
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        },
+        "semantics": "exit readiness only; reaping, exit status/time/causality, full-population and kernel return Unverified",
+        "vm": {
+          "identity": {
+            "expected_started": 11189404,
+            "pid": 2536055
+          },
+          "reaped": "Unverified",
+          "state": "ExitReadyObservedAfterOwnerStopWithinCleanupDeadline"
+        }
+      },
+      "host_process_exit_and_kernel_resource_return": "See held exit readiness proof; kernel/full-population return remain Unverified",
+      "owner_stop_and_observer_join": {
+        "Ok": null
+      },
+      "protocol_completed": true
+    }
+  }
+]
