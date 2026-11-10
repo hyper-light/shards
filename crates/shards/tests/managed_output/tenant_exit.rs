@@ -97,22 +97,24 @@ impl Capture {
                 }
                 CaptureEvent::Aborted(errno) => panic!("normal member completion aborted: {errno}"),
             }
-            observer
-                .sender
-                .send(Command::Handler(Ask::Ack(self.wire)))
-                .unwrap();
-            if terminal && self.state.terminal() {
-                let terminal = observer.next(until);
+            let ack = observer.sender.send(Command::Handler(Ask::Ack(self.wire)));
+            if ack.is_err() || (terminal && self.state.terminal()) {
+                let ended = observer.next(until);
                 eprintln!(
-                    "tenant-exit after consumed canonical End member={} channel={} wire={} actual={terminal:?}",
+                    "tenant-exit terminal observation member={} channel={} wire={} ack={ack:?} actual={ended:?}",
                     observer.scope.member, observer.scope.channel as u8, self.wire
                 );
                 assert!(
-                    matches!(terminal, Event::End),
-                    "transport EOF after consumed End; actual={terminal:?}"
+                    ack.is_ok(),
+                    "terminal ACK enqueue failed: {ack:?}; event={ended:?}"
+                );
+                assert!(
+                    matches!(ended, Event::End),
+                    "transport EOF after consumed End; actual={ended:?}"
                 );
                 return;
             }
+            assert!(ack.is_ok());
             if !terminal && self.bytes == expected {
                 return;
             }
