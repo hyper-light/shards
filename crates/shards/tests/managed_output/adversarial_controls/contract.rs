@@ -69,6 +69,7 @@ pub(crate) enum ControlCase {
     Overdeclared,
     AckLength,
     ShortHeader,
+    HeaderOnly,
     ShortAck,
 }
 
@@ -80,6 +81,7 @@ impl ControlCase {
             "control-overdeclared" => Self::Overdeclared,
             "control-ack-length" => Self::AckLength,
             "control-short-header" => Self::ShortHeader,
+            "control-header-only" => Self::HeaderOnly,
             "control-short-ack" => Self::ShortAck,
             _ => return None,
         })

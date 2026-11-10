@@ -46,6 +46,15 @@ impl ControlCase {
                 finish = true;
                 reason = Reason::Closed;
             }
+            Self::HeaderOnly => {
+                bytes.truncate(header);
+                assert_eq!(
+                    frame::peek(&bytes).unwrap(),
+                    Some((Tag::Stdin, std::mem::size_of::<u64>()))
+                );
+                finish = true;
+                reason = Reason::Closed;
+            }
         }
         assert!(!bytes.is_empty() && bytes.len() <= managed::CONTROL_BYTES);
         (bytes, finish, reason)
@@ -61,11 +70,15 @@ fn malformed_inputs_keep_actual_buffers_bounded_without_allocating_declared_leng
         ControlCase::Overdeclared,
         ControlCase::AckLength,
         ControlCase::ShortHeader,
+        ControlCase::HeaderOnly,
         ControlCase::ShortAck,
     ] {
         let (bytes, finish, reason) = case.wire(end);
         assert!(bytes.len() <= managed::consumed(end).len());
-        if matches!(case, ControlCase::ShortHeader | ControlCase::ShortAck) {
+        if matches!(
+            case,
+            ControlCase::ShortHeader | ControlCase::HeaderOnly | ControlCase::ShortAck
+        ) {
             assert!(finish);
             assert_eq!(reason, Reason::Closed);
         } else {
@@ -83,4 +96,15 @@ fn malformed_inputs_keep_actual_buffers_bounded_without_allocating_declared_leng
         Some(ControlCase::ShortAck)
     );
     assert_eq!(ControlCase::parse("cursor-one"), None);
+    let (bytes, finish, reason) = ControlCase::HeaderOnly.wire(end);
+    assert_eq!(
+        bytes.len(),
+        std::mem::size_of::<u8>() + std::mem::size_of::<u32>()
+    );
+    assert!(finish);
+    assert_eq!(reason, Reason::Closed);
+    assert_eq!(
+        ControlCase::parse("control-header-only"),
+        Some(ControlCase::HeaderOnly)
+    );
 }
