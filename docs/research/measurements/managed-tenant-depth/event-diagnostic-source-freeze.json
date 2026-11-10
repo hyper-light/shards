@@ -1,0 +1,25 @@
+{
+  "canonical_policy": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "policy_receipt": 7371,
+  "role": "implementer/assigned adversarial",
+  "base": "29189b6a8406f0f670c164abc6bffd9de19ec6ea",
+  "actual_native_rust_source": "cba6d1c32c5d27ef34b5cd9b49f95834253d6448",
+  "actual_host_expiry_source": "bbd3f22caee7d4429d1d8459e16f88b27b692bfb",
+  "source_changes": "Capture::receive only, same one Event per existing loop read; canonical End EOF read unchanged",
+  "files": {
+    "crates/shards/tests/managed_output/tenant_exit.rs": "cfe3d4abab06045babce3f6574c7528fcfdba0311f1234c9962ca63d75c00b52",
+    "crates/shards/tests/managed_output/current_tenant_stdio.rs": "6dc79f09089d0c9cc3b66ff97a1291dfcb1d197756476615f2351b3c11a49c1b",
+    "crates/testguest/src/workload.rs": "a03ef0dde5769629bcc7da47c9548d24bcc1b17840985ebc96e6e63e3ad139c9",
+    "crates/shards/tests/common/managed_capture.rs": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+    "crates/shards/tests/managed_output.rs": "f281608accc0066c96b83c3c9ec28672c3ed94781c3330d8063b8dd7880a5e36"
+  },
+  "private_runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private_scope": "~/managed-tenant-depth-a920-01a1c5d2-v1/{source,target,records,cache,frozen}",
+  "needs": "linux/amd64,cpus=2,mem=4g,disk=24g",
+  "light_lint_seconds": 600,
+  "cargo_jobs": 4,
+  "new_vm_authorized": false,
+  "r79_event_cause": "Unknown; not recorded by original source",
+  "old_archive_sha256": "17a785e9b59502797cfe1f6371ab26c18caf51562961acccc1fb650e40c7c66d"
+}

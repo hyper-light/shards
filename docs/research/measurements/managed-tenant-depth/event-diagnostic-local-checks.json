@@ -1,0 +1,32 @@
+{
+  "initial_source_check": {
+    "tool_chunk": "305c22",
+    "rustfmt_check_exit": 0,
+    "diff_check_exit": 0,
+    "source_sha256": "cfe3d4abab06045babce3f6574c7528fcfdba0311f1234c9962ca63d75c00b52"
+  },
+  "later_durable_check_attempt": {
+    "tool_chunk": "543ed2",
+    "command": [
+      "lockf",
+      "-t",
+      "0",
+      "/tmp/g121-mac.lock",
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "--config",
+      "skip_children=true",
+      "crates/shards/tests/managed_output/tenant_exit.rs"
+    ],
+    "exit": 1,
+    "rustfmt_executed": false,
+    "reason": "lock already held",
+    "original_log": "event-diagnostic-local-rustfmt.log"
+  },
+  "remaining_durable_checks": "remote admitted scope; no lock bypass",
+  "local_free_bytes": 179698409472,
+  "vm_runs": 0,
+  "local_build_or_cargo": false
+}
