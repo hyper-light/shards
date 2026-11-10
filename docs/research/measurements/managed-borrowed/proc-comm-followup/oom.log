@@ -1,0 +1,4 @@
+
+running 1 test
+test taken::linux::tests::proc_read_and_start_path_return_allocation_failure ... memory allocation of 32 bytes failed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

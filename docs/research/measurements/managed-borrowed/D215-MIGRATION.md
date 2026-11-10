@@ -38,4 +38,8 @@ allocation before the fallible Socket path. No warmed-state remedy or
 whole-library panic-free claim is adopted. The historical GNU timing assertion
 red remains in the unchanged-source record; its causal test replacement and
 actual marker-removal red/restored results are in [HELD-OUTPUT](HELD-OUTPUT.md).
-The separate suspected non-UTF8 comm input case remains unreproduced and deferred.
+The subsequent [non-UTF8 comm case](PROC-COMM.md) is now reproduced: legal raw
+comm bytes incorrectly caused a typed Start/InvalidData before dial. Its isolated
+byte-reader candidate preserves numeric/held-process/deadline semantics and
+public types, but remains unadopted because a distinct actual std read32-byte OOM
+abort blocks R01. No lifecycle/Mutex remedy or whole-library passing gate follows.

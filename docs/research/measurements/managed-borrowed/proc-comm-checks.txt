@@ -1,0 +1,15 @@
+Native tested source eee20469c7589ca71688eadab25396a00ae2ddbe.
+Evidence-only followup does not change compiled Rust or launcher bytes.
+
+rustfmt +1.98.1 --edition 2024 --check crates/api/src/taken.rs crates/api/src/borrowed.rs docs/research/measurements/managed-borrowed/proc-comm.rs docs/research/measurements/managed-borrowed/proc-stat.rs
+exit0
+
+bash -n docs/research/measurements/managed-borrowed/run-proc-comm-light.sh
+bash -n docs/research/measurements/managed-borrowed/run-proc-comm-followup.sh
+exit0
+
+git diff --check
+exit0
+
+Current f5 development-policy checker check(Path.cwd()) applied to this worktree:
+exit0; evidence/coordinator review still required.

@@ -125,10 +125,12 @@ allocating a fallback. [`io::Error::new/other`](https://doc.rust-lang.org/std/io
 allocate even for static-string payloads; `ErrorKind::OutOfMemory.into()` has a
 nonallocating representation. No new OOM error boxing is allowed.
 
-The Linux identity query needs removal of path/error `format!` allocations, but
-does **not** need a copied read framework: [Rust1.98.1 fs::read_to_string](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/fs.rs)
-already uses `try_reserve_exact`, and the [shared read loop](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/io/mod.rs)
-uses fallible growth. This is source evidence, not an injected-OOM passing test.
+Historical source observation: [Rust1.98.1 fs::read_to_string](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/fs.rs)
+uses `try_reserve_exact`, and portions of the [shared read loop](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/io/mod.rs)
+use fallible growth. That did not establish complete fallibility: the subsequent
+[actual procfs control](PROC-COMM.md) aborts on the infallible32-byte initial
+probe under allocation refusal. The previous no-reader-change conclusion is
+superseded by that open allocation blocker; no replacement framework is adopted.
 Unix must reuse taken::Held; Windows needs only query+synchronize held-handle RAII.
 The current Windows afunix local clone converts WSAPROTOCOL_INFOW to Vec; a narrow
 stack-based local duplication path is a candidate, preserving external share APIs.

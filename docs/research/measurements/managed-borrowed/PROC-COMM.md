@@ -79,19 +79,70 @@ the previous read_to_string; its invalid-UTF8 error uses the static INVALID_UTF8
 error, so allocating error construction is not established by this repro.
 No custom-reader remedy or whole-library panic-free claim is adopted.
 
-## Validation status and R01–R16
+## Actual candidate results and allocation blocker
 
-Repro is actual red; encoding candidate and focused valid/malformed/allocation
-checks are not yet run. The approved next light job preserves one4CPU8GiB20GiB
-request per new concrete source, one old-UTF8-read mutation and byte-exact
-restoration. A headroom refusal will be retained without lowering/retrying.
+Root explicitly authorized a sequential red→local candidate→new-source focused
+job, one unchanged4CPU8GiB20GiB request per concrete source; this does not license
+repeated headroom polling or lowering an envelope. Native r204 at exact
+`eee20469c7589ca71688eadab25396a00ae2ddbe` (production encoding change6a7fcd6a)
+was accepted once with30/32 idle cores, same runner/toolchain/private target.
+Invocation: `bash docs/research/measurements/managed-borrowed/run-proc-comm-followup.sh`.
 
-R01: allocation qualification pending, no hidden fallback formatting. R02/R03:
+- Real own-child finite borrowed connect passed1/0: actual CONNECT1234, OK reply
+  and exact payload `k`; original name restored, same start, held alive before
+  exit, child exit0 and all worker joins.
+- Valid and malformed/missing/invalid-UTF8/overflow decimal field cases passed2/0.
+  The malformed outcomes were checked under allocation refusal and returned
+  InvalidData. These test the real private field selection helper.
+- Independent old-UTF8-read mutation failed1/101: exact original Start/InvalidData
+  and noCONNECT; explicit name restoration/same start/child0/all joins still
+  completed before the assertion. Byte-exact taken.rs restoration and actual
+  recompile passed the real borrowed test1/0 again.
+- Strict GNU API/afunix all-target clippy passed0.
+- **Isolated OOM control RED:** the first expression,
+  `allocation::fail_after(0, || std::fs::read("/proc/self/stat"))`, aborted with
+  `memory allocation of 32 bytes failed`, exit134/SIGABRT. The later started/path
+  and valid-field-under-OOM assertions in that same test were NOT reached.
+  Source proof of the small-probe allocation is corroborated by the direct
+  primitive control; this is not a new production caller stack trace.
+  Entire r204 exits1 and the encoding candidate is not R01-complete/adoptable.
+
+The full ordinary corpus was not rerun after the known isolated abort. There is
+no skipped-OOM passing-corpus claim. The failing test remains ordinary/unignored.
+No extra allocator campaign, profile, custom reader, capacity guess, warmed state
+or production remedy for the allocation blocker was introduced. `ulimit -c0`
+applied only to the test shell; Bash still printed its signal description.
+
+Fixed/restored binary SHA256
+`9afe76665e9fe5034797eef37182c90520fb70075d516c8fe0ae294867c5b00b`;
+mutation SHA256
+`65e758f6257093a44b4fff92eb53d09633c3188a8d5dbd048e53bda44bfc3ad9`.
+All selected compiler artifacts `fresh:false`. Exact binaries remain private
+in `~/managed-borrowed-evidence/proc-comm-{fixed,utf8-removal,restored}/test.bin`.
+Raw commands/logs/manifests/build JSON/restoration/patch/admission are retained:
+
+| Raw directory | Archive SHA256 |
+| --- | --- |
+| [proc-comm-fixed](proc-comm-fixed/) | `7eb73c3d850169d173d7db26864ce6534c0b296a009270be5740c8c0b0deb428` |
+| [proc-comm-utf8-removal](proc-comm-utf8-removal/) | `68233753279ef0f477f04a0e388fbd3c617930d9a1dce4b4dd6ad49882ddb49e` |
+| [proc-comm-restored](proc-comm-restored/) | `d85c77057f29e57b6d9cc6184db0476dc72485194067baf0841d15497d959e42` |
+| [proc-comm-followup](proc-comm-followup/) | `72c12cca336e163b7920316dab2526b7c8616953fbccb86faf1ee26fedd0eecb` |
+
+Owed: reviewed returning-allocation solution for the actual initial-probe abort,
+then reached path/valid-parser OOM assertions and whole ordinary GNU/musl corpus,
+Linux arm64 libc checks, coordinator combined/matrix/VM review. The reproduction
+and allocation controls do not validate every process-name/host/version/resource
+case, and no general allocation-free/leak-free assertion is made.
+
+## R01–R16 account
+
+R01: actual initial-probe allocation abort blocks completion; no hidden fallback
+formatting. R02/R03:
 primary raw-comm/decimal-field semantics; existing field22/19 index unchanged.
 R04/R05: existing held identity/error phases and original finite deadline remain;
 no new production wait/cache/state owner. R06/R07/R13: one private field helper,
 byte iteration and rationale comment. R08/R14: no performance claim or agent
-profiling. R09/R10: actual pre-fix red/raw above, fixed/mutation pending. R11/R12:
+profiling. R09/R10: actual pre-fix red and fixed/mutation/raw above. R11/R12:
 Linux-only procfs adapter; GNU/musl/arm64 and combined matrix owed. R15: scoped
 light units only, root review/integration and heavy validation owed. R16: new
 private worktree/target/evidence, historical artifacts untouched. The earlier

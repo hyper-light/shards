@@ -1,0 +1,18 @@
+
+running 1 test
+test borrowed::proc_comm::non_utf8_comm_keeps_held_identity_and_borrowed_connect ... own_child_stat_invalid_utf8=true comm_hex=[6f, 77, 6e, 20, ff, 29, 20, 29, 20, fe] held_alive_before=true
+actual_CONNECT=false borrowed_error=Some(Process { pid: 3573713, cause: Io { phase: Start, source: Error { kind: InvalidData, message: "stream did not contain valid UTF-8" } } })
+own_comm_restored=true start_unchanged=true child_exit=Some(0) workers_joined=true
+
+thread 'borrowed::proc_comm::non_utf8_comm_keeps_held_identity_and_borrowed_connect' (3573712) panicked at crates/api/src/../../../docs/research/measurements/managed-borrowed/proc-comm.rs:195:5:
+assertion failed: actual_connect
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    borrowed::proc_comm::non_utf8_comm_keeps_held_identity_and_borrowed_connect
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 62 filtered out; finished in 0.00s
+

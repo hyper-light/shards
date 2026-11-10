@@ -1,5 +1,9 @@
 # G22 finite borrowed connector candidate
 
+This record describes the original535 candidate. A subsequent isolated Linux
+comm-encoding candidate and its newly confirmed std read OOM blocker are in
+[PROC-COMM.md](PROC-COMM.md); that followup remains incomplete and unadopted.
+
 Current production-source checkpoint: signed
 `53535ab61225905acfa98f12dabdabb75138c808`, branch `p/managed-borrowed`, isolated
 worktree `managed-borrowed`, based on combined `cbe3d027`. Experimental; no main
@@ -85,11 +89,14 @@ isize::MAX; the1 accounts for the original possibly unboxed Socket. The layout
 test checks these assumptions. Unix descriptors additionally use the OS's signed
 int descriptor range. No undocumented fixed Windows handle limit is assumed.
 
-Linux identity reading reuses pinned Rust1.98.1's fallible
+Linux identity reading originally reused pinned Rust1.98.1's
 [fs::read_to_string](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/fs.rs)
-and [read growth](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/io/mod.rs);
-only path construction/error representation changes. There is no new proc parser
-or buffering framework. Unix reuses held pidfd/kqueue machinery. Windows uses
+and [read growth](https://raw.githubusercontent.com/rust-lang/rust/1.98.1/library/std/src/io/mod.rs).
+The earlier unqualified fallibility conclusion was incomplete: the subsequent
+[raw-comm/OOM investigation](PROC-COMM.md) reproduced a32-byte initial-probe abort
+on procfs under allocation refusal. Its byte-reader candidate fixes legal comm
+encoding but does not yet close this allocation path. No reader framework remedy
+is adopted. Unix reuses held pidfd/kqueue machinery. Windows uses
 [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess)
 with query-limited+synchronize access, shared GetProcessTimes creation extraction,
 zero-time held state checks and OwnedHandle close. The narrow afunix adapter

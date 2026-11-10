@@ -1,0 +1,13 @@
+diff --git a/crates/api/src/taken.rs b/crates/api/src/taken.rs
+index 0b25572a..411bb093 100644
+--- a/crates/api/src/taken.rs
++++ b/crates/api/src/taken.rs
+@@ -98,7 +98,7 @@ mod linux {
+     pub(super) fn started(pid: u32) -> io::Result<u64> {
+         let at = crate::channel::message(format_args!("/proc/{pid}/stat"))
+             .map_err(|()| io::Error::from(io::ErrorKind::OutOfMemory))?;
+-        let stat = std::fs::read(&at)?;
++        let stat = std::fs::read_to_string(&at)?.into_bytes();
+         start_field(&stat)
+     }
+ 

@@ -1,0 +1,7 @@
+
+running 2 tests
+test taken::linux::tests::missing_or_invalid_start_field_is_nonallocating_invalid_data ... ok
+test taken::linux::tests::start_field_ignores_comm_encoding_and_embedded_parens ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s
+

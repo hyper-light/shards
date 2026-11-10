@@ -1,0 +1,16 @@
+   Compiling libc v0.2.189
+    Checking typenum v1.20.1
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-comm-ab6a7ed8f1/crates/abi)
+    Checking const-oid v0.10.2
+    Checking cpufeatures v0.3.1
+    Checking hybrid-array v0.4.15
+    Checking cfg-if v1.0.5
+    Checking crypto-common v0.2.2
+    Checking block-buffer v0.12.1
+    Checking triomphe v0.1.17
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-comm-ab6a7ed8f1/crates/testdir)
+    Checking digest v0.11.3
+    Checking sha2 v0.11.0
+    Checking shards-afunix v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-comm-ab6a7ed8f1/crates/afunix)
+    Checking shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-borrowed-comm-ab6a7ed8f1/crates/api)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.39s
