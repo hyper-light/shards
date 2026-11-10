@@ -490,6 +490,17 @@ mod tests {
         assert!(Stream::set_read_timeout(&a, Some(Duration::ZERO)).is_err());
     }
 
+    #[test]
+    fn already_queued_data_is_read_before_waiting_out_a_timeout() {
+        let (mut a, mut b) = pair().unwrap();
+        b.write_all(b"x").unwrap();
+        // The shortest nonzero timeout bounds waiting, not the initial nonblocking I/O.
+        a.set_read_timeout(Some(Duration::from_nanos(1))).unwrap();
+        let mut byte = [0; 1];
+        assert_eq!(a.read(&mut byte).unwrap(), 1);
+        assert_eq!(&byte, b"x");
+    }
+
     /// A timeout is kept as given, to its nanosecond: none rounded down to a shorter one or
     /// up to poll(2)'s millisecond, and none of them for ever (D215).
     #[test]
