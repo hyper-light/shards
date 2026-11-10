@@ -2090,8 +2090,8 @@ fn images_are_built_from_a_context_in_the_body() {
 /// connection; each body larger than Go's server would read (256 KiB). On one connection:
 /// a build's context sent through a session, refused by the build, and a call of a version
 /// not served, refused before it is routed, each answer read before any of the body is
-/// sent; a call's body past what a call may carry, answered once that much is read; and a
-/// call after them.
+/// sent; a large malformed JSON body, read whole and refused as JSON rather than by the removed
+/// fixed body cap; and a call after them.
 #[test]
 fn a_call_answered_first_keeps_its_connection() {
     let Some((home, _)) = home("eng-early") else {
@@ -2123,7 +2123,13 @@ fn a_call_answered_first_keeps_its_connection() {
         .unwrap();
     api.conn.write_all(&past).unwrap();
     let refused = api.answer("POST");
-    assert_eq!(refused.status, 413, "{}", refused.text());
+    assert_eq!(refused.status, 400, "{}", refused.text());
+    assert!(
+        refused.text().contains("EOF while parsing a value")
+            && refused.text().contains(&format!("column {}", past.len())),
+        "{}",
+        refused.text()
+    );
     assert_eq!(api.call("GET", "/_ping", None).status, 200);
 }
 

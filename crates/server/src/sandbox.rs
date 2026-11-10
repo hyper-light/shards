@@ -734,8 +734,9 @@ return { me, sent };"#,
         assert_eq!(came, Ok(r#"{"me":"agent a","sent":{"id":1}}"#.to_string()));
     }
 
-    /// What the instance refuses is thrown, as an Error the program may catch; so is a call
-    /// past what a frame holds, which is never sent.
+    /// What the instance refuses is thrown, as an Error the program may catch. A call
+    /// past the former picked 1 MiB cap still reaches the instance whole: only the
+    /// protocol's u32 length bounds it now (D136).
     #[test]
     fn a_refused_call_is_thrown() {
         let (_, came) = ran(
@@ -744,16 +745,16 @@ return { me, sent };"#,
         );
         assert_eq!(came, Ok(r#""agent a may not send agent c requests""#.to_string()));
         let (calls, came) = ran(
-            r#"try { await shards.send("agent b", "x".repeat(1 << 20)); } catch (e) { return e.message; }"#,
+            r#"return await shards.send("agent b", "x".repeat(1 << 20));"#,
             |_| r#"{"value":{"id":1}}"#.to_string(),
         );
-        assert!(calls.is_empty(), "{calls:?}");
-        let said = came.unwrap();
-        assert!(
-            said.starts_with(r#""a call of "#)
-                && said.ends_with(r#" bytes, more than the 1048576 a call holds""#),
-            "{said}"
+        let expected = format!(
+            r#"{{"name":"send","args":{{"to":"agent b","text":"{}"}}}}"#,
+            "x".repeat(1 << 20)
         );
+        assert_eq!(calls.len(), 1);
+        assert!(calls.first() == Some(&expected), "the large call arrived changed");
+        assert_eq!(came, Ok(r#"{"id":1}"#.to_string()));
     }
 
     /// The native call `shards` is made of is out of the program's reach, and `shards`
