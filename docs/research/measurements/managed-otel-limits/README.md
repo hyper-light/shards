@@ -1,5 +1,11 @@
 # Typed local memory.max observation
 
+Relocation note: this is the historical022 checkpoint record. Its actual
+commands/source-package paths and outcomes below retain their original meaning.
+The current harness lives here under `docs/research/measurements`; see
+[RELOCATION.md](RELOCATION.md) for the move association and separate current-path
+light validation. Historical archives/results were not rewritten or rerun.
+
 This is a Reader primitive for ROOT's next real on-demand limit metric. It is
 **not wired into Snapshot/export/callers and is not feature-ready**. ROOT owns
 that wiring and its combined compilation/validation. Configured ceilings are
@@ -53,7 +59,7 @@ it neither walks ancestors nor computes effective/remaining entitlement.
 Primary basis: the existing pinned
 [Linux cgroup contract](https://github.com/gregkh/linux/blob/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/Documentation/admin-guide/cgroup-v2.rst#memory-interface-files)
 defines memory.max and symbolic max. ROOT's
-[OTel report](../../research/managed-runtime-otel-metrics.md) already maps a finite
+[OTel report](../../managed-runtime-otel-metrics.md) already maps a finite
 `memory.max` to `shards.cgroup.memory.limit`, Gauge, `By`, with explicit unbounded
 semantics. This batch implements only reading. Point omission/diagnostics,
 timestamps, signed OTLP value bounds and caller generation/identity are ROOT's

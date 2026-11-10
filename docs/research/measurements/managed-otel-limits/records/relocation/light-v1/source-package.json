@@ -1,0 +1,60 @@
+{
+  "archive_bytes": 24456,
+  "archive_sha256": "44cd64e08556c4cdd77f1c3a822eb22e5a55c8e0a85fdcd9cae121a5da86e3bd",
+  "files": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    "clippy.toml": {
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    "crates/init/src/metrics.rs": {
+      "bytes": 10207,
+      "sha256": "f023a1aaa04597c3a9bf4094557a6e6545b670769421f12e27571ff2450673f9"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 16634,
+      "sha256": "0bb86b2f172e12b8053cf30333ccbabd1a6963a315836a639c79de5a4458f28c"
+    },
+    "crates/init/src/metrics/tests.rs": {
+      "bytes": 13345,
+      "sha256": "00bdb503602f042dc2a50b1eed7d980d38ed0f94709d53fe36d1109fbea3e244"
+    },
+    "crates/testdir/src/lib.rs": {
+      "bytes": 17917,
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    "docs/research/measurements/managed-otel-limits/Cargo.lock": {
+      "bytes": 496,
+      "sha256": "3c76154b7e5d87f0518803c46299b0187006bc9e9e020f7f6e9facefaa5dab73"
+    },
+    "docs/research/measurements/managed-otel-limits/Cargo.toml": {
+      "bytes": 534,
+      "sha256": "1ac4824e78af91d8b7a52ab20f07920b448d657b02b03960d46ed8a8b0d19847"
+    },
+    "docs/research/measurements/managed-otel-limits/lib.rs": {
+      "bytes": 101,
+      "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+    },
+    "docs/research/measurements/managed-otel-limits/run-light.py": {
+      "bytes": 7160,
+      "sha256": "76bd0d53345e37c5316ec5e8878f997eaaf7c148cfd3e2f6012cc6c7dacac959"
+    },
+    "docs/research/measurements/managed-otel-limits/testdir/Cargo.toml": {
+      "bytes": 176,
+      "sha256": "b807658e972e33b7666a6fe6db61439cdc6aa02cac01dae99f7d71791f1dfa48"
+    },
+    "rustfmt.toml": {
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    }
+  },
+  "parent": "a41ab4a2c4f65360016263ef30aaa517d4388180",
+  "policy_revision": "b57e2fcec7170cad4c2366f7462e3fa5ff3e3fbe"
+}

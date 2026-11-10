@@ -9,7 +9,7 @@ members = ["testdir"]
 default-members = ["."]
 
 [lib]
-path = "../../../crates/init/src/managed_otel_limits_light.rs"
+path = "../../../../crates/init/src/managed_otel_limits_light.rs"
 
 [dependencies]
 libc = "=0.2.191"

@@ -26,7 +26,7 @@ def main():
                              "disk_bytes": 4 * 1024**3, "timeout_seconds": 600},
               "owned_root": str(base), "commands": [], "measurement": False,
               "environment": {"platform": platform.platform(), "uname": list(platform.uname())}}
-    leaf = pathlib.Path("docs/measurements/managed-otel-limits")
+    leaf = pathlib.Path("docs/research/measurements/managed-otel-limits")
     wrapper = pathlib.Path("crates/init/src/managed_otel_limits_light.rs")
     with (source / wrapper).open("xb") as output:
         output.write((source / leaf / "lib.rs").read_bytes())

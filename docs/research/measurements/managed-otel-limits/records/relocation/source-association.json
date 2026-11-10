@@ -1,0 +1,427 @@
+{
+  "archive_roles": {
+    "first-format-failure": {
+      "inventory_members": 20,
+      "manifest_members": 1,
+      "manifest_name": "members.json",
+      "original_payloads": 19,
+      "path": "docs/research/measurements/managed-otel-limits/records/light-v1/raw.tar.gz",
+      "sha256": "c1f05d8a6b6837eca452ed8f95cf681f3929fdfb81c02241c8a150252d90a7e6"
+    },
+    "first-passing-reader": {
+      "inventory_members": 36,
+      "manifest_members": 1,
+      "manifest_name": "members.json",
+      "original_payloads": 35,
+      "path": "docs/research/measurements/managed-otel-limits/records/light-v2/raw.tar.gz",
+      "sha256": "91b536596d9f24322e4c90f8f1ac84d9552f7141133cdfa0c825ec7ebbf0cc23"
+    },
+    "shared-pids-reader": {
+      "inventory_members": 36,
+      "manifest_members": 1,
+      "manifest_name": "members.json",
+      "original_payloads": 35,
+      "path": "docs/research/measurements/managed-otel-limits-next/records/light-v1/raw.tar.gz",
+      "sha256": "c05e6c27c0bf91069054fb10fd8ae05217fc255868fd7f8b718a8d4362243246"
+    }
+  },
+  "files": {
+    "Cargo.lock": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 496,
+        "sha256": "3c76154b7e5d87f0518803c46299b0187006bc9e9e020f7f6e9facefaa5dab73"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/Cargo.lock",
+      "relocated": {
+        "bytes": 496,
+        "sha256": "3c76154b7e5d87f0518803c46299b0187006bc9e9e020f7f6e9facefaa5dab73"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/Cargo.lock",
+      "role": "relocated-document-or-live-harness"
+    },
+    "Cargo.toml": {
+      "byte_identical": false,
+      "original": {
+        "bytes": 531,
+        "sha256": "1070b3c87ae19952ed1447f019f03988094fdfd9197371709907995da3deb307"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/Cargo.toml",
+      "relocated": {
+        "bytes": 534,
+        "sha256": "1ac4824e78af91d8b7a52ab20f07920b448d657b02b03960d46ed8a8b0d19847"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/Cargo.toml",
+      "role": "relocated-document-or-live-harness"
+    },
+    "HANDOFF.md": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 4031,
+        "sha256": "92274b775e98b1aa8153bfe168aa7096848d403d41153600cfd9e0700e120088"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/HANDOFF.md",
+      "relocated": {
+        "bytes": 4031,
+        "sha256": "92274b775e98b1aa8153bfe168aa7096848d403d41153600cfd9e0700e120088"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/HANDOFF.md",
+      "role": "relocated-document-or-live-harness"
+    },
+    "README.md": {
+      "byte_identical": false,
+      "original": {
+        "bytes": 12491,
+        "sha256": "af807520b01f7928915ac3e2f71633e8e80944554bdb4364830ca78ba90fd97d"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/README.md",
+      "relocated": {
+        "bytes": 12864,
+        "sha256": "06cbecac4d026a86a1cd8e3c12b727776d9be55fdb99674eb7dc452b553ad8c0"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/README.md",
+      "role": "relocated-document-or-live-harness"
+    },
+    "lib.rs": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 101,
+        "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/lib.rs",
+      "relocated": {
+        "bytes": 101,
+        "sha256": "df354d915857a530d7411005d55b37bc4f5bf2dbddc959a6ee6e0a28f0729bc1"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/lib.rs",
+      "role": "relocated-document-or-live-harness"
+    },
+    "records/light-v1/archive.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 164,
+        "sha256": "23efb00eaeac9406a161fa882bb67fdb752683853d87315da2e1d94874c8dce2"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/archive.json",
+      "relocated": {
+        "bytes": 164,
+        "sha256": "23efb00eaeac9406a161fa882bb67fdb752683853d87315da2e1d94874c8dce2"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/archive.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/format.stderr": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 194,
+        "sha256": "55281e88532136144a793142fb11f82f96f756bd5a24a1bab16c84167741cfe8"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/format.stderr",
+      "relocated": {
+        "bytes": 194,
+        "sha256": "55281e88532136144a793142fb11f82f96f756bd5a24a1bab16c84167741cfe8"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/format.stderr",
+      "role": "historical-record"
+    },
+    "records/light-v1/inventory.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 6981,
+        "sha256": "6da1e4b59d3c6c0075923b774f86c290c0fae332f31e9f7c69a52fb727e71ec4"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/inventory.json",
+      "relocated": {
+        "bytes": 6981,
+        "sha256": "6da1e4b59d3c6c0075923b774f86c290c0fae332f31e9f7c69a52fb727e71ec4"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/inventory.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/invocation.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 35021,
+        "sha256": "00eef376519d76b1f29c064aaa4c61e3a15355ffff91666c5713dd6781fa4d09"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/invocation.json",
+      "relocated": {
+        "bytes": 35021,
+        "sha256": "00eef376519d76b1f29c064aaa4c61e3a15355ffff91666c5713dd6781fa4d09"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/invocation.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/raw.tar.gz": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 3506,
+        "sha256": "c1f05d8a6b6837eca452ed8f95cf681f3929fdfb81c02241c8a150252d90a7e6"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/raw.tar.gz",
+      "relocated": {
+        "bytes": 3506,
+        "sha256": "c1f05d8a6b6837eca452ed8f95cf681f3929fdfb81c02241c8a150252d90a7e6"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/raw.tar.gz",
+      "role": "historical-record"
+    },
+    "records/light-v1/readback.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 10978,
+        "sha256": "91ba29dee9ba77812cf55b8f5d406e9a789c47e52d1c8fcae85435063a7b2d68"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/readback.json",
+      "relocated": {
+        "bytes": 10978,
+        "sha256": "91ba29dee9ba77812cf55b8f5d406e9a789c47e52d1c8fcae85435063a7b2d68"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/readback.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/result.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 4429,
+        "sha256": "94f02b5aed1895c6b3049f9241c839b0e123d78e0e3f4c9f7cb6a2b3721b2ebb"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/result.json",
+      "relocated": {
+        "bytes": 4429,
+        "sha256": "94f02b5aed1895c6b3049f9241c839b0e123d78e0e3f4c9f7cb6a2b3721b2ebb"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/result.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/retry.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 2188,
+        "sha256": "ef1ee059b6d5dd75f4267c234aaf1710ed46d78ae2e946cee7e92b6558be4d6d"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/retry.json",
+      "relocated": {
+        "bytes": 2188,
+        "sha256": "ef1ee059b6d5dd75f4267c234aaf1710ed46d78ae2e946cee7e92b6558be4d6d"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/retry.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/source-package.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 2007,
+        "sha256": "e3a935f2aacc860f28a0c8351f4a9d0e09f638281bb3398f243a2724f578ef2b"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/source-package.json",
+      "relocated": {
+        "bytes": 2007,
+        "sha256": "e3a935f2aacc860f28a0c8351f4a9d0e09f638281bb3398f243a2724f578ef2b"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/source-package.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/source.tar.gz": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 23453,
+        "sha256": "1287fb9313c8d052636d124a1ca5458c86bbde0f24616a97bd8a1142527c7a16"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/source.tar.gz",
+      "relocated": {
+        "bytes": 23453,
+        "sha256": "1287fb9313c8d052636d124a1ca5458c86bbde0f24616a97bd8a1142527c7a16"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/source.tar.gz",
+      "role": "historical-record"
+    },
+    "records/light-v1/transferInvocation.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 558,
+        "sha256": "22b24319cf901aa0c3c767407e852c0e089b2c415fd79bf8e768b3d24726c0b2"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/transferInvocation.json",
+      "relocated": {
+        "bytes": 558,
+        "sha256": "22b24319cf901aa0c3c767407e852c0e089b2c415fd79bf8e768b3d24726c0b2"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/transferInvocation.json",
+      "role": "historical-record"
+    },
+    "records/light-v1/transferResult.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 2188,
+        "sha256": "ef1ee059b6d5dd75f4267c234aaf1710ed46d78ae2e946cee7e92b6558be4d6d"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v1/transferResult.json",
+      "relocated": {
+        "bytes": 2188,
+        "sha256": "ef1ee059b6d5dd75f4267c234aaf1710ed46d78ae2e946cee7e92b6558be4d6d"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v1/transferResult.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/archive.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 5249,
+        "sha256": "09e55dcbd46d0d27d02909f0dbb05e150e369bdf790614294d604b8176763746"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/archive.json",
+      "relocated": {
+        "bytes": 5249,
+        "sha256": "09e55dcbd46d0d27d02909f0dbb05e150e369bdf790614294d604b8176763746"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/archive.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/kiln-run.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 15150,
+        "sha256": "ca1110bd9b8dee783ee72d01439003f4de8c570f2a8dcc01a5c187de181477a1"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/kiln-run.json",
+      "relocated": {
+        "bytes": 15150,
+        "sha256": "ca1110bd9b8dee783ee72d01439003f4de8c570f2a8dcc01a5c187de181477a1"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/kiln-run.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/launch.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 35226,
+        "sha256": "f7451bff4e816927b22cf20ac1c44bf285a454881658d882ca80fbf8aba90c3c"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/launch.json",
+      "relocated": {
+        "bytes": 35226,
+        "sha256": "f7451bff4e816927b22cf20ac1c44bf285a454881658d882ca80fbf8aba90c3c"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/launch.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/raw.tar.gz": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 11971,
+        "sha256": "91b536596d9f24322e4c90f8f1ac84d9552f7141133cdfa0c825ec7ebbf0cc23"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/raw.tar.gz",
+      "relocated": {
+        "bytes": 11971,
+        "sha256": "91b536596d9f24322e4c90f8f1ac84d9552f7141133cdfa0c825ec7ebbf0cc23"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/raw.tar.gz",
+      "role": "historical-record"
+    },
+    "records/light-v2/result.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 6887,
+        "sha256": "9724e647e7cad8d9408c94ce16ea22972d4f2f9b31a187f33cecc35252e8382d"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/result.json",
+      "relocated": {
+        "bytes": 6887,
+        "sha256": "9724e647e7cad8d9408c94ce16ea22972d4f2f9b31a187f33cecc35252e8382d"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/result.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/source-package.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 2007,
+        "sha256": "55c197ef1bb62a0971b1610d0b107700e072ab130afaa890140e0a54ff42cfb8"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/source-package.json",
+      "relocated": {
+        "bytes": 2007,
+        "sha256": "55c197ef1bb62a0971b1610d0b107700e072ab130afaa890140e0a54ff42cfb8"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/source-package.json",
+      "role": "historical-record"
+    },
+    "records/light-v2/source.tar.gz": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 23617,
+        "sha256": "3392eae8479ad9280733f72acfdb59154f7d899bb0315e37f12277d959b5c1e9"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/source.tar.gz",
+      "relocated": {
+        "bytes": 23617,
+        "sha256": "3392eae8479ad9280733f72acfdb59154f7d899bb0315e37f12277d959b5c1e9"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/source.tar.gz",
+      "role": "historical-record"
+    },
+    "records/light-v2/transfer.json": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 452,
+        "sha256": "8d1c8d27ab377467eed2e346fd110ef2b43a350af9c8ab390c21a08b43ae83f8"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/light-v2/transfer.json",
+      "relocated": {
+        "bytes": 452,
+        "sha256": "8d1c8d27ab377467eed2e346fd110ef2b43a350af9c8ab390c21a08b43ae83f8"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/light-v2/transfer.json",
+      "role": "historical-record"
+    },
+    "records/policy-check.txt": {
+      "byte_identical": true,
+      "original": {
+        "bytes": 81,
+        "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/records/policy-check.txt",
+      "relocated": {
+        "bytes": 81,
+        "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/records/policy-check.txt",
+      "role": "historical-record"
+    },
+    "run-light.py": {
+      "byte_identical": false,
+      "original": {
+        "bytes": 7151,
+        "sha256": "eccf01e8e879e55f73e2e38e2500c8c3ccd4244049e031ae941fdc01e55571db"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/run-light.py",
+      "relocated": {
+        "bytes": 7160,
+        "sha256": "76bd0d53345e37c5316ec5e8878f997eaaf7c148cfd3e2f6012cc6c7dacac959"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/run-light.py",
+      "role": "relocated-document-or-live-harness"
+    },
+    "testdir/Cargo.toml": {
+      "byte_identical": false,
+      "original": {
+        "bytes": 173,
+        "sha256": "a5b87260f4d21172841e365d3c28542378709015b89b36ba4fae5973be8ed84a"
+      },
+      "original_path": "docs/measurements/managed-otel-limits/testdir/Cargo.toml",
+      "relocated": {
+        "bytes": 176,
+        "sha256": "b807658e972e33b7666a6fe6db61439cdc6aa02cac01dae99f7d71791f1dfa48"
+      },
+      "relocated_path": "docs/research/measurements/managed-otel-limits/testdir/Cargo.toml",
+      "role": "relocated-document-or-live-harness"
+    }
+  },
+  "historical_record_files_preserved": 21,
+  "new_directory": "docs/research/measurements/managed-otel-limits",
+  "note": "Historical literal commands/source archive contents/results stay unchanged and identify their original execution paths. Relocated current-source light run is separate, not a rerun or reinterpretation of those records.",
+  "old_directory": "docs/measurements/managed-otel-limits",
+  "pre_move_revision": "a41ab4a2c4f65360016263ef30aaa517d4388180"
+}

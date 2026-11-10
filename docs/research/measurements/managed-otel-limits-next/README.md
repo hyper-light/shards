@@ -74,7 +74,7 @@ Normal headroom admission accepted **2CPU / 2GiB memory / 4GiB disk / <=600s / j
 sync:false. These are requested/admitted bounds, not measured peaks or a new
 kernel-enforcement claim. Original source/targets/raw records were preserved.
 
-The exact unchanged [original proof driver](../../../measurements/managed-otel-limits/run-light.py),
+The exact unchanged [original proof driver](https://github.com/hyper-light/shards/blob/02272096c758a2df31691112a4c1b8b83b8c601c/docs/measurements/managed-otel-limits/run-light.py),
 test-only manifests, wrapper and lock from 02272096c were reused. The source
 closure includes the actual Reader, unchanged codec and actual testdir source;
 there is no second maintained implementation. A normal module wrapper is
@@ -130,7 +130,7 @@ with no compilation/test. All36 unique safe regular archive members and35
 manifest-covered originals were verified locally; the manifest excludes itself.
 This follow-up had no failed build/test attempt. The original prior fmt-before-
 compile failure, its two refused headroom reads and later corrected harness
-remain unchanged in [the preceding record](../../../measurements/managed-otel-limits/README.md).
+remain unchanged in [the preceding record](../managed-otel-limits/README.md).
 That failure is not relabelled as a production defect or a passing run.
 
 The full staged `git diff --cached --check` returned2 for a new blank line at
