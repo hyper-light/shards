@@ -57,3 +57,11 @@ reduced ask. Export/hashverification remains owed when admitted, not passed.
 No active owned VM/build; private source/target/cache/frozen/raw remain reserved.
 ROOT has actualRED receipt6912; missing typed event/cause and any fresh diagnostic
 campaign require ROOT's next authorization. No overall lane/management closure.
+
+
+Complete expiry raw export subsequently admitted without reducing2CPU4GiB24GiB.
+All64 created files/65members of raw-expiry-v1.tar.gz verified locally,
+37056B/SHA17a785e9b59502797cfe1f6371ab26c18caf51562961acccc1fb650e40c7c66d.
+No actor rerun/source change; Rust remains bbd. Actual test remains101, causeUnknown.
+See complete EXPIRY-RESULT.md and ROOT-only diagnostic proposal. No active owned
+VM/build, source/target/cache/frozen/raw reserved; full lane remains OPEN.

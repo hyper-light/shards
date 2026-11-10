@@ -21,8 +21,18 @@
       "admitted": false,
       "idle_cores": 0,
       "command_executed": false
+    },
+    {
+      "admitted": false,
+      "idle_cores": 0,
+      "command_executed": false
+    },
+    {
+      "admitted": true,
+      "command_executed": true,
+      "purpose": "raw collection only"
     }
   ],
   "ask_reduced": false,
-  "raw_archive": "Pending while CPU headroom is insufficient; all originals remain on reserved private runner"
+  "raw_archive": "Completed, transferred and all64 created originals verified; see raw-expiry-v1 receipts"
 }

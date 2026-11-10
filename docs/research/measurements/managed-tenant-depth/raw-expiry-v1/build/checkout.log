@@ -1,0 +1,11 @@
+Warning: you are leaving 1 commit behind, not connected to
+any of your branches:
+
+  cba6d1c3 Extend owned inherited-writer fixture with finite descendant depth
+
+If you want to keep it by creating a new branch, this may be a good time
+to do so with:
+
+ git branch <new-branch-name> cba6d1c3
+
+HEAD is now at bbd3f22c Add one owned D2 guest-expiry fixture case

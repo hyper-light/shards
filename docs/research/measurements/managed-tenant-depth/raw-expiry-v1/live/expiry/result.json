@@ -1,0 +1,17 @@
+{
+  "source": "bbd3f22caee7d4429d1d8459e16f88b27b692bfb",
+  "test_exit": 101,
+  "one_selected_test_passed": false,
+  "teardown": {
+    "observer_fd_baseline": 11,
+    "owner_stop_observer_join": {
+      "complete": true,
+      "error": null
+    },
+    "parent_child_waitstatus_and_full_population_return": "Unverified; ROOT held watches owed; cleanup Unknown retains Child until outer owner stop",
+    "protocol_complete": false,
+    "run_removed": true
+  },
+  "full_population_kernel_direct_wait": "Unknown",
+  "retry_or_enlargement": false
+}

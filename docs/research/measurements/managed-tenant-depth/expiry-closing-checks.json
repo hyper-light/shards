@@ -1,0 +1,17 @@
+{
+  "source": "bbd3f22caee7d4429d1d8459e16f88b27b692bfb",
+  "crates_unchanged": true,
+  "source_freeze_hashes_match": true,
+  "verified_created_original_files": {
+    "old_v1": 120,
+    "old_v2": 182,
+    "expiry": 64
+  },
+  "actual_expiry_cases": 1,
+  "actual_result": 101,
+  "retry_or_enlargement": false,
+  "lost_Event_variant": "Unknown; never captured",
+  "host_cleanup": "complete/FD11to11",
+  "direct_wait_population_parent_kernel": "Unknown",
+  "local_free_bytes": 183923888128
+}

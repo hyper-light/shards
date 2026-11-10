@@ -1,0 +1,35 @@
+{
+  "reason": "Lossless original whitespace/blank EOF preservation; unchanged full original tar and remote originals retained.",
+  "files": [
+    {
+      "original": "build/commit.txt",
+      "representation": "build/commit.txt.gz",
+      "decoded_bytes": 619,
+      "decoded_sha256": "0b6feef129475da499607ef6d6c782bb208841af9fe50cbf7797533377f03a7f"
+    },
+    {
+      "original": "collect.command",
+      "representation": "collect.command.gz",
+      "decoded_bytes": 2092,
+      "decoded_sha256": "e7826138d8b828d9a16eabb88553aeaa74d6ff13b0fea5e3bbe572d5d339c623"
+    },
+    {
+      "original": "live/expiry/test.log",
+      "representation": "live/expiry/test.log.gz",
+      "decoded_bytes": 7046,
+      "decoded_sha256": "6bb5cb98a98b385d2fd7469043afbb13f3fbd4933ca0b526499d40ccf80d2f6b"
+    },
+    {
+      "original": "live.command",
+      "representation": "live.command.gz",
+      "decoded_bytes": 2235,
+      "decoded_sha256": "77940321b8cdee846c7f3c419a79a48f22ebf4005a3c9ffa015bc8384fb83c4a"
+    },
+    {
+      "original": "prepare.command",
+      "representation": "prepare.command.gz",
+      "decoded_bytes": 5838,
+      "decoded_sha256": "2264ff0c806a1d0261dc2ec43fa0e9fed8483b96ae577b158e60b18a08121503"
+    }
+  ]
+}

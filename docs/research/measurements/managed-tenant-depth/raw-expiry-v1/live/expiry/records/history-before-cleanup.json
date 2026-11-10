@@ -1,0 +1,12 @@
+{
+  "completeness": "Unknown: asynchronous/lost/rotated records and omitted threads remain possible; namespace PIDs are not VM PIDs",
+  "copy_error": null,
+  "read": {
+    "status": 0,
+    "stderr": "",
+    "stdout": "TIME                            MEMBER           PID  EVENT  WHAT\n2026-11-10T21:31:13.337550126Z  command          920  exec   /bin/testguest sleep\n2026-11-10T21:31:13.338719611Z  agent helper     922  fork   from 1\n2026-11-10T21:31:13.340267890Z  agent helper     922  exec   shards-server \"agent helper\" /proc/self/fd/6 200001 3 4 \"\" [] 7\n2026-11-10T21:31:13.343583581Z  agent helper     927  fork   from 922\n2026-11-10T21:31:13.343911438Z  agent helper     927  exec   shards-server sandbox\n2026-11-10T21:31:13.344737350Z  agent helper     930  fork   from 1\n2026-11-10T21:31:13.344909870Z  agent helper     933  fork   from 930\n2026-11-10T21:31:13.345119219Z  agent helper     930  exec   shards-init managed-reaper\n2026-11-10T21:31:13.427537095Z  agent helper     933  exec   /agents/helper/member managed-capture agent inherit-stdio 40023 120000 15000 16 269 2\n2026-11-10T21:31:13.428180632Z  harness driver  1704  fork   from 1\n2026-11-10T21:31:13.428803373Z  agent helper    1706  fork   from 933\n2026-11-10T21:31:13.429028654Z  agent helper    1706  exec   /agents/helper/member managed-capture agent inherited-child 40023 120000 16 269 1 121447870959 15000\n2026-11-10T21:31:13.429331383Z  agent helper    1708  fork   from 1706\n2026-11-10T21:31:13.429488736Z  agent helper    1708  exec   /agents/helper/member managed-capture agent inherited-child 40023 120000 16 269 0 121447870959 15000\n2026-11-10T21:31:13.429851842Z  harness driver  1704  exec   shards-server \"harness driver\" /proc/self/fd/6 200002 3 4 \"\" [] 7\n2026-11-10T21:31:13.440007301Z  harness driver  1711  fork   from 1704\n2026-11-10T21:31:13.440273840Z  harness driver  1711  exec   shards-server sandbox\n2026-11-10T21:31:13.441341118Z  harness driver  1715  fork   from 1\n2026-11-10T21:31:13.441578574Z  harness driver  1717  fork   from 1715\n2026-11-10T21:31:13.441749624Z  harness driver  1715  exec   shards-init managed-reaper\n2026-11-10T21:31:13.465260974Z  harness driver  1717  exec   /harness/driver/bin/member managed-capture harness step 36935 240000\n"
+  },
+  "segments": [
+    "processes.0"
+  ]
+}

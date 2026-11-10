@@ -2,7 +2,7 @@
 
 Actual single-case result: [EXPIRY-RESULT.md](EXPIRY-RESULT.md), strict RED before
 canonical End. No retry or timing change. Full remote originals are retained;
-complete archive export is temporarily held by exact CPU headroom.
+complete archive export subsequently passed all64-original hash verification.
 
 POLICY_READ assigned adversarial/implementer01a1c5d28cea74a5b0241200190d6c54,
 canonical0342b85d9c808e3ced041a6c3ef0e9bf70438272, rules SHA256

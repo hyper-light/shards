@@ -1,0 +1,40 @@
+{
+  "actor_work_ms": 120000,
+  "channels": [
+    {
+      "channel": 1,
+      "member": 1,
+      "payload_hex": "6167656e74007374646f75740aff1b5b324a6f75742d7461696c6167656e742d696e686572697465642d7265616479007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 68,
+      "state": "Open { offset: 68 }",
+      "wire_consumed": 176
+    },
+    {
+      "channel": 2,
+      "member": 1,
+      "payload_hex": "6167656e74007374646572720a80fe6572722d7461696c6167656e742d696e686572697465642d7265616479007374646572720a80fe6572722d7461696c",
+      "payload_offset": 62,
+      "state": "Open { offset: 62 }",
+      "wire_consumed": 170
+    },
+    {
+      "channel": 1,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646f75740aff1b5b324a6f75742d7461696c",
+      "payload_offset": 28,
+      "state": "Open { offset: 28 }",
+      "wire_consumed": 90
+    },
+    {
+      "channel": 2,
+      "member": 2,
+      "payload_hex": "6861726e657373007374646572720a80fe6572722d7461696c",
+      "payload_offset": 25,
+      "state": "Open { offset: 25 }",
+      "wire_consumed": 87
+    }
+  ],
+  "host_work_ms": 240000,
+  "sibling_work_ms": 240000,
+  "state": "NoLeafChallengeConnectionOrBytesSent"
+}

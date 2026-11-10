@@ -68,3 +68,28 @@ unrun here and ROOT-owed. R15/R16: one assigned case, signed named source, exact
 pre-actor readback and headroom refusals honored, old/frozen source preserved;
 no children/goals/main merge/Root cache/paused VM/held campaigns. Full lane and
 management closure remain OPEN; this is a failed test checkpoint, not readiness.
+
+
+## Complete raw retention after headroom returned
+
+Four collection admissions were refused at idle1/0/0/0; commands did not execute,
+and the2CPU/4GiB/24GiB ask was retained. After admission, the collector preserved
+all64 created original files as raw-expiry-v1.tar.gz,37,056B, SHA256
+17a785e9b59502797cfe1f6371ab26c18caf51562961acccc1fb650e40c7c66d.
+All65 safe unique regular members and64 originals were transferred/verified
+locally against their original lengths/SHA256. Five lossless gzip representations
+preserve original whitespace/blank EOF; every decoded original was reverified.
+Full original archive and remote originals/frozen remain unchanged. This preserves
+all created files, not the non-Record Event value that was never recorded.
+
+The archive includes exact build, source scope, artifact/input readback and one
+actor marker/invocation, complete original test log, both metadata cuts, wire
+bytes, process-history segment/readback and all cleanup outcomes. No retry or
+extra VM actor was needed for collection. Missing typed event/cause remains the
+ROOT dependency; the diagnostic proposal is EXPIRY-NEXT-DIAGNOSTIC.md, not code.
+The earlier selected readback and failed-admission records remain historical.
+
+
+After cleanup the retained stopped metadata has aborted/unknown actor176/170 and
+sibling90/87 (accepted==consumed). Those are owner-stop outcomes AFTER the first
+failure, not evidence of an earlier capture Aborted event or its cause.
