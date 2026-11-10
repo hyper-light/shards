@@ -1,0 +1,954 @@
+{
+  "schema": "managed-cold-sync-source-identity-v1",
+  "role": "implementer",
+  "agent": "01a1c5bda0bf766683384c0705c0a9bc",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+  "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+  "handoff_sha256": "f3b15a3de551b4b0ebea82ef040563d37c911c18120257ab653637303e655e6e",
+  "reproduced_source_revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+  "local_sources": [
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/api/src/client.rs",
+      "bytes": 67027,
+      "lines": 1678,
+      "sha256": "0dada72aefc5f1eb605c4938d9023b35d5ffa3b2bd7f748ab9e124b5c5b60794",
+      "git_blob": "b6045d0718ec4bf112bc4539fcc7c3477bc7dd57",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/api/src/client.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/api/src/lib.rs",
+      "bytes": 21589,
+      "lines": 513,
+      "sha256": "36320cb65ccf610ece02cf42a4afffc09b8d7075cca30534cbe3634509517593",
+      "git_blob": "0ac08738d8ba77b98cf713edb2178965536b9321",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/api/src/lib.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/api/src/stream.rs",
+      "bytes": 28976,
+      "lines": 692,
+      "sha256": "46f41f6e27590b3a840413d18198d0642247bde1a103e0c722e98b1573e0be52",
+      "git_blob": "a709c6aaec5d43c2aa23cf9a5aecde904615b33d",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/api/src/stream.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/api/src/while_runs.rs",
+      "bytes": 4847,
+      "lines": 115,
+      "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+      "git_blob": "c7a6d4eb7d7635eb7a02935cebd2b42affe67506",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/api/src/while_runs.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/api/Cargo.toml",
+      "bytes": 722,
+      "lines": 27,
+      "sha256": "be062eb3430d2778f875cb1895fbc3ae50e6cd0633dd0fc23882165c7d2dd5e9",
+      "git_blob": "91bbceef45e56720438406450a87741266b6d798",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/api/Cargo.toml",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "crates/vmm/src/sync.rs",
+      "bytes": 772,
+      "lines": 24,
+      "sha256": "6da2cb23f825fff6a724897ac14ad62963387fb1ff08790038ac932e0561816e",
+      "git_blob": "f0775dc31bf2a501f23c860f426398c90ebf01b5",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/crates/vmm/src/sync.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "rust-toolchain.toml",
+      "bytes": 700,
+      "lines": 12,
+      "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+      "git_blob": "6c0e18d27147c5d7f876bd38d128e8fe04c2c4e5",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/rust-toolchain.toml",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+      "path": "resources/supported-targets.txt",
+      "bytes": 172,
+      "lines": 7,
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a",
+      "git_blob": "6a05a60b90ce2a2313ecf747e47539a504b2be9e",
+      "url": "https://github.com/hyper-light/shards/blob/122332036eb689c33fd52b4a065c53c7dc5e4530/resources/supported-targets.txt",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/api/src/client.rs",
+      "bytes": 68536,
+      "lines": 1696,
+      "sha256": "34b6943af5831d1bc0e8341d5ea021189d737e78cd8d0114c18ec0a8543770ce",
+      "git_blob": "5c397ae3a9f0ba36e514a63a2ce44308e243a77c",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/api/src/client.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/api/src/lib.rs",
+      "bytes": 25201,
+      "lines": 609,
+      "sha256": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+      "git_blob": "e754f3c978fd4e7f459f47bae3a068296dfa28b0",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/api/src/lib.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/api/src/stream.rs",
+      "bytes": 26687,
+      "lines": 636,
+      "sha256": "81c863047f8ba42b740981b4f51fe3ed0b329c8b08a02896a40973271666dd99",
+      "git_blob": "ab47646f59771ea67a2e83fd4b32b5f6ecd2436e",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/api/src/stream.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/api/src/while_runs.rs",
+      "bytes": 4847,
+      "lines": 115,
+      "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+      "git_blob": "c7a6d4eb7d7635eb7a02935cebd2b42affe67506",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/api/src/while_runs.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/api/Cargo.toml",
+      "bytes": 641,
+      "lines": 26,
+      "sha256": "a626ca3ace04d96acb1396011dc9c24f99f31293e6ac41c612250329cedd057c",
+      "git_blob": "95015adf237a8fd938677256b38be997bd343018",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/api/Cargo.toml",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "crates/vmm/src/sync.rs",
+      "bytes": 772,
+      "lines": 24,
+      "sha256": "6da2cb23f825fff6a724897ac14ad62963387fb1ff08790038ac932e0561816e",
+      "git_blob": "f0775dc31bf2a501f23c860f426398c90ebf01b5",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/crates/vmm/src/sync.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "rust-toolchain.toml",
+      "bytes": 700,
+      "lines": 12,
+      "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+      "git_blob": "6c0e18d27147c5d7f876bd38d128e8fe04c2c4e5",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/rust-toolchain.toml",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "resources/supported-targets.txt",
+      "bytes": 172,
+      "lines": 7,
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a",
+      "git_blob": "6a05a60b90ce2a2313ecf747e47539a504b2be9e",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/resources/supported-targets.txt",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "docs/research/measurements/managed-sync-coordinator/README.md",
+      "bytes": 5378,
+      "sha256": "79b54b467261f8045643fa69951cda96a151ad9c635dbc20ec7ae9790e05f1c5",
+      "git_blob": "51a13eae31e02bbf4206e25c5d634ca3a7a2d044",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/docs/research/measurements/managed-sync-coordinator/README.md",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "docs/research/measurements/managed-sync-coordinator/raw/identity",
+      "bytes": 1039,
+      "sha256": "1446302a08cf00dfc2787c62dc9fdb9396ae8ffc24b0757933efca5f01b482a8",
+      "git_blob": "2fca5c81489f822567b6be5b4f9ffdaf29e90bd1",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/docs/research/measurements/managed-sync-coordinator/raw/identity",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "docs/research/measurements/managed-sync-coordinator/raw/owned-trace-v2.command.json",
+      "bytes": 250,
+      "sha256": "3f9cab4f754dc2f3bd8fd65cc75a08e004b8c56c2b23ed613ddb0105d9226a15",
+      "git_blob": "9e1a74efe2dcec5881f8b5792cea62184a877e37",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/docs/research/measurements/managed-sync-coordinator/raw/owned-trace-v2.command.json",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    },
+    {
+      "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "path": "docs/research/measurements/managed-proc-main/allocation.rs",
+      "bytes": 2178,
+      "sha256": "638e6f6599e683d8ffec09f6abf76992b0023e7ae42dad71576ac0f881eaab37",
+      "git_blob": "e055abbeade6231df6dda2a0adfd351565b14fdc",
+      "url": "https://github.com/hyper-light/shards/blob/eb5654d6f5356cacaca536ff51f14a632fa7e801/docs/research/measurements/managed-proc-main/allocation.rs",
+      "read_method": "git show <revision>:<path>; Git blob and full content SHA-256 independently checked"
+    }
+  ],
+  "exact_client_spans": [
+    {
+      "name": "shared-state-tail",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 376,
+          "last_line": 415,
+          "bytes": 1222,
+          "sha256": "410f2cdabfd6aa8513fc757680ba85c0d00a0abd58e69cac3da3db0bdf0b5bf7"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 375,
+          "last_line": 414,
+          "bytes": 1222,
+          "sha256": "410f2cdabfd6aa8513fc757680ba85c0d00a0abd58e69cac3da3db0bdf0b5bf7"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "poison-helper",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 425,
+          "last_line": 428,
+          "bytes": 104,
+          "sha256": "1e45ff7fb3b254bcf24c7297ca88992087a3540d6c42a2a81ce04eae9a8e8101"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 424,
+          "last_line": 427,
+          "bytes": 104,
+          "sha256": "1e45ff7fb3b254bcf24c7297ca88992087a3540d6c42a2a81ce04eae9a8e8101"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "watch-drain-child",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 431,
+          "last_line": 589,
+          "bytes": 6003,
+          "sha256": "9f4dbbb477c12c79a8b9694c87cbdd50efda664f87c04b90d0211f76730db1ed"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 430,
+          "last_line": 588,
+          "bytes": 6003,
+          "sha256": "9f4dbbb477c12c79a8b9694c87cbdd50efda664f87c04b90d0211f76730db1ed"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "guest-handle",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 591,
+          "last_line": 614,
+          "bytes": 755,
+          "sha256": "c4301878933a28af523f71054af403687fc037c0cbd28d659b1357f2f3ecddcb"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 590,
+          "last_line": 613,
+          "bytes": 755,
+          "sha256": "c4301878933a28af523f71054af403687fc037c0cbd28d659b1357f2f3ecddcb"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "terminal-and-signal",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 615,
+          "last_line": 685,
+          "bytes": 2840,
+          "sha256": "09f02bc328e902d6fe757def1ab3290562600b527dbcf59000b2d04edb8d160d"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 614,
+          "last_line": 684,
+          "bytes": 2840,
+          "sha256": "09f02bc328e902d6fe757def1ab3290562600b527dbcf59000b2d04edb8d160d"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "connect-to-first-state-lock",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 790,
+          "last_line": 800,
+          "bytes": 572,
+          "sha256": "5b2c91332e1165c41767b238ea8da45c688cb8a75613672802e0aee425a9f3b2"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 830,
+          "last_line": 840,
+          "bytes": 572,
+          "sha256": "5b2c91332e1165c41767b238ea8da45c688cb8a75613672802e0aee425a9f3b2"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "stop-identity-wait-drop",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 841,
+          "last_line": 918,
+          "bytes": 2688,
+          "sha256": "c1cf1f8b0089645c5287bd584ad9effa0906c396d684c13f7f7dbd75559805ff"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 870,
+          "last_line": 947,
+          "bytes": 2688,
+          "sha256": "c1cf1f8b0089645c5287bd584ad9effa0906c396d684c13f7f7dbd75559805ff"
+        }
+      ],
+      "identical": true
+    },
+    {
+      "name": "boot-construction",
+      "method": "Exact text between unique named anchors; source identity only, not runtime proof.",
+      "versions": [
+        {
+          "revision": "122332036eb689c33fd52b4a065c53c7dc5e4530",
+          "first_line": 160,
+          "last_line": 233,
+          "bytes": 2515,
+          "sha256": "defe53102d0d963e948cd5a064844f51d890600111edc6d90294b75e59fea5be"
+        },
+        {
+          "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+          "first_line": 159,
+          "last_line": 232,
+          "bytes": 2515,
+          "sha256": "defe53102d0d963e948cd5a064844f51d890600111edc6d90294b75e59fea5be"
+        }
+      ],
+      "identical": true
+    }
+  ],
+  "SDK_source_only": [
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/sys/_pthread/_pthread_types.h",
+      "resolved_path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/usr/include/sys/_pthread/_pthread_types.h",
+      "bytes": 3855,
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b",
+      "retrieved_utc": "2026-11-10T16:31:25.882904+00:00",
+      "scope": "Source/layout citation only; no compilation, native sync probe, allocation/cost measurement or claim of deployed dylib identity."
+    },
+    {
+      "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/SDKSettings.json",
+      "resolved_path": "/Library/Developer/CommandLineTools/SDKs/MacOSX26.4.sdk/SDKSettings.json",
+      "bytes": 7725,
+      "sha256": "f231d03c93d59ebfffd410e941e50db8fcef6ec19ebe715967ab07ac44a51fc8",
+      "retrieved_utc": "2026-11-10T16:31:25.883699+00:00",
+      "scope": "Source/layout citation only; no compilation, native sync probe, allocation/cost measurement or claim of deployed dylib identity."
+    }
+  ],
+  "primary_sources": [
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/mutex/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/mod.rs",
+      "bytes": 1151,
+      "sha256": "1c715675a2bc34471b96de58f7aaaf2db411289cf838d17edc61cb2d6b006aa2",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:26.302920+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/mutex/pthread.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/pthread.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/pthread.rs",
+      "bytes": 2485,
+      "sha256": "1aa80435780abe34a365179635e92fb5935894fb9b4f615eb45b336958c28035",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:26.540640+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/mutex/futex.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/futex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/futex.rs",
+      "bytes": 3399,
+      "sha256": "bb566c9097ec2c4478427de576e5335b7dfb60a2ff41f24beae2eea99d3209bf",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:26.954074+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/condvar/mod.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/mod.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/mod.rs",
+      "bytes": 1097,
+      "sha256": "af88b86441a57ae779ae0a01528bc4e8b0068f1e72978547c1a08ac4d7107c2d",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:27.193657+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/condvar/pthread.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/pthread.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/pthread.rs",
+      "bytes": 3249,
+      "sha256": "515dac39964e931abbcf56fa963254adab34cbd7a76916ccd03fd4d863acfd4f",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:27.411617+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/condvar/futex.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/futex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/condvar/futex.rs",
+      "bytes": 1680,
+      "sha256": "18037d0dbba53a96fac7331308bb34bb5e3ab99c71256d305086cb71e29a9aa1",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:27.642739+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/sync/once_box.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/once_box.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/once_box.rs",
+      "bytes": 2752,
+      "sha256": "395ab1241ab919abedd060b790527a605763b5a94260e51e702ba2df5852ad6c",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:27.896751+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/pal/unix/sync/mutex.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/mutex.rs",
+      "bytes": 5515,
+      "sha256": "1df3c112f84ccfa7ff048aa88a604dc6029b405f59e0aa96d35381b589aa9b17",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.144901+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/sys/pal/unix/sync/condvar.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/condvar.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/pal/unix/sync/condvar.rs",
+      "bytes": 9027,
+      "sha256": "d9ee3e1dfed50235c9c3963f6a585aa359b6d2cb8cc524e27295c6ed8e1a6804",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.235336+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/alloc/src/boxed.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/boxed.rs",
+      "bytes": 89206,
+      "sha256": "ad1b7ab420ae7fced26fbd1ff0b8b1b603057d509f75b283d285b3d3bd0a7d0f",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.343809+00:00"
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/alloc/src/sync.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/sync.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/alloc/src/sync.rs",
+      "bytes": 177495,
+      "sha256": "5df6230fefb967e2059a97de56d50bf2452f4805b22009f603faaa89c027a0d1",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.465741+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "d7828fff7b5d6327ae608e82db45f888b344449a",
+      "ref": "parking_lot-v0.12.5",
+      "path": "src/mutex.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/mutex.rs",
+      "bytes": 12396,
+      "sha256": "b7ee456958a3b0dc208dd39be195641ce3998f7906d101ccf284fa0f84c58d14",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.653864+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "d7828fff7b5d6327ae608e82db45f888b344449a",
+      "ref": "parking_lot-v0.12.5",
+      "path": "src/raw_mutex.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/raw_mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/raw_mutex.rs",
+      "bytes": 11796,
+      "sha256": "4a79255673f47e167ce28d331c3b51f245017c7023e36c1c9b09baf00cc121c6",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:28.845037+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "d7828fff7b5d6327ae608e82db45f888b344449a",
+      "ref": "parking_lot-v0.12.5",
+      "path": "src/condvar.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/condvar.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/src/condvar.rs",
+      "bytes": 42758,
+      "sha256": "182e5a2f6c06cf665bb7723c2780580647a73d9de5ff319f26c0fbbf5e7280ea",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:29.067823+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "d7828fff7b5d6327ae608e82db45f888b344449a",
+      "ref": "parking_lot-v0.12.5",
+      "path": "core/src/parking_lot.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/core/src/parking_lot.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/core/src/parking_lot.rs",
+      "bytes": 61242,
+      "sha256": "ead11d575a1930c241aeec20f0e5e504bcdad637e284449ef4efcb9f9f175777",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:29.164836+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "d7828fff7b5d6327ae608e82db45f888b344449a",
+      "ref": "parking_lot-v0.12.5",
+      "path": "core/Cargo.toml",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/core/Cargo.toml",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/d7828fff7b5d6327ae608e82db45f888b344449a/core/Cargo.toml",
+      "bytes": 887,
+      "sha256": "65c66e6fa2047c1b4212f3e6de272fc85205831d991b7ff62c8a9ccfdf34c7eb",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:29.888749+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "1a5c3dd5c328b574234082e3ae4d8de078090d87",
+      "ref": "parking_lot-v0.13.0",
+      "path": "src/mutex.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/mutex.rs",
+      "bytes": 10865,
+      "sha256": "6e3d4fb392c1c2a7d4ed296b0b3fd62dd487d3912648b1738022baffffdd3d90",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:30.471212+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "1a5c3dd5c328b574234082e3ae4d8de078090d87",
+      "ref": "parking_lot-v0.13.0",
+      "path": "src/raw_mutex.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/raw_mutex.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/raw_mutex.rs",
+      "bytes": 12073,
+      "sha256": "cc0e10037f14cc2d5f535a7d9ae57ff16258dd7b6eb8ed36cb59d2c6f4666fdd",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:30.664884+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "1a5c3dd5c328b574234082e3ae4d8de078090d87",
+      "ref": "parking_lot-v0.13.0",
+      "path": "src/condvar.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/condvar.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/src/condvar.rs",
+      "bytes": 25007,
+      "sha256": "0c84babd38838d4b3dcb797e02877f241bf785d832f2ff28df0b26f28e92d686",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.043117+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "1a5c3dd5c328b574234082e3ae4d8de078090d87",
+      "ref": "parking_lot-v0.13.0",
+      "path": "core/src/parking_lot.rs",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/core/src/parking_lot.rs",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/core/src/parking_lot.rs",
+      "bytes": 70206,
+      "sha256": "7fdbf668384dfd40c7442aa3d5a5db9144cebdb7584add69a99573ee7180cffd",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.138015+00:00"
+    },
+    {
+      "repository": "Amanieu/parking_lot",
+      "revision": "1a5c3dd5c328b574234082e3ae4d8de078090d87",
+      "ref": "parking_lot-v0.13.0",
+      "path": "core/Cargo.toml",
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/core/Cargo.toml",
+      "resolved_url": "https://raw.githubusercontent.com/Amanieu/parking_lot/1a5c3dd5c328b574234082e3ae4d8de078090d87/core/Cargo.toml",
+      "bytes": 991,
+      "sha256": "4b5a822f5dcd37a81d032a4ae4b0f1b49bd0e4b81dee006bacc7e9625caf2047",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.308673+00:00"
+    },
+    {
+      "repository": "m-ou-se/atomic-wait",
+      "revision": "6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa",
+      "ref": "HEAD resolved 2026-11-10",
+      "path": "Cargo.toml",
+      "url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/Cargo.toml",
+      "resolved_url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/Cargo.toml",
+      "bytes": 583,
+      "sha256": "125d1d9fe6f8cf6e83042625463c4b3d2390ad15d1726ca50f127232ba37196e",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.555556+00:00"
+    },
+    {
+      "repository": "m-ou-se/atomic-wait",
+      "revision": "6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa",
+      "ref": "HEAD resolved 2026-11-10",
+      "path": "src/lib.rs",
+      "url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/lib.rs",
+      "resolved_url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/lib.rs",
+      "bytes": 1040,
+      "sha256": "54a024579eba6fefc23ba258525ffa828ea498ea91cb060f01f0926307a4f8a1",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.761444+00:00"
+    },
+    {
+      "repository": "m-ou-se/atomic-wait",
+      "revision": "6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa",
+      "ref": "HEAD resolved 2026-11-10",
+      "path": "src/linux.rs",
+      "url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/linux.rs",
+      "resolved_url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/linux.rs",
+      "bytes": 780,
+      "sha256": "991623cbcd6747fb8182dfb9d7a8dc875df059a6190b27e370d4ccea960a72d8",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:31.951751+00:00"
+    },
+    {
+      "repository": "m-ou-se/atomic-wait",
+      "revision": "6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa",
+      "ref": "HEAD resolved 2026-11-10",
+      "path": "src/macos.rs",
+      "url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/macos.rs",
+      "resolved_url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/macos.rs",
+      "bytes": 2769,
+      "sha256": "c984cb127b29d099dbd4c8304ee40fd87b09a55d5321a37f0c0d3552107d16b4",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:32.374706+00:00"
+    },
+    {
+      "repository": "m-ou-se/atomic-wait",
+      "revision": "6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa",
+      "ref": "HEAD resolved 2026-11-10",
+      "path": "src/windows.rs",
+      "url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/windows.rs",
+      "resolved_url": "https://raw.githubusercontent.com/m-ou-se/atomic-wait/6a42cf2b8395e9e9a6c44e689f3b9760d6239cfa/src/windows.rs",
+      "bytes": 592,
+      "sha256": "4a5a96f192c43e332afb255d9e05264cfe0935a9086ca06df73fb19e41305afd",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:32.570929+00:00"
+    },
+    {
+      "repository": "crossbeam-rs/crossbeam",
+      "revision": "ccd83ac4108a2a1b41e9c6e79c87267167d18dfa",
+      "ref": "crossbeam-utils-0.8.21",
+      "path": "crossbeam-utils/src/sync/parker.rs",
+      "url": "https://raw.githubusercontent.com/crossbeam-rs/crossbeam/ccd83ac4108a2a1b41e9c6e79c87267167d18dfa/crossbeam-utils/src/sync/parker.rs",
+      "resolved_url": "https://raw.githubusercontent.com/crossbeam-rs/crossbeam/ccd83ac4108a2a1b41e9c6e79c87267167d18dfa/crossbeam-utils/src/sync/parker.rs",
+      "bytes": 13020,
+      "sha256": "698996e7530da1f3815df11c89df7d916155229cbfd022cccbd555f1d1d31985",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:32.781904+00:00"
+    },
+    {
+      "repository": "apple-oss-distributions/libpthread",
+      "revision": "1f4f5265b319111142f1bf3a27d4484ef5a98314",
+      "ref": "libpthread-539.100.4 reference, not proven deployed dylib",
+      "path": "include/sys/_pthread/_pthread_types.h",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/include/sys/_pthread/_pthread_types.h",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/include/sys/_pthread/_pthread_types.h",
+      "bytes": 3855,
+      "sha256": "741433612525badf767d48b1924d4c7ba564ccc5c1bab5cb7045c238850fa86b",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:32.986944+00:00"
+    },
+    {
+      "repository": "apple-oss-distributions/libpthread",
+      "revision": "1f4f5265b319111142f1bf3a27d4484ef5a98314",
+      "ref": "libpthread-539.100.4 reference, not proven deployed dylib",
+      "path": "src/pthread_mutex.c",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_mutex.c",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_mutex.c",
+      "bytes": 50968,
+      "sha256": "28e355c987bcde9db2bc001933fd543b925a395344aedf7b029b79069b6744f3",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:33.170518+00:00"
+    },
+    {
+      "repository": "apple-oss-distributions/libpthread",
+      "revision": "1f4f5265b319111142f1bf3a27d4484ef5a98314",
+      "ref": "libpthread-539.100.4 reference, not proven deployed dylib",
+      "path": "src/pthread_cond.c",
+      "url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_cond.c",
+      "resolved_url": "https://raw.githubusercontent.com/apple-oss-distributions/libpthread/1f4f5265b319111142f1bf3a27d4484ef5a98314/src/pthread_cond.c",
+      "bytes": 26879,
+      "sha256": "1ae8db5b479ad2a7314fc5c5d61b765a0a88be5c9521a2db64448f40b1232a0b",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:31:33.387022+00:00"
+    },
+    {
+      "repository": "Manishearth/triomphe",
+      "revision": "1c3cfa221b3f97729cbc989fc67976f45f874331",
+      "ref": "published crates.io triomphe 0.1.17",
+      "path": "src/arc.rs",
+      "url": "https://raw.githubusercontent.com/Manishearth/triomphe/1c3cfa221b3f97729cbc989fc67976f45f874331/src/arc.rs",
+      "published_package_url": "https://static.crates.io/crates/triomphe/triomphe-0.1.17.crate",
+      "published_package_sha256": "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc",
+      "published_package_bytes": 41935,
+      "bytes": 49638,
+      "sha256": "68a8048894d2c02d7a13b7392a0a958a4bedcc54916c0cae1227af1b5f28d593",
+      "retrieved_utc": "2026-11-10T16:41:51.732004+00:00",
+      "source_identity": "Exact published package body; no build, extracted files or installed dependency.",
+      "resolved_url": "https://raw.githubusercontent.com/Manishearth/triomphe/1c3cfa221b3f97729cbc989fc67976f45f874331/src/arc.rs",
+      "status": 200,
+      "raw_commit_verified_utc": "2026-11-10T16:42:09.447548+00:00"
+    },
+    {
+      "repository": "Manishearth/triomphe",
+      "revision": "1c3cfa221b3f97729cbc989fc67976f45f874331",
+      "ref": "published crates.io triomphe 0.1.17",
+      "path": "Cargo.toml.orig",
+      "url": "https://static.crates.io/crates/triomphe/triomphe-0.1.17.crate",
+      "published_package_url": "https://static.crates.io/crates/triomphe/triomphe-0.1.17.crate",
+      "published_package_sha256": "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc",
+      "published_package_bytes": 41935,
+      "bytes": 948,
+      "sha256": "fda2b13143ce48bd5b0b2e76ed345b5d3a96087a4a1e50e842ae5aea8d413308",
+      "retrieved_utc": "2026-11-10T16:41:51.732224+00:00",
+      "source_identity": "Exact published package Cargo.toml.orig member, not asserted to exist at raw Git repository path."
+    },
+    {
+      "repository": "rust-lang/rust",
+      "revision": "48a229ceaefd4985c50990b14116b6d856af0985",
+      "ref": "1.98.1",
+      "path": "library/std/src/process.rs",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/process.rs",
+      "resolved_url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/process.rs",
+      "bytes": 95174,
+      "sha256": "5cab3fe1f471db27db7c3d79d4123613ba0646983f5ad3236bfaaab87f4abaa5",
+      "status": 200,
+      "retrieved_utc": "2026-11-10T16:42:09.905239+00:00"
+    }
+  ],
+  "retrieval_limits": [
+    {
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_mutex_init.html",
+      "result": "403; not used as read primary evidence"
+    },
+    {
+      "url": "https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html",
+      "result": "403; not used as read primary evidence"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Amanieu/parking_lot/parking_lot-0.12.5/core/src/parking_lot.rs",
+      "result": "404 due wrong tag spelling; corrected via primary tags API to parking_lot-v0.12.5, exact commit above"
+    }
+  ],
+  "native_current_revision_results": "UNRUN; historical actual Mutex abort belongs to reproduced source/toolchain/host only",
+  "no_selection": "No production edit, primitive/architecture/number choice, new runtime cache/polling/spin/phase ledger or native/OOM/profile/campaign execution.",
+  "published_package_identity": {
+    "url": "https://static.crates.io/crates/triomphe/triomphe-0.1.17.crate",
+    "bytes": 41935,
+    "sha256": "0d15f4f5898bcfc5d8a8e45ed30b2f108d710c1a2e5489dbf80e078f707181bc",
+    "vcs": {
+      "git": {
+        "sha1": "1c3cfa221b3f97729cbc989fc67976f45f874331"
+      },
+      "path_in_vcs": ""
+    },
+    "scope": "Bounded in-memory package source read only, no filesystem archive/extract/build or dependency adoption."
+  },
+  "initial_policy_receipt": {
+    "revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+    "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+    "handoff_sha256": "036047640911f1989602432beb03ea33ec7a420a45a01b0d187fb183367f154a"
+  },
+  "resume_policy_receipt": {
+    "revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+    "rules_sha256": "d634fcb944959ce1e40a9277d12b0905fcfcebf82d9da9832e826f790a349242",
+    "plan_sha256": "8b3fcc78cc5c112e2c6405c234c740a12ed2b38b35c7feedcaebe7a21d84be8e",
+    "handoff_sha256": "f3b15a3de551b4b0ebea82ef040563d37c911c18120257ab653637303e655e6e",
+    "role": "implementer",
+    "full_policy_plan_handoff_reread": true,
+    "receipt_recorded_utc": "2026-11-10T16:45:29.870396+00:00"
+  },
+  "requested_comparison_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+  "later_main_equivalence": [
+    {
+      "path": "crates/api/src/client.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "5c397ae3a9f0ba36e514a63a2ce44308e243a77c",
+      "sha256": "34b6943af5831d1bc0e8341d5ea021189d737e78cd8d0114c18ec0a8543770ce",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "crates/api/src/lib.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "e754f3c978fd4e7f459f47bae3a068296dfa28b0",
+      "sha256": "9331f9a2e94f11a09bc15cb51f51ef1b6f1d9eaf45e124cd0fde74ee5358a4f2",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "crates/api/src/stream.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "ab47646f59771ea67a2e83fd4b32b5f6ecd2436e",
+      "sha256": "81c863047f8ba42b740981b4f51fe3ed0b329c8b08a02896a40973271666dd99",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "crates/api/src/while_runs.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "c7a6d4eb7d7635eb7a02935cebd2b42affe67506",
+      "sha256": "d36c4c2cfc883af2f7d4ee7ad70395b947643569b65e9f7b3af09609eb5af289",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "crates/api/Cargo.toml",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "95015adf237a8fd938677256b38be997bd343018",
+      "sha256": "a626ca3ace04d96acb1396011dc9c24f99f31293e6ac41c612250329cedd057c",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "crates/vmm/src/sync.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "f0775dc31bf2a501f23c860f426398c90ebf01b5",
+      "sha256": "6da2cb23f825fff6a724897ac14ad62963387fb1ff08790038ac932e0561816e",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "6c0e18d27147c5d7f876bd38d128e8fe04c2c4e5",
+      "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "resources/supported-targets.txt",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "6a05a60b90ce2a2313ecf747e47539a504b2be9e",
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "docs/research/measurements/managed-sync-coordinator/README.md",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "51a13eae31e02bbf4206e25c5d634ca3a7a2d044",
+      "sha256": "79b54b467261f8045643fa69951cda96a151ad9c635dbc20ec7ae9790e05f1c5",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "docs/research/measurements/managed-sync-coordinator/raw/identity",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "2fca5c81489f822567b6be5b4f9ffdaf29e90bd1",
+      "sha256": "1446302a08cf00dfc2787c62dc9fdb9396ae8ffc24b0757933efca5f01b482a8",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "docs/research/measurements/managed-sync-coordinator/raw/owned-trace-v2.command.json",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "9e1a74efe2dcec5881f8b5792cea62184a877e37",
+      "sha256": "3f9cab4f754dc2f3bd8fd65cc75a08e004b8c56c2b23ed613ddb0105d9226a15",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    },
+    {
+      "path": "docs/research/measurements/managed-proc-main/allocation.rs",
+      "baseline_revision": "eb5654d6f5356cacaca536ff51f14a632fa7e801",
+      "later_main_revision": "f9030566bc227d50770bba879bd1387ebffe410f",
+      "git_blob": "e055abbeade6231df6dda2a0adfd351565b14fdc",
+      "sha256": "638e6f6599e683d8ffec09f6abf76992b0023e7ae42dad71576ac0f881eaab37",
+      "identical": true,
+      "scope": "source byte identity only, no runtime result inherited"
+    }
+  ]
+}

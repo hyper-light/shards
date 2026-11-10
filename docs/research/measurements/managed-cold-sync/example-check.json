@@ -1,0 +1,636 @@
+{
+  "schema": "managed-cold-sync-example-proof-v1",
+  "role": "implementer",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "kiln_needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+  "sync": false,
+  "whole_repository_compile": false,
+  "native_synchronization_probe": false,
+  "real_child_created": false,
+  "source_sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d",
+  "initial_check": {
+    "schema": "managed-cold-sync-example-light-v1",
+    "scope": "pure call-shape example only; no real Child constructed, OS primitive, native sync probe, OOM or profiling case",
+    "directory": "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n",
+    "input_sha256": "b61b7d1a20f8ffba2a90b572bb774ac82eaa6b4104ae9acf641108a1814765d4",
+    "utc": "2026-11-10T16:40:16.695285+00:00",
+    "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "affinity": [
+      0
+    ],
+    "rlimit_as": [
+      1073741824,
+      1073741824
+    ],
+    "rlimit_cpu": [
+      60,
+      60
+    ],
+    "rlimit_fsize": [
+      2147483648,
+      2147483648
+    ],
+    "commands": [
+      {
+        "name": "locate-rustc",
+        "argv": [
+          "rustup",
+          "which",
+          "--toolchain",
+          "1.98.1",
+          "rustc"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc\n",
+        "stderr": ""
+      },
+      {
+        "name": "locate-rustfmt",
+        "argv": [
+          "rustup",
+          "which",
+          "--toolchain",
+          "1.98.1",
+          "rustfmt"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt\n",
+        "stderr": ""
+      },
+      {
+        "name": "rustc-version",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "-vV"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "stderr": ""
+      },
+      {
+        "name": "rustfmt-version",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--version"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n",
+        "stderr": ""
+      },
+      {
+        "name": "format",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--edition",
+          "2024",
+          "--config",
+          "max_width=110",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "format-check",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--check",
+          "--edition",
+          "2024",
+          "--config",
+          "max_width=110",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "positive-type",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--crate-type=lib",
+          "--emit=metadata",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/positive.rmeta"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": "warning: unexpected `cfg` condition name: `test`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:123:7\n    |\n123 | #[cfg(test)]\n    |       ^^^^\n    |\n    = help: expected names are: `duplicate_owner` and 32 more\n    = help: to expect this configuration use `--check-cfg=cfg(test)`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: 1 warning emitted\n\n"
+      },
+      {
+        "name": "duplicate-owner-type",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--crate-type=lib",
+          "--emit=metadata",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs",
+          "--cfg",
+          "duplicate_owner",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/negative.rmeta"
+        ],
+        "exit": 1,
+        "expected": 1,
+        "stdout": "",
+        "stderr": "warning: unexpected `cfg` condition name: `test`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:123:7\n    |\n123 | #[cfg(test)]\n    |       ^^^^\n    |\n    = help: expected names are: `duplicate_owner` and 32 more\n    = help: to expect this configuration use `--check-cfg=cfg(test)`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nerror[E0382]: borrow of moved value: `child`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:120:24\n    |\n118 | pub fn rejected_duplicate(child: Child, prepared: Result<PreparedOwnedSync, SyncFailure>) {\n    |                           ----- move occurs because `child` has type `Child`, which does not implement the `Copy` trait\n119 |     let _result = retain_child_on_refusal(child, prepared);\n    |                                           ----- value moved here\n120 |     let _stale_owner = child.id();\n    |                        ^^^^^ value borrowed here after move\n    |\nnote: consider changing this parameter type in function `retain_child_on_refusal` to borrow instead if owning the value isn't necessary\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:106:12\n    |\n105 | pub fn retain_child_on_refusal(\n    |        ----------------------- in this function\n106 |     child: Child,\n    |            ^^^^^ this parameter takes ownership of the value\n\nerror: aborting due to 1 previous error; 1 warning emitted\n\nFor more information about this error, try `rustc --explain E0382`.\n"
+      },
+      {
+        "name": "compile-pure-tests",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--test",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface-tests"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": "warning: unexpected `cfg` condition name: `test`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:123:7\n    |\n123 | #[cfg(test)]\n    |       ^^^^\n    |\n    = help: expected names are: `duplicate_owner` and 32 more\n    = help: to expect this configuration use `--check-cfg=cfg(test)`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg.html> for more information about checking conditional configuration\n    = note: `#[warn(unexpected_cfgs)]` on by default\n\nwarning: unexpected `cfg` condition name: `test`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:145:5\n    |\n145 |     #[test]\n    |     ^^^^^^^\n    |\n    = note: using a cfg inside a attribute macro will use the cfgs from the destination crate and not the ones from the defining crate\n    = help: try referring to `test` crate for guidance on how handle this unexpected cfg\n    = help: to expect this configuration use `--check-cfg=cfg(test)`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg.html> for more information about checking conditional configuration\n\nwarning: unexpected `cfg` condition name: `test`\n   --> /home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface.rs:160:5\n    |\n160 |     #[test]\n    |     ^^^^^^^\n    |\n    = note: using a cfg inside a attribute macro will use the cfgs from the destination crate and not the ones from the defining crate\n    = help: try referring to `test` crate for guidance on how handle this unexpected cfg\n    = help: to expect this configuration use `--check-cfg=cfg(test)`\n    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg.html> for more information about checking conditional configuration\n\nwarning: 3 warnings emitted\n\n"
+      },
+      {
+        "name": "pure-tests",
+        "argv": [
+          "/home/adalundhe/managed-cold-sync-example-v1-qllgx69n/interface-tests",
+          "--test-threads=1"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "\nrunning 2 tests\ntest tests::failed_launch_returns_prepared_resource ... ok\ntest tests::preparation_refusal_never_calls_launch ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+        "stderr": ""
+      }
+    ],
+    "status": "passed-pure-type-format-only",
+    "formatted_sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d",
+    "artifacts": [
+      {
+        "name": "compile-pure-tests.stderr",
+        "bytes": 1738,
+        "sha256": "765a053db28890f90df11333061c5e2735e2d65bb2eed1c31b8636d7b5019f3d"
+      },
+      {
+        "name": "compile-pure-tests.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "duplicate-owner-type.stderr",
+        "bytes": 1638,
+        "sha256": "d1e244a9a1f9f8144ee97074b2e90cc53bd58fd95c321ac88cd02b4bc000cb0c"
+      },
+      {
+        "name": "duplicate-owner-type.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format-check.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format-check.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "interface-tests",
+        "bytes": 7168992,
+        "sha256": "2b427df07e2131fc530296475698be67ce12dd12d59afd7bf58db27711bc35dc"
+      },
+      {
+        "name": "interface.rs",
+        "bytes": 5144,
+        "sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d"
+      },
+      {
+        "name": "locate-rustc.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "locate-rustc.stdout",
+        "bytes": 77,
+        "sha256": "5e62365fff7a10a0329048ba518ca146351c5d3cec29827f0db608a5cd7b862d"
+      },
+      {
+        "name": "locate-rustfmt.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "locate-rustfmt.stdout",
+        "bytes": 79,
+        "sha256": "1dda8f815af694fb30f065e96c9dd5fc5380a5edd5f0500760598bba392e5aeb"
+      },
+      {
+        "name": "positive-type.stderr",
+        "bytes": 525,
+        "sha256": "705395dece848147ba0482c9b668cccf2001d24221953c534e9456278034f278"
+      },
+      {
+        "name": "positive-type.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "positive.rmeta",
+        "bytes": 22865,
+        "sha256": "735c3b644751720df64483b0ba7b3c277c43699fb968634844a6ae595d29fa82"
+      },
+      {
+        "name": "pure-tests.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "pure-tests.stdout",
+        "bytes": 230,
+        "sha256": "b06cd637ca38cc46a00d06bf22f84889c5eec9db7aa15a83886725d95449b493"
+      },
+      {
+        "name": "rustc-version.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "rustc-version.stdout",
+        "bytes": 196,
+        "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+      },
+      {
+        "name": "rustfmt-version.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "rustfmt-version.stdout",
+        "bytes": 45,
+        "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+      }
+    ]
+  },
+  "initial_harness_note": "Initial pure/type checks passed but emitted unexpected cfg(test) warnings from the explicit rustc check-cfg allowlist. No source fix was needed; final submitted command names cfg(test) and denies warnings. Initial private artifacts/raw outputs preserved.",
+  "final_check": {
+    "schema": "managed-cold-sync-example-light-v1",
+    "scope": "pure call-shape example only; no real Child constructed, OS primitive, native sync probe, OOM or profiling case",
+    "directory": "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h",
+    "input_sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d",
+    "utc": "2026-11-10T16:40:31.998412+00:00",
+    "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "affinity": [
+      0
+    ],
+    "rlimit_as": [
+      1073741824,
+      1073741824
+    ],
+    "rlimit_cpu": [
+      60,
+      60
+    ],
+    "rlimit_fsize": [
+      2147483648,
+      2147483648
+    ],
+    "commands": [
+      {
+        "name": "locate-rustc",
+        "argv": [
+          "rustup",
+          "which",
+          "--toolchain",
+          "1.98.1",
+          "rustc"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc\n",
+        "stderr": ""
+      },
+      {
+        "name": "locate-rustfmt",
+        "argv": [
+          "rustup",
+          "which",
+          "--toolchain",
+          "1.98.1",
+          "rustfmt"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt\n",
+        "stderr": ""
+      },
+      {
+        "name": "rustc-version",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "-vV"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n",
+        "stderr": ""
+      },
+      {
+        "name": "rustfmt-version",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--version"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n",
+        "stderr": ""
+      },
+      {
+        "name": "format",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--edition",
+          "2024",
+          "--config",
+          "max_width=110",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "format-check",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustfmt",
+          "--check",
+          "--edition",
+          "2024",
+          "--config",
+          "max_width=110",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "positive-type",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "-Dwarnings",
+          "--check-cfg",
+          "cfg(test)",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--crate-type=lib",
+          "--emit=metadata",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/positive.rmeta"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "duplicate-owner-type",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "-Dwarnings",
+          "--check-cfg",
+          "cfg(test)",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--crate-type=lib",
+          "--emit=metadata",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs",
+          "--cfg",
+          "duplicate_owner",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/negative.rmeta"
+        ],
+        "exit": 1,
+        "expected": 1,
+        "stdout": "",
+        "stderr": "error[E0382]: borrow of moved value: `child`\n   --> /home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs:120:24\n    |\n118 | pub fn rejected_duplicate(child: Child, prepared: Result<PreparedOwnedSync, SyncFailure>) {\n    |                           ----- move occurs because `child` has type `Child`, which does not implement the `Copy` trait\n119 |     let _result = retain_child_on_refusal(child, prepared);\n    |                                           ----- value moved here\n120 |     let _stale_owner = child.id();\n    |                        ^^^^^ value borrowed here after move\n    |\nnote: consider changing this parameter type in function `retain_child_on_refusal` to borrow instead if owning the value isn't necessary\n   --> /home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs:106:12\n    |\n105 | pub fn retain_child_on_refusal(\n    |        ----------------------- in this function\n106 |     child: Child,\n    |            ^^^^^ this parameter takes ownership of the value\n\nerror: aborting due to 1 previous error\n\nFor more information about this error, try `rustc --explain E0382`.\n"
+      },
+      {
+        "name": "compile-pure-tests",
+        "argv": [
+          "/home/adalundhe/.rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu/bin/rustc",
+          "--edition=2024",
+          "-Dwarnings",
+          "--check-cfg",
+          "cfg(test)",
+          "--check-cfg",
+          "cfg(duplicate_owner)",
+          "--test",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface.rs",
+          "-o",
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface-tests"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "",
+        "stderr": ""
+      },
+      {
+        "name": "pure-tests",
+        "argv": [
+          "/home/adalundhe/managed-cold-sync-example-v2-lmrc9y4h/interface-tests",
+          "--test-threads=1"
+        ],
+        "exit": 0,
+        "expected": 0,
+        "stdout": "\nrunning 2 tests\ntest tests::failed_launch_returns_prepared_resource ... ok\ntest tests::preparation_refusal_never_calls_launch ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n",
+        "stderr": ""
+      }
+    ],
+    "status": "passed-pure-type-format-only",
+    "formatted_sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d",
+    "artifacts": [
+      {
+        "name": "compile-pure-tests.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "compile-pure-tests.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "duplicate-owner-type.stderr",
+        "bytes": 1122,
+        "sha256": "f0c3f6cd17c5f787fa46ed6884ca808d527140b903d0948de818c0cebb9dd233"
+      },
+      {
+        "name": "duplicate-owner-type.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format-check.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format-check.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "format.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "interface-tests",
+        "bytes": 7168992,
+        "sha256": "04ac06936b55ba19b75803d4a702e90ac950a0a9e9b1d802c8fc8551386be262"
+      },
+      {
+        "name": "interface.rs",
+        "bytes": 5144,
+        "sha256": "fc04c6bc94f41e6f0e7973139d25c956bf00540ef4bfa30d5b4b914dcf76b43d"
+      },
+      {
+        "name": "locate-rustc.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "locate-rustc.stdout",
+        "bytes": 77,
+        "sha256": "5e62365fff7a10a0329048ba518ca146351c5d3cec29827f0db608a5cd7b862d"
+      },
+      {
+        "name": "locate-rustfmt.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "locate-rustfmt.stdout",
+        "bytes": 79,
+        "sha256": "1dda8f815af694fb30f065e96c9dd5fc5380a5edd5f0500760598bba392e5aeb"
+      },
+      {
+        "name": "positive-type.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "positive-type.stdout",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "positive.rmeta",
+        "bytes": 22865,
+        "sha256": "5aefc1c8e570e12b5844cc8d7c6608820073d5a1b2c103dfc0385eb0515c8b75"
+      },
+      {
+        "name": "pure-tests.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "pure-tests.stdout",
+        "bytes": 230,
+        "sha256": "b06cd637ca38cc46a00d06bf22f84889c5eec9db7aa15a83886725d95449b493"
+      },
+      {
+        "name": "rustc-version.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "rustc-version.stdout",
+        "bytes": 196,
+        "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+      },
+      {
+        "name": "rustfmt-version.stderr",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "name": "rustfmt-version.stdout",
+        "bytes": 45,
+        "sha256": "5ee6d8b8c1029331c46a25d772a77b5ea1721c1f8464413f2b10ebbb584fdbbb"
+      }
+    ]
+  },
+  "initial_submitted_command": "python3 - <<'PY'\nimport os, resource, tempfile, pathlib, subprocess, json, base64, hashlib, platform, datetime\nos.umask(0o077)\navailable=sorted(os.sched_getaffinity(0))\nos.sched_setaffinity(0,{available[0]})\nresource.setrlimit(resource.RLIMIT_AS,(1073741824,1073741824))\nresource.setrlimit(resource.RLIMIT_CPU,(60,60))\nresource.setrlimit(resource.RLIMIT_FSIZE,(2147483648,2147483648))\nroot=pathlib.Path(tempfile.mkdtemp(prefix='managed-cold-sync-example-v1-',dir=pathlib.Path.home()))\nsource=root/'interface.rs'\nbody=base64.b64decode(os.environ['SOURCE_B64'],validate=True)\nif hashlib.sha256(body).hexdigest()!=os.environ['SOURCE_SHA256']:\n raise SystemExit('source identity mismatch')\nwith source.open('xb') as out: out.write(body)\nrecord={'schema':'managed-cold-sync-example-light-v1','scope':'pure call-shape example only; no real Child constructed, OS primitive, native sync probe, OOM or profiling case','directory':str(root),'input_sha256':hashlib.sha256(body).hexdigest(),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.platform(),'machine':platform.machine(),'affinity':sorted(os.sched_getaffinity(0)),'rlimit_as':list(resource.getrlimit(resource.RLIMIT_AS)),'rlimit_cpu':list(resource.getrlimit(resource.RLIMIT_CPU)),'rlimit_fsize':list(resource.getrlimit(resource.RLIMIT_FSIZE)),'commands':[]}\ndef run(name,args,expected=0):\n p=subprocess.run(args,cwd=root,stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=45)\n (root/(name+'.stdout')).write_text(p.stdout)\n (root/(name+'.stderr')).write_text(p.stderr)\n row={'name':name,'argv':args,'exit':p.returncode,'expected':expected,'stdout':p.stdout,'stderr':p.stderr}\n record['commands'].append(row)\n if p.returncode!=expected: raise RuntimeError(name+' exit '+str(p.returncode))\n return p\ntry:\n rustc=run('locate-rustc',['rustup','which','--toolchain','1.98.1','rustc']).stdout.strip()\n rustfmt=run('locate-rustfmt',['rustup','which','--toolchain','1.98.1','rustfmt']).stdout.strip()\n run('rustc-version',[rustc,'-vV'])\n run('rustfmt-version',[rustfmt,'--version'])\n run('format',[rustfmt,'--edition','2024','--config','max_width=110',str(source)])\n run('format-check',[rustfmt,'--check','--edition','2024','--config','max_width=110',str(source)])\n checked=[rustc,'--edition=2024','--check-cfg','cfg(duplicate_owner)','--crate-type=lib','--emit=metadata',str(source)]\n run('positive-type',checked+['-o',str(root/'positive.rmeta')])\n neg=run('duplicate-owner-type',checked+['--cfg','duplicate_owner','-o',str(root/'negative.rmeta')],1)\n if 'E0382' not in neg.stderr: raise RuntimeError('missing expected moved-Child E0382')\n run('compile-pure-tests',[rustc,'--edition=2024','--check-cfg','cfg(duplicate_owner)','--test',str(source),'-o',str(root/'interface-tests')])\n tests=run('pure-tests',[str(root/'interface-tests'),'--test-threads=1'])\n if '2 passed; 0 failed' not in tests.stdout: raise RuntimeError('expected two pure tests')\n record['status']='passed-pure-type-format-only'\nexcept Exception as error:\n record['status']='check-error'; record['error']=str(error)\nfinally:\n formatted=source.read_bytes()\n record['formatted_sha256']=hashlib.sha256(formatted).hexdigest()\n record['artifacts']=[{'name':p.name,'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.iterdir()) if p.is_file()]\n (root/'example-check.json').write_text(json.dumps(record,indent=2)+'\\n')\n print(json.dumps({'record':record,'formatted_b64':base64.b64encode(formatted).decode()}))\nif record['status']!='passed-pure-type-format-only': raise SystemExit(1)\nPY",
+  "final_submitted_command": "python3 - <<'PY'\nimport os, resource, tempfile, pathlib, subprocess, json, base64, hashlib, platform, datetime\nos.umask(0o077)\navailable=sorted(os.sched_getaffinity(0))\nos.sched_setaffinity(0,{available[0]})\nresource.setrlimit(resource.RLIMIT_AS,(1073741824,1073741824))\nresource.setrlimit(resource.RLIMIT_CPU,(60,60))\nresource.setrlimit(resource.RLIMIT_FSIZE,(2147483648,2147483648))\nroot=pathlib.Path(tempfile.mkdtemp(prefix='managed-cold-sync-example-v2-',dir=pathlib.Path.home()))\nsource=root/'interface.rs'\nbody=base64.b64decode(os.environ['SOURCE_B64'],validate=True)\nif hashlib.sha256(body).hexdigest()!=os.environ['SOURCE_SHA256']:\n raise SystemExit('source identity mismatch')\nwith source.open('xb') as out: out.write(body)\nrecord={'schema':'managed-cold-sync-example-light-v1','scope':'pure call-shape example only; no real Child constructed, OS primitive, native sync probe, OOM or profiling case','directory':str(root),'input_sha256':hashlib.sha256(body).hexdigest(),'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'platform':platform.platform(),'machine':platform.machine(),'affinity':sorted(os.sched_getaffinity(0)),'rlimit_as':list(resource.getrlimit(resource.RLIMIT_AS)),'rlimit_cpu':list(resource.getrlimit(resource.RLIMIT_CPU)),'rlimit_fsize':list(resource.getrlimit(resource.RLIMIT_FSIZE)),'commands':[]}\ndef run(name,args,expected=0):\n p=subprocess.run(args,cwd=root,stdin=subprocess.DEVNULL,capture_output=True,text=True,timeout=45)\n (root/(name+'.stdout')).write_text(p.stdout)\n (root/(name+'.stderr')).write_text(p.stderr)\n row={'name':name,'argv':args,'exit':p.returncode,'expected':expected,'stdout':p.stdout,'stderr':p.stderr}\n record['commands'].append(row)\n if p.returncode!=expected: raise RuntimeError(name+' exit '+str(p.returncode))\n return p\ntry:\n rustc=run('locate-rustc',['rustup','which','--toolchain','1.98.1','rustc']).stdout.strip()\n rustfmt=run('locate-rustfmt',['rustup','which','--toolchain','1.98.1','rustfmt']).stdout.strip()\n run('rustc-version',[rustc,'-vV'])\n run('rustfmt-version',[rustfmt,'--version'])\n run('format',[rustfmt,'--edition','2024','--config','max_width=110',str(source)])\n run('format-check',[rustfmt,'--check','--edition','2024','--config','max_width=110',str(source)])\n checked=[rustc,'--edition=2024','-Dwarnings','--check-cfg','cfg(test)','--check-cfg','cfg(duplicate_owner)','--crate-type=lib','--emit=metadata',str(source)]\n run('positive-type',checked+['-o',str(root/'positive.rmeta')])\n neg=run('duplicate-owner-type',checked+['--cfg','duplicate_owner','-o',str(root/'negative.rmeta')],1)\n if 'E0382' not in neg.stderr: raise RuntimeError('missing expected moved-Child E0382')\n run('compile-pure-tests',[rustc,'--edition=2024','-Dwarnings','--check-cfg','cfg(test)','--check-cfg','cfg(duplicate_owner)','--test',str(source),'-o',str(root/'interface-tests')])\n tests=run('pure-tests',[str(root/'interface-tests'),'--test-threads=1'])\n if '2 passed; 0 failed' not in tests.stdout: raise RuntimeError('expected two pure tests')\n record['status']='passed-pure-type-format-only'\nexcept Exception as error:\n record['status']='check-error'; record['error']=str(error)\nfinally:\n formatted=source.read_bytes()\n record['formatted_sha256']=hashlib.sha256(formatted).hexdigest()\n record['artifacts']=[{'name':p.name,'bytes':p.stat().st_size,'sha256':hashlib.sha256(p.read_bytes()).hexdigest()} for p in sorted(root.iterdir()) if p.is_file()]\n (root/'example-check.json').write_text(json.dumps(record,indent=2)+'\\n')\n print(json.dumps({'record':record,'formatted_b64':base64.b64encode(formatted).decode()}))\nif record['status']!='passed-pure-type-format-only': raise SystemExit(1)\nPY",
+  "environment_inputs": "SOURCE_B64 supplied only interface.rs bytes; SOURCE_SHA256 records exact input above. No repository sync, root target, full copy, toolchain install, native case or Mac compile.",
+  "owed_root": "Current-source native Mac OOM red; reviewed implementation choice; actual preparation refusal/first contention/CV/cleanup/guard mutation; combined seven-target/native cost campaigns.",
+  "local_text_validation": {
+    "policy_command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "policy_exit": 0,
+    "policy_stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "initial_manifest_checker_exit": 1,
+    "initial_manifest_checker_stderr": "KeyError: url (checker assumed four versioned measurement records had optional URL fields)",
+    "correction": "Added canonical GitHub revision/path URLs for those four git-show-verified local records; no production/example/native change.",
+    "final_exit": 0,
+    "final_checks": {
+      "local_source_hash_checks": 20,
+      "client_span_hash_checks": 8,
+      "later_main_equivalence": 12,
+      "SDK_source_identity_checks": 2,
+      "primary_sources": 33,
+      "proposal_source_citations": 30,
+      "example_final_checks": 10,
+      "R01_R16_rows": 16
+    },
+    "frozen_sha256_checks": {
+      "fixture.rs": "bafc3ff31ae9f5a4c484124911c890494860bc88c50fd2d751aed57c2f44aab7",
+      "launcher.py": "b10e3895ebe5844e23e0c9f3178ea66d3cf535a204cf14b27a8e7c6273ba95b4",
+      "nofile-child.c": "4ba28b107a0f9b325f021d2106f57721eabef6db1d173df0d0deb114ea28e1ea"
+    }
+  }
+}
