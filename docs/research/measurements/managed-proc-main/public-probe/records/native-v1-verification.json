@@ -1,0 +1,22 @@
+{
+  "source": "c42b6129d2aaa1dc66f1c6ab9f9138afe9a137fb",
+  "remote_source_hashes_match_git_blobs": [
+    "crates/api/src/client.rs",
+    "crates/api/src/conformance.rs",
+    "crates/api/src/lib.rs",
+    "crates/api/src/said.rs",
+    "crates/api/src/sim.rs",
+    "crates/api/src/stream.rs",
+    "crates/api/src/taken.rs",
+    "crates/api/src/while_runs.rs",
+    "docs/research/measurements/managed-proc-main/public-probe/Cargo.toml",
+    "docs/research/measurements/managed-proc-main/public-probe/Cargo.lock",
+    "docs/research/measurements/managed-proc-main/public-probe/src/main.rs",
+    "docs/research/measurements/managed-proc-main/public-probe/run-light.sh",
+    "docs/research/measurements/managed-proc-main/allocation.rs"
+  ],
+  "remote_status_empty": true,
+  "raw_manifest_files_verified": 19,
+  "all_four_exits_zero": true,
+  "product_tree_matches_base": true
+}

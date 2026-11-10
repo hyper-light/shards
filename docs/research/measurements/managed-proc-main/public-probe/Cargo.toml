@@ -1,0 +1,15 @@
+[package]
+name = "managed-proc-public-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+shards-api = { path = "../../../../../crates/api" }
+
+[profile.release]
+debug = "line-tables-only"
