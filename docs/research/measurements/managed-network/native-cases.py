@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--within-ms", type=int, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--only", action="append", default=[], help="exact case name; repeat to select several")
     args = parser.parse_args()
     if args.within_ms <= 0:
         parser.error("the coordinator must supply a positive case budget")
@@ -25,6 +26,8 @@ def main():
     rows = []
 
     def case(name, words, expected, no_listen=False):
+        if args.only and name not in args.only:
+            return
         command = [str(binary), "managed-network", *words]
         start = time.monotonic_ns()
         out = args.out / (name + ".stdout")
@@ -84,13 +87,15 @@ def main():
         "scope": "native endpoint behavior only; no VM/interception/performance claim",
         "revision": args.revision, "platform": platform.platform(),
         "euid": os.geteuid(), "within_ms": args.within_ms,
+        "selected": args.only,
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "results": rows,
     }
     (args.out / "results.json").write_text(json.dumps(manifest, indent=2) + "\n")
     failed = [row["case"] for row in rows if not row["passed"]]
-    print(json.dumps({"cases": len(rows), "failed": failed, "evidence": str(args.out)}))
-    return bool(failed)
+    missing = sorted(set(args.only) - {row["case"] for row in rows})
+    print(json.dumps({"cases": len(rows), "failed": failed, "missing": missing, "evidence": str(args.out)}))
+    return bool(failed or missing or not rows)
 
 
 if __name__ == "__main__":

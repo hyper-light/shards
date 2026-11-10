@@ -58,8 +58,15 @@ This adds one owned cancellation descriptor per paired probe, released after joi
 without a timer or a new production relay mechanism. Its green/mutation results
 must be recorded after the actual reruns; none is assumed here.
 
-Repeat with `native-cases.py --binary PATH --out NEW_DIRECTORY --within-ms120000
---revision SHA` (separate `--within-ms` and `120000` in the actual command).
+Repeat with:
+
+```sh
+python3 docs/research/measurements/managed-network/native-cases.py \
+  --binary PATH --out NEW_DIRECTORY --within-ms 120000 --revision SHA
+```
+
+For independent mutations select an exact case with `--only CASE_NAME` (repeat
+the option for several). Unknown selectors and zero selected cases fail.
 The120000ms is the existing build.rs test guard supplied by the coordinator, not
 a product timeout. The27cases cover both IP families, TCP/connected/unconnected
 UDP, empty/binary/protocol-sized payloads, zero deadlines, oversized datagrams
