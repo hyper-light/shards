@@ -22,9 +22,10 @@ or adopted into this candidate.
 ROOT subsequently approved ONE exact case: [GO-RECEIPT.md](GO-RECEIPT.md).
 Execution source stays9764144d5a7170c1ba6607ecd0222a0015db12de. The initial
 r171 preflight stopped on host Zig0.17 before compilation; its failure remains
-retained. Normally admitted r172 selects private pinned0.16 and starts the first
-fullcaller build within the original build deadline. No pure/Clippy/native result
-or native job exists at this progress snapshot. See [RUN-HANDOFF.md](RUN-HANDOFF.md),
+retained. Normally admitted r172 uses private pinned0.16 and completes the actual
+fullcaller build0 within the original deadline. The next same-envelope check
+admission was refused at0idle; pure/Clippy/native remain unrun and no native job
+exists. See [BUILD-RESULT.md](BUILD-RESULT.md), [RUN-HANDOFF.md](RUN-HANDOFF.md),
 [PINNED-TOOLCHAIN.md](PINNED-TOOLCHAIN.md) and [execution-source.json](execution-source.json).
 ROOT's later Capturing integration failure is separate, as recorded in
 [INTEGRATION-NOTE.md](INTEGRATION-NOTE.md); the active campaign is not rebased.

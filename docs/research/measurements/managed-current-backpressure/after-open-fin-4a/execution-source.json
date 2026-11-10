@@ -20,11 +20,11 @@
     "crates/abi/src/run/managed.rs": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01"
   },
   "execution_approval": "ROOT GO exact ONE stdout AfterOpenEmptyFinish case, current user message after976 source review",
-  "hardware_state": "Original ask normally admitted r172:4idle/84GB free/2CPU4GiB24GiB, remaining original build deadline3199s; private pinnedZig0.16 acquisition/first compile underway. r171 preflight1 preserved.",
+  "hardware_state": "r172 COMPLETE0 fullcaller; next original full2CPU4GiB24GiB check admission refused at0idle, no check job/command/native actor",
   "case_started": false,
   "build_started": true,
   "native_job_id": null,
-  "command_text_ast_parse": "3/3 syntax only; not caller compilation/pure/Clippy/native execution",
+  "command_text_ast_parse": "Seven retained command bodies parsed as source; this is not a test gate. Actual command/job outcomes are recorded separately.",
   "resources": "Linux GNU2CPU4GiB24GiB/j4 unchanged",
   "build_outer_s": 3600,
   "native_phase_ms": 240000,
@@ -40,7 +40,7 @@
     "pinned-native.command.txt": "4df09bcfd6dffbc657ec371b8286467150424984e1a16f54f507b71afe6b29af",
     "collect.command.txt": "47c7eea3b7eef26ca5a097b1c63003b1e7e529a7146f2888aecb93bacf87baa9"
   },
-  "root_gates_owed": "Evidence review/integration/matrix; all new actual compilation/pure/Clippy/native gates currently unrun. No VM/mutation/profile authorized.",
+  "root_gates_owed": "Fullcaller GNU compilation r172 passed0. Pure/strict Clippy/native remain unrun due headroom; ROOT final evidence review/combined integration/matrix/audits/profiles remain owed. No VM/mutation/profile is authorized here.",
   "build_job_id": "r172",
   "actual_build_runner": "451397fcc585f7f7cb9aaf00e42064bb",
   "actual_private_base": "/home/adalundhe/managed-after-open-fin-4a-v1",
@@ -51,7 +51,7 @@
       "2.44"
     ],
     "machine": "x86_64",
-    "disk_free_bytes": 424985124864
+    "disk_free_bytes": 412753522688
   },
   "original_build_deadline_epoch_s": 1794353589.118,
   "private_pinned_toolchain": "runtime-cache/toolchain/zig-x86_64-linux-0.16.0, official archive70e496... source scripts/install-zig; private process PATH only",
@@ -61,5 +61,28 @@
     "rust_compilation_started": false,
     "native_cases_started": 0,
     "cause": "PATH Zig0.17 versus repository0.16, kept strict"
-  }
+  },
+  "build_result": 0,
+  "test_executable": {
+    "target": "/home/adalundhe/managed-after-open-fin-4a-v1/target/test-release/deps/managed_output-87d4844abdafeb5c",
+    "frozen": "/home/adalundhe/managed-after-open-fin-4a-v1/artifacts/managed_output",
+    "sha256": "ab5d5820d183da87955f75aa3b31a1a85f39a94319e6ffe88ac9e33c4c791a17",
+    "fresh": false,
+    "source": "9764144d5a7170c1ba6607ecd0222a0015db12de"
+  },
+  "check_job_id": null,
+  "pure": "UNRUN; admission refused before command",
+  "clippy": "UNRUN; admission refused before command",
+  "actual_native_case_count": 0,
+  "initial_build_host_preflight": {
+    "platform": "Linux-7.2.9-2-cachyos-x86_64-with-glibc2.44",
+    "libc": [
+      "glibc",
+      "2.44"
+    ],
+    "machine": "x86_64",
+    "disk_free_bytes": 412753522688
+  },
+  "active_remote_jobs": [],
+  "reserved_remote_scope": "Keep entire /home/adalundhe/managed-after-open-fin-4a-v1 source/target/Cargo/Zig/runtime/compiler/artifacts/records for pending same-source checks/native case; no deletion"
 }

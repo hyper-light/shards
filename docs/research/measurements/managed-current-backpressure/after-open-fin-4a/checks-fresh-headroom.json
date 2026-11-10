@@ -1,0 +1,98 @@
+{
+  "me": "e30189ea29182644fe5a4b2e06c7dac2",
+  "want": "2 CPUs, 4 GiB of memory, 24 GiB of disk, os == linux, arch == x86_64",
+  "runners": [
+    {
+      "runner": {
+        "name": "8fadc1ec213332e16cb0d915a3fb913f",
+        "hostname": "fedora-2",
+        "label": "kiln-a094a12d.attlocal.net",
+        "was": [
+          "kiln-a094a12d.attlocal.net"
+        ],
+        "os": "linux",
+        "arch": "x86_64",
+        "labels": [
+          "baremetal",
+          "linux",
+          "x86_64"
+        ],
+        "connected": true,
+        "reach": true,
+        "fingerprint": "d0c169120ba887ed3b77f31b67c5b37419ce91be19fd760317c9b136daa2cd23",
+        "reach_version": 2,
+        "cpus": 32,
+        "cpu_pct": 12.90302276611328,
+        "load1": 4.139999866485596,
+        "mem_total": 67128664064,
+        "mem_used": 5253369856,
+        "slots": 8,
+        "busy": 0,
+        "draining": false,
+        "harnesses": [
+          "claude",
+          "codex",
+          "devin"
+        ],
+        "via": "",
+        "facts": null
+      },
+      "score": 75.8125,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 58 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk"
+    }
+  ],
+  "passed": [
+    [
+      "2768d0d5d2974f1e21d348edadff9d1b",
+      "macos is not linux"
+    ],
+    [
+      "451397fcc585f7f7cb9aaf00e42064bb",
+      "0 of 32 cores idle, under 2 CPUs"
+    ],
+    [
+      "75694786916abd6207b67832b9b1e85e",
+      "macos is not linux"
+    ],
+    [
+      "b24c5c951260dcdfd0972f2aeaf3cf51",
+      "macos is not linux"
+    ],
+    [
+      "cec37f60f22c5a60d27f08f4d2e5daa8",
+      "macos is not linux"
+    ],
+    [
+      "d1323898b255a3ed435eb83fa0f7b0cf",
+      "macos is not linux"
+    ],
+    [
+      "e30189ea29182644fe5a4b2e06c7dac2",
+      "macos is not linux"
+    ],
+    [
+      "f3f618f29b31df31a1f52482b39578c2",
+      "macos is not linux"
+    ],
+    [
+      "f766f09294f2e17e3b8a631ffd4e6a4b",
+      "windows is not linux"
+    ],
+    [
+      "fedora.attlocal.net",
+      "it hasn't said how busy it is yet"
+    ]
+  ],
+  "labels": {
+    "2768d0d5d2974f1e21d348edadff9d1b": "adas-mac-studio-3.local",
+    "451397fcc585f7f7cb9aaf00e42064bb": "adacachy",
+    "75694786916abd6207b67832b9b1e85e": "adalundhe-macbook-pro",
+    "8fadc1ec213332e16cb0d915a3fb913f": "kiln-a094a12d.attlocal.net",
+    "b24c5c951260dcdfd0972f2aeaf3cf51": "adas-mac-studio-2.local",
+    "cec37f60f22c5a60d27f08f4d2e5daa8": "adas-mac-studio.local",
+    "d1323898b255a3ed435eb83fa0f7b0cf": "adas-mac-studio.local-2",
+    "e30189ea29182644fe5a4b2e06c7dac2": "adas-macbook-pro-2.local",
+    "f3f618f29b31df31a1f52482b39578c2": "adas-macbook-pro.local",
+    "f766f09294f2e17e3b8a631ffd4e6a4b": "jupiter"
+  }
+}
