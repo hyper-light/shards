@@ -191,6 +191,13 @@ Fedora closing r644/source1533; the reported Mac r634/source1533 seven-target/
 native results are root's revision-specific results, not this lane's tests.
 No lane pause/stop or data/evidence deletion follows from headroom steering.
 
+The [finite ring trace proposal](vmm-ring-trace-proposal.md) supplies the specific
+event/clock/censoring/ownership acceptance contract missing from a generic
+occupancy count. It adds no harness/runtime implementation or measured result.
+The linked source record preserves parent hashes and corrects the quoted query
+rendering without rewriting the earlier observation. The next precise source
+literal/ownership has been requested from root; the original lane remains active.
+
 ## R01–R16 account for both research batches
 
 | Rule | Actual work and remaining limit |

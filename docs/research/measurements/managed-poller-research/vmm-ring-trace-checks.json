@@ -1,0 +1,254 @@
+{
+  "kind": "finite-trace documentation checks only, no runtime/measurement",
+  "checked_utc": "2026-11-10T15:00:59.149796+00:00",
+  "documentation_parent": "ba8ea1516ee8a9071e832c24d77608c8de2e2bb6",
+  "source_base": "24f48ee5ebf198485117aa93bf47685ad7d7d53f",
+  "source_freshness_at_parent": "7c26e5292161fc891a7c6c6525305464a3a044be",
+  "commands": [
+    {
+      "command": "python3 scripts/check-development-policy",
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required."
+    }
+  ],
+  "manual_checks": {
+    "relative_links": [
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-output-cost/HOST-EXIT.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-coordinator-output-exit/README.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "managed-poller-capacity.md",
+        "target": "measurements/managed-poller-research/vmm-ring-trace-proposal.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "../../managed-poller-capacity.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-plan.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "kiln-research.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "tls-handshake-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "quic-datagram-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "vmm-ring-trace-proposal.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-poller.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-inotify.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-contracts.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "STEP2.md",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2.json",
+        "exists": true
+      },
+      {
+        "from": "README.md",
+        "target": "checks-step2-sources.json",
+        "exists": true
+      },
+      {
+        "from": "vmm-ring-trace-proposal.md",
+        "target": "vmm-ring-trace-kiln-research.md",
+        "exists": true
+      },
+      {
+        "from": "vmm-ring-trace-proposal.md",
+        "target": "vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "vmm-ring-trace-proposal.md",
+        "target": "vmm-rings-source-identity.json",
+        "exists": true
+      },
+      {
+        "from": "vmm-ring-trace-proposal.md",
+        "target": "vmm-rings.md",
+        "exists": true
+      },
+      {
+        "from": "vmm-ring-trace-proposal.md",
+        "target": "vmm-ring-trace-source-identity.json",
+        "exists": true
+      }
+    ],
+    "no_trailing_whitespace": true,
+    "parent_record_git_hashes": 3,
+    "index_empty_before_own_staging": true,
+    "exact_six_staged_paths": [
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-checks.json",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-proposal.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-source-identity.json"
+    ],
+    "no_other_staged_path": true
+  },
+  "artifact_sha256": {
+    "docs/research/managed-poller-capacity.md": "8ad676b5d949e0681432aaaf38cc738c1152e93f66df6e3027885c77bd357f86",
+    "docs/research/measurements/managed-poller-research/README.md": "41ad6bdcc15a25d3c1314ee921836ffce81b7ed95d1f266cbb583bf91d499228",
+    "docs/research/measurements/managed-poller-research/vmm-ring-trace-proposal.md": "ea813d6dab524d5504d2fd31950f49e8ee1bfb4744d77be9f75127d90a85e2bb",
+    "docs/research/measurements/managed-poller-research/vmm-ring-trace-source-identity.json": "6aeffaa77974004692bd0b3d441a9171fa1f9f525deb287459fb0bafd63328af",
+    "docs/research/measurements/managed-poller-research/vmm-ring-trace-kiln-research.md": "e3ee9ec5866f5318c05699001cf83e2dadc757e1d31d086c19d9fd4400b0fe7c"
+  },
+  "kiln_f20": "B/79, twoquotesfound; inference not runtime proof",
+  "unrun": [
+    "all compile/unit/integration/realguest/syscall/campaign execution",
+    "queue negotiation/occupancy/notification/wrap/driverfailure/reset/restore/cancel validation",
+    "all profiles/benchmarks/comparative costs and hard aggregate accounting",
+    "seven-target/actual hardware/platform coverage"
+  ],
+  "pending": [
+    "precise coordinator vmm-round2 evidence locator/revision",
+    "coordinator confirmation FS shared literal scope includes hiprio and request queue",
+    "coordinator source/caller-map acceptance; source-derived map committed8fe",
+    "root exact executable/source/harness/runner/envelope approval",
+    "next exact coordinator-scoped literal requested in ba8 checkpoint message"
+  ],
+  "named_staged_whitespace": {
+    "argv": [
+      "git",
+      "diff",
+      "--cached",
+      "--check",
+      "--",
+      "docs/research/managed-poller-capacity.md",
+      "docs/research/measurements/managed-poller-research/README.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-proposal.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-source-identity.json",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-kiln-research.md",
+      "docs/research/measurements/managed-poller-research/vmm-ring-trace-checks.json"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "preserved_untracked_other_files": [
+    "step9-checkpoints.json",
+    "step9-kiln-verify.json",
+    "step9-verify-checkpoints.py"
+  ]
+}

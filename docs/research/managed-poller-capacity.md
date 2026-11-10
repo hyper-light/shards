@@ -615,3 +615,10 @@ attempt, pending exact `vmm-round2`/FS scope confirmations and all unrun work.
 Alternatives and a bounded root-only per-device/notification/refusal/restore/
 occupancy/cost matrix select no production method. No harness or runtime action
 was executed or implicitly authorized by this research return.
+
+The [finite trace proposal](measurements/managed-poller-research/vmm-ring-trace-proposal.md)
+refines the root measurement requirement into publication/pop/used/reclaim
+boundaries, descriptor-weighted versus request occupancy, finite-window
+censoring and clock-domain rules, bounded recording and decisive rejection of
+incomplete evidence. It remains a textual proposal without instrumentation,
+execution or a selected sizing method.
