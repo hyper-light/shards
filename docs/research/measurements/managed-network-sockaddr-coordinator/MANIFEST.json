@@ -1,0 +1,190 @@
+{
+  "root-managed-sockaddr-c91-host-compile-v1/compile.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-sockaddr-c91-host-compile-v1/compile.log": {
+    "bytes": 2594,
+    "sha256": "81f3cb8c43d9896f2968670a100bdeaf8eb9392afe95dbd06979f4bf75fa195d"
+  },
+  "root-managed-sockaddr-c91-host-compile-v1/source.txt": {
+    "bytes": 41,
+    "sha256": "0d16da24e5b34121c87693b51e9e55af09ad7aaf2e197a4fdf7a96515aac4698"
+  },
+  "root-managed-sockaddr-host-followup-v1/comma-only.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-sockaddr-host-followup-v1/comma-only.log": {
+    "bytes": 2296,
+    "sha256": "ad673fec9f6eeeb53e06077586abc221b07940414ef53a55a483a55b73dbc23d"
+  },
+  "root-managed-sockaddr-host-followup-v1/comma-only.source": {
+    "bytes": 41,
+    "sha256": "7caf2f0b0d97d58154793efdca82d1cde0b8348f7419ea5974273583531b3e1a"
+  },
+  "root-managed-sockaddr-host-followup-v1/fixed.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-sockaddr-host-followup-v1/fixed.log": {
+    "bytes": 1965,
+    "sha256": "8baa99026c7362c2be87769552049445139f34403850b3118b5a76c29d858bcf"
+  },
+  "root-managed-sockaddr-host-followup-v1/fixed.source": {
+    "bytes": 41,
+    "sha256": "843e264e2f4d6394b9a20692dda6a8b31161d2670b68a74be55e8ee1d37be9fa"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/command.json": {
+    "bytes": 243,
+    "sha256": "a98e2a1599967634a2c55f9a1354fdd718f1e23391de156e8d63b269cd0acbdd"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/driver.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/driver.log": {
+    "bytes": 7243,
+    "sha256": "83464627cce71e8ba73d886a830b88d676df4443520d1ff607086f7ea5724939"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/inputs.json": {
+    "bytes": 511,
+    "sha256": "0d76c7771629940f99bf490773cd7ebd24f7929adf93f04349f6fe1480dfcbb2"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/observed.json": {
+    "bytes": 268,
+    "sha256": "d05a2d46300ded42a913f5fbe2f198b16253e2fb25b0d48df326cf92b7cf7882"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/sock-addr-udp4-connected.cmdline": {
+    "bytes": 106,
+    "sha256": "5d947177948131bb4b9926e99af621ec6a299ea2324f2429feebc0a878e304f7"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/sock-addr-udp4-connected.identity.json": {
+    "bytes": 2068,
+    "sha256": "4f1ca467239173dec53ec545b93c50e2f98e14f06b02d557ee30c5742e233409"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/sock-addr-udp4-connected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/sock-addr-udp4-connected.stderr": {
+    "bytes": 225,
+    "sha256": "1265153536e063d91defa64ef46c19b2403d6d4837e9444636a4fe062ae71dc1"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/connected/sock-addr-udp4-connected.stdout": {
+    "bytes": 451,
+    "sha256": "f8608f932dcd139adaf00065bef7e5c47ad00c75b745e6f86380d07ab381376b"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/driver.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/identity.txt": {
+    "bytes": 394,
+    "sha256": "3676758ae9cce7288bf743a059c640e8c82584f8aa5e827cea77dc10ab012d5f"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/results.json": {
+    "bytes": 611,
+    "sha256": "3b7b0df5d21f71d9b77bcfbe3d545c763e77208981f9585ed673af09bafe68a7"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/source.sha256.json": {
+    "bytes": 498,
+    "sha256": "35d2da8073aad94825ad56249762535e40c9c526b0f375a0bbf0412d363876af"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/command.json": {
+    "bytes": 243,
+    "sha256": "a98e2a1599967634a2c55f9a1354fdd718f1e23391de156e8d63b269cd0acbdd"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/driver.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/driver.log": {
+    "bytes": 7071,
+    "sha256": "c26a1f76a8499e68d98f663b3acf6972685ac59df50411e204972f1039a1a8f4"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/inputs.json": {
+    "bytes": 515,
+    "sha256": "fb2ef8ce57d08fd66407ec24ae772ea30d49242e3c09543c9f75058d2b49e50b"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/observed.json": {
+    "bytes": 270,
+    "sha256": "7de101aa3fbb228bd4c4a1d0b896090a9d5ca72e34b9d2f7d036960203ec4c6c"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/sock-addr-udp4-unconnected.cmdline": {
+    "bytes": 108,
+    "sha256": "d7b0c9fb8cb8ae164c57a9a4a8830bdfabd15a5d2c6fa42936dbe5d323f37c61"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/sock-addr-udp4-unconnected.identity.json": {
+    "bytes": 2070,
+    "sha256": "fac78fa3c1fdb5cd530a37f688afabfe2648acf04c27f1f7b17a75a3e1969dc9"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/sock-addr-udp4-unconnected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/sock-addr-udp4-unconnected.stderr": {
+    "bytes": 227,
+    "sha256": "5674d46105e2af73c31cf13fa6072afe1a45cebbc93af2269a5a0907703b79ed"
+  },
+  "root-managed-sockaddr-f4f2-runtime-v1/unconnected/sock-addr-udp4-unconnected.stdout": {
+    "bytes": 453,
+    "sha256": "c6dad0fb90a8b7fd35059cb1c30ec8f66f08efd989577ab161671186e26240b0"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/cargo.exit": {
+    "bytes": 4,
+    "sha256": "39b8dc3fc8b44765c8e6f1adee04c5b465e555ab791cc42d0d9e810d5b64297c"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/command.json": {
+    "bytes": 243,
+    "sha256": "a98e2a1599967634a2c55f9a1354fdd718f1e23391de156e8d63b269cd0acbdd"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/connected/sock-addr-udp4-connected.cmdline": {
+    "bytes": 106,
+    "sha256": "5d947177948131bb4b9926e99af621ec6a299ea2324f2429feebc0a878e304f7"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/connected/sock-addr-udp4-connected.identity.json": {
+    "bytes": 2052,
+    "sha256": "432333b96cf24ad3d4bc0c5e3cef1e93005f17b0d0dba1aca5aa2b7720ebb31a"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/connected/sock-addr-udp4-connected.status.json": {
+    "bytes": 12,
+    "sha256": "fe85cceb474303eb80a5ca9a60b16d92208a8e0b38647647654b0c42447b51f7"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/connected/sock-addr-udp4-connected.stderr": {
+    "bytes": 225,
+    "sha256": "09dec6cf3d30007509b2ad5da88272fc333c3e82de5ec3877f09faa42928e7ef"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/connected/sock-addr-udp4-connected.stdout": {
+    "bytes": 656,
+    "sha256": "dbfe007603d4b76f4fff39a9be1b926bf148697e099793eb616468423be550aa"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/driver.log": {
+    "bytes": 7351,
+    "sha256": "5b289dd535b78e9d96c0f8ef0c404b5cf5020f80b5247a8e3c144eaa9b8e047f"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/inputs.json": {
+    "bytes": 495,
+    "sha256": "771d2aabee4d33b6119791ebe2ed12c38753598828d2834158eec220fa22b2c2"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/instrumentation.patch": {
+    "bytes": 1265,
+    "sha256": "02931d7f9ced6ae135b6da1d0d07e29f51804d1d4b2d5dd9512288cbe9f4e80e"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/original.rs": {
+    "bytes": 25098,
+    "sha256": "6cc260b2e330347670473ed0003b9856e1db30258f368253eb537a0222056af1"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/restored.diff": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/restored.sha256": {
+    "bytes": 65,
+    "sha256": "ab1af2a9b924684e22d2baab63933a9a5beda75c26c282404c34f96221d6a943"
+  },
+  "root-managed-sockaddr-cgroup-steps-v1/source.json": {
+    "bytes": 239,
+    "sha256": "7ff43bd64509fb3f71e0cb2e43f2c517eab6cb809612ea79bbafbf36cdb3274d"
+  }
+}

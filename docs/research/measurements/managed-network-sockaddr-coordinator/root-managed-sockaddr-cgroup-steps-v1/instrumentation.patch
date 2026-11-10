@@ -1,0 +1,18 @@
+--- crates/testguest/src/managed_network/intercept/sock_addr.rs
++++ crates/testguest/src/managed_network/intercept/sock_addr.rs
+@@ -519,8 +519,13 @@
+     }
+     fn new() -> io::Result<Self> {
+         in_mount(None, || {
+-            let namespace = File::open("/proc/thread-self/ns/mnt")?;
+-            fs::create_dir(MOUNT.to_str().map_err(io::Error::other)?)?;
++            let namespace = File::open("/proc/thread-self/ns/mnt").inspect_err(|e| {
++                let _ = record(format_args!("{{\"type\":\"CgroupStep\",\"operation\":\"OpenMountNamespace\",\"errno\":{:?}}}",e.raw_os_error()));
++            })?;
++            record(format_args!("{{\"type\":\"CgroupStep\",\"operation\":\"OpenMountNamespace\",\"outcome\":\"Ok\"}}"))?;
++            let made = fs::create_dir(MOUNT.to_str().map_err(io::Error::other)?);
++            record(format_args!("{{\"type\":\"CgroupStep\",\"operation\":\"CreateMountDirectory\",\"ok\":{},\"errno\":{},\"tmp_exists\":{}}}", made.is_ok(), made.as_ref().err().and_then(io::Error::raw_os_error).map_or_else(|| "null".to_owned(),|n| n.to_string()), std::path::Path::new("/tmp").is_dir()))?;
++            made?;
+             let mut scope = MountScope {
+                 namespace,
+                 state: MountState::Directory,

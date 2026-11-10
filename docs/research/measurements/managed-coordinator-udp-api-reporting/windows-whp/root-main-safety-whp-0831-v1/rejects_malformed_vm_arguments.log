@@ -1,0 +1,17 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_pc_windows_msvc
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-pc-windows-msvc'
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' failed - Err(Error { kind: ToolExecError, message: "command did not execute successfully (status code exit code: 2): \"C:\\\\Program Files (x86)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\VC\\\\Tools\\\\MSVC\\\\14.44.35207\\\\bin\\\\HostX64\\\\x64\\\\cl.exe\" \"-nologo\" \"-MD\" \"-O2\" \"-Z7\" \"-Brepro\" \"-WX\" \"-W4\" \"-FoC:/Users/corph/ROAE12~1\\\\TEST-R~1\\\\build\\\\AWS-LC~4\\\\out\\\\out-stdalign_check\\\\14bd1f1301f350ff-stdalign_check.o\" \"-c\" \"C:\\\\Users\\\\corph\\\\ROOT-M~4\\\\vendor\\\\AWS-LC~2\\\\aws-lc\\\\tests\\\\compiler_features_tests\\\\stdalign_check.c\"" }).
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 0.40s
+     Running tests\boot.rs (C:/Users/corph/root-main-safety-whp-target\test-release\deps\boot-d96de25d34584dec.exe)
+
+running 1 test
+test rejects_malformed_vm_arguments ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 37 filtered out; finished in 0.28s
+

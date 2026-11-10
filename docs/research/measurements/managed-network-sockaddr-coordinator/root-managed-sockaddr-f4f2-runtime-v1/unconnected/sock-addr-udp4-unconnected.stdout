@@ -1,0 +1,6 @@
+[    0.009103] PCI: Fatal: No config space access function found
+controlled-network-fixture-argv ["/init", "managed-network", "sock-addr-udp4", "unconnected", "30000"]
+managed-sock-addr {"type":"Error","stage":"Cgroup","kind":"NotFound","errno":2}
+managed-network failed kind=NotFound errno=Some(2): No such file or directory (os error 2)
+SHARDS-TEST FAIL managed-network probe failed; see its errno/state record
+[    0.045463] reboot: Power down

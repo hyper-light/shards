@@ -1,0 +1,2 @@
+target/artifacts/vmlinux-6.18.48-x86_64-hyperv-17c3ba205400
+target/e2e/shards-37cf4ac614d4b144/shards.exe

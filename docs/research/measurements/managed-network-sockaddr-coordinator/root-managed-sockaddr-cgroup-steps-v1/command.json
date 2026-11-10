@@ -1,0 +1,1 @@
+["cargo", "test", "--locked", "-j4", "--profile", "test-release", "-p", "shards", "--test", "managed_network", "direct_guest_socket_address_udp4_requires_original_native_tuple", "--", "--ignored", "--exact", "--nocapture", "--test-threads=1"]

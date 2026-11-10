@@ -1,0 +1,90 @@
+{
+  "root-main-safety-whp-0831-v1/artifact-paths.txt": {
+    "bytes": 106,
+    "sha256": "ed184f02ee87bf8d2a0bd45156515fc4e9e9c52da63698286ce3e013575efdd7"
+  },
+  "root-main-safety-whp-0831-v1/driver.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-main-safety-whp-0831-v1/final-status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-main-safety-whp-0831-v1/nasm.txt": {
+    "bytes": 43,
+    "sha256": "704870e31f6ee4a468d4d6746dc8c1da2ddf3ce2ea1cfa64c79fe12c87545cc8"
+  },
+  "root-main-safety-whp-0831-v1/rejects_invalid_vm_configuration.command": {
+    "bytes": 142,
+    "sha256": "04273fb739f5a38223e93cb316d2cc54b09dc7964d5944c9512250ee9f656730"
+  },
+  "root-main-safety-whp-0831-v1/rejects_invalid_vm_configuration.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-main-safety-whp-0831-v1/rejects_invalid_vm_configuration.log": {
+    "bytes": 1558,
+    "sha256": "b2e413d0666897e5688a1177b1d5dd2cb72fc4bbeb4d9f460902c07b46278068"
+  },
+  "root-main-safety-whp-0831-v1/rejects_malformed_vm_arguments.command": {
+    "bytes": 140,
+    "sha256": "e22b837ad2b2288bf19b86737d39e9c4c982bcffdd6a65ce443efba6139a801b"
+  },
+  "root-main-safety-whp-0831-v1/rejects_malformed_vm_arguments.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-main-safety-whp-0831-v1/rejects_malformed_vm_arguments.log": {
+    "bytes": 1556,
+    "sha256": "64b9dc0fb736b0257d64e77ed1db87438a5ee1bae51952f0d5e9e8ac4ee05791"
+  },
+  "root-main-safety-whp-0831-v1/runs_init_as_pid_1_and_powers_off.command": {
+    "bytes": 143,
+    "sha256": "ad1a7d276e5fc99b0dd8df788dc6704289313e6d9965cc1b46030dcbaecf1f21"
+  },
+  "root-main-safety-whp-0831-v1/runs_init_as_pid_1_and_powers_off.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-main-safety-whp-0831-v1/runs_init_as_pid_1_and_powers_off.log": {
+    "bytes": 1559,
+    "sha256": "0e43586774f63b670154f68f5b92f10f9cd525b2e1e44e49f326aea377e7c402"
+  },
+  "root-main-safety-whp-0831-v1/runtime-artifacts.sha256": {
+    "bytes": 238,
+    "sha256": "ce757933eeba9a94bbd88b20d8e8ecaf808e328b83ba461255752dadbc87e7eb"
+  },
+  "root-main-safety-whp-0831-v1/rustc.txt": {
+    "bytes": 194,
+    "sha256": "c45e612575abeef05e99e88eb1e7aea52cddab9ad70d4f65ad20eaa65e92a9cf"
+  },
+  "root-main-safety-whp-0831-v1/source.txt": {
+    "bytes": 41,
+    "sha256": "a4b9204e0307fffa3248cd922e73c2a833fd751f8bdcd328e753e84c61956538"
+  },
+  "root-main-safety-whp-0831-v1/status.txt": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-main-safety-whp-0831-v1/test-artifacts.sha256": {
+    "bytes": 153,
+    "sha256": "8670940aa7573b02c26e310b92c2f085841d6c57b1d5c98c035b705a73aa80b9"
+  },
+  "root-main-safety-whp-0831-v1/this_host_has_its_hypervisor_backend.command": {
+    "bytes": 146,
+    "sha256": "bbfdd267eff68c96523468cc96c8d7d65dcc601d6ae44ed90c74035d1c46a781"
+  },
+  "root-main-safety-whp-0831-v1/this_host_has_its_hypervisor_backend.exit": {
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  "root-main-safety-whp-0831-v1/this_host_has_its_hypervisor_backend.log": {
+    "bytes": 8277,
+    "sha256": "cb333952b81ff98b0da36abb711ecb4c73050be8f02ace82d60d5ddc73226c8f"
+  },
+  "root-main-safety-whp-0831-v1/zig.txt": {
+    "bytes": 7,
+    "sha256": "aa037454b5e8320521a32b278a3f4aff05fc79009ab5503f5d4a1b9a33b38c47"
+  }
+}

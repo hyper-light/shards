@@ -243,3 +243,22 @@ source, log and exit0 are retained in `matrix-c7e8`. This includes the UDP-local
 fixture and composed migration comments, not the still-unimplemented BPF
 comparison or every native hypervisor. Later record-only edits do not add a
 runtime result.
+
+## Native Windows x64 WHP smoke gate
+
+Root r462 ran exact main-only safety source
+`08316c12f7c980b580d0182431e31d445f9a86f6` on Jupiter, with real carried
+helpers, `SHARDS_REQUIRE_VMS=1` and a private empty Docker configuration.
+All four selected tests pass: backend identity, actual guest PID1 boot/power-off,
+invalid VM configuration and malformed VM arguments. The boot assertion requires
+the guest PID1 marker and its init marker before VM exit; this is an actual WHP
+guest result, not just capability detection or compilation.
+
+The 22 raw records under `windows-whp` retain exact commands, logs, original
+exits, source/status/toolchain and test/runtime artifact hashes. The pinned
+Windows hypervisor kernel is SHA256
+`43219b3751e5f60c29a12fb31518b7a11606d7a3796f68a152740c41c7bd81f6`.
+AWS-LC's compiler-feature probe warning remains in the unmodified successful
+build logs. No host admin, Defender, firewall, trust or global tool setting changed.
+This gate covers neither the full suite nor Windows ARM, managed capture or the
+experimental network mechanisms. The Windows ARM VM remains paused.

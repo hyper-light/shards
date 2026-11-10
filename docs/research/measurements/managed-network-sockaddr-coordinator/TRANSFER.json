@@ -1,0 +1,13 @@
+{
+  "archive": "/Users/adalundhe/g121-sockaddr-early-records-v1.tgz",
+  "bytes": 16990,
+  "sha256": "b0314fae6ea648eb56d849db9702f2af7c5c5ef12321f9bc3d43f5de147599ba",
+  "files": 47,
+  "root_runs": [
+    "r463",
+    "r465",
+    "r466",
+    "r467"
+  ],
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f"
+}
