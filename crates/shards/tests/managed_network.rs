@@ -75,6 +75,8 @@ impl Inputs {
             "CONFIG_NF_TPROXY_IPV6",
             "CONFIG_IP_MULTIPLE_TABLES",
             "CONFIG_IPV6_MULTIPLE_TABLES",
+            "CONFIG_BPF_SYSCALL",
+            "CONFIG_CGROUP_BPF",
         ];
         let config = std::fs::read_to_string(&self.config).expect("supply the uncompressed effective config");
         let values: Vec<_> = symbols
@@ -692,4 +694,142 @@ fn direct_guest_native_pairs_preserve_binary_empty_and_half_close() {
             }
         }
     }
+}
+
+fn sock_addr_records(text: &str) -> Vec<serde_json::Value> {
+    text.lines()
+        .filter_map(|line| {
+            line.strip_prefix("managed-sock-addr ")
+                .or_else(|| line.strip_prefix("managed-intercept "))
+        })
+        .map(|line| serde_json::from_str(line).expect("fixture record must be valid JSON"))
+        .collect()
+}
+
+#[test]
+fn socket_address_record_parser_keeps_actual_tuple_and_failed_verdict() {
+    let records = sock_addr_records(concat!(
+        "console noise\n",
+        "managed-sock-addr {\"type\":\"ClientIdentity\",\"requested\":\"127.0.0.1:41\",\"peer\":\"127.0.0.1:42\"}\n",
+        "managed-intercept {\"type\":\"UdpArrival\",\"peer\":\"127.0.0.1:42\",\"reported\":0,\"copied_hex\":\"\"}\n",
+        "managed-sock-addr {\"type\":\"ClientCompletion\",\"compatibility\":\"Mismatch\",\"success\":false}\n"
+    ));
+    assert_eq!(records.len(), 3);
+    assert_ne!(records[0]["requested"], records[0]["peer"]);
+    assert_eq!(records[1]["reported"], 0);
+    assert_eq!(records[2]["success"], false);
+}
+
+#[test]
+#[ignore = "coordinator alone loads hooks and runs actual guest compatibility comparison"]
+fn direct_guest_socket_address_udp4_requires_original_native_tuple() {
+    let input = Inputs::supplied();
+    let mode = required("SHARDS_SOCK_ADDR_MODE");
+    assert!(matches!(mode.as_str(), "connected" | "unconnected"));
+    let name = format!("sock-addr-udp4-{mode}");
+    let millis = input.case_ms.to_string();
+    let run = input.boot(&name, &["sock-addr-udp4", &mode, &millis]);
+    let records = sock_addr_records(&run.stdout);
+    // Raw boot/identity/status are durable before any compatibility assertion.
+    let one = |kind: &str| {
+        let selected: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
+        assert_eq!(selected.len(), 1, "{kind}: {run}");
+        selected[0]
+    };
+    let target = one("Target");
+    assert_ne!(target["backend"], target["responder"]);
+    let identities: Vec<_> = records.iter().filter(|r| r["type"] == "ClientIdentity").collect();
+    assert_eq!(identities.len(), 2, "both fresh exec clients must report: {run}");
+    assert_ne!(identities[0]["pid"], identities[1]["pid"]);
+    for identity in &identities {
+        assert_eq!(identity["namespace"], target["namespace"]);
+        assert_eq!(identity["requested"], target["backend"]);
+        let cgroup = identity["cgroup_hex"].as_str().expect("actual cgroup bytes");
+        let bytes: Vec<_> = cgroup
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect();
+        assert!(String::from_utf8(bytes).unwrap().contains("/sock-addr-client\n"));
+        if mode == "connected" {
+            assert_eq!(
+                identity["peer"], target["backend"],
+                "changed getpeername is incompatible: {run}"
+            );
+        } else {
+            assert!(identity["peer"].is_null());
+            assert_eq!(identity["peer_error"], "NotConnected");
+        }
+    }
+    for (role, identity, binary) in [
+        ("SockAddrBaselineClient", identities[0], "4241434b454e4400ff"),
+        ("SockAddrHookClient", identities[1], "52454c41590080"),
+    ] {
+        let arrivals: Vec<_> = records
+            .iter()
+            .filter(|r| r["type"] == "UdpArrival" && r["role"] == role)
+            .collect();
+        assert_eq!(arrivals.len(), 2, "binary and empty observations required: {run}");
+        for (index, arrival) in arrivals.into_iter().enumerate() {
+            assert_eq!(
+                arrival["peer"], target["backend"],
+                "IP AND port must remain original: {run}"
+            );
+            assert_eq!(arrival["original"], identity["local"]);
+            assert_eq!(arrival["metadata"], "Known");
+            assert_eq!(
+                arrival["flags"].as_i64().unwrap() & 0x28 // Linux guest MSG_TRUNC (0x20) | MSG_CTRUNC (0x08), not host ABI.,
+                0
+            );
+            assert_eq!(arrival["copied_hex"], if index == 0 { binary } else { "" });
+            assert_eq!(arrival["reported"], if index == 0 { binary.len() / 2 } else { 0 });
+        }
+    }
+    let cleanup = records
+        .iter()
+        .find(|r| r["type"] == "Cleanup" && r["state"] == "Observed")
+        .expect("joined/detached/removed facts");
+    for fact in [
+        "backend_joined",
+        "relay_joined",
+        "link_detached",
+        "cgroup_removed",
+    ] {
+        assert_eq!(cleanup[fact], true, "{fact}: {run}");
+    }
+    for role in ["Backend", "Relay"] {
+        let worker = records
+            .iter()
+            .find(|r| r["type"] == "UdpWorkerCompletion" && r["role"] == role)
+            .expect("worker joined");
+        assert_eq!(worker["joined"], true);
+        assert_eq!(worker["arrivals"], 2);
+        assert_eq!(worker["matched"], 2);
+        assert_eq!(worker["empty"], 1);
+        assert_eq!(
+            worker["terminal"],
+            if role == "Backend" {
+                "Cancelled"
+            } else {
+                "ScriptComplete"
+            }
+        );
+        let client = records
+            .iter()
+            .find(|r| r["type"] == "ClientCompletion" && r["expected"] == role)
+            .expect("client terminal");
+        assert_eq!(client["script"], "Complete");
+        assert_eq!(client["exchanges"], 2);
+        assert_eq!(client["compatibility"], "Exact");
+        assert_eq!(client["success"], true);
+    }
+    assert!(
+        !records
+            .iter()
+            .any(|r| r["type"] == "Error" || r["type"] == "UdpError")
+    );
+    assert_eq!(
+        run.status, 0,
+        "destination rewrite alone is not compatibility success: {run}"
+    );
 }

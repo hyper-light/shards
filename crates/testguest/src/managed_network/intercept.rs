@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
 use std::thread::JoinHandle;
 
+pub(super) mod sock_addr;
 pub(super) mod udp;
 mod wire;
 use wire::Netlink;
