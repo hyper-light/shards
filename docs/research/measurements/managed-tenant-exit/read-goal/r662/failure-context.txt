@@ -1,0 +1,5 @@
+tenant-exit canonical member=2 channel=1 wire=150 controlled_hex=[01, 01, 01, 00, 00, 00, 00, 02, 00, 00, 00, 00, 00, 00, 00, 38, 5b, 32, 4a, 6f, 75, 74, 2d, 74, 61, 69, 6c]
+
+thread 'tenant_exit::member_normal_exit_preserves_sibling_and_main_progress' (2563612) panicked at crates/shards/tests/managed_output.rs:332:14:
+called `Result::unwrap()` on an `Err` value: Error("the driver's admitted command slots are full")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

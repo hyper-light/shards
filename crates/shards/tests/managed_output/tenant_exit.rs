@@ -1,6 +1,6 @@
 //! Coordinator-only normal member completion with causally later neighbor output.
 use super::*;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::io::Read as _;
 
 struct Inputs {
@@ -55,8 +55,15 @@ struct Capture {
     state: StreamState,
 }
 
+#[derive(Clone, Copy)]
+enum ReadGoal {
+    CanonicalEnd,
+    InitialPayload,
+    FinalPayload,
+}
+
 impl Capture {
-    fn receive(&mut self, observer: &Observer, expected: &[u8], terminal: bool, until: Instant) {
+    fn receive(&mut self, observer: &Observer, expected: &[u8], goal: ReadGoal, until: Instant) {
         loop {
             let Event::Record(offset, chunk) = observer.next(until) else {
                 panic!("expected canonical member record before terminal");
@@ -85,7 +92,10 @@ impl Capture {
                     assert!(expected.starts_with(&self.bytes), "exact controlled member bytes");
                 }
                 CaptureEvent::End => {
-                    assert!(terminal, "continuing neighbor ended before owner stop");
+                    assert!(
+                        matches!(goal, ReadGoal::CanonicalEnd),
+                        "continuing neighbor ended before owner stop"
+                    );
                     assert_eq!(self.bytes, expected);
                     assert_eq!(
                         self.state,
@@ -97,8 +107,12 @@ impl Capture {
                 }
                 CaptureEvent::Aborted(errno) => panic!("normal member completion aborted: {errno}"),
             }
+            if matches!(goal, ReadGoal::FinalPayload) && self.bytes == expected {
+                // ack_and_finish owns this final record's single ACK and FIN handoff.
+                return;
+            }
             let ack = observer.sender.send(Command::Handler(Ask::Ack(self.wire)));
-            if ack.is_err() || (terminal && self.state.terminal()) {
+            if ack.is_err() || (matches!(goal, ReadGoal::CanonicalEnd) && self.state.terminal()) {
                 let ended = observer.next(until);
                 eprintln!(
                     "tenant-exit terminal observation member={} channel={} wire={} ack={ack:?} actual={ended:?}",
@@ -115,7 +129,7 @@ impl Capture {
                 return;
             }
             assert!(ack.is_ok());
-            if !terminal && self.bytes == expected {
+            if matches!(goal, ReadGoal::InitialPayload) && self.bytes == expected {
                 return;
             }
         }
@@ -201,7 +215,11 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
         capture.receive(
             &fixture.observers[*index],
             &payload(if *member == 1 { "agent" } else { "harness" }, *channel),
-            *member == 1,
+            if *member == 1 {
+                ReadGoal::CanonicalEnd
+            } else {
+                ReadGoal::InitialPayload
+            },
             until,
         );
         if *member == 1 {
@@ -244,7 +262,12 @@ fn run(fixture: &mut Fixture, inputs: &Inputs, until: Instant) -> Vec<(u32, Chan
                 payload("harness-after-exit", *channel),
             ]
             .concat();
-            capture.receive(&fixture.observers[*index], &expected, false, until);
+            capture.receive(
+                &fixture.observers[*index],
+                &expected,
+                ReadGoal::FinalPayload,
+                until,
+            );
             fixture.observers[*index].ack_and_finish(capture.wire, until);
         }
         fixture
