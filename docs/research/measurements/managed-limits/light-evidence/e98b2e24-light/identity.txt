@@ -1,0 +1,20 @@
+$ git rev-parse HEAD
+e98b2e240c69f78aea08d1b70215ebe5f212f5f0
+
+$ git status --short
+
+$ rustc -Vv
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+
+$ uname -a
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+
+$ df -k .
+Filesystem      1K-blocks       Used  Available Use% Mounted on
+/dev/nvme1n1p3 7811313664 5789059084 1995476820  75% /home

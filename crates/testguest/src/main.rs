@@ -9,6 +9,8 @@ mod linux;
 #[cfg(target_os = "linux")]
 mod managed_lifecycle;
 #[cfg(target_os = "linux")]
+mod managed_limits;
+#[cfg(target_os = "linux")]
 mod managed_network;
 #[cfg(target_os = "linux")]
 mod managed_reap;

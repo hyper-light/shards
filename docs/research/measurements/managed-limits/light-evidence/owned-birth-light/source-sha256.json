@@ -1,0 +1,8 @@
+{
+  "crates/testguest/src/lib.rs": "85ebff905ce3a969eee3f9bb1495700604f6797049e510c162b50e64d935b804",
+  "crates/testguest/src/main.rs": "4f281430bdb1d7cf439c65f489dde0dc55b88d9b84c776a0f99eda9ba10bca88",
+  "crates/testguest/src/workload.rs": "a99bcd481244da2ed114166018ca5949e277cf6bc2152ae1b5dae45aca127e44",
+  "crates/testguest/src/limits.rs": "241c493ee25820a2c31daba97f088eaa64e7d521f9d062a1cbd368033606fc7a",
+  "crates/testguest/src/managed_limits.rs": "da515c695857a3870d08c6f49771a659867fee170f463d3289cb435eedf40171",
+  "crates/shards/tests/managed_limits.rs": "4e243ff75095ce67efd18cbb8c44ed208eab165975e73d7c23b71b58e4efc373"
+}

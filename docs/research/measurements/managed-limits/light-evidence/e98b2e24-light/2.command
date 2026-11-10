@@ -1,0 +1,1 @@
+cargo clippy --locked -j4 --profile test-release -p shards-testguest --bin shards-testguest -- -D warnings
