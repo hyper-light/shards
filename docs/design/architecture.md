@@ -11097,6 +11097,24 @@ restores for templates (D25): HVF and KVM, on x86_64 and arm64 (D154), and WHP (
 lies outside the microVM goes as with CRIU by default, and is said: connections to the
 world beyond it, exec sessions and attached clients.
 
+Lifecycle quarantine retains a typed first cause, PopulationObservation or Capture,
+with its actual errno. Capture reuses the same held cgroup/pidfd containment; it
+cannot relabel its allocation failure as a failed population read. Ended proof and
+prior shared-boundary faults remain terminal. [Consumer and composition evidence](../research/measurements/managed-lifecycle/quarantine-cause.md).
+
+A known unready managed tenant refuses the guest cut through typed run kind46,
+`QuiesceRefused`, correlated with the existing private restore tokens. The declared
+member, lifecycle reason and errno are checked; tokens never enter display/logs.
+Guest Open/Draining/Committing/Quiet states separate earlier bytes from the fixed
+reply. Readiness is checked before the first successful QUIESCED byte; a refusal
+returns Open without changing tokens or ending healthy tenants. A partial success
+cannot become a refusal. Stop/reap/control continues, so post-commit quarantine
+still needs full P11 freeze/revalidation against snapshot publication; this narrow
+guard does not certify a consistent cut. Host Idle/Waiting/Quiet/Refused/Ended and
+QuiesceError deliver a refusal before the VMM snapshot call, with presentation only
+at the legacy String boundary. [Decision, literal derivations, exact light checks
+and unresolved acceptance gates](../research/measurements/managed-lifecycle/quiesce-refusal.md).
+
 Templates are saved before their guest has plugged any memory or swapped (D148, D159). A
 running microVM has done both, so a save keeps them:
 

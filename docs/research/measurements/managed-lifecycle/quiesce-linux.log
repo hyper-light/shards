@@ -1,0 +1,62 @@
+policy=0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936  docs/development-rules.md
+source hashes
+295419b27e6d42798c7458237015a8d1f350b25f53d11c70823ac3393374f2d7  crates/abi/src/run.rs
+dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092  crates/abi/src/run/quiesce.rs
+1d7a7ccfc1d3061b7cd7280089e52bb485729c6af7576edeaae71973f668b0ef  crates/init/src/managed.rs
+717e88e1e4e00847e14e66074d36900d4241fb695d6ade3c1ca1745fbc08b106  crates/init/src/run.rs
+61dd8594ce9ce7237be1677648f5183c9980686a0d00a9ab03a069e39290e54b  crates/init/src/domains.rs
+80026ac60b1fb9d1c134e2b72da3cf3d7f63c3022246dcd87bc404004905ba98  crates/shards/src/workload.rs
+faa4866d318f743509cd396e108bf99e4343fbe6246da56fff525d657116bcde  crates/shards/src/warm.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/abi)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s
+     Running unittests src/lib.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/shards_abi-8e4f3c9ccfc239a1)
+
+running 2 tests
+test run::quiesce::tests::a_lifecycle_reason_cannot_disguise_an_invalid_error ... ok
+test run::quiesce::tests::a_refusal_is_fixed_typed_and_bound_to_its_request ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.00s
+
+     Running tests/allocations.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/allocations-8f65b55a1879041a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.83s
+     Running unittests src/main.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 4 tests
+test run::cut_tests::a_partial_success_header_cannot_become_a_refusal ... ok
+test run::cut_tests::a_success_commits_tokens_only_with_its_first_byte ... ok
+test run::cut_tests::a_refused_cut_drains_earlier_bytes_and_returns_open_without_tokens ... ok
+test run::cut_tests::a_blocked_success_is_rechecked_before_any_byte_commits ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+     Running unittests src/main.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 10 tests
+test managed::tests::a_second_completion_cannot_replace_the_owned_status ... ok
+test managed::tests::an_empty_population_cannot_supply_an_unobserved_exit_status ... ok
+test managed::tests::a_lost_leader_identity_is_a_shared_boundary_failure ... ok
+test managed::tests::only_a_complete_fresh_helper_ready_record_releases_startup ... ok
+test managed::tests::eof_or_an_unexpected_gate_word_never_releases_the_actor ... ok
+test managed::tests::only_running_and_proven_ended_populations_are_checkpoint_ready ... ok
+test managed::tests::malformed_status_never_becomes_a_successful_launch ... ok
+test managed::tests::exec_closes_its_status_but_setup_and_exec_failures_stay_typed ... ok
+test managed::tests::a_lost_population_control_is_a_shared_boundary_failure ... ok
+test managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/abi)
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.75s
+
+
+kiln r10 exit_code=0

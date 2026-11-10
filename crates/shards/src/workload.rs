@@ -158,49 +158,133 @@ pub fn await_resumed(tokens: &[u8]) -> Result<Resumed, String> {
     Ok(Resumed { run, signals })
 }
 
-/// A save of the run, as its relay sees it (D176): the guest has said all it held, or the
-/// run's end came first.
-struct Quiescing {
-    quiet: bool,
-    ended: bool,
+#[derive(Debug)]
+pub enum QuiesceError {
+    InvalidRequest,
+    Ended,
+    Busy,
+    NotStarted,
+    Transport(io::Error),
+    Protocol(run::quiesce::DecodeError),
+    Refused(run::quiesce::Refused),
 }
 
-static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing {
-    quiet: false,
-    ended: false,
-});
+impl std::fmt::Display for QuiesceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest => f.write_str("a save's restore tokens have the wrong length"),
+            Self::Ended => f.write_str("its command has ended"),
+            Self::Busy => f.write_str("a save of its command is already pending"),
+            Self::NotStarted => f.write_str("its command has not started"),
+            Self::Transport(error) => write!(f, "asking its guest: {error}"),
+            Self::Protocol(error) => write!(f, "its guest sent an invalid save response: {error}"),
+            Self::Refused(refusal) => write!(f, "its guest refused the save: {refusal}"),
+        }
+    }
+}
+
+impl std::error::Error for QuiesceError {}
+
+/// The run relay's checkpoint request and its typed terminal reply (D176).
+enum Quiescing {
+    Idle,
+    Waiting([u8; run::quiesce::REQUEST_BYTES]),
+    Quiet,
+    Refused(run::quiesce::Refused),
+    Ended {
+        protocol: Option<run::quiesce::DecodeError>,
+    },
+}
+
+impl Quiescing {
+    fn begin(&mut self, request: [u8; run::quiesce::REQUEST_BYTES]) -> Result<(), QuiesceError> {
+        match self {
+            Self::Idle => {
+                *self = Self::Waiting(request);
+                Ok(())
+            }
+            Self::Ended { .. } => Err(QuiesceError::Ended),
+            _ => Err(QuiesceError::Busy),
+        }
+    }
+
+    fn cancel(&mut self, request: &[u8; run::quiesce::REQUEST_BYTES]) {
+        if matches!(self, Self::Waiting(held) if held == request) {
+            *self = Self::Idle;
+        }
+    }
+
+    fn quiet(&mut self) {
+        if matches!(self, Self::Waiting(_)) {
+            *self = Self::Quiet;
+        }
+    }
+
+    fn refuse(&mut self, refusal: run::quiesce::Refused) {
+        if matches!(self, Self::Waiting(request) if refusal.matches(request)) {
+            *self = Self::Refused(refusal);
+        }
+    }
+
+    fn end(&mut self) {
+        if !matches!(self, Self::Ended { .. }) {
+            *self = Self::Ended { protocol: None };
+        }
+    }
+
+    fn protocol_failed(&mut self, error: run::quiesce::DecodeError) {
+        *self = Self::Ended {
+            protocol: Some(error),
+        };
+    }
+
+    fn outcome(&mut self) -> Option<Result<(), QuiesceError>> {
+        match self {
+            Self::Idle | Self::Waiting(_) => None,
+            Self::Ended { protocol } => Some(Err(match *protocol {
+                Some(error) => QuiesceError::Protocol(error),
+                None => QuiesceError::Ended,
+            })),
+            Self::Quiet => {
+                *self = Self::Idle;
+                Some(Ok(()))
+            }
+            Self::Refused(refusal) => {
+                let error = QuiesceError::Refused(*refusal);
+                *self = Self::Idle;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
+static QUIESCING: Mutex<Quiescing> = Mutex::new(Quiescing::Idle);
 static QUIET: std::sync::Condvar = std::sync::Condvar::new();
 
 fn quiescing() -> std::sync::MutexGuard<'static, Quiescing> {
     QUIESCING.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Has the guest go quiet for a save of the run (D176), `tokens` the two it dials the host
-/// again with in a microVM restored from it, and waits until it has: all it held said, and
-/// read here, so that none of it is on its way as the save is taken. What the host sends
-/// it meanwhile, its stdin and signals, comes after the save in a restored copy, where it
-/// is not. An error where its command has ended, or has yet to start.
-pub fn quiesce(tokens: &[u8]) -> Result<(), String> {
-    {
-        let mut q = quiescing();
-        if q.ended {
-            return Err("its command has ended".into());
-        }
-        q.quiet = false;
-    }
-    match lock_stdin().as_mut() {
-        Some(conn) => send(conn, kind::QUIESCE, tokens).map_err(|e| format!("asking its guest: {e}"))?,
-        None => return Err("its command has not started".into()),
+/// Waits for the guest's cut or a correlated refusal before the VMM saves it (D176).
+/// The two restore tokens remain private to this control path.
+pub fn quiesce(tokens: &[u8]) -> Result<(), QuiesceError> {
+    let request = tokens.try_into().map_err(|_| QuiesceError::InvalidRequest)?;
+    quiescing().begin(request)?;
+    let sent = match lock_stdin().as_mut() {
+        Some(conn) => send(conn, kind::QUIESCE, tokens).map_err(QuiesceError::Transport),
+        None => Err(QuiesceError::NotStarted),
+    };
+    if let Err(error) = sent {
+        quiescing().cancel(&request);
+        return Err(error);
     }
     let mut q = quiescing();
-    while !q.quiet && !q.ended {
+    loop {
+        if let Some(outcome) = q.outcome() {
+            return outcome;
+        }
         q = QUIET.wait(q).unwrap_or_else(PoisonError::into_inner);
     }
-    if !q.quiet {
-        return Err("its command ended first".into());
-    }
-    q.quiet = false;
-    Ok(())
 }
 
 /// Lets the guest go on after a save, taken or not (D176).
@@ -678,7 +762,7 @@ pub fn serve(
     let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
     let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
     // A save waiting for the guest to go quiet waits no more: its command has ended.
-    quiescing().ended = true;
+    quiescing().end();
     QUIET.notify_all();
     if let Some(told) = told {
         told(&status);
@@ -839,7 +923,19 @@ fn relay_frames(
             kind::EXEC_FAILED => exec_failed(payload),
             // All the guest held is here, the save it was asked for waits on it (D176).
             kind::QUIESCED => {
-                quiescing().quiet = true;
+                quiescing().quiet();
+                QUIET.notify_all();
+            }
+            kind::QUIESCE_REFUSED => {
+                let refusal = match run::quiesce::Refused::decode(payload) {
+                    Ok(refusal) => refusal,
+                    Err(error) => {
+                        quiescing().protocol_failed(error);
+                        QUIET.notify_all();
+                        return Err("the guest sent a malformed quiesce refusal".into());
+                    }
+                };
+                quiescing().refuse(refusal);
                 QUIET.notify_all();
             }
             kind::OOM => oom = Some(payload.to_vec()),
@@ -2157,6 +2253,62 @@ mod tests {
     use super::*;
     use crate::segments::{log_segment, new_segment};
     static HELLO_TESTS: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn quiesce_replies_resolve_only_the_waiting_request() {
+        use run::quiesce::{REQUEST_BYTES, Reason, Refused};
+        let request = [0x5a; REQUEST_BYTES];
+        let refusal = Refused::new(request, 7, Reason::Quarantined, 21).unwrap();
+        let mut q = Quiescing::Idle;
+        q.begin(request).unwrap();
+        assert!(matches!(q.begin(request), Err(QuiesceError::Busy)));
+        q.refuse(Refused::new([0x5b; REQUEST_BYTES], 7, Reason::Quarantined, 21).unwrap());
+        assert!(q.outcome().is_none());
+        q.refuse(refusal);
+        let error = q.outcome().unwrap().unwrap_err();
+        assert!(matches!(&error, QuiesceError::Refused(found) if *found == refusal));
+        assert_eq!(
+            error.to_string(),
+            "its guest refused the save: tenant 7 is quarantined with unknown population; errno 21"
+        );
+        assert!(matches!(q, Quiescing::Idle));
+        q.quiet();
+        assert!(q.outcome().is_none());
+        q.begin(request).unwrap();
+        q.quiet();
+        assert!(q.outcome().unwrap().is_ok());
+        q.refuse(refusal);
+        assert!(q.outcome().is_none());
+    }
+
+    #[test]
+    fn quiesce_send_failure_and_command_end_keep_their_ownership() {
+        let request = [0; run::quiesce::REQUEST_BYTES];
+        let mut q = Quiescing::Idle;
+        q.begin(request).unwrap();
+        q.cancel(&[1; run::quiesce::REQUEST_BYTES]);
+        assert!(matches!(q, Quiescing::Waiting(_)));
+        q.cancel(&request);
+        assert!(matches!(q, Quiescing::Idle));
+        q.begin(request).unwrap();
+        q = Quiescing::Ended { protocol: None };
+        q.cancel(&request);
+        q.quiet();
+        assert!(matches!(q.begin(request), Err(QuiesceError::Ended)));
+        assert!(matches!(q.outcome(), Some(Err(QuiesceError::Ended))));
+        assert!(matches!(q, Quiescing::Ended { .. }));
+    }
+
+    #[test]
+    fn quiesce_bad_response_keeps_its_typed_error_when_the_relay_ends() {
+        let mut q = Quiescing::Idle;
+        q.begin([0; run::quiesce::REQUEST_BYTES]).unwrap();
+        let error = run::quiesce::DecodeError::UnknownReason(u8::MAX);
+        q.protocol_failed(error);
+        q.end();
+        assert!(matches!(q.outcome(), Some(Err(QuiesceError::Protocol(found))) if found == error));
+        assert!(matches!(q, Quiescing::Ended { .. }));
+    }
 
     /// A directory of its own, removed when dropped, whether its test passes or panics.
     fn temp(tag: &str) -> shards_testdir::TempDir {

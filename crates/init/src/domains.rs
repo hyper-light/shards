@@ -1619,7 +1619,7 @@ pub fn start(
     for (i, d) in domains.iter().enumerate() {
         let member =
             d.id.checked_sub(FIRST_ID)
-                .ok_or("managed member ordinal precedes its namespace")?;
+                .ok_or("a domain's identity precedes its declared range")?;
         let group = format!("{CGROUPS}/{}", d.cgroup);
         std::fs::create_dir(&group).map_err(|e| format!("{group}: {e}"))?;
         if let Some(n) = d.pids {

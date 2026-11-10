@@ -59,9 +59,32 @@ impl std::fmt::Display for BoundaryFault {
 impl std::error::Error for BoundaryFault {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuarantineCause {
+    PopulationObservation { errno: i32 },
+    Capture { errno: i32 },
+}
+
+impl QuarantineCause {
+    pub fn errno(self) -> i32 {
+        match self {
+            Self::PopulationObservation { errno } | Self::Capture { errno } => errno,
+        }
+    }
+}
+
+impl std::fmt::Display for QuarantineCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PopulationObservation { errno } => write!(f, "population observation errno {errno}"),
+            Self::Capture { errno } => write!(f, "capture errno {errno}"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Update {
     Observed,
-    Quarantined { errno: i32 },
+    Quarantined { cause: QuarantineCause },
 }
 
 impl Failure {
@@ -108,7 +131,7 @@ pub enum State {
     },
     Quarantined {
         status: Option<u32>,
-        errno: i32,
+        cause: QuarantineCause,
     },
     Faulted {
         status: Option<u32>,
@@ -117,6 +140,26 @@ pub enum State {
 }
 
 impl State {
+    fn checkpoint_block(self) -> Option<(shards_abi::run::quiesce::Reason, i32)> {
+        use shards_abi::run::quiesce::Reason;
+        match self {
+            Self::Running | Self::Ended { .. } => None,
+            Self::Starting => Some((Reason::Starting, 0)),
+            Self::Stopping => Some((Reason::Stopping, 0)),
+            Self::Draining { .. } => Some((Reason::Draining, 0)),
+            Self::Quarantined { cause, .. } => Some((Reason::Quarantined, cause.errno())),
+            Self::Faulted { fault, .. } => Some((
+                Reason::Faulted,
+                match fault {
+                    BoundaryFault::PopulationControl { errno } | BoundaryFault::LeaderControl { errno } => {
+                        errno
+                    }
+                    BoundaryFault::StatusConflict => libc::EPROTO,
+                },
+            )),
+        }
+    }
+
     fn stopping(self) -> Self {
         match self {
             Self::Starting | Self::Running => Self::Stopping,
@@ -128,9 +171,9 @@ impl State {
         match self {
             Self::Starting | Self::Running | Self::Stopping => Ok(Self::Draining { status }),
             Self::Draining { status: old } | Self::Ended { status: old } if old == status => Ok(self),
-            Self::Quarantined { status: None, errno } => Ok(Self::Quarantined {
+            Self::Quarantined { status: None, cause } => Ok(Self::Quarantined {
                 status: Some(status),
-                errno,
+                cause,
             }),
             Self::Quarantined {
                 status: Some(old), ..
@@ -383,6 +426,10 @@ impl Owned {
         matches!(self.state, State::Ended { .. })
     }
 
+    pub fn checkpoint_block(&self) -> Option<(shards_abi::run::quiesce::Reason, i32)> {
+        self.state.checkpoint_block()
+    }
+
     pub fn quarantined(&self) -> bool {
         matches!(self.state, State::Quarantined { .. })
     }
@@ -428,13 +475,20 @@ impl Owned {
             Ok(true) => self.state = self.state.empty(),
             Ok(false) => {}
             Err(e) => {
-                return self.quarantine(e.raw_os_error().unwrap_or(libc::EIO));
+                return self.quarantine(QuarantineCause::PopulationObservation {
+                    errno: e.raw_os_error().unwrap_or(libc::EIO),
+                });
             }
         }
         Ok(Update::Observed)
     }
 
-    fn quarantine(&mut self, errno: i32) -> Result<Update, BoundaryFault> {
+    pub fn quarantine(&mut self, cause: QuarantineCause) -> Result<Update, BoundaryFault> {
+        match self.state {
+            State::Ended { .. } | State::Quarantined { .. } => return Ok(Update::Observed),
+            State::Faulted { fault, .. } => return Err(fault),
+            _ => {}
+        }
         self.stop()?;
         if let Err(e) = signal_stop(&self.pidfd) {
             let fault = BoundaryFault::LeaderControl {
@@ -445,9 +499,9 @@ impl Owned {
         }
         self.state = State::Quarantined {
             status: self.state.status(),
-            errno,
+            cause,
         };
-        Ok(Update::Quarantined { errno })
+        Ok(Update::Quarantined { cause })
     }
 
     fn population_empty(&self) -> io::Result<bool> {
@@ -859,6 +913,37 @@ mod tests {
     }
 
     #[test]
+    fn only_running_and_proven_ended_populations_are_checkpoint_ready() {
+        use shards_abi::run::quiesce::Reason;
+        assert_eq!(State::Running.checkpoint_block(), None);
+        assert_eq!(State::Ended { status: 17 }.checkpoint_block(), None);
+        assert_eq!(State::Starting.checkpoint_block(), Some((Reason::Starting, 0)));
+        assert_eq!(State::Stopping.checkpoint_block(), Some((Reason::Stopping, 0)));
+        assert_eq!(
+            State::Draining { status: 17 }.checkpoint_block(),
+            Some((Reason::Draining, 0))
+        );
+        for status in [None, Some(17)] {
+            assert_eq!(
+                State::Quarantined {
+                    status,
+                    cause: QuarantineCause::PopulationObservation { errno: libc::EISDIR }
+                }
+                .checkpoint_block(),
+                Some((Reason::Quarantined, libc::EISDIR))
+            );
+            assert_eq!(
+                State::Faulted {
+                    status,
+                    fault: BoundaryFault::StatusConflict
+                }
+                .checkpoint_block(),
+                Some((Reason::Faulted, libc::EPROTO))
+            );
+        }
+    }
+
+    #[test]
     fn only_a_complete_fresh_helper_ready_record_releases_startup() {
         let ready = [READY, 0, 0, 0, 0];
         for cut in 0..ready.len() {
@@ -1023,17 +1108,79 @@ mod tests {
     }
 
     #[test]
+    fn a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause() {
+        let mut child = Child::start();
+        let dir = shards_testdir::TempDir::new("lifecycle-capture-error").unwrap();
+        let mut domain = wrong_event_owner(&dir, child.pidfd.try_clone().unwrap(), child.pid.unwrap());
+        let cause = QuarantineCause::Capture { errno: libc::ENOMEM };
+        assert_eq!(domain.quarantine(cause), Ok(Update::Quarantined { cause }));
+        assert!(domain.owner.is_none());
+        assert!(domain.events().is_none());
+        assert_eq!(std::fs::read(dir.join("kill")).unwrap(), b"1");
+        assert_eq!(
+            domain.quarantine(QuarantineCause::PopulationObservation { errno: libc::EISDIR }),
+            Ok(Update::Observed)
+        );
+        assert_eq!(domain.state, State::Quarantined { status: None, cause });
+        let status = child.reap();
+        assert_eq!(domain.reaped(status), Ok(Update::Observed));
+        assert_eq!(
+            domain.state,
+            State::Quarantined {
+                status: Some(status),
+                cause
+            }
+        );
+        assert_eq!(
+            domain.checkpoint_block(),
+            Some((shards_abi::run::quiesce::Reason::Quarantined, libc::ENOMEM))
+        );
+    }
+
+    #[test]
+    fn quarantine_preserves_ended_proof_and_a_prior_boundary_failure() {
+        let dir = shards_testdir::TempDir::new("lifecycle-terminal-quarantine").unwrap();
+        let (wrong_pidfd, other) = pipe().unwrap();
+        drop(other);
+        let mut domain = wrong_event_owner(&dir, wrong_pidfd, 0);
+        // Neither terminal call may issue the invalid stop controls.
+        domain.kill = std::fs::File::open(dir.join("kill")).unwrap();
+        let cause = QuarantineCause::Capture { errno: libc::ENOMEM };
+        domain.state = State::Ended { status: 17 };
+        assert_eq!(domain.quarantine(cause), Ok(Update::Observed));
+        assert_eq!(domain.state, State::Ended { status: 17 });
+        let fault = BoundaryFault::PopulationControl { errno: libc::EBADF };
+        domain.state = State::Faulted {
+            status: Some(17),
+            fault,
+        };
+        assert_eq!(domain.quarantine(cause), Err(fault));
+        assert_eq!(
+            domain.state,
+            State::Faulted {
+                status: Some(17),
+                fault
+            }
+        );
+    }
+
+    #[test]
     fn a_real_observation_error_quarantines_only_the_owned_tenant() {
         let mut child = Child::start();
         let sibling = Child::start();
         let dir = shards_testdir::TempDir::new("lifecycle-events-error").unwrap();
         let mut domain = wrong_event_owner(&dir, child.pidfd.try_clone().unwrap(), child.pid.unwrap());
-        assert_eq!(domain.changed(), Ok(Update::Quarantined { errno: libc::EISDIR }));
+        assert_eq!(
+            domain.changed(),
+            Ok(Update::Quarantined {
+                cause: QuarantineCause::PopulationObservation { errno: libc::EISDIR }
+            })
+        );
         assert_eq!(
             domain.state,
             State::Quarantined {
                 status: None,
-                errno: libc::EISDIR
+                cause: QuarantineCause::PopulationObservation { errno: libc::EISDIR }
             }
         );
         assert!(domain.owner.is_none());
@@ -1047,7 +1194,7 @@ mod tests {
             domain.state,
             State::Quarantined {
                 status: Some(status),
-                errno: libc::EISDIR
+                cause: QuarantineCause::PopulationObservation { errno: libc::EISDIR }
             }
         );
         assert_eq!(domain.changed(), Ok(Update::Observed));

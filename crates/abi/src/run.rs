@@ -9,6 +9,7 @@
 use alloc::vec::Vec;
 
 pub mod managed;
+pub mod quiesce;
 
 /// The host port the guest dials for its workload.
 pub const PORT: u32 = 1024;
@@ -170,6 +171,9 @@ pub mod kind {
     pub const MANAGED_CREDIT: u8 = 44;
     /// Guest to host, on the independent signal connection: one tenant's trusted Abort.
     pub const MANAGED_ABORT: u8 = 45;
+    /// Guest to host: a requested cut was refused, as [`quiesce::Refused`](super::quiesce::Refused).
+    /// It is a control result, never workload output or a successful QUIESCED.
+    pub const QUIESCE_REFUSED: u8 = 46;
     /// Guest to host, on the signal connection: the managed control scope ended normally.
     pub const MANAGED_CONTROL_END: u8 = 47;
 }

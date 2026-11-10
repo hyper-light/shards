@@ -1,0 +1,44 @@
+policy=0d936117dbc6663eb02829c3e921879cecdad3a8f503047588baa21dc82da936  docs/development-rules.md
+source hashes
+7850fa6a28c65a1063cd349748f227ecc874bb381507a0565e39c500d7f07d1e  crates/init/src/managed.rs
+7e2020de682deb6a887038fd1c119904ce220fc78fe15a9a2ba1ec46b9c6675e  crates/init/src/run.rs
+rustc 1.98.1 (48a229cea 2026-09-01)
+Linux fedora.attlocal.net 6.19.10-300.fc44.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Mar 25 18:23:49 UTC 2026 x86_64 GNU/Linux
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.61s
+     Running unittests src/main.rs (/home/adalundhe/.cache/g121-managed-lifecycle-target/debug/deps/shards_init-efa7b4d2495f5c91)
+
+running 12 tests
+test managed::tests::a_second_completion_cannot_replace_the_owned_status ... ok
+test managed::tests::an_empty_population_cannot_supply_an_unobserved_exit_status ... ok
+test managed::tests::a_lost_population_control_is_a_shared_boundary_failure ... ok
+test managed::tests::eof_or_an_unexpected_gate_word_never_releases_the_actor ... ok
+test managed::tests::a_lost_leader_identity_is_a_shared_boundary_failure ... ok
+test managed::tests::a_capture_failure_uses_the_same_owned_containment_and_keeps_its_cause ... ok
+test managed::tests::only_running_and_proven_ended_populations_are_checkpoint_ready ... ok
+test managed::tests::malformed_status_never_becomes_a_successful_launch ... ok
+test managed::tests::only_a_complete_fresh_helper_ready_record_releases_startup ... ok
+test managed::tests::exec_closes_its_status_but_setup_and_exec_failures_stay_typed ... ok
+test managed::tests::quarantine_preserves_ended_proof_and_a_prior_boundary_failure ... ok
+test managed::tests::a_real_observation_error_quarantines_only_the_owned_tenant ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 84 filtered out; finished in 0.00s
+
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-lifecycle-d03ca14420/crates/init)
+error: variant `Capture` is never constructed
+  --> crates/init/src/managed.rs:64:5
+   |
+62 | pub enum QuarantineCause {
+   |          --------------- variant in this enum
+63 |     PopulationObservation { errno: i32 },
+64 |     Capture { errno: i32 },
+   |     ^^^^^^^
+   |
+   = note: `QuarantineCause` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: could not compile `shards-init` (bin "shards-init") due to 1 previous error
+
+kiln r11 exit_code=101 (12 tests passed; production lint requires capture consumer)
+

@@ -4272,11 +4272,11 @@ fn send_workload_layer(conn: &File) -> Option<libc::pid_t> {
 }
 
 fn apply_lifecycle(domain: &mut crate::domains::Started, update: crate::managed::Update) {
-    if let crate::managed::Update::Quarantined { errno } = update {
-        domain.abort_output(errno);
+    if let crate::managed::Update::Quarantined { cause } = update {
+        domain.abort_output(cause.errno());
         let _ = writeln!(
             io::stderr(),
-            "shards-init: {}: quarantined after population observation errno {errno}; emptiness unknown",
+            "shards-init: {}: quarantined after {cause}; emptiness unknown",
             domain.label
         );
     }
@@ -4366,14 +4366,7 @@ impl Workload {
         let mut status: Option<u32> = None;
         let mut execs: Vec<Exec> = Vec::new();
         let mut buf = vec![0u8; CHUNK];
-        // A save of the run (D176): asked to QUIESCE, it sends the host all it holds and then
-        // QUIESCED (`flushing`), then nothing more (`quiet`) until the host says RESUME or, in
-        // a microVM restored from the save, until it has dialed the host again with the save's
-        // `tokens`; what comes meanwhile waits in `to_host`. A lineage's generation past
-        // `born` says its microVM was restored since (control::GENERATION); `lost`, that the
-        // host's connection was, in one.
-        let mut flushing: Option<Outbox> = None;
-        let mut quiet = false;
+        let mut cut = Cut::Open;
         // The host's end of its connection read: nothing more comes on it.
         let mut host_eof = false;
         let mut tokens: Option<Tokens> = None;
@@ -4477,7 +4470,7 @@ impl Workload {
             // (flakes plan step 3, PM M328).
             if host.is_none() {
                 to_host.clear();
-                flushing = None;
+                cut = Cut::Open;
             }
             for e in &mut execs {
                 if e.conn.is_none() {
@@ -4542,8 +4535,7 @@ impl Workload {
                     .capture_control
                     .as_ref()
                     .is_none_or(crate::capture::ControlQueue::ended)
-                && flushing.is_none()
-                && !quiet
+                && cut.open()
                 && self.stdout.is_none()
                 && self.stderr.is_none()
                 && (to_host.is_empty() || host.is_none())
@@ -4577,17 +4569,13 @@ impl Workload {
             };
             poll(Some(self.sigchld.as_raw_fd()), libc::POLLIN, Owner::Sigchld);
             // Quiet for a save, it reads on: the host's RESUME, or a restore's reset (D176).
-            let sending = match &flushing {
-                Some(f) => !f.is_empty(),
-                None => !quiet && !to_host.is_empty(),
-            };
+            let sending = cut.sending(&to_host);
             // Read while the run goes on, its stdin closed or not: the host asks for a save
             // on it, and a restore resets it (D176). Its stdin waits while it holds enough.
             let host_events = if !host_eof
                 && ((!exited && (stdin_eof || to_stdin.len() < BUFFERED))
                     || (reported && !asked)
-                    || quiet
-                    || flushing.is_some())
+                    || !cut.open())
             {
                 libc::POLLIN
             } else {
@@ -4870,18 +4858,25 @@ impl Workload {
                     }
                     Owner::Host => {
                         if p.revents & libc::POLLOUT != 0 {
-                            let out = flushing.as_mut().unwrap_or(&mut to_host);
-                            match write(fd, out.pending()) {
-                                Ok(n) => out.written(n),
-                                // A connection a restore reset is dialed again, below
-                                // (D176).
+                            let refusal = match cut
+                                .request()
+                                .map(|request| checkpoint_refusal(request, &self.domains))
+                                .transpose()
+                            {
+                                Ok(refusal) => refusal.flatten(),
+                                Err(error) => {
+                                    fatal = Some(setup_failed(format!(
+                                        "invalid tenant checkpoint state: {error}"
+                                    )));
+                                    break 'relay;
+                                }
+                            };
+                            match cut.write(fd, &mut to_host, refusal) {
+                                Ok(Some(committed)) => tokens = Some(committed),
+                                Ok(None) => {}
+                                // A connection a restore reset is dialed again (D176).
                                 Err(_) if tokens.is_some() && generation() > born => lost = true,
                                 Err(_) => host = None,
-                            }
-                            // All it held is said, and QUIESCED after it: quiet from here.
-                            if flushing.as_ref().is_some_and(Outbox::is_empty) {
-                                flushing = None;
-                                quiet = true;
                             }
                         }
                         if p.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
@@ -4920,18 +4915,16 @@ impl Workload {
                                         asked = true;
                                         packing = send_workload_layer(&conn);
                                     }
-                                    // A save asked for (D176): what it holds goes, then
-                                    // QUIESCED, and nothing that comes after either.
-                                    if let Some(t) = quiesce
-                                        && flushing.is_none()
-                                        && !quiet
+                                    if let Some(request) = quiesce
+                                        && cut.open()
                                     {
-                                        tokens = Some(t);
-                                        to_host.extend(&[&run::header(kind::QUIESCED, 0)]);
-                                        flushing = Some(std::mem::take(&mut to_host));
+                                        cut = Cut::Draining {
+                                            pending: std::mem::take(&mut to_host),
+                                            request,
+                                        };
                                     }
                                     if resume {
-                                        quiet = false;
+                                        cut.resume();
                                     }
                                 }
                             }
@@ -5202,7 +5195,7 @@ impl Workload {
                         signals = Some(signal);
                         signals_connected = true;
                         from_signals.clear();
-                        quiet = false;
+                        cut = Cut::Open;
                         born = generation();
                     }
                     failed => {
@@ -5213,7 +5206,7 @@ impl Workload {
                         host = None;
                         stdin_eof = true;
                         asked |= reported;
-                        quiet = false;
+                        cut = Cut::Open;
                     }
                 }
             }
@@ -5271,6 +5264,139 @@ impl Workload {
     }
 }
 
+fn checkpoint_refusal(
+    request: Tokens,
+    domains: &[crate::domains::Started],
+) -> io::Result<Option<run::quiesce::Refused>> {
+    for domain in domains {
+        if let Some((reason, errno)) = domain.lifecycle.checkpoint_block() {
+            return run::quiesce::Refused::new(request.bytes(), domain.member, reason, errno)
+                .map(Some)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EPROTO));
+        }
+    }
+    Ok(None)
+}
+
+/// The cut reply is separate from queued output, so no success byte precedes its
+/// final readiness check. Once a byte is written, the reply cannot change (D176).
+enum Cut {
+    Open,
+    Draining { pending: Outbox, request: Tokens },
+    Committing { reply: CutReply, at: usize },
+    Quiet,
+}
+
+enum CutReply {
+    Quiet(Tokens),
+    Refused(run::quiesce::Refused),
+}
+
+impl CutReply {
+    fn frame(&self) -> ([u8; run::HEADER + run::quiesce::Refused::LEN], usize) {
+        let mut bytes = [0; run::HEADER + run::quiesce::Refused::LEN];
+        match self {
+            Self::Quiet(_) => {
+                for (to, from) in bytes.iter_mut().zip(run::header(kind::QUIESCED, 0)) {
+                    *to = from;
+                }
+                (bytes, run::HEADER)
+            }
+            Self::Refused(refusal) => {
+                // The fixed refusal has fewer bytes than the u32 frame length can hold.
+                let header = run::header(kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32);
+                for (to, from) in bytes.iter_mut().zip(header.into_iter().chain(refusal.encode())) {
+                    *to = from;
+                }
+                (bytes, run::HEADER + run::quiesce::Refused::LEN)
+            }
+        }
+    }
+}
+
+impl Cut {
+    fn open(&self) -> bool {
+        matches!(self, Self::Open)
+    }
+
+    fn sending(&self, output: &Outbox) -> bool {
+        match self {
+            Self::Open => !output.is_empty(),
+            Self::Draining { .. } | Self::Committing { .. } => true,
+            Self::Quiet => false,
+        }
+    }
+
+    fn request(&self) -> Option<Tokens> {
+        match self {
+            Self::Draining { pending, request } if pending.is_empty() => Some(*request),
+            Self::Committing {
+                reply: CutReply::Quiet(request),
+                at: 0,
+            } => Some(*request),
+            _ => None,
+        }
+    }
+
+    fn resume(&mut self) {
+        if matches!(self, Self::Quiet) {
+            *self = Self::Open;
+        }
+    }
+
+    fn write(
+        &mut self,
+        fd: RawFd,
+        output: &mut Outbox,
+        refusal: Option<run::quiesce::Refused>,
+    ) -> io::Result<Option<Tokens>> {
+        if let Self::Draining { pending, request } = self
+            && pending.is_empty()
+        {
+            *self = Self::Committing {
+                reply: CutReply::Quiet(*request),
+                at: 0,
+            };
+        }
+        if let Self::Committing { reply, at: 0 } = self
+            && let Some(refusal) = refusal
+        {
+            *reply = CutReply::Refused(refusal);
+        }
+        match self {
+            Self::Open => {
+                output.written(write(fd, output.pending())?);
+                Ok(None)
+            }
+            Self::Draining { pending, .. } => {
+                pending.written(write(fd, pending.pending())?);
+                Ok(None)
+            }
+            Self::Quiet => Ok(None),
+            Self::Committing { reply, at } => {
+                let (bytes, len) = reply.frame();
+                let pending = bytes
+                    .get(..len)
+                    .and_then(|b| b.get(*at..))
+                    .ok_or_else(|| io::Error::from_raw_os_error(libc::EPROTO))?;
+                let n = write(fd, pending)?;
+                let committed = match reply {
+                    CutReply::Quiet(request) if *at == 0 && n != 0 => Some(*request),
+                    _ => None,
+                };
+                *at = at.saturating_add(n).min(len);
+                if *at == len {
+                    *self = match reply {
+                        CutReply::Quiet(_) => Self::Quiet,
+                        CutReply::Refused(_) => Self::Open,
+                    };
+                }
+                Ok(committed)
+            }
+        }
+    }
+}
+
 /// A save's tokens (D176), each a connection's to dial the host again with in a microVM
 /// restored from it: the workload's, then the signals'.
 #[derive(Clone, Copy)]
@@ -5280,6 +5406,14 @@ struct Tokens {
 }
 
 impl Tokens {
+    fn bytes(self) -> [u8; run::quiesce::REQUEST_BYTES] {
+        let mut bytes = [0; run::quiesce::REQUEST_BYTES];
+        for (to, from) in bytes.iter_mut().zip(self.run.into_iter().chain(self.signal)) {
+            *to = from;
+        }
+        bytes
+    }
+
     /// The tokens a QUIESCE frame carries; none from one of another length.
     fn read(payload: &[u8]) -> Option<Tokens> {
         let (run, signal) = payload.split_first_chunk::<{ run::TOKEN }>()?;
@@ -5700,5 +5834,162 @@ pub(crate) fn write(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    fn request() -> Tokens {
+        Tokens::read(&[0x5a; run::quiesce::REQUEST_BYTES]).unwrap()
+    }
+
+    fn refused() -> run::quiesce::Refused {
+        run::quiesce::Refused::new(
+            request().bytes(),
+            7,
+            run::quiesce::Reason::Quarantined,
+            libc::EISDIR,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_refused_cut_drains_earlier_bytes_and_returns_open_without_tokens() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut pending = Outbox::default();
+        pending.extend(&[b"before"]);
+        let mut after = Outbox::default();
+        after.extend(&[b"after"]);
+        let mut cut = Cut::Draining {
+            pending,
+            request: request(),
+        };
+        assert!(cut.write(writer.as_raw_fd(), &mut after, None).unwrap().is_none());
+        let mut before = [0; b"before".len()];
+        reader.read_exact(&mut before).unwrap();
+        assert_eq!(&before, b"before");
+        assert!(cut.request().is_some());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut after, Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(cut.open());
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32))
+        );
+        let mut payload = [0; run::quiesce::Refused::LEN];
+        reader.read_exact(&mut payload).unwrap();
+        assert_eq!(run::quiesce::Refused::decode(&payload), Ok(refused()));
+        cut.write(writer.as_raw_fd(), &mut after, None).unwrap();
+        let mut tail = [0; b"after".len()];
+        reader.read_exact(&mut tail).unwrap();
+        assert_eq!(&tail, b"after");
+    }
+
+    #[test]
+    fn a_partial_success_header_cannot_become_a_refusal() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut cut = Cut::Committing {
+            reply: CutReply::Quiet(request()),
+            at: 1,
+        };
+        assert!(cut.request().is_none());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        let mut tail = [0; run::HEADER - 1];
+        reader.read_exact(&mut tail).unwrap();
+        assert_eq!(Some(tail.as_slice()), run::header(kind::QUIESCED, 0).get(1..));
+        assert!(matches!(cut, Cut::Quiet));
+        cut.resume();
+        assert!(cut.open());
+    }
+
+    #[test]
+    fn a_blocked_success_is_rechecked_before_any_byte_commits() {
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let bytes = [0; run::CHUNK];
+        let mut filled = 0usize;
+        loop {
+            match writer.write(&bytes) {
+                Ok(n) => {
+                    assert_ne!(n, 0);
+                    filled = filled.checked_add(n).unwrap();
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let mut cut = Cut::Draining {
+            pending: Outbox::default(),
+            request: request(),
+        };
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(cut.request().is_some());
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), Some(refused()))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            cut,
+            Cut::Committing {
+                reply: CutReply::Refused(_),
+                at: 0
+            }
+        ));
+        io::copy(
+            &mut Read::by_ref(&mut reader).take(filled as u64),
+            &mut io::sink(),
+        )
+        .unwrap();
+        assert!(
+            cut.write(writer.as_raw_fd(), &mut Outbox::default(), None)
+                .unwrap()
+                .is_none()
+        );
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(
+            run::parse_header(header),
+            Some((kind::QUIESCE_REFUSED, run::quiesce::Refused::LEN as u32))
+        );
+        let mut payload = [0; run::quiesce::Refused::LEN];
+        reader.read_exact(&mut payload).unwrap();
+        assert_eq!(run::quiesce::Refused::decode(&payload), Ok(refused()));
+        assert!(cut.open());
+    }
+
+    #[test]
+    fn a_success_commits_tokens_only_with_its_first_byte() {
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let mut cut = Cut::Draining {
+            pending: Outbox::default(),
+            request: request(),
+        };
+        let tokens = cut
+            .write(writer.as_raw_fd(), &mut Outbox::default(), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tokens.bytes(), request().bytes());
+        assert!(matches!(cut, Cut::Quiet));
+        let mut header = [0; run::HEADER];
+        reader.read_exact(&mut header).unwrap();
+        assert_eq!(header, run::header(kind::QUIESCED, 0));
+        assert!(!cut.sending(&Outbox::default()));
     }
 }
