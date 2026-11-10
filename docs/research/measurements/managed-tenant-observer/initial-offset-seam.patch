@@ -17,25 +17,15 @@
          self.flush(io);
          Ok(())
      }
-@@ -214,6 +215,17 @@
+@@ -212,6 +213,7 @@
+         metadata: &Metadata,
+         scope: Scope,
          address: SocketAddr,
++        from: u64,
          until: Instant,
      ) -> Self {
-+        Self::start_at(owner, metadata, scope, address, 0, until)
-+    }
-+
-+    fn start_at(
-+        owner: &Identity,
-+        metadata: &Metadata,
-+        scope: Scope,
-+        address: SocketAddr,
-+        from: u64,
-+        until: Instant,
-+    ) -> Self {
          let patience = until.saturating_duration_since(Instant::now());
-         let window = metadata.capacity.checked_add(managed::DATA_HEAD).unwrap();
-         let admitted = Admitted {
-@@ -228,6 +240,7 @@
+@@ -228,6 +230,7 @@
          let client = Client {
              config: Some(managed::client_config(owner, metadata.server, admitted).unwrap()),
              scope,
@@ -43,7 +33,7 @@
              conn: None,
              stream: None,
              events: event,
-@@ -587,6 +600,18 @@
+@@ -587,6 +590,18 @@
          outsider: bool,
          until: Instant,
      ) -> usize {
@@ -62,13 +52,7 @@
          let metadata = self.metadata.as_ref().unwrap();
          let _ = writeln!(
              std::io::stdout(),
-@@ -594,11 +619,12 @@
-             channel as u8
-         );
-         let stranger = outsider.then(|| Identity::generate().unwrap());
--        let observer = Observer::start(
-+        let observer = Observer::start_at(
-             stranger.as_ref().unwrap_or(&self.owner),
+@@ -599,6 +614,7 @@
              metadata,
              offered.unwrap_or_else(|| metadata.scope(member, channel)),
              metadata.endpoints[&(member, channel as u8)],

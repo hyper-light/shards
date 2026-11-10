@@ -52,8 +52,10 @@ with existing callers default0; the new test supplies only an actually retained
 start. No product protocol change. This seam must be approved before edits there.
 `initial-offset-seam.patch` makes that exact test-only change reviewable against
 87503's host parent. It is a PROPOSED patch artifact, not applied source: one
-caller-supplied Client cursor, Observer::start_at and Fixture::observe_at, with
-existing start/observe wrappers default0. ROOT owns approval/application there.
+caller-supplied Client cursor, an extra Observer::start argument and
+Fixture::observe_at, with the existing Fixture::observe wrapper default0. Actual
+source search found only Fixture's caller of Observer::start, so an unused
+Observer::start_at wrapper is omitted. ROOT owns approval/application there.
 
 ROOT reported actual r606 failure before normal metadata: a pure Unit wake from
 Control.finish sees the existing one-slot queue Full and triggers Output.abort /
