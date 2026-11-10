@@ -1,0 +1,57 @@
+diff --git a/crates/init/src/domains.rs b/crates/init/src/domains.rs
+index cf79e05e1..47d7d1092 100644
+--- a/crates/init/src/domains.rs
++++ b/crates/init/src/domains.rs
+@@ -1792,7 +1792,7 @@ pub fn start(
+             crate::capture::Pipe::make().map_err(|e| format!("{}: its stdout pipe: {e}", d.label))?;
+         let (stderr, stderr_write) =
+             crate::capture::Pipe::make().map_err(|e| format!("{}: its stderr pipe: {e}", d.label))?;
+-        let mut launch = crate::managed::Launch::new(last_cap, &cgroup)
++        let mut launch = crate::managed::Launch::new(last_cap, &cgroup, d.cgroup == "agent-faulty")
+             .map_err(|e| format!("{}: preparing its owner: {e}", d.label))?;
+         let mut args = CloneArgs {
+             pidfd: (&raw mut launch.pidfd) as u64,
+diff --git a/crates/init/src/managed.rs b/crates/init/src/managed.rs
+index 85879fd77..2a7d76712 100644
+--- a/crates/init/src/managed.rs
++++ b/crates/init/src/managed.rs
+@@ -250,7 +250,7 @@ fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+ }
+ 
+ impl Launch {
+-    pub fn new(last_cap: u32, group: &std::fs::File) -> io::Result<Self> {
++    pub fn new(last_cap: u32, group: &std::fs::File, bad_events: bool) -> io::Result<Self> {
+         // SAFETY: open(2) of init's own executable, before entering an actor root.
+         let binary = unsafe { libc::open(c"/proc/self/exe".as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+         if binary < 0 {
+@@ -262,7 +262,7 @@ impl Launch {
+         std::fs::File::from(owner.1.try_clone()?).write_all(&last_cap.to_be_bytes())?;
+         Ok(Self {
+             binary,
+-            events: open_at(group, c"cgroup.events", libc::O_RDONLY)?,
++            events: if bad_events { group.try_clone()? } else { open_at(group, c"cgroup.events", libc::O_RDONLY)? },
+             kill: open_at(group, c"cgroup.kill", libc::O_WRONLY)?,
+             owner,
+             gate: pipe()?,
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index bcbdff8e1..a97aa448f 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -1447,7 +1447,7 @@ fn warm_restore(mut cfg: RestoreConfig, fd: LinkArg, resume: bool) -> ExitCode {
+             return ExitCode::FAILURE;
+         }
+     };
+-    cfg.console = Console::Discard;
++    cfg.console = Console::Stdout;
+     serve_workload(None, Source::Warm(daemon, resume), move |vsock| {
+         cfg.vsock = Some(vsock);
+         restore_vm(cfg)
+@@ -1465,7 +1465,7 @@ fn warm_boot(mut cfg: Config, rootfs: PathBuf, fd: LinkArg) -> ExitCode {
+     };
+     let template = cfg.snapshot.is_some();
+     boot_into(&mut cfg, rootfs, template);
+-    cfg.console = Console::Discard;
++    cfg.console = Console::Stdout;
+     crate::warm::HOST_DEVICES.store(!cfg.vfio.is_empty(), std::sync::atomic::Ordering::Relaxed);
+     serve_workload(None, Source::Warm(daemon, false), move |vsock| {
+         cfg.vsock = Some(vsock);
