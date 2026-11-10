@@ -1,0 +1,29 @@
+{
+  "base_revision": "b02e8592c547553c788702ac6c52ea6b633e875d",
+  "scope": "pure extracted ABI/witness/reader checks only; no full caller or transport compile",
+  "source_directory": "/tmp/shards-native-reconnect-pure-b02e-v1",
+  "output_directory": "/tmp/shards-native-reconnect-pure-output-b02e-v1",
+  "source_archive": {
+    "path": "/tmp/shards-native-reconnect-pure-b02e-v1.tgz",
+    "bytes": 45741,
+    "sha256": "976878d98bc5987df013ecbec9e5c928bae54942ef2913b95ace2bdffda91142"
+  },
+  "outputs": {
+    "abi-build": {
+      "sha256": "eba145b9a3b726fa42c0d5186a74343d4a29631bf7541869f716f197d47824cd",
+      "bytes": 599864
+    },
+    "libshards_abi.rlib": {
+      "sha256": "1b58f5c5272f0b1686688dcb6f32fd40dcde881e1eb631da730235b50586f565",
+      "bytes": 1648736
+    },
+    "pure-tests": {
+      "sha256": "f538eab77245c7192ba8a61f86eacf73e461b988fa667c928eec833e8d0b620b",
+      "bytes": 1159752
+    }
+  },
+  "free_after_bytes": 34655100928,
+  "production_changes": false,
+  "remote_execution": false,
+  "remote_discovery_only": "Kiln Fedora 8fadc1ec213332e16cb0d915a3fb913f admitted <=1CPU/1GiB/2GiB; only pwd/find/ls/rustc/cargo version discovery, no build or mutation"
+}

@@ -64,6 +64,7 @@ enum Ask {
 struct Client {
     config: Option<ClientConfig>,
     scope: Scope,
+    from: u64,
     conn: Option<ConnKey>,
     stream: Option<StreamId>,
     events: mpsc::Sender<Event>,
@@ -114,7 +115,8 @@ impl Handler for Client {
             code: 1,
             why: "fixture stream failed",
         })?);
-        self.pending.extend_from_slice(&managed::subscribe(self.scope, 0));
+        self.pending
+            .extend_from_slice(&managed::subscribe(self.scope, self.from));
         self.flush(io);
         Ok(())
     }
@@ -221,6 +223,7 @@ impl Observer {
         metadata: &Metadata,
         scope: Scope,
         address: SocketAddr,
+        from: u64,
         until: Instant,
     ) -> Self {
         let patience = until.saturating_duration_since(Instant::now());
@@ -237,6 +240,7 @@ impl Observer {
         let client = Client {
             config: Some(managed::client_config(owner, metadata.server, admitted).unwrap()),
             scope,
+            from,
             conn: None,
             stream: None,
             events: event,
@@ -605,6 +609,18 @@ impl Fixture {
         outsider: bool,
         until: Instant,
     ) -> usize {
+        self.observe_at(member, channel, offered, outsider, 0, until)
+    }
+
+    fn observe_at(
+        &mut self,
+        member: u32,
+        channel: Channel,
+        offered: Option<Scope>,
+        outsider: bool,
+        from: u64,
+        until: Instant,
+    ) -> usize {
         let metadata = self.metadata.as_ref().unwrap();
         let _ = writeln!(
             std::io::stdout(),
@@ -617,6 +633,7 @@ impl Fixture {
             metadata,
             offered.unwrap_or_else(|| metadata.scope(member, channel)),
             metadata.endpoints[&(member, channel as u8)],
+            from,
             until,
         );
         self.observers.push(observer);

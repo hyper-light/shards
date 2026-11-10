@@ -1,0 +1,9 @@
+diff --git a/crates/shards/tests/managed_output/tenant_exit.rs b/crates/shards/tests/managed_output/tenant_exit.rs
+--- a/crates/shards/tests/managed_output/tenant_exit.rs
++++ b/crates/shards/tests/managed_output/tenant_exit.rs
+@@ -6,2 +6,5 @@
++#[path = "tenant_reconnect.rs"]
++mod reconnect;
++
+ #[path = "tenant_stdio.rs"]
+ mod stdio;

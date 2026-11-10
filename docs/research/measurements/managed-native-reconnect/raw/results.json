@@ -1,0 +1,16 @@
+{
+  "pure_tests": {
+    "exit": 0,
+    "passed": 5,
+    "failed": 0,
+    "ignored": 0,
+    "filtered_out": 0
+  },
+  "rustfmt": 0,
+  "policy": 0,
+  "git_diff_check": 0,
+  "excluded_paths_unchanged_from_base": true,
+  "full_caller_typecheck": "UNRUN",
+  "cargo_clippy": "UNRUN",
+  "real_endpoint_vm_reconnect_adversarial_cleanup": "ROOT_OWED"
+}

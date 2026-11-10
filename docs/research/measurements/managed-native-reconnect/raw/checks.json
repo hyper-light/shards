@@ -1,0 +1,67 @@
+{
+  "rustfmt": {
+    "command": [
+      "rustfmt",
+      "--check",
+      "--edition",
+      "2024",
+      "--config-path",
+      "rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "crates/shards/tests/managed_output.rs",
+      "crates/shards/tests/managed_output/tenant_reconnect.rs",
+      "crates/shards/tests/managed_output/tenant_observer.rs"
+    ],
+    "exit": 0
+  },
+  "policy": {
+    "command": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0
+  },
+  "diff-check": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0
+  },
+  "excluded-paths": {
+    "command": [
+      "git",
+      "diff",
+      "--quiet",
+      "b02e8592c547553c788702ac6c52ea6b633e875d",
+      "--",
+      "crates/shards/tests/managed_output/tenant_exit.rs",
+      "crates/shards/tests/managed_output/tenant_stdio.rs",
+      "crates/remote/src/managed.rs",
+      "crates/shards/src/daemon/managed.rs"
+    ],
+    "exit": 0
+  },
+  "staged-diff-check": {
+    "command": [
+      "/Users/adalundhe/.kiln-run/bin/gits",
+      "diff",
+      "--cached",
+      "--check"
+    ],
+    "exit": 0,
+    "output": ""
+  },
+  "registration-apply-check": {
+    "command": [
+      "/Users/adalundhe/.kiln-run/bin/gits",
+      "apply",
+      "--check",
+      "docs/research/measurements/managed-native-reconnect/register-reconnect.patch"
+    ],
+    "exit": 0,
+    "output": ""
+  }
+}

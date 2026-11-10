@@ -1,0 +1,5 @@
+{
+  "command": "gits diff --cached --check",
+  "exit": 2,
+  "raw_output": "docs/research/measurements/managed-native-reconnect/raw/pure-tests.log:4: trailing whitespace.\n+test reader_tests::shifted_observed_wire_start_refuses_before_changing_capture_state_or_payload ... \ndocs/research/measurements/managed-native-reconnect/raw/pure-tests.log:16: new blank line at EOF.\ndocs/research/measurements/managed-native-reconnect/register-reconnect.patch:7: trailing whitespace.\n+ \ndocs/research/measurements/managed-native-reconnect/register-reconnect.patch:13: trailing whitespace.\n+ \ndocs/research/measurements/managed-native-reconnect/register-reconnect.patch:13: new blank line at EOF.\n"
+}
