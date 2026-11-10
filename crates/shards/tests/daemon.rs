@@ -1814,7 +1814,8 @@ fn lists_removed_by_hand_are_made_again_for_the_next_client() {
 }
 
 /// A daemon told to stop waits for a client that takes nothing of its answer no longer
-/// than a request's time (10 s) from that write's start, says so, and exits; for one whose
+/// than its observed answer wait (at least RFC 1122 §4.2.3.5's R2, 100 s) from that
+/// write's start, says so, and exits; for one whose
 /// answer is all written, not at all, and that client reads it whole once it reads, a FIFO
 /// keeping what was written as its writer goes. Here two clients of `inspect` whose stdout
 /// is a pipe nobody reads yet, as a pager's that waits: each has the answer's first message
@@ -1907,9 +1908,14 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    let stopped = run_shards_env(&["daemon"], &["stop"], &env, TIMEOUT);
+    // The daemon deliberately rides out a client that takes no answer for at least
+    // TCP's R2 (RFC 1122 §4.2.3.5), as its learned answer wait does. The ordinary command
+    // guard is shorter than this protocol floor; leave that floor plus the same guard
+    // for the shutdown itself, rather than killing a daemon still within its own wait.
+    let answer_floor = Duration::from_secs(100);
+    let stopped = run_shards_env(&["daemon"], &["stop"], &env, answer_floor + TIMEOUT);
     assert_eq!(stopped.status, Some(0), "{stopped}");
-    // The slot whose write waited held the daemon a request's time, and only it: unless
+    // The slot whose write waited held the daemon its answer wait, and only it: unless
     // the stop came before the daemon had the error to write, and cut it off with the rest.
     let log = std::fs::read_to_string(home.join("daemon.log")).unwrap();
     let without: Vec<&str> = log.lines().filter(|l| l.contains("exiting without it")).collect();
@@ -1923,7 +1929,7 @@ fn a_stopping_daemon_waits_for_no_client_that_reads_nothing() {
             .and_then(|d| d.strip_suffix('s'))
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or_default();
-        assert!(held >= 10.0, "{line}");
+        assert!(held >= answer_floor.as_secs_f64(), "{line}");
     }
     // Each read at last: all of what is written is read.
     let read =
@@ -2448,6 +2454,11 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
         return;
     }
     let (image, _) = served();
+    // Counts beyond every possible process thread limit are refused on every host. A
+    // fixed large count can be valid on a host whose own limits permit more clients.
+    let too_many = u64::MAX.to_string();
+    let warm_error = format!("SHARDS_WARM_MAX: {too_many} is more than");
+    let clients_error = format!("SHARDS_MAX_CLIENTS: {too_many} is more than the");
     for (settings, said) in [
         (
             &[("SHARDS_POOL", "two")][..],
@@ -2458,17 +2469,14 @@ fn a_daemon_refuses_settings_it_cannot_keep() {
             &[("SHARDS_POOL", "5"), ("SHARDS_WARM_MAX", "4")][..],
             "SHARDS_POOL: 5 is more than",
         ),
-        (
-            &[("SHARDS_WARM_MAX", "100000")][..],
-            "SHARDS_WARM_MAX: 100000 is more than",
-        ),
+        (&[("SHARDS_WARM_MAX", too_many.as_str())][..], warm_error.as_str()),
         (
             &[("SHARDS_MAX_CLIENTS", "0")][..],
             "SHARDS_MAX_CLIENTS: the daemon serves at least one client",
         ),
         (
-            &[("SHARDS_MAX_CLIENTS", "100000000")][..],
-            "SHARDS_MAX_CLIENTS: 100000000 is more than the",
+            &[("SHARDS_MAX_CLIENTS", too_many.as_str())][..],
+            clients_error.as_str(),
         ),
         (&[("SHARDS_DAEMON_IDLE", "soon")][..], "SHARDS_DAEMON_IDLE"),
         (
