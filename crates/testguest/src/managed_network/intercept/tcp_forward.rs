@@ -1711,4 +1711,151 @@ mod native_tests {
             "direct and mediated native reset must agree"
         );
     }
+
+    #[test]
+    #[ignore = "finite native client-origin reset with independent backend error/prefix witnesses"]
+    fn native_tcp_client_reset_matches_direct_peer() {
+        let (input, deadline) = native_inputs();
+        assert_eq!(input.scenario, Scenario::ServerFirst);
+        let mut errors = Vec::new();
+        let mut faults = Vec::new();
+        for ordinal in [0, 1] {
+            let before = descriptor_count().unwrap();
+            let backend_input = input.duplicate().unwrap();
+            let mut backend_endpoint = Endpoint::reserve(input.request.len()).unwrap();
+            let mut client_endpoint = Endpoint::reserve(input.greeting.len()).unwrap();
+            let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+            let destination = listener.local_addr().unwrap();
+            let mut backend = Worker::spawn(&deadline, move |deadline| {
+                let (mut stream, peer) = deadline
+                    .io(listener.as_raw_fd(), libc::POLLIN, || listener.accept())
+                    .unwrap();
+                stream.set_nonblocking(true).unwrap();
+                let tuple = Tuple {
+                    local: stream.local_addr().unwrap(),
+                    peer,
+                };
+                let result = (|| {
+                    backend_endpoint.send(&mut stream, &backend_input.greeting, &deadline)?;
+                    backend_endpoint.receive(&mut stream, &backend_input.request, &deadline)
+                })();
+                backend_endpoint
+                    .record("ClientResetBackend", ordinal, tuple, &result)
+                    .unwrap();
+                (stream, tuple, backend_endpoint, result)
+            })
+            .unwrap();
+            let (target, mut relay) = if ordinal == 0 {
+                (destination, None)
+            } else {
+                let listener =
+                    listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
+                let at = listener.local_addr().unwrap();
+                let upstream = TcpStream::from(
+                    bound(
+                        SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                        libc::SOCK_STREAM,
+                        SocketMode::Native,
+                    )
+                    .unwrap(),
+                );
+                let [up, down] = input.slot_sizes;
+                let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
+                (
+                    at,
+                    Some(
+                        start(
+                            listener,
+                            upstream,
+                            destination,
+                            Slots::reserve(up, down).unwrap(),
+                            [input.request.len(), response],
+                            &deadline,
+                        )
+                        .unwrap(),
+                    ),
+                )
+            };
+            let mut client = TcpStream::connect_timeout(&target, deadline.left().unwrap()).unwrap();
+            client.set_nonblocking(true).unwrap();
+            let tuple = Tuple {
+                local: client.local_addr().unwrap(),
+                peer: client.peer_addr().unwrap(),
+            };
+            client_endpoint
+                .receive(&mut client, &input.greeting, &deadline)
+                .unwrap();
+            client_endpoint
+                .send(&mut client, &input.request, &deadline)
+                .unwrap();
+            let (mut stream, backend_tuple, mut endpoint, result) = backend.join().unwrap();
+            result.unwrap();
+            assert_eq!(endpoint.read, input.request.len());
+            assert_eq!(endpoint.read_end, End::Open);
+            client_endpoint
+                .record("ClientResetClient", ordinal, tuple, &Ok(()))
+                .unwrap();
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            // SAFETY: abortive close of only this fixture's owned client stream.
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        client.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_LINGER,
+                        (&raw const linger).cast(),
+                        size_of_val(&linger) as _,
+                    )
+                },
+                0
+            );
+            drop(client);
+            let native_reset = if let Some(worker) = &mut relay {
+                let forwarded = worker.join().unwrap();
+                record_flow(&forwarded, "caller", tuple.local, backend_tuple.peer);
+                matches!(
+                    forwarded.result,
+                    Err(Fault::Native {
+                        leg: Leg::Client,
+                        operation: Operation::Read,
+                        kind: io::ErrorKind::ConnectionReset,
+                        errno: Some(libc::ECONNRESET)
+                    })
+                )
+            } else {
+                true
+            };
+            faults.push(native_reset);
+            let result = endpoint.eof(&mut stream, &deadline);
+            endpoint
+                .record("ClientResetPeer", ordinal, backend_tuple, &result)
+                .unwrap();
+            let kind = result.as_ref().err().map(io::Error::kind);
+            errors.push(kind);
+            println!(
+                "managed-tcp-forward {{\"type\":\"NativeClientReset\",\"ordinal\":{ordinal},\"backend_error_kind\":\"{kind:?}\",\"backend_joined\":true,\"relay_joined\":{},\"native_fault_retained\":{native_reset}}}",
+                relay.is_some()
+            );
+            drop(stream);
+            drop(relay);
+            drop(backend);
+            let after = descriptor_count().unwrap();
+            assert_eq!(after, before);
+            println!(
+                "managed-tcp-forward {{\"type\":\"NativeResetCleanup\",\"origin\":\"Client\",\"ordinal\":{ordinal},\"fd_before\":{before},\"fd_after\":{after},\"kernel_return\":\"Unknown\"}}"
+            );
+        }
+        assert_eq!(faults, [true, true]);
+        assert_eq!(
+            errors,
+            [
+                Some(io::ErrorKind::ConnectionReset),
+                Some(io::ErrorKind::ConnectionReset)
+            ],
+            "direct and mediated client-origin reset must agree"
+        );
+    }
 }

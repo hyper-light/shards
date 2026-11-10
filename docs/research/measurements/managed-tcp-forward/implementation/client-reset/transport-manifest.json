@@ -1,0 +1,110 @@
+{
+  "bundle_sha256": "50dd0c53b902ca0447d01866a331134e5f42de5c925dc9378c3bf876859819b2",
+  "members": [
+    {
+      "path": "override-identities.json",
+      "bytes": 3682,
+      "sha256": "a08a234be52b4c83f244986d840ad6e64652d602261bf533e4ed7a43891661f9"
+    },
+    {
+      "path": "policy.log",
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "path": "result.json",
+      "bytes": 2626,
+      "sha256": "eb56f4bd5ca942c9b4676691d336f9d462354deae7f79e517cf32b32188f6d58"
+    },
+    {
+      "path": "source/crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "bytes": 68673,
+      "sha256": "ec520bc4e2bfd9aed5fe6365c7ab85c6671ffed6e8a8fc3690bf7e3bbbe1d8e7"
+    },
+    {
+      "path": "source-identities.json",
+      "bytes": 3826,
+      "sha256": "14a6e485c141e375728bec0fe3d4f1d5d089b3713d8271eb105b1dc6e6fcab4d"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first/inputs.json",
+      "bytes": 503,
+      "sha256": "b371321ea3e93c7e7e4ce857228d13da9fd3ea39c8f84aac6020fdd288bc3812"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first/observed.json",
+      "bytes": 3762,
+      "sha256": "dd56267a523df9f404389eb999eb9bda5d333c4ca0c9efc1a9ce855d48d4c289"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first/result.json",
+      "bytes": 1008,
+      "sha256": "cbec10d91646e6f6e901ae7f60514bc23e6d12b641f88aae9714dcc8d1c6a13b"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first/stdout",
+      "bytes": 3209,
+      "sha256": "d358a0f39dcf1c4e930000f1659b90cc977d3715a036ea23b95c67181e17062a"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-caller-server-first.inputs.json",
+      "bytes": 503,
+      "sha256": "b371321ea3e93c7e7e4ce857228d13da9fd3ea39c8f84aac6020fdd288bc3812"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu-test-build.log",
+      "bytes": 4240,
+      "sha256": "21b5ab67734a7bd2b1c7620647abec7d73021028f9c5d9ac98985bc436171455"
+    },
+    {
+      "path": "x86_64-unknown-linux-gnu.log",
+      "bytes": 299,
+      "sha256": "3f54b7fe8b9c0fc09a834459ca4cb8bdb62b936be29af87311ab8b4a8b4bd791"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first/inputs.json",
+      "bytes": 503,
+      "sha256": "b371321ea3e93c7e7e4ce857228d13da9fd3ea39c8f84aac6020fdd288bc3812"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first/observed.json",
+      "bytes": 3762,
+      "sha256": "da9ac2f18750bd9afd4ab423525d2251230822e67c61e171fdb45ec013cc40c0"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first/result.json",
+      "bytes": 1009,
+      "sha256": "96dc7f1ba134b4f5183c5f8325de0019f4fac60280bed169e145dda9134251f6"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first/stdout",
+      "bytes": 3209,
+      "sha256": "f373fadc2ca52ec8aa2541612a8843480220426791c33ed2f47ee7bb8ba94be6"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-caller-server-first.inputs.json",
+      "bytes": 503,
+      "sha256": "b371321ea3e93c7e7e4ce857228d13da9fd3ea39c8f84aac6020fdd288bc3812"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl-test-build.log",
+      "bytes": 4247,
+      "sha256": "c336e16e8b8b2b388f64eb93fc4b06fd943bececde93daddb1321a0bf73e1704"
+    },
+    {
+      "path": "x86_64-unknown-linux-musl.log",
+      "bytes": 441,
+      "sha256": "3980bf45f8e66e5862df58f5d2dd73f3a8aae6649b9184bd6d5038d16acea9f8"
+    }
+  ]
+}

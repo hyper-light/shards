@@ -55,7 +55,9 @@ is preserved. Restored static-musl binary
 `5df0f79e030e4266058602ec9866f03d5b1dc0492b71d508535af15aff43f675`
 then passes reset, both half-close orders and receipt-cancel in four fresh tests.
 
-Client-origin reset, option-failure behavior, further partial-prefix races,
+At this checkpoint client-origin reset was unverified; the subsequent
+[reverse reset fixture](../client-reset/README.md) supplies its native results.
+Option-failure behavior, further partial-prefix races,
 KVM reset interception and all-route semantics remain unverified. This is not
 a universal TCP compatibility, cleanup, hard-budget or performance claim.
 

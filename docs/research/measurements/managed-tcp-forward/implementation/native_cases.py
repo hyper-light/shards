@@ -16,6 +16,7 @@ FILTERS = {
     "both-half-closes": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
     "receipt-cancel": "managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt",
     "reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer",
+    "client-reset": "managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer",
 }
 PREFIX = "managed-tcp-forward "
 
@@ -146,6 +147,16 @@ def main():
         outcome["checks"]["client_bytes"] = len(client) == 2 and all(bytes.fromhex(row["read_hex"]) == payload(env_inputs["SHARDS_TCP_GREETING_HEX"]) for row in client)
         outcome["checks"]["both_endpoint_halves"] = len(reset) == 2 and all(row["client_error_kind"] == "Some(ConnectionReset)" for row in reset)
         outcome["checks"]["both_flow_halves"] = len(flows) == 1 and flows[0]["fault"]["kind"] == "Native" and flows[0]["fault"]["error_kind"] == "ConnectionReset"
+        outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 2 and all(row["fd_before"] == row["fd_after"] for row in cleanup)
+    if args.case == "client-reset":
+        reset = [row for row in rows if row.get("type") == "NativeClientReset"]
+        cleanup = [row for row in rows if row.get("type") == "NativeResetCleanup"]
+        backend = [row for row in endpoints if row["role"] == "ClientResetBackend"]
+        client = [row for row in endpoints if row["role"] == "ClientResetClient"]
+        outcome["checks"]["backend_bytes"] = len(backend) == 2 and all(row["ok"] and bytes.fromhex(row["read_hex"]) == payload(env_inputs["SHARDS_TCP_REQUEST_HEX"]) for row in backend)
+        outcome["checks"]["client_bytes"] = len(client) == 2 and all(row["ok"] and bytes.fromhex(row["read_hex"]) == payload(env_inputs["SHARDS_TCP_GREETING_HEX"]) for row in client)
+        outcome["checks"]["both_endpoint_halves"] = len(reset) == 2 and all(row["backend_error_kind"] == "Some(ConnectionReset)" for row in reset)
+        outcome["checks"]["both_flow_halves"] = len(flows) == 1 and flows[0]["fault"]["kind"] == "Native" and flows[0]["fault"]["leg"] == "Client" and flows[0]["fault"]["error_kind"] == "ConnectionReset" and flows[0]["abort"] == {"kind": "Requested", "leg": "Backend"}
         outcome["checks"]["all_owned_descriptor_returns"] = len(cleanup) == 2 and all(row["fd_before"] == row["fd_after"] for row in cleanup)
     if env_inputs.get("SHARDS_NATIVE_WRITE_PRESSURE") == "required":
         outcome["checks"]["actual_short_send"] = len(flows) == 1 and flows[0]["to_backend"]["partial_writes"] > 0

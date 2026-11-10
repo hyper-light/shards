@@ -1,0 +1,7 @@
+    Updating crates.io index
+     Locking 1 package to latest Rust 1.98.1 compatible version
+      Adding libc v0.2.189 (available: v0.2.191)
+   Compiling libc v0.2.189
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v10/check/devcgroup)
+    Checking relay-shared-check v0.0.0 (/home/adalundhe/relay-tcp-forward-cbd3-light-v10/check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.98s

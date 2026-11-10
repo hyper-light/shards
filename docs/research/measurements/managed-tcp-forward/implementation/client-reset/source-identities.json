@@ -1,0 +1,110 @@
+[
+  {
+    "path": "Cargo.toml",
+    "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+  },
+  {
+    "path": "rust-toolchain.toml",
+    "sha256": "a8a7daa5dc4e8c791eb1bed0aa16678b2eb2449b3cc6f29c7fea245c6ff7b201"
+  },
+  {
+    "path": "rustfmt.toml",
+    "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+  },
+  {
+    "path": "AGENTS.md",
+    "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+  },
+  {
+    "path": "CLAUDE.md",
+    "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+  },
+  {
+    "path": ".cargo/config.toml",
+    "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace"
+  },
+  {
+    "path": "docs/development-rules.md",
+    "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+  },
+  {
+    "path": "docs/development-evidence.md",
+    "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+  },
+  {
+    "path": "resources/supported-targets.txt",
+    "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a"
+  },
+  {
+    "path": "scripts/lint",
+    "sha256": "5db1b68bc06218d1df6ed032759f4b39aa78bc0bb9f549bfdf37d831c956d040"
+  },
+  {
+    "path": "scripts/check-development-policy",
+    "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac"
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "sha256": "0707e0d998f93686ddec2974c1f1dead655108190370b29437d8e685aeed02ce"
+  },
+  {
+    "path": ".github/workflows/release.yml",
+    "sha256": "27a09295956b66534bd0bdda08eeb8dd262c1645b8d42b7b777fd93ee9ab2415"
+  },
+  {
+    "path": "docs/research/measurements/managed-network-intercept/ipv4-wire-before.hex",
+    "sha256": "637e2c05b8256410af49939f40b6a4739f8956ee8728719948e8336004fd56ba"
+  },
+  {
+    "path": "docs/research/measurements/managed-tcp-forward/implementation/native_cases.py",
+    "sha256": "c07530666ed6579ac45f1ed11a4d0a529878fc0e64dfde41c31e454c80071076"
+  },
+  {
+    "path": "crates/devcgroup/src/lib.rs",
+    "sha256": "75a58692ea29228f71d435f0a6e7accce6ee0b3a13efe7c20e7e00431e22b68c"
+  },
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3"
+  },
+  {
+    "path": "crates/testguest/src/interface_root.rs",
+    "sha256": "7a12e0a8977cc5a4a868bd70425dfb2b4e58fbf4b8096e06204f9c7238f289d1"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept.rs",
+    "sha256": "e42cb43955f0ae572f22057fd6cae49ea9e0823a55dbe241818e15dffb5349e9"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/sock_addr.rs",
+    "sha256": "9d47e42ad6b767508ec60a47ba1283ac1b3fdbe6b4742ef3e8b884a92b18eb4a"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+    "sha256": "ec520bc4e2bfd9aed5fe6365c7ab85c6671ffed6e8a8fc3690bf7e3bbbe1d8e7"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+    "sha256": "05461b491ba32ee357b353beeb383438c8ba1aec8c27bbeacb6e1c51b36b9b93"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/udp.rs",
+    "sha256": "ec12509c7f360c46411b6f10edb04154071cc6de357b86ec53acf249592f4133"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/udp/forward.rs",
+    "sha256": "e2c47d494f224bd4eb78341e786ad7271daf87a569649ca5b1f0e0c5fb202a61"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/sock_addr/bpf.rs",
+    "sha256": "9aad0283c896f1a192f204a99537fd7804dffe30d25a1227560e8fc201ffde01"
+  },
+  {
+    "path": "crates/init/src/relay.rs",
+    "sha256": "ab2ac5712e25dcd7210bdde287f126eda3c8b96ed2101c93c2055629d6fe5951"
+  },
+  {
+    "path": "crates/init/src/engine.rs",
+    "sha256": "80f0c2035cfd0f74b561bcb7b52cbc7e17ffa2333d4aeb990965df9ac1483147"
+  }
+]

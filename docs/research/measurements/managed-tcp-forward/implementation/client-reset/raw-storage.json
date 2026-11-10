@@ -1,0 +1,16 @@
+[
+  {
+    "original": "x86_64-unknown-linux-gnu-caller-server-first/stdout",
+    "stored": "x86_64-unknown-linux-gnu-caller-server-first/stdout.raw.gz",
+    "bytes": 3209,
+    "sha256": "d358a0f39dcf1c4e930000f1659b90cc977d3715a036ea23b95c67181e17062a",
+    "stored_sha256": "30388f970f2340daa8fec4e303bf2bc2e40bf1e43e364a6d7bdd7a59943b3cdd"
+  },
+  {
+    "original": "x86_64-unknown-linux-musl-caller-server-first/stdout",
+    "stored": "x86_64-unknown-linux-musl-caller-server-first/stdout.raw.gz",
+    "bytes": 3209,
+    "sha256": "f373fadc2ca52ec8aa2541612a8843480220426791c33ed2f47ee7bb8ba94be6",
+    "stored_sha256": "06893271309ecab6420ba728a546a19ec6479d8016d47d764b4df566c16f6842"
+  }
+]
