@@ -1,0 +1,11 @@
+--- a/crates/shards/src/build/proxy/server.rs
++++ b/crates/shards/src/build/proxy/server.rs
+@@ -902,7 +902,7 @@
+             return Err(Admission::Closed);
+         }
+         let id = live.0;
+-        let next = id.checked_add(1).ok_or(Admission::IdentityExhausted)?;
++        let next = id.wrapping_add(1);
+         let copy = conn.try_clone().map_err(Admission::Socket)?;
+         live.1.try_reserve(1).map_err(Admission::Memory)?;
+         live.0 = next;

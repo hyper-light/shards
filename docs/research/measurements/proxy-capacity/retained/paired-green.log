@@ -1,0 +1,160 @@
+pair=0 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":260956,"sample_ns":100218918,"stop_ns":8450,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=1 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":13,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":565450,"sample_ns":100163892,"stop_ns":59895,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=2 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":410739,"sample_ns":100299537,"stop_ns":32154,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=3 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":193325,"sample_ns":100222581,"stop_ns":8512,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=4 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":279702,"sample_ns":100064731,"stop_ns":12717,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=5 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":328466,"sample_ns":100219693,"stop_ns":7771,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=6 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":366099,"sample_ns":100253647,"stop_ns":28211,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=7 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":210185,"sample_ns":100167932,"stop_ns":5962,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=8 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":147689,"sample_ns":100198945,"stop_ns":6410,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=9 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":226153,"sample_ns":100204667,"stop_ns":17431,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=10 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":414931,"sample_ns":100217427,"stop_ns":20530,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=11 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":349386,"sample_ns":100194993,"stop_ns":15312,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=12 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":193586,"sample_ns":100259667,"stop_ns":7347,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.13s
+
+pair=13 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":393499,"sample_ns":100253715,"stop_ns":32612,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.13s
+
+pair=14 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":201095,"sample_ns":100139756,"stop_ns":9831,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=15 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":13,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":344212,"sample_ns":100214918,"stop_ns":6400,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.13s
+
+pair=16 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":346140,"sample_ns":100231981,"stop_ns":32270,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=17 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":272072,"sample_ns":100187894,"stop_ns":9597,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=18 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":387621,"sample_ns":100230115,"stop_ns":19592,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.12s
+
+pair=19 variant=green
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":4,"fds_live":11,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":342534,"sample_ns":100197388,"stop_ns":7685,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.13s
+

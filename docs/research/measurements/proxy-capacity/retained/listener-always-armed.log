@@ -1,0 +1,33 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/test-release/build/aws-lc-sys-6fb58a9b0064b9c1/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/crates/shards)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 32s
+     Running unittests src/main.rs (/home/adalundhe/managed-proxy-events-target/test-release/deps/shards-342f296f3d2f4b99)
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... 
+thread 'build::proxy::server::tests::proxy_capacity_wait_costs' (1926325) panicked at crates/shards/src/build/proxy/tests.rs:444:17:
+assertion failed: matches!(questions.asks.try_recv(), Err(mpsc::TryRecvError::Empty))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    build::proxy::server::tests::proxy_capacity_wait_costs
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 675 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p shards --bin shards`

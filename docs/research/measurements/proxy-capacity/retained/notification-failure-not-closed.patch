@@ -1,0 +1,11 @@
+--- a/crates/shards/src/build/proxy/server.rs
++++ b/crates/shards/src/build/proxy/server.rs
+@@ -845,7 +845,7 @@
+             // readable until this thread takes it, even if it precedes the wait.
+             if let Err(e) = self.drain_capacity() {
+                 shards_vmm::debug!("the build's proxy capacity: {e}");
+-                self.end();
++                // Mutation: return without closing owned connections.
+                 return;
+             }
+             if self.ended.load(Ordering::SeqCst) {

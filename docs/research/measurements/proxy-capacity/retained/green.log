@@ -1,0 +1,42 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.29s
+     Running unittests src/main.rs (/home/adalundhe/managed-proxy-events-target/release/deps/shards-16f112b590f0b46c)
+
+running 1 test
+test build::proxy::server::tests::proxy_capacity_wait_costs ... PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":0,"major_faults":0,"minor_faults":0,"refill_ns":293218,"sample_ns":100212376,"stop_ns":40917,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":1,"major_faults":0,"minor_faults":0,"refill_ns":165481,"sample_ns":100188769,"stop_ns":18612,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":2,"major_faults":0,"minor_faults":0,"refill_ns":152948,"sample_ns":100159796,"stop_ns":9183,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":17,"iteration":3,"major_faults":0,"minor_faults":0,"refill_ns":156898,"sample_ns":100158727,"stop_ns":10261,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":4,"major_faults":0,"minor_faults":0,"refill_ns":151663,"sample_ns":100191055,"stop_ns":11894,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":5,"major_faults":0,"minor_faults":0,"refill_ns":144888,"sample_ns":100181988,"stop_ns":8209,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":6,"major_faults":0,"minor_faults":0,"refill_ns":164584,"sample_ns":100183905,"stop_ns":20727,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":7,"major_faults":0,"minor_faults":0,"refill_ns":132569,"sample_ns":100164615,"stop_ns":9142,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":8,"major_faults":0,"minor_faults":0,"refill_ns":141771,"sample_ns":100190732,"stop_ns":9823,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":17,"iteration":9,"major_faults":0,"minor_faults":0,"refill_ns":133832,"sample_ns":100154772,"stop_ns":8588,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":17,"iteration":10,"major_faults":0,"minor_faults":0,"refill_ns":145107,"sample_ns":100151409,"stop_ns":10338,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":11,"major_faults":0,"minor_faults":0,"refill_ns":292275,"sample_ns":100169535,"stop_ns":48147,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":18,"iteration":12,"major_faults":0,"minor_faults":0,"refill_ns":461357,"sample_ns":100166353,"stop_ns":84907,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":18,"iteration":13,"major_faults":0,"minor_faults":0,"refill_ns":428252,"sample_ns":100160011,"stop_ns":90070,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":14,"major_faults":0,"minor_faults":0,"refill_ns":486753,"sample_ns":100165846,"stop_ns":51676,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":15,"major_faults":0,"minor_faults":0,"refill_ns":149698,"sample_ns":100194291,"stop_ns":15901,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":16,"major_faults":0,"minor_faults":0,"refill_ns":110562,"sample_ns":100183002,"stop_ns":11851,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":17,"major_faults":0,"minor_faults":0,"refill_ns":174955,"sample_ns":100228918,"stop_ns":11335,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":18,"major_faults":0,"minor_faults":0,"refill_ns":158036,"sample_ns":100188982,"stop_ns":13523,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+PROXY_CAPACITY_SAMPLE {"cpu_ns":0,"cpu_ticks":0,"fds_before":9,"fds_live":16,"iteration":19,"major_faults":0,"minor_faults":0,"refill_ns":173886,"sample_ns":100179872,"stop_ns":18801,"voluntary_switches":0,"waiting":"poll_schedule_timeout.constprop.0"}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 675 filtered out; finished in 2.29s
+

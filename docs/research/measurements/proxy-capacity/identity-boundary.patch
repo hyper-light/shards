@@ -1,0 +1,38 @@
+--- a/crates/shards/src/build/proxy/tests.rs
++++ b/crates/shards/src/build/proxy/tests.rs
+@@ -1731,3 +1731,35 @@
+         println!("{name}: n={n} {}", quantiles(t));
+     }
+ }
++
++#[test]
++fn exhausted_proxy_connection_identity_grants_no_connection() {
++    let dir = scratch("capacity-identity");
++    let proxy = Proxy::new(
++        crate::build::builder::SocketDir::held(dir.to_path_buf()).unwrap(),
++        &shards_image::store::Limits::none(),
++    )
++    .unwrap();
++    let (session, _questions) = Session::begin(&proxy, shards_registry::proxy::Proxies::default()).unwrap();
++    let (connection, _peer) = UnixStream::pair().unwrap();
++    session.live.lock().unwrap().0 = u64::MAX;
++    let refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        session.hold(&connection).into_iter().next().is_none()
++    }));
++    let admitted = session
++        .live
++        .lock()
++        .unwrap_or_else(PoisonError::into_inner)
++        .1
++        .len();
++    println!(
++        "PROXY_IDENTITY_BOUNDARY refused={} panicked={} admitted={admitted}",
++        matches!(refusal, Ok(true)),
++        refusal.is_err()
++    );
++    assert!(
++        matches!(refusal, Ok(true)),
++        "exhausted connection identity was not refused"
++    );
++    assert_eq!(admitted, 0);
++}

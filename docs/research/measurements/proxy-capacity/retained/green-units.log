@@ -1,0 +1,46 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Using assembler flag: -Wa,--debug-prefix-map=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/managed-proxy-events-target/release/build/aws-lc-sys-e1ed78698764b19e/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-proxy-events-e61669f50c/crates/shards)
+    Finished `release` profile [optimized + debuginfo] target(s) in 7m 27s
+     Running unittests src/main.rs (/home/adalundhe/managed-proxy-events-target/release/deps/shards-16f112b590f0b46c)
+
+running 23 tests
+test build::proxy::server::tests::a_body_that_cannot_be_read_is_a_502 ... ok
+test build::proxy::server::tests::a_broken_completion_path_closes_admission_and_owned_connections ... ok
+test build::proxy::server::tests::a_completion_posted_before_the_acceptor_waits_is_not_lost ... ok
+test build::proxy::server::tests::a_full_proxy_refills_on_worker_completion_and_stops_with_a_queued_socket ... ok
+test build::proxy::server::tests::a_responses_hop_fields_go ... ok
+test build::proxy::server::tests::a_step_holds_so_many_connections_at_once ... ok
+test build::proxy::server::tests::a_tls_body_ended_bare_is_no_material ... ok
+test build::proxy::server::tests::a_tunnel_ends_whole_with_the_clients_bytes_unread ... ok
+test build::proxy::server::tests::an_http10_body_of_no_length_ends_its_connection ... ok
+test build::proxy::server::tests::exhausted_proxy_connection_identity_grants_no_connection ... PROXY_IDENTITY_BOUNDARY refused=true panicked=false admitted=0
+ok
+test build::proxy::server::tests::heads_are_waited_for_so_long_alone ... ok
+test build::proxy::server::tests::plain_requests_are_checked_and_passed_on ... ok
+test build::proxy::server::tests::proxy_capacity_wait_costs ... ignored, native wait-cost measurement: docs/research/measurements/proxy-capacity/run.sh
+test build::proxy::server::tests::request_bodies_stop_short_of_the_room_kept ... ok
+test build::proxy::server::tests::request_costs ... ignored, a measurement: docs/research/measurements/build-proxy/run.sh
+test build::proxy::server::tests::requests_are_passed_on ... ok
+test build::proxy::server::tests::requests_are_read ... ok
+test build::proxy::server::tests::requests_no_one_answers_are_refused ... ok
+test build::proxy::server::tests::requests_that_are_no_material_say_why ... ok
+test build::proxy::server::tests::the_loopback_is_never_reached_through_the_proxy ... ok
+test build::proxy::server::tests::tunnels_are_checked_request_by_request ... ok
+test build::proxy::server::tests::tunnels_are_read ... ok
+test build::proxy::server::tests::upstream_tls_is_never_weakened ... ok
+
+test result: ok. 21 passed; 0 failed; 2 ignored; 0 measured; 653 filtered out; finished in 5.23s
+
