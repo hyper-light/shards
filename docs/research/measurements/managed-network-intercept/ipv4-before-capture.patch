@@ -1,0 +1,40 @@
+--- a/crates/testguest/src/managed_network/intercept/wire.rs
++++ b/crates/testguest/src/managed_network/intercept/wire.rs
+@@ -633,4 +633,36 @@
+             assert!(!local.windows(4).any(|bytes| bytes == BACKEND.octets()));
+         }
+     }
+-}
++
++    #[test]
++    fn ipv4_encoding_matches_checked_baseline() {
++        let mut encoded = Vec::new();
++        for (origin, ip) in [
++            ("forward", BACKEND),
++            ("forward-relay-absent", BACKEND),
++            ("local", BACKEND),
++            ("local-loopback", Ipv4Addr::LOCALHOST),
++            ("local-self", ROUTER_BACKEND),
++        ] {
++            let input = Inputs::parse(origin, "1000", "1", "1000", "100").unwrap();
++            let at = SocketAddr::from((ip, 43210));
++            let selected = selector(at).unwrap();
++            encoded.extend((selected.len() as u64).to_be_bytes());
++            encoded.extend(selected);
++            let local = route(7, ip, 32, None, 1000, 2, 254).unwrap();
++            encoded.extend((local.len() as u64).to_be_bytes());
++            encoded.extend(local);
++            for message in interception_messages(&input, at, 43211).unwrap() {
++                encoded.extend(message.kind.to_be_bytes());
++                encoded.extend(message.flags.to_be_bytes());
++                encoded.extend((message.body.len() as u64).to_be_bytes());
++                encoded.extend(message.body);
++            }
++        }
++        let mut hex = String::new();
++        use std::fmt::Write;
++        for byte in encoded { write!(hex, "{byte:02x}").unwrap(); }
++        println!("IPV4_BASELINE_HEX {hex}");
++    }
++
++}
