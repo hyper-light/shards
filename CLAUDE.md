@@ -1,5 +1,10 @@
 # shards
 
+**Before edits, builds, tests or delegation, read [AGENTS.md](AGENTS.md) and
+[docs/development-rules.md](docs/development-rules.md) in full. R01–R16 are binding
+for every session and subagent. Follow their role, readback and evidence gates;
+they supersede older conflicting guidance below.**
+
 An all-in-one, rootless microVM platform for agents:
 
 - our own VMM (Hypervisor.framework on macOS, KVM on Linux)
@@ -13,7 +18,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
 
 - **One binary.** `shards` is the only file to install and run: every command, the daemon included, one CLI. Never ship, install or document anything beside it. The VM process and the network process are separate *processes* (per-VM memory, PM M34; macOS App Sandbox, D30) but not separate deliverables: `shards` carries them and writes them out once per build (D36).
 - **Platform- and architecture-agnostic.**
-  - shards runs on Linux (glibc and musl), macOS and Windows, on x86_64/amd64 and aarch64/arm64: the 8-target matrix CI lints and tests.
+  - shards runs on Linux (glibc and musl) and Windows on amd64/arm64, and macOS on arm64. Intel Mac is unsupported. The supported seven-target set is `resources/supported-targets.txt`.
   - Hypervisor specifics live behind `hv` (KVM, Hypervisor.framework, WHP), guest-architecture specifics behind `arch`, and OS specifics behind `platform`. Everything else is written once.
   - Configs, builds, optimizations and tests cover every architecture. Use OCI platform names (`amd64`, `arm64`) wherever users see platforms.
 - **Networks are default deny.** In a shards microVM, a network flow that no directive explicitly grants does not exist: no implicit peers, ports, protocols, directions or names. Every grant names who, to whom, on which ports, which way.
@@ -29,7 +34,7 @@ Targets: request → usable in **under 5 ms, boot included**, and less memory pe
   - Every performance claim comes from a committed benchmark.
   - Benchmarks report n, p50, p90, p99 and max, with host, OS and revision.
 - **Lean code.** Write only what the current milestone needs. Match the surrounding style.
-- **Commit and push** after each tested milestone, on `dev`.
+- **Implementation and merges:** scoped agents return tested signed commits and owed runs; the main coordinator audits, runs all heavy validation/profiling, batches reviewed work and merges to main (R15).
 
 ## Commands and gotchas
 

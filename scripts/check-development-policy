@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Check the mechanical parts of the binding development policy."""
+
+from pathlib import Path
+import re
+import sys
+
+
+def check(root):
+    errors = []
+    policy_path = "docs/development-rules.md"
+    policy = (root / policy_path).read_text()
+    rules = re.findall(r"^## (R\d{2}) —", policy, re.MULTILINE)
+    expected_rules = [f"R{n:02}" for n in range(1, 17)]
+    if rules != expected_rules:
+        errors.append("binding policy must contain R01–R16 exactly once, in order")
+    for name in ["AGENTS.md", "CLAUDE.md"]:
+        if policy_path not in (root / name).read_text():
+            errors.append(f"{name} must require the binding policy")
+    if not (root / "docs/development-evidence.md").is_file():
+        errors.append("mandatory evidence checklist is missing")
+
+    targets = (root / "resources/supported-targets.txt").read_text().splitlines()
+    if len(targets) != len(set(targets)) or not targets:
+        errors.append("supported targets must be nonempty and unique")
+    required = {"aarch64-apple-darwin"}
+    required.update(f"{arch}-unknown-linux-{libc}" for arch in ["x86_64", "aarch64"]
+                    for libc in ["gnu", "musl"])
+    required.update(f"{arch}-pc-windows-msvc" for arch in ["x86_64", "aarch64"])
+    if set(targets) != required:
+        errors.append("supported targets must retain every R11 platform/architecture/libc")
+    if any(t.endswith("apple-darwin") and t != "aarch64-apple-darwin" for t in targets):
+        errors.append("Intel Mac is unsupported")
+    for name in ["ci.yml", "release.yml"]:
+        workflow = (root / ".github/workflows" / name).read_text()
+        actual = set(re.findall(r"\btarget:\s*([a-z0-9_-]+)", workflow))
+        if actual != set(targets):
+            errors.append(f"{name} targets differ from supported-targets.txt: {sorted(actual ^ set(targets))}")
+        if "python3 scripts/check-development-policy" not in workflow:
+            errors.append(f"{name} must run this policy check")
+    if "resources/supported-targets.txt" not in (root / "scripts/lint").read_text():
+        errors.append("scripts/lint must read the supported target set")
+
+    cargo = (root / "Cargo.toml").read_text()
+    clippy = re.search(r"^\[workspace\.lints\.clippy\]\s*\n(.*?)(?=^\[|\Z)", cargo,
+                       re.MULTILINE | re.DOTALL)
+    settings = clippy.group(1) if clippy else ""
+    for name in ["unwrap_used", "expect_used", "panic", "panic_in_result_fn", "todo",
+                 "unimplemented", "unreachable", "indexing_slicing", "string_slice"]:
+        setting = re.search(rf'^{re.escape(name)}\s*=\s*"(deny|forbid)"\s*(?:#.*)?$',
+                            settings, re.MULTILINE)
+        if setting is None:
+            errors.append(f"production panic-related lint {name} must remain denied")
+    return errors
+
+
+def main():
+    root = Path(__file__).resolve().parent.parent
+    try:
+        errors = check(root)
+    except (OSError, ValueError, KeyError) as error:
+        print(f"development policy check failed: {error}", file=sys.stderr)
+        return 1
+    for error in errors:
+        print(error, file=sys.stderr)
+    if errors:
+        return 1
+    print("Development policy checks passed; evidence/coordinator review is still required.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

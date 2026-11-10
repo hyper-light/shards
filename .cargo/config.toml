@@ -15,9 +15,6 @@ AWS_LC_SYS_NO_JITTER_ENTROPY = "1"
 [target.aarch64-apple-darwin]
 runner = "scripts/hvf-run"
 
-[target.x86_64-apple-darwin]
-runner = "scripts/hvf-run"
-
 # Guest binaries are static musl executables linked by the LLVM linker Rust ships, so
 # no cross toolchain is needed on the build host.
 [target.aarch64-unknown-linux-musl]

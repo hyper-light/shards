@@ -12,14 +12,17 @@ set -eu
 export SHARDS_HELPERS=skip
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-all="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
-x86_64-pc-windows-msvc aarch64-pc-windows-msvc x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+all=$(cat "$root/resources/supported-targets.txt")
 llvm=${LLVM_BIN:-$(brew --prefix llvm 2>/dev/null || true)/bin}
 
 echo "== format"
 cargo fmt --all --check
 
 for target in ${*:-$all}; do
+	case " $(printf '%s' "$all" | tr '\n' ' ') " in
+		*" $target "*) ;;
+		*) echo "unsupported target: $target" >&2; exit 1 ;;
+	esac
 	var=$(printf %s "$target" | tr - _)
 	echo "== $target"
 	case $target in

@@ -473,8 +473,8 @@ next.
   Windows Hypervisor Platform on Windows.
 - **No crashes.** Bad input gets an error message. Lints forbid code that can panic, and CI
   enforces them.
-- **Portability.** One codebase covers Linux, macOS and Windows on x86_64 and arm64, and CI
-  builds all eight targets.
+- **Portability.** One codebase covers Linux (glibc/musl) and Windows on amd64/arm64,
+  and macOS on arm64. CI builds the seven supported targets; Intel Mac is unsupported.
 
 The design and the evidence behind each decision are in
 [docs/design/architecture.md](docs/design/architecture.md).
