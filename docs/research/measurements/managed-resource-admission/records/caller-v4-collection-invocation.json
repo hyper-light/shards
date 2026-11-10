@@ -1,0 +1,7 @@
+{
+  "on": "8fadc1ec213332e16cb0d915a3fb913f",
+  "needs": "linux/amd64,cpus=1,mem=1g,disk=2g",
+  "sync": false,
+  "command": "PYTHONDONTWRITEBYTECODE=1 python3 -c 'import base64,hashlib,json,pathlib,tarfile\np=pathlib.Path(\"/home/adalundhe/managed-resource-admission-light-72c202955-caller-v1\")\nassert p.is_dir() and not p.is_symlink()\nmanifest=json.loads((p/\"MANIFEST.json\").read_text())\nassert len(manifest)==11\nfor e in manifest:\n name=e[\"path\"]; assert pathlib.PurePosixPath(name).name==name and name not in (\".\",\"..\")\n f=p/name; assert f.is_file() and not f.is_symlink()\n b=f.read_bytes(); assert len(b)==e[\"bytes\"] and hashlib.sha256(b).hexdigest()==e[\"sha256\"]\nfiles=sorted(p.iterdir()); assert len(files)==12 and all(f.is_file() and not f.is_symlink() for f in files)\na=p.with_suffix(\".tar.gz\")\nif not a.exists():\n with tarfile.open(a,\"x:gz\") as t:\n  for f in files: t.add(f,arcname=f.name,recursive=False)\nb=a.read_bytes()\nwith tarfile.open(a,\"r:gz\") as t:\n members=t.getmembers(); assert len(members)==12\n for m in members:\n  assert m.isfile() and pathlib.PurePosixPath(m.name).name==m.name\n  assert t.extractfile(m).read()==(p/m.name).read_bytes()\nprint(json.dumps({\"key\":\"caller-v4\",\"records\":str(p),\"archive\":str(a),\"bytes\":len(b),\"sha256\":hashlib.sha256(b).hexdigest(),\"members\":12,\"check_exit\":(p/\"check.exit\").read_text(),\"clippy_exit\":(p/\"clippy.exit\").read_text(),\"binary\":None,\"base64\":base64.b64encode(b).decode()}))\n'",
+  "timeout_s": 60
+}

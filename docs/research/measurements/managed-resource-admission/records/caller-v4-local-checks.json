@@ -1,0 +1,30 @@
+{
+  "production_source": "72c202955bb5604aef495a91619c6bf885f6f1a0",
+  "source_changes_in_this_checkpoint": false,
+  "checks": [
+    {
+      "command": "scripts/check-development-policy",
+      "exit_code": 0
+    },
+    {
+      "command": "rustfmt --edition 2024 --check docs/research/measurements/managed-resource-admission/cap-correctness.rs crates/init/src/domains/admission.rs crates/init/src/domains.rs crates/init/src/run.rs",
+      "exit_code": 0
+    },
+    {
+      "command": "Python ast.parse run-caller-light.py/run-light.py; json.loads own records/*.json",
+      "exit_code": 0
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0
+    }
+  ],
+  "remote_original_archive_sha256": "ac92686171e02634d84293b7134ff792b61845c3b31e332e4e7c27b0ecf0b3f9",
+  "original_members_verified": 12,
+  "GNU_actual_init_check": 0,
+  "GNU_actual_init_Clippy_D_warnings": 0,
+  "musl": "ROOT actual r777/r776101; root-owned correction/gates pending; not passed",
+  "R01_R16": "README.md table and ROOT owed gates remain applicable; policy receipt is not proof",
+  "local_compile": false,
+  "new_test_only_cases": "written/formatted only; not compiled/executed in this checkpoint"
+}

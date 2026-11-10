@@ -1,0 +1,32 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded regex v1.13.1
+  Downloaded autocfg v1.5.1
+  Downloaded num-integer v0.1.47
+  Downloaded num-traits v0.2.19
+  Downloaded memchr v2.8.3
+  Downloaded num-bigint v0.4.8
+  Downloaded aho-corasick v1.1.5
+  Downloaded regex-syntax v0.8.11
+  Downloaded regex-automata v0.4.18
+  Downloaded libc v0.2.189
+   Compiling autocfg v1.5.1
+   Compiling num-traits v0.2.19
+    Checking memchr v2.8.3
+    Checking aho-corasick v1.1.5
+    Checking regex-syntax v0.8.11
+   Compiling libc v0.2.189
+    Checking regex-automata v0.4.18
+    Checking num-integer v0.1.47
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/abi)
+    Checking num-bigint v0.4.8
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/template)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/cmdline)
+    Checking shards-archive v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/archive)
+    Checking shards-dns v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/dns)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/user)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/devcgroup)
+    Checking shards-init v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.97s

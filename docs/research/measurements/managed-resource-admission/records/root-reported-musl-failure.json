@@ -1,0 +1,15 @@
+{
+  "provenance": "Direct coordinator/user report; not executed by this lane; raw combined logs retained by ROOT",
+  "source_reported": "combined f1a3 (full SHA not supplied in this report)",
+  "normal_run": "r777",
+  "normal_result": 101,
+  "target": "x86_64-unknown-linux-musl",
+  "symptom": "domains/admission.rs:158 fstatfs.f_type u64 versus libc::CGROUP2_SUPER_MAGIC i64",
+  "seven_run": "r776",
+  "seven_result": 101,
+  "seven_raw_details": "ROOT retrieving; not held here",
+  "correction_owner": "ROOT; one shared checked conversion, no cfg duplication/unwrap/fallback",
+  "own_production_frozen": "72c202955bb5604aef495a91619c6bf885f6f1a0",
+  "own_result_limit": "GNU real init check0/Clippy0 did not validate musl; no supported-target pass claimed",
+  "owed": "ROOT exact correction source, musl carried-helper build, seven-target, actual KVM and raw evidence"
+}

@@ -15,12 +15,32 @@ global handoff. This lane remains implementation/light only; no children/goals.
 
 ## Actual production path
 
-Latest follow-up source `5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7` adds a
+Latest production checkpoint is signed/pushed
+`72c202955bb5604aef495a91619c6bf885f6f1a0`. ROOT explicitly authorized removal
+of the superseded `run::workload_headroom` after the real init check exposed its
+unused warning. Both `rg` and the tracked-source search found only its definition,
+the new admission definition and the qualified new caller; exactly the obsolete
+function/comment's 14 lines were removed, with no other run startup change.
+On this source the actual GNU init binary-target cargo check and Clippy with
+`-D warnings` both returned 0. No executable was linked or run. The original
+12 raw members are verified in `records/caller-v4/`; original archive SHA256
+`ac92686171e02634d84293b7134ff792b61845c3b31e332e4e7c27b0ecf0b3f9`.
+The module remains byte-identical to the nine-unit formatter checkpoint below.
+
+These GNU results did not cover the supported musl target. ROOT subsequently
+reported actual combined r777 normal carried-init x86 musl build101: the
+`fstatfs.f_type`/`CGROUP2_SUPER_MAGIC` comparison has u64/i64 operands there;
+r776 seven-target also returned101. See `records/root-reported-musl-failure.json`.
+ROOT owns its shared checked comparison correction and the exact musl/combined
+reruns. This lane does not duplicate that edit, introduce a fallback, or claim
+portability from GNU-only checking. Raw combined logs remain ROOT-owned.
+
+The earlier follow-up source `5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7` adds a
 checked diagnostic writer: every fragment fits actual remaining String capacity
 before push; formatting failure discards partial output. Build0, nine pure/private
 units0 and isolated Clippy0, plus actual full init binary-target cargo check0.
-The latter emits one obsolete `run::workload_headroom` warning; ROOT owns that
-unassigned site, so actual full-caller Clippy is not claimed. No linking/helper/
+That earlier check emits the now-removed obsolete `run::workload_headroom` warning;
+Clippy was unrun at that earlier checkpoint. No linking/helper/
 init/controller/VM execution follows from this typecheck. Exact source, commands,
 capacity-fault unit and original archives are in `records/caps-v4/`,
 `records/caller-v2/` and `records/formatter-proof.json`.
@@ -143,7 +163,13 @@ All own jobs have completed; private sources, Cargo caches, binaries and raw
 records remain preserved. No actual run-group/controller/full-caller/VM operation
 was executed by the unit harness. Exact commands/environments are in each record.
 
-ROOT owes actual full init/helper caller compilation, live cgroup/kernel-rounded
+The later `records/caller-v4/` confirms actual GNU full init check0 and Clippy0;
+the earlier warning and failures remain retained. A fresh admitted post-restart
+read verified the own v1–v4 source/record/binary hashes; it did not establish
+process/population cleanup. Its exact command/result are in
+`records/post-restart-owned-inventory-{invocation,result}.json`.
+
+ROOT owes actual musl/full carried-helper compilation, live cgroup/kernel-rounded
 readback and refusal/unused rollback/FD/identity/lifecycle/cleanup cases, bounded
 mutation/restoration, host/backend/target integration and all profiling,
 attribution and benchmarks. This is a new admission requirement; source
@@ -184,6 +210,6 @@ remain OPEN production work, not established by these readbacks.
 | R06/R07/R13 | Narrow domains resource sites, focused new module, unsafe obligations documented. Root review/full caller proof pending. |
 | R08/R14 | No resource/performance/competitive claim. Parent/kernel/foreign costs and paired profiles remain root-owned and unrun. |
 | R09/R10 | New requirement, not an unreproduced defect fix. Actual pre-start admission failure retained; kernel red/green/mutation still owed. |
-| R11/R12 | One Linux guest implementation on both guest arches/all host backends. Linux compile/light pending; seven targets and actual KVM/HVF/WHP unverified. ARM Windows paused. |
+| R11/R12 | GNU real init check/Clippy0 and nine private-file units0; ROOT's actual musl101 exposes a missed supported target. ROOT owns the correction and exact seven-target/helper/VM gates; none is inherited from GNU. One Linux guest implementation; ARM Windows paused. |
 | R15 | Implementer scope only; no children/goals/main merge. Root owns integration/audits/profiling/benchmarking and assigned actual gates. |
 | R16 | Local below30GiB reported; no local build/large copy/cache deletion. No active own local target; frozen source/evidence/binaries preserved. |

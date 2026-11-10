@@ -72,6 +72,18 @@ def main():
         code, output = "Timeout", error.stdout or b""
     (records / "check.exit").write_text(str(code) + "\n")
     (records / "check.log").write_bytes(output)
+    clippy_code = None
+    if code == 0:
+        clippy = [cargo, "+1.98.1", "clippy", "-p", "shards-init", "--bin", "shards-init", "-j", "1", "--", "-D", "warnings"]
+        (records / "clippy.command.json").write_text(json.dumps({"argv": clippy, "cwd": str(source), "timeout_seconds": 240}, indent=2) + "\n")
+        try:
+            result = subprocess.run(clippy, cwd=source, env=environment, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, timeout=240)
+            clippy_code, clippy_output = result.returncode, result.stdout
+        except subprocess.TimeoutExpired as error:
+            clippy_code, clippy_output = "Timeout", error.stdout or b""
+        (records / "clippy.exit").write_text(str(clippy_code) + "\n")
+        (records / "clippy.log").write_bytes(clippy_output)
     if (source / "Cargo.lock").exists():
         shutil.copyfile(source / "Cargo.lock", records / "Cargo.lock")
     for e in identity["file_hashes"]:
@@ -79,9 +91,11 @@ def main():
     manifest = [{"path": p.name, "bytes": p.stat().st_size, "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
                 for p in sorted(records.iterdir()) if p.is_file()]
     (records / "MANIFEST.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(json.dumps({"check_exit": code, "records": str(records), "binary": None,
+    print(json.dumps({"check_exit": code, "clippy_exit": clippy_code, "records": str(records), "binary": None,
                       "target": "real shards-init binary check only", "raw_files": len(manifest) + 1}))
     print(output.decode(errors="replace")[-6000:])
+    if clippy_code is not None:
+        print(clippy_output.decode(errors="replace")[-6000:])
 
 
 if __name__ == "__main__":

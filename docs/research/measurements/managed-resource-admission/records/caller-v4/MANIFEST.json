@@ -1,0 +1,57 @@
+[
+  {
+    "path": "Cargo.lock",
+    "bytes": 9684,
+    "sha256": "4d2d101f9586f9b810fefa140e0d18cc5a7a91423f3a495c4e553745e659a975"
+  },
+  {
+    "path": "cargo.txt",
+    "bytes": 327,
+    "sha256": "cfac1b8bc7fab9cc1785746fc4af15b3a7b2718a3df0eaefd61dc57f85edda0f"
+  },
+  {
+    "path": "check.command.json",
+    "bytes": 275,
+    "sha256": "a12e9967b83bfb7515d4c9c72112e6de41c7bc26d208f47564a222a7098ff1b8"
+  },
+  {
+    "path": "check.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "check.log",
+    "bytes": 1813,
+    "sha256": "65f8683f13f1ba6fc1e52ff8d5d122f9e24f411c00b4b283837fa1c0443de88a"
+  },
+  {
+    "path": "clippy.command.json",
+    "bytes": 312,
+    "sha256": "29aa34967a117da26759d980bc209c35e782479bdb137208130ce4aea0e6fb90"
+  },
+  {
+    "path": "clippy.exit",
+    "bytes": 2,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "clippy.log",
+    "bytes": 1144,
+    "sha256": "d61102035814fb0fee7d00ba003ea8abde969eec51da7b5dfb8ab03fc8e11535"
+  },
+  {
+    "path": "input.json",
+    "bytes": 27864,
+    "sha256": "e72cf17e9f71b0e706afec6369e7859d5f89ddc8832d38a0ca9c9e209712e2b8"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 196,
+    "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+  },
+  {
+    "path": "scope.json",
+    "bytes": 1311,
+    "sha256": "e841bc933a59b95530b7a99ca369088281d08da8df24009d44beb7dc54f9bf2c"
+  }
+]

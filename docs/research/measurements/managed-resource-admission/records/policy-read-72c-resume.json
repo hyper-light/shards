@@ -1,0 +1,29 @@
+{
+  "role": "implementer",
+  "policy_revision": "cbd39284937d024640c56db6f8d8ef2bd9b0ee24",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "full_read": [
+    "canonical AGENTS.md",
+    "canonical docs/development-rules.md R01\u2013R16",
+    "canonical docs/development-evidence.md",
+    "canonical CLAUDE.md",
+    "canonical docs/design/managed-runtime-plan.md",
+    "/Users/adalundhe/g121-handoff.md",
+    "own AGENTS.md/rules",
+    "own managed-resource-admission/HANDOFF.md"
+  ],
+  "owned": [
+    "crates/init/src/domains/admission.rs",
+    "narrow domains.rs cgroup preparation/resource descriptor sites",
+    "ROOT-authorized run.rs legacy workload_headroom removal only",
+    "docs/research/measurements/managed-resource-admission"
+  ],
+  "root_message_key": "managed-policy-resume-72c-musl-root-owned-v1",
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "envelope": "serial sync:false <=1CPU/1GiB RAM/2GiB disk NEW private remote sources/targets only",
+  "local_active_targets": [],
+  "local_active_caches": [],
+  "local_builds": "none",
+  "forbidden": "no children/goals/plans/auto dispatch/main merge; no local heavy builds/full worktrees; no root caches/paused WinARM/host root/controller/security/crypto changes",
+  "source_frozen": "72c202955bb5604aef495a91619c6bf885f6f1a0"
+}

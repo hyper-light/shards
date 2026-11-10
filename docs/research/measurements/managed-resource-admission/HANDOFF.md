@@ -1,6 +1,47 @@
 # Resource admission implementation handoff
 
-LATEST VERIFIED SOURCE: signed/pushed5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7,
+LATEST FROZEN PRODUCTION: signed/pushed72c202955bb5604aef495a91619c6bf885f6f1a0,
+branch p/managed-resource-admission-v1; remote ls-remote confirmed that full SHA.
+Only run.rs change is ROOT-authorized obsolete workload_headroom/comment removal,
+14 deleted lines after rg/all-tracked-source search found no real caller. New
+admission::workload_headroom remains the actual checked descriptor caller.
+ModuleSHA6d478025241a340b2eb4bcf4ef420c192ea64c5089c512b911ffdcd74fc2421f;
+domainsSHA1e61e8215ced9bb9a0c6a34ed3599c119f7a1cb28c4e78a258415fd5f33896c7;
+runSHAa4b8a68f6b5935c30ccfee839c6fcaf8a62cb93a31fa6906658f6c179634086a.
+Actual NEW own72c202955-caller-v1 source/target/log: real init GNU check0 and
+bin-target Clippy -D warnings0, no obsolete warning, no link/init/VM execution.
+12 original records and archive verified in records/caller-v4, archiveSHA
+ac92686171e02634d84293b7134ff792b61845c3b31e332e4e7c27b0ecf0b3f9.
+Caller input archive adf8e21b20291e37129963b613d859db95d6103d31004c5383aac7a2399dd6fa,
+998346 bytes, original exact source/command/chunked env retained. All own jobs
+terminal; ZERO active LOCAL target/cache/build. Do not infer population cleanup.
+
+IMPORTANT actual ROOT combined r777 normal carried-init musl build101 and r776
+seven-target101: fstatfs.f_type is u64 versus CGROUP2_SUPER_MAGIC i64 on musl.
+GNU-only validation missed supported musl. ROOT explicitly owns the one shared
+checked-conversion correction and actual musl/KVM/seven reruns. DO NOT duplicate
+that production edit/fallback; preserve this72c source while ROOT composes.
+ROOT raw combined logs/full source identity remain owed; the direct report is
+retained as root-reported-musl-failure.json, not a local reproduced run.
+
+Post-compaction FULL canonical and own policies/plan/global+own handoff re-read,
+same cbd/df2 revision/hash, readback managed-policy-resume-72c-musl-root-owned-v1.
+Fresh Fedora reboot inventory verified only own source/records/binaries at boot
+059f75eb-7936-4784-8c79-39b0ed191809, not process liveness/cleanup. Command/result
+are in records/post-restart-owned-inventory-*.json. No old run assumed resumed.
+
+CONTINUE test-only six ordinary-file cap boundary/held-object cases in own
+cap-correctness.rs, appended ONLY as private cfg(test) child of exact module body
+for an admitted serial1CPU/1GiB RAM/2GiB disk NEW remote scope. No production edit
+or claimed cgroup emulation. Retain nine existing cases and require all15 to run.
+No actual controller/VM/guarantee work assigned; ROOT all combined/heavy gates.
+Strict guarantees and owner/domain/execution/flow/control budgets remain OPEN;
+ROOT says no authoritative checked guaranteed-claim producer exists. Existing
+asks remain caps; do not fabricate guarantee hooks, ledger, flags or allowance.
+
+## Earlier checkpoints (historical, not later source gates)
+
+Earlier signed/pushed5f131376ec43681ff50d32b9c1ad0a9f3ec6adf7,
 moduleSHA6d478025241a340b2eb4bcf4ef420c192ea64c5089c512b911ffdcd74fc2421f;
 domainsSHA1e61unchanged. Actual private GNU build0/NINEunits0fail0filtered/
 Clippy0 on newowncaps-v4. Exact capacity-fault test verifies refused excess fmt

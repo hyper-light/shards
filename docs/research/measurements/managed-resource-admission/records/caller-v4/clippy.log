@@ -1,0 +1,10 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/abi)
+    Checking shards-template v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/template)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/cmdline)
+    Checking shards-archive v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/archive)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/devcgroup)
+    Checking shards-user v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/user)
+    Checking shards-dns v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/dns)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/erofs)
+    Checking shards-init v0.1.0 (/home/adalundhe/managed-resource-admission-source-72c202955-caller-v1/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.33s
