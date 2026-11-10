@@ -16,10 +16,30 @@ fn input(name: &str) -> u32 {
 }
 
 fn agentfile(base: &str, budget: Budget, actor_port: u16, healthy_port: u16) -> String {
-    format!(
+    let text = format!(
         "FROM {base}\nAGENT --processes={} limited FROM ./limited\nHARNESS healthy FROM ./healthy\nVOLUME --chown=limited /limits FOR limited\nVOLUME --chown=healthy /healthy FOR healthy\nNETWORK --ingress={actor_port} --ingress={healthy_port} control\nEXPOSE --agents=limited {actor_port} AS ingress FOR control\nEXPOSE --harnesses=healthy {healthy_port} AS ingress FOR control\nCONNECT limited WITH limited ON control\nCONNECT healthy WITH healthy ON control\n",
         budget.tasks
-    )
+    );
+    shards_agentfile::agentfile::connections(&parsed_directives(&text)).unwrap();
+    text
+}
+
+fn parsed_directives(text: &str) -> Vec<shards_agentfile::agentfile::Directive> {
+    let parsed =
+        shards_agentfile::parser::parse_as(text.as_bytes(), shards_agentfile::parser::Dialect::Agentfile)
+            .unwrap();
+    let instructions =
+        shards_agentfile::instructions::parse(&parsed, &shards_agentfile::lint::Linter::default()).unwrap();
+    shards_agentfile::agentfile::check(&instructions).unwrap();
+    let directives = instructions.stages[0]
+        .commands
+        .iter()
+        .filter_map(|command| match &command.kind {
+            shards_agentfile::instructions::Kind::Agentfile(directive) => Some(directive.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    shards_agentfile::agentfile::resolve_targets(&directives).unwrap()
 }
 
 fn published(directory: &Path, name: &str, until: Instant) -> Vec<u8> {
@@ -416,26 +436,11 @@ fn fixture_process_observation_checks_threads_and_parentage() {
 
 #[test]
 fn fixture_agentfile_preserves_the_finite_task_declaration_and_grants() {
-    use shards_agentfile::{
-        agentfile::{Directive, Processes},
-        instructions::Kind,
-    };
+    use shards_agentfile::agentfile::{Directive, Processes};
     let budget = Budget::new(6, 4, 2).unwrap();
     let text = agentfile("scratch", budget, 7100, 7101);
-    let parsed =
-        shards_agentfile::parser::parse_as(text.as_bytes(), shards_agentfile::parser::Dialect::Agentfile)
-            .unwrap();
-    let instructions =
-        shards_agentfile::instructions::parse(&parsed, &shards_agentfile::lint::Linter::default()).unwrap();
-    shards_agentfile::agentfile::check(&instructions).unwrap();
-    let directives = instructions.stages[0]
-        .commands
-        .iter()
-        .filter_map(|command| match &command.kind {
-            Kind::Agentfile(directive) => Some(directive.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+    let directives = parsed_directives(&text);
+    shards_agentfile::agentfile::connections(&directives).unwrap();
     assert!(
         matches!(&directives[0], Directive::Agent(domain) if domain.processes == Processes::AtMost(budget.tasks))
     );
@@ -450,5 +455,22 @@ fn fixture_agentfile_preserves_the_finite_task_declaration_and_grants() {
         std::io::stderr(),
         "checked fixture normalized declaration: {}",
         String::from_utf8(shards_agentfile::agentfile::spec(&directives)).unwrap()
+    );
+}
+
+#[test]
+fn fixture_connections_rejects_the_original_comma_port_request() {
+    let valid = agentfile("scratch", Budget::new(6, 4, 2).unwrap(), 7100, 7101);
+    let original = valid.replace("--ingress=7100 --ingress=7101", "--ingress=7100,7101");
+    let directives = parsed_directives(&original);
+    // Parse/check alone are partial. Build planning and runtime both call this
+    // existing validator before using grants (plan.rs:5120; shards/agentfile.rs:200).
+    let Err(refusal) = shards_agentfile::agentfile::connections(&directives) else {
+        panic!("connections accepted the original malformed comma port request");
+    };
+    let _ = writeln!(
+        std::io::stderr(),
+        "existing connections rejected original comma request: {}",
+        String::from_utf8(refusal).unwrap()
     );
 }
