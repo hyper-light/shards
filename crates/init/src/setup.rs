@@ -497,6 +497,14 @@ pub fn apply(entry: &[u8]) -> Result<(), i32> {
     if entry.starts_with(b"domains-seccomp=")
         || entry.starts_with(b"domains-seccomp-none=")
         || entry.starts_with(b"domain-volume=")
+        || [
+            shards_abi::run::managed::CAPACITY_KEY,
+            shards_abi::run::managed::TOKEN_KEY,
+            shards_abi::run::managed::MEMBERS_KEY,
+            shards_abi::run::managed::ACTIVE_KEY,
+        ]
+        .iter()
+        .any(|key| entry.starts_with(key))
     {
         return Ok(());
     }
