@@ -1,0 +1,22 @@
+[
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "bytes": 31401,
+    "sha256": "a984625968bcbf599f3ea0e7b502af521d8fdc1835d60e9a8b08e78395417ecc"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept.rs",
+    "bytes": 16440,
+    "sha256": "7392ece655a8d2477cacce627e78927f9cd777aa19a9212a112abb80d273cdb2"
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/wire.rs",
+    "bytes": 16777,
+    "sha256": "c9b429f75c684d87b51094e827824b2aae05d582827bea2899ba5374186b75c2"
+  },
+  {
+    "path": "crates/shards/tests/managed_network.rs",
+    "bytes": 13794,
+    "sha256": "768b9772bdb7813fc82cd65d589bb62244dc49d80611c421330ba6e09615cd4d"
+  }
+]

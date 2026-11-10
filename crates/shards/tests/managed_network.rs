@@ -165,6 +165,84 @@ fn fixture_cmdline_and_config_preserve_empty_and_missing_evidence() {
     );
 }
 
+fn intercept_records(stdout: &str) -> Vec<serde_json::Value> {
+    stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("managed-intercept "))
+        .map(|record| serde_json::from_str(record).expect("typed interception record"))
+        .collect()
+}
+
+#[test]
+fn interception_records_keep_distinct_bytes_and_typed_counts() {
+    let records = intercept_records(
+        "ignored\nmanaged-intercept {\"type\":\"Joined\",\"backend_accepted\":1,\"relay_accepted\":1,\"joined\":true}\n",
+    );
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["joined"], true);
+    assert_eq!(records[0]["backend_accepted"].as_u64(), Some(1));
+    assert!(std::panic::catch_unwind(|| intercept_records("managed-intercept {broken}")).is_err());
+}
+
+#[test]
+#[ignore = "coordinator runs isolated IPv4 TCP interception experiment; no production adoption"]
+fn experimental_tcp4_interception_has_distinct_backend_and_relay_observations() {
+    let inputs = Inputs::supplied();
+    assert!(!common::cannot_run_vms(), "real hypervisor required");
+    let origin = required("SHARDS_INTERCEPT_ORIGIN");
+    assert!(matches!(origin.as_str(), "local" | "forward"));
+    let mark = required("SHARDS_INTERCEPT_MARK");
+    let table = required("SHARDS_INTERCEPT_TABLE");
+    let priority = required("SHARDS_INTERCEPT_RULE_PRIORITY");
+    let millis = inputs.case_ms.to_string();
+    let run = inputs.boot(
+        &format!("intercept-tcp4-{origin}"),
+        &["intercept-tcp4", &origin, &millis, &mark, &table, &priority],
+    );
+    assert_eq!(run.status, Some(0), "{run}");
+    assert!(run.stdout.contains("SHARDS-TEST PASS"), "{run}");
+    let records = intercept_records(&run.stdout);
+    let one = |kind| {
+        let matching: Vec<_> = records.iter().filter(|r| r["type"] == kind).collect();
+        assert_eq!(matching.len(), 1, "{kind}: {run}");
+        matching[0]
+    };
+    let namespaces = one("Namespaces");
+    let router = namespaces["router_inode"].as_u64().unwrap();
+    let backend = namespaces["backend_inode"].as_u64().unwrap();
+    let client = namespaces["client_inode"].as_u64().unwrap();
+    assert!(router != backend && router != client && backend != client);
+    let baseline = one("Baseline");
+    let intercepted = one("Intercepted");
+    assert_eq!(intercepted["original"], baseline["destination"]);
+    assert_eq!(intercepted["original"], intercepted["client_peer"]);
+    assert_eq!(intercepted["peer"], intercepted["client_local"]);
+    let joined = one("Joined");
+    assert_eq!(joined["joined"], true);
+    assert_eq!(joined["backend_accepted"], 1);
+    assert_eq!(joined["relay_accepted"], 1);
+    let observations: Vec<_> = records
+        .iter()
+        .filter(|r| r["type"] == "ClientObservation")
+        .collect();
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0]["reply"], "Backend");
+    assert_eq!(observations[0]["hex"], "4241434b454e4400ff");
+    assert_eq!(observations[1]["reply"], "Relay");
+    assert_eq!(observations[1]["hex"], "52454c41590080");
+    let servers: Vec<_> = records
+        .iter()
+        .filter(|r| r["type"] == "ServerObservation")
+        .collect();
+    assert_eq!(servers.len(), 2);
+    let actual_backend = servers.iter().find(|r| r["role"] == "Backend").unwrap();
+    let actual_relay = servers.iter().find(|r| r["role"] == "Relay").unwrap();
+    assert_eq!(actual_backend["local"], baseline["destination"]);
+    assert_eq!(actual_backend["peer"], observations[0]["local"]);
+    assert_eq!(actual_relay["local"], intercepted["original"]);
+    assert_eq!(actual_relay["peer"], intercepted["client_local"]);
+}
+
 #[test]
 #[ignore = "coordinator runs direct experimental-kernel VMs"]
 fn direct_guest_capabilities_are_separate_from_payload_results() {

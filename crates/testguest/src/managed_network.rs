@@ -1,11 +1,14 @@
 //! Native socket observations for the managed-runtime route experiments. This does
-//! not install policy or assert that a flow crossed a relay.
+//! not install product policy. The explicit intercept-tcp4 experiment administers
+//! only fresh guest namespaces and records its finite route observations.
 
 use std::io::{self, Read, Write};
 use std::mem::{size_of, size_of_val};
 use std::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::{Duration, Instant};
+
+mod intercept;
 
 const CONFIG: &[&str] = &[
     "CONFIG_NETFILTER",
@@ -39,6 +42,7 @@ enum Transport {
 #[derive(Debug)]
 enum Probe<'a> {
     Capabilities(Option<&'a str>),
+    Intercept(intercept::Inputs),
     Serve(Case, SocketMode),
     Dial(Case),
     Pair(Case),
@@ -103,6 +107,9 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
     match words.as_slice() {
         ["capabilities"] => Ok(Probe::Capabilities(None)),
         ["capabilities", path] => Ok(Probe::Capabilities(Some(path))),
+        ["intercept-tcp4", origin, millis, mark, table, priority] => Ok(Probe::Intercept(
+            intercept::Inputs::parse(origin, millis, mark, table, priority)?,
+        )),
         [role, transport, address, sent, received, millis, mode] => {
             let transport = match *transport {
                 "tcp" => Transport::Tcp,
@@ -134,7 +141,7 @@ fn parse(args: &[String]) -> io::Result<Probe<'_>> {
             }
         }
         _ => Err(invalid(
-            "use capabilities [CONFIG] or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
+            "use capabilities [CONFIG], intercept-tcp4 {local|forward} DEADLINE_MS MARK TABLE RULE_PRIORITY, or {serve|dial|pair} {tcp|udp|udp-connected} ADDRESS SENT_HEX EXPECT_HEX DEADLINE_MS {native|transparent}",
         )),
     }
 }
@@ -228,6 +235,7 @@ impl Deadline {
 fn run(probe: Probe<'_>) -> io::Result<()> {
     match probe {
         Probe::Capabilities(path) => capabilities(path),
+        Probe::Intercept(input) => intercept::run(input),
         Probe::Serve(case, mode) => {
             let deadline = Deadline::new(case.within)?;
             match case.transport {
