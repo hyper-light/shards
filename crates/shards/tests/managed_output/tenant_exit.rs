@@ -6,6 +6,9 @@ use std::io::Read as _;
 #[path = "tenant_stdio.rs"]
 mod stdio;
 
+#[path = "current_controls.rs"]
+mod current_controls;
+
 struct Inputs {
     port: u16,
     patience: Duration,

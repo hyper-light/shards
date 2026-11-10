@@ -1,0 +1,89 @@
+diff --git a/crates/shards/tests/common/managed_capture.rs b/crates/shards/tests/common/managed_capture.rs
+index ee1d25801..663070f33 100644
+--- a/crates/shards/tests/common/managed_capture.rs
++++ b/crates/shards/tests/common/managed_capture.rs
+@@ -40,9 +40,29 @@ impl std::fmt::Debug for Event {
+ #[cfg(test)]
+ #[derive(Debug)]
+ pub(super) enum ControlReceipt {
+-    Write { accepted: usize, pending: usize },
+-    Read { bytes: usize, ended: bool },
+-    Finish { error: Option<String> },
++    WriteAttempt {
++        pending: Vec<u8>,
++    },
++    WriteResult {
++        accepted: usize,
++        pending: Vec<u8>,
++    },
++    Writable {
++        owned_connection: bool,
++        owned_stream: bool,
++        pending: Vec<u8>,
++    },
++    Write {
++        accepted: usize,
++        pending: usize,
++    },
++    Read {
++        bytes: usize,
++        ended: bool,
++    },
++    Finish {
++        error: Option<String>,
++    },
+     WriteError(String),
+ }
+ 
+@@ -86,11 +106,33 @@ impl Client {
+             return;
+         };
+         while !self.pending.is_empty() {
++            #[cfg(test)]
++            if let Some(receipts) = &self.control_receipts {
++                let _ = receipts.send(ControlReceipt::WriteAttempt {
++                    pending: self.pending.clone(),
++                });
++            }
+             match io.write(conn, stream, &self.pending) {
+-                Ok(0) => return,
++                Ok(0) => {
++                    #[cfg(test)]
++                    if let Some(receipts) = &self.control_receipts {
++                        let _ = receipts.send(ControlReceipt::WriteResult {
++                            accepted: 0,
++                            pending: self.pending.clone(),
++                        });
++                    }
++                    return;
++                }
+                 Ok(n) => {
+                     self.pending.drain(..n);
+                     #[cfg(test)]
++                    if let Some(receipts) = &self.control_receipts {
++                        let _ = receipts.send(ControlReceipt::WriteResult {
++                            accepted: n,
++                            pending: self.pending.clone(),
++                        });
++                    }
++                    #[cfg(test)]
+                     if let Some(receipts) = &self.control_receipts {
+                         let _ = receipts.send(ControlReceipt::Write {
+                             accepted: n,
+@@ -186,7 +228,15 @@ impl Handler for Client {
+         }
+     }
+ 
+-    fn writable(&mut self, io: &mut Io<'_>, _: ConnKey, _: StreamId) {
++    fn writable(&mut self, io: &mut Io<'_>, conn: ConnKey, stream: StreamId) {
++        #[cfg(test)]
++        if let Some(receipts) = &self.control_receipts {
++            let _ = receipts.send(ControlReceipt::Writable {
++                owned_connection: self.conn == Some(conn),
++                owned_stream: self.stream == Some(stream),
++                pending: self.pending.clone(),
++            });
++        }
+         self.flush(io);
+     }
+     fn stopped(&mut self, _: &mut Io<'_>, _: ConnKey, _: StreamId) {

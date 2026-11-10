@@ -1,0 +1,32 @@
+{
+  "base": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "policy_revision": "a920c85b5c0c9d40aafc4f4cce32432c7c0aed79",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer / assigned adversarial",
+  "branch": "p/managed-backpressure-owned-v1",
+  "frozen_source_preserved": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "proposal_commit": "ffefcaa57657ed5d5b176ccad34572ceaa736fc5",
+  "owned": {
+    "crates/shards/tests/common/managed_capture.rs": "9a16a2289f2df2bc68eed6e6123af4a85cd68ff3036fdd0eeba36fd7aec78d1f",
+    "crates/shards/tests/managed_output/tenant_exit.rs": "437b69e863c0e4ea372fc5dbed8b0320a063ff3f0d8e6160a40915afa6ef1f4e",
+    "crates/shards/tests/managed_output/current_controls.rs": "3447293d3555a02e498a247b969ea6e72d1058bb8c4ab677e499d9ce396eb5ce",
+    "crates/shards/tests/managed_output/current_controls/backpressure.rs": "f0ea4d265a6d26b9f468938820ccaed5fc202ff0cc8cefc523124a37f4319267",
+    "crates/shards/tests/managed_output/current_controls/contract.rs": "3e32f863b317e9696daabc7f7079a3774487b6d9cc2377c83a2a26b5f9e7146a",
+    "crates/shards/tests/managed_output/current_controls/control_inputs.rs": "7b25717df6aa66a55209eecd2d335e454b7b58fcb5a89104f8ac456b1923f98a",
+    "crates/shards/tests/managed_output/current_controls/native_terminal.rs": "202ff62f0ea13f59ae09be46b1ad50de4d386e730fdf65185dca1a257f1e4c37",
+    "crates/shards/tests/managed_output/current_controls/write_receipts.rs": "c7ecdb15b28dea327b339895ecbe0d40e33268ff4ea39a7e6a62bacfead620aa"
+  },
+  "patches": {
+    "zero-write-instrumentation.patch": "f4318749badb3f3c27916463caf34d76bdf212acac25f870921cc40e488faf3c",
+    "registration.patch": "83132563b3eadea370e89912f641141638ff310af278e25a24d826d4d003f6bc",
+    "shared-client.patch": "b11f082989b78c5f93f1867d92fc2a5b8201d04de3a80a13bfda73ee93196dc4"
+  },
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "private_base": "/home/adalundhe/managed-current-backpressure-a920-v1",
+  "resources": "2CPU/4GiB/24GiB j4",
+  "build_outer_s": 3600,
+  "case_phase_ms": 240000,
+  "case_cleanup_ms": 15000,
+  "case_outer_ms": 255000,
+  "production_edits": false
+}

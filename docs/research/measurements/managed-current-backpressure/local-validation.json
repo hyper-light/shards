@@ -1,0 +1,11 @@
+{
+  "policy_command": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "policy_exit": 0,
+  "format": "canonical rustfmt skip_children=true named files, exit0",
+  "source_prose_diff_check_exit": 0,
+  "raw_patch_context_whitespace": "preserved exact raw; not prose formatter input",
+  "actual_endpoint_build_and_cases": "PENDING"
+}
