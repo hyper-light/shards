@@ -460,7 +460,14 @@ impl Control {
             }
         }
         self.shared.notify();
-        self.sender.send(Command::Handler(())).map_err(Error::Transport)
+        // Shared owns finishing; a queued unit wake will flush that state too.
+        // Only this endpoint's producer/control enqueue these unit notifications.
+        match self.sender.try_send(Command::Handler(())) {
+            Ok(()) | Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(()),
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(Error::Transport(crate::Error::new(
+                "the connection's driver has ended",
+            ))),
+        }
     }
 
     /// Revocation uses the driver's separate stop flag, even with a full handoff.
@@ -894,6 +901,86 @@ impl Handler for Service {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    fn native_endpoint() -> (Endpoint, Producer, Control) {
+        let identity = Identity::generate().unwrap();
+        Endpoint::bind(
+            &identity,
+            identity.fingerprint(),
+            Scope {
+                run: RunId([7; 32]),
+                generation: 9,
+                member: 0,
+                channel: Channel::Stdout,
+            },
+            Admitted {
+                record_bytes: CONTROL_BYTES,
+                transport_bytes: u64::try_from(CONTROL_BYTES + DATA_HEAD).unwrap(),
+                // RFC 8446: uint24 handshake length plus its four-byte header.
+                handshake_bytes: (1 << 24) - 1 + 4,
+                datagram_bytes: DATAGRAM_BYTES,
+                // Finite setup admission only; the driver is never run by these tests.
+                patience: std::time::Duration::from_secs(1),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn finish_coalesces_the_queued_record_wake_without_discarding_the_record() {
+        let (mut endpoint, producer, control) = native_endpoint();
+        assert!(endpoint.driver.handler_mut().subscribe(0));
+        let bytes = vec![0, u8::MAX];
+        let pointer = bytes.as_ptr();
+        producer.submit(bytes).unwrap();
+        assert!(matches!(
+            control.sender.try_send(Command::Handler(())),
+            Err(std::sync::mpsc::TrySendError::Full(Command::Handler(())))
+        ));
+        control.finish().unwrap();
+        let state = lock(&control.shared);
+        assert!(matches!(state.1, Ending::Finishing));
+        match &state.0 {
+            Slot::Record {
+                start: 0,
+                bytes,
+                written: 0,
+            } => {
+                assert_eq!(bytes, &[0, u8::MAX]);
+                assert_eq!(bytes.as_ptr(), pointer);
+            }
+            other => panic!("finish must retain the pending record: {other:?}"),
+        }
+        assert_eq!(
+            progress(&state.0),
+            Progress {
+                accepted: 2,
+                consumed: 0
+            }
+        );
+    }
+
+    #[test]
+    fn finish_coalesces_a_queued_wake_for_an_empty_stream() {
+        let (_endpoint, _producer, control) = native_endpoint();
+        control.sender.try_send(Command::Handler(())).unwrap();
+        control.finish().unwrap();
+        control.finish().unwrap();
+        let state = lock(&control.shared);
+        assert!(matches!(state.1, Ending::Finishing));
+        assert!(matches!(state.0, Slot::Finished(0)));
+    }
+
+    #[test]
+    fn finish_after_the_native_driver_drops_keeps_the_disconnect_error() {
+        let (endpoint, _producer, control) = native_endpoint();
+        drop(endpoint);
+        assert!(matches!(
+            control.sender.try_send(Command::Handler(())),
+            Err(std::sync::mpsc::TrySendError::Disconnected(Command::Handler(())))
+        ));
+        assert!(matches!(control.finish(), Err(Error::Transport(_))));
+    }
 
     fn service(slot: Slot) -> Service {
         Service {
