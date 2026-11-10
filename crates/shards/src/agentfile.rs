@@ -484,6 +484,65 @@ mod tests {
     }
 
     #[test]
+    fn runnable_members_are_read_again_when_the_image_at_a_path_changes() {
+        use shards_agentfile::agentfile::{Directive, Domain, Processes, digest, spec};
+        use shards_build::vfs::Fs;
+        use shards_image::erofs::{DataRef, Meta, Source, Tree};
+        struct Contents(Vec<Vec<u8>>);
+        impl Source for Contents {
+            fn read_at(&mut self, data: DataRef, at: u64, out: &mut [u8]) -> std::io::Result<()> {
+                let bytes = self.0.get(data.source as usize).unwrap();
+                out.copy_from_slice(bytes.get(at as usize..at as usize + out.len()).unwrap());
+                Ok(())
+            }
+        }
+        let declaration = Directive::Agent(Domain {
+            name: b"a".to_vec(),
+            source: b"./artifact".to_vec(),
+            to: None,
+            processes: Processes::Unbounded,
+        });
+        let json = spec(&[declaration]);
+        let expected = String::from_utf8(digest(&json)).unwrap();
+        let dir = shards_testdir::TempDir::new("managed-plan-replace").unwrap();
+        let path = dir.join("root.erofs");
+        let write = |config: &[u8]| {
+            let mut fs = Fs::new(
+                Tree::new(Meta {
+                    mode: 0o755,
+                    ..Meta::default()
+                }),
+                (0, 0),
+            );
+            for directory in [b"/agents".as_slice(), b"/agents/a.d"] {
+                fs.mkdir(directory, 0o755).unwrap();
+            }
+            let mut contents = Contents(vec![json.clone(), config.to_vec()]);
+            for (index, name) in [b"/.agentfile.json".as_slice(), b"/agents/a.d/osi.json"]
+                .into_iter()
+                .enumerate()
+            {
+                let id = fs.create(name, 0o444).unwrap();
+                fs.set_data(
+                    id,
+                    contents.0[index].len() as u64,
+                    DataRef {
+                        source: index as u32,
+                        offset: 0,
+                    },
+                );
+            }
+            let mut file = std::fs::File::create(&path).unwrap();
+            shards_image::erofs::write(fs.tree(), &mut contents, &mut file).unwrap();
+            file.sync_all().unwrap();
+        };
+        write(br#"{"run":{"command":["true"]}}"#);
+        assert_eq!(agentfile(&path, &expected).unwrap().active_members, [0]);
+        write(b"{}");
+        assert!(agentfile(&path, &expected).unwrap().active_members.is_empty());
+    }
+
+    #[test]
     fn runnable_members_keep_declared_ids_and_resolve_config_links_inside_the_image() {
         use shards_agentfile::agentfile::{Directive, Domain, Processes};
         use shards_build::vfs::Fs;
