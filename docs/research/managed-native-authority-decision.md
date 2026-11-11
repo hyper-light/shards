@@ -197,3 +197,79 @@ restore/move, seven targets, parent/kernel accounting and comparative costs.
 No correctness, compatibility, hard-admission, leak-free or4–5x result follows
 from this choice or its source inspection. Required literal derivations, explicit
 wire/lifecycle transitions and everyR01–R16 account remain part of implementation.
+
+
+## Selected native seccomp stages
+
+ROOT selected this experimental implementation at receipt12079. It is not an
+accepted production boundary or a passing composed-helper/VM result. Native
+owns the canonical policy codec/helper builder; the actual init owner produces
+and retains the checked policy objects. No separate process manager is added.
+
+Source inspection establishes the constraint: the current helper installs its
+fixed code-worker/lifecycle allowlist before later children. It excludes held
+native exec and general runtime operations. Adding exec alone cannot support
+those programs. Applying the existing domain profile unchanged to the helper
+would also refuse trusted clone3. These are new-feature compatibility facts,
+not a claimed live legacy defect. Existing GNU native-exec and code-helper tests
+validate separate mechanisms; they do not prove the proposed composition.
+
+Linux documents inherited filters and restrictive stacking in its
+[seccomp contract](https://docs.kernel.org/userspace-api/seccomp_filter.html).
+The selected stages therefore keep the helper's parent filter as the union of
+its existing fixed trusted calls and the actual owner-compiled domain program.
+The architecture/x32 guard precedes every helper exception. The fallback enters
+the unchanged domain BPF, retaining its relative jumps and decisions. The native
+child adds the exact original domain filter after actual Group association,
+durable intent/current commit and release, immediately before the unchanged
+held-object exec leaf. That intersection removes helper-only exceptions from
+the untrusted image. Code workers retain their existing stricter filter.
+
+This follows the late application pattern in
+[runc1.3.3](https://raw.githubusercontent.com/opencontainers/runc/v1.3.3/libcontainer/standard_init_linux.go)
+while preserving Shards' own single-helper ownership and raw-child FD map. The
+existing selected profile source allows map/fchdir/held-exec operations; its
+actual compiled guest behavior still needs testing. Rejected alternatives are
+an arbitrary native-runtime syscall list, disabling helper filtering, and a
+separate precreated executor/manager. The first guesses runtime requirements;
+the others discard an existing restriction or add lifetime/resource machinery.
+
+Policy flags and program come from the existing checked domain Filter producer,
+not actor bytes or CLI identity labels. Transfer a typed policy record and a
+sealed non-executable acquired object on the same private owner6 bootstrap path;
+queue initialization while preparation owns both endpoints, before clone/release.
+Confined readiness requires actual validated policy installation. Required
+seals, byte lengths, native instruction representation and flags are checked;
+missing/malformed/stale policy refuses readiness. The fixed descriptor derives
+from the reviewed bootstrap map; it is not a capacity default. All lengths and
+instruction-count checks derive from the actual program and the
+[pinned kernel UAPI](https://raw.githubusercontent.com/torvalds/linux/v6.18/include/uapi/linux/filter.h)
+and [classic-BPF contract](https://raw.githubusercontent.com/torvalds/linux/v6.18/Documentation/networking/filter.rst).
+Actual encoded bytes, pages, descriptors and preparation overlap remain charged
+objects; no hard backing or low-overhead claim follows from their representation.
+
+One explicit NotBorn message is also required for a published Process Group
+cancelled before association. Only the trusted helper may report it after
+retiring the same pre-birth Worker and every birth/Group capability, so a late
+Commit cannot launch it. The actual owner combines that fact with kernel empty
+before removal. Cancellation, missing pidfd and EOF never substitute for this
+fact. Possible birth instead requires matching trusted reap and kernel empty;
+unknown outcomes retain ownership. This closes a new protocol requirement,
+without claiming a reproduced legacy leak or completed revocation proof.
+
+For actor protocol input, reuse the selected CONTROL3/owner6 route with a distinct
+typed MemberActor message and the existing input/body codecs. MemberActor input
+and operation/Worker identities stay separate; there is no synthetic job0 or
+reinterpretation of a header width as a tag. The init input Owner keeps the sole
+writer/buffer. The actual protected selected launch request and actor association
+precede attachment; every write uses fresh original-scope/current WRITE checks.
+A decoded Context or requested extent alone grants nothing. A new direct input
+endpoint would add dispatcher/descriptor/charge obligations, so the existing
+protected route is the implementation candidate. Frame overlap and all payload
+ownership must be acquired explicitly; no cross-process mutable borrow or extra
+unbounded queue is introduced. Raw input sessions continue to refuse Native.
+
+R01-R16 source/typed transition, actual guest compatibility, meaningful guards,
+whole population and parent/kernel/cost gates remain open. These stages preserve
+the paused WindowsARM VM and held campaigns. No4-to5x performance result is
+claimed; ROOT owns comparable measurements after the actual caller is composed.
