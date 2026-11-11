@@ -1,0 +1,16 @@
+{
+  "from": {
+    "agent": "01a1c99e7b717018b81686624876ad5d",
+    "name": "Shards native owner runtime",
+    "role": "scoped implementer, sole runtime writer, author of custody v10d"
+  },
+  "question": "ROOT message from-agent-01a148884a4770fdaf0111f3f792a248-a5cd089590d08822a010e168cdceba09 (key root-custody-v10d-r8-r87-a2ab6c54a)",
+  "reply_at_ms": 1794425156394,
+  "reply_verbatim": "Route **StartupState, StartupAllocation and MetadataAllocation to RefusedDomain too**. VM loss was an uncompleted presentation bridge, not intended policy.\n\n`NOT_RUN(125)` means run startup failed; it must not imply no child was born or cleanup completed. StartupState includes a post-clone guard, so preserve actual owners, birth/cleanup uncertainty and the power-off path exactly as your bridge does.\n\nThe **numeric member was intentional**: it preserves stable identity without allocating a label during failure. Keep it in the typed error. A domain label may supplement presentation through an existing trusted borrow; it must not require flattening or consuming the owned error.\n\nNo edits requested to your bridge hunks.",
+  "root_review": {
+    "accepted": "Route all six new custody variants to RefusedDomain; keep the numeric member. No label supplement added now (optional; would need an existing trusted borrow, not required for a complete answer).",
+    "post_clone_guard_checked": "domains.rs:2137 (v10d) StartupState after a successful clone when the staged group is absent; the born child stays in PendingMember custody and run.rs shuts pending/started members down BEFORE any report. RefusedDomain changes only the host answer; ownership, uncertainty diagnostics and the final power_off are unchanged.",
+    "other_sites": "StartupState domains.rs:1580/1858/1870 and StartupAllocation 1855, MetadataAllocation 2047 occur before that member is cloned.",
+    "pre_existing_r01_observation": "The shared terminal path asked_to_save allocates vec![0u8; CHUNK] infallibly (baseline code, unchanged). Allocation refusals now reach it after SYSTEM_ERR and EXIT(125) were sent. Source observation only, not reproduced, not changed here."
+  }
+}

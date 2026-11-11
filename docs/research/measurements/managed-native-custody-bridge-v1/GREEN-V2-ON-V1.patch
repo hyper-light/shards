@@ -1,0 +1,73 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -50,9 +50,10 @@
+         member: Option<u32>,
+         cause: SignalFailure,
+     },
+-    /// A member's typed start refusal whose untyped predecessor answered
+-    /// SYSTEM_ERR with NOT_RUN. The original failure, including a rejected
+-    /// parent group, stays owned here until power_off; reporting borrows it.
++    /// A member's typed start refusal. SYSTEM_ERR with NOT_RUN says the run
++    /// failed to start, not that no member was born or that cleanup finished.
++    /// The original failure, including a rejected parent group, stays owned
++    /// here until power_off; reporting borrows it.
+     RefusedDomain(crate::domains::StartFailure),
+     UnreportedDomain(crate::domains::StartFailure),
+     UnreportedLaunch {
+@@ -125,7 +126,10 @@
+                 None => StartupFailure::UnreportedLaunch { member, failure },
+             }
+         }
+-        failure @ (crate::domains::StartFailure::Clone { .. }
++        failure @ (crate::domains::StartFailure::StartupState
++        | crate::domains::StartFailure::StartupAllocation
++        | crate::domains::StartFailure::MetadataAllocation { .. }
++        | crate::domains::StartFailure::Clone { .. }
+         | crate::domains::StartFailure::Pid { .. }
+         | crate::domains::StartFailure::OwnerParent { .. }) => StartupFailure::RefusedDomain(failure),
+         failure => StartupFailure::UnreportedDomain(failure),
+@@ -6393,9 +6397,9 @@
+     }
+ 
+     #[test]
+-    fn clone_and_pid_refusals_report_system_error_and_not_run() {
++    fn member_start_refusals_report_system_error_and_not_run() {
+         let (conn, mut reader) = connection();
+-        for cause in [
++        let refusals = [
+             crate::domains::StartFailure::Clone {
+                 member: 7,
+                 actual: -1,
+@@ -6405,16 +6409,25 @@
+                 member: 8,
+                 actual: libc::c_long::MAX,
+             },
+-        ] {
++            crate::domains::StartFailure::StartupState,
++            crate::domains::StartFailure::StartupAllocation,
++            crate::domains::StartFailure::MetadataAllocation { member: 10 },
++        ];
++        let mut answers = Vec::new();
++        for cause in refusals {
+             let expected = run::render_error(&cause);
+             let failure = domain_start_failed(cause, &Spec::default());
+-            assert_eq!(
+-                report_startup_failure(&conn, &failure),
+-                Some(NOT_RUN),
+-                "typed member refusal must answer SYSTEM_ERR with NOT_RUN"
+-            );
+-            assert_eq!(system_error(&mut reader), expected.as_bytes());
++            let answer = report_startup_failure(&conn, &failure);
++            if answer.is_some() {
++                assert_eq!(system_error(&mut reader), expected.as_bytes());
++            }
++            answers.push(answer);
+         }
++        assert_eq!(
++            answers,
++            [Some(NOT_RUN); 5],
++            "typed member refusal must answer SYSTEM_ERR with NOT_RUN"
++        );
+         let unknown = domain_start_failed(crate::domains::StartFailure::MissingNativeOwner, &Spec::default());
+         assert_eq!(report_startup_failure(&conn, &unknown), None);
+         reader.set_nonblocking(true).unwrap();

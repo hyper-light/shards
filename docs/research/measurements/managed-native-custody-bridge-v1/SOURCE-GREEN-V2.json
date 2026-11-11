@@ -1,0 +1,14 @@
+{
+  "manifest_sha256": "93855c9eb57b4ab057b94651614ca749bdf9363f5178d11fd2cbb40da00bb6d3",
+  "full_source_sha256": "4393d6113c216b01543805ed7e7dc005507037d4519777d8798745b45fd5f2bd",
+  "package_sha256": "373406dec8dcdc622d3b5d6a72d7d9ca7e3ae6a08c67a802597188212e1c5059",
+  "package_bytes": 640766,
+  "source_files": 4789,
+  "variants": {
+    "green-v2": "dff63046236f145c9034af4b481fe1e0e6f756bd9a50798ac9e52e63960a7c4f",
+    "red-v10d": "737a39addda8f2d5cc7a91b2cb41e7573e1a8db57ec91b2d55d89093190905d9",
+    "red-v1": "767f819dd7981deb10e88b0883d46f5f41620691cb48befb9cffe92f956e2910",
+    "mutant-v2": "3387045097fa03ae79190a21c89dbc187a8eb00ac03e611ca466552b7013e3de"
+  },
+  "strict_baseline_count": 17
+}

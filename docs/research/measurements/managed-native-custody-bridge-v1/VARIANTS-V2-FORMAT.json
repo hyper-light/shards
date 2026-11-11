@@ -1,0 +1,86 @@
+{
+  "green-v2": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/green-v2/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "dff63046236f145c9034af4b481fe1e0e6f756bd9a50798ac9e52e63960a7c4f",
+    "after_sha256": "dff63046236f145c9034af4b481fe1e0e6f756bd9a50798ac9e52e63960a7c4f",
+    "bytes": 282189
+  },
+  "red-v10d": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/red-v10d/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "737a39addda8f2d5cc7a91b2cb41e7573e1a8db57ec91b2d55d89093190905d9",
+    "after_sha256": "737a39addda8f2d5cc7a91b2cb41e7573e1a8db57ec91b2d55d89093190905d9",
+    "bytes": 281285
+  },
+  "red-v1": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/red-v1/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "767f819dd7981deb10e88b0883d46f5f41620691cb48befb9cffe92f956e2910",
+    "after_sha256": "767f819dd7981deb10e88b0883d46f5f41620691cb48befb9cffe92f956e2910",
+    "bytes": 281955
+  },
+  "mutant-v2": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/mutant-v2/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "1a2d37e6181f056b21f916b471696e53400d4ef158d2c3385744806b31faaac6",
+    "after_sha256": "3387045097fa03ae79190a21c89dbc187a8eb00ac03e611ca466552b7013e3de",
+    "bytes": 282223
+  }
+}
