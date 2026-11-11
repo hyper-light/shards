@@ -1,0 +1,7 @@
+{
+  "chunk_id": "e3bf75",
+  "wall_time_seconds": 0.000017792,
+  "exit_code": 1,
+  "original_token_count": 211,
+  "output": "{\n  \"status\": \"UNAPPLIED_SOURCE_PROPOSAL_ONLY\",\n  \"base\": \"33ea5a816ae1d4f9656762d2acedc98ec00ccc34\",\n  \"frozen_leaf_sha256\": \"75427cca006a347f7b6a02ef88203e3b947db3d5f74157192001d1dc097e8a00\",\n  \"proposed_leaf_sha256\": \"066d59449e3019a02e8822ada398b8beebad6dbf790600a657fad34fc16b6ab0\",\n  \"patch_sha256\": \"87f101726e01beb0654600bfc8b7f0d826bb1462fdc9a8e6bfd497c155831820\",\n  \"original_committed_sequence_statements_exact\": true,\n  \"wire_parser_frame_and_snapshot_helpers_exact\": true,\n  \"cleanup_predicates_and_order_unchanged\": true,\n  \"new_selected_requests\": 19,\n  \"new_builds\": 0,\n  \"new_actors\": 0,\n  \"required_before_apply_build_actors\": \"ROOT review/GO; new normally admitted scope/deadline/dispatch\"\n}\nTraceback (most recent call last):\n  File \"<stdin>\", line 10, in <module>\nAssertionError: lockf: /tmp/g121-mac.lock: already locked\n\n"
+}

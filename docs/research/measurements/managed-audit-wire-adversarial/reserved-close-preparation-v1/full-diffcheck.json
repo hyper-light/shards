@@ -1,0 +1,7 @@
+{
+  "chunk_id": "f0cc57",
+  "wall_time_seconds": 0.0000095,
+  "exit_code": 2,
+  "original_token_count": 280,
+  "output": "{\n  \"argv\": [\n    \"lockf\",\n    \"-t\",\n    \"0\",\n    \"/tmp/g121-mac.lock\",\n    \"rustfmt\",\n    \"--config-path\",\n    \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml\",\n    \"--config\",\n    \"skip_children=true\",\n    \"--emit\",\n    \"stdout\",\n    \"docs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native.proposed.rs\"\n  ],\n  \"exit_code\": 75,\n  \"floor_bytes\": 66376052736\n}docs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native-caller.patch:4: trailing whitespace.\n+ \ndocs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native-caller.patch:13: trailing whitespace.\n+ \ndocs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native-caller.patch:19: trailing whitespace.\n+ \ndocs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native-caller.patch:48: trailing whitespace.\n+ \ndocs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native-caller.patch:148: trailing whitespace.\n+ \n"
+}

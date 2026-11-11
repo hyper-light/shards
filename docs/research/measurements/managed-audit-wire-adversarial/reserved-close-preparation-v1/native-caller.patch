@@ -1,0 +1,177 @@
+--- a/docs/research/measurements/managed-audit-wire-adversarial/native.rs
++++ b/docs/research/measurements/managed-audit-wire-adversarial/native.rs
+@@ -12,6 +12,12 @@
+ 
+ type Result<T> = io::Result<T>;
+ type Snapshot = [Vec<u8>; 2];
++
++#[derive(Clone, Copy)]
++enum Case {
++    Committed,
++    ReservedClose,
++}
+ 
+ // Journal's first lease is call0. The original codec input uses broker request1;
+ // neither is the FUSE frame correlation, which starts at1 independently.
+@@ -452,7 +458,7 @@
+     )
+ }
+ 
+-fn sequence(wire: &mut Wire<'_>, corpus: &Corpus, files: &[File; 2], initial: &Snapshot) -> Result<()> {
++fn sequence(wire: &mut Wire<'_>, corpus: &Corpus, files: &[File; 2], initial: &Snapshot, case: Case) -> Result<()> {
+     let [scope, other] = corpus.scopes;
+     let [data, neighbor] = &corpus.records;
+     let mut init = 7u32.to_le_bytes().to_vec();
+@@ -529,6 +535,19 @@
+             && u64::from_be_bytes(field(first, at + 2 * size_of::<u64>())?) == data.terminal_max,
+         "actual immutable slot differs",
+     )?;
++    match case {
++        Case::Committed => {}
++        Case::ReservedClose => {
++            return reserved_close_sequence(
++                wire,
++                corpus,
++                files,
++                (node, fh, other_node, other_fh),
++                reserved,
++                &current,
++            );
++        }
++    }
+     require(
+         wire.control(node, fh, scope, reserve)? == reserved,
+         "duplicate Reserve differs",
+@@ -698,7 +717,89 @@
+     )
+ }
+ 
+-fn owned_case(corpus: &Corpus, root: &Path, trace: &mut Trace, deadline: Instant) -> Result<()> {
++fn reserved_close_sequence(
++    wire: &mut Wire<'_>,
++    corpus: &Corpus,
++    files: &[File; 2],
++    handles: (u64, u64, u64, u64),
++    reserved: wire::Reply,
++    retained: &Snapshot,
++) -> Result<()> {
++    let (node, fh, other_node, other_fh) = handles;
++    let [scope, other] = corpus.scopes;
++    let [data, neighbor] = &corpus.records;
++    let closed = wire::Reply {
++        stage: wire::Stage::Closed,
++        ..reserved
++    };
++    let reserve = wire::Request::Reserve {
++        call: AUDIT_CALL,
++        intent: data.intent_max,
++        terminal: data.terminal_max,
++    };
++    // These are seven selected ordinary controls, not recovery retries. No
++    // append occurs: every result must retain the exact post-Reserve objects.
++    for (name, request, cause) in [
++        ("reserved-close", wire::Request::Close { call: AUDIT_CALL }, wire::Cause::None),
++        ("reserved-close-duplicate", wire::Request::Close { call: AUDIT_CALL }, wire::Cause::None),
++        ("reserved-close-inspect", wire::Request::Inspect { call: AUDIT_CALL }, wire::Cause::None),
++        ("closed-reserve-refused", reserve, wire::Cause::Closed),
++        ("closed-intent-refused", wire::Request::CommitIntent { call: AUDIT_CALL }, wire::Cause::Closed),
++        ("closed-terminal-refused", wire::Request::CommitTerminal { call: AUDIT_CALL }, wire::Cause::Closed),
++        ("closed-final-inspect", wire::Request::Inspect { call: AUDIT_CALL }, wire::Cause::None),
++    ] {
++        require(
++            wire.control(node, fh, scope, request)? == wire::Reply { cause, ..closed },
++            format!("actual {name} state/cause/cursors/accepted/credit differ"),
++        )?;
++        require(
++            snapshot(files, wire.trace, name, corpus.budget)? == *retained,
++            format!("actual {name} changed the retained slot or neighbor"),
++        )?;
++    }
++    require(wire.sent == 15, "did not execute exact seven post-Reserve controls")?;
++    empty(
++        wire.control(
++            other_node,
++            other_fh,
++            other,
++            wire::Request::Reserve {
++                call: AUDIT_CALL,
++                intent: neighbor.intent_max,
++                terminal: neighbor.terminal_max,
++            },
++        )?,
++        0,
++        wire::Cause::Exhausted,
++    )?;
++    require(
++        snapshot(files, wire.trace, "closed-neighbor-refused", corpus.budget)? == *retained,
++        "closed member refunded extents or neighbor refusal changed files",
++    )?;
++    empty(
++        wire.control(other_node, other_fh, other, wire::Request::Identify)?,
++        0,
++        wire::Cause::None,
++    )?;
++    require(
++        snapshot(files, wire.trace, "closed-neighbor-identified", corpus.budget)? == *retained,
++        "neighbor identification changed files",
++    )?;
++    wire.release(node, fh)?;
++    wire.release(other_node, other_fh)?;
++    require(wire.sent == 19, "did not execute exact19 requests")?;
++    require(
++        snapshot(files, wire.trace, "closed-reserved-released", corpus.budget)? == *retained,
++        "RELEASE changed the retained uncommitted slot",
++    )?;
++    let [first, second] = retained;
++    require(
++        sum(amount(first.len())?, amount(second.len())?)? == corpus.budget,
++        "actual retained lengths differ from the aggregate B after early Close",
++    )
++}
++
++fn owned_case(corpus: &Corpus, root: &Path, trace: &mut Trace, deadline: Instant, case: Case) -> Result<()> {
+     let directory = File::open(root)?;
+     let root_fd = directory.as_raw_fd();
+     let server = match Server::audited(directory.into(), &corpus.config, 0) {
+@@ -765,7 +866,7 @@
+                     deadline,
+                     sent: 0,
+                 };
+-                let result = sequence(&mut wire, corpus, &files, &initial);
++                let result = sequence(&mut wire, corpus, &files, &initial, case);
+                 let _ = wire.trace.event(format!(
+                     "sequence_result={result:?} attempted_requests={}; later requests unreached on failure",
+                     wire.sent
+@@ -821,7 +922,7 @@
+         .and(require(root_closed, "owned root descriptor did not close"))
+ }
+ 
+-fn run() -> Result<()> {
++fn run(case: Case) -> Result<()> {
+     let began = Instant::now();
+     let deadline = began
+         .checked_add(WORK)
+@@ -841,7 +942,7 @@
+         rlimit()?,
+         directory.display()
+     ))?;
+-    let result = owned_case(&corpus, &directory, &mut trace, deadline);
++    let result = owned_case(&corpus, &directory, &mut trace, deadline, case);
+     let recorded = trace.event(format!("owned_case_result={result:?}"));
+     let mut result = result.and(recorded);
+     // Salvage paths only when setup failed before a held witness existed. These
+@@ -878,6 +979,13 @@
+ #[test]
+ #[ignore = "requires ROOT-reviewed corpus/source and one admitted private native dispatch"]
+ fn full_fuse_frames_share_one_retained_audit_budget() {
+-    let outcome = run();
++    let outcome = run(Case::Committed);
+     assert!(outcome.is_ok(), "actual native audit fixture: {outcome:?}");
+ }
++
++#[test]
++#[ignore = "requires separate ROOT source and one-case dispatch approval"]
++fn reserved_close_retains_extent_and_refuses_reopening() {
++    let outcome = run(Case::ReservedClose);
++    assert!(outcome.is_ok(), "actual native reserved Close fixture: {outcome:?}");
++}

@@ -5,6 +5,11 @@ not rerun or weakened. This proposed distinct state edge has NOT been implemente
 built or executed and needs ROOT's source/actor authorization. No producer defect
 is alleged. The lane remains assigned; this proposal is the next finite item.
 
+The exact UNAPPLIED [caller diff](reserved-close-preparation-v1/native-caller.patch)
+and [source/check readback](reserved-close-preparation-v1/README.md) are now present
+for that review. The actual executed native leaf remains unchanged. Static format
+was held by the shared lock; no compile/actor gate is claimed for this proposal.
+
 ## Concrete contract and shared source
 
 Use exactly the same frozen ba78 constructor/writer, original6b corpus and actual

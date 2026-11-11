@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "rustfmt",
+    "--config-path",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+    "--config",
+    "skip_children=true",
+    "--emit",
+    "stdout",
+    "docs/research/measurements/managed-audit-wire-adversarial/reserved-close-preparation-v1/native.proposed.rs"
+  ],
+  "exit_code": 75,
+  "floor_bytes": 66376052736
+}
