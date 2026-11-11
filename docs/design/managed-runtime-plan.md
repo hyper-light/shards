@@ -69,7 +69,7 @@ The [capture-storage coordinator record](../research/measurements/managed-captur
 adds allocation transfer through the existing credit/record/application-ACK
 slot, the real58-byte-credit/1-byte-loan reproduction and typed guard, independent
 guard removal/restoration, seven-target checks, full-daemon/native units and
-25 ordinary ARM64 KVM passes. This establishes the selected backing-buffer
+25 ordinary KVM passes on each of ARM64 and amd64. This establishes the selected backing-buffer
 behavior; hard parent/kernel admission, protected control, complete transport
 accounting, remaining hosts/faults and measured costs are still open.
 

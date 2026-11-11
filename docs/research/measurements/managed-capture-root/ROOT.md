@@ -53,6 +53,37 @@ checkout/target remains protected. Advancing the old capture branch with an
 evidence-only commit before resolving synchronization was a coordination error;
 the independent landing starts from current main and selects only named paths.
 
+## Actual amd64 KVM caller on landed main
+
+The fresh no-sync r37 gate checked out immutable published
+`0c598386ca1f7c65c6e0634dba77983e4abffff2` into its own source/target on Adacachy.
+It did not reuse or overwrite the uncertain original attempt. CachyOS Linux
+7.2.9-2-cachyos amd64, actual cached Cargo compiler metadata and post-run readback
+identify Rust1.98.1/48a229cea and LLVM22.1.8. Admission was4CPU/16GiB/64GiB,
+cargo-j4; neither that envelope nor the observed free space proves a hard cap.
+
+| Actual stage | Result |
+| --- | --- |
+| Policy | 0 |
+| Normal carried managed-output build | 0,296.62s |
+| Matching static musl test guest | 0,31.94s |
+| Ordinary managed-output KVM suite | **25 passed,0 failed,10 ignored**,43.86s wall |
+
+Each direct subprocess had actual pidfd exit readiness and was waited/reaped;
+controller descriptors returned9→9 for every stage. No timeout or SKIP occurred.
+Whole descendant/kernel return remains Unknown. The test and guest executables,
+source and target remain in the private scope. `amd64-main.py` uses a fresh
+short0700 temporary parent for native Unix socket length compatibility; it does
+not widen a production limit. Official OTLP consumers were not rerun because
+this batch leaves their codec unchanged; no new consumer acceptance is claimed.
+
+[Independently verified amd64 raw archive](root-records/amd64-main-0c/verified.json):
+59 payloads plus manifest60,32146bytes, SHA256
+`d459c963985eb22df08da96b68a1a6e002d2f7b0abab7747eb9858ec721924af`.
+Every member is unique, safe, regular and matches its declared length/SHA256.
+The separate post-run toolchain record includes actual cached Cargo metadata,
+not a claim that a later command alone identifies the earlier compiler.
+
 ## Actual ARM64 KVM caller
 
 The separate existing nested-KVM fixture ran from frozen source09a on this
@@ -124,7 +155,7 @@ R01–R16 review extends the implementer's complete account in
 | R02/R03/R05/R12 | Existing protocol/layout bounds and pinned Vec/cgroup sources; allocation follows the existing slot/credit notifications, without polling or a storage cache. No new production default or platform duplicate. Actual storage is distinct from authority. |
 | R08/R14 | No comparative speed, allocation-free, leak-free or4–5× claim. Actual allocation/reallocation/copy/fault, induced parent/kernel charges and protected-control measurements remain owed. |
 | R09/R10 | Real API red/green, independent exact check removal/restoration, full caller and ARM64 KVM results with verified raw records. Binary-retention and original-attempt limitations above are explicit. |
-| R11 | All7 targets/GPU/format compile-lint; Mac native18remote/13daemon; actual ARM64 KVM25. This batch does not establish amd64 KVM, native HVF capture, WHP or all Linux distributions. Paused Windows ARM stays untouched. |
+| R11 | All7 targets/GPU/format compile-lint; Mac native18remote/13daemon; actual ARM64 KVM25 and landed-main amd64 KVM25. Native HVF capture, WHP and all Linux distributions are not established by this batch. Paused Windows ARM stays untouched. |
 | R15/R16 | ROOT reviewed source/results/mutation and prepares the signed named-path batch. Original sources, targets, failed outputs and evidence are retained; no user-data/cache deletion or headroom bypass. |
 
 Hard parent/kernel backing, complete transport accounting, actual protected
