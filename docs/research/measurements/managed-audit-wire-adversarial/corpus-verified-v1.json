@@ -1,0 +1,43 @@
+{
+  "archive_sha256": "7b14ede379a4679e4bb3269c40928dda6139358b3fb6342fc4767a4c6404ad46",
+  "manifest_sha256": "804f3b66b34565517f88caf43a1b48ad0102eaede0e15348b548df0a9eaa6698",
+  "source_revision": "6b86176f7354c4b9655b1a70c5671b1f04068f66",
+  "archive_payloads": 389,
+  "archive_total_members": 390,
+  "corpus_payloads": 364,
+  "all_unique_safe_regular_hashes_verified": true,
+  "selected": [
+    {
+      "member": 1,
+      "operation": "Send",
+      "broker_request": 1,
+      "scope_sha256": "8cb5741220a6f46f2e0565ac07d971a68f10593590ebd847e950dadbcd4eb1c3",
+      "intent_max": 213,
+      "terminal_max": 844,
+      "intent_bytes": 139,
+      "terminal_bytes": 283,
+      "shape_count": 40,
+      "intent_sha256": "6404c3310c36f13e2276edfd8833a1ccf98ddeab80fad0219e32a2b457f40d58",
+      "terminal_sha256": "1c8d8e289c9d7496556538aea700b260ef6628667e9fb064846b5d93eb013cef"
+    },
+    {
+      "member": 3,
+      "operation": "Send",
+      "broker_request": 1,
+      "scope_sha256": "dc9ef7ec3ee305c5a7ec56f6f17ad930f317c10a3d50b86ed19aedd331ae2a55",
+      "intent_max": 213,
+      "terminal_max": 844,
+      "intent_bytes": 139,
+      "terminal_bytes": 283,
+      "shape_count": 40,
+      "intent_sha256": "85d9f16b867b646185c2d347022d371374e08305c3c4d502ec309c0a5a5119e3",
+      "terminal_sha256": "50e48f2219df6c94ea549eeb9341b44cb7cccbeeb27639381207dd3d30cd87d0"
+    }
+  ],
+  "aggregate_B": 1333,
+  "audit_lease_call": 0,
+  "fuse_unique_correlations": "1..24",
+  "codec_reemitted": false,
+  "scope_typed_decode": "existing ABI before effects in the single native case",
+  "synthetic_effects_are_not_live_peer_facts": true
+}

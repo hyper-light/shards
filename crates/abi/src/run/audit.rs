@@ -475,7 +475,9 @@ pub enum Retained {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportCause {
     Config(Error),
-    Directory,
+    DirectoryNative(i32),
+    NotDirectory,
+    StateCapacity,
     Capacity,
     Allocation,
     Filesystem(i32),
@@ -515,7 +517,9 @@ impl ExportStatus {
                     Error::Allocation => 6,
                 },
             ),
-            Some(ExportCause::Directory) => (2, 0, 0, 0, 0),
+            Some(ExportCause::DirectoryNative(code)) => (2, 0, 1, 0, code),
+            Some(ExportCause::NotDirectory) => (9, 0, 0, 0, 0),
+            Some(ExportCause::StateCapacity) => (10, 0, 0, 0, 0),
             Some(ExportCause::Capacity) => (3, 0, 0, 0, 0),
             Some(ExportCause::Allocation) => (4, 0, 0, 0, 0),
             Some(ExportCause::Filesystem(code)) => (5, 0, 1, 0, code),
@@ -569,7 +573,7 @@ impl ExportStatus {
                 6 => Error::Allocation,
                 _ => return Err(Error::Tag),
             })),
-            2 => Some(ExportCause::Directory),
+            2 => Some(ExportCause::DirectoryNative(code)),
             3 => Some(ExportCause::Capacity),
             4 => Some(ExportCause::Allocation),
             5 => Some(ExportCause::Filesystem(code)),
@@ -586,6 +590,8 @@ impl ExportStatus {
             }),
             7 => Some(ExportCause::Encoding),
             8 => Some(ExportCause::ExistingObject),
+            9 => Some(ExportCause::NotDirectory),
+            10 => Some(ExportCause::StateCapacity),
             _ => return Err(Error::Tag),
         };
         let status = match (tag, cause, retained) {
@@ -863,6 +869,9 @@ mod tests {
             )
             .is_err()
         );
+        let mut old_directory = [0; EXPORT_STATUS_BYTES];
+        old_directory[..3].copy_from_slice(&[VERSION, 2, 2]);
+        assert_eq!(ExportStatus::decode(&old_directory), Err(Error::Reserved));
         for status in [
             ExportStatus::Ready {
                 remaining: 0,
@@ -877,6 +886,18 @@ mod tests {
             },
             ExportStatus::Refused {
                 cause: ExportCause::ExistingObject,
+                retained: Retained::Unknown,
+            },
+            ExportStatus::Refused {
+                cause: ExportCause::DirectoryNative(i32::MIN),
+                retained: Retained::Unknown,
+            },
+            ExportStatus::Refused {
+                cause: ExportCause::NotDirectory,
+                retained: Retained::Unknown,
+            },
+            ExportStatus::Refused {
+                cause: ExportCause::StateCapacity,
                 retained: Retained::Unknown,
             },
             ExportStatus::Refused {

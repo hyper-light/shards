@@ -1,0 +1,23 @@
+{
+  "parent": "c722364a789d9df6fd58b8e0340e90e43950399b",
+  "applied_patch_sha256": "3449d714d0ef0e0cda4e02751e735bfa23685acbb5a63c28e937bf8f969b4312",
+  "exact_frozen_revision": "ba78d4ba775e7d83b7fea9a5989e3ca6b9857a2a",
+  "files": [
+    {
+      "path": "crates/abi/src/run/audit.rs",
+      "before_sha256": "a2653258a8c02500f58986e1ddc3225569e72f8fe950dabb3e496c2ebaf09bf6",
+      "after_sha256": "7a4f80ff0a780bed72c425cf6b8e935806a82a7989395a9ae460bb2b2b4d66ea"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/audit.rs",
+      "before_sha256": "164067c0d97fd64a08f8edbe82377a15fb34278f23d7a5e601c5182a673e4d7c",
+      "after_sha256": "48f5f487121df35d1632c7e923435fb2539e43287db0a795a16dd04cf009a172"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/server.rs",
+      "before_sha256": "0ff23bdabe3a0bd29054e3aa313aec5b03ab20e7bda70b23c86cf958d68ec440",
+      "after_sha256": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64"
+    }
+  ],
+  "active_writer_touched": false
+}

@@ -695,8 +695,7 @@ impl Server {
         config: &shards_abi::run::audit::ExportConfig,
         budget: u64,
     ) -> Result<Self, audit::StartFailure> {
-        let mut server =
-            Self::with_budget(root, false, None, budget).map_err(audit::StartFailure::Directory)?;
+        let mut server = Self::base(root, false, None, budget).map_err(audit::StartFailure::Directory)?;
         {
             // Unpublished construction owns the entire server exclusively; no
             // runtime mutex is held across initial file/directory barriers.
@@ -721,11 +720,27 @@ impl Server {
         only: Option<CString>,
         budget: u64,
     ) -> Result<Server, String> {
-        let st = stat_fd(root.raw()).map_err(|e| format!("the shared directory: errno {e}"))?;
+        Self::base(root, read_only, only, budget).map_err(|error| error.to_string())
+    }
+
+    fn base(
+        root: host::Owned,
+        read_only: bool,
+        only: Option<CString>,
+        budget: u64,
+    ) -> Result<Server, audit::DirectoryFailure> {
+        let st = stat_fd(root.raw()).map_err(audit::DirectoryFailure::DirectoryNative)?;
         if !is_dir(&st) {
-            return Err("the shared directory is not a directory".into());
+            return Err(audit::DirectoryFailure::NotDirectory);
         }
         let mut nodes = HashMap::new();
+        nodes
+            .try_reserve(1)
+            .map_err(|_| audit::DirectoryFailure::StateCapacity)?;
+        let mut by_key = HashMap::new();
+        by_key
+            .try_reserve(1)
+            .map_err(|_| audit::DirectoryFailure::StateCapacity)?;
         nodes.insert(
             ROOT,
             Node {
@@ -738,7 +753,6 @@ impl Server {
                 volume: NO_VOLUME,
             },
         );
-        let mut by_key = HashMap::new();
         let (dev, ino) = key(&st);
         by_key.insert((NO_VOLUME, dev, ino), ROOT);
         Ok(Server {

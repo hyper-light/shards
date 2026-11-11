@@ -219,9 +219,24 @@ pub struct CreateFailure {
     pub cause: CreateCause,
     retained: Run,
 }
+#[derive(Debug, Clone, Copy)]
+pub enum DirectoryFailure {
+    DirectoryNative(Errno),
+    NotDirectory,
+    StateCapacity,
+}
+impl std::fmt::Display for DirectoryFailure {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DirectoryNative(errno) => write!(out, "the shared directory: errno {errno}"),
+            Self::NotDirectory => out.write_str("the shared directory is not a directory"),
+            Self::StateCapacity => out.write_str("the shared directory's state storage is unavailable"),
+        }
+    }
+}
 #[derive(Debug)]
 pub enum StartFailure {
-    Directory(String),
+    Directory(DirectoryFailure),
     Writer(CreateFailure),
 }
 impl std::fmt::Display for CreateCause {
@@ -263,7 +278,14 @@ impl StartFailure {
     pub fn status(&self) -> shards_abi::run::audit::ExportStatus {
         use shards_abi::run::audit::{ExportCause, ExportStatus, Retained};
         let (cause, retained) = match self {
-            Self::Directory(_) => (ExportCause::Directory, Retained::Unknown),
+            Self::Directory(error) => (
+                match error {
+                    DirectoryFailure::DirectoryNative(errno) => ExportCause::DirectoryNative(*errno),
+                    DirectoryFailure::NotDirectory => ExportCause::NotDirectory,
+                    DirectoryFailure::StateCapacity => ExportCause::StateCapacity,
+                },
+                Retained::Unknown,
+            ),
             Self::Writer(error) => (
                 match error.cause {
                     CreateCause::Capacity => ExportCause::Capacity,
@@ -1210,6 +1232,43 @@ mod tests {
             .0,
             -super::super::EPERM
         );
+    }
+
+    #[test]
+    fn private_audit_constructor_refuses_regular_root_without_changing_its_bytes() {
+        let dir = shards_testdir::TempDir::new("audit-root-kind").unwrap();
+        let path = dir.join("root-file");
+        std::fs::write(&path, b"retain-existing-root").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        #[cfg(unix)]
+        let root = std::os::fd::OwnedFd::from(file);
+        #[cfg(windows)]
+        let root = std::os::windows::io::OwnedHandle::from(file);
+        let config = wire::ExportConfig::new(
+            StorageRequest::new(
+                wire::JOURNAL_HEADER_BYTES as u64,
+                wire::Retention::UntilOwnerDeletion,
+            )
+            .unwrap(),
+            vec![scope(0)],
+        )
+        .unwrap();
+        let error = match Server::audited(root, &config, 0) {
+            Ok(_) => panic!("regular file granted a directory producer"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            StartFailure::Directory(DirectoryFailure::NotDirectory)
+        ));
+        assert_eq!(
+            error.status(),
+            wire::ExportStatus::Refused {
+                cause: wire::ExportCause::NotDirectory,
+                retained: wire::Retained::Unknown,
+            }
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"retain-existing-root");
     }
 
     #[test]
