@@ -28,7 +28,7 @@ pinning and kernel-state obligations; a new thread pool would add another
 lifetime/accounting seam. Neither is selected for this implementation.
 
 Physical child acquisition is separate from permission to execute a requested
-untrusted program. The [existing authority decision](../../../managed-native-authority-decision.md)
+untrusted program. The [existing authority decision](../../managed-native-authority-decision.md)
 already distinguishes required trusted management workers from the owner's
 semantic process grant. processes=none continues to deny Effect::Process.
 An independently authorized Write still needs actual lifetime resources for its
