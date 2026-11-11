@@ -5,6 +5,7 @@
 //! payload, audit and result resources. This leaf never resolves another path,
 //! creates/truncates a file, issues authority or exposes its writable descriptor.
 
+use std::borrow::Cow;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 
 use super::file;
@@ -21,20 +22,60 @@ pub(crate) enum Failure {
     Count,
 }
 
-/// Borrowed literal caller bytes. Offset and length do not authorize storage.
+/// Literal caller bytes, borrowed or already acquired. Neither form grants storage.
 pub(crate) struct Request<'a> {
     offset: libc::off_t,
-    bytes: &'a [u8],
+    bytes: Cow<'a, [u8]>,
 }
 
 impl<'a> Request<'a> {
     pub fn new(offset: u64, bytes: &'a [u8]) -> Result<Self, Failure> {
-        let end = offset
-            .checked_add(u64::try_from(bytes.len()).map_err(|_| Failure::Bounds)?)
-            .ok_or(Failure::Bounds)?;
-        let offset = libc::off_t::try_from(offset).map_err(|_| Failure::Bounds)?;
-        libc::off_t::try_from(end).map_err(|_| Failure::Bounds)?;
-        Ok(Self { offset, bytes })
+        Ok(Self {
+            offset: checked_offset(offset, bytes.len())?,
+            bytes: Cow::Borrowed(bytes),
+        })
+    }
+
+    /// Return the original borrowed view or owned allocation without materializing
+    /// a copy, including when `Rejected` returns the selected object and request.
+    pub fn into_payload(self) -> Cow<'a, [u8]> {
+        self.bytes
+    }
+}
+
+impl Request<'static> {
+    /// Retain the caller's initialized allocation through readiness and partial
+    /// writes. Acquiring and charging that allocation remains the caller's duty.
+    pub fn owned(offset: u64, bytes: Vec<u8>) -> Result<Self, RejectedPayload> {
+        match checked_offset(offset, bytes.len()) {
+            Ok(offset) => Ok(Self {
+                offset,
+                bytes: Cow::Owned(bytes),
+            }),
+            Err(failure) => Err(RejectedPayload { bytes, failure }),
+        }
+    }
+}
+
+fn checked_offset(offset: u64, bytes: usize) -> Result<libc::off_t, Failure> {
+    let end = offset
+        .checked_add(u64::try_from(bytes).map_err(|_| Failure::Bounds)?)
+        .ok_or(Failure::Bounds)?;
+    let offset = libc::off_t::try_from(offset).map_err(|_| Failure::Bounds)?;
+    libc::off_t::try_from(end).map_err(|_| Failure::Bounds)?;
+    Ok(offset)
+}
+
+pub(crate) struct RejectedPayload {
+    pub bytes: Vec<u8>,
+    pub failure: Failure,
+}
+
+impl std::fmt::Debug for RejectedPayload {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("RejectedPayload")
+            .field("failure", &self.failure)
+            .finish_non_exhaustive()
     }
 }
 
@@ -166,7 +207,7 @@ impl<'a> Prepared<'a> {
         let Some(offset) = offset else {
             return Step::Terminal(self.finish(End::Failed(Failure::Bounds)));
         };
-        // SAFETY: the held checked regular object and literal borrowed bytes
+        // SAFETY: the held checked regular object and selected literal bytes
         // remain live; the complete offset range was checked before any effect.
         let written = unsafe {
             libc::pwrite(

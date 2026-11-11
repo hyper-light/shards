@@ -1,0 +1,147 @@
+diff --git a/crates/server/src/native_effects/write.rs b/crates/server/src/native_effects/write.rs
+index 2984f1564..f08ced2de 100644
+--- a/crates/server/src/native_effects/write.rs
++++ b/crates/server/src/native_effects/write.rs
+@@ -5,6 +5,7 @@
+ //! payload, audit and result resources. This leaf never resolves another path,
+ //! creates/truncates a file, issues authority or exposes its writable descriptor.
+ 
++use std::borrow::Cow;
+ use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+ 
+ use super::file;
+@@ -21,20 +22,60 @@ pub(crate) enum Failure {
+     Count,
+ }
+ 
+-/// Borrowed literal caller bytes. Offset and length do not authorize storage.
++/// Literal caller bytes, borrowed or already acquired. Neither form grants storage.
+ pub(crate) struct Request<'a> {
+     offset: libc::off_t,
+-    bytes: &'a [u8],
++    bytes: Cow<'a, [u8]>,
+ }
+ 
+ impl<'a> Request<'a> {
+     pub fn new(offset: u64, bytes: &'a [u8]) -> Result<Self, Failure> {
+-        let end = offset
+-            .checked_add(u64::try_from(bytes.len()).map_err(|_| Failure::Bounds)?)
+-            .ok_or(Failure::Bounds)?;
+-        let offset = libc::off_t::try_from(offset).map_err(|_| Failure::Bounds)?;
+-        libc::off_t::try_from(end).map_err(|_| Failure::Bounds)?;
+-        Ok(Self { offset, bytes })
++        Ok(Self {
++            offset: checked_offset(offset, bytes.len())?,
++            bytes: Cow::Borrowed(bytes),
++        })
++    }
++
++    /// Return the original borrowed view or owned allocation without materializing
++    /// a copy, including when `Rejected` returns the selected object and request.
++    pub fn into_payload(self) -> Cow<'a, [u8]> {
++        self.bytes
++    }
++}
++
++impl Request<'static> {
++    /// Retain the caller's initialized allocation through readiness and partial
++    /// writes. Acquiring and charging that allocation remains the caller's duty.
++    pub fn owned(offset: u64, bytes: Vec<u8>) -> Result<Self, RejectedPayload> {
++        match checked_offset(offset, bytes.len()) {
++            Ok(offset) => Ok(Self {
++                offset,
++                bytes: Cow::Owned(bytes),
++            }),
++            Err(failure) => Err(RejectedPayload { bytes, failure }),
++        }
++    }
++}
++
++fn checked_offset(offset: u64, bytes: usize) -> Result<libc::off_t, Failure> {
++    let end = offset
++        .checked_add(u64::try_from(bytes).map_err(|_| Failure::Bounds)?)
++        .ok_or(Failure::Bounds)?;
++    let offset = libc::off_t::try_from(offset).map_err(|_| Failure::Bounds)?;
++    libc::off_t::try_from(end).map_err(|_| Failure::Bounds)?;
++    Ok(offset)
++}
++
++pub(crate) struct RejectedPayload {
++    pub bytes: Vec<u8>,
++    pub failure: Failure,
++}
++
++impl std::fmt::Debug for RejectedPayload {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        out.debug_struct("RejectedPayload")
++            .field("failure", &self.failure)
++            .finish_non_exhaustive()
+     }
+ }
+ 
+@@ -166,7 +207,7 @@ impl<'a> Prepared<'a> {
+         let Some(offset) = offset else {
+             return Step::Terminal(self.finish(End::Failed(Failure::Bounds)));
+         };
+-        // SAFETY: the held checked regular object and literal borrowed bytes
++        // SAFETY: the held checked regular object and selected literal bytes
+         // remain live; the complete offset range was checked before any effect.
+         let written = unsafe {
+             libc::pwrite(
+diff --git a/crates/server/src/native_effects/write/tests.rs b/crates/server/src/native_effects/write/tests.rs
+index b2e0a1b17..c9af861ee 100644
+--- a/crates/server/src/native_effects/write/tests.rs
++++ b/crates/server/src/native_effects/write/tests.rs
+@@ -88,7 +88,7 @@ fn readonly_and_append_modes_refuse_before_any_bytes_change() {
+         .unwrap();
+     assert_eq!(rejected.failure, Failure::Access);
+     assert!(file::stat(rejected.object.as_fd()).is_ok());
+-    assert_eq!(rejected.request.bytes, b"bad");
++    assert_eq!(rejected.request.bytes.as_ref(), b"bad");
+     let append: OwnedFd = OpenOptions::new().append(true).open(&path).unwrap().into();
+     let rejected = Prepared::existing(append, Request::new(0, b"bad").unwrap())
+         .err()
+@@ -186,3 +186,43 @@ fn same_canonical_audit_reserves_intent_and_terminal_before_ordinary_effect() {
+     assert_eq!(std::fs::read(tmp.join("audit")).unwrap(), b"IT");
+     assert_eq!(std::fs::read(&path).unwrap(), b"new");
+ }
++
++#[test]
++fn owned_request_bounds_refusal_returns_the_same_initialized_allocation() {
++    let mut bytes = Vec::with_capacity(9);
++    bytes.extend_from_slice(b"\0\xffliteral");
++    let pointer = bytes.as_ptr();
++    let capacity = bytes.capacity();
++    let rejected = Request::owned(u64::MAX, bytes).err().unwrap();
++    assert_eq!(rejected.failure, Failure::Bounds);
++    assert_eq!(rejected.bytes.as_ptr(), pointer);
++    assert_eq!(rejected.bytes.capacity(), capacity);
++    assert_eq!(rejected.bytes, b"\0\xffliteral");
++}
++
++#[test]
++fn owned_object_refusal_returns_the_same_descriptor_and_payload() {
++    let tmp = shards_testdir::TempDir::new("native-write-owned-refusal").unwrap();
++    let directory: OwnedFd = File::open(&tmp).unwrap().into();
++    let descriptor = directory.as_raw_fd();
++    let identity = file::stat(directory.as_fd()).unwrap();
++    let mut bytes = Vec::with_capacity(11);
++    bytes.extend_from_slice(b"\0\xffliteral");
++    let pointer = bytes.as_ptr();
++    let capacity = bytes.capacity();
++    let request: Request<'static> = Request::owned(4, bytes).unwrap();
++    let rejected = Prepared::existing(directory, request).err().unwrap();
++    assert_eq!(rejected.failure, Failure::FileKind);
++    assert_eq!(rejected.object.as_raw_fd(), descriptor);
++    let returned = file::stat(rejected.object.as_fd()).unwrap();
++    assert_eq!(
++        (returned.st_dev, returned.st_ino),
++        (identity.st_dev, identity.st_ino)
++    );
++    let Cow::Owned(bytes) = rejected.request.into_payload() else {
++        panic!("owned request lost its allocation");
++    };
++    assert_eq!(bytes.as_ptr(), pointer);
++    assert_eq!(bytes.capacity(), capacity);
++    assert_eq!(bytes, b"\0\xffliteral");
++}

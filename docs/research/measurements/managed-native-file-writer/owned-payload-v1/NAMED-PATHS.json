@@ -1,0 +1,94 @@
+{
+  "preimage_revision": "bb5548066be4208019e933565a9f5b8547194d36",
+  "named_paths": [
+    "crates/server/src/native_effects/write.rs",
+    "crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/COMMIT-MESSAGE.txt",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/MANIFEST.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/OWNED-PAYLOAD.patch",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/POLICY-CHECK.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/POLICY_READ.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/PREIMAGE.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/README.md",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/STATIC-CHECKS.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/after/crates/server/src/native_effects/write.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/after/crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/before/crates/server/src/native_effects/write.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/before/crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-v1/NAMED-PATHS.json"
+  ],
+  "payloads": [
+    {
+      "path": "crates/server/src/native_effects/write.rs",
+      "bytes": 8003,
+      "sha256": "ccd7c1c4820c15fccc152de7968f187e0965266fbb49cf9c85e461156ab95fef"
+    },
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 8766,
+      "sha256": "bc2d4f5564ea4d09b1f43828508e2a22159b624628680bdc05e2bc86bda9b2b5"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/COMMIT-MESSAGE.txt",
+      "bytes": 619,
+      "sha256": "1e7838693b0e7365ad66ace0108a07fee68d765c67e3942ea8d217ccc0a10789"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/MANIFEST.json",
+      "bytes": 1559,
+      "sha256": "03478f68e394f94fac40c6bf51be98faf6f322eb6be830b4c1837fba7b6dbe16"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/OWNED-PAYLOAD.patch",
+      "bytes": 6137,
+      "sha256": "a023ae43094d9ebe3b926d146652bb9d5fc60fbb5ae1d3409df2b690a8dc086f"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/POLICY-CHECK.json",
+      "bytes": 1764,
+      "sha256": "4818de971c450c5379e2495af9d0abb1a902eb863b1e59811065a55ac85dd93c"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/POLICY_READ.json",
+      "bytes": 1216,
+      "sha256": "f23b7b468fe8bfe227d612c5a4d84d599368177183ebda50b9d8143fa58be36c"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/PREIMAGE.json",
+      "bytes": 436,
+      "sha256": "db0cd01f7559ff6b6648bb11777eefb0a94eab3f8bf6c1fc55e2ca5537b137f9"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/README.md",
+      "bytes": 7393,
+      "sha256": "252ba1c09ce0e098c118d2b185683cdd627fff5d2b3a7fc700520bbcbcaf7c65"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/STATIC-CHECKS.json",
+      "bytes": 863,
+      "sha256": "95f156d55fa548762ea7d6383e3098135d0c148e51a0313bade13d4353486aa5"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/after/crates/server/src/native_effects/write.rs",
+      "bytes": 8003,
+      "sha256": "ccd7c1c4820c15fccc152de7968f187e0965266fbb49cf9c85e461156ab95fef"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/after/crates/server/src/native_effects/write/tests.rs",
+      "bytes": 8766,
+      "sha256": "bc2d4f5564ea4d09b1f43828508e2a22159b624628680bdc05e2bc86bda9b2b5"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/before/crates/server/src/native_effects/write.rs",
+      "bytes": 6696,
+      "sha256": "3bfda368e08fc3368239efb184a479e2fe870ecb8c6704eba308803493fc4c9d"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-v1/before/crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7065,
+      "sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52"
+    }
+  ],
+  "total_payload_bytes": 67286,
+  "state": "SOURCE ONLY; zero compiler/formatter/runtime/old-case replay; no inherited seven-case pass"
+}

@@ -1,0 +1,7 @@
+server: retain owned native writer payloads through readiness
+
+Add an owned initialized Vec entrypoint beside the existing borrowed request. Preserve the original bounds checks and Prepared operations, return the original payload on bounds/object refusal, and keep private content out of rejection Debug.
+
+Freeze the exact source delta for the actual native Stage consumer. Two ownership tests are authored but unrun; no compiler, formatter, old-case replay, held audit graph or runtime campaign was executed. Prior bb5548066 passes do not validate this source.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

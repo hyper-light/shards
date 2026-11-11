@@ -88,7 +88,7 @@ fn readonly_and_append_modes_refuse_before_any_bytes_change() {
         .unwrap();
     assert_eq!(rejected.failure, Failure::Access);
     assert!(file::stat(rejected.object.as_fd()).is_ok());
-    assert_eq!(rejected.request.bytes, b"bad");
+    assert_eq!(rejected.request.bytes.as_ref(), b"bad");
     let append: OwnedFd = OpenOptions::new().append(true).open(&path).unwrap().into();
     let rejected = Prepared::existing(append, Request::new(0, b"bad").unwrap())
         .err()
@@ -185,4 +185,44 @@ fn same_canonical_audit_reserves_intent_and_terminal_before_ordinary_effect() {
     assert_eq!(returned.result, Ok(Status::TerminalSynced));
     assert_eq!(std::fs::read(tmp.join("audit")).unwrap(), b"IT");
     assert_eq!(std::fs::read(&path).unwrap(), b"new");
+}
+
+#[test]
+fn owned_request_bounds_refusal_returns_the_same_initialized_allocation() {
+    let mut bytes = Vec::with_capacity(9);
+    bytes.extend_from_slice(b"\0\xffliteral");
+    let pointer = bytes.as_ptr();
+    let capacity = bytes.capacity();
+    let rejected = Request::owned(u64::MAX, bytes).err().unwrap();
+    assert_eq!(rejected.failure, Failure::Bounds);
+    assert_eq!(rejected.bytes.as_ptr(), pointer);
+    assert_eq!(rejected.bytes.capacity(), capacity);
+    assert_eq!(rejected.bytes, b"\0\xffliteral");
+}
+
+#[test]
+fn owned_object_refusal_returns_the_same_descriptor_and_payload() {
+    let tmp = shards_testdir::TempDir::new("native-write-owned-refusal").unwrap();
+    let directory: OwnedFd = File::open(&tmp).unwrap().into();
+    let descriptor = directory.as_raw_fd();
+    let identity = file::stat(directory.as_fd()).unwrap();
+    let mut bytes = Vec::with_capacity(11);
+    bytes.extend_from_slice(b"\0\xffliteral");
+    let pointer = bytes.as_ptr();
+    let capacity = bytes.capacity();
+    let request: Request<'static> = Request::owned(4, bytes).unwrap();
+    let rejected = Prepared::existing(directory, request).err().unwrap();
+    assert_eq!(rejected.failure, Failure::FileKind);
+    assert_eq!(rejected.object.as_raw_fd(), descriptor);
+    let returned = file::stat(rejected.object.as_fd()).unwrap();
+    assert_eq!(
+        (returned.st_dev, returned.st_ino),
+        (identity.st_dev, identity.st_ino)
+    );
+    let Cow::Owned(bytes) = rejected.request.into_payload() else {
+        panic!("owned request lost its allocation");
+    };
+    assert_eq!(bytes.as_ptr(), pointer);
+    assert_eq!(bytes.capacity(), capacity);
+    assert_eq!(bytes, b"\0\xffliteral");
 }

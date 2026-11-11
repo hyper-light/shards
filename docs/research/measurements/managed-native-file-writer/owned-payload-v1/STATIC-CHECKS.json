@@ -1,0 +1,29 @@
+{
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--check",
+        "--directory=docs/research/measurements/managed-native-file-writer/owned-payload-v1/apply-check",
+        "docs/research/measurements/managed-native-file-writer/owned-payload-v1/OWNED-PAYLOAD.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "apply",
+        "--directory=docs/research/measurements/managed-native-file-writer/owned-payload-v1/apply-check",
+        "docs/research/measurements/managed-native-file-writer/owned-payload-v1/OWNED-PAYLOAD.patch"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "exact_postimages_verified": 2,
+  "scope": "Text patch/preimage/postimage checks only; no Rust compiler, formatter or test/runtime executed."
+}

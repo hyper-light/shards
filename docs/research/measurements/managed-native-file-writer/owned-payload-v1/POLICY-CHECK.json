@@ -1,0 +1,50 @@
+{
+  "policy_revision": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "all_current_inputs_byte_equal": true,
+  "inputs": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "0707e0d998f93686ddec2974c1f1dead655108190370b29437d8e685aeed02ce"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "27a09295956b66534bd0bdda08eeb8dd262c1645b8d42b7b777fd93ee9ab2415"
+    },
+    {
+      "path": "AGENTS.md",
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    {
+      "path": "CLAUDE.md",
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    {
+      "path": "docs/development-rules.md",
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    {
+      "path": "resources/supported-targets.txt",
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a"
+    },
+    {
+      "path": "scripts/check-development-policy",
+      "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac"
+    },
+    {
+      "path": "scripts/lint",
+      "sha256": "5db1b68bc06218d1df6ed032759f4b39aa78bc0bb9f549bfdf37d831c956d040"
+    }
+  ],
+  "exit_code": 0,
+  "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "stderr": "",
+  "scope": "Exact current mechanical-policy projection because sparse worktree lacks workflow files; no compiler/runtime/implementation compliance claim."
+}

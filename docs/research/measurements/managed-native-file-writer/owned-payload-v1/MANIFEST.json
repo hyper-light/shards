@@ -1,0 +1,37 @@
+{
+  "state": "FROZEN SOURCE ONLY; UNCOMPILED and UNRUN. Earlier seven-case/test-lint passes belong to bb5548066, not this source.",
+  "preimage_revision": "bb5548066be4208019e933565a9f5b8547194d36",
+  "source": [
+    {
+      "path": "crates/server/src/native_effects/write.rs",
+      "bytes": 8003,
+      "sha256": "ccd7c1c4820c15fccc152de7968f187e0965266fbb49cf9c85e461156ab95fef"
+    },
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 8766,
+      "sha256": "bc2d4f5564ea4d09b1f43828508e2a22159b624628680bdc05e2bc86bda9b2b5"
+    }
+  ],
+  "patch": {
+    "path": "OWNED-PAYLOAD.patch",
+    "bytes": 6137,
+    "sha256": "a023ae43094d9ebe3b926d146652bb9d5fc60fbb5ae1d3409df2b690a8dc086f"
+  },
+  "new_methods": [
+    "Request::owned(u64,Vec<u8>)->Result<Request<'static>,RejectedPayload>",
+    "Request::into_payload(self)->Cow<'a,[u8]>"
+  ],
+  "unchanged_contract": [
+    "Request::new borrowed constructor",
+    "Prepared::existing/identity/offset/requested/accepted/cancel/commit and Step",
+    "same held object, bounds, mode checks, single pwrite, cursor and terminal facts"
+  ],
+  "payload_rejection": "Bounds returns original Vec in RejectedPayload; object refusal returns same OwnedFd and Request, whose into_payload returns Cow::Owned containing same Vec. FD not passed to Request::owned remains with caller on bounds refusal.",
+  "new_tests_authored": 2,
+  "tests_executed": 0,
+  "rust_compilers_or_formatters_executed": 0,
+  "old_cases_replayed": 0,
+  "active_jobs": 0,
+  "held_audit_cases_or_graph_executed": 0
+}
