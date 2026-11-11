@@ -1,0 +1,11 @@
+{
+  "format_exit": 0,
+  "policy_exit": 0,
+  "commands": [
+    "rustfmt --edition 2024 --check crates/init/src/domains/admission/execution.rs",
+    "python3 scripts/check-development-policy"
+  ],
+  "local_builds": 0,
+  "runtime_replays": 0,
+  "actual_owner_graph_not_run_by_this_implementer": true
+}

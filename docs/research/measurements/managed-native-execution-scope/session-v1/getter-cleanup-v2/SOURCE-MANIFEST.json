@@ -1,0 +1,112 @@
+[
+  {
+    "path": "API.md",
+    "bytes": 3404,
+    "sha256": "dfa0f21096202f6a396bc30f6b0c5719a05ba7f9565c57e729f572f381115c13"
+  },
+  {
+    "path": "BASELINE-CONSUMER.json",
+    "bytes": 1251,
+    "sha256": "dec677583ef3a5e29712d993dab1d07a9ebcc9ca09050e8877effd7224d0775f"
+  },
+  {
+    "path": "LOCAL-CHECKS.json",
+    "bytes": 299,
+    "sha256": "ef79a8d3b17f1a0f14176fc56db31a467cb0b6e5c4ff94e9e6140a98f646c87d"
+  },
+  {
+    "path": "POLICY_READ.json",
+    "bytes": 725,
+    "sha256": "2eb18425bfc8e77b8c81513af86db49b7bd31e160505349e5384ca460bd0ecdb"
+  },
+  {
+    "path": "UNUSED-GETTERS.patch",
+    "bytes": 3214,
+    "sha256": "034fcf05cd9678027ec54c4c0aff8867b98009e4d81ca275802503c4bb3dd835"
+  },
+  {
+    "path": "actual-consumer-before/actual-init-check.command.json",
+    "bytes": 116,
+    "sha256": "c9c5b00baaf72ab4f775bd06eea81606c566881ed2b485823b94e1ba29f83c83"
+  },
+  {
+    "path": "actual-consumer-before/actual-init-check.json",
+    "bytes": 352,
+    "sha256": "0e60b1107967f141cfe42b6f207f335087e399dfd919b5fd0445118e6f8f635d"
+  },
+  {
+    "path": "actual-consumer-before/actual-init-check.stderr",
+    "bytes": 9500,
+    "sha256": "653b400ffa35076128ed8e1e6cf8eafb9bd64c67872289a4cdc83cd20e3d943a"
+  },
+  {
+    "path": "actual-consumer-before/source-verified.json",
+    "bytes": 199,
+    "sha256": "e1f7157723c3bdeffab9996db827d0f48e81d65a11aa5ddb65d9963254ae933d"
+  },
+  {
+    "path": "before.rs",
+    "bytes": 17373,
+    "sha256": "f1dc920bf54cc1d2bb86025f77f5658b9485f83bd26b87febf7a418df80405cb"
+  },
+  {
+    "path": "execution.rs",
+    "bytes": 16749,
+    "sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3"
+  },
+  {
+    "path": "harness/Cargo.lock",
+    "bytes": 486,
+    "sha256": "f34bcd9c109f5644322ee4746e687d23e7d2871625542858f084ff9be78f9b92"
+  },
+  {
+    "path": "harness/Cargo.toml",
+    "bytes": 511,
+    "sha256": "feb1ed0c73c8314eb742a5afca06321cc9faf0eaba060e1edbca1387ced5c868"
+  },
+  {
+    "path": "harness/clippy.toml",
+    "bytes": 526,
+    "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+  },
+  {
+    "path": "harness/src/domains/admission/execution.rs",
+    "bytes": 16749,
+    "sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3"
+  },
+  {
+    "path": "harness/src/domains/admission.rs",
+    "bytes": 20116,
+    "sha256": "a65fd44b18efdacd0074025796c93b816b32799926ffee7eb868917ada24ef10"
+  },
+  {
+    "path": "harness/src/domains/mod.rs",
+    "bytes": 26,
+    "sha256": "857df99b8a94c2927acb01f3d39ac8310e4e09878344ed64a746147af93fd7a6"
+  },
+  {
+    "path": "harness/src/lib.rs",
+    "bytes": 137,
+    "sha256": "b0766b7c95aa5a6dfc817a2be92da0e6ed773016fd16aada46146999933f29d4"
+  },
+  {
+    "path": "harness/src/managed.rs",
+    "bytes": 464,
+    "sha256": "1eb53ce882570d45d75e534886c1617c5a30025ae22f5870b9b18375d43e948d"
+  },
+  {
+    "path": "harness/testdir/Cargo.toml",
+    "bytes": 165,
+    "sha256": "335ae9fc8b3ee4737234cdd21cfb3db752aac9d9cafdec87efcdd9b5dacb6027"
+  },
+  {
+    "path": "harness/testdir/src/lib.rs",
+    "bytes": 17917,
+    "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+  },
+  {
+    "path": "run.py",
+    "bytes": 4996,
+    "sha256": "3897e3cd1846605a2707a7e2de46d7511173b3e1c21e6d45127eac42042c5737"
+  }
+]

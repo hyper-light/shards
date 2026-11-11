@@ -1,0 +1,20 @@
+{
+  "command": [
+    "cargo",
+    "check",
+    "--locked",
+    "-p",
+    "shards-init",
+    "--all-targets",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2"
+  ],
+  "exit": 101,
+  "timeout": false,
+  "direct_child_wait": true,
+  "fd_before": 9,
+  "fd_after": 9,
+  "descendant_population": "Unverified",
+  "elapsed_scope": 13.766952200094238
+}

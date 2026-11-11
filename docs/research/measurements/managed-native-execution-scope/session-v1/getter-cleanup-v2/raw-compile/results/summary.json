@@ -1,0 +1,67 @@
+{
+  "outcome": "passed",
+  "seconds": 2.1230687550269067,
+  "stages": [
+    {
+      "name": "rustc",
+      "argv": [
+        "rustc",
+        "--version",
+        "--verbose"
+      ],
+      "remaining_seconds_before": 599.9995298829162,
+      "exit": 0,
+      "seconds": 0.11410470795817673
+    },
+    {
+      "name": "cargo",
+      "argv": [
+        "cargo",
+        "--version",
+        "--verbose"
+      ],
+      "remaining_seconds_before": 599.8851660710061,
+      "exit": 0,
+      "seconds": 0.01583674398716539
+    },
+    {
+      "name": "build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-run",
+        "--jobs",
+        "2",
+        "--message-format=json"
+      ],
+      "remaining_seconds_before": 599.8691237729508,
+      "exit": 0,
+      "seconds": 1.5196734870551154
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--all-targets",
+        "--jobs",
+        "2",
+        "--",
+        "-D",
+        "clippy::all",
+        "-D",
+        "clippy::undocumented_unsafe_blocks"
+      ],
+      "remaining_seconds_before": 598.3424714219291,
+      "exit": 0,
+      "seconds": 0.4650073630036786
+    }
+  ],
+  "production_integration": "getter cleanup only; full actual init graph verification belongs to runtime owner/ROOT",
+  "kernel_population": "Unknown",
+  "authority": "MechanicsOnly"
+}

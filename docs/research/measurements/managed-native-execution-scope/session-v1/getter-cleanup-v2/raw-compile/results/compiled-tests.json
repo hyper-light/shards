@@ -1,0 +1,9 @@
+{
+  "path": "/home/adalundhe/native-execution-getter-7878-compile-v1/source/results/frozen-tests",
+  "bytes": 8320616,
+  "sha256": "2b9bdc3100676ec12515337b5e600c0e6e298dacaa844ae8b0ff55bf8348802e",
+  "source_manifest_sha256": "c3191ee0f11ed7f7be70e091d48ffebb2391f2c0cabcbe6f2f12d90825de07e9",
+  "runtime_cases_in_this_batch": 0,
+  "prior_functional_source": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "prior_functional_passes": 7
+}

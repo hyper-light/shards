@@ -1,0 +1,31 @@
+{
+  "source": "actual runtime owner v1 raw, read-only, no rerun",
+  "owner": "01a1c99e7b717018b81686624876ad5d",
+  "archive_bytes": 7814,
+  "archive_sha256": "b53ff7a81e947b25207f4ff646eaa99948a6f1bbc1172a8a61d13d7067793869",
+  "selected_payloads": [
+    {
+      "path": "actual-init-check.command.json",
+      "bytes": 116,
+      "sha256": "c9c5b00baaf72ab4f775bd06eea81606c566881ed2b485823b94e1ba29f83c83"
+    },
+    {
+      "path": "actual-init-check.json",
+      "bytes": 352,
+      "sha256": "0e60b1107967f141cfe42b6f207f335087e399dfd919b5fd0445118e6f8f635d"
+    },
+    {
+      "path": "actual-init-check.stderr",
+      "bytes": 9500,
+      "sha256": "653b400ffa35076128ed8e1e6cf8eafb9bd64c67872289a4cdc83cd20e3d943a"
+    },
+    {
+      "path": "source-verified.json",
+      "bytes": 199,
+      "sha256": "e1f7157723c3bdeffab9996db827d0f48e81d65a11aa5ddb65d9963254ae933d"
+    }
+  ],
+  "candidate_leaf_sha256": "9119e887409b214cd4ed8a76fe63233aacd4d49f1170ba73f9c862dde5aabb75",
+  "getter_diagnostics": "three unused-method warning groups name exactly five getters; six total Rust warnings also include unrelated owner warnings",
+  "outcome": "overall compile101 also has independent caller/type errors, tests/Clippy unrun in that actual graph"
+}

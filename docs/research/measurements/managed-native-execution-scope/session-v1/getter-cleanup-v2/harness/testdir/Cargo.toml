@@ -1,0 +1,11 @@
+[package]
+name = "shards-testdir"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "=0.2.189"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

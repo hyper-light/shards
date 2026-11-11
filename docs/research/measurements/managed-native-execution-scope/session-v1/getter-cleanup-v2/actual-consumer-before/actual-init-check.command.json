@@ -1,0 +1,1 @@
+["cargo", "check", "--locked", "-p", "shards-init", "--all-targets", "--target", "x86_64-unknown-linux-gnu", "-j2"]

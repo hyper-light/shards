@@ -1,0 +1,15 @@
+{
+  "revision": "3830327b6c8d7ac22452a5e32ffa32799263132c",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "owned_paths": [
+    "crates/init/src/domains/admission/execution.rs",
+    "docs/research/measurements/managed-native-execution-scope/session-v1/**"
+  ],
+  "task": "remove only five actual-consumer unused getters; tests inspect private fields; no runtime replay",
+  "before_commit": "25d9da41ffe580879a7d8d6753d25dc14944450a",
+  "before_sha256": "f1dc920bf54cc1d2bb86025f77f5658b9485f83bd26b87febf7a418df80405cb",
+  "after_sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3",
+  "kernel_behavior": "unchanged",
+  "children": 0
+}

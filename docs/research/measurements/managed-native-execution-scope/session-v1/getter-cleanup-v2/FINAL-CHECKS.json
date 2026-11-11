@@ -1,0 +1,21 @@
+{
+  "source_payloads_verified": 22,
+  "raw_payloads_verified": 14,
+  "old_f1_source_preserved": true,
+  "old_tracked_evidence_unchanged": true,
+  "only_existing_tracked_change": [
+    "crates/init/src/domains/admission/execution.rs"
+  ],
+  "removed_getters": 5,
+  "runtime_cases": 0,
+  "compile_exit": 0,
+  "clippy_exit": 0,
+  "projection_rust_unused_warnings": 26,
+  "policy_revision": "3830327b6c8d7ac22452a5e32ffa32799263132c",
+  "full_staged_whitespace": {
+    "exit": 2,
+    "findings": 7,
+    "cause": "five unchanged unified-patch context spaces and two exact extracted-source EOF blanks; preserved"
+  },
+  "other_new_paths_whitespace_exit": 0
+}

@@ -1,0 +1,8 @@
+{
+  "bytes": 25919,
+  "sha256": "267327de705a74c3504b595ff6d38e134edd3a3ba4cf0551aa421ff12828f599",
+  "source_manifest_sha256": "c3191ee0f11ed7f7be70e091d48ffebb2391f2c0cabcbe6f2f12d90825de07e9",
+  "leaf_sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3",
+  "checks": "fresh compile/Clippy only, zero runtime cases",
+  "budget": "normal GNU2CPU2GiB4GiB600/j2 private scope"
+}

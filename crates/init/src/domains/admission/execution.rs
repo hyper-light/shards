@@ -72,16 +72,6 @@ impl Prepared {
         }
     }
 
-    pub(crate) fn job(&self) -> NonZeroU64 {
-        self.job
-    }
-
-    /// Borrow this SAME directory during trusted preparation. Publish BEFORE
-    /// handing it to any birth participant; actors receive no control/migration FD.
-    pub(crate) fn directory(&self) -> &File {
-        &self.group.directory
-    }
-
     /// Publish BEFORE sending the Group FD or enabling any possible birth. Also
     /// retain on an already uncertain local birth; never cancel it as pre-birth.
     /// The real owner keeps these objects with its actual pidfd/ACK/current state.
@@ -113,10 +103,6 @@ pub(crate) struct Published {
 }
 
 impl Published {
-    pub(crate) fn job(&self) -> NonZeroU64 {
-        self.job
-    }
-
     pub(crate) fn directory(&self) -> &File {
         &self.group.directory
     }
@@ -155,23 +141,12 @@ pub(crate) struct Retained {
 }
 
 impl Retained {
-    pub(crate) fn job(&self) -> NonZeroU64 {
-        self.job
-    }
-
     pub(crate) fn preparation_failure(&self) -> Option<Refusal> {
         self.preparation
     }
 
     pub(crate) fn removal_failure(&self) -> Rollback {
         self.removal
-    }
-
-    pub(crate) fn directory(&self) -> Option<&File> {
-        match &self.holding {
-            Holding::Opened(group) => Some(&group.directory),
-            Holding::Unopened(_) => None,
-        }
     }
 
     /// Retry only after proven no-birth, or actual empty plus matching reaping.
@@ -292,8 +267,8 @@ mod tests {
                 Acquisition::Retained(held) => held,
                 other => panic!("failed unlink lost ownership: {other:?}"),
             };
-            assert_eq!(retained.job(), job());
-            assert!(retained.directory().is_some());
+            assert_eq!(retained.job, job());
+            assert!(matches!(&retained.holding, Holding::Opened(_)));
             assert_eq!(
                 retained.preparation_failure().unwrap().cause,
                 Cause::Io { errno: libc::ENOENT }
@@ -337,10 +312,10 @@ mod tests {
             Acquisition::Prepared(prepared) => prepared,
             other => panic!("regular-file controls: {other:?}"),
         };
-        assert_eq!(prepared.job(), job());
-        assert!(prepared.directory().metadata().unwrap().is_dir());
+        assert_eq!(prepared.job, job());
+        assert!(prepared.group.directory.metadata().unwrap().is_dir());
         let (published, controls) = prepared.publish();
-        assert_eq!(published.job(), job());
+        assert_eq!(published.job, job());
         assert!(published.directory().metadata().unwrap().is_dir());
         assert_eq!(std::fs::read(path.join("cgroup.kill")).unwrap(), b"untouched");
         drop(controls);
@@ -374,7 +349,7 @@ mod tests {
             preparation: Some(refusal),
             removal: refusal.rollback,
         };
-        assert!(retained.directory().is_none());
+        assert!(matches!(&retained.holding, Holding::Unopened(_)));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::remove_file(path.join("marker")).unwrap();
         assert!(matches!(retained.retry_remove(), Cleanup::Removed));
