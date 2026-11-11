@@ -92,6 +92,10 @@ const SCOPE_BYTES: usize = size_of::<RunId>() + size_of::<u64>() + size_of::<u32
 const SUBSCRIBE_BYTES: usize = SCOPE_BYTES + OFFSET_BYTES;
 pub const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
 pub const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
+/// The most bytes one record takes: its data frame carries the record's offset, then the
+/// record whole, within one frame's [`frame::MAX_FRAME`]. The endpoint admits no window
+/// past it.
+pub const RECORD_MOST: usize = frame::MAX_FRAME - OFFSET_BYTES;
 
 /// A run and its current management generation, minted by the trusted owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,15 +390,14 @@ impl std::fmt::Debug for Rejected {
 }
 
 fn record_buffer(capacity: usize) -> Result<Vec<u8>, Error> {
-    let maximum = frame::MAX_FRAME.saturating_sub(OFFSET_BYTES);
-    if capacity == 0 || capacity > maximum {
+    if capacity == 0 || capacity > RECORD_MOST {
         return Err(Error::Admission(AdmissionError::Capacity));
     }
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
         .map_err(|_| Error::Admission(AdmissionError::Allocation))?;
-    if bytes.capacity() > maximum {
+    if bytes.capacity() > RECORD_MOST {
         return Err(Error::Admission(AdmissionError::Capacity));
     }
     Ok(bytes)
@@ -405,7 +408,7 @@ impl Producer {
     /// The returned actual capacity includes allocator-reported excess and must
     /// be accounted before that credit is published. QUIC's window is unchanged.
     pub fn admit(&self, record_bytes: usize) -> Result<usize, Error> {
-        if record_bytes == 0 || record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES) {
+        if record_bytes == 0 || record_bytes > RECORD_MOST {
             return Err(Error::Admission(AdmissionError::Capacity));
         }
         let current = {
@@ -695,7 +698,7 @@ impl Endpoint {
         admitted: Admitted,
     ) -> Result<(Self, Producer, Control), Error> {
         if admitted.record_bytes == 0
-            || admitted.record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES)
+            || admitted.record_bytes > RECORD_MOST
             || admitted.transport_bytes == 0
             || admitted.handshake_bytes == 0
             || admitted.patience.is_zero()

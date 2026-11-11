@@ -1,0 +1,477 @@
+diff --git a/crates/remote/src/managed.rs b/crates/remote/src/managed.rs
+index a950021e7..a63ab7d4d 100644
+--- a/crates/remote/src/managed.rs
++++ b/crates/remote/src/managed.rs
+@@ -92,6 +92,10 @@ const SCOPE_BYTES: usize = size_of::<RunId>() + size_of::<u64>() + size_of::<u32
+ const SUBSCRIBE_BYTES: usize = SCOPE_BYTES + OFFSET_BYTES;
+ pub const CONTROL_BYTES: usize = FRAME_HEAD + SUBSCRIBE_BYTES;
+ pub const DATA_HEAD: usize = FRAME_HEAD + OFFSET_BYTES;
++/// The most bytes one record takes: its data frame carries the record's offset, then the
++/// record whole, within one frame's [`frame::MAX_FRAME`]. The endpoint admits no window
++/// past it.
++pub const RECORD_MOST: usize = frame::MAX_FRAME - OFFSET_BYTES;
+ 
+ /// A run and its current management generation, minted by the trusted owner.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -386,15 +390,14 @@ impl std::fmt::Debug for Rejected {
+ }
+ 
+ fn record_buffer(capacity: usize) -> Result<Vec<u8>, Error> {
+-    let maximum = frame::MAX_FRAME.saturating_sub(OFFSET_BYTES);
+-    if capacity == 0 || capacity > maximum {
++    if capacity == 0 || capacity > RECORD_MOST {
+         return Err(Error::Admission(AdmissionError::Capacity));
+     }
+     let mut bytes = Vec::new();
+     bytes
+         .try_reserve_exact(capacity)
+         .map_err(|_| Error::Admission(AdmissionError::Allocation))?;
+-    if bytes.capacity() > maximum {
++    if bytes.capacity() > RECORD_MOST {
+         return Err(Error::Admission(AdmissionError::Capacity));
+     }
+     Ok(bytes)
+@@ -405,7 +408,7 @@ impl Producer {
+     /// The returned actual capacity includes allocator-reported excess and must
+     /// be accounted before that credit is published. QUIC's window is unchanged.
+     pub fn admit(&self, record_bytes: usize) -> Result<usize, Error> {
+-        if record_bytes == 0 || record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES) {
++        if record_bytes == 0 || record_bytes > RECORD_MOST {
+             return Err(Error::Admission(AdmissionError::Capacity));
+         }
+         let current = {
+@@ -695,7 +698,7 @@ impl Endpoint {
+         admitted: Admitted,
+     ) -> Result<(Self, Producer, Control), Error> {
+         if admitted.record_bytes == 0
+-            || admitted.record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES)
++            || admitted.record_bytes > RECORD_MOST
+             || admitted.transport_bytes == 0
+             || admitted.handshake_bytes == 0
+             || admitted.patience.is_zero()
+diff --git a/crates/shards/src/daemon/managed.rs b/crates/shards/src/daemon/managed.rs
+index 492611de0..0ee762344 100644
+--- a/crates/shards/src/daemon/managed.rs
++++ b/crates/shards/src/daemon/managed.rs
+@@ -332,9 +332,13 @@ impl Output {
+                             .map_err(|reason| io::Error::other(Failure::Admission(reason)))?;
+                         learning.admitted = desired;
+                     }
++                    // A window the endpoint cannot take now (storage it could not allocate,
++                    // or a size or a record in flight it refuses) leaves the channel the
++                    // window it has; the growth's charge goes back as it drops.
+                     Err(
+                         shards_remote::managed::Error::Admission(
+-                            shards_remote::managed::AdmissionError::Allocation,
++                            shards_remote::managed::AdmissionError::Allocation
++                            | shards_remote::managed::AdmissionError::Capacity,
+                         )
+                         | shards_remote::managed::Error::Closed,
+                     ) => {}
+@@ -883,8 +887,7 @@ impl<D: Disk> Daemon<D> {
+                 .ok_or_else(|| io::Error::other("active credit index"))? = CreditSlot::Waiting;
+             let producer = Arc::new(producer);
+             let weak_credits = Arc::downgrade(&credits);
+-            let quantum = shards_registry::Quantum::new(capacity, run::MAX_PAYLOAD as usize)
+-                .ok_or_else(|| io::Error::other("invalid capture quantum bounds"))?;
++            let quantum = capture_quantum(capacity)?;
+             let output = Arc::new(Output {
+                 scope,
+                 address: endpoint.address,
+@@ -1263,6 +1266,17 @@ fn record_capacity(labels: &[String], active: &[u32]) -> io::Result<usize> {
+         })
+ }
+ 
++/// The byte quantum a channel's credit climbs in (D226), from the run's first record. A
++/// record crosses two frames, each bounded by its protocol: the run's from the guest
++/// (`run::MAX_PAYLOAD`) and the endpoint's data frame to the owner (`RECORD_MOST`, its
++/// frame less the record's offset). It climbs to the smaller, so that every window it
++/// desires is one the endpoint can admit.
++fn capture_quantum(capacity: usize) -> io::Result<shards_registry::Quantum> {
++    let most = usize::try_from(run::MAX_PAYLOAD).map_err(io::Error::other)?;
++    shards_registry::Quantum::new(capacity, most)
++        .ok_or_else(|| io::Error::other("invalid capture quantum bounds"))
++}
++
+ fn private_record(path: &Path) -> io::Result<File> {
+     match shards_ipc::create_private(path) {
+         Ok(file) => Ok(file),
+@@ -1879,4 +1893,378 @@ mod tests {
+         }
+         assert!(encoded(0, Channel::Stderr, 0, Event::Aborted(5)).len() <= capacity);
+     }
++
++    /// Test patience for the real transport below, as the daemon's own tests wait.
++    const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
++
++    fn admitted(capacity: usize, patience: std::time::Duration) -> Admitted {
++        Admitted {
++            record_bytes: capacity,
++            transport_bytes: u64::try_from(capacity + shards_remote::managed::DATA_HEAD).unwrap(),
++            handshake_bytes: HANDSHAKE_BYTES,
++            datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
++            patience,
++        }
++    }
++
++    /// Member 0's `channel` of a run, bound as `start_managed_capture` binds it.
++    fn bound(
++        server: &identity::Identity,
++        owner: Fingerprint,
++        channel: Channel,
++        capacity: usize,
++    ) -> (Scope, Endpoint, Producer, Control) {
++        let scope = Scope {
++            run: RunId([7; 32]),
++            generation: 1,
++            member: 0,
++            channel,
++        };
++        let (endpoint, producer, control) =
++            Endpoint::bind(server, owner, scope, admitted(capacity, shards_remote::tls::QUIET)).unwrap();
++        (scope, endpoint, producer, control)
++    }
++
++    /// The output of a bound channel, as `start_managed_capture` makes it, learning in
++    /// `quantum`.
++    #[allow(clippy::too_many_arguments)]
++    fn output(
++        scope: Scope,
++        endpoint: &Endpoint,
++        control: Control,
++        quantum: shards_registry::Quantum,
++        capacity: usize,
++        metadata: &Arc<Mutex<File>>,
++        credits: std::sync::Weak<Credits>,
++        index: usize,
++        charge: &Arc<Charge>,
++    ) -> Output {
++        Output {
++            scope,
++            address: endpoint.address,
++            control,
++            metadata: Arc::clone(metadata),
++            life: Mutex::new(Life::Serving),
++            credits,
++            index,
++            learning: Mutex::new(Learning {
++                quantum,
++                sample: None,
++                admitted: capacity,
++            }),
++            charge: Arc::clone(charge),
++        }
++    }
++
++    /// Climbs `quantum` as an owner does that consumes each full record a millisecond after
++    /// it was issued (D226's climb), until its window has not changed for 64 records (a
++    /// doubling takes six: a window it settles in and two it measures, two records each);
++    /// the window it desires then.
++    fn climbed(quantum: &mut shards_registry::Quantum) -> usize {
++        let start = Instant::now();
++        let mut desired = quantum.desired();
++        let mut unchanged = 0;
++        for n in 0..100_000 {
++            let began = start + std::time::Duration::from_millis(n);
++            quantum.consumed(
++                began,
++                began + std::time::Duration::from_millis(1),
++                desired as u64,
++            );
++            if quantum.desired() == desired {
++                unchanged += 1;
++                if unchanged == 64 {
++                    return desired;
++                }
++            } else {
++                (desired, unchanged) = (quantum.desired(), 0);
++            }
++        }
++        panic!("the quantum never settled: {desired}");
++    }
++
++    /// A growth its endpoint refuses (`Admission(Capacity)`) leaves the channel the window it
++    /// has: it is credited at that, the charge the growth took is given back, and the channel
++    /// serves on (finding 1 of audit-fix-host-v1: the refusal was an error that ended the
++    /// owner's credit worker and, with it, every channel of the run).
++    #[test]
++    fn growth_the_endpoint_refuses_keeps_the_current_window() {
++        let server = identity::Identity::generate().unwrap();
++        let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
++        let (scope, endpoint, producer, control) =
++            bound(&server, server.fingerprint(), Channel::Stdout, capacity);
++        let storage = producer.storage_capacity();
++        let dir = shards_testdir::TempDir::new("managed-refused").unwrap();
++        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
++        let budget = Arc::new(Mutex::new(Some(0)));
++        let charge = Arc::new(Charge {
++            budget: Arc::clone(&budget),
++            bytes: Mutex::new(0),
++        });
++        // A quantum climbing past what one endpoint record holds: the capture's own, before
++        // its bound.
++        let quantum = shards_registry::Quantum::new(capacity, run::MAX_PAYLOAD as usize).unwrap();
++        let output = output(
++            scope,
++            &endpoint,
++            control,
++            quantum,
++            capacity,
++            &metadata,
++            std::sync::Weak::new(),
++            0,
++            &charge,
++        );
++        let desired = climbed(&mut lock(&output.learning).quantum);
++        assert!(
++            matches!(
++                producer.admit(desired),
++                Err(shards_remote::managed::Error::Admission(
++                    shards_remote::managed::AdmissionError::Capacity
++                ))
++            ),
++            "its endpoint holds a window of {desired}: no refusal to keep"
++        );
++        let granted = output.capacity(&producer);
++        assert!(
++            matches!(granted, Ok(n) if n == capacity),
++            "a growth its endpoint refused cost the channel its credit: {granted:?}"
++        );
++        assert_eq!(lock(&output.learning).admitted, capacity);
++        assert_eq!(producer.storage_capacity(), storage);
++        assert_eq!(*lock(&budget), Some(0), "the refused growth's charge stayed taken");
++        assert_eq!(*lock(&output.life), Life::Serving);
++        assert!(!matches!(output.control.state(), State::Aborted(_)));
++    }
++
++    /// An owner subscribed to one channel at its start over the real transport, as an
++    /// owner's observer is: what a channel needs of its owner to be credited (`Ready`).
++    struct Subscriber {
++        scope: Scope,
++        config: Option<hyper_quic::ClientConfig>,
++        pending: Vec<u8>,
++        at: Option<(shards_remote::net::ConnKey, hyper_quic::StreamId)>,
++        ended: bool,
++    }
++
++    impl Subscriber {
++        fn flush(&mut self, io: &mut shards_remote::net::Io<'_>) {
++            let Some((conn, stream)) = self.at else { return };
++            while !self.pending.is_empty() {
++                match io.write(conn, stream, &self.pending) {
++                    Ok(0) => return,
++                    Ok(n) => drop(self.pending.drain(..n)),
++                    Err(_) => {
++                        self.ended = true;
++                        return;
++                    }
++                }
++            }
++        }
++    }
++
++    impl shards_remote::net::Handler for Subscriber {
++        type Command = std::net::SocketAddr;
++
++        fn connected(
++            &mut self,
++            io: &mut shards_remote::net::Io<'_>,
++            conn: shards_remote::net::ConnKey,
++            _: &[u8],
++        ) -> Result<(), shards_remote::net::Close> {
++            let stream = io.open(conn).map_err(|_| shards_remote::net::Close {
++                code: 1,
++                why: "the subscription's stream",
++            })?;
++            self.at = Some((conn, stream));
++            self.pending
++                .extend_from_slice(&shards_remote::managed::subscribe(self.scope, 0));
++            self.flush(io);
++            Ok(())
++        }
++        fn opened(&mut self, _: &mut shards_remote::net::Io<'_>, _: u64, _: hyper_quic::StreamId) {}
++        fn readable(&mut self, _: &mut shards_remote::net::Io<'_>, _: u64, _: hyper_quic::StreamId) {}
++        fn writable(&mut self, io: &mut shards_remote::net::Io<'_>, _: u64, _: hyper_quic::StreamId) {
++            self.flush(io);
++        }
++        fn stopped(&mut self, _: &mut shards_remote::net::Io<'_>, _: u64, _: hyper_quic::StreamId) {
++            self.ended = true;
++        }
++        fn lost(&mut self, _: &mut shards_remote::net::Io<'_>, _: u64, _: &str, _: Option<u64>) {
++            self.ended = true;
++        }
++        fn command(&mut self, io: &mut shards_remote::net::Io<'_>, to: std::net::SocketAddr) {
++            match self.config.take().map(|config| io.connect(to, config)) {
++                Some(Ok(_)) => {}
++                _ => self.ended = true,
++            }
++        }
++        fn done(&self) -> bool {
++            self.ended
++        }
++    }
++
++    /// The credit the owner's credit worker sends its capture, read from the capture's end.
++    fn credit(peer: &Stream) -> io::Result<run::managed::Credit> {
++        let mut head = [0; run::HEADER];
++        read_exact(peer, &mut head)?;
++        let (kind, len) = run::parse_header(head).ok_or_else(|| io::Error::other("not a frame"))?;
++        if kind != run::kind::MANAGED_CREDIT {
++            return Err(io::Error::other(format!("a frame of kind {kind}, not a credit")));
++        }
++        let mut payload = vec![0; len as usize];
++        read_exact(peer, &mut payload)?;
++        run::managed::Credit::decode(&payload).map_err(|e| io::Error::other(e.to_string()))
++    }
++
++    /// A capture whose window climbed to its most is credited within one endpoint record,
++    /// and no channel of its run is aborted for it: the owner's credit worker, granting a
++    /// subscribed channel, issues its credit at the window it climbed to, which its
++    /// endpoint holds, and goes on; the run's other channel serves on (finding 1 of
++    /// audit-fix-host-v1: the quantum climbed to `run::MAX_PAYLOAD`, past the endpoint's
++    /// record, whose refusal ended the worker and every channel of the run with it).
++    #[test]
++    fn a_climbed_capture_credit_fits_one_endpoint_record_and_aborts_no_channel() {
++        let server = identity::Identity::generate().unwrap();
++        let owner = identity::Identity::generate().unwrap();
++        let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
++        // The most one endpoint record holds, as its data frame carries it (its offset, then
++        // the record, within one frame): checked against an endpoint of its own.
++        let most = shards_remote::frame::MAX_FRAME - size_of::<u64>();
++        {
++            let (_, _endpoint, producer, _control) =
++                bound(&server, owner.fingerprint(), Channel::Stdout, capacity);
++            assert!(producer.admit(most).is_ok());
++            assert!(producer.admit(most + 1).is_err());
++        }
++        let dir = shards_testdir::TempDir::new("managed-climb").unwrap();
++        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
++        let charge = Arc::new(Charge {
++            budget: Arc::new(Mutex::new(Some(0))),
++            bytes: Mutex::new(0),
++        });
++        let credits = Arc::new(Credits {
++            state: Mutex::new(Queue {
++                slots: vec![CreditSlot::Waiting, CreditSlot::Waiting],
++                next: 0,
++                life: QueueLife::Open,
++            }),
++            changed: Condvar::new(),
++        });
++        let (mut outputs, mut producers, mut endpoints) = (Vec::new(), Vec::new(), Vec::new());
++        for (index, channel) in [Channel::Stdout, Channel::Stderr].into_iter().enumerate() {
++            let (scope, endpoint, producer, control) =
++                bound(&server, owner.fingerprint(), channel, capacity);
++            let output = Arc::new(output(
++                scope,
++                &endpoint,
++                control,
++                capture_quantum(capacity).unwrap(),
++                capacity,
++                &metadata,
++                Arc::downgrade(&credits),
++                index,
++                &charge,
++            ));
++            let weak = Arc::downgrade(&credits);
++            producer.on_credit(move || {
++                if let Some(credits) = weak.upgrade() {
++                    credits.wake();
++                }
++            });
++            outputs.push(Some(output));
++            producers.push(Some(Arc::new(producer)));
++            endpoints.push(endpoint);
++        }
++        let stdout = Arc::clone(outputs.first().unwrap().as_ref().unwrap());
++        let stderr = Arc::clone(outputs.get(1).unwrap().as_ref().unwrap());
++        let desired = climbed(&mut lock(&stdout.learning).quantum);
++        #[cfg(unix)]
++        let (stream, peer) = Stream::pair().unwrap();
++        #[cfg(windows)]
++        let (stream, peer) = Stream::plain_pair().unwrap();
++        peer.set_read_timeout(Some(PATIENCE)).unwrap();
++        let writing = stream.try_clone().unwrap();
++        let owner_side = Owner {
++            outputs,
++            stream,
++            credits,
++            _charge: Arc::clone(&charge),
++        };
++        let (subscriber, sender) = shards_remote::net::Driver::bind_bounded(
++            "127.0.0.1:0".parse().unwrap(),
++            None,
++            Subscriber {
++                scope: stdout.scope,
++                config: Some(
++                    shards_remote::managed::client_config(&owner, server.fingerprint(), admitted(capacity, PATIENCE))
++                        .unwrap(),
++                ),
++                pending: Vec::new(),
++                at: None,
++                ended: false,
++            },
++            shards_remote::net::DriverLimits {
++                connections: 1,
++                command_slots: 1,
++                queued_datagram_bytes: shards_remote::managed::DATAGRAM_BYTES,
++                handshake_patience: PATIENCE,
++            },
++        )
++        .unwrap();
++        let (worked, work) = std::sync::mpsc::sync_channel(1);
++        let (granted, ended, sibling) = std::thread::scope(|threads| {
++            for endpoint in endpoints {
++                threads.spawn(move || endpoint.run());
++            }
++            let mut subscriber = subscriber;
++            threads.spawn(move || subscriber.run());
++            sender
++                .send(shards_remote::net::Command::Handler(stdout.address))
++                .unwrap();
++            let (owner_side, producers) = (&owner_side, &producers);
++            threads.spawn(move || {
++                // As the run's own credit worker ends (start_managed_capture): its owner, and
++                // every channel of the run, with it.
++                let result = send_credits(writing, owner_side, producers);
++                if result.is_err() {
++                    owner_side.abort();
++                }
++                let _ = worked.send(result);
++            });
++            let granted = credit(&peer);
++            // A worker that sent a credit goes on; one that did not has ended, or ends.
++            let ended = match granted {
++                Ok(_) => work.try_recv().ok(),
++                Err(_) => work.recv_timeout(PATIENCE).ok(),
++            };
++            let sibling = (*lock(&stderr.life), stderr.control.state());
++            owner_side.abort();
++            sender.request_stop();
++            (granted, ended, sibling)
++        });
++        let record = std::fs::read_to_string(dir.join("metadata")).unwrap();
++        assert!(
++            ended.is_none(),
++            "the credit worker ended at a capture's grant: {ended:?}; its run's record:\n{record}"
++        );
++        assert_eq!(
++            sibling.0,
++            Life::Serving,
++            "the run's other channel ended for its sibling's credit: {sibling:?}"
++        );
++        assert!(!matches!(sibling.1, State::Aborted(_)), "{sibling:?}");
++        let granted = granted.unwrap();
++        assert_eq!((granted.member, granted.channel), (0, Channel::Stdout));
++        assert!(
++            desired <= most,
++            "the capture's window climbed to {desired}, past the {most} one endpoint record holds"
++        );
++        assert!(desired > capacity, "the window never climbed");
++        assert_eq!(
++            granted.capacity, desired as u64,
++            "the channel was credited short of the window it climbed to"
++        );
++        assert_eq!(lock(&stdout.learning).admitted, desired);
++    }
+ }

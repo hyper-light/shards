@@ -1,0 +1,29 @@
+{
+  "POLICY_READ": {
+    "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+    "source": "origin/main (read with git show from /Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing)",
+    "files": {
+      "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "CLAUDE.md": "read in full"
+    },
+    "role": "implementer",
+    "coordinator": "ROOT",
+    "task": "audit-fix-host-v1: reproduce (R09) then fix verified audit findings in host-side code: (1) managed capture quantum above the endpoint record limit aborting a run's channels; (2) torn metadata lines in managed output; (3) kernel command-line composer handling only x86 machine options before a user's --; (4) read metrics hang and untyped refusals; (5, optional) api connect_borrowed zero patience and identity() refusal flattening",
+    "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1",
+    "branch": "p/audit-fix-host-v1",
+    "owned_paths": [
+      "crates/shards/src/daemon/**",
+      "crates/remote/src/managed.rs",
+      "crates/api/src/**",
+      "crates/vmm/src/vm/**",
+      "tests of those files",
+      "crates/shards/tests/managed_output/metrics.rs (compile only; ignored coordinator-run VM test)",
+      "docs/research/measurements/audit-fix-host-v1/"
+    ],
+    "limits": "light tests only (unit tests of touched crates, cargo fmt --check, clippy -D warnings); no VM E2E, benchmarks or profiling; every cargo under lockf /tmp/g121-mac.lock with -j2 after df >= 30 GiB; no push/merge/rebase; signed gits commits with named paths; no spawned agents",
+    "rules": "R01-R16 binding; R09 red-before-fix with mutation of the guard; R01 no panics; R03 derived constants; R04 typed states/errors; R11/R12 cfg gating across supported targets; R13 smallest complete change",
+    "read_at": "2026-11-11"
+  }
+}

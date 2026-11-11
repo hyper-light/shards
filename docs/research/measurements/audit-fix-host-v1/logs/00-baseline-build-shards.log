@@ -1,0 +1,101 @@
+# command: lockf /tmp/g121-mac.lock env SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-init SHARDS_SERVER_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-server cargo test -j2 -p shards --bin shards --no-run
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: bff3015182ad754274f1048ce393ac12cb6cd91f
+# source diff vs HEAD (excluding this evidence directory): 0 lines, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T20:46:43Z
+# free GiB on /Users/adalundhe: 48
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+   Compiling memchr v2.8.3
+   Compiling autocfg v1.5.1
+   Compiling serde_core v1.0.229
+   Compiling num-traits v0.2.19
+   Compiling zmij v1.0.23
+   Compiling aho-corasick v1.1.5
+   Compiling serde_json v1.0.151
+   Compiling regex-syntax v0.8.11
+   Compiling regex-automata v0.4.18
+   Compiling itoa v1.0.18
+   Compiling serde v1.0.229
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling regex v1.13.1
+   Compiling num-integer v0.1.47
+   Compiling serde_derive v1.0.229
+   Compiling base64 v0.23.1
+   Compiling num-bigint v0.4.8
+   Compiling flate2 v1.1.10
+   Compiling twox-hash v2.1.4
+   Compiling ruzstd v0.9.1
+   Compiling shards-template v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/template)
+   Compiling shards-erofs v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/erofs)
+   Compiling shards-image v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/image)
+   Compiling shards-cmdline v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/cmdline)
+   Compiling crypto-common v0.1.7
+   Compiling block-buffer v0.10.4
+   Compiling keccak v0.2.2
+   Compiling time-core v0.1.9
+   Compiling powerfmt v0.2.0
+   Compiling deranged v0.5.8
+   Compiling num-conv v0.2.2
+   Compiling time v0.3.55
+   Compiling sha3 v0.11.0
+   Compiling digest v0.10.7
+   Compiling shards-agentfile v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/agentfile)
+   Compiling cpufeatures v0.2.17
+   Compiling httparse v1.10.1
+   Compiling rustls v0.23.46
+   Compiling sha1 v0.10.7
+   Compiling shards-gitsign v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/gitsign)
+   Compiling hashbrown v0.17.1
+   Compiling percent-encoding v2.3.2
+   Compiling libbz2-rs-sys v0.2.5
+   Compiling bzip2 v0.6.1
+   Compiling form_urlencoded v1.2.2
+   Compiling hashlink v0.12.2
+   Compiling shards-tuf v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/tuf)
+   Compiling sha1-checked v0.10.0
+   Compiling yasna v0.6.0
+   Compiling unicode-normalization v0.1.25
+   Compiling pem v4.0.0
+   Compiling lzma-rust2 v0.21.0
+   Compiling shards v0.7.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/shards)
+   Compiling encoding_rs v0.8.35
+   Compiling shards-apple v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/apple)
+   Compiling shards-dns v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/dns)
+   Compiling arraydeque v0.5.1
+   Compiling iri-string v0.7.14
+   Compiling shards-api v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/api)
+   Compiling shards-registry v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/registry)
+   Compiling yaml-rust2 v0.13.0
+   Compiling shards-net v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/net)
+   Compiling shards-build v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/build)
+   Compiling rcgen v0.14.10
+   Compiling shards-git v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/git)
+   Compiling shards-sigstore v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/sigstore)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm)
+   Compiling shards-remote v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/remote)
+   Compiling shards-rego v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/rego)
+   Compiling shards-seccomp v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/seccomp)
+   Compiling shards-testguest v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/testguest)
+   Compiling shards-archive v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/archive)
+   Compiling shards-zstd v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/zstd)
+   Compiling shards-ext4 v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/ext4)
+   Compiling shards-user v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/user)
+   Compiling shards-flate v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/flate)
+   Compiling shards-tui v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/tui)
+   Compiling shards-gateway v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/gateway)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 44s
+  Executable unittests src/main.rs (target/debug/deps/shards-590c76d8cc8bee5d)
+# exit: 0 at 2026-11-11T20:48:28Z
