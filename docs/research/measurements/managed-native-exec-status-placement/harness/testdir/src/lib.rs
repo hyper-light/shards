@@ -1,0 +1,469 @@
+//! A directory a test has of its own, in the system's temporary directory, removed as the
+//! test goes, a failing test's too: its value is dropped as the panic unwinds, and a
+//! failing test's says first, on stderr, the end of each log its programs wrote in it
+//! (a daemon's log, a run's stderr, a VM's sample), which says why it failed. Each test
+//! process's are under `shards-tests/<pid>/`, so that a process killed before it removed
+//! its own leaves them where the next one finds them: the first directory a process makes
+//! removes those of every process that has ended. Only that directory is swept, and only
+//! a process's that no longer runs.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, Once, PoisonError};
+
+/// How many of this process's directories are live: its own directory goes with the last,
+/// and is made, or found, under this lock alone, so that none is made in it as it goes.
+static LIVE: Mutex<usize> = Mutex::new(0);
+
+/// Every test process's directories' parent.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the one place a test's directory is made in the system's temporary directory"
+)]
+fn parent() -> PathBuf {
+    std::env::temp_dir().join("shards-tests")
+}
+
+/// Raises this test process's soft limit on open descriptors to its hard limit, and on
+/// macOS to no more than `kern.maxfilesperproc`, as shards' own processes raise theirs
+/// (vmm `platform::raise_descriptor_limit`): a test binary runs its tests side by side,
+/// and a macOS terminal, or a launchd job, starts it with 256, which the daemon's tests
+/// passed together, 7 of them failing for "Too many open files". Where it cannot, the
+/// limit stays as it was.
+#[cfg(unix)]
+fn raise_descriptor_limit() {
+    let mut lim = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit(2) into a local.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) } != 0 {
+        return;
+    }
+    let most = lim.rlim_max.min(per_process_most().unwrap_or(libc::rlim_t::MAX));
+    if most > lim.rlim_cur {
+        lim.rlim_cur = most;
+        // SAFETY: setrlimit(2) from a local.
+        unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) };
+    }
+}
+
+/// The most descriptors macOS lets a process have open, whatever its limit
+/// (`kern.maxfilesperproc`, which setrlimit(2) refuses a soft limit past).
+#[cfg(target_os = "macos")]
+fn per_process_most() -> Option<libc::rlim_t> {
+    let mut most: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname(3) of an int into a local of its size.
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut most).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (read == 0).then(|| libc::rlim_t::try_from(most).ok()).flatten()
+}
+
+/// None elsewhere: the hard limit is the most.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn per_process_most() -> Option<libc::rlim_t> {
+    None
+}
+
+/// A test's directory, made empty, removed as it is dropped.
+#[derive(Debug)]
+pub struct TempDir(PathBuf);
+
+impl TempDir {
+    /// A directory of the test's own, named for `name`: `shards-tests/<pid>/<name>-<n>`
+    /// under the system's temporary directory, each character no Windows name may hold
+    /// (`<>:"/\|?*` and the control characters: Naming Files, Paths, and Namespaces) a `-`
+    /// on every host, so that a name made of an image's (`oom-x:1`) is one directory there.
+    pub fn new(name: &str) -> io::Result<TempDir> {
+        let name: String = name
+            .chars()
+            .map(|c| {
+                if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        static SWEPT: Once = Once::new();
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let parent = parent();
+        SWEPT.call_once(|| {
+            #[cfg(unix)]
+            raise_descriptor_limit();
+            sweep(&parent);
+        });
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = parent
+            .join(std::process::id().to_string())
+            .join(format!("{name}-{n}"));
+        let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", dir.display())))?;
+        *live += 1;
+        Ok(TempDir(dir))
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempDir {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            show_logs(&self.0, 3, &mut io::stderr().lock());
+        }
+        remove(&self.0);
+        // The process's own directory, with its last.
+        let mut live = LIVE.lock().unwrap_or_else(PoisonError::into_inner);
+        *live = live.saturating_sub(1);
+        if *live == 0
+            && let Some(own) = self.0.parent()
+        {
+            let _ = std::fs::remove_dir(own);
+        }
+    }
+}
+
+/// The last bytes [`show_logs`] shows of a log, unless `SHARDS_TEST_LOG_SHOWN` says how many
+/// (a test whose programs log at debug, read whole).
+const SHOWN: u64 = 32 << 10;
+
+fn shown() -> u64 {
+    std::env::var("SHARDS_TEST_LOG_SHOWN")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(SHOWN)
+}
+
+/// What a failing test's directory says of why: the last [`SHOWN`] bytes of each log in it,
+/// `depth` directories down (`*.log`, `*.stderr`, `*.sample`), into `out`.
+fn show_logs(dir: &Path, depth: u32, out: &mut impl io::Write) {
+    use std::io::{Read as _, Seek as _};
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Ok(kind) = e.file_type() else {
+            continue;
+        };
+        let log = path
+            .extension()
+            .is_some_and(|x| x == "log" || x == "stderr" || x == "sample");
+        if kind.is_dir() && depth > 0 {
+            show_logs(&path, depth - 1, out);
+        } else if kind.is_file() && log {
+            let Ok(mut f) = std::fs::File::open(&path) else {
+                continue;
+            };
+            let len = f.metadata().map_or(0, |m| m.len());
+            let mut tail = Vec::new();
+            if f.seek(io::SeekFrom::Start(len.saturating_sub(shown()))).is_err()
+                || f.read_to_end(&mut tail).is_err()
+            {
+                continue;
+            }
+            let _ = writeln!(
+                out,
+                "--- {}, its last {} of {len} bytes",
+                path.display(),
+                tail.len()
+            );
+            let _ = out.write_all(&tail);
+            let _ = writeln!(out);
+        }
+    }
+}
+
+/// Removes `dir` and all in it, a test's directories it made unreadable or unwritable
+/// too: where a removal fails, each directory in it is made its owner's to read, write and
+/// search (no link followed), and it is removed again.
+fn remove(dir: &Path) {
+    if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fn open_up(dir: &Path) {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    open_up(&entry.path());
+                }
+            }
+        }
+        open_up(dir);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Removes the directories of test processes that have ended, under `parent`: each named
+/// by its process's ID, removed once no process has that ID (kill(2) with no signal:
+/// ESRCH). One whose ID another process has taken since stays until that one ends too.
+#[cfg(unix)]
+fn sweep(parent: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+            .filter(|&pid| pid != me)
+            .and_then(|pid| libc::pid_t::try_from(pid).ok())
+            .filter(|&pid| pid > 0)
+        else {
+            continue;
+        };
+        // SAFETY: kill(2) with no signal sends nothing; it asks whether the process is.
+        let gone = unsafe { libc::kill(pid, 0) } != 0
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            remove(&entry.path());
+        }
+    }
+}
+
+/// Windows tests run on runners made for each run, where nothing is left from before.
+#[cfg(not(unix))]
+fn sweep(_: &Path) {}
+
+/// The tests' helper program (`src/bin/shards-testhelper.rs`, which says its commands), for
+/// what a test runs where a Unix host would run a shell's tools: built for this host as a
+/// test process first asks for it, by cargo (the rustup proxy on PATH, without the dyld
+/// paths cargo gives test processes, which keep rust-lld from its libLLVM), into a target
+/// directory of its own beside the tests' (`testhelper`), one build at a time under its
+/// lock; and copied into a directory of this process's own, which it runs from, so that no
+/// build after a change replaces a program another test process runs (which Windows
+/// refuses). `SHARDS_TESTHELPER` names one built already, for a host given tests built
+/// elsewhere, which has no cargo.
+pub fn helper() -> Result<&'static Path, String> {
+    static BUILT: std::sync::OnceLock<Result<(TempDir, PathBuf), String>> = std::sync::OnceLock::new();
+    match BUILT.get_or_init(build_helper) {
+        Ok((_, program)) => Ok(program.as_path()),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn build_helper() -> Result<(TempDir, PathBuf), String> {
+    let name = format!("shards-testhelper{}", std::env::consts::EXE_SUFFIX);
+    // A host given the tests built for it, with no cargo to build with (a Windows host the
+    // tests were cross-built for), names a helper built beside them, as SHARDS_TEST_GUESTS
+    // names its guests.
+    if let Some(given) = std::env::var_os("SHARDS_TESTHELPER") {
+        return copy_helper(Path::new(&given), &name);
+    }
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // A test's program is `<target>/<profile>/deps/<test>`.
+    let exe = std::env::current_exe().map_err(|e| format!("this test's program: {e}"))?;
+    let target = exe
+        .ancestors()
+        .nth(3)
+        .map_or_else(|| workspace.join("target"), Path::to_path_buf)
+        .join("testhelper");
+    std::fs::create_dir_all(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+    let lock =
+        std::fs::File::create(target.join(".lock")).map_err(|e| format!("{}: {e}", target.display()))?;
+    lock.lock().map_err(|e| format!("{}: {e}", target.display()))?;
+    let built = build_and_copy(&workspace, &target, &name);
+    // Let go of before its file closes (a flock(2) lock is its open file's).
+    let _ = lock.unlock();
+    built
+}
+
+fn build_and_copy(workspace: &Path, target: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
+    let out = std::process::Command::new("cargo")
+        .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+        .env_remove("DYLD_LIBRARY_PATH")
+        .current_dir(workspace)
+        .args([
+            "build",
+            "--quiet",
+            "-p",
+            "shards-testdir",
+            "--bin",
+            "shards-testhelper",
+        ])
+        .arg("--target-dir")
+        .arg(target)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("cargo: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "building shards-testhelper: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    copy_helper(&target.join("debug").join(name), name)
+}
+
+/// `built` copied into a directory of this process's own, which it runs from.
+fn copy_helper(built: &Path, name: &str) -> Result<(TempDir, PathBuf), String> {
+    let dir = TempDir::new("testhelper").map_err(|e| e.to_string())?;
+    let program = dir.join(name);
+    // Written by a process of its own on Unix: a file this one held open to write, a child
+    // another test's thread forked meanwhile would hold until it execs, and an exec of it
+    // would fail with ETXTBSY until then (Linux).
+    #[cfg(unix)]
+    {
+        let copied = std::process::Command::new("cp")
+            .arg(built)
+            .arg(&program)
+            .status()
+            .map_err(|e| format!("cp: {e}"))?;
+        if !copied.success() {
+            return Err(format!("{} not copied: {copied}", built.display()));
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::copy(built, &program).map_err(|e| format!("{}: {e}", built.display()))?;
+    Ok((dir, program))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A failing test's directory says the end of each of its logs, and nothing else.
+    #[test]
+    fn a_failing_tests_logs_are_said() {
+        let dir = TempDir::new("logs").unwrap();
+        let mut long = b"its start\n".to_vec();
+        long.resize(10 + SHOWN as usize, b'x');
+        std::fs::write(dir.join("daemon.log"), &long).unwrap();
+        std::fs::write(dir.join("run-0.stderr"), "a run said this\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "no log\n").unwrap();
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::write(dir.join("a/b/vm-7.sample"), "a VM's stacks\n").unwrap();
+        let mut said = Vec::new();
+        show_logs(&dir, 3, &mut said);
+        let said = String::from_utf8(said).unwrap();
+        let tail = "x".repeat(SHOWN as usize);
+        assert!(
+            said.contains(&format!(
+                "daemon.log, its last {SHOWN} of {} bytes\n{tail}\n",
+                SHOWN + 10
+            )),
+            "{said}"
+        );
+        assert!(!said.contains("its start"), "{said}");
+        assert!(
+            said.contains("a run said this") && said.contains("a VM's stacks"),
+            "{said}"
+        );
+        assert!(!said.contains("no log"), "{said}");
+    }
+
+    /// A directory is made empty and removed as it goes, a panicking test's too; the
+    /// process's own directory goes with its last; another process's that has ended is
+    /// swept as the next is made, one that runs is not.
+    #[test]
+    fn a_tests_directory_goes_with_it() {
+        let dir = TempDir::new("one").unwrap();
+        let path = dir.to_path_buf();
+        assert!(path.is_dir() && std::fs::read_dir(&path).unwrap().next().is_none());
+        std::fs::write(path.join("f"), "f").unwrap();
+        drop(dir);
+        assert!(!path.exists());
+        let held = std::thread::spawn(|| {
+            let dir = TempDir::new("panicking").unwrap();
+            let path = dir.to_path_buf();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _dir = dir;
+                panic!("a failing test");
+            }));
+            (r.is_err(), path)
+        })
+        .join()
+        .unwrap();
+        assert!(held.0 && !held.1.exists());
+        // One holding a directory none may read, write or search, which a guest may make.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = TempDir::new("closed").unwrap();
+            let path = dir.to_path_buf();
+            std::fs::create_dir_all(path.join("d/e")).unwrap();
+            std::fs::write(path.join("d/e/f"), "f").unwrap();
+            for d in ["d/e", "d"] {
+                std::fs::set_permissions(path.join(d), std::fs::Permissions::from_mode(0o0)).unwrap();
+            }
+            drop(dir);
+            assert!(!path.exists());
+        }
+    }
+
+    /// Directories made and dropped on many threads at once are each made: the process's
+    /// own goes only with its last, never from under one being made (before, mkdir there
+    /// failed, EINVAL on macOS, as another's drop took it).
+    #[test]
+    fn many_at_once_are_each_made() {
+        std::thread::scope(|s| {
+            for t in 0..16 {
+                s.spawn(move || {
+                    for i in 0..200 {
+                        let dir = TempDir::new(&format!("race-{t}")).unwrap();
+                        std::fs::write(dir.join("f"), i.to_string()).unwrap();
+                    }
+                });
+            }
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_ended_processs_directories_are_swept() {
+        let parent = TempDir::new("sweep").unwrap();
+        // A process that ended, and one that runs: this one's parent, which never ends
+        // before its child.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let ended = child.id();
+        child.wait().unwrap();
+        let running = std::os::unix::process::parent_id();
+        for pid in [ended, running] {
+            std::fs::create_dir_all(parent.join(pid.to_string()).join("left-0")).unwrap();
+        }
+        std::fs::create_dir_all(parent.join("not-a-pid")).unwrap();
+        sweep(&parent);
+        assert!(!parent.join(ended.to_string()).exists());
+        assert!(parent.join(running.to_string()).exists());
+        assert!(parent.join("not-a-pid").exists());
+    }
+}

@@ -1,0 +1,4 @@
+   Compiling libc v0.2.189
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/native-exec-status-placement-05cc-v1/source/harness/testdir)
+   Compiling native-exec-status-placement v0.1.0 (/home/adalundhe/native-exec-status-placement-05cc-v1/source/harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.56s

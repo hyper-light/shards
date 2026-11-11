@@ -1,0 +1,9 @@
+{
+  "archive": "PACKAGE-v1.tar.gz",
+  "bytes": 43488,
+  "sha256": "bbc28e11b22c684415c55693decd56e9649b9fc74ee921c216185bf3d4374f28",
+  "source_manifest_sha256": "e8299de5a68805cc8ac94015cf398b7640ca8b97997ef43d10827ff998a6c9cb",
+  "cases": 2,
+  "runtime_prior_to_dispatch": 0,
+  "scope": "NEW GNU normal2CPU2GiB4GiB600/j2; no earlier run scope reused"
+}

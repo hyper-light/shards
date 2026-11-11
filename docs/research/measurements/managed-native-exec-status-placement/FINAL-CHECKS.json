@@ -1,0 +1,23 @@
+{
+  "full_staged_whitespace": {
+    "exit": 2,
+    "findings": [
+      "unchanged original LITERALS-COUNTS-v1.patch context blank line contains a space",
+      "unchanged raw native.stdout has a new blank line at EOF"
+    ],
+    "action": "preserve exact input patch and native raw bytes; no normalization"
+  },
+  "other_staged_paths_whitespace": {
+    "exit": 0
+  },
+  "source_manifest_recheck": {
+    "exit": 0,
+    "files": 29,
+    "unchanged_process": true
+  },
+  "raw_manifest_verification": {
+    "exit": 0,
+    "payloads": 18
+  },
+  "tests_after_green": "no extra build/case rerun; only handoff/readme/receipt additions"
+}

@@ -1,0 +1,15 @@
+{
+  "revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "owned_paths": [
+    "docs/research/measurements/managed-native-exec-status-placement/**"
+  ],
+  "full_read": [
+    "origin/main:AGENTS.md",
+    "origin/main:docs/development-rules.md",
+    "origin/main:docs/development-evidence.md",
+    "/Users/adalundhe/g121-handoff.md"
+  ],
+  "scope": "resumed disjoint status-placement fixture; no production writes; prior localbuilds/tests zero"
+}

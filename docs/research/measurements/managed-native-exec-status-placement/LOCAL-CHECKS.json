@@ -1,0 +1,19 @@
+{
+  "base": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "checks": [
+    {
+      "command": "rustfmt --edition 2024 --check docs/research/measurements/managed-native-exec-status-placement/harness/src/native_effects/process/status_placement.rs",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "python3 scripts/check-development-policy",
+      "exit": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    }
+  ],
+  "local_builds": 0,
+  "local_actors": 0
+}

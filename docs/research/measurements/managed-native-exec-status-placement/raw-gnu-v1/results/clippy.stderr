@@ -1,0 +1,4 @@
+    Checking libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-exec-status-placement-05cc-v1/source/harness/testdir)
+    Checking native-exec-status-placement v0.1.0 (/home/adalundhe/native-exec-status-placement-05cc-v1/source/harness)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.46s

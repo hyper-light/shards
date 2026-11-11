@@ -1,0 +1,4 @@
+native_effects::process::tests::status_placement::before_map_install_failure_reports_saved_errno_on_staged_status: test
+native_effects::process::tests::status_placement::post_map_exec_failure_reports_saved_errno_on_installed_status: test
+
+2 tests, 0 benchmarks

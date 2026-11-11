@@ -1,0 +1,8 @@
+{
+  "path": "/home/adalundhe/native-exec-status-placement-05cc-v1/source/results/frozen-tests",
+  "bytes": 9878504,
+  "sha256": "88d0480fc0ef217db57552475f910ca09b7c12ff6560a55da80513cd4e81258b",
+  "source_manifest_sha256": "e8299de5a68805cc8ac94015cf398b7640ca8b97997ef43d10827ff998a6c9cb",
+  "expected_native_cases": 2,
+  "prior_cases": 0
+}

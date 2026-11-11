@@ -1,0 +1,8 @@
+{
+  "step": "freeze old process source using SOURCE-v1.json hash",
+  "outcome": "assertion failed before copying process source; owner advanced concurrently",
+  "builds": 0,
+  "actors": 0,
+  "retained": "original46ab dependencies copied before assertion; latest fixture now consumes immutable freeze-v4",
+  "policy": "no active peer file overwritten"
+}

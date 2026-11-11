@@ -1,0 +1,15 @@
+--- a/crates/server/src/native_effects/literals.rs
++++ b/crates/server/src/native_effects/literals.rs
+@@ -78,6 +78,12 @@
+         self.env_ptrs.as_ptr()
+     }
+ 
++    /// Actual literal entry counts for the prepared execution's audit facts;
++    /// neither the private values nor another retained copy is exposed.
++    pub fn counts(&self) -> (usize, usize) {
++        (self.argv.len(), self.env.len())
++    }
++
+     /// Owned heap regions, including actual vector capacities. Allocator overhead
+     /// and transient preparation storage are not included or minted as entitlement.
+     pub fn bytes(&self) -> usize {

@@ -1,0 +1,10 @@
+{
+  "kind": "real process Prepared.metadata caller request: counts are actual argv/env vector lengths, no values/copy/authority",
+  "before_sha256": "cf639b85533d9ff67e3b0ee232635d00da48943a6880cb5b0c56efa234d60096",
+  "after_sha256": "4ee5e5c298c345faf199e54acbcd33b4a2c9fbf3fb5289b6008f67482141e4ee",
+  "raw_bytes": 619,
+  "raw_sha256": "89e0302796cb1349226a972d0743b444619efac715e42288b3414519206d72d5",
+  "gzip_bytes": 364,
+  "gzip_sha256": "f6de86e691bf5005a37dffdf922116c52d64fe7e3ad3bbf7b6f446a43ebd8121",
+  "result": "source-only new getter, process owner actual caller/light checks next"
+}
