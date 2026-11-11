@@ -1,0 +1,58 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=120 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/env-probe.sh
+# tree: bff3015182ad754274f1048ce393ac12cb6cd91f + untracked evidence dir only; exit_code 0
+== uname
+Linux 7.2.9-2-cachyos x86_64 GNU/Linux
+== os-release
+NAME="CachyOS Linux"
+ID=cachyos
+== rustup
+rustup 1.29.1 (2026-09-01)
+info: This is the version for the rustup toolchain manager, not the rustc compiler.
+== toolchains
+stable-x86_64-unknown-linux-gnu (default)
+1.88-x86_64-unknown-linux-gnu
+1.88.0-x86_64-unknown-linux-gnu
+1.94.1-x86_64-unknown-linux-gnu
+1.98.0-x86_64-unknown-linux-gnu
+1.98.1-x86_64-unknown-linux-gnu (active)
+1.99.0-x86_64-unknown-linux-gnu
+1.99.1-x86_64-unknown-linux-gnu
+== active (repo pin)
+1.98.1-x86_64-unknown-linux-gnu (overridden by '/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/rust-toolchain.toml')
+== targets of 1.98.1
+aarch64-unknown-linux-gnu
+aarch64-unknown-linux-musl
+x86_64-unknown-linux-gnu
+x86_64-unknown-linux-musl
+== components of 1.98.1
+cargo-x86_64-unknown-linux-gnu
+clippy-x86_64-unknown-linux-gnu
+rust-docs-x86_64-unknown-linux-gnu
+rust-std-aarch64-unknown-linux-gnu
+rust-std-aarch64-unknown-linux-musl
+rust-std-x86_64-unknown-linux-gnu
+rust-std-x86_64-unknown-linux-musl
+rustc-x86_64-unknown-linux-gnu
+rustfmt-x86_64-unknown-linux-gnu
+== rustc
+rustc 1.98.1 (48a229cea 2026-09-01)
+binary: rustc
+commit-hash: 48a229ceaefd4985c50990b14116b6d856af0985
+commit-date: 2026-09-01
+host: x86_64-unknown-linux-gnu
+release: 1.98.1
+LLVM version: 22.1.8
+== cargo
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+== strace
+== nproc/mem
+32
+MemTotal:       128893460 kB
+MemAvailable:   104032208 kB
+== disk of cwd
+/dev/nvme1n1p2  7.3T  7.1T  197G  98% /home
+== cwd
+/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d
+bff3015182ad754274f1048ce393ac12cb6cd91f
+?? docs/research/measurements/audit-fix-init-v1/

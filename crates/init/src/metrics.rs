@@ -214,12 +214,15 @@ impl Reader {
                     }
                 }
                 (State::Fields { read: r, write: w }, Token::Line) => {
-                    read = read
-                        .checked_add(r.ok_or(Failure::Missing)?)
-                        .ok_or(Failure::Overflow)?;
-                    write = write
-                        .checked_add(w.ok_or(Failure::Missing)?)
-                        .ok_or(Failure::Overflow)?;
+                    // Linux prints a device's byte fields together, or neither where its
+                    // blkg has done no read or write (v6.18 block/blk-cgroup.c 1206-1210).
+                    let (r, w) = match (*r, *w) {
+                        (Some(r), Some(w)) => (r, w),
+                        (None, None) => (0, 0),
+                        _ => return Err(Failure::Missing),
+                    };
+                    read = read.checked_add(r).ok_or(Failure::Overflow)?;
+                    write = write.checked_add(w).ok_or(Failure::Overflow)?;
                     state = State::Device;
                 }
                 (_, Token::Long(prefix))

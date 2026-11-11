@@ -1,0 +1,55 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=120 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/cgroup-io-probe.sh
+# tree: bff3015182ad754274f1048ce393ac12cb6cd91f + untracked evidence dir only; exit_code 0
+== kernel
+7.2.9-2-cachyos
+== cgroup2 mount
+cgroup2 /sys/fs/cgroup cgroup2 rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot,memory_hugetlb_accounting 0 0
+== root cgroup.controllers
+cpuset cpu io memory hugetlb pids rdma misc dmem
+== device lines with neither rbytes= nor wbytes= (first 20)
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1eb597f7_df3d_485b_83c3_c2a747b21048.slice/docker-be05805037b34c9030ec2c008046e2e2ac5b95090504f9a40d2d9c26c06dfdef.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podee3e958a_993f_4816_91cb_388a3761c5f9.slice/docker-aff2a18b061419e4bb3363090a64f1e9ccfed42c0698b226b4fccc85181d0c5e.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podc82ab242_0e98_41f3_acfb_0f593ac8f4b9.slice/docker-59ac785fb45ac26b992cb10222a54c7729068ae2eeecee805641e29732d6924b.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod3a9d4b17_bc9c_4407_8a26_183b790073ae.slice/docker-3d4e3946219abb618457c075e958c29cc0e17c0d2de724517e23a4ac94d94f15.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod5a1de1f0_23cd_436d_8c91_22bcc02bedaa.slice/docker-a9b829344f37f9f4efd3977c4d9dd9b7c62a1c03880baba77e347cd5d5cff44c.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod06d2a693_b7e4_47ea_8695_21b9f16509ef.slice/docker-53d127861cfaed41d981919a220b189d9e31e4ff2f2b8474e74e4520440f0d95.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-f5b75f0e7e2e045435b61dd60ce7ec55da6d60b1b7efd5959b5bc9bb2e31b400.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod397bf77d_c1dd_445b_9350_494d8a0c06d4.slice/docker-f09056c6b6c3a4ed9a6adc3d8b97fe42457c50b7e3018cc0bf1c7bc200e340d9.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-f5b75f0e7e2e045435b61dd60ce7ec55da6d60b1b7efd5959b5bc9bb2e31b400.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod397bf77d_c1dd_445b_9350_494d8a0c06d4.slice/docker-557b21f1eeb728436f93f184f6337d7ec6abd19a4ff1d60e4d2b049cbaa1fcdb.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/init.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/containerd.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/docker.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/kubelet.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/systemd-journald.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/cri-docker.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/dbus.service/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/system.slice/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/kubepods.slice/kubepods-pod6a96ed62_fd73_4742_886d_02377b88cb16.slice/docker-ec239e39339834ad158b94d9709a85e42f41149206ddda3e43c54e24fca973ff.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/kubepods.slice/kubepods-pod6a96ed62_fd73_4742_886d_02377b88cb16.slice/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod237be3c9_d65d_4465_a57f_c1d6104ec881.slice/docker-bdf38bc241ebef2804f70728b16123a670c77cdc2ca12a3b64f4a78822648408.scope/io.stat: [253:0 ]
+/sys/fs/cgroup/system.slice/docker-e18ad9e98f85e7a6b5cb4e24440987d9874bb78eae81b22d0707dca54c118e74.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod237be3c9_d65d_4465_a57f_c1d6104ec881.slice/io.stat: [253:0 ]
+total: 28
+== exact bytes of /sys/fs/cgroup/system.slice/docker-774edafa40abbe1f8b3c7902d0e11c473a395eda0199044df7115090c8166bff.scope/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1eb597f7_df3d_485b_83c3_c2a747b21048.slice/docker-be05805037b34c9030ec2c008046e2e2ac5b95090504f9a40d2d9c26c06dfdef.scope/io.stat
+0000000   2   5   3   :   0      \n   2   5   9   :   0       r   b   y
+0000020   t   e   s   =   3   5   0   0   0   3   2   0       w   b   y
+0000040   t   e   s   =   0       r   i   o   s   =   1   3   0   9    
+0000060   w   i   o   s   =   0       d   b   y   t   e   s   =   0    
+0000100   d   i   o   s   =   0  \n   2   5   9   :   3       r   b   y
+0000120   t   e   s   =   1   8   1   9   0   3   3   6       w   b   y
+0000140   t   e   s   =   0       r   i   o   s   =   1   1   6   2    
+0000160   w   i   o   s   =   0       d   b   y   t   e   s   =   0    
+0000200   d   i   o   s   =   0  \n   2   5   9   :   2       r   b   y
+0000220   t   e   s   =   6   6   2   8   5   5   6   8   0       w   b
+0000240   y   t   e   s   =   0       r   i   o   s   =   1   2   7   1
+0000260   9       w   i   o   s   =   0       d   b   y   t   e   s   =
+0000300   0       d   i   o   s   =   0  \n   2   5   9   :   1       r
+0000320   b   y   t   e   s   =   1   1   8   1   2   8   6   4       w
+0000340   b   y   t   e   s   =   0       r   i   o   s   =   7   2   1
+0000360       w   i   o   s   =   0       d   b   y   t   e   s   =   0
+0000400       d   i   o   s   =   0  \n
+0000410
+== lines with exactly one of rbytes=/wbytes= (expected 0)
+0
+== cgroups by (io in cgroup.controllers, io.stat present)
+    983 io-listed io.stat-present
+    167 io-unlisted io.stat-absent

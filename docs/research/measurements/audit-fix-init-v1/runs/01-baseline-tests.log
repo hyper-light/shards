@@ -1,0 +1,16 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: git rev-parse HEAD; git status --short; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- -q 2>&1; echo "exit=$?"
+# tree: bff3015182ad754274f1048ce393ac12cb6cd91f, crates unmodified (only the untracked evidence dir); exit_code 0
+bff3015182ad754274f1048ce393ac12cb6cd91f
+?? docs/research/measurements/audit-fix-init-v1/
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 146 tests
+..........
+running 1 test
+................i............................................................ 87/146
+...........................................................
+test result: ok. 145 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+exit=0

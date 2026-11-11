@@ -1,0 +1,81 @@
+diff --git a/crates/init/src/metrics.rs b/crates/init/src/metrics.rs
+index d3b53047e..a7aad9501 100644
+--- a/crates/init/src/metrics.rs
++++ b/crates/init/src/metrics.rs
+@@ -214,12 +214,14 @@ impl Reader {
+                     }
+                 }
+                 (State::Fields { read: r, write: w }, Token::Line) => {
+-                    read = read
+-                        .checked_add(r.ok_or(Failure::Missing)?)
+-                        .ok_or(Failure::Overflow)?;
+-                    write = write
+-                        .checked_add(w.ok_or(Failure::Missing)?)
+-                        .ok_or(Failure::Overflow)?;
++                    // Linux prints a device's byte fields together, or neither where its
++                    // blkg has done no read or write (v6.18 block/blk-cgroup.c 1206-1210).
++                    let (r, w) = match (*r, *w) {
++                        (Some(r), Some(w)) => (r, w),
++                        _ => return Err(Failure::Missing),
++                    };
++                    read = read.checked_add(r).ok_or(Failure::Overflow)?;
++                    write = write.checked_add(w).ok_or(Failure::Overflow)?;
+                     state = State::Device;
+                 }
+                 (_, Token::Long(prefix))
+diff --git a/crates/init/src/metrics/tests.rs b/crates/init/src/metrics/tests.rs
+index 4fa5f0685..7634a7236 100644
+--- a/crates/init/src/metrics/tests.rs
++++ b/crates/init/src/metrics/tests.rs
+@@ -132,6 +132,51 @@ fn duplicate_selected_io_fields_on_one_device_are_invalid() {
+     }
+ }
+ 
++#[test]
++fn device_lines_without_byte_fields_add_zero() {
++    let mut reader = Reader::new().unwrap();
++    // A device whose blkg has done no read or write is printed by name alone (Linux v6.18
++    // block/blk-cgroup.c 1193-1227); the first is a live io.stat, byte for byte
++    // (docs/research/measurements/audit-fix-init-v1/runs/cgroup-io-probe.log).
++    let live = concat!(
++        "253:0 \n",
++        "259:0 rbytes=35000320 wbytes=0 rios=1309 wios=0 dbytes=0 dios=0\n",
++        "259:3 rbytes=18190336 wbytes=0 rios=1162 wios=0 dbytes=0 dios=0\n",
++        "259:2 rbytes=662855680 wbytes=0 rios=12719 wios=0 dbytes=0 dios=0\n",
++        "259:1 rbytes=11812864 wbytes=0 rios=721 wios=0 dbytes=0 dios=0\n",
++    );
++    for (io, read, write) in [
++        (live, 727_859_200, 0),
++        ("8:0 \n", 0, 0),
++        ("8:0 ", 0, 0),
++        // iocost's own field on a device with no read or write (blk-iocost.c v6.18 3063).
++        ("8:0  cost.usage=0\n8:16 rbytes=5 wbytes=7 rios=1 wios=1 dbytes=0 dios=0\n", 5, 7),
++    ] {
++        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
++        assert_other_metrics(sample);
++        assert_eq!((sample.read_bytes, sample.write_bytes), (Ok(read), Ok(write)), "{io:?}");
++    }
++}
++
++#[test]
++fn a_device_line_with_one_byte_field_is_missing() {
++    let mut reader = Reader::new().unwrap();
++    // The kernel prints rbytes and wbytes together or neither (blk-cgroup.c v6.18 1206-1210).
++    for io in [
++        "8:0 rbytes=5 rios=1\n",
++        "8:0 wbytes=7 wios=1\n",
++        "8:16 rbytes=5 wbytes=7\n8:0 rbytes=1\n",
++    ] {
++        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
++        assert_other_metrics(sample);
++        assert_eq!(
++            (sample.read_bytes, sample.write_bytes),
++            (Err(Failure::Missing), Err(Failure::Missing)),
++            "{io:?}"
++        );
++    }
++}
++
+ #[test]
+ fn io_numbers_and_cross_device_sums_are_checked() {
+     let mut reader = Reader::new().unwrap();

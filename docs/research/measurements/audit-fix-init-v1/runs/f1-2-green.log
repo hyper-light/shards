@@ -1,0 +1,54 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- metrics:: 2>&1; echo "exit=$?"
+# tree: bff3015 + patches/f1-green.patch (sha256 b22d76939deb6807e1711dffe4a38c6904b5f027913e8fdc59e43984ab1a2f15)
+# result: GREEN (cargo exit 0): 37 metrics tests pass, the two new ones included
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/init/src/metrics.rs       | 15 ++++++++------
+ crates/init/src/metrics/tests.rs | 45 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 54 insertions(+), 6 deletions(-)
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.15s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 37 tests
+test metrics::otlp::tests::an_invalid_timestamp_is_rejected_before_any_output ... ok
+test metrics::otlp::tests::empty_collection_is_one_empty_request ... ok
+test metrics::otlp::tests::counts_units_temporality_and_directions_match_the_contract ... ok
+test metrics::otlp::tests::int64_boundary_is_preserved_and_overflow_is_not_a_measurement ... ok
+test metrics::otlp::tests::utf8_is_preserved_and_json_controls_cannot_escape_strings ... ok
+test metrics::otlp::tests::unavailable_values_are_omitted_with_separate_typed_diagnostics ... ok
+test metrics::otlp::tests::every_collection_has_a_current_error_count_even_after_recovery ... ok
+test metrics::otlp::tests::event_sums_keep_fixed_keys_true_zero_and_distinct_failure_series ... ok
+test metrics::otlp::tests::microseconds_become_decimal_seconds_without_integer_clamping ... ok
+test metrics::otlp::tests::scopes_and_exact_identities_stay_distinct ... ok
+test metrics::tests::cpu_key_and_number_survive_an_actual_page_boundary ... ok
+test metrics::tests::event_file_failures_keep_exact_errno_and_the_other_file_independent ... ok
+test metrics::tests::duplicate_selected_io_fields_on_one_device_are_invalid ... ok
+test metrics::tests::a_device_line_with_one_byte_field_is_missing ... ok
+test metrics::tests::empty_io_is_zero_but_missing_io_remains_an_io_failure ... ok
+test metrics::tests::event_parse_failures_do_not_erase_independent_selected_fields ... ok
+test metrics::otlp::tests::event_signed_overflow_omits_only_that_series_and_never_fabricates_a_reset ... ok
+test metrics::tests::event_snapshots_reuse_one_page_and_keep_held_groups_independent_after_errors ... ok
+test metrics::otlp::tests::partial_writes_and_sink_failure_are_returned ... ok
+test metrics::tests::full_u64_values_are_not_narrowed_and_larger_numbers_overflow ... ok
+test metrics::tests::device_lines_without_byte_fields_add_zero ... ok
+test metrics::tests::event_keys_are_order_independent_and_unknown_fields_are_not_labels ... ok
+test metrics::tests::missing_cpu_usage_does_not_erase_independent_metrics ... ok
+test metrics::tests::limits_fixed_name_open_preserves_missing_and_symlink_errno ... ok
+test metrics::tests::io_numbers_and_cross_device_sums_are_checked ... ok
+test metrics::tests::limits_distinguish_finite_zero_full_u64_and_symbolic_max ... ok
+test metrics::tests::limits_keep_fixed_names_and_held_groups_independent_after_errors ... ok
+test metrics::tests::kernel_fields_are_selected_by_key_and_scope_is_preserved ... ok
+test metrics::tests::snapshots_keep_actual_limit_results_and_reuse_the_one_page ... ok
+test metrics::tests::selected_io_tokens_survive_an_actual_page_boundary ... ok
+test metrics::tests::limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors ... ok
+test metrics::tests::scalar_extra_tokens_are_invalid_across_whitespace_and_lines ... ok
+test metrics::tests::event_reader_keeps_u64_range_before_codec_checks_signed_bounds ... ok
+test metrics::otlp::tests::limit_gauges_keep_zero_range_and_all_states_distinct_without_identity_churn ... ok
+test metrics::tests::unknown_fields_longer_than_a_page_do_not_hide_selected_fields ... ok
+test metrics::tests::limits_missing_malformed_duplicate_and_overflow_values_stay_errors ... ok
+test metrics::tests::event_tokens_cross_pages_and_long_unknown_lines_cannot_hide_later_known_keys ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.00s
+
+exit=0

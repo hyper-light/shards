@@ -133,6 +133,59 @@ fn duplicate_selected_io_fields_on_one_device_are_invalid() {
 }
 
 #[test]
+fn device_lines_without_byte_fields_add_zero() {
+    let mut reader = Reader::new().unwrap();
+    // A device whose blkg has done no read or write is printed by name alone (Linux v6.18
+    // block/blk-cgroup.c 1193-1227); the first is a live io.stat, byte for byte
+    // (docs/research/measurements/audit-fix-init-v1/runs/cgroup-io-probe.log).
+    let live = concat!(
+        "253:0 \n",
+        "259:0 rbytes=35000320 wbytes=0 rios=1309 wios=0 dbytes=0 dios=0\n",
+        "259:3 rbytes=18190336 wbytes=0 rios=1162 wios=0 dbytes=0 dios=0\n",
+        "259:2 rbytes=662855680 wbytes=0 rios=12719 wios=0 dbytes=0 dios=0\n",
+        "259:1 rbytes=11812864 wbytes=0 rios=721 wios=0 dbytes=0 dios=0\n",
+    );
+    for (io, read, write) in [
+        (live, 727_859_200, 0),
+        ("8:0 \n", 0, 0),
+        ("8:0 ", 0, 0),
+        // iocost's own field on a device with no read or write (blk-iocost.c v6.18 3063).
+        (
+            "8:0  cost.usage=0\n8:16 rbytes=5 wbytes=7 rios=1 wios=1 dbytes=0 dios=0\n",
+            5,
+            7,
+        ),
+    ] {
+        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
+        assert_other_metrics(sample);
+        assert_eq!(
+            (sample.read_bytes, sample.write_bytes),
+            (Ok(read), Ok(write)),
+            "{io:?}"
+        );
+    }
+}
+
+#[test]
+fn a_device_line_with_one_byte_field_is_missing() {
+    let mut reader = Reader::new().unwrap();
+    // The kernel prints rbytes and wbytes together or neither (blk-cgroup.c v6.18 1206-1210).
+    for io in [
+        "8:0 rbytes=5 rios=1\n",
+        "8:0 wbytes=7 wios=1\n",
+        "8:16 rbytes=5 wbytes=7\n8:0 rbytes=1\n",
+    ] {
+        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
+        assert_other_metrics(sample);
+        assert_eq!(
+            (sample.read_bytes, sample.write_bytes),
+            (Err(Failure::Missing), Err(Failure::Missing)),
+            "{io:?}"
+        );
+    }
+}
+
+#[test]
 fn io_numbers_and_cross_device_sums_are_checked() {
     let mut reader = Reader::new().unwrap();
     let too_large = (u128::from(u64::MAX) + 1).to_string();

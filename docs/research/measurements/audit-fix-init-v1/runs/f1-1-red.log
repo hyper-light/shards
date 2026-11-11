@@ -1,0 +1,33 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- metrics::tests::device_lines_without_byte_fields_add_zero metrics::tests::a_device_line_with_one_byte_field_is_missing 2>&1; echo "exit=$?"
+# tree: bff3015 + patches/f1-red-tests-only.patch (sha256 b0501987960f671fd66ebd476285e6222dadedfe31b4628c3d7d6bc263c5ef35): tests only, production unmodified
+# result: RED as expected (cargo exit 101): the live io.stat gives (Err(Missing), Err(Missing)), not (Ok(727859200), Ok(0))
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/init/src/metrics/tests.rs | 45 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 45 insertions(+)
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.85s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 2 tests
+test metrics::tests::a_device_line_with_one_byte_field_is_missing ... ok
+test metrics::tests::device_lines_without_byte_fields_add_zero ... FAILED
+
+failures:
+
+---- metrics::tests::device_lines_without_byte_fields_add_zero stdout ----
+
+thread 'metrics::tests::device_lines_without_byte_fields_add_zero' (3902202) panicked at crates/init/src/metrics/tests.rs:157:9:
+assertion `left == right` failed: "253:0 \n259:0 rbytes=35000320 wbytes=0 rios=1309 wios=0 dbytes=0 dios=0\n259:3 rbytes=18190336 wbytes=0 rios=1162 wios=0 dbytes=0 dios=0\n259:2 rbytes=662855680 wbytes=0 rios=12719 wios=0 dbytes=0 dios=0\n259:1 rbytes=11812864 wbytes=0 rios=721 wios=0 dbytes=0 dios=0\n"
+  left: (Err(Missing), Err(Missing))
+ right: (Ok(727859200), Ok(0))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    metrics::tests::device_lines_without_byte_fields_add_zero
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 146 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+exit=101
