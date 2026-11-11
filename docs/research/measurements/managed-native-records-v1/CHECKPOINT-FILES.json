@@ -1,0 +1,62 @@
+{
+  "scope": "single-process Linux OS ordering observation only; no production changes or selected retirement protocol",
+  "base": "28ba5083bd65a9a3bff4896921821cbbd4f1fee7",
+  "files": {
+    "docs/research/measurements/managed-native-records-v1/DISPATCH.json": {
+      "bytes": 600,
+      "sha256": "a183af7cfefc7c5b3d3937750e954a227e22ea84cbcff048994b1ee6264c96d8"
+    },
+    "docs/research/measurements/managed-native-records-v1/POLICY_READ.json": {
+      "bytes": 1776,
+      "sha256": "a990aa8d1cd8d79c35a9c6f0034821ae73fc89f84933493446ab087d8ee5ee58"
+    },
+    "docs/research/measurements/managed-native-records-v1/README.md": {
+      "bytes": 5822,
+      "sha256": "8ab77b807ca88439f4800b4b3613a734dee8bf8a29356fb5fb00be50193ca70e"
+    },
+    "docs/research/measurements/managed-native-records-v1/REMOTE-COMMAND.sh": {
+      "bytes": 8781,
+      "sha256": "0242265f9a48be976b1b6afd9a10989e2328bc4abba3b4de59abd7063bd1da50"
+    },
+    "docs/research/measurements/managed-native-records-v1/TOOL-RESULT.json": {
+      "bytes": 742,
+      "sha256": "e2215ce4685691a00675f2bbd2a479f276647dbcec23028a16dad61154c5018d"
+    },
+    "docs/research/measurements/managed-native-records-v1/VERIFIED.json": {
+      "bytes": 2782,
+      "sha256": "1320c3c7ab7cfe8d04c611dcd5976cfbb80494497af6fefa3e32333ece5d3fb6"
+    },
+    "docs/research/measurements/managed-native-records-v1/ordering.py": {
+      "bytes": 7627,
+      "sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6"
+    },
+    "docs/research/measurements/managed-native-records-v1/policy.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-records-v1/policy.stdout": {
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    "docs/research/measurements/managed-native-records-v1/recovered-linux/ordering.py": {
+      "bytes": 7627,
+      "sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6"
+    },
+    "docs/research/measurements/managed-native-records-v1/recovered-linux/raw/identity.json": {
+      "bytes": 881,
+      "sha256": "dc76a99e5f06dc8bbbdbd38bfef43fd845116a26120c6b8bc3f9f6caf7e85101"
+    },
+    "docs/research/measurements/managed-native-records-v1/recovered-linux/raw/result.json": {
+      "bytes": 372,
+      "sha256": "31bab59cec6af402e9f3c1c656c9bb15c1184943e9caa7ea617315cf2ede3e57"
+    },
+    "docs/research/measurements/managed-native-records-v1/recovered-linux/raw/trace.json": {
+      "bytes": 1483,
+      "sha256": "ae6933d7f9f1fb3978f78f8c3fa179e8646f5c54a9c6dfb65a3d5462c3470fdc"
+    },
+    "docs/research/measurements/managed-native-records-v1/recovered-linux/setup.json": {
+      "bytes": 489,
+      "sha256": "f0811a41aadab9401aea2263171c86e11e99d49c1bbfa801c8686a39b42a4130"
+    }
+  }
+}

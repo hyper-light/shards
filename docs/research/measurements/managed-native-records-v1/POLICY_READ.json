@@ -1,0 +1,49 @@
+{
+  "revision": "28ba5083bd65a9a3bff4896921821cbbd4f1fee7",
+  "role": "coordinator",
+  "agent": "01a148884a4770fdaf0111f3f792a248",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full"
+    },
+    "docs/design/managed-runtime-plan.md": {
+      "bytes": 53785,
+      "sha256": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241",
+      "read": "full"
+    },
+    "docs/research/managed-native-authority-decision.md": {
+      "bytes": 18947,
+      "sha256": "a7a889114c5b9f43c0918f4ecfef4dd7bd4a0eae36e7432ca129824904530056",
+      "read": "full"
+    }
+  },
+  "handoff": {
+    "bytes": 22283,
+    "sha256": "41ff187ad1e9058f40e267589d0f3d85b0020cef711b43d6c9b052b281518b20",
+    "read": "full"
+  },
+  "scope": "ONE new single-process OS ordering probe using anonymous seqpacket/SCM_RIGHTS and two independent nonblocking pipes. No production imports/compiler/actor/helper/VM/cgroup/permission/limit change or held dispatch.",
+  "owned_paths": [
+    "docs/research/measurements/managed-native-records-v1/"
+  ],
+  "source_sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6",
+  "source_bytes": 7627,
+  "source_only_preparation_unrun": true
+}

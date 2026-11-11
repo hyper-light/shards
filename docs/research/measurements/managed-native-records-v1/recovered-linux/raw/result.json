@@ -1,0 +1,11 @@
+{
+  "exit": 0,
+  "failure": null,
+  "elapsed_seconds": 0.000530401011928916,
+  "scope": "one-process OS socket/pipe observation; no Shards codec/helper/actor",
+  "processes_spawned": 0,
+  "production_imports": 0,
+  "held_dispatches": 0,
+  "whole_kernel_reference_return": "Unproved",
+  "observation": "ordered control cut arrived before old independent body completion"
+}

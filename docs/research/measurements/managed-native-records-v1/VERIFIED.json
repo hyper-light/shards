@@ -1,0 +1,123 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "remote": "/home/adalundhe/Projects/root-native-retirement-order-v1-1794404338971",
+  "files": {
+    "ordering.py": {
+      "bytes": 7627,
+      "sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6"
+    },
+    "setup.json": {
+      "bytes": 489,
+      "sha256": "f0811a41aadab9401aea2263171c86e11e99d49c1bbfa801c8686a39b42a4130"
+    },
+    "raw/identity.json": {
+      "bytes": 881,
+      "sha256": "dc76a99e5f06dc8bbbdbd38bfef43fd845116a26120c6b8bc3f9f6caf7e85101"
+    },
+    "raw/trace.json": {
+      "bytes": 1483,
+      "sha256": "ae6933d7f9f1fb3978f78f8c3fa179e8646f5c54a9c6dfb65a3d5462c3470fdc"
+    },
+    "raw/result.json": {
+      "bytes": 372,
+      "sha256": "31bab59cec6af402e9f3c1c656c9bb15c1184943e9caa7ea617315cf2ede3e57"
+    }
+  },
+  "safe_unique_regular_files": 5,
+  "all_lengths_hashes_verified": true,
+  "source_equal_local": true,
+  "result": {
+    "exit": 0,
+    "failure": null,
+    "elapsed_seconds": 0.000530401011928916,
+    "scope": "one-process OS socket/pipe observation; no Shards codec/helper/actor",
+    "processes_spawned": 0,
+    "production_imports": 0,
+    "held_dispatches": 0,
+    "whole_kernel_reference_return": "Unproved",
+    "observation": "ordered control cut arrived before old independent body completion"
+  },
+  "identity": {
+    "policy_revision": "28ba5083bd65a9a3bff4896921821cbbd4f1fee7",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "role": "coordinator",
+    "kernel": "7.2.9-2-cachyos",
+    "architecture": "x86_64",
+    "uid": 1000,
+    "pid": 3754847,
+    "affinity": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31
+    ],
+    "threads": 1,
+    "cgroup": "0::/user.slice/user-1000.slice/user@1000.service/app.slice/kiln-agent-01a1c7f3.service/kiln-agents/run-01a1cad578d972f5b9cd8dafa22d5774\n",
+    "rlimit_as": [
+      -1,
+      -1
+    ],
+    "rlimit_nofile": [
+      1048576,
+      1048576
+    ],
+    "source_sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6"
+  },
+  "controlled_fd_before_after": [
+    [
+      0,
+      1,
+      2,
+      3,
+      7,
+      8,
+      9,
+      10,
+      18
+    ],
+    [
+      0,
+      1,
+      2,
+      3,
+      7,
+      8,
+      9,
+      10,
+      18
+    ]
+  ],
+  "cases_or_rust_commands": 0,
+  "actual_helper_or_Shard_protocol_proof": false,
+  "production_retirement_selected": false,
+  "whole_kernel_reference_return": "Unproved",
+  "read_only_recovery_after_original_exit": true
+}

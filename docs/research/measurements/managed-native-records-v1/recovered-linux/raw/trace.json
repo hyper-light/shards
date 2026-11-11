@@ -1,0 +1,90 @@
+[
+  {
+    "event": "control_sent",
+    "header": "fixture:older",
+    "bytes": 13,
+    "body_fd": 3
+  },
+  {
+    "event": "control_sent",
+    "header": "fixture:newer",
+    "bytes": 13,
+    "body_fd": 5
+  },
+  {
+    "event": "control_sent",
+    "header": "fixture:cut-through-newer",
+    "bytes": 25,
+    "body_fd": null
+  },
+  {
+    "event": "control_received",
+    "header": "fixture:older",
+    "received_fds": [
+      13
+    ],
+    "flags": 1073741824,
+    "body_object_matched": true
+  },
+  {
+    "event": "control_received",
+    "header": "fixture:newer",
+    "received_fds": [
+      14
+    ],
+    "flags": 1073741824,
+    "body_object_matched": true
+  },
+  {
+    "event": "control_received",
+    "header": "fixture:cut-through-newer",
+    "received_fds": [],
+    "flags": 1073741824,
+    "body_object_matched": false
+  },
+  {
+    "event": "later_control_and_body_observed",
+    "cut_received": true,
+    "older_body": {
+      "state": "pending-with-writer-held",
+      "saved_errno": 11
+    },
+    "newer_body": "newer-body",
+    "readiness": {
+      "14": 1
+    }
+  },
+  {
+    "event": "older_body_completed_after_cut",
+    "body": "older-body"
+  },
+  {
+    "event": "actual_pipe_eof_after_writer_close"
+  },
+  {
+    "event": "owned_cleanup",
+    "before": [
+      0,
+      1,
+      2,
+      3,
+      7,
+      8,
+      9,
+      10,
+      18
+    ],
+    "after": [
+      0,
+      1,
+      2,
+      3,
+      7,
+      8,
+      9,
+      10,
+      18
+    ],
+    "errors": []
+  }
+]

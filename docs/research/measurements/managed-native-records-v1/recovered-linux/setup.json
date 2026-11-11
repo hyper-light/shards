@@ -1,0 +1,9 @@
+{
+  "first_transfer_monotonic": 552960.922303759,
+  "outer_timeout_seconds": 60,
+  "absolute_deadline": 553020.922303759,
+  "source_sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6",
+  "source_bytes": 7627,
+  "declared_envelope": "2CPU/2GiB/4GiB admission; one process; no claimed hard physical-memory reservation",
+  "scope": "anonymous nonblocking socket/pipe ordering only; no production imports/compiler/helper/actor/VM/cgroup/limit/permission/held action"
+}

@@ -1,0 +1,15 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "scope": "/home/adalundhe/Projects/root-native-retirement-order-v1-1794404338971",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "sync": false,
+  "reuse": false,
+  "timeout_seconds": 60,
+  "returned_running": false,
+  "observed_exit": 0,
+  "run_id": null,
+  "run_id_note": "Synchronous machines.run response supplied no run ID; none inferred.",
+  "source_sha256": "9186cafacc0890f6159f7af0ee8f0f7264149243768975bf9ecc7cf53c3325e6",
+  "source_bytes": 7627,
+  "phase": "one new fixture execution; later read-only artifact recovery is separate"
+}

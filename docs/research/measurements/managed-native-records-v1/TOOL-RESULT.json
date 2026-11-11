@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "{\"exit\": 0, \"failure\": null, \"elapsed_seconds\": 0.000530401011928916, \"scope\": \"one-process OS socket/pipe observation; no Shards codec/helper/actor\", \"processes_spawned\": 0, \"production_imports\": 0, \"held_dispatches\": 0, \"whole_kernel_reference_return\": \"Unproved\", \"observation\": \"ordered control cut arrived before old independent body completion\"}\n",
+    "running": false,
+    "why": "linux/x86_64 · 23 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · memory pressure 1% · I/O pressure 20%",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}
