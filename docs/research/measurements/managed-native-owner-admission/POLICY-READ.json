@@ -1,0 +1,69 @@
+{
+  "kind": "POLICY_READ",
+  "revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "agent": "01a1c5d2ee5871a2a9a9cdc9f56793f0",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "files": [
+    {
+      "path": "AGENTS.md",
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read_full": true
+    },
+    {
+      "path": "docs/development-rules.md",
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read_full": true
+    },
+    {
+      "path": "docs/development-evidence.md",
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read_full": true
+    },
+    {
+      "path": "CLAUDE.md",
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read_full": true
+    },
+    {
+      "path": "docs/design/managed-runtime-plan.md",
+      "bytes": 53785,
+      "sha256": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241",
+      "read_full": true
+    },
+    {
+      "path": "docs/research/managed-native-authority-decision.md",
+      "bytes": 13778,
+      "sha256": "526e52710c36ce3fe5e9a26aea479501a7e734f4277c505dfaa9b07c8bb40e34",
+      "read_full": true
+    }
+  ],
+  "handoff": {
+    "path": "/Users/adalundhe/g121-handoff.md",
+    "sha256": "7814a57b92dbdb060c05da671ac0d321cd8902fb5407951108633593e56a9d19",
+    "read_full": true
+  },
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-owner-admission-v1",
+  "branch": "p/managed-native-owner-admission-v1",
+  "owned_paths": [
+    "crates/init/src/managed/native/operations.rs",
+    "docs/research/measurements/managed-native-owner-admission/**"
+  ],
+  "scope": "2CPU2GiB4GiB600/j2 ordinary targeted pure/native; normalguard; MacARM floor30GiB/lockf if used",
+  "constraints": [
+    "nochildren",
+    "noaudit/profile/benchmark/heavyVM/mainmerge",
+    "nohostroot/systeminstall",
+    "no new productionpanic/constants/cache/poll/implicitstate/fakegrant",
+    "preserveallpriorsource/raw/binary/pausedWinARM/reviewholds"
+  ],
+  "root_delivery_seq": 11477,
+  "native_source_edited": false,
+  "builds": 0,
+  "actors": 0
+}

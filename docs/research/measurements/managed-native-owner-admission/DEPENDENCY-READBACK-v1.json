@@ -1,0 +1,36 @@
+{
+  "read_at_epoch": 1794380484.965729,
+  "existing_frozen_parent": [
+    {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-parent-admission-kiln/docs/research/measurements/managed-parent-admission/native-owner-issuer-v1/frozen-v1/channel.rs",
+      "bytes": 6599,
+      "sha256": "382fa8b4a782ee8039db9ac5529c46d98c87855c3e010d730574618c8d297b23"
+    },
+    {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-parent-admission-kiln/docs/research/measurements/managed-parent-admission/native-owner-issuer-v1/frozen-v1/native.rs",
+      "bytes": 10124,
+      "sha256": "b79751ad4708b1338efa30b71e46d3d90f832fdb24ca9d6d3cd228b903cb7a4b"
+    }
+  ],
+  "parent_freeze_status": "constructor/shared transport SOURCE; format0 only, not registered/compiled/current authority",
+  "source_facts": [
+    "Owner fields channel,snapshot,member,context,phase",
+    "Phase Offered/AwaitingAssociation/Installed/ClosingAfterActorWait; only bootstrap progress",
+    "snapshot dropped afterInstalled; no frozen runtime issuedrights selection API yet",
+    "ABI freeze3ce has Scope/Snapshot/Bootstrap only; request operation codec remains native-owned",
+    "resource new scope has no published frozen execution API at inspection"
+  ],
+  "read_only_not_audit": true,
+  "shared_runtime_signatures_status": "requested fromowners beforeleafedits",
+  "peer_delivery": {
+    "parent": 11478,
+    "native": 11480,
+    "resource": 11481,
+    "epochs": 11482
+  },
+  "initial_peer_delivery_failures": "allfirst5 sends andoneparentrepeat returned not connected to kiln server; noacceptedclaim; laternormaldeliveryreceiptsabove",
+  "path_preparation": "supplied clean full worktreealreadyexisted; creation script assertion stopped beforeworktreeoperation; reusedpreserved",
+  "source_edits": 0,
+  "builds": 0,
+  "actors": 0
+}
