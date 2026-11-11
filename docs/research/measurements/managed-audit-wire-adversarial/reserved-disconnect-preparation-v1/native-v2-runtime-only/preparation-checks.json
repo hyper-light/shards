@@ -1,0 +1,8 @@
+{
+  "policy_exit": 0,
+  "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "stderr": "",
+  "python_syntax_scripts": 3,
+  "native_source_unchanged": true,
+  "case_attempts": 0
+}

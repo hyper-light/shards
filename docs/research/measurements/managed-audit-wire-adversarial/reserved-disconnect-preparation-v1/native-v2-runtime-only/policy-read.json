@@ -1,0 +1,28 @@
+{
+  "kind": "POLICY_READ",
+  "role": "implementer/assigned adversarial",
+  "agent": "01a1c5d2ee5871a2a9a9cdc9f56793f0",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "revision": "749c3ca0602c43dac74976e8db713102f5b15874",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "full_reads": [
+    "AGENTS.md",
+    "docs/development-rules.md R01\u2013R16",
+    "docs/development-evidence.md",
+    "CLAUDE.md",
+    "docs/design/managed-runtime-plan.md",
+    "/Users/adalundhe/g121-handoff.md"
+  ],
+  "handoff_sha256": "9369db1adaf8eb3e0808517cc489988271d6e898f0195bd1267a2c02a7425fd1",
+  "delivery_seq": 10627,
+  "owned_evidence": "docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v2-runtime-only",
+  "owned_private_root": "/Users/adalundhe/managed-audit-wire-reserved-disconnect-runtime-v2",
+  "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+  "resources": "2CPU2GiB4GiB600s; floor30GiB+4GiB; case30+15/hard45",
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "source_leaf_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+  "executable_sha256": "ce4c34d7f480c8b02073d15e0f4ba5b2a11ebfe5b2ceb8bfe2fdc996cc2a8871",
+  "read_only_reuse_explicitly_authorized": true,
+  "no_cargo_rebuild_download_emission_source_edit": true,
+  "runtime_attempts": 0
+}

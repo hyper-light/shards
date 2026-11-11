@@ -1,0 +1,5 @@
+test: prepare first native audit disconnect runtime-only scope
+
+Reuse the independently verified frozen caller read-only in a new exclusive scope. Keep the original scope and source unchanged; derive one blocking lock wait from the new absolute budget while reserving the full 45-second case bound. No Cargo, dependency fetch, codec emission or actor has run in this preparation.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
