@@ -1,0 +1,140 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index 9bb496398..2b0eb52af 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -3534,7 +3534,7 @@ impl<D: Disk> Daemon<D> {
+             };
+             // As it was made: a create's a create, whose Config says the streams its command
+             // line gave (AttachStdout); a start says how it attaches then (`again_as`).
+-            if let Err(e) = std::fs::write(dir.join(REQUEST), kept.encode()) {
++            if let Err(e) = keep_request(&dir.join(REQUEST), &kept.encode()) {
+                 log(format!(
+                     "container {id}: keeping its request: {e}; it cannot be started again"
+                 ));
+@@ -8784,6 +8784,11 @@ fn newest_log(dir: &Path) -> io::Result<Log> {
+     })
+ }
+ 
++/// Keeps `request`, the run a new microVM was made by (D37), at `path`.
++fn keep_request(path: &Path, request: &[u8]) -> io::Result<()> {
++    std::fs::write(path, request)
++}
++
+ /// The request microVM `id` was made by, as a client asks to start it again: attached
+ /// as that client asks, its stdin only if it was made to read one, never pulled (moby
+ /// daemon/start.go; docker/cli container/start.go).
+@@ -13912,4 +13917,114 @@ mod tests {
+             let _ = starting.run.join();
+         });
+     }
++
++    /// `keep_request(path, request)` in a child of this process (fork(2)) whose file size
++    /// limit is `limit` bytes (setrlimit(2), RLIMIT_FSIZE) and which ignores the SIGXFSZ a
++    /// write past it raises, so that the write stops there with EFBIG. How the child ended:
++    /// the errno of the error it returned, 0 where it kept the request, 255 where the child
++    /// could not be limited or the error has no errno; None where a signal ended it.
++    #[cfg(unix)]
++    fn kept_under_limit(path: &Path, request: &[u8], limit: usize) -> Option<i32> {
++        let limit = libc::rlim_t::try_from(limit).unwrap();
++        let limit = libc::rlimit {
++            rlim_cur: limit,
++            rlim_max: limit,
++        };
++        // SAFETY: fork(2). This process has other threads, whose locks its child may find
++        // held, so until it exits the child takes no lock and allocates nothing: signal(2),
++        // setrlimit(2) (a system call's wrapper in glibc, musl and libSystem), and
++        // keep_request's open(2), write(2), rename(2), unlink(2) and close(2) over bytes and
++        // paths made before the fork, whose C strings std makes on its stack (paths under
++        // 384 bytes: library/std/src/sys/helpers/small_c_string.rs); then _exit(2), which
++        // runs none of this process's destructors or exit handlers.
++        let pid = unsafe { libc::fork() };
++        if pid == 0 {
++            // SAFETY: as above, in the child; `limit` is a valid rlimit.
++            let limited = unsafe {
++                libc::signal(libc::SIGXFSZ, libc::SIG_IGN) != libc::SIG_ERR
++                    && libc::setrlimit(libc::RLIMIT_FSIZE, &limit) == 0
++            };
++            let code = match limited.then(|| keep_request(path, request)) {
++                Some(Ok(())) => 0,
++                Some(Err(e)) => e.raw_os_error().unwrap_or(255),
++                None => 255,
++            };
++            // SAFETY: as above, in the child.
++            unsafe { libc::_exit(code) };
++        }
++        assert!(pid > 0, "fork: {}", io::Error::last_os_error());
++        let mut status = 0;
++        // SAFETY: waitpid(2) for the child just made, its status written to a local.
++        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
++        libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status))
++    }
++
++    /// A microVM's request (D37) is kept whole or not at all: its write, stopped partway with
++    /// EFBIG ([`kept_under_limit`]), leaves no `request` and nothing beside it. Not one cut
++    /// halfway, which no reader can read, nor one cut where what was written reads as a
++    /// request itself (`Run::decode` takes one without the options after it, which a build
++    /// added later), which `start` would run without them: here `--cap-drop ALL` and
++    /// `--read-only`.
++    #[cfg(unix)]
++    #[test]
++    fn a_request_written_partway_is_not_kept() {
++        let dir = shards_testdir::TempDir::new("request-cut").unwrap();
++        let path = dir.join(REQUEST);
++        let request = Run {
++            image: "alpine".to_string(),
++            cmd: vec!["sleep".to_string(), "60".to_string()],
++            cap_drop: vec!["ALL".to_string()],
++            read_only: true,
++            ..Run::default()
++        }
++        .encode();
++        let half = request.len() / 2;
++        assert!(
++            Run::decode(&request[..half]).is_none(),
++            "half the request reads as one"
++        );
++        let read_as_one = (1..request.len())
++            .rev()
++            .find(|&n| Run::decode(&request[..n]).is_some())
++            .expect("no prefix of the request reads as one");
++        let mut found = Vec::new();
++        for cut in [half, read_as_one] {
++            let ended = kept_under_limit(&path, &request, cut);
++            if ended != Some(libc::EFBIG) {
++                found.push(format!("cut at {cut}: the write ended {ended:?}, not with EFBIG"));
++            }
++            match std::fs::read(&path) {
++                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
++                Ok(kept) if kept == request => {}
++                Ok(kept) => found.push(match Run::decode(&kept) {
++                    None => format!(
++                        "cut at {cut} of {}: `request` kept, {} bytes, not a request",
++                        request.len(),
++                        kept.len()
++                    ),
++                    Some(r) => format!(
++                        "cut at {cut} of {}: `request` kept, {} bytes, read as another: \
++                         cap_drop {:?}, read_only {}",
++                        request.len(),
++                        kept.len(),
++                        r.cap_drop,
++                        r.read_only
++                    ),
++                }),
++                Err(e) => found.push(format!("cut at {cut}: {e}")),
++            }
++            let mut left: Vec<String> = std::fs::read_dir(&dir)
++                .unwrap()
++                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
++                .collect();
++            for name in &left {
++                std::fs::remove_file(dir.join(name)).unwrap();
++            }
++            left.retain(|n| n != REQUEST);
++            if !left.is_empty() {
++                found.push(format!("cut at {cut}: left {left:?}"));
++            }
++        }
++        assert!(found.is_empty(), "{found:#?}");
++    }
+ }

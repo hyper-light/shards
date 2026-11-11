@@ -1,0 +1,34 @@
+== run r361 (background): the bin's production code, cfg(test) off
+bff3015182ad754274f1048ce393ac12cb6cd91f
+817cb76d19b9b26704172e2ad12e35199523e6415c8a0fe7f1673dd43cd5d5af  crates/shards/src/daemon.rs
+2026-11-11T21:57:43Z
+$ cargo clippy -p shards --bin shards -j2 -- -D warnings
+    Finished `dev` profile [unoptimized] target(s) in 31.71s
+clippy exit: 0
+2026-11-11T21:58:15Z
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb, exit_code 0
+
+== the bin in test mode (cfg(test): the new test and its helper linted too)
+bff3015182ad754274f1048ce393ac12cb6cd91f
+817cb76d19b9b26704172e2ad12e35199523e6415c8a0fe7f1673dd43cd5d5af  crates/shards/src/daemon.rs
+2026-11-11T21:58:46Z
+$ cargo clippy -p shards --bin shards --profile test -j2 -- -D warnings
+    Finished `test` profile [unoptimized] target(s) in 40.43s
+clippy exit: 0
+2026-11-11T21:59:26Z
+3.3G	target
+/dev/nvme1n1p2  7.3T  7.1T  190G  98% /home
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb, exit_code 0
+
+== which modes those checks were: cargo's own compiler-artifact records, both runs again (fresh)
+$ for p in dev test: cargo clippy -p shards --bin shards [--profile test] -j2 --message-format=json -- -D warnings
+  | python3 -I -c '<prints the shards bin's compiler-artifact profile.test and fresh, any compiler-message for shards, build-finished>'
+== clippy --profile dev
+{'profile_test': False, 'fresh': True, 'kind': ['bin']}
+build-finished success: True
+== clippy --profile test
+{'profile_test': True, 'fresh': True, 'kind': ['bin']}
+build-finished success: True
+--- no compiler-message for the shards target in either (cargo replays a fresh unit's cached diagnostics)
+--- each command filtered `^warning: aws-lc-sys` lines and cargo's `Checking`/`Compiling` progress lines; nothing else was removed
+--- the crate has no lib target (crates/shards/Cargo.toml: autobins = false, one [[bin]] at src/main.rs, daemon.rs is its module), so "the crate's lib" is `--bin shards`

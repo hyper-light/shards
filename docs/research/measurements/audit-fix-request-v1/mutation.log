@@ -1,0 +1,31 @@
+bff3015182ad754274f1048ce393ac12cb6cd91f
+12b293efea0c3d69eaf562914fc8d42b721bc8d5186bf46884e459309c8ce97d  crates/shards/src/daemon.rs
+2026-11-11T21:56:07Z
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/crates/shards)
+    Finished `test` profile [unoptimized] target(s) in 16.68s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 1 test
+
+thread 'daemon::tests::a_request_written_partway_is_not_kept' (259764) panicked at crates/shards/src/daemon.rs:14036:9:
+[
+    "cut at 81 of 163: `request` kept, 81 bytes, not a request",
+    "cut at 115 of 163: `request` kept, 115 bytes, read as another: cap_drop [], read_only false",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test daemon::tests::a_request_written_partway_is_not_kept ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_request_written_partway_is_not_kept
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 705 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb, exit_code 0 (of the shell; cargo's own is the `exit: 101` above)
+--- kiln: why "linux/x86_64 · 25 of 32 cores idle · 98 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · memory pressure 1% · I/O pressure 24%"
+--- kiln: synced files_sent 7, removed 0, bytes 746248, ms 1956
+--- the command filtered `^warning: aws-lc-sys` lines (aws-lc-sys build-script notes, as in red.log)
+--- source: green with mutation.diff applied (keep_request's body reverted to the direct write); local shasum 12b293efea0c3d69eaf562914fc8d42b721bc8d5186bf46884e459309c8ce97d

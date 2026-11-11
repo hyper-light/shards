@@ -1,0 +1,20 @@
+Linux 7.2.9-2-cachyos x86_64
+32
+/dev/nvme1n1p2  7.3T  7.1T  182G  98% /home
+/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb
+/usr/bin/cargo
+/usr/bin/rustup
+1.98.1-x86_64-unknown-linux-gnu (overridden by '/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/rust-toolchain.toml')
+CARGO_TARGET_DIR=unset RUSTC_WRAPPER=unset
+NAME="CachyOS Linux"
+PRETTY_NAME="CachyOS"
+ldd (GNU libc) 2.44
+/usr/bin/cc
+/usr/bin/gcc
+/usr/bin/clang
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ M crates/shards/src/daemon.rs
+?? docs/research/measurements/audit-fix-request-v1/
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb (adacachy), exit_code 0
+--- kiln: why "linux/x86_64 · 26 of 32 cores idle · 98 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · memory pressure 0% · I/O pressure 31%"
+--- kiln: synced to /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb, files_sent 17770, removed 0, bytes 1226410928, ms 130681
