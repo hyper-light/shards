@@ -1,0 +1,35 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/lint.sh; echo "lint_exit=$?"; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- -q 2>&1; echo "test_exit=$?"
+# tree: d0d1585a + finding 2 final (green + rustfmt layout of two test statements; the reproduction test's assertions are unchanged); committed as finding 2
+# result: fmt, clippy gnu, clippy musl, musl check all exit 0; full shards-init unit suite 149 passed, 0 failed, 1 ignored (baseline 145/0/1 + 4 new tests)
+d0d1585a244756ab13245bdc4caeef9e52d05ed9
+ crates/init/src/metrics.rs       |  21 ++++++-
+ crates/init/src/metrics/otlp.rs  |  48 ++++++++++++---
+ crates/init/src/metrics/tests.rs | 123 ++++++++++++++++++++++++++++++---------
+ 3 files changed, 155 insertions(+), 37 deletions(-)
+== cargo fmt --all --check
+== exit 0: cargo fmt --all --check
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.72s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.03s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+== cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+== exit 0: cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+lint_exit=0
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.33s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 150 tests
+..................
+running 1 test
+.........i........................................................... 87/150
+...............................................................
+test result: ok. 149 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+test_exit=0
