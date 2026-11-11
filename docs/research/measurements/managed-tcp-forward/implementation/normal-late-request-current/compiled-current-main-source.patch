@@ -1,0 +1,320 @@
+diff --git a/crates/testguest/src/managed_network/intercept/tcp_forward.rs b/crates/testguest/src/managed_network/intercept/tcp_forward.rs
+index 4ca078823..4318b36c4 100644
+--- a/crates/testguest/src/managed_network/intercept/tcp_forward.rs
++++ b/crates/testguest/src/managed_network/intercept/tcp_forward.rs
+@@ -1882,6 +1882,315 @@ mod native_tests {
+         assert_eq!(client_endpoint.written, request.checked_add(extra.len()).unwrap());
+     }
+ 
++    #[test]
++    #[ignore = "finite ordinary request suffix after actual backend EOF with independent endpoint receipts"]
++    fn native_tcp_late_request_suffix_after_backend_eof() {
++        let (input, deadline) = native_inputs();
++        assert_eq!(input.scenario, Scenario::ServerFirst);
++        let [up, down] = input.slot_sizes;
++        let request = input.request.len();
++        let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
++        assert!(up > 0 && up < request, "caller upload slot splits the request");
++        let before = descriptor_count().unwrap();
++        let mut client_endpoint = Endpoint::reserve(response).unwrap();
++        let mut backend_endpoint = Endpoint::reserve(request).unwrap();
++        let slots = Slots::reserve(up, down).unwrap();
++        let backend_input = input.duplicate().unwrap();
++        let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
++        let destination = listener.local_addr().unwrap();
++        let mut backend = Worker::spawn(&deadline, move |deadline| {
++            let (mut stream, peer) = deadline
++                .io(listener.as_raw_fd(), libc::POLLIN, || listener.accept())
++                .unwrap();
++            stream.set_nonblocking(true).unwrap();
++            let tuple = Tuple {
++                local: stream.local_addr().unwrap(),
++                peer,
++            };
++            let result = (|| {
++                backend_endpoint.send(&mut stream, &backend_input.greeting, &deadline)?;
++                backend_endpoint.receive(&mut stream, backend_input.request.get(..up).unwrap(), &deadline)?;
++                backend_endpoint.record("BackendPrefix", 0, tuple, &Ok(()))?;
++                backend_endpoint.send(&mut stream, &backend_input.tail, &deadline)?;
++                backend_endpoint.close_write(&stream)?;
++                backend_endpoint.record("BackendResponseClosed", 0, tuple, &Ok(()))?;
++                backend_endpoint.receive(&mut stream, backend_input.request.get(up..).unwrap(), &deadline)?;
++                backend_endpoint.eof(&mut stream, &deadline)
++            })();
++            backend_endpoint
++                .record("NativeBackend", 0, tuple, &result)
++                .unwrap();
++            (tuple, backend_endpoint, result)
++        })
++        .unwrap();
++        let relay_listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
++        let relay_at = relay_listener.local_addr().unwrap();
++        let upstream = TcpStream::from(
++            bound(
++                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
++                libc::SOCK_STREAM,
++                SocketMode::Native,
++            )
++            .unwrap(),
++        );
++        let mut relay = start(
++            relay_listener,
++            upstream,
++            destination,
++            slots,
++            [request, response],
++            &deadline,
++        )
++        .unwrap();
++        let mut client = TcpStream::connect_timeout(&relay_at, deadline.left().unwrap()).unwrap();
++        client.set_nonblocking(true).unwrap();
++        let client_tuple = Tuple {
++            local: client.local_addr().unwrap(),
++            peer: client.peer_addr().unwrap(),
++        };
++        let before_suffix = (|| {
++            client_endpoint.receive(&mut client, &input.greeting, &deadline)?;
++            client_endpoint.send(&mut client, input.request.get(..up).unwrap(), &deadline)?;
++            client_endpoint.receive(&mut client, &input.tail, &deadline)?;
++            client_endpoint.eof(&mut client, &deadline)
++        })();
++        client_endpoint
++            .record("ClientBeforeSuffix", 0, client_tuple, &before_suffix)
++            .unwrap();
++        // These are actual endpoint facts before the remaining request is sent.
++        let before_suffix_ends = (client_endpoint.read_end, client_endpoint.write_end);
++        let before_suffix_counts = (client_endpoint.read, client_endpoint.written);
++        let suffix_result = before_suffix
++            .and_then(|()| client_endpoint.send(&mut client, input.request.get(up..).unwrap(), &deadline));
++        client_endpoint
++            .record("ClientAfterSuffix", 0, client_tuple, &suffix_result)
++            .unwrap();
++        let close_result = client_endpoint.close_write(&client);
++        client_endpoint
++            .record("NativeClient", 0, client_tuple, &close_result)
++            .unwrap();
++        let (backend_tuple, endpoint, backend_result) = backend.join().unwrap();
++        let forwarded = relay.join().unwrap();
++        record_flow(&forwarded, "caller", client_tuple.local, backend_tuple.peer);
++        let remaining = deadline.at.saturating_duration_since(std::time::Instant::now());
++        println!(
++            "managed-tcp-forward {{\"type\":\"NativeJoined\",\"relay_joined\":true,\"backend_joined\":true,\"original_remaining_ns\":{}}}",
++            remaining.as_nanos()
++        );
++        drop(client);
++        drop(relay);
++        drop(backend);
++        let after = descriptor_count().unwrap();
++        println!(
++            "managed-tcp-forward {{\"type\":\"NativeBoundaryCleanup\",\"fd_before\":{before},\"fd_after\":{after},\"kernel_return\":\"Unknown\"}}"
++        );
++        assert_eq!(after, before);
++        suffix_result.unwrap();
++        close_result.unwrap();
++        backend_result.unwrap();
++        assert!(!remaining.is_zero());
++        assert_eq!(before_suffix_ends, (End::Closed, End::Open));
++        assert_eq!(before_suffix_counts, (response, up));
++        assert!(matches!(forwarded.result, Ok(Termination::BothHalvesClosed)));
++        assert!(matches!(forwarded.abort, Abort::NotRequired));
++        assert_eq!(
++            client_endpoint.bytes.get(..client_endpoint.read).unwrap(),
++            [input.greeting.as_slice(), input.tail.as_slice()].concat()
++        );
++        assert_eq!(endpoint.bytes.get(..endpoint.read).unwrap(), input.request);
++        assert_eq!(
++            (client_endpoint.read, client_endpoint.written),
++            (response, request)
++        );
++        assert_eq!((endpoint.read, endpoint.written), (request, response));
++        assert_eq!(
++            (client_endpoint.read_end, client_endpoint.write_end),
++            (End::Closed, End::Closed)
++        );
++        assert_eq!(
++            (endpoint.read_end, endpoint.write_end),
++            (End::Closed, End::Closed)
++        );
++        assert_eq!(client_endpoint.extra, None);
++        assert_eq!(endpoint.extra, None);
++        for progress in [&forwarded.flow.to_backend, &forwarded.flow.to_client] {
++            assert_eq!(progress.half, Half::WriteClosed(SourceEnd::Eof));
++            assert_eq!((progress.pending, progress.extra_consumed), (0, 0));
++        }
++        assert_eq!(
++            (forwarded.flow.to_backend.read, forwarded.flow.to_backend.written),
++            (request, request)
++        );
++        assert_eq!(
++            (forwarded.flow.to_client.read, forwarded.flow.to_client.written),
++            (response, response)
++        );
++    }
++
++    #[test]
++    #[ignore = "finite reverse byte boundary before client FIN with independent endpoint terminal receipts"]
++    fn native_tcp_extra_backend_before_client_fin_is_not_forwarded() {
++        let (input, deadline) = native_inputs();
++        assert_eq!(input.scenario, Scenario::ServerFirst);
++        let extra = payload(&std::env::var("SHARDS_TCP_EXTRA_HEX").unwrap()).unwrap();
++        assert_eq!(extra.len(), 1, "one explicit extra application byte");
++        let before = descriptor_count().unwrap();
++        let request = input.request.len();
++        let response = input.greeting.len().checked_add(input.tail.len()).unwrap();
++        let mut client_endpoint = Endpoint::reserve(response).unwrap();
++        let mut backend_endpoint = Endpoint::reserve(request).unwrap();
++        let backend_input = input.duplicate().unwrap();
++        let listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
++        let destination = listener.local_addr().unwrap();
++        let mut backend = Worker::spawn(&deadline, move |deadline| {
++            let (mut stream, peer) = deadline
++                .io(listener.as_raw_fd(), libc::POLLIN, || listener.accept())
++                .unwrap();
++            stream.set_nonblocking(true).unwrap();
++            let tuple = Tuple {
++                local: stream.local_addr().unwrap(),
++                peer,
++            };
++            let result = (|| {
++                backend_endpoint.send(&mut stream, &backend_input.greeting, &deadline)?;
++                backend_endpoint.receive(&mut stream, &backend_input.request, &deadline)?;
++                backend_endpoint.send(&mut stream, &backend_input.tail, &deadline)
++            })();
++            backend_endpoint
++                .record("BackendBoundaryReceipt", 0, tuple, &result)
++                .unwrap();
++            (stream, tuple, backend_endpoint, result)
++        })
++        .unwrap();
++        let relay_listener = listen(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)), SocketMode::Native).unwrap();
++        let relay_at = relay_listener.local_addr().unwrap();
++        let upstream = TcpStream::from(
++            bound(
++                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
++                libc::SOCK_STREAM,
++                SocketMode::Native,
++            )
++            .unwrap(),
++        );
++        let [up, down] = input.slot_sizes;
++        let mut relay = start(
++            relay_listener,
++            upstream,
++            destination,
++            Slots::reserve(up, down).unwrap(),
++            [request, response],
++            &deadline,
++        )
++        .unwrap();
++        let mut client = TcpStream::connect_timeout(&relay_at, deadline.left().unwrap()).unwrap();
++        client.set_nonblocking(true).unwrap();
++        let client_tuple = Tuple {
++            local: client.local_addr().unwrap(),
++            peer: client.peer_addr().unwrap(),
++        };
++        client_endpoint
++            .receive(&mut client, &input.greeting, &deadline)
++            .unwrap();
++        client_endpoint
++            .send(&mut client, &input.request, &deadline)
++            .unwrap();
++        client_endpoint
++            .receive(&mut client, &input.tail, &deadline)
++            .unwrap();
++        let (mut stream, backend_tuple, mut endpoint, receipt) = backend.join().unwrap();
++        // The full prefixes are independently held while the client's write
++        // half remains open. Reverse fault handling cannot await request EOF.
++        let client_before_extra_write_end = client_endpoint.write_end;
++        let backend_before_extra_read_end = endpoint.read_end;
++        println!(
++            "managed-tcp-forward {{\"type\":\"NativeReverseBoundary\",\"request_received\":{},\"response_received\":{},\"client_write_end\":\"{:?}\",\"backend_read_end\":\"{:?}\"}}",
++            endpoint.read, client_endpoint.read, client_before_extra_write_end, backend_before_extra_read_end
++        );
++        let backend_send = endpoint
++            .send(&mut stream, &extra, &deadline)
++            .and_then(|()| endpoint.close_write(&stream));
++        endpoint
++            .record("BackendExtraSent", 0, backend_tuple, &backend_send)
++            .unwrap();
++        // The first error is retained even when a second finite read witnesses
++        // EOF. Keep the client write half open through both actual observations.
++        let client_result = client_endpoint.eof(&mut client, &deadline);
++        let client_terminal = if client_endpoint.extra.is_some() {
++            client_endpoint.eof(&mut client, &deadline)
++        } else {
++            Ok(())
++        };
++        let client_result = client_result.and(client_terminal);
++        client_endpoint
++            .record("NativeClient", 0, client_tuple, &client_result)
++            .unwrap();
++        // This late FIN also lets a future authorized guard-removal control
++        // finish normally after its independent forbidden-byte receipt.
++        let late_client_close = client_endpoint.close_write(&client);
++        client_endpoint
++            .record("ClientAfterLateFin", 0, client_tuple, &late_client_close)
++            .unwrap();
++        let backend_eof = endpoint.eof(&mut stream, &deadline);
++        let backend_result = backend_send.and(backend_eof);
++        endpoint
++            .record("NativeBackend", 0, backend_tuple, &backend_result)
++            .unwrap();
++        drop(stream);
++        let forwarded = relay.join().unwrap();
++        record_flow(&forwarded, "caller", client_tuple.local, backend_tuple.peer);
++        let remaining = deadline.at.saturating_duration_since(std::time::Instant::now());
++        println!(
++            "managed-tcp-forward {{\"type\":\"NativeJoined\",\"relay_joined\":true,\"backend_joined\":true,\"original_remaining_ns\":{}}}",
++            remaining.as_nanos()
++        );
++        drop(client);
++        drop(relay);
++        drop(backend);
++        let after = descriptor_count().unwrap();
++        println!(
++            "managed-tcp-forward {{\"type\":\"NativeBoundaryCleanup\",\"fd_before\":{before},\"fd_after\":{after},\"kernel_return\":\"Unknown\"}}"
++        );
++        assert_eq!(after, before);
++        receipt.unwrap();
++        backend_result.unwrap();
++        late_client_close.unwrap();
++        client_result.unwrap();
++        assert!(!remaining.is_zero());
++        assert!(
++            matches!(forwarded.result, Err(Fault::ExtraData { leg: Leg::Backend, offset }) if offset == response),
++            "{:?}",
++            forwarded.result
++        );
++        assert_eq!(
++            (
++                forwarded.flow.to_client.read,
++                forwarded.flow.to_client.written,
++                forwarded.flow.to_client.pending,
++                forwarded.flow.to_client.extra_consumed
++            ),
++            (response, response, 0, 1)
++        );
++        assert_eq!(
++            (
++                forwarded.flow.to_backend.read,
++                forwarded.flow.to_backend.written,
++                forwarded.flow.to_backend.half,
++                forwarded.flow.to_backend.pending,
++                forwarded.flow.to_backend.extra_consumed
++            ),
++            (request, request, Half::Reading, 0, 0)
++        );
++        assert_eq!(endpoint.written, response.checked_add(extra.len()).unwrap());
++        assert_eq!(client_endpoint.written, request);
++        assert_eq!(client_before_extra_write_end, End::Open);
++        assert_eq!(backend_before_extra_read_end, End::Open);
++        assert_eq!(client_endpoint.extra, None);
++        assert_eq!(client_endpoint.read_end, End::Closed);
++        assert_eq!(client_endpoint.write_end, End::Closed);
++        assert_eq!(endpoint.read_end, End::Closed);
++        assert!(matches!(forwarded.abort, Abort::NotRequired));
++    }
++
+     #[test]
+     #[ignore = "finite native direct/mediated reset compatibility with independent prefix receipts"]
+     fn native_tcp_reset_matches_direct_peer() {

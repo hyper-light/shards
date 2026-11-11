@@ -1,0 +1,15 @@
+{
+  "status": "PROPOSAL_ONLY_NOT_AUTHORIZED_TO_EXECUTE",
+  "policy_revision": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer + assigned adversarial relay tester",
+  "proposal_sha256": "3f50dc277298af66933f36f31d06b0eb3e1da45d725629b5b359b7caf600030a",
+  "inspected_fixture_sha256": "d5b7a801123a46c0cec6f95ac3764d7216fc115c7ecac90d1946b20fb3edcbd0",
+  "pump_sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+  "runner": null,
+  "target": null,
+  "native_executions": 0,
+  "source_edits": 0,
+  "skipped_mutation_coordinator_receipt": 9919,
+  "new_proposal_path_receipt": 9944
+}

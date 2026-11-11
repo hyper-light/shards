@@ -1,0 +1,38 @@
+{
+  "binary": "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+  "binary_before_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+  "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+  "fd_before": 4,
+  "kernel_return": "Unknown",
+  "pidfd_exit_ready": true,
+  "reaped": true,
+  "timeout": false,
+  "pid": 1364913,
+  "pidfd_events": [
+    [
+      3,
+      1
+    ]
+  ],
+  "status": 0,
+  "fd_after": 4,
+  "binary_after_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+  "checks": {
+    "one_actual_test": true,
+    "native0": true,
+    "pidfd_exit_ready_direct_reaped_no_forced_cleanup": true,
+    "parent_fd_return": true,
+    "binary_unchanged": true,
+    "existing_workers_joined": true,
+    "actual_native_connected": true,
+    "authorized_fixed_inputs": true,
+    "ordinary_exact_client_prefix_eof": true,
+    "ordinary_exact_backend_prefix_eof": true,
+    "ordinary_both_halves_closed": true,
+    "ordinary_progress_facts": true,
+    "ordinary_native_fd_return": true
+  },
+  "kernel_population_return": "Unknown",
+  "physical_kernel_caps": "Unverified",
+  "passed": true
+}

@@ -1,0 +1,154 @@
+{
+  "native_cases_started": 2,
+  "case_order": [
+    "late-request",
+    "forward-server-first"
+  ],
+  "runtime_retry": false,
+  "mutation": false,
+  "physical_kernel_caps": "Unverified",
+  "kernel_population_return": "Unknown",
+  "controller_fd_before": 9,
+  "cases": [
+    {
+      "case": "late-request",
+      "command": [
+        "python3",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/packet/native_case.py",
+        "--case",
+        "late-request",
+        "--binary",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+        "--inputs",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/packet/inputs.json",
+        "--record",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/cases/late-request"
+      ],
+      "binary_before_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+      "original_remaining_ns_before": 552993068489,
+      "driver_status": 0,
+      "pid": 1364642,
+      "pidfd_exit_ready": true,
+      "direct_reaped": true,
+      "forced_owned_cleanup": false,
+      "fd_before": 9,
+      "fd_after": 9,
+      "binary_after_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+      "elapsed_ns": 61028772,
+      "original_remaining_ns_after": 552932037422,
+      "native_result": {
+        "binary": "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+        "binary_before_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+        "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_late_request_suffix_after_backend_eof",
+        "fd_before": 4,
+        "kernel_return": "Unknown",
+        "pidfd_exit_ready": true,
+        "reaped": true,
+        "timeout": false,
+        "pid": 1364716,
+        "pidfd_events": [
+          [
+            3,
+            1
+          ]
+        ],
+        "status": 0,
+        "fd_after": 4,
+        "binary_after_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+        "checks": {
+          "one_actual_test": true,
+          "native0": true,
+          "pidfd_exit_ready_direct_reaped_no_forced_cleanup": true,
+          "parent_fd_return": true,
+          "binary_unchanged": true,
+          "existing_workers_joined": true,
+          "actual_native_connected": true,
+          "authorized_fixed_inputs": true,
+          "independent_backend_prefix3_before_response_close": true,
+          "actual_client_response14_EOF_while_write_open_after_prefix3": true,
+          "actual_suffix10_accepted_after_response_EOF": true,
+          "actual_late_client_FIN": true,
+          "independent_backend_full13_and_EOF": true,
+          "typed_both_halves_closed_no_fault": true,
+          "exact_progress_and_no_extra_or_pending": true,
+          "actual_causal_receipts_before_strict_assertions": true,
+          "native_fd_return_original_deadline_positive": true
+        },
+        "kernel_population_return": "Unknown",
+        "physical_kernel_caps": "Unverified",
+        "passed": true
+      }
+    },
+    {
+      "case": "forward-server-first",
+      "command": [
+        "python3",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/packet/native_case.py",
+        "--case",
+        "forward-server-first",
+        "--binary",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+        "--inputs",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/packet/inputs.json",
+        "--record",
+        "/home/adalundhe/relay-normal-late-request-0a6-v1/cases/forward-server-first"
+      ],
+      "binary_before_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+      "original_remaining_ns_before": 552931700244,
+      "driver_status": 0,
+      "pid": 1364786,
+      "pidfd_exit_ready": true,
+      "direct_reaped": true,
+      "forced_owned_cleanup": false,
+      "fd_before": 9,
+      "fd_after": 9,
+      "binary_after_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+      "elapsed_ns": 66773960,
+      "original_remaining_ns_after": 552864924601,
+      "native_result": {
+        "binary": "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+        "binary_before_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+        "filter": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes",
+        "fd_before": 4,
+        "kernel_return": "Unknown",
+        "pidfd_exit_ready": true,
+        "reaped": true,
+        "timeout": false,
+        "pid": 1364913,
+        "pidfd_events": [
+          [
+            3,
+            1
+          ]
+        ],
+        "status": 0,
+        "fd_after": 4,
+        "binary_after_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+        "checks": {
+          "one_actual_test": true,
+          "native0": true,
+          "pidfd_exit_ready_direct_reaped_no_forced_cleanup": true,
+          "parent_fd_return": true,
+          "binary_unchanged": true,
+          "existing_workers_joined": true,
+          "actual_native_connected": true,
+          "authorized_fixed_inputs": true,
+          "ordinary_exact_client_prefix_eof": true,
+          "ordinary_exact_backend_prefix_eof": true,
+          "ordinary_both_halves_closed": true,
+          "ordinary_progress_facts": true,
+          "ordinary_native_fd_return": true
+        },
+        "kernel_population_return": "Unknown",
+        "physical_kernel_caps": "Unverified",
+        "passed": true
+      }
+    }
+  ],
+  "status": "COMPLETE",
+  "source_unchanged": true,
+  "binary_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+  "passed": true,
+  "controller_fd_after": 9,
+  "original_remaining_ns": 552858652762
+}

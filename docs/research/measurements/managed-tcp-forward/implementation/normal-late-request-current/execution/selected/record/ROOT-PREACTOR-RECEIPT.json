@@ -1,0 +1,11 @@
+{
+  "sent": true,
+  "message": "from-agent-01a1c5d2ee0e7248982c95a59f1fd905-9b8ca178c42c8226a1794f80d259c491",
+  "accepted": {
+    "session": "01a148884a4770fdaf0111f3f792a248",
+    "message": "from-agent-01a1c5d2ee0e7248982c95a59f1fd905-9b8ca178c42c8226a1794f80d259c491",
+    "epoch": 0,
+    "at": 1794372047036,
+    "seq": 10208
+  }
+}

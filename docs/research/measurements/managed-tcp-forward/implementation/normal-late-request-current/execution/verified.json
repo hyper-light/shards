@@ -1,0 +1,24 @@
+{
+  "archives": [
+    {
+      "archive": "execution/raw-linux.tar.gz",
+      "bytes": 31242,
+      "sha256": "61957e3947b525575b8f676e734e9513a69185d707395f79be9f357795790963",
+      "payloads": 88,
+      "members": 89,
+      "all_unique_safe_regular_exact_lengths_hashes": true
+    },
+    {
+      "archive": "source-package-v1.tar.gz",
+      "bytes": 14184,
+      "sha256": "d8a7c93c7d63b72c145044356060380ee29ae26cbd954830cb8dc3d535b721b3",
+      "payloads": 7,
+      "members": 8,
+      "all_unique_safe_regular_exact_lengths_hashes": true
+    }
+  ],
+  "stdout_observed_equal_both_cases": true,
+  "native_cases": 2,
+  "runtime_retries": 0,
+  "mutation": false
+}

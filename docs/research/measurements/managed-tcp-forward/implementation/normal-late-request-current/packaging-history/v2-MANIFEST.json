@@ -1,0 +1,325 @@
+{
+  "status": "COMPLETED_FIRST_TWO_GNU_CASES_UNSIGNED_EXACT_PATCH_FOR_ROOT_OWN_SIGNER",
+  "base_main": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "patch_bytes": 333043,
+  "patch_sha256": "224722c8ba01d7f762492f71971f25b648af586b2e570f525f35fa0e06609190",
+  "source_postimage_sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058",
+  "source_path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+  "new_function_lines": 145,
+  "prior_reviewed_baseline_additions": 164,
+  "total_source_additions": 309,
+  "named_paths": [
+    "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/IDENTITY.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/PROPOSAL.md",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/README.md",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/SOURCE.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/build_packet.py",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/compiled-current-main-source.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/manifest.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/native-dispatch-receipt.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/policy-receipt.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/post-run-inputs.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/raw-linux.tar.gz",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/observed.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/result.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stderr",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stdout",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/observed.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/result.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stderr",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stdout",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/FINAL.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/READY.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/ROOT-PREACTOR-RECEIPT.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/preactor-environment.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-after-actors.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-before.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-changed-paths.stdout",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-diff.stdout",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/toolchain.stdout",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/verified.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/format-identity.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/guarded.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/inputs.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request-v1.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request.patch",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function.rs",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function_v2.rs",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/native_case.py",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/package-identity.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/package-manifest.json",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/private-tcp_forward-v1.rs.gz",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/private-tcp_forward-v2.rs.gz",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/run_two_cases.py",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/source-package-v1.tar.gz",
+    "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/verify.py"
+  ],
+  "identities": [
+    {
+      "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+      "bytes": 98129,
+      "sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/IDENTITY.json",
+      "bytes": 710,
+      "sha256": "678472ba481ccf6d8d153907c39aad8c77d14615dfa1bf65282b7cb743b6478e"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/PROPOSAL.md",
+      "bytes": 5744,
+      "sha256": "3f50dc277298af66933f36f31d06b0eb3e1da45d725629b5b359b7caf600030a"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/README.md",
+      "bytes": 10348,
+      "sha256": "2faf7465fdeca771d16315351c8f826564589f96ead1529936543bf59018b335"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/SOURCE.json",
+      "bytes": 5768,
+      "sha256": "040241791c1dc9e6afd795ebd6fb58430994dec57b20f92147094c9913332ac6"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/build_packet.py",
+      "bytes": 9561,
+      "sha256": "0d4f7f368c6ee1facb1b20eb9b33f9eb6d75ac2ec154f560cd6125124c6ef579"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/compiled-current-main-source.patch",
+      "bytes": 15584,
+      "sha256": "b171ec3838c7d3e5cad974f269d5b46e62fcc957546247b428e60e40af23f85c"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/manifest.json",
+      "bytes": 14377,
+      "sha256": "e97e90ca90fe252147873839ffd8a9e7cf43d8c9660336bcdf899010fab8f0e7"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/native-dispatch-receipt.json",
+      "bytes": 8224,
+      "sha256": "302713d61f126da7fac1a1fc819ea18c956047ca17232f3c9bd20bb720967a2d"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/policy-receipt.json",
+      "bytes": 337,
+      "sha256": "b11905f65a47bdf1bc3c0fc2789784a96ca3d049f87d82aa50e4f3c5f09ba4ce"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/post-run-inputs.json",
+      "bytes": 19101,
+      "sha256": "d5ee4a89a4630539a331e2f0a52bedf223b4c407a91156e3747bac96a1a48ace"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/raw-linux.tar.gz",
+      "bytes": 31242,
+      "sha256": "61957e3947b525575b8f676e734e9513a69185d707395f79be9f357795790963"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/observed.json",
+      "bytes": 1567,
+      "sha256": "42332a57b8a0ca735c4e2a31f245a88c90a236b1852e1de5d8da0696c121dc5f"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/result.json",
+      "bytes": 1206,
+      "sha256": "22df1a233f4dffcda74560cd471c63d03a1f79196ff98d0d7da1fa953d431ed2"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stdout",
+      "bytes": 1526,
+      "sha256": "14fd895e51e2713a4cfdeaa2855cba48062edfc63531ac42bcf14dae88c5f140"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/observed.json",
+      "bytes": 3132,
+      "sha256": "8cd7811fff979ed535358a28f0f143b6ef5278de32ed31214f6720cb72d03cb3"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/result.json",
+      "bytes": 1506,
+      "sha256": "d2ca959e816836d59dd52f412513cbaf94e3737303beb153a656fff3944dad7b"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stdout",
+      "bytes": 2705,
+      "sha256": "72edec073748e8ea7de7e657b24a0eeed35e8b003520656d00b4a5f608014f2d"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/FINAL.json",
+      "bytes": 5810,
+      "sha256": "a70a4fe72eaebb5d9c8a72dc34f04248afc49940e0a7a50db90d4c70bb2accc4"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/READY.json",
+      "bytes": 1229,
+      "sha256": "d3ceadfc0a2e80005150689ad7eea7435168a90d4c4abcc4a9765d6f79505b7e"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/ROOT-PREACTOR-RECEIPT.json",
+      "bytes": 337,
+      "sha256": "f351321805adaf6bd8926e66f72a5a4997417b6f47503c2e808751f506fac08f"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/preactor-environment.json",
+      "bytes": 825,
+      "sha256": "45c3cbccc53f0f2cb00a276b1db21d712b6da2f173879338bab02b03f1cdda38"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-after-actors.json",
+      "bytes": 1905,
+      "sha256": "c318d696fdc87d1de8ecd4baf928ef3bdc391993701edd437394c9013bf35b09"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-before.json",
+      "bytes": 1905,
+      "sha256": "c318d696fdc87d1de8ecd4baf928ef3bdc391993701edd437394c9013bf35b09"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-changed-paths.stdout",
+      "bytes": 62,
+      "sha256": "6105f7729f7b1c87282c97e2cbacddc1cf28e47fcc5b7ce77c270865aa79069e"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-diff.stdout",
+      "bytes": 15584,
+      "sha256": "b171ec3838c7d3e5cad974f269d5b46e62fcc957546247b428e60e40af23f85c"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/toolchain.stdout",
+      "bytes": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/verified.json",
+      "bytes": 665,
+      "sha256": "d257e49f90db911c445cf1a798f89416999dc72c3c1059634f5dafbaa4a1a8b5"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/format-identity.json",
+      "bytes": 690,
+      "sha256": "077c38a236aea2fd5d7eb35d55826bf1bcf3856605a383f5e2a76b1d2d17355b"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/guarded.patch",
+      "bytes": 8465,
+      "sha256": "b1b5570584b541b3a195da194b301541118e13b26d15e249c2174af21076fe1a"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/inputs.json",
+      "bytes": 504,
+      "sha256": "5664f9e34425beb40f20b35bc413884de186e845c71bd5f97599e2031e02e47c"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request-v1.patch",
+      "bytes": 7502,
+      "sha256": "a997855f0f4338c64a9958bb4910a583e678116df6929059097b2eaee2531b6d"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request.patch",
+      "bytes": 7533,
+      "sha256": "26cb7b01e29fae307ca511122555c0e1ff429b35c02cdc8d3ec0e6888943a886"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function.rs",
+      "bytes": 6951,
+      "sha256": "7ef9659c49698825a8b9dec60c8ce196175e99fe15483a5eedcec067e144505c"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function_v2.rs",
+      "bytes": 6974,
+      "sha256": "80b7d4d88ee8b9a2e781567871a4bffd51d701efcc2760aa0cb8621012e3dde0"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/native_case.py",
+      "bytes": 10566,
+      "sha256": "c2c8e3fcd0e031492fcc91c9458432b61076b2b9dcce4800bea09f2c25c83528"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/package-identity.json",
+      "bytes": 375,
+      "sha256": "a71bb0a0840b2235a29897df1404541c597b9fe02eca432911d38a74c52da337"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/package-manifest.json",
+      "bytes": 1063,
+      "sha256": "f0a880d5401bfb28401b83b4d53e1995f71d2dcacc91a162e7b931bca3845fbd"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/private-tcp_forward-v1.rs.gz",
+      "bytes": 16198,
+      "sha256": "dc4ee1e483e3467f594d251d5ea776adbef723b35952cc7bed26395bb261cf58"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/private-tcp_forward-v2.rs.gz",
+      "bytes": 16190,
+      "sha256": "070f69e06ddb680b1e84152c935f2e5e3b796f1282af274531f0ba4b88fdf8d1"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/run_two_cases.py",
+      "bytes": 7364,
+      "sha256": "46774cd2e69d94668bbd391d1e7235bddb35d1d35cecf6155f196ae66f5bb392"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/source-package-v1.tar.gz",
+      "bytes": 14184,
+      "sha256": "d8a7c93c7d63b72c145044356060380ee29ae26cbd954830cb8dc3d535b721b3"
+    },
+    {
+      "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/verify.py",
+      "bytes": 3282,
+      "sha256": "b7b96f3efc7b2a2f003990aed37c102b8dc4f3c7d46ac584e99f546b82800f80"
+    }
+  ],
+  "native_cases": 2,
+  "native_failures": 0,
+  "runtime_retries": 0,
+  "mutations": 0,
+  "raw_payloads_verified": 88,
+  "source_payloads_verified": 7,
+  "manifest_count": 2,
+  "policy_check": "actual remote r1 exit0",
+  "GNU_projection_check_lint_build": "actual remote r1 all0",
+  "raw_verify_py": 0,
+  "python_ast_selected": 0,
+  "whole_diff_check": {
+    "status": 2,
+    "stdout": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/compiled-current-main-source.patch:8: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stdout:11: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stdout:15: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-diff.stdout:8: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/guarded.patch:8: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request-v1.patch:5: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late-request.patch:5: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function.rs:137: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function_v2.rs:145: new blank line at EOF.\n",
+    "stderr": ""
+  },
+  "nonretained_patch_diff_check": {
+    "status": 2,
+    "stdout": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/forward-server-first/stdout:11: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/cases/late-request/stdout:15: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/execution/selected/record/source-diff.stdout:8: trailing whitespace.\n+ \ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function.rs:137: new blank line at EOF.\ndocs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/late_request_function_v2.rs:145: new blank line at EOF.\n",
+    "stderr": ""
+  },
+  "base_apply_check": {
+    "status": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "real_baseline_index_before_sha256": "622a6e7e7e2bd30c49cbdadc577f2279b488c799ac1ffc39b6768543e13ee43e",
+  "real_baseline_index_after_sha256": "622a6e7e7e2bd30c49cbdadc577f2279b488c799ac1ffc39b6768543e13ee43e",
+  "old_r2_index_sha256": "30e3ea8546c89ac3ede3cd9c2e6b2292646f0d537d61eb4b06cbdb76e48ee512",
+  "baseline_HEAD_unchanged": "0c598386ca1f7c65c6e0634dba77983e4abffff2",
+  "own_signer_context_present": true,
+  "required_trailer": "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+  "initial_packaging_failure_retained": "../initial-packaging-failure.json and ../selection.index",
+  "owed_ROOT": [
+    "signature/adoption/main decision",
+    "applicable current musl/full product/matrix/VM gates",
+    "cost/profile/parent/kernel/full-route decisions"
+  ],
+  "overall_lane_closed": false,
+  "local_free_bytes": 39564124160
+}

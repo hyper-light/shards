@@ -1,0 +1,9 @@
+{
+  "path": "docs/research/measurements/managed-tcp-forward/implementation/normal-late-request-current/source-package-v1.tar.gz",
+  "bytes": 14184,
+  "sha256": "d8a7c93c7d63b72c145044356060380ee29ae26cbd954830cb8dc3d535b721b3",
+  "members": 8,
+  "source_sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058",
+  "native_cases": 0,
+  "remote_builds": 0
+}

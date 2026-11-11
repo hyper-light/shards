@@ -1,0 +1,33 @@
+{
+  "native_cases_started": 0,
+  "physical_kernel_caps": "Unverified",
+  "kernel_population_return": "Unknown",
+  "affinity": [
+    0,
+    1
+  ],
+  "rlimit_as": [
+    2147483648,
+    2147483648
+  ],
+  "rlimit_core": [
+    0,
+    0
+  ],
+  "fd_before": 9,
+  "status": "READY_NATIVE_UNRUN",
+  "base": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "source_package_sha256": "d8a7c93c7d63b72c145044356060380ee29ae26cbd954830cb8dc3d535b721b3",
+  "fixture_sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058",
+  "driver_sha256": "c2c8e3fcd0e031492fcc91c9458432b61076b2b9dcce4800bea09f2c25c83528",
+  "binary": "/home/adalundhe/relay-normal-late-request-0a6-v1/artifacts/native-gnu",
+  "binary_sha256": "ad44d58f5b65e182e7d95cc4241fb6cec385fc6e58a593b283aa05674c33b282",
+  "binary_bytes": 12939472,
+  "listings": {
+    "late-request": "managed_network::intercept::tcp_forward::native_tests::native_tcp_late_request_suffix_after_backend_eof: test\n\n1 test, 0 benchmarks\n",
+    "forward-server-first": "managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes: test\n\n1 test, 0 benchmarks\n"
+  },
+  "source_unchanged": true,
+  "fd_after": 9,
+  "original_remaining_ns": 592222649444
+}

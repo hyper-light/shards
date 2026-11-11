@@ -1,0 +1,62 @@
+[
+  {
+    "path": "crates/init/src/engine.rs",
+    "sha256": "050266736a4d86632a094e9f738ca92a4d2815b0d3b919de34146fdaedebcf8d",
+    "bytes": 6484
+  },
+  {
+    "path": "crates/init/src/relay.rs",
+    "sha256": "083bce5ec7f0a96c74d1e44c0aa3d882344a36fce1401b017f8e114a8841fe27",
+    "bytes": 22823
+  },
+  {
+    "path": "crates/testguest/src/managed_network.rs",
+    "sha256": "c69dda64c941b4aebb173ed8f5856870ec337adbdd017ab703154dd4eb14c8a3",
+    "bytes": 39798
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept.rs",
+    "sha256": "ab78ad947bc741e26bd8f13ace7a0b3214aa8f1a98f788957f8528f93b790773",
+    "bytes": 36683
+  },
+  {
+    "path": "crates/testguest/src/managed_network/intercept/tcp_forward.rs",
+    "sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058",
+    "bytes": 98129
+  },
+  {
+    "path": "crates/shards/tests/managed_network/tcp_forward.rs",
+    "sha256": "9ce3ca4d1d20a4f47c777daeca792c09536b743d738ad76cacc55eab830a97e6",
+    "bytes": 9354
+  },
+  {
+    "path": "docs/research/measurements/managed-tcp-forward/implementation/engine-native/original_body.rs",
+    "sha256": "f5d78a8638d209c1ccacda3f0b2bd17f7df8ba992a08d2265b2d45af245961a5",
+    "bytes": 897
+  },
+  {
+    "path": "Cargo.toml",
+    "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f",
+    "bytes": 3885
+  },
+  {
+    "path": "Cargo.lock",
+    "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+    "bytes": 45993
+  },
+  {
+    "path": "clippy.toml",
+    "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928",
+    "bytes": 526
+  },
+  {
+    "path": ".cargo/config.toml",
+    "sha256": "c7e64e8e9d4392421dfc684f738e78a4239aec865171e128495a21e6f74d0ace",
+    "bytes": 1094
+  },
+  {
+    "path": "rustfmt.toml",
+    "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa",
+    "bytes": 16
+  }
+]

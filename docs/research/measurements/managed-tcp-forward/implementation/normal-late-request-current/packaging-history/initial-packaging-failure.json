@@ -1,0 +1,8 @@
+{
+  "status": "PackagingAssertionStoppedBeforePatchEmission",
+  "cause": "private index was based on0a6, but default git diff --cached compared to worktree HEAD0c and included22 unrelated current-main documentation paths",
+  "correction": "all private-index diff commands explicitly name intended base0a6",
+  "source_postimage_correct": true,
+  "native_reexecutions": 0,
+  "original_selection_index_preserved": "selection.index"
+}

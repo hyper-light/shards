@@ -1,0 +1,22 @@
+{
+  "format_only": true,
+  "outside_owned_function_unchanged": true,
+  "formatter_command": [
+    "/Users/adalundhe/.rustup/toolchains/1.98.1-aarch64-apple-darwin/bin/rustfmt",
+    "--emit",
+    "stdout",
+    "--edition",
+    "2024",
+    "--config-path",
+    "rustfmt.toml",
+    "--config",
+    "skip_children=true"
+  ],
+  "formatter_status": 0,
+  "original_unrun_sha256": "9df0b7be15d1d5fffd2f9ca9f93fb527b8d979a63f1cb07c8c2a7e6341d06457",
+  "postimage_sha256": "602591cf917f778c800e2d758ecac8971dede19634d486c020d1c20484e1a058",
+  "patch_sha256": "26cb7b01e29fae307ca511122555c0e1ff429b35c02cdc8d3ec0e6888943a886",
+  "function_lines": 145,
+  "native_cases": 0,
+  "local_Rust_builds": 0
+}

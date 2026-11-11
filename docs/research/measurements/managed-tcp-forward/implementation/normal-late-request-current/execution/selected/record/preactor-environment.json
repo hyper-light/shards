@@ -1,0 +1,36 @@
+{
+  "uname": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "env": {
+    "CARGO_HOME": "/home/adalundhe/relay-normal-late-request-0a6-v1/cargo-home",
+    "CARGO_TARGET_DIR": "/home/adalundhe/relay-normal-late-request-0a6-v1/target",
+    "CARGO_BUILD_JOBS": "2",
+    "NUM_JOBS": "2",
+    "CARGO_INCREMENTAL": "0",
+    "RUSTUP_TOOLCHAIN": "1.98.1",
+    "CLIPPY_CONF_DIR": "/home/adalundhe/relay-normal-late-request-0a6-v1/source"
+  },
+  "limits": {
+    "native_cases_started": 0,
+    "physical_kernel_caps": "Unverified",
+    "kernel_population_return": "Unknown",
+    "affinity": [
+      0,
+      1
+    ],
+    "rlimit_as": [
+      2147483648,
+      2147483648
+    ],
+    "rlimit_core": [
+      0,
+      0
+    ],
+    "fd_before": 9
+  }
+}

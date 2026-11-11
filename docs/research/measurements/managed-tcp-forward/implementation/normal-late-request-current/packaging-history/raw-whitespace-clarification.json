@@ -1,0 +1,8 @@
+{
+  "status": "AllWhitespaceReportsAreRetainedRawOrSourceFragmentContext",
+  "whole_diff_status": 2,
+  "old_nonpatch_filter_status": 2,
+  "cause": "filter excluded .patch but still included authentic native stdout EOF blank, verbatim source-diff stdout, and insertion-ready source fragments ending in blank line",
+  "correction": "preserve all bytes; check other implementation/documentation paths separately using an exact recorded retained-file list",
+  "native_reexecutions": 0
+}
