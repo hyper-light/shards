@@ -2,7 +2,9 @@
 //!
 //! Each region owns an initialized private RW/NX mapping and ordinary mlock of
 //! its entire page-rounded extent. DONTFORK prevents a later child from adding
-//! COW obligations to these pages. Original owner/ancestor admission and induced
+//! COW obligations to these pages. A following wipe-on-fork page marks the
+//! owning address space, so any process created without CLONE_VM refuses the
+//! region whatever its PID or PID namespace. Original owner/ancestor admission and induced
 //! kernel/transport resources remain the caller's independent responsibilities.
 //! See docs/research/measurements/managed-native-regions-v1/DECISION.md.
 
@@ -14,6 +16,7 @@ use std::ptr::NonNull;
 pub enum Operation {
     Map,
     ExcludeChild,
+    MarkOwner,
     Lock,
     Release,
 }
@@ -72,25 +75,39 @@ impl Extent {
     }
 }
 
+/// What the owner writes into its wipe-on-fork page. Any nonzero byte works:
+/// madvise(2) MADV_WIPEONFORK gives every child created without CLONE_VM a
+/// zero-filled page instead.
+const OWNED: u8 = 1;
+
 enum State {
-    Held {
-        address: *mut libc::c_void,
-        process: libc::pid_t,
-    },
+    Held { address: *mut libc::c_void },
     Released,
 }
 
+/// The region's page-rounded extent, then one wipe-on-fork page, in one mapping.
 struct Mapping {
     state: State,
     extent: Extent,
+    total: NonZeroUsize,
+}
+
+/// The wipe-on-fork page directly after the region's extent.
+fn owner_page(address: *mut libc::c_void, extent: Extent) -> *mut u8 {
+    address.cast::<u8>().wrapping_add(extent.mapped.get())
 }
 
 impl Mapping {
+    /// The region's address in the acquiring address space only. getpid is no
+    /// identity here: guest init is PID 1, and so is each child it clones into a
+    /// new PID namespace, where DONTFORK left this range unmapped.
     fn address(&self) -> Result<*mut libc::c_void, Failure> {
         match self.state {
-            State::Held { address, process } => {
-                // SAFETY: getpid has no pointer argument or ownership side effect.
-                if unsafe { libc::getpid() } == process {
+            State::Held { address } => {
+                // SAFETY: the owner page is mapped wherever this value exists:
+                // in the acquiring address space it holds OWNED, and a child
+                // created without CLONE_VM inherits it zero-filled.
+                if unsafe { owner_page(address, self.extent).read_volatile() } == OWNED {
                     Ok(address)
                 } else {
                     Err(Failure::WrongProcess)
@@ -105,9 +122,10 @@ impl Mapping {
             return Ok(());
         }
         let address = self.address()?;
-        // SAFETY: this is the exact still-owned mmap range; no slice survives
-        // the consuming public release. Successful unmap also removes its locks.
-        if unsafe { libc::munmap(address, self.extent.mapped.get()) } != 0 {
+        // SAFETY: this is the exact still-owned mmap range, region and owner
+        // page; no slice survives the consuming public release. Successful
+        // unmap also removes its locks.
+        if unsafe { libc::munmap(address, self.total.get()) } != 0 {
             return Err(native(Operation::Release));
         }
         self.state = State::Released;
@@ -203,12 +221,19 @@ impl Region {
             .and_then(NonZeroUsize::new)
             .ok_or(Rejected::Refused(Failure::PageSize { actual }))?;
         let extent = Extent::checked(bytes, page).map_err(Rejected::Refused)?;
+        let total = extent
+            .mapped
+            .get()
+            .checked_add(page.get())
+            .filter(|bytes| isize::try_from(*bytes).is_ok())
+            .and_then(NonZeroUsize::new)
+            .ok_or(Rejected::Refused(Failure::Length))?;
         // SAFETY: positive checked extent, no fixed address, file, executable
         // permission or other existing mapping is changed.
         let raw = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                extent.mapped.get(),
+                total.get(),
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
                 -1,
@@ -218,14 +243,13 @@ impl Region {
         if raw == libc::MAP_FAILED {
             return Err(Rejected::Refused(native(Operation::Map)));
         }
-        // SAFETY: getpid has no pointer argument or ownership side effect.
-        let process = unsafe { libc::getpid() };
+        // SAFETY: the owner page lies inside this fresh writable mapping. It is
+        // marked first, so every cleanup below can still release the mapping.
+        unsafe { owner_page(raw, extent).write_volatile(OWNED) };
         let mapping = Mapping {
-            state: State::Held {
-                address: raw,
-                process,
-            },
+            state: State::Held { address: raw },
             extent,
+            total,
         };
         let Some(address) = NonNull::new(raw.cast::<u8>()) else {
             return Err(Rejected::cleanup(mapping, Failure::NullAddress));
@@ -234,6 +258,11 @@ impl Region {
         // locks/publication so future fork cannot create private-page COW debt.
         if unsafe { libc::madvise(raw, extent.mapped.get(), libc::MADV_DONTFORK) } != 0 {
             return Err(Rejected::cleanup(mapping, native(Operation::ExcludeChild)));
+        }
+        // SAFETY: exactly the owned page after the region, inside this mapping;
+        // children created without CLONE_VM then see it zero-filled.
+        if unsafe { libc::madvise(owner_page(raw, extent).cast(), page.get(), libc::MADV_WIPEONFORK) } != 0 {
+            return Err(Rejected::cleanup(mapping, native(Operation::MarkOwner)));
         }
         // SAFETY: exact accessible RW range. Ordinary mlock (not ONFAULT or
         // MAP_LOCKED) must populate the complete range or report failure.
