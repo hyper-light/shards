@@ -1,0 +1,24 @@
+{
+  "method": "Full name/version/source/checksum tuple comparison for every non-adapter package against product Cargo.lock",
+  "unexpected": [],
+  "actual_packages": 138,
+  "product_packages": 213,
+  "private_lock_sha256": "348bbfe888b2fa569abc6d34ae300e37627fdb6cad9f584831ba07bf0f6ad1a5",
+  "status": "pass",
+  "environment": {
+    "OS": "macOS26.4.1 Build25E253",
+    "kernel": "Darwin25.4.0 arm64",
+    "rustc": "1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "1.98.1 (797e8a9bc 2026-08-05)"
+  },
+  "active_jobs": [],
+  "private_source_harnesses": [
+    "/Users/adalundhe/managed-resource-enforcement-light-v1",
+    "/Users/adalundhe/managed-resource-enforcement-light-v2",
+    "/Users/adalundhe/managed-resource-enforcement-light-v3",
+    "/Users/adalundhe/managed-resource-enforcement-light-v4",
+    "/Users/adalundhe/managed-resource-enforcement-light-v5"
+  ],
+  "private_target": "/Users/adalundhe/managed-resource-enforcement-target-v1",
+  "cleanup": "No source, caches, evidence or targets deleted. Remote2768 source sync retained; floor hold occurred before harness/target creation."
+}

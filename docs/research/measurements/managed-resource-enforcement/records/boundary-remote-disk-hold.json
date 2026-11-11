@@ -1,0 +1,24 @@
+{
+  "args": {
+    "on": "2768d0d5d2974f1e21d348edadff9d1b",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement",
+    "command": "lockf -t 600 /tmp/g121-mac.lock python3 - <<'PY'\nimport os,shutil,subprocess,sys\nfrom pathlib import Path\nroot=Path.cwd()\nfree=shutil.disk_usage(root).free\nprint('CAPTURE_BOUNDARY_FREE_DISK',free,flush=True)\nif free < 30 * (1 << 30):\n raise SystemExit('Mac policy floor: hold below30GiB')\nharness=Path.home()/'managed-resource-enforcement-boundary-native-v1'\nenv={k:v for k,v in os.environ.items() if not k.startswith('DYLD_')}\nenv.update(CARGO_TARGET_DIR=str(Path.home()/'managed-resource-enforcement-boundary-target-v1'),CARGO_BUILD_JOBS='2',CARGO_NET_OFFLINE='true',SHARDS_CAPTURE_API_CASE_MS='10000')\nsubprocess.run([sys.executable,'docs/research/measurements/managed-resource-enforcement/prepare-light.py',str(harness)],check=True,env=env)\noutput=Path('docs/research/measurements/managed-resource-enforcement/records/boundary-red-v2')\nresult=subprocess.run([sys.executable,'docs/research/measurements/managed-resource-enforcement/run-checks.py','--harness',str(harness),'--output',str(output),'--seconds','580','--boundary'],env=env)\nfor name in ['producer-boundary.stdout','producer-boundary.stderr']:\n p=output/name\n if p.exists():\n  print(name,flush=True)\n  sys.stdout.write(p.read_text())\nraise SystemExit(result.returncode)\nPY",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "initial": {
+    "runner": "2768d0d5d2974f1e21d348edadff9d1b",
+    "output": "",
+    "running": true,
+    "id": "r7",
+    "why": "macos/aarch64 · 13 of 14 cores idle · 32 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+  },
+  "result": {
+    "runner": "2768d0d5d2974f1e21d348edadff9d1b",
+    "output": "CAPTURE_BOUNDARY_FREE_DISK 4608966656\nMac policy floor: hold below30GiB\n",
+    "running": false,
+    "exit_code": 1
+  },
+  "classification": "Remote source sync completed; Mac free-disk guard returned1 before harness preparation, compilation or scenario. No red/green result. Source copy retained; no target/cache/evidence cleanup performed."
+}

@@ -65,6 +65,14 @@ seven-target gate at a84e1a81f. All raw members were independently verified afte
 read-only runner recovery. These are local cap observations, not resource rights,
 parent/kernel backing, production HTTP delivery or completion of G25/P0-P13.
 
+The [capture-storage coordinator record](../research/measurements/managed-capture-root/ROOT.md)
+adds allocation transfer through the existing credit/record/application-ACK
+slot, the real58-byte-credit/1-byte-loan reproduction and typed guard, independent
+guard removal/restoration, seven-target checks, full-daemon/native units and
+25 ordinary ARM64 KVM passes. This establishes the selected backing-buffer
+behavior; hard parent/kernel admission, protected control, complete transport
+accounting, remaining hosts/faults and measured costs are still open.
+
 The per-channel endpoint design remains an experiment: aggregate parent/kernel
 budgets and the final topology are not established. Native TCP/UDP byte matches
 are not interception evidence. [Central interception records](../research/measurements/managed-central-intercept/README.md)

@@ -1,0 +1,24 @@
+{
+  "args": {
+    "on": "e30189ea29182644fe5a4b2e06c7dac2",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "sync": false,
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement",
+    "command": "lockf -t 600 /tmp/g121-mac.lock env CARGO_TARGET_DIR=/Users/adalundhe/managed-resource-enforcement-target-v1 CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true SHARDS_CAPTURE_API_CASE_MS=10000 python3 docs/research/measurements/managed-resource-enforcement/run-checks.py --harness /Users/adalundhe/managed-resource-enforcement-light-v5 --output docs/research/measurements/managed-resource-enforcement/records/boundary-green-v1 --seconds 580 --boundary",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "initial": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "",
+    "running": true,
+    "id": "r9",
+    "why": "macos/aarch64 · 15 of 18 cores idle · 90 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+  },
+  "result": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "{\n  \"source_before\": {\n    \"crates/remote/src/managed.rs\": \"005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95\",\n    \"crates/shards/src/daemon/managed.rs\": \"2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"source_after\": {\n    \"crates/remote/src/managed.rs\": \"005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95\",\n    \"crates/shards/src/daemon/managed.rs\": \"2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"checks\": [\n    {\n      \"name\": \"producer-boundary\",\n      \"command\": [\n        \"cargo\",\n        \"test\",\n        \"--manifest-path\",\n        \"/Users/adalundhe/managed-resource-enforcement-light-v5/Cargo.toml\",\n        \"--test\",\n        \"producer_boundary\",\n        \"-j2\",\n        \"--\",\n        \"--exact\",\n        \"a_small_owned_submission_cannot_lend_less_storage_than_its_next_credit\",\n        \"--nocapture\",\n        \"--test-threads=1\"\n      ],\n      \"status\": 0,\n      \"elapsed_seconds\": 2.519628833\n    }\n  ]\n}\n",
+    "running": false,
+    "exit_code": 0
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "full_cached_diff_check": 2,
+  "stdout": "docs/research/measurements/managed-resource-enforcement/records/boundary-green-v1/producer-boundary.stdout:8: new blank line at EOF.\ndocs/research/measurements/managed-resource-enforcement/records/boundary-red-v1/producer-boundary.stdout:13: new blank line at EOF.\ndocs/research/measurements/managed-resource-enforcement/records/final-v1/remote-units.stdout:23: new blank line at EOF.\ndocs/research/measurements/managed-resource-enforcement/records/final-v2/daemon-core-units.stdout:18: new blank line at EOF.\ndocs/research/measurements/managed-resource-enforcement/records/final-v2/remote-units.stdout:23: new blank line at EOF.\n",
+  "stderr": "",
+  "raw_bytes_normalized": false,
+  "named_raw_exclusions": [
+    "docs/research/measurements/managed-resource-enforcement/records/boundary-green-v1/producer-boundary.stdout",
+    "docs/research/measurements/managed-resource-enforcement/records/boundary-red-v1/producer-boundary.stdout",
+    "docs/research/measurements/managed-resource-enforcement/records/final-v1/remote-units.stdout",
+    "docs/research/measurements/managed-resource-enforcement/records/final-v2/daemon-core-units.stdout",
+    "docs/research/measurements/managed-resource-enforcement/records/final-v2/remote-units.stdout"
+  ],
+  "nonraw_cached_diff_check": 0,
+  "python_ast_check": 0,
+  "policy_check": 0,
+  "all_compile_runtime_inputs_match_frozen_09a": true
+}

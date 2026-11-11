@@ -26,6 +26,7 @@ pub enum ProtocolError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionError {
     Capacity,
+    Allocation,
     Window,
     Patience,
     ExcludedPort,
@@ -214,8 +215,15 @@ pub struct Admitted {
 
 #[derive(Debug)]
 enum Slot {
-    Waiting(u64),
-    Ready(u64),
+    Waiting {
+        at: u64,
+        bytes: Vec<u8>,
+    },
+    Ready {
+        at: u64,
+        bytes: Vec<u8>,
+    },
+    Capturing(u64),
     Record {
         start: u64,
         bytes: Vec<u8>,
@@ -260,6 +268,7 @@ pub struct Progress {
 pub enum State {
     Pending(Progress),
     Ready(Progress),
+    Capturing(Progress),
     Finished(Progress),
     Aborted(Progress),
 }
@@ -267,17 +276,23 @@ pub enum State {
 impl State {
     pub fn progress(self) -> Progress {
         match self {
-            Self::Pending(at) | Self::Ready(at) | Self::Finished(at) | Self::Aborted(at) => at,
+            Self::Pending(at)
+            | Self::Ready(at)
+            | Self::Capturing(at)
+            | Self::Finished(at)
+            | Self::Aborted(at) => at,
         }
     }
 }
 
 fn progress(slot: &Slot) -> Progress {
     match slot {
-        Slot::Waiting(at) | Slot::Ready(at) | Slot::Finished(at) => Progress {
-            accepted: *at,
-            consumed: *at,
-        },
+        Slot::Waiting { at, .. } | Slot::Ready { at, .. } | Slot::Capturing(at) | Slot::Finished(at) => {
+            Progress {
+                accepted: *at,
+                consumed: *at,
+            }
+        }
         Slot::Record { start, bytes, .. } | Slot::AwaitingAck { start, bytes } => Progress {
             accepted: start.saturating_add(bytes.len() as u64),
             consumed: *start,
@@ -296,7 +311,8 @@ impl Shared {
         match state.0 {
             Slot::Aborted { .. } => State::Aborted(at),
             Slot::Finished(_) => State::Finished(at),
-            Slot::Ready(_) if matches!(state.1, Ending::Open) => State::Ready(at),
+            Slot::Ready { .. } if matches!(state.1, Ending::Open) => State::Ready(at),
+            Slot::Capturing(_) if matches!(state.1, Ending::Open) => State::Capturing(at),
             _ => State::Pending(at),
         }
     }
@@ -308,7 +324,7 @@ impl Shared {
                 return Err(Error::Closed);
             }
             state.1 = Ending::Finishing;
-            if let Slot::Ready(at) | Slot::Waiting(at) = state.0 {
+            if let Slot::Ready { at, .. } | Slot::Waiting { at, .. } = state.0 {
                 state.0 = Slot::Finished(at);
             }
         }
@@ -369,20 +385,93 @@ impl std::fmt::Debug for Rejected {
     }
 }
 
+fn record_buffer(capacity: usize) -> Result<Vec<u8>, Error> {
+    let maximum = frame::MAX_FRAME.saturating_sub(OFFSET_BYTES);
+    if capacity == 0 || capacity > maximum {
+        return Err(Error::Admission(AdmissionError::Capacity));
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| Error::Admission(AdmissionError::Allocation))?;
+    if bytes.capacity() > maximum {
+        return Err(Error::Admission(AdmissionError::Capacity));
+    }
+    Ok(bytes)
+}
+
 impl Producer {
-    /// Raises retained-record allowance only after the caller extends its owned
-    /// reservation. This does not enlarge QUIC's fixed in-flight send window.
-    pub fn admit(&self, record_bytes: usize) -> Result<(), Error> {
+    /// Prepares backing when extending the selected record window.
+    /// The returned actual capacity includes allocator-reported excess and must
+    /// be accounted before that credit is published. QUIC's window is unchanged.
+    pub fn admit(&self, record_bytes: usize) -> Result<usize, Error> {
         if record_bytes == 0 || record_bytes > frame::MAX_FRAME.saturating_sub(OFFSET_BYTES) {
             return Err(Error::Admission(AdmissionError::Capacity));
         }
-        self.shared.record_bytes.fetch_max(record_bytes, Ordering::AcqRel);
-        Ok(())
+        let current = {
+            let state = lock(&self.shared);
+            if !matches!(state.1, Ending::Open) || matches!(state.0, Slot::Finished(_) | Slot::Aborted { .. })
+            {
+                return Err(Error::Closed);
+            }
+            self.storage_capacity()
+        };
+        if record_bytes <= current {
+            return Ok(current);
+        }
+        let bytes = record_buffer(record_bytes)?;
+        let capacity = bytes.capacity();
+        let mut state = lock(&self.shared);
+        let open = matches!(state.1, Ending::Open);
+        match &mut state.0 {
+            Slot::Waiting { bytes: old, .. } | Slot::Ready { bytes: old, .. } if open => {
+                if capacity > old.capacity() {
+                    *old = bytes;
+                    self.shared.record_bytes.store(capacity, Ordering::Release);
+                }
+                Ok(old.capacity())
+            }
+            Slot::Finished(_) | Slot::Aborted { .. } => Err(Error::Closed),
+            _ => Err(Error::Admission(AdmissionError::Capacity)),
+        }
+    }
+
+    /// The selected allocation capacity, including backing lent to capture.
+    /// This is not a live-usage observation or a parent entitlement.
+    pub fn storage_capacity(&self) -> usize {
+        self.shared.record_bytes.load(Ordering::Acquire)
+    }
+
+    /// Transfers the prepared allocation to the one capture-credit owner. It
+    /// must submit it or abort its Control on every cancellation/error/drop.
+    /// The Capturing state prevents a second borrower issuing duplicate credit.
+    pub fn take_buffer(&self) -> Result<Option<Vec<u8>>, Error> {
+        let mut state = lock(&self.shared);
+        if !matches!(state.1, Ending::Open) {
+            return Ok(None);
+        }
+        let Slot::Ready { at, ref bytes } = state.0 else {
+            return Ok(None);
+        };
+        // Existing submit(Vec) callers can replace the prepared Vec with smaller
+        // owned storage. It is valid input, but cannot back the selected window.
+        // Refusal preserves their owned-submit path and the Ready state.
+        if bytes.capacity() < self.shared.record_bytes.load(Ordering::Acquire) {
+            return Err(Error::Admission(AdmissionError::Capacity));
+        }
+        let old = std::mem::replace(&mut state.0, Slot::Capturing(at));
+        if let Slot::Ready { at, bytes } = old {
+            state.0 = Slot::Capturing(at);
+            Ok(Some(bytes))
+        } else {
+            state.0 = old;
+            Ok(None)
+        }
     }
 
     pub fn capacity(&self) -> usize {
         let state = lock(&self.shared);
-        if matches!(state.0, Slot::Ready(_)) && matches!(state.1, Ending::Open) {
+        if matches!(state.0, Slot::Ready { .. }) && matches!(state.1, Ending::Open) {
             self.shared.record_bytes.load(Ordering::Acquire)
         } else {
             0
@@ -404,7 +493,7 @@ impl Producer {
         let mut state = lock(&self.shared);
         loop {
             match state.0 {
-                Slot::Ready(_) if matches!(state.1, Ending::Open) => {
+                Slot::Ready { .. } if matches!(state.1, Ending::Open) => {
                     return Ok(self.shared.record_bytes.load(Ordering::Acquire));
                 }
                 Slot::Finished(_) | Slot::Aborted { .. } => {
@@ -430,11 +519,10 @@ impl Producer {
         }
         {
             let mut state = lock(&self.shared);
-            let Slot::Ready(start) = state.0 else {
-                return Err(match state.0 {
-                    Slot::Finished(_) | Slot::Aborted { .. } => Rejected::Closed(bytes),
-                    _ => Rejected::Full(bytes),
-                });
+            let start = match state.0 {
+                Slot::Ready { at, .. } | Slot::Capturing(at) => at,
+                Slot::Finished(_) | Slot::Aborted { .. } => return Err(Rejected::Closed(bytes)),
+                _ => return Err(Rejected::Full(bytes)),
             };
             if !matches!(state.1, Ending::Open) {
                 return Err(Rejected::Closed(bytes));
@@ -615,6 +703,8 @@ impl Endpoint {
         {
             return Err(Error::Admission(AdmissionError::Capacity));
         }
+        let bytes = record_buffer(admitted.record_bytes)?;
+        let capacity = bytes.capacity();
         let transport = transport(admitted, CONTROL_BYTES)?;
         let mut config = tls::owner_server(identity, owner, transport, ALPN)?;
         config
@@ -622,9 +712,9 @@ impl Endpoint {
             .incoming_buffer_size(0)
             .incoming_buffer_size_total(0);
         let shared = Arc::new(Shared {
-            slot: Mutex::new((Slot::Waiting(0), Ending::Open)),
+            slot: Mutex::new((Slot::Waiting { at: 0, bytes }, Ending::Open)),
             changed: Condvar::new(),
-            record_bytes: AtomicUsize::new(admitted.record_bytes),
+            record_bytes: AtomicUsize::new(capacity),
             waker: Mutex::new(None),
         });
         let handler = Service {
@@ -712,7 +802,10 @@ impl Service {
         self.control_len = 0;
         let mut state = lock(&self.shared);
         match &mut state.0 {
-            Slot::Ready(at) => state.0 = Slot::Waiting(*at),
+            Slot::Ready { at, bytes } => {
+                let (at, bytes) = (*at, std::mem::take(bytes));
+                state.0 = Slot::Waiting { at, bytes };
+            }
             Slot::Record { written, .. } => *written = 0,
             Slot::AwaitingAck { .. } => {
                 if let Slot::AwaitingAck { start, bytes } = std::mem::replace(
@@ -805,8 +898,12 @@ impl Service {
 
     fn subscribe(&self, offset: u64) -> bool {
         let mut state = lock(&self.shared);
-        match &state.0 {
-            Slot::Waiting(at) if *at == offset => state.0 = Slot::Ready(offset),
+        match &mut state.0 {
+            Slot::Waiting { at, bytes } if *at == offset => {
+                let bytes = std::mem::take(bytes);
+                state.0 = Slot::Ready { at: offset, bytes };
+            }
+            Slot::Capturing(at) if *at == offset => {}
             Slot::Record { start, .. } | Slot::AwaitingAck { start, .. } if *start == offset => {}
             Slot::Finished(at) if *at == offset => {}
             _ => return false,
@@ -820,16 +917,18 @@ impl Service {
         let mut state = lock(&self.shared);
         match &state.0 {
             Slot::AwaitingAck { start, bytes } if start.checked_add(bytes.len() as u64) == Some(offset) => {
-                state.0 = if matches!(state.1, Ending::Finishing) {
-                    Slot::Finished(offset)
-                } else {
-                    Slot::Ready(offset)
-                };
+                let old = std::mem::replace(&mut state.0, Slot::Finished(offset));
+                if !matches!(state.1, Ending::Finishing)
+                    && let Slot::AwaitingAck { mut bytes, .. } = old
+                {
+                    bytes.clear();
+                    state.0 = Slot::Ready { at: offset, bytes };
+                }
                 drop(state);
                 self.shared.notify();
                 true
             }
-            Slot::Ready(at) if *at == offset => true,
+            Slot::Ready { at, .. } if *at == offset => true,
             _ => false,
         }
     }
@@ -943,6 +1042,20 @@ impl Handler for Service {
 mod tests {
     use super::*;
 
+    fn waiting(at: u64) -> Slot {
+        Slot::Waiting {
+            at,
+            bytes: record_buffer(16).unwrap(),
+        }
+    }
+
+    fn ready(at: u64) -> Slot {
+        Slot::Ready {
+            at,
+            bytes: record_buffer(16).unwrap(),
+        }
+    }
+
     fn native_endpoint() -> (Endpoint, Producer, Control) {
         let identity = Identity::generate().unwrap();
         Endpoint::bind(
@@ -965,6 +1078,97 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn prepared_capture_storage_is_transferred_and_recycled_after_ack() {
+        let (mut endpoint, producer, control) = native_endpoint();
+        let service = endpoint.driver.handler_mut();
+        let (pointer, capacity) = match &lock(&service.shared).0 {
+            Slot::Waiting { bytes, .. } => (bytes.as_ptr(), bytes.capacity()),
+            other => panic!("{other:?}"),
+        };
+        assert!(capacity >= CONTROL_BYTES);
+        assert_eq!(producer.storage_capacity(), capacity);
+        assert!(producer.take_buffer().unwrap().is_none());
+        assert!(service.subscribe(0));
+        let mut bytes = producer.take_buffer().unwrap().unwrap();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes.capacity(), capacity);
+        assert_eq!(
+            control.state(),
+            State::Capturing(Progress {
+                accepted: 0,
+                consumed: 0
+            })
+        );
+        assert!(producer.take_buffer().unwrap().is_none());
+        assert_eq!(producer.capacity(), 0);
+        bytes.extend_from_slice(b"a\0\xff");
+        producer.submit(bytes).unwrap();
+        let mut state = lock(&service.shared);
+        let old = std::mem::replace(&mut state.0, Slot::Finished(0));
+        let Slot::Record { start, bytes, .. } = old else {
+            panic!("record not submitted")
+        };
+        assert_eq!(bytes.as_ptr(), pointer);
+        state.0 = Slot::AwaitingAck { start, bytes };
+        drop(state);
+        assert!(service.consumed(3));
+        let recycled = producer.take_buffer().unwrap().unwrap();
+        assert_eq!(recycled.as_ptr(), pointer);
+        assert_eq!(recycled.capacity(), capacity);
+        assert!(recycled.is_empty());
+        // A capture borrower cancelling instead of submitting must terminalize
+        // its owner before dropping the detached allocation.
+        control.abort();
+        drop(recycled);
+        assert!(matches!(control.state(), State::Aborted(_)));
+        assert!(producer.take_buffer().unwrap().is_none());
+    }
+
+    #[test]
+    fn capture_reconnect_preserves_the_borrowed_record_and_cursor() {
+        let (mut endpoint, producer, control) = native_endpoint();
+        let service = endpoint.driver.handler_mut();
+        assert!(service.subscribe(0));
+        let mut bytes = producer.take_buffer().unwrap().unwrap();
+        let pointer = bytes.as_ptr();
+        service.disconnect();
+        assert!(!service.subscribe(1));
+        assert!(service.subscribe(0));
+        assert!(producer.take_buffer().unwrap().is_none());
+        bytes.extend_from_slice(b"payload");
+        producer.submit(bytes).unwrap();
+        match &lock(&service.shared).0 {
+            Slot::Record { start: 0, bytes, .. } => assert_eq!(bytes.as_ptr(), pointer),
+            other => panic!("{other:?}"),
+        }
+        control.abort();
+    }
+
+    #[test]
+    fn growth_prepares_real_storage_and_refusal_preserves_the_previous_window() {
+        let (mut endpoint, producer, control) = native_endpoint();
+        let before = producer.storage_capacity();
+        let grown = producer.admit(before.checked_mul(2).unwrap()).unwrap();
+        assert!(grown > before);
+        assert_eq!(producer.storage_capacity(), grown);
+        assert!(matches!(
+            producer.admit(usize::MAX),
+            Err(Error::Admission(AdmissionError::Capacity))
+        ));
+        assert_eq!(producer.storage_capacity(), grown);
+        assert!(endpoint.driver.handler_mut().subscribe(0));
+        let bytes = producer.take_buffer().unwrap().unwrap();
+        assert_eq!(bytes.capacity(), grown);
+        assert!(matches!(
+            producer.admit(grown.checked_mul(2).unwrap()),
+            Err(Error::Admission(AdmissionError::Capacity))
+        ));
+        assert_eq!(producer.storage_capacity(), grown);
+        control.abort();
+        assert!(matches!(producer.submit(bytes), Err(Rejected::Invalid(_))));
     }
 
     #[test]
@@ -1051,8 +1255,9 @@ mod tests {
             consumed: 8,
         };
         for (slot, expected) in [
-            (Slot::Waiting(8), State::Pending(at)),
-            (Slot::Ready(8), State::Ready(at)),
+            (waiting(8), State::Pending(at)),
+            (ready(8), State::Ready(at)),
+            (Slot::Capturing(8), State::Capturing(at)),
             (Slot::Finished(8), State::Finished(at)),
             (
                 Slot::Aborted {
@@ -1122,7 +1327,7 @@ mod tests {
                 },
                 Ending::Aborted,
             ),
-            (Slot::Ready(8), Ending::Aborted),
+            (ready(8), Ending::Aborted),
         ] {
             let service = service(slot);
             lock(&service.shared).1 = ending;
@@ -1166,7 +1371,7 @@ mod tests {
 
     #[test]
     fn refusal_categories_preserve_scope_and_stale_generation() {
-        let service = service(Slot::Waiting(0));
+        let service = service(waiting(0));
         let scope = service.scope;
         assert_eq!(service.check_scope(scope), Ok(()));
         assert_eq!(
@@ -1207,7 +1412,7 @@ mod tests {
         assert!(!service.consumed(9));
         assert!(matches!(lock(&service.shared).0, Slot::AwaitingAck { .. }));
         assert!(service.consumed(8));
-        assert!(matches!(lock(&service.shared).0, Slot::Ready(8)));
+        assert!(matches!(lock(&service.shared).0, Slot::Ready { at: 8, .. }));
         assert!(service.consumed(8));
         assert!(!service.consumed(9));
     }
@@ -1256,7 +1461,7 @@ mod tests {
 
     #[test]
     fn replay_and_forward_cursors_do_not_subscribe_to_a_new_stream() {
-        let service = service(Slot::Waiting(8));
+        let service = service(waiting(8));
         assert!(!service.subscribe(0));
         assert!(!service.subscribe(9));
         assert!(service.subscribe(8));

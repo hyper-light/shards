@@ -1,0 +1,28 @@
+{
+  "same_rendered_native_fixture": true,
+  "rendered_fixture_sha256": "d42f2bb0db7fbe73b45b49f4fb5427fac6592bd7b0110b851d13daef2de86f4e",
+  "canonical_observer_sha256": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+  "red": {
+    "advertised_bytes": 58,
+    "actual_loan_capacity": 1,
+    "application_ack": 1,
+    "test_status": 101,
+    "both_actors_joined": true,
+    "product_checkpoint": "1ae95bbda"
+  },
+  "green": {
+    "typed_refusal": "Admission::Capacity",
+    "advertised_bytes": 58,
+    "application_ack": 1,
+    "owned_vec_compatibility": "The same real Observer Record(1, bytes) equality assertion passed for 58 controlled y bytes after typed refusal.",
+    "test_status": 0,
+    "both_actors_joined": true
+  },
+  "not_claimed": [
+    "current daemon mixed-API defect",
+    "full host/kernel resource admission",
+    "full VM cleanup",
+    "independent mutation sweep",
+    "performance advantage"
+  ]
+}

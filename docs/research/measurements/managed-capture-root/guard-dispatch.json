@@ -1,0 +1,15 @@
+{
+  "local_refused_before_execution": {
+    "runner": "",
+    "output": "",
+    "running": false,
+    "error": "no runner suits e30189ea29182644fe5a4b2e06c7dac2, 2 CPUs, 4 GiB of memory, 12 GiB of disk, os == macos, arch == aarch64: adas-mac-studio-3.local: not e30189ea29182644fe5a4b2e06c7dac2; adacachy: not e30189ea29182644fe5a4b2e06c7dac2; adalundhe-macbook-pro: not e30189ea29182644fe5a4b2e06c7dac2; kiln-a094a12d.attlocal.net: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio-2.local: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio.local: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio.local-2: not e30189ea29182644fe5a4b2e06c7dac2; adas-macbook-pro-2.local: 0 of 18 cores idle, under 2 CPUs; jupiter: not e30189ea29182644fe5a4b2e06c7dac2; fedora.attlocal.net: not e30189ea29182644fe5a4b2e06c7dac2"
+  },
+  "studio_admitted": {
+    "runner": "b24c5c951260dcdfd0972f2aeaf3cf51",
+    "output": "",
+    "running": true,
+    "id": "r967",
+    "why": "macos/aarch64 · 11 of 14 cores idle · 32 GB free · room for 2 CPUs, 4 GiB of memory, 12 GiB of disk"
+  }
+}

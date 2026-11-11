@@ -1,0 +1,42 @@
+{
+  "base": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "source": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/shards/src/daemon/managed.rs",
+  "source_sha256": "2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a",
+  "adapted_sha256": "c4e23f80261d5dc1803bc617062fd510568eed56f1d7efbb763f2b6636589702",
+  "product_lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+  "canonical_observer_sha256": "98cb47d86c53a5a454d23b0eae716b5fd66fea942c62299daa67f74500fc26ce",
+  "boundary_fixture_sha256": "8e1588d8b9f7f582be5d9e3d6233f7d36babc1ad0314aade497d563a643dd3c5",
+  "excluded": [
+    "Daemon startup impl",
+    "owner key lookup",
+    "unrelated owner-key/generation tests",
+    "ROOT-only terminal-order fixtures"
+  ],
+  "fixture_inputs": [
+    "host_available=u64::MAX for pure accounting only",
+    "log sink"
+  ],
+  "real_dependencies": {
+    "shards-abi": {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/abi"
+    },
+    "shards-ipc": {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/ipc"
+    },
+    "shards-remote": {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/remote"
+    },
+    "shards-registry": {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/registry"
+    },
+    "shards-vmm": {
+      "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/vmm"
+    }
+  },
+  "not_proven": [
+    "complete caller",
+    "host authority",
+    "kernel/VM accounting",
+    "real transport"
+  ]
+}

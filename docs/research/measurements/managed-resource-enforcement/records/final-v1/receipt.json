@@ -1,0 +1,65 @@
+{
+  "source_before": {
+    "crates/remote/src/managed.rs": "c6946cea96a3baa5ebb34f4577cdd98325fb75f03095b659c636f69a37e01e71",
+    "crates/shards/src/daemon/managed.rs": "30d10086aa7b69f082078a559c7ce28881f25322a37b4c5fce5e93ace0ce5fc5",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "source_after": {
+    "crates/remote/src/managed.rs": "c6946cea96a3baa5ebb34f4577cdd98325fb75f03095b659c636f69a37e01e71",
+    "crates/shards/src/daemon/managed.rs": "30d10086aa7b69f082078a559c7ce28881f25322a37b4c5fce5e93ace0ce5fc5",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "checks": [
+    {
+      "name": "remote-units",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "shards-remote",
+        "--lib",
+        "managed::",
+        "-j2",
+        "--",
+        "--test-threads=1"
+      ],
+      "status": 0,
+      "elapsed_seconds": 1.586459583
+    },
+    {
+      "name": "remote-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "shards-remote",
+        "--lib",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "status": 0,
+      "elapsed_seconds": 51.601707542
+    },
+    {
+      "name": "daemon-core-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "/Users/adalundhe/managed-resource-enforcement-light-v3/Cargo.toml",
+        "--lib",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "status": 0,
+      "elapsed_seconds": 52.70070499999999
+    }
+  ]
+}

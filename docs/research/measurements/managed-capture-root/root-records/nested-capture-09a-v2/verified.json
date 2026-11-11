@@ -1,0 +1,10 @@
+{
+  "source": "09a187d2a55522d59a79b0fc21ac9378f25c0fb9",
+  "archive_bytes": 33123,
+  "archive_sha256": "dacc7895fdc93198dea73e288d0c213c4e26408017524ff80600fb09aa619500",
+  "verified_payloads": 21,
+  "verified_members": 22,
+  "all_members_safe_unique_regular_exact": true,
+  "ordinary_kvm_arm64": "25passed/0failed/10ignored",
+  "whole_population_kernel_return": "Unknown"
+}

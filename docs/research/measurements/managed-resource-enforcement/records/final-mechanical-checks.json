@@ -1,0 +1,36 @@
+{
+  "checks": [
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "e05f84",
+        "wall_time_seconds": 0.000006875,
+        "exit_code": 0,
+        "original_token_count": 21,
+        "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "32b40d",
+        "wall_time_seconds": 0.018477208,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    },
+    {
+      "status": "fulfilled",
+      "value": {
+        "chunk_id": "5816d0",
+        "wall_time_seconds": 0.000007375,
+        "exit_code": 0,
+        "original_token_count": 0,
+        "output": ""
+      }
+    }
+  ],
+  "scope": "Policy script; rustfmt --check for the two owned Rust paths; whitespace check for owned Rust/docs/scripts/JSON. Raw stdout/stderr intentionally preserved and not represented by this narrower whitespace check.",
+  "signature": "Both checkpoints use /Users/adalundhe/.kiln-run/bin/gits and the required Co-Authored-By trailer; independent signature verification belongs to Kiln."
+}

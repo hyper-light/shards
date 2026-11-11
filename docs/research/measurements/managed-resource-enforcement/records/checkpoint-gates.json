@@ -1,0 +1,26 @@
+{
+  "checkpoint": "1ae95bbda",
+  "policy_check": {
+    "command": "python3 scripts/check-development-policy",
+    "exit_code": 0,
+    "output": "Development policy checks passed; evidence/coordinator review is still required."
+  },
+  "whole_staged_diff_check": {
+    "exit_code": 2,
+    "warning": "docs/research/measurements/managed-resource-enforcement/records/final-v1/remote-units.stdout:23: new blank line at EOF.",
+    "continued_commit": "The shell command sequence erroneously continued after the nonzero check. The authentic raw stdout was preserved; no whole-diff pass is claimed."
+  },
+  "code_docs_json_diff_check": {
+    "base": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+    "target": "1ae95bbda",
+    "scope": "the two owned Rust files, README/OWNER_INPUT, prepare-light/run-checks, own records/*.json; raw stdout/stderr excluded from this narrower whitespace check",
+    "exit_code": 0,
+    "output": ""
+  },
+  "signature_check": {
+    "command": "/Users/adalundhe/.kiln-run/bin/gits verify-commit 1ae95bbda",
+    "exit_code": 1,
+    "output": "kiln-git-sign: kiln checks commits' signatures itself, against its root (docs/ci.md W27-R03); git can't check them here",
+    "interpretation": "Commit created using mandated signing wrapper; local git verification unavailable, not an independent signature pass."
+  }
+}

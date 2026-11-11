@@ -1,0 +1,117 @@
+{
+  "source": "09a187d2a55522d59a79b0fc21ac9378f25c0fb9",
+  "original": "/Users/adalundhe/root-managed-capture-nested-09a-v1",
+  "members": [
+    {
+      "path": "completed.json",
+      "bytes": 151,
+      "sha256": "7346f1d414ea212f8f6fcea742135a7ca124c391eb1ccda6d84b00d44a077ad2"
+    },
+    {
+      "path": "executed-driver.py",
+      "bytes": 6206,
+      "sha256": "03e48a68b748c1feb94c0433d0ef0f4118d6ee7a35e388a52a27f8b7b8a3a0e8"
+    },
+    {
+      "path": "host-boot-carried-build.command.json",
+      "bytes": 168,
+      "sha256": "37b6127b7b604b053e45e33dca1862a2cf0017716e10a2c912c21d9982c5854c"
+    },
+    {
+      "path": "host-boot-carried-build.result.json",
+      "bytes": 154,
+      "sha256": "9f4e11b0d4336ef94c8ab7f24ceaac33a9f6b530e9bfe607d4d34f3e09387a8e"
+    },
+    {
+      "path": "host-boot-carried-build.stderr",
+      "bytes": 9678,
+      "sha256": "ab656b95f2cb4fbe94e0fc204a9b547d3f9b6b7f8be7d219829970e033e7a7fd"
+    },
+    {
+      "path": "host-boot-carried-build.stdout",
+      "bytes": 272513,
+      "sha256": "98d232290391905469c33924a39fe09bed5768283870bcd97c12cfcbbad09b02"
+    },
+    {
+      "path": "identity.json",
+      "bytes": 1300,
+      "sha256": "da971cc1b5b3a49f75bfea0d91081b9179779f34195959381cbfda9ca8b66f57"
+    },
+    {
+      "path": "launchd-cleanup.json",
+      "bytes": 183,
+      "sha256": "ec32d4bdb5aded0f68f3f2fb3a43ad8b4ac1f2be65ddf397f2f2bbd155c9c914"
+    },
+    {
+      "path": "nested-console.log",
+      "bytes": 23476,
+      "sha256": "4f392474c8b37b34ee04daba38a51d0dc7f1af490a3365a2c051bc025f049e85"
+    },
+    {
+      "path": "nested-kvm-managed-output.command.json",
+      "bytes": 722,
+      "sha256": "52c5cb73c6e7cc3cfebaa1438c07b17df41a8b343adb8018539dea24cebf3cee"
+    },
+    {
+      "path": "nested-kvm-managed-output.result.json",
+      "bytes": 159,
+      "sha256": "d9e5c4c0a40ec1f5379f6a61441777dbb841cea5e00d5341107d82c8f1441db4"
+    },
+    {
+      "path": "nested-kvm-managed-output.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "nested-kvm-managed-output.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "nested-launchd.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "nested-launchd.log",
+      "bytes": 12965,
+      "sha256": "68453f56806786a5c1a202085a7e50848819d91b9158fc12e8d8231fa59f7bb4"
+    },
+    {
+      "path": "nested-launchd.plist",
+      "bytes": 2379,
+      "sha256": "70da17c6e41d1bdb4caa62ee05def08c7d8bd221bdd2f456d5f8db2590a00d21"
+    },
+    {
+      "path": "policy.command.json",
+      "bytes": 48,
+      "sha256": "ae5e336496af1b20fa59437f1a7fcca3aa66f08f9dc0e507f41fb1decc373cf2"
+    },
+    {
+      "path": "policy.result.json",
+      "bytes": 160,
+      "sha256": "f677b978b357863ec8f0de905f951e5f55859e8e1832c57ebd2ec1dbf59940da"
+    },
+    {
+      "path": "policy.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "policy.stdout",
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "path": "retained-artifacts.json",
+      "bytes": 1527,
+      "sha256": "b3576f440cbcea09d074cc2ed89371708cc3766ee5fbf57ec8883b5ac386ee07"
+    }
+  ],
+  "excluded_retained": [
+    "target/",
+    "empty-docker/",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-capture-nested-root-v1/target"
+  ],
+  "whole_population_kernel_return": "Unknown"
+}

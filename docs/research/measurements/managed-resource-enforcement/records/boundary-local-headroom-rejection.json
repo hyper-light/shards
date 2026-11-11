@@ -1,0 +1,18 @@
+{
+  "args": {
+    "on": "e30189ea29182644fe5a4b2e06c7dac2",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "sync": false,
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement",
+    "command": "lockf -t 600 /tmp/g121-mac.lock env CARGO_TARGET_DIR=/Users/adalundhe/managed-resource-enforcement-target-v1 CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true SHARDS_CAPTURE_API_CASE_MS=10000 python3 docs/research/measurements/managed-resource-enforcement/run-checks.py --harness /Users/adalundhe/managed-resource-enforcement-light-v4 --output docs/research/measurements/managed-resource-enforcement/records/boundary-red-v1 --seconds 580 --boundary",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "result": {
+    "runner": "",
+    "output": "",
+    "running": false,
+    "error": "no runner suits e30189ea29182644fe5a4b2e06c7dac2, 2 CPUs, 2 GiB of memory, 4 GiB of disk, os == macos, arch == aarch64: adacachy2: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio-3.local: not e30189ea29182644fe5a4b2e06c7dac2; adacachy: not e30189ea29182644fe5a4b2e06c7dac2; adalundhe-macbook-pro: not e30189ea29182644fe5a4b2e06c7dac2; kiln-a094a12d.attlocal.net: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio-2.local: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio.local: not e30189ea29182644fe5a4b2e06c7dac2; adas-mac-studio.local-2: not e30189ea29182644fe5a4b2e06c7dac2; adas-macbook-pro-2.local: 0 of 18 cores idle, under 2 CPUs; adas-macbook-pro.local: not e30189ea29182644fe5a4b2e06c7dac2; jupiter: not e30189ea29182644fe5a4b2e06c7dac2; fedora.attlocal.net: not e30189ea29182644fe5a4b2e06c7dac2"
+  },
+  "classification": "Not admitted: local runner zero idle CPUs. No job/test started; no red/green result. Subsequent same-envelope ordinary native boundary probe uses a newly inventoried eligible Mac and private source/target; no guard bypass or held campaign."
+}

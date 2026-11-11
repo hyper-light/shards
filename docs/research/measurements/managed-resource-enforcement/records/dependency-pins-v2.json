@@ -1,0 +1,10 @@
+{
+  "method": "Compare every Cargo.lock package name/version/source/checksum tuple (fixed generated string fields) except the private adapter against product Cargo.lock",
+  "unexpected": [],
+  "actual_packages": 138,
+  "product_packages": 213,
+  "product_lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+  "private_lock_sha256": "4c754023a342a2b4046d4f54a14a537173ff77ca0ca183a50284fb154107a3e7",
+  "status": "pass",
+  "earlier_validator_attempt": "Python3 default has no tomllib; first validator failed before inspection. This fixed-field reader uses standard json/re only."
+}

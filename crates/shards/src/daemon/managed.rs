@@ -138,6 +138,67 @@ impl Charge {
         *budget = Some(next);
         Ok(())
     }
+
+    fn release(&self, bytes: u64) -> Result<(), Admission> {
+        let mut held = lock(&self.bytes);
+        let mut budget = lock(&self.budget);
+        let Some((remaining, total)) = held
+            .checked_sub(bytes)
+            .zip(budget.and_then(|used| used.checked_sub(bytes)))
+        else {
+            *budget = None;
+            return Err(Admission::Unavailable);
+        };
+        *held = remaining;
+        *budget = Some(total);
+        Ok(())
+    }
+
+    fn prepare_growth(&self, bytes: u64) -> Result<Growth<'_>, Admission> {
+        self.grow(bytes)?;
+        Ok(Growth {
+            charge: self,
+            state: GrowthState::Prepared(bytes),
+        })
+    }
+}
+
+struct Growth<'a> {
+    charge: &'a Charge,
+    state: GrowthState,
+}
+
+enum GrowthState {
+    Prepared(u64),
+    Committed,
+}
+
+impl Growth<'_> {
+    fn extend(&mut self, bytes: u64) -> Result<(), Admission> {
+        let GrowthState::Prepared(held) = self.state else {
+            return Err(Admission::Unavailable);
+        };
+        let next = held.checked_add(bytes).ok_or(Admission::Overflow)?;
+        if bytes > 0 {
+            self.charge.grow(bytes)?;
+        }
+        self.state = GrowthState::Prepared(next);
+        Ok(())
+    }
+
+    fn commit(mut self, replaced: u64) -> Result<(), Admission> {
+        self.charge.release(replaced)?;
+        self.state = GrowthState::Committed;
+        Ok(())
+    }
+}
+
+impl Drop for Growth<'_> {
+    fn drop(&mut self) {
+        if let GrowthState::Prepared(bytes) = self.state {
+            let _ = self.charge.release(bytes);
+        }
+    }
 }
 
 impl Drop for Charge {
@@ -251,16 +312,34 @@ impl Output {
         let mut learning = lock(&self.learning);
         let desired = learning.quantum.desired();
         if desired > learning.admitted {
+            let old = producer.storage_capacity();
             let extra = desired
                 .checked_sub(learning.admitted)
-                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(desired))
                 .and_then(|n| u64::try_from(n).ok())
                 .ok_or_else(|| io::Error::other("capture growth overflow"))?;
-            // One VM-owned record and one daemon-owned record may overlap while IPC copies.
-            // QUIC's in-flight window remains fixed and separately reserved.
-            if self.charge.grow(extra).is_ok() {
-                producer.admit(desired).map_err(io::Error::other)?;
-                learning.admitted = desired;
+            // Keep the old daemon allocation charged while preparing its replacement,
+            // plus the increased VM record allowance. This is logical accounting;
+            // neither it nor owned Vec storage establishes parent/kernel entitlement.
+            if let Ok(mut growth) = self.charge.prepare_growth(extra) {
+                match producer.admit(desired) {
+                    Ok(actual) => {
+                        growth
+                            .extend(u64::try_from(actual.saturating_sub(desired)).map_err(io::Error::other)?)
+                            .map_err(|reason| io::Error::other(Failure::Admission(reason)))?;
+                        growth
+                            .commit(u64::try_from(old).map_err(io::Error::other)?)
+                            .map_err(|reason| io::Error::other(Failure::Admission(reason)))?;
+                        learning.admitted = desired;
+                    }
+                    Err(
+                        shards_remote::managed::Error::Admission(
+                            shards_remote::managed::AdmissionError::Allocation,
+                        )
+                        | shards_remote::managed::Error::Closed,
+                    ) => {}
+                    Err(error) => return Err(io::Error::other(error)),
+                }
             }
         }
         Ok(desired.min(learning.admitted))
@@ -358,13 +437,20 @@ enum After {
 enum CreditSlot {
     Inactive,
     Waiting,
-    Granted { capacity: usize, began: Instant },
+    Granted {
+        capacity: usize,
+        began: Instant,
+        bytes: Vec<u8>,
+    },
     Captured(Vec<u8>, After),
     Sending,
     Draining,
     Ended,
     Revoked,
-    RevokedGranted { capacity: usize },
+    RevokedGranted {
+        capacity: usize,
+        bytes: Vec<u8>,
+    },
     Receiving,
     RevokedReceiving,
 }
@@ -392,8 +478,8 @@ impl Credits {
     fn revoke(&self, index: usize) {
         let mut state = lock(&self.state);
         if let Some(slot) = state.slots.get_mut(index) {
-            *slot = match slot {
-                CreditSlot::Granted { capacity, .. } => CreditSlot::RevokedGranted { capacity: *capacity },
+            *slot = match std::mem::replace(slot, CreditSlot::Revoked) {
+                CreditSlot::Granted { capacity, bytes, .. } => CreditSlot::RevokedGranted { capacity, bytes },
                 CreditSlot::Receiving => CreditSlot::RevokedReceiving,
                 _ => CreditSlot::Revoked,
             };
@@ -417,26 +503,32 @@ impl Credits {
         self.changed.notify_all();
     }
 
-    fn begin_record(&self, index: usize, len: usize) -> io::Result<(usize, Instant)> {
+    fn begin_record(&self, index: usize, len: usize) -> io::Result<(usize, Instant, Vec<u8>)> {
         let mut state = lock(&self.state);
         let slot = state
             .slots
             .get_mut(index)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unknown capture route"))?;
-        match slot {
-            CreditSlot::Granted { capacity, began } if len <= *capacity => {
-                let grant = (*capacity, *began);
-                *slot = CreditSlot::Receiving;
-                Ok(grant)
+        let receiving = match slot {
+            CreditSlot::Granted { capacity, .. } if len <= *capacity => CreditSlot::Receiving,
+            CreditSlot::RevokedGranted { capacity, .. } if len <= *capacity => CreditSlot::RevokedReceiving,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "capture record exceeds issued channel credit",
+                ));
             }
-            CreditSlot::RevokedGranted { capacity } if len <= *capacity => {
-                let grant = (*capacity, Instant::now());
-                *slot = CreditSlot::RevokedReceiving;
-                Ok(grant)
-            }
+        };
+        match std::mem::replace(slot, receiving) {
+            CreditSlot::Granted {
+                capacity,
+                began,
+                bytes,
+            } => Ok((capacity, began, bytes)),
+            CreditSlot::RevokedGranted { capacity, bytes } => Ok((capacity, Instant::now(), bytes)),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "capture record exceeds issued channel credit",
+                "capture buffer ownership",
             )),
         }
     }
@@ -504,7 +596,7 @@ impl Credits {
                 let remote = observe(index)?;
                 let action = match (std::mem::replace(slot, CreditSlot::Sending), remote) {
                     (CreditSlot::Waiting, State::Ready(_)) => Some(Action::Grant(index)),
-                    (CreditSlot::Captured(bytes, after), State::Ready(_)) => {
+                    (CreditSlot::Captured(bytes, after), State::Ready(_) | State::Capturing(_)) => {
                         Some(Action::Submit(index, bytes, after))
                     }
                     (CreditSlot::Draining, State::Finished(_))
@@ -722,6 +814,11 @@ impl<D: Disk> Daemon<D> {
                     .checked_add(control.kernel_buffer_bytes().map_err(Failure::Endpoint)?)
                     .ok_or_else(|| io::Error::other("capture kernel queue overflow"))?;
                 charge.grow(kernel)?;
+                let excess = u64::try_from(producer.storage_capacity().saturating_sub(capacity))
+                    .map_err(io::Error::other)?;
+                if excess > 0 {
+                    charge.grow(excess)?;
+                }
                 staged.push((scope, endpoint, producer, control));
             }
         }
@@ -939,6 +1036,13 @@ fn send_credits(
                     .ok_or_else(|| io::Error::other("unknown producer"))?;
                 output.observed();
                 let capacity = output.capacity(producer)?;
+                let Some(bytes) = producer.take_buffer().map_err(Failure::Endpoint)? else {
+                    let mut state = lock(&owner.credits.state);
+                    if let Some(slot @ CreditSlot::Sending) = state.slots.get_mut(index) {
+                        *slot = CreditSlot::Waiting;
+                    }
+                    continue;
+                };
                 {
                     let mut state = lock(&owner.credits.state);
                     let Some(slot @ CreditSlot::Sending) = state.slots.get_mut(index) else {
@@ -947,6 +1051,7 @@ fn send_credits(
                     *slot = CreditSlot::Granted {
                         capacity,
                         began: Instant::now(),
+                        bytes,
                     };
                 }
                 let credit = run::managed::Credit {
@@ -1035,11 +1140,15 @@ fn bridge(
         let (member, channel) =
             run::managed::route_prefix(&prefix).map_err(|e| io::Error::other(e.to_string()))?;
         let route = route_index(member, channel)?;
-        let (capacity, began) = owner.credits.begin_record(route, len as usize)?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(len as usize).map_err(io::Error::other)?;
-        bytes.extend_from_slice(&prefix);
+        let (capacity, began, mut bytes) = owner.credits.begin_record(route, len as usize)?;
+        if bytes.capacity() < len as usize {
+            return Err(io::Error::other("capture buffer is smaller than issued credit").into());
+        }
         bytes.resize(len as usize, 0);
+        bytes
+            .get_mut(..run::managed::HEADER)
+            .ok_or_else(|| io::Error::other("short capture record"))?
+            .copy_from_slice(&prefix);
         read_exact(
             &stream,
             bytes
@@ -1289,6 +1398,77 @@ mod terminal_tests {
             }),
             changed: Condvar::new(),
         }
+    }
+
+    #[test]
+    fn issued_capture_storage_survives_revocation_until_its_record_is_drained() {
+        let bytes = Vec::with_capacity(16);
+        let pointer = bytes.as_ptr();
+        let credits = queue(vec![
+            CreditSlot::Granted {
+                capacity: 16,
+                began: Instant::now(),
+                bytes,
+            },
+            CreditSlot::Waiting,
+        ]);
+        assert!(credits.begin_record(0, 17).is_err());
+        credits.revoke(0);
+        let (capacity, _, mut bytes) = credits.begin_record(0, 8).unwrap();
+        assert_eq!(capacity, 16);
+        assert_eq!(bytes.as_ptr(), pointer);
+        bytes.resize(8, 0);
+        assert_eq!(bytes.as_ptr(), pointer);
+        credits.captured(0, bytes, After::More).unwrap();
+        assert!(matches!(
+            lock(&credits.state).slots.first(),
+            Some(CreditSlot::Revoked)
+        ));
+        assert!(matches!(
+            credits.next(|_| Ok(State::Ready(at(0, 0)))).unwrap(),
+            Some(Action::Grant(1))
+        ));
+    }
+
+    #[test]
+    fn captured_storage_submits_while_its_endpoint_is_the_explicit_borrower() {
+        let mut bytes = Vec::with_capacity(16);
+        bytes.extend_from_slice(b"record");
+        let pointer = bytes.as_ptr();
+        let credits = queue(vec![CreditSlot::Captured(bytes, After::More)]);
+        match credits.next(|_| Ok(State::Capturing(at(0, 0)))).unwrap() {
+            Some(Action::Submit(0, bytes, After::More)) => {
+                assert_eq!(bytes.as_ptr(), pointer);
+                assert_eq!(bytes, b"record");
+            }
+            _ => panic!("the capture loan was not submitted"),
+        }
+        credits.close();
+        assert!(
+            credits
+                .next(|_| panic!("closed owner must not probe"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn prepared_growth_rolls_back_or_commits_the_replacement_charge() {
+        let budget = Arc::new(Mutex::new(Some(80)));
+        let charge = Charge {
+            budget: Arc::clone(&budget),
+            bytes: Mutex::new(80),
+        };
+        {
+            let _pending = charge.prepare_growth(40).unwrap();
+            assert_eq!(*lock(&budget), Some(120));
+        }
+        assert_eq!(*lock(&budget), Some(80));
+        charge.prepare_growth(40).unwrap().commit(30).unwrap();
+        assert_eq!(*lock(&budget), Some(90));
+        assert_eq!(*lock(&charge.bytes), 90);
+        drop(charge);
+        assert_eq!(*lock(&budget), Some(0));
     }
 
     #[test]

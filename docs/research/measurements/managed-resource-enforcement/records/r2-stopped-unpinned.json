@@ -1,0 +1,25 @@
+{
+  "args": {
+    "on": "e30189ea29182644fe5a4b2e06c7dac2",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "sync": false,
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement",
+    "command": "lockf -t 600 /tmp/g121-mac.lock env CARGO_TARGET_DIR=/Users/adalundhe/managed-resource-enforcement-target-v1 CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true cargo test --manifest-path /Users/adalundhe/managed-resource-enforcement-light-v1/Cargo.toml --lib daemon::managed::terminal_tests:: -j2 -- --test-threads=1",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "initial": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "     Locking 137 packages to latest Rust 1.98.1 compatible versions\n   Compiling libc v0.2.191\n   Compiling find-msvc-tools v0.1.15\n   Compiling unicode-ident v1.0.27\n   Compiling proc-macro2 v1.0.107\n   Compiling quote v1.0.47\n   Compiling aws-lc-rs v1.18.1 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/vendor/aws-lc-rs)\n",
+    "running": true,
+    "id": "r2",
+    "why": "macos/aarch64 · 16 of 18 cores idle · 90 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+  },
+  "stop": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "   Compiling syn v3.0.9\n   Compiling jobserver v0.1.35\n   Compiling cc v1.11.1\n   Compiling cmake v0.1.58\n   Compiling zeroize v1.9.1\n   Compiling rustls-pki-types v1.15.1\n   Compiling aws-lc-sys v0.45.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/vendor/aws-lc-sys)\n   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/abi)\n   Compiling serde_core v1.0.229\n   Compiling memchr v2.8.3\n   Compiling zmij v1.0.23\n   Compiling aho-corasick v1.1.5\n   Compiling cpufeatures v0.3.1\n   Compiling serde v1.0.229\n   Compiling serde_json v1.0.154\n   Compiling regex-syntax v0.8.11\n   Compiling regex-automata v0.4.18\n   Compiling sha2 v0.11.1\n   Compiling shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/ipc)\n   Compiling getrandom v0.4.3\n   Compiling serde_derive v1.0.229\n   Compiling thiserror-impl v2.0.21\n   Compiling rustls v0.23.46\n   Compiling itoa v1.0.18\n   Compiling log v0.4.35\n   Compiling twox-hash v2.1.5\n   Compiling httparse v1.10.1\n   Compiling ruzstd v0.9.1\n   Compiling thiserror v2.0.21\n   Compiling rand v0.10.3\n   Compiling regex v1.13.1\n   Compiling flate2 v1.1.11\n   Compiling powerfmt v0.2.1\n   Compiling time-core v0.1.9\n   Compiling num-conv v0.2.2\n   Compiling shards-erofs v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement/crates/erofs)\n",
+    "running": false,
+    "exit_code": 70
+  },
+  "reason": "Stopped own job before tests because the initial adapter omitted product Cargo.lock and selected newer offline dependency versions. Original generated source/lock and partial target retained; no product test result claimed."
+}

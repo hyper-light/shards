@@ -1,0 +1,98 @@
+{
+  "label": "mac-capture-09a",
+  "source_directory": "/Users/adalundhe/root-managed-seven-capture-09a-v1",
+  "excluded_retained_directories": [
+    "frozen",
+    "guests",
+    "runtime-cache",
+    "tmp"
+  ],
+  "files": [
+    {
+      "path": "cargo.txt",
+      "bytes": 36,
+      "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6"
+    },
+    {
+      "path": "checkout.log",
+      "bytes": 180,
+      "sha256": "c38ac1c917bf5c5b0f086d85ce81d591d1d866c5d42c714e30880b5db204c15e"
+    },
+    {
+      "path": "command.json",
+      "bytes": 54,
+      "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+    },
+    {
+      "path": "daemon-core.command.json",
+      "bytes": 194,
+      "sha256": "0c1c63d04e4989d0447183a441e90bc4f64dcb4ef08eaaaf451ba4f2f9190bf2"
+    },
+    {
+      "path": "daemon-core.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "daemon-core.log",
+      "bytes": 8275,
+      "sha256": "2e5614ec2bd1da9257711ee7ccf1db4430fedece86e7f88c09654599e5a48bea"
+    },
+    {
+      "path": "fetch.log",
+      "bytes": 127,
+      "sha256": "d4aa34ac82239605018cb290301287967ae2bb0b2368771b6ccf5906f993a893"
+    },
+    {
+      "path": "free.post.json",
+      "bytes": 28,
+      "sha256": "9cb52f5e6b1bc72dfcedd3ca4e173160918e013dc7984e4cce6f1f55074d062c"
+    },
+    {
+      "path": "lint.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "lint.log",
+      "bytes": 27606,
+      "sha256": "aa78956f240c4bf99a900b6020683e4ae8472c6193b3c732f4fa54e491e1e608"
+    },
+    {
+      "path": "native.command.json",
+      "bytes": 144,
+      "sha256": "adf57b7c25fd31fd1de6cb7e1a252cf5e52dff3c4362f118b42adf64905bd0d5"
+    },
+    {
+      "path": "native.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "native.log",
+      "bytes": 3567,
+      "sha256": "337e55feb5435ffb7ba0708cf23bce9a1480f78200cad923e5894c642552aa7a"
+    },
+    {
+      "path": "policy.txt",
+      "bytes": 89,
+      "sha256": "ba2c0eab0d98204f9a9bfe5d51bcda5809908a1ff9d853058ca4e1cb95de7eac"
+    },
+    {
+      "path": "rustc.txt",
+      "bytes": 192,
+      "sha256": "e003fd3d385fcd0de16bc6b049124efb20207831dd810fd4ab39ff079bbb12a5"
+    },
+    {
+      "path": "source.txt",
+      "bytes": 41,
+      "sha256": "e721be794c5302b8e8a6f1bf480389690e8d3dcf665f4f5338af642af93b96b8"
+    },
+    {
+      "path": "untracked-preserved.json",
+      "bytes": 809,
+      "sha256": "ba7ffbc659844d4aa42b009157263f32faaa26df43d3b6e352cc2cfc8b7e8f6d"
+    }
+  ],
+  "management_layer_complete": false
+}

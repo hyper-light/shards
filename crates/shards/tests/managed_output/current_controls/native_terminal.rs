@@ -103,6 +103,7 @@ impl Worker {
                     return;
                 }
                 State::Finished(_) | State::Aborted(_) => panic!("native data admission became terminal"),
+                State::Capturing(_) => panic!("native owned-submit fixture has an outstanding capture loan"),
                 State::Pending(_) => {}
             }
             self.credits.recv_timeout(left(until)).unwrap();

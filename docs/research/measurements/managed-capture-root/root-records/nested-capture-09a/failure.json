@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "error": "AttributeError: hashlib.file_digest unavailable in Python 3.9",
+  "actors_started": 0,
+  "archive_created": false,
+  "originals_changed": false,
+  "packer_sha256": "b529089850b7628583bc69cef5ef49cae684019b61e94672541f3892e4b8e524"
+}

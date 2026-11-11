@@ -1,0 +1,13 @@
+
+running 1 test
+test a_small_owned_submission_cannot_lend_less_storage_than_its_next_credit ... CAPTURE_API_BOUNDARY event=loan advertised=58 actual=1 acknowledged=1
+CAPTURE_API_BOUNDARY event=cleanup joined=true
+FAILED
+
+failures:
+
+failures:
+    a_small_owned_submission_cannot_lend_less_storage_than_its_next_credit
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

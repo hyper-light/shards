@@ -1,0 +1,24 @@
+{
+  "args": {
+    "on": "e30189ea29182644fe5a4b2e06c7dac2",
+    "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+    "sync": false,
+    "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-resource-enforcement",
+    "command": "lockf -t 600 /tmp/g121-mac.lock env CARGO_TARGET_DIR=/Users/adalundhe/managed-resource-enforcement-target-v1 CARGO_BUILD_JOBS=2 CARGO_NET_OFFLINE=true python3 docs/research/measurements/managed-resource-enforcement/run-checks.py --harness /Users/adalundhe/managed-resource-enforcement-light-v3 --output docs/research/measurements/managed-resource-enforcement/records/final-v1 --seconds 580",
+    "timeout_s": 600,
+    "wait_s": 1
+  },
+  "initial": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "",
+    "running": true,
+    "id": "r5",
+    "why": "macos/aarch64 · 15 of 18 cores idle · 90 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+  },
+  "completion": {
+    "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+    "output": "{\n  \"source_before\": {\n    \"crates/remote/src/managed.rs\": \"c6946cea96a3baa5ebb34f4577cdd98325fb75f03095b659c636f69a37e01e71\",\n    \"crates/shards/src/daemon/managed.rs\": \"30d10086aa7b69f082078a559c7ce28881f25322a37b4c5fce5e93ace0ce5fc5\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"source_after\": {\n    \"crates/remote/src/managed.rs\": \"c6946cea96a3baa5ebb34f4577cdd98325fb75f03095b659c636f69a37e01e71\",\n    \"crates/shards/src/daemon/managed.rs\": \"30d10086aa7b69f082078a559c7ce28881f25322a37b4c5fce5e93ace0ce5fc5\",\n    \"Cargo.lock\": \"1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133\"\n  },\n  \"checks\": [\n    {\n      \"name\": \"remote-units\",\n      \"command\": [\n        \"cargo\",\n        \"test\",\n        \"--locked\",\n        \"-p\",\n        \"shards-remote\",\n        \"--lib\",\n        \"managed::\",\n        \"-j2\",\n        \"--\",\n        \"--test-threads=1\"\n      ],\n      \"status\": 0,\n      \"elapsed_seconds\": 1.586459583\n    },\n    {\n      \"name\": \"remote-clippy\",\n      \"command\": [\n        \"cargo\",\n        \"clippy\",\n        \"--locked\",\n        \"-p\",\n        \"shards-remote\",\n        \"--lib\",\n        \"-j2\",\n        \"--\",\n        \"-D\",\n        \"warnings\"\n      ],\n      \"status\": 0,\n      \"elapsed_seconds\": 51.601707542\n    },\n    {\n      \"name\": \"daemon-core-clippy\",\n      \"command\": [\n        \"cargo\",\n        \"clippy\",\n        \"--locked\",\n        \"--manifest-path\",\n        \"/Users/adalundhe/managed-resource-enforcement-light-v3/Cargo.toml\",\n        \"--lib\",\n        \"-j2\",\n        \"--\",\n        \"-D\",\n        \"warnings\"\n      ],\n      \"status\": 0,\n      \"elapsed_seconds\": 52.70070499999999\n    }\n  ]\n}\n",
+    "running": false,
+    "exit_code": 0
+  }
+}

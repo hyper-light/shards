@@ -1,0 +1,33 @@
+{
+  "source_before": {
+    "crates/remote/src/managed.rs": "005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95",
+    "crates/shards/src/daemon/managed.rs": "2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "source_after": {
+    "crates/remote/src/managed.rs": "005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95",
+    "crates/shards/src/daemon/managed.rs": "2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "checks": [
+    {
+      "name": "producer-boundary",
+      "command": [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "/Users/adalundhe/managed-resource-enforcement-light-v5/Cargo.toml",
+        "--test",
+        "producer_boundary",
+        "-j2",
+        "--",
+        "--exact",
+        "a_small_owned_submission_cannot_lend_less_storage_than_its_next_credit",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "status": 0,
+      "elapsed_seconds": 2.519628833
+    }
+  ]
+}

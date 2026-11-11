@@ -1,0 +1,82 @@
+{
+  "source_before": {
+    "crates/remote/src/managed.rs": "005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95",
+    "crates/shards/src/daemon/managed.rs": "2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "source_after": {
+    "crates/remote/src/managed.rs": "005bdb67ced70ecb26312c5738c9b53eb092c09f7ca84e8f8f75fc9dc536da95",
+    "crates/shards/src/daemon/managed.rs": "2eb2ce4a683786ab46bc6604cf9e890ea47ed76f5e44c953642212040b84230a",
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+  },
+  "checks": [
+    {
+      "name": "remote-units",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-p",
+        "shards-remote",
+        "--lib",
+        "managed::",
+        "-j2",
+        "--",
+        "--test-threads=1"
+      ],
+      "status": 0,
+      "elapsed_seconds": 0.960414333
+    },
+    {
+      "name": "daemon-core-units",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        "/Users/adalundhe/managed-resource-enforcement-light-v5/Cargo.toml",
+        "--lib",
+        "daemon::managed::terminal_tests::",
+        "-j2",
+        "--",
+        "--test-threads=1"
+      ],
+      "status": 0,
+      "elapsed_seconds": 0.8166123330000001
+    },
+    {
+      "name": "remote-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-p",
+        "shards-remote",
+        "--lib",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "status": 0,
+      "elapsed_seconds": 0.400059709
+    },
+    {
+      "name": "daemon-core-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "/Users/adalundhe/managed-resource-enforcement-light-v5/Cargo.toml",
+        "--lib",
+        "-j2",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "status": 0,
+      "elapsed_seconds": 0.579935292
+    }
+  ]
+}

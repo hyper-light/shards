@@ -1,0 +1,8 @@
+
+running 1 test
+test a_small_owned_submission_cannot_lend_less_storage_than_its_next_credit ... CAPTURE_API_BOUNDARY event=typed-refusal advertised=58 acknowledged=1
+CAPTURE_API_BOUNDARY event=cleanup joined=true
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
