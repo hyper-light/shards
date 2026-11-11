@@ -1,0 +1,22 @@
+{
+  "role": "coordinator",
+  "policy_revision": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "source_checkpoint": "77fa0c8cce6f01590bfaf01d010f1b0d33ae8f3d",
+  "selected_path": "docs/research/managed-helper-protocol-bounds.md",
+  "selected_sha256": "26200ed0697d5175daadd288905c25252647b3f0e95d39ee41888851fa6d6e90",
+  "full_document_read": true,
+  "references_resolve": 24,
+  "policy_check": 0,
+  "whitespace_check": 0,
+  "production_or_test_source_changes": false,
+  "primary_files_reopened": [
+    "linux sched.h",
+    "linux scm.h",
+    "systemd sd-daemon.c",
+    "systemd sd_notify.xml"
+  ],
+  "external_source_hashes_all_recomputed_here": false,
+  "r01_r16_record": "docs/research/managed-helper-protocol-bounds.md#verification-and-r01r16-account",
+  "limits": "Source-derived protocol research only; no codec, admission, current lifecycle, VM, performance or platform gate claim. Historical source identities and unrun results stay explicit."
+}
