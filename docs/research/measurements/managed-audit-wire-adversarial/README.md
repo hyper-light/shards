@@ -1,6 +1,15 @@
 # Native private-audit wire fixture preparation
 
-**Source implementation for review; native cases0.** The original FIN campaign expired without
+**One actual native full-FUSE case passed at frozen0f8; no retry.** See
+[native-v2/RESULTS.md](native-v2/RESULTS.md) for exact source, original corpus,
+full-caller/strict-Clippy gates, all24 frame/file/cleanup witnesses and the
+114-payload archive plus manifest. ROOT authorized/applied the exact ba78
+constructor selection only in this private branch. Integration/7/VM/fault/cost
+remain ROOT owed. The following preparation records retain their historical
+source identities and earlier holds; they are superseded only by that exact
+native result, never evidence of broader management closure.
+
+The original FIN campaign expired without
 the remaining gates; its preserved immutable pointers are in
 [FIN-CONTINUITY.md](FIN-CONTINUITY.md).
 
@@ -12,17 +21,18 @@ refusal. At that preparation checkpoint no fixture/include was applied and no
 build, mount or actor ran.
 
 The later explicit implementation GO is recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md).
-The cfg(test) include and [native.rs](native.rs) are now present on this private
-candidate; compilation/Clippy/actors remain held for original corpus and ROOT
-source/dispatch review. Earlier proposal/unapplied patch records remain immutable.
+The cfg(test) include and [native.rs](native.rs) were added on this private
+candidate; the historical implementation record predates ROOT's later corpus,
+source/dispatch review and native GO. Earlier proposal/raw patch records remain exact.
 
 - [source-scope.json](source-scope.json): exact8c base, owner-confirmed frozen
   ba78 constructor/API document, inspected source blobs/hashes, policy, sparse
   worktree and unallocated future runner/target.
 - [include.patch](include.patch): original three-line cfg(test) token proposal,
   preserved exactly. The same token is now applied after the implementation GO.
-- [constructor-refinement.patch](constructor-refinement.patch): exact UNAPPLIED
-  three-file ba78 refinement selection, preserving fallible typed construction.
+- [constructor-refinement.patch](constructor-refinement.patch): original exact
+  three-file ba78 refinement selection, now applied with explicit ROOT GO;
+  [constructor-composition-v1.json](constructor-composition-v1.json) pins old/new bytes.
 - [CODEC-INPUT-CONTRACT.md](CODEC-INPUT-CONTRACT.md): remaining actual private
   broker encoder corpus dependency and precise emission proposal, no copied
   encoder or unverified numeric Imax/Tmax.
@@ -37,8 +47,8 @@ source/dispatch review. Earlier proposal/unapplied patch records remain immutabl
   full FUSE bodies, exact byte-region comparisons, actual cleanup receipts and
   source-disclosed common TempDir sweep/soft-FD-limit behavior. No native run.
 
-ROOT review precedes implementation/registration/build/actors. Later intended
-native-only ARM Mac envelope is2CPU/2GiB/4GiB/600s/j2, build180s, case30s plus15s
-cleanup with hard45s parent; exact runner/private paths remain unallocated.
+ROOT review preceded implementation/registration/build/actors. Executed
+native-only ARM Mac envelope was2CPU/2GiB/4GiB/600s/j2, build180s, case30s plus15s
+cleanup with hard45s parent; exact runner/private paths are in the results.
 VM/stalled-I/O/ENOSPC/crash/mutations/profiles/benchmark/integration/main merge
 remain ROOT-owned and unrun. Full R01–R16 account and limits are in the proposal.

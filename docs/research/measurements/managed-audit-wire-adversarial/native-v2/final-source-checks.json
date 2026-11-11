@@ -1,0 +1,13 @@
+{
+  "command": [
+    "python3 scripts/check-development-policy",
+    "git diff --check",
+    "Python AST parse five owned scripts",
+    "gits status --short"
+  ],
+  "chunk_id": "b58cf2",
+  "wall_time_seconds": 0.000007667,
+  "exit_code": 0,
+  "original_token_count": 132,
+  "output": "Development policy checks passed; evidence/coordinator review is still required.\nPYTHON_AST_5_OK\nLOCAL_FREE_BYTES 67780661248\nOWN_SIGNER_PRESENT True\n M docs/research/measurements/managed-audit-wire-adversarial/README.md\n?? docs/research/measurements/managed-audit-wire-adversarial/build-native.py\n?? docs/research/measurements/managed-audit-wire-adversarial/native-v1/\n?? docs/research/measurements/managed-audit-wire-adversarial/native-v2/\n?? docs/research/measurements/managed-audit-wire-adversarial/verify-native-records.py\n"
+}

@@ -1,0 +1,12 @@
+{
+  "status": "PackedAllRawVerified_NoRerun",
+  "archive": "/Users/adalundhe/managed-audit-wire-native-v1/raw-native-v1.tar.gz",
+  "bytes": 16401,
+  "sha256": "fed4897abc3072942c88e2bc07b158ea3b07ce9eb7640f014a1b4445e57403f0",
+  "manifest_sha256": "92e39f67d524766e2e0f8d42ebd734a4261d9adebffbeb140a2ee810791edef0",
+  "payloads": 114,
+  "total_members": 115,
+  "epoch": 1794366708.888501,
+  "original_deadline_epoch": 1794366967.3,
+  "all_unique_safe_regular_hashes_verified": true
+}

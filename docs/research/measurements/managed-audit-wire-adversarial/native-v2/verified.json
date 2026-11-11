@@ -1,0 +1,11 @@
+{
+  "command": [
+    "/opt/homebrew/bin/python3.12",
+    "docs/research/measurements/managed-audit-wire-adversarial/verify-native-records.py"
+  ],
+  "chunk_id": "877e91",
+  "wall_time_seconds": 0.05347325,
+  "exit_code": 0,
+  "original_token_count": 153,
+  "output": "{\n  \"status\": \"Verified\",\n  \"raw_payloads\": 114,\n  \"raw_total_members\": 115,\n  \"source_payloads\": 176,\n  \"external_package_identities_unchanged\": 3,\n  \"native_case_attempts\": 1,\n  \"runtime_retries\": 0,\n  \"actual_request_reply_pairs\": 24,\n  \"aggregate_B\": 1333,\n  \"retained_lengths\": [\n    1215,\n    118\n  ],\n  \"archive_sha256\": \"fed4897abc3072942c88e2bc07b158ea3b07ce9eb7640f014a1b4445e57403f0\",\n  \"manifest_sha256\": \"92e39f67d524766e2e0f8d42ebd734a4261d9adebffbeb140a2ee810791edef0\",\n  \"limits\": \"No physical quota, durability, fairness, live semantic effect, population/kernel or management closure proof\"\n}\n"
+}

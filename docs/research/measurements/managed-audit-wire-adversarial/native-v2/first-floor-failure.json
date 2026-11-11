@@ -1,0 +1,38 @@
+{
+  "raw": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"result\": {\n    \"status\": \"SetupFailed_NoBuildOrCase\",\n    \"receipts\": [\n      {\n        \"stage\": \"setup\",\n        \"runner\": \"cec37f60f22c5a60d27f08f4d2e5daa8\",\n        \"output\": \"Traceback (most recent call last):\\n  File \\\"<stdin>\\\", line 7, in <module>\\nAssertionError: ('floor plus full ask', 27178512384)\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 13 of 14 cores idle · 33 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 1\n      }\n    ]\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+      }
+    ],
+    "structuredContent": {
+      "result": {
+        "status": "SetupFailed_NoBuildOrCase",
+        "receipts": [
+          {
+            "stage": "setup",
+            "runner": "cec37f60f22c5a60d27f08f4d2e5daa8",
+            "output": "Traceback (most recent call last):\n  File \"<stdin>\", line 7, in <module>\nAssertionError: ('floor plus full ask', 27178512384)\n",
+            "running": false,
+            "why": "macos/aarch64 · 13 of 14 cores idle · 33 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+            "exit_code": 1
+          }
+        ]
+      },
+      "calls": [
+        {
+          "name": "machines.run",
+          "ok": true
+        }
+      ]
+    },
+    "isError": false
+  },
+  "conservative_scope_start_epoch": 1794366367.3,
+  "original_deadline_epoch": 1794366967.3,
+  "source_created": false,
+  "builds": 0,
+  "native_cases": 0,
+  "cleanup_or_cap_change": false
+}

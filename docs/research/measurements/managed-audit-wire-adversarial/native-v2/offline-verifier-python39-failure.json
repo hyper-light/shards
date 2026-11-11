@@ -1,0 +1,11 @@
+{
+  "command": [
+    "python3",
+    "docs/research/measurements/managed-audit-wire-adversarial/verify-native-records.py"
+  ],
+  "chunk_id": "88a470",
+  "wall_time_seconds": 0.000006666,
+  "exit_code": 1,
+  "original_token_count": 75,
+  "output": "Traceback (most recent call last):\n  File \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/verify-native-records.py\", line 10, in <module>\n    import tomllib\nModuleNotFoundError: No module named 'tomllib'\n"
+}

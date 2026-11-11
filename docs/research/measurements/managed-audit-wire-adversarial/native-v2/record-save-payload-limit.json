@@ -1,0 +1,5 @@
+{
+  "status": "NoWriteExecuted",
+  "reason": "JavaScript execution exceeds the 64000-byte strict auto-review limit",
+  "correction": "Separate ordinary file writes below the declared payload limit; no scope, permission or evidence change."
+}
