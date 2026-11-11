@@ -1,0 +1,7 @@
+[
+  "/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/artifacts/mutant-shards_ipc-c126d553cd7914f1",
+  "--exact",
+  "locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe",
+  "--nocapture",
+  "--test-threads=1"
+]

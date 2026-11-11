@@ -1,0 +1,13 @@
+[
+  "cargo",
+  "test",
+  "--locked",
+  "--offline",
+  "-p",
+  "shards-ipc",
+  "--target",
+  "x86_64-unknown-linux-gnu",
+  "-j2",
+  "--no-run",
+  "--message-format=json"
+]

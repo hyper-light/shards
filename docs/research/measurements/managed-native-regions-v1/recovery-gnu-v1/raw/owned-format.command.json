@@ -1,0 +1,7 @@
+[
+  "rustfmt",
+  "--edition",
+  "2024",
+  "--check",
+  "crates/ipc/src/locked_region.rs"
+]

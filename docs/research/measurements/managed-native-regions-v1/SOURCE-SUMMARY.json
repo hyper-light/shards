@@ -1,0 +1,13 @@
+{
+  "entries": 4747,
+  "regular": 4746,
+  "metadata_only_links": 1,
+  "same_inactive_template_files": 4658,
+  "overlay_files": 88,
+  "regular_bytes": 162144799,
+  "capsule_bytes": 2487819,
+  "source_manifest_sha256": "583961cff40f42d42306210b0d10095d9b3af2198946067dbcc25aca6010ee64",
+  "input_sha256": "d15aa46e56e08daa67472fd4499ecd0a9218c478823cbbc5e6af29e07ce1bdb4",
+  "template": "actual frozen runtime v8 source/cache READ ONLY; no result inheritance",
+  "lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133"
+}

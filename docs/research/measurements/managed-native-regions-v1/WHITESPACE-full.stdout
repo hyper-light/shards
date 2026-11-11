@@ -1,0 +1,33 @@
+docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:27: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:30: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:42: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:53: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:72: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:75: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:87: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:99: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stdout:12: new blank line at EOF.
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stdout:7: new blank line at EOF.
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stdout:7: new blank line at EOF.
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stdout:6: new blank line at EOF.
+docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stdout:7: new blank line at EOF.
+docs/research/measurements/managed-native-regions-v1/source-delivery-v1/PRODUCT.patch:8: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:27: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:30: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:42: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:53: trailing whitespace.
++ 
+docs/research/measurements/managed-native-regions-v1/source-delivery-v2/PRODUCT.patch:8: trailing whitespace.
++ 

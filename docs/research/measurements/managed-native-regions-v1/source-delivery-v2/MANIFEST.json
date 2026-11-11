@@ -1,0 +1,25 @@
+{
+  "meaning": "Actual tested storage/residency component ONLY, no hard ancestor/kernel/transport/Session or finite-record grant",
+  "files": {
+    "crates/ipc/src/locked_region.rs": {
+      "bytes": 9427,
+      "sha256": "02fe880924da4941251aea582136406529d027808cfec6a2211aafbc93fc8b1b"
+    },
+    "crates/ipc/src/locked_region/tests.rs": {
+      "bytes": 7125,
+      "sha256": "00df5f1b059e8d615a72c2a5fcdfd22ec4a1ed61d7a96cd89969cc6c4ba8d8f6"
+    }
+  },
+  "patch_sha256": "f20b2c1ff8dae219470958d2cde03f2769936cdc0968bf963d829663a3399a25",
+  "registration": "Linux lib token only; preserve existing child_fds/sealed_body and all other current lib bytes; full old lib is deliberately not included",
+  "on_v1_format_delta_sha256": "40b1c974230dda4ff01ca00c0190c2e24e32ec325287f5a3788713b64c4948db",
+  "source_manifest_sha256": "9bbf9ed366bccbc78d937c1b06001ffe847e741bae896bb99bf9471e119c1457",
+  "actual_check": 0,
+  "actual_strict": 0,
+  "three_new_cases": 3,
+  "mutation_failed_for_mapping_inheritance": true,
+  "original_guarded_case_restored_pass": true,
+  "raw_archive_sha256": "acbbee9755d247340d8913f5de31747386986fc32c5eb36f7a5bb8d6ad904fcf",
+  "all_55_raw_payloads_verified": true,
+  "earlier_source_delivery_v1": "Preserved immutable; v2 changes formatting only; exact API unchanged"
+}

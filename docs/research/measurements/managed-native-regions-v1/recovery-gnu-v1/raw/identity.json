@@ -1,0 +1,29 @@
+{
+  "uname": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "uid": 1000,
+  "cpus": [
+    0,
+    1
+  ],
+  "normal_envelope": "2CPU/2GiB/4GiB/600s including15s cleanup/j2",
+  "limits_before": {
+    "address_space": [
+      -1,
+      -1
+    ],
+    "memlock": [
+      8388608,
+      8388608
+    ]
+  },
+  "scope": "/home/adalundhe/Projects/root-native-regions-gnu-v1-1794400171274",
+  "source_manifest_sha256": "583961cff40f42d42306210b0d10095d9b3af2198946067dbcc25aca6010ee64",
+  "actual_main": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "forbidden": "No held audit graph/five, helper, actor, VM, cgroups, host-root/security or pressure campaigns"
+}

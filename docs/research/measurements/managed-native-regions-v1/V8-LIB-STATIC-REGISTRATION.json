@@ -1,0 +1,10 @@
+{
+  "before_v8_lib_sha256": "e7a02fbc8b544d7f7f20b99b7f45527e72d785fa8ac1bc34b36442342e0289d4",
+  "patch": "18382e95b5926c3609f9dde3ef55d88b041b44856e9038b83e28d9f23871afea",
+  "check_exit": 0,
+  "stderr": "",
+  "new_executable_runs": 0,
+  "after_v8_lib_sha256": "e268785360577d59774d85f602116fe33c8744a5212aafb8f12b34fd7e262539",
+  "apply_exit": 0,
+  "only_linux_registration_added": true
+}

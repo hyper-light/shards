@@ -1,0 +1,661 @@
+{
+  "role": "ROOT coordinator",
+  "branch": "p/managed-native-regions-v1",
+  "base": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "meaning": "Finite acquired Linux storage component, actual IPC3newcases+strict0+mapping guard mutation; no full native/Session/backing/matrix claim",
+  "files": {
+    "crates/ipc/src/lib.rs": {
+      "bytes": 137433,
+      "sha256": "c3883fbb07a16cf8c2845738369d979b4c1aaa6c7ab0be38d5cbacb4f338e6bb"
+    },
+    "crates/ipc/src/locked_region.rs": {
+      "bytes": 9427,
+      "sha256": "02fe880924da4941251aea582136406529d027808cfec6a2211aafbc93fc8b1b"
+    },
+    "crates/ipc/src/locked_region/tests.rs": {
+      "bytes": 7125,
+      "sha256": "00df5f1b059e8d615a72c2a5fcdfd22ec4a1ed61d7a96cd89969cc6c4ba8d8f6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/DECISION.md": {
+      "bytes": 6077,
+      "sha256": "0df999077cda363cfd2e69dc953563bcc2a41222fd6f9bef73600c561eff6b21"
+    },
+    "docs/research/measurements/managed-native-regions-v1/DISPATCH-gnu-v1.json": {
+      "bytes": 18953,
+      "sha256": "66616f4bab030cc6c6d60f922c169bd63667b2bd3d4d6c78b864c62509044084"
+    },
+    "docs/research/measurements/managed-native-regions-v1/DISPATCH-gnu-v2.json": {
+      "bytes": 6697,
+      "sha256": "dbc7dd4532984d176f94037f5263503cfe7c847fd1bfb10c89b8d3d28ecbcaf2"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT-COMPARISON-FIRST-FAILURE-v2.json": {
+      "bytes": 387,
+      "sha256": "85d31e6a1dd0573077e5ec23b36ebba9a5da03a76543ff3aeb7f175302ae7376"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT-INPUT-v2.json": {
+      "bytes": 23991,
+      "sha256": "a23e65f7be995ddf21cf7cdf8794f540035935b8c3b1d0bc37d9375ddbe9cf34"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT-INPUT.json": {
+      "bytes": 21050,
+      "sha256": "f8715beac97090adc4151b5a3fe30f38ab67f569f97408ceecac1bfa5fd52dbd"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT-RESULT-v2.json": {
+      "bytes": 23584,
+      "sha256": "0e58b6d9f3c74cdb046fe47874de42595bada032f72f88fdb8dd1c7903827176"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT-RESULT.json": {
+      "bytes": 23254,
+      "sha256": "a9073516b14b54e8e1c038d2840b937f07f9d0c096d3d0d034ade5ea4d41340c"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/FORMAT.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch": {
+      "bytes": 4315,
+      "sha256": "40b1c974230dda4ff01ca00c0190c2e24e32ec325287f5a3788713b64c4948db"
+    },
+    "docs/research/measurements/managed-native-regions-v1/POLICY_READ-resume-v2.json": {
+      "bytes": 521,
+      "sha256": "92b0ce9c0471de2ce4e1f5c3bd7c890c88a055bd4d62dbdf1c816f89e1a102bf"
+    },
+    "docs/research/measurements/managed-native-regions-v1/POLICY_READ.json": {
+      "bytes": 636,
+      "sha256": "9f00951f65d5cb0d5b47c542785e500f56f842041502fc0dd18b47c9f5954c76"
+    },
+    "docs/research/measurements/managed-native-regions-v1/README.md": {
+      "bytes": 8228,
+      "sha256": "5be9cc0a66dfe591475f645d5675d1f108cce7e83c29aea2e81f98ba0dd1d2d4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/RUN-DELTA-v2.json.zlib": {
+      "bytes": 261954,
+      "sha256": "75a6f948f0d76ed4250624e250b4a222350923bda831d06442ef4e8a6aa4744f"
+    },
+    "docs/research/measurements/managed-native-regions-v1/RUN-INPUT-v2.json.zlib": {
+      "bytes": 2494894,
+      "sha256": "cea80e726aaeff6a869d58a241a6a17e36b0fff808207f97057cc6170ac83ea2"
+    },
+    "docs/research/measurements/managed-native-regions-v1/RUN-INPUT.json": {
+      "bytes": 570,
+      "sha256": "e135a6acc75a7a95c2b2af12c56375c9e0c1fa4ca476285bd4821335deb9a927"
+    },
+    "docs/research/measurements/managed-native-regions-v1/RUN-INPUT.json.zlib": {
+      "bytes": 2494928,
+      "sha256": "33ff7661eb4003f5e16e04002df0c4d2d99823b1c216855549fde867563216e3"
+    },
+    "docs/research/measurements/managed-native-regions-v1/SOURCE-INPUT.json.zlib": {
+      "bytes": 2487819,
+      "sha256": "d15aa46e56e08daa67472fd4499ecd0a9218c478823cbbc5e6af29e07ce1bdb4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/SOURCE-MANIFEST-v2.json": {
+      "bytes": 1076274,
+      "sha256": "9bbf9ed366bccbc78d937c1b06001ffe847e741bae896bb99bf9471e119c1457"
+    },
+    "docs/research/measurements/managed-native-regions-v1/SOURCE-MANIFEST.json": {
+      "bytes": 1076185,
+      "sha256": "583961cff40f42d42306210b0d10095d9b3af2198946067dbcc25aca6010ee64"
+    },
+    "docs/research/measurements/managed-native-regions-v1/SOURCE-SUMMARY.json": {
+      "bytes": 545,
+      "sha256": "885ca38e1475385eb5d9c8b4dbccccf4ef6595824bb86c8020671ce21b966a98"
+    },
+    "docs/research/measurements/managed-native-regions-v1/SOURCE-v2.json": {
+      "bytes": 2696,
+      "sha256": "d289cb5f21b30ac522c5b622cca5c7898a9ade8f78cef6d6f04d427847087275"
+    },
+    "docs/research/measurements/managed-native-regions-v1/V8-LIB-STATIC-REGISTRATION.json": {
+      "bytes": 392,
+      "sha256": "cbcc6094af2777fecafff0a85541cd78a6a791123033d1631a0b415b75671819"
+    },
+    "docs/research/measurements/managed-native-regions-v1/WHITESPACE-full.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/WHITESPACE-full.stdout": {
+      "bytes": 2255,
+      "sha256": "e11f5b10ddf894a54321a12d7b040f3ed983e4390235aa2edf69b0ec15f8d2ae"
+    },
+    "docs/research/measurements/managed-native-regions-v1/WHITESPACE.json": {
+      "bytes": 7004,
+      "sha256": "8b226c5e565582e174787ff3b19c5eef185414aec873f6c54d24b017bd5b6da0"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/VERIFIED.json": {
+      "bytes": 834,
+      "sha256": "4b5bf3f2d56d85fb39f15e54c2fed005ed1161dbca69f679b99942280ead98e9"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-000": {
+      "bytes": 12000,
+      "sha256": "7ff5553f573694ee8a80299c01d7175d51a42915599737c3b6bfc83a88fd4ec3"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-001": {
+      "bytes": 12000,
+      "sha256": "4844150a0915a3cd6b1de718f43a6094d5ca7cf7d50c8b8bbfab8db369584b74"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-002": {
+      "bytes": 12000,
+      "sha256": "a218dae8d4b507e6f967e9e61b7df29b1e63e8b452860ddbfe15fd143c74a789"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-003": {
+      "bytes": 12000,
+      "sha256": "0cb5e47372b4c322f4e72dbc63c21a33f269d233b9987e1976e693ca702a57a8"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-004": {
+      "bytes": 12000,
+      "sha256": "5508b950750eb6dc2114a93c6dfcbee3dd6d4d7de1d951b52b05d5d7f0be6958"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-005": {
+      "bytes": 12000,
+      "sha256": "13ed78df654609960b57767aa191146fcb4e9c13bc69b2fedde8fe3207f4f4b7"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-006": {
+      "bytes": 12000,
+      "sha256": "5c0cf159e028c551778efd94fac49d68a307540803a2bd79faddf7148eef351b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-007": {
+      "bytes": 12000,
+      "sha256": "a5a09b7aa2a5ac9010ca849268fa266f564fef7fe8a252309dc135a9ee66bdcb"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-008": {
+      "bytes": 12000,
+      "sha256": "1093d880ea668c1317da6abb6f60fabb14fb42491c325687ea75038ae2240b3d"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-009": {
+      "bytes": 12000,
+      "sha256": "2d36a94a39418b54028302f1f6b0b932b4c3c605259906415c0872deae4d5361"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-010": {
+      "bytes": 12000,
+      "sha256": "c75b0a24b9af124abc3fa7aab86771a6cc951cfbd3a86a6084dbb45b3feb37b3"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-011": {
+      "bytes": 12000,
+      "sha256": "fe1a0e17355c50730d9c0f219f3829bf3aa6be2f5d69645ccbd358a87f7f8dfe"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-012": {
+      "bytes": 12000,
+      "sha256": "0b460da82b05607fc9d9bd41cbb257414323881fabba60da4496aa454c830507"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-013": {
+      "bytes": 12000,
+      "sha256": "e45cdd9801bca7aa07b1fa83f67b9505d19acd7596a6bbca144f1e9b4fc04c03"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-014": {
+      "bytes": 12000,
+      "sha256": "f29126503e6c2443a3b2e58a99af09328ec6a2c345bc1103da217ac516269f5d"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-015": {
+      "bytes": 12000,
+      "sha256": "3e2f675d7d30268a7831b236e9ef7fa4d5df51e39613eca6b6a473007cb2d9dc"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-016": {
+      "bytes": 12000,
+      "sha256": "6d1c2ff2b804d99cc7a4943446f09b4a6f9696d9b21bff7ce69fab3db718e8a6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-017": {
+      "bytes": 12000,
+      "sha256": "07ab88d399b7ff301ea4816e1e8f6d28c7c2e376c2837d2f2dd5797f25261a0c"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-018": {
+      "bytes": 12000,
+      "sha256": "82c5d393482ac2cd0213581cf6be92247670d9d4ddfc5ed9eb375081cb72f530"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-019": {
+      "bytes": 12000,
+      "sha256": "3202031b698956a21a37282e5fa48f54cc00fc1fa8737f904129d27e3bc84cd6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/parts/part-020": {
+      "bytes": 11361,
+      "sha256": "ec014671cbb6e6a68df43b831cc1e1340b38036a0f1447c4a571f05ad45b55e2"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/MANIFEST.json": {
+      "bytes": 1532,
+      "sha256": "9789ce6a5dcac44dcbb59db4378c187c2c9acfae14c2592c4d2aa2f4655f51d1"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/driver.py": {
+      "bytes": 12060,
+      "sha256": "98cdcf93647e94dbfbbf0ceb2d0965c977e0b7e5413d110a94312d827dcca673"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/final.json": {
+      "bytes": 498,
+      "sha256": "6b38ec278af73bdf03a6e18c43de38e3237def03b6509c5cf3d93dc41f1a50c8"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/identity.json": {
+      "bytes": 738,
+      "sha256": "482220aa4637fe7cc55adc61ea5e244f2af2d220888ac28c2c32caf13b3e75ae"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.command.json": {
+      "bytes": 91,
+      "sha256": "ab652f6aa6969bb4a7174bf04512004f23e29888e330b40f192ab88496e3c378"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.json": {
+      "bytes": 319,
+      "sha256": "8c3a6e06e83bff9ddc950e34991a4491c949d583458d587d4985616454a5110a"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout": {
+      "bytes": 4994,
+      "sha256": "d593e4f0e0fc078e906bf89a9cc75b145b11a99cf41569d7e05ca4163c31a7b1"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/policy.command.json": {
+      "bytes": 63,
+      "sha256": "b39e6318c9972483eb293b5d8ae77718223632d7fb61e527c645adaab5d09d90"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/policy.json": {
+      "bytes": 286,
+      "sha256": "c2508974e5924441036e1d171db6538f1aaeb91b8668d1c99144da94da612288"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/policy.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/policy.stdout": {
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/source-before.json": {
+      "bytes": 829305,
+      "sha256": "51a93274d96fcf3327212e0cf7d26aaee4eb0b31fff1b9f9126752370d6d84c9"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw.tar.gz": {
+      "bytes": 251361,
+      "sha256": "12d17f7e492737caa6df59cc1ad6db7168ee335401f027eb72f1eee732e42ac0"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/VERIFIED.json": {
+      "bytes": 3692,
+      "sha256": "07e010a6810baeb3104330ad8e17c63a59757ea4bfa7e1814c767436ca0ff8f4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-000": {
+      "bytes": 12000,
+      "sha256": "a9f2f4090474b881ed21b08c2baf1962f9182334f3af11c17a8fbdb4536a34e9"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-001": {
+      "bytes": 12000,
+      "sha256": "00ce2ef2cebbe901dc135c840d40e706a6b7fb256885529d2a7863576355aba9"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-002": {
+      "bytes": 12000,
+      "sha256": "15d46baaa2db077d5e18074742cba9d496af43d0c554cc674715e23405a4e058"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-003": {
+      "bytes": 12000,
+      "sha256": "a86e6fdf46164cd6ba5a4d909133728ae19756bbb1b1d016442370ac38a9a0d2"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-004": {
+      "bytes": 12000,
+      "sha256": "d03b7a63e97960fcad1c283ff6cc014de1da5165848524c8724e9e120d094864"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-005": {
+      "bytes": 12000,
+      "sha256": "963415a13e097c89083b72fd14387691ace97e0c3494f30247c68415867741df"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-006": {
+      "bytes": 12000,
+      "sha256": "3842c6921ba84ea708671300e7fe392e61d830fd296ba5706a3e5f64e11b6fa4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-007": {
+      "bytes": 12000,
+      "sha256": "8908f91665f59c28f06438933f7f1420bf42728f7fc799c2630fda58b31b68ad"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-008": {
+      "bytes": 12000,
+      "sha256": "c60e26549d3dd4cd4ffbd6274f4edcc383e93af9736af2906a537b707789a4b4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-009": {
+      "bytes": 12000,
+      "sha256": "5ea6755068926ef98af85bf97de93d115c05ccd050f9a26788d7b9dae5f38842"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-010": {
+      "bytes": 12000,
+      "sha256": "5d499c3f7840fa429c359ac6796502cb17feec981bb7a857e0eecd579d1277d1"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-011": {
+      "bytes": 12000,
+      "sha256": "659576826d1a39473e288c7db016d5668abb626320baa282e73a40123b9c692b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-012": {
+      "bytes": 12000,
+      "sha256": "aa50cdbdc32c6dca12f69d8f7f67f6932d56e7699b368e85e45ceb22be3601cb"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-013": {
+      "bytes": 12000,
+      "sha256": "684d738252f30465e5fe5f17284a3bd884eb31fd240f5e0f51e60608775c5f84"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-014": {
+      "bytes": 12000,
+      "sha256": "398ab0c3ab7581e7d7b5bde4614a6e78c26d2f1a737b0be7ac06685d830d6192"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-015": {
+      "bytes": 12000,
+      "sha256": "a5823e4d587dc5fbdc09d585bc2fff8798dcd1abae0eba0aaf8feefb56b1af51"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-016": {
+      "bytes": 12000,
+      "sha256": "d39b1a5576ee813979e28af70614d2abd44a9c6cf09279cf8bac5e121d57bc1b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-017": {
+      "bytes": 12000,
+      "sha256": "ddeb93917362f612e02964172c7fa3380230d876d7aba7de36188115f8069aa6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-018": {
+      "bytes": 12000,
+      "sha256": "156297bac29a7e6368f7216391b63eaedda32fd2b0ad94b25866661621fe89ca"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-019": {
+      "bytes": 12000,
+      "sha256": "83b40138f4cfaba065ca3517345578d4f968b8a3c39cf22330110b95988128bf"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-020": {
+      "bytes": 12000,
+      "sha256": "bf899c81ff5c25a796691d192421c9f9ce1209f12b47a3c817ee784781dd70b7"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/parts/part-021": {
+      "bytes": 5369,
+      "sha256": "addd348e669a54b5f43cc86e65cee92df2c0f42ee84554c2701331f678ca23ad"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/MANIFEST.json": {
+      "bytes": 7381,
+      "sha256": "5e45da3decb160308819372841bb92cf1a805c95e1943b084085d7b71a1731fe"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/driver.py": {
+      "bytes": 12093,
+      "sha256": "2f698cf827142ae5ca2d36fd703895edce2176928849f7e8bd6d221a9e4afb73"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/final.json": {
+      "bytes": 538,
+      "sha256": "c2fc44bfefa98e0b86804bf8e388ffdc58befaf1ac2c42fa0655eab5fe2e2913"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/identity.json": {
+      "bytes": 738,
+      "sha256": "926ef017158e9e692407ebcddde43ffffec2fc98b90e0e89e904319bde422cbb"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-all-target-strict.command.json": {
+      "bytes": 181,
+      "sha256": "413f4fec745c3c60c295a5f8eeb09faa2836376ca499201984e51934c964713c"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-all-target-strict.json": {
+      "bytes": 425,
+      "sha256": "104199ca036af764ae624a3daf2e604847080bcf97bb755f236a2515d7e8cec4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-all-target-strict.stderr": {
+      "bytes": 431,
+      "sha256": "58cf1604299e7833058ff514c658d3567d7f0fe5482282e9f58b3fb8fc1be997"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-all-target-strict.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-check.command.json": {
+      "bytes": 150,
+      "sha256": "1304993c4190d3fa550a6fef4ececd8362757658192aaead94ecec71f1d74a80"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-check.json": {
+      "bytes": 389,
+      "sha256": "cc815170b0d7f23e965c61fafc7b83436382c1dc4372e07e9b7bc96f4cad2dd0"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-check.stderr": {
+      "bytes": 458,
+      "sha256": "20a87abd097507f13905da796032304e8ca5775bb8f64bd3501eb9ec27613d81"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-check.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-build.command.json": {
+      "bytes": 171,
+      "sha256": "627f6ad6a0430e6979e736acdaedfbed26b10c387bd1c05b90319d40854d426b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-build.json": {
+      "bytes": 412,
+      "sha256": "c33bb00990c475ac6565ea3bd394d7ef529e33e46e46d248e6f5251aa6b71193"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-build.stderr": {
+      "bytes": 459,
+      "sha256": "68f8c5f33ad395c1cbc11d28efd84ae07b8683dc3682f75376934fbc4b930715"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-build.stdout": {
+      "bytes": 7303,
+      "sha256": "f9810868c34a7182a2d899943192018c020b927f26bd199c596d744683a3ab11"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-list.command.json": {
+      "bytes": 124,
+      "sha256": "de05c6c21a6fb70db24186260c4aa8c43f8979e44c300d94581bc756264e7eb0"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-list.json": {
+      "bytes": 347,
+      "sha256": "94964effb9b92c5012e8c8cf6e70c30a526e9cffa27c3a9c0fde41bb21d2d7a6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-list.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/ipc-test-list.stdout": {
+      "bytes": 3699,
+      "sha256": "08455bfe1d5a65b90198171f9d57ab35aca2b17cf9e1f50d844f98c7a9ccf3ac"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.command.json": {
+      "bytes": 265,
+      "sha256": "eff90119d1e98e249a69ae7d3f8eb7a70f0edc170f4fab7d790d841b268acbf5"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.json": {
+      "bytes": 496,
+      "sha256": "816cf42a483aa2ff6ba437b0850c57a7ac319ad5d549b64edba41684b7ac8dc6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stderr": {
+      "bytes": 361,
+      "sha256": "22b74a2299989993e032bab0d4b904153cc3971cb7c3975815889b047f700fca"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stdout": {
+      "bytes": 426,
+      "sha256": "c499663d1cc70b74cef8a8d242e18bfbc53092d15eac9a94e755c284c6aad5b4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-test-build.command.json": {
+      "bytes": 171,
+      "sha256": "627f6ad6a0430e6979e736acdaedfbed26b10c387bd1c05b90319d40854d426b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-test-build.json": {
+      "bytes": 412,
+      "sha256": "1c42d744d7c5c5e6aa659360d7df88f5a39ff50ffee3417b6988dd78948c9407"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-test-build.stderr": {
+      "bytes": 480,
+      "sha256": "5047760dfda02e8922d808d751b33f307b83430d3e97c4649ffa8650d411059e"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-test-build.stdout": {
+      "bytes": 7515,
+      "sha256": "772a0897af1399f9626c95674fe27bed1d178dd625e03902fcdf8e451ad87234"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutation.json": {
+      "bytes": 432,
+      "sha256": "66d95deb547c896d559985c90ab65bcbdf794b93e9555995b39955da340f2028"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.command.json": {
+      "bytes": 262,
+      "sha256": "a8757e3e55b7da444b7705b5da22ed254be943cfcd0afbdacb66492346c9b08d"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.json": {
+      "bytes": 491,
+      "sha256": "25be360c32996b3890db5527bd6de7e01e431e9eec05e27950ac81925ff0f567"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stdout": {
+      "bytes": 318,
+      "sha256": "9a5c1f40f945dcb2b21b8e66be6adf03299b2754b1c9723c17152fdfaa73476c"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.command.json": {
+      "bytes": 258,
+      "sha256": "c7cd98630c4d0adf5d5a7f8ec30efca8453baec7bb1017de216f3825aa5aea55"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.json": {
+      "bytes": 487,
+      "sha256": "a94ee207db36ff263997db7a51ee41f982e24d904f185eeb7dcee549e09e0d23"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stdout": {
+      "bytes": 303,
+      "sha256": "4ffa9fc7343825f26866fe4edc08ab265b4c0bbace820788f90519e7f1983349"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.command.json": {
+      "bytes": 248,
+      "sha256": "4b945516d73a11f8171fd78d93c71704fa2af2a3eec78b2fbd88747d75a898de"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.json": {
+      "bytes": 477,
+      "sha256": "c8777dded8b0ce9a87f239516dbbe3b6750b0c7621d838396f9bb7e3a36a4beb"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stdout": {
+      "bytes": 204,
+      "sha256": "e32a614dfdd02068df0027c1c01ec62c687cb19a4c11091a1c4a1c338594514a"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/owned-format.command.json": {
+      "bytes": 128,
+      "sha256": "94240924976109bbb935a66b0c47cb44df87130fd67546816d32c966818d2c01"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/owned-format.json": {
+      "bytes": 360,
+      "sha256": "1e17ca5494f0a690af05235444bdf18aa59bf1416cc30b7fbab8c636b4a0a164"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/owned-format.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/owned-format.stdout": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/policy.command.json": {
+      "bytes": 63,
+      "sha256": "b39e6318c9972483eb293b5d8ae77718223632d7fb61e527c645adaab5d09d90"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/policy.json": {
+      "bytes": 286,
+      "sha256": "d4fc19ab1012013171de3bfcdc0c7647a43a427ec1a26f5bf3ab3cc07e79d5a6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/policy.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/policy.stdout": {
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/precase-binary.json": {
+      "bytes": 317,
+      "sha256": "f06acd4deb88b0b8387609a12f11ef2cbf0266c03ce4e4ae7f009446f104b190"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/precase-mutant-binary.json": {
+      "bytes": 228,
+      "sha256": "5608d2da0b3444c5c75d0328d24faa7435383d1635d7dcb8e78fc6e6d169bb63"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.command.json": {
+      "bytes": 258,
+      "sha256": "c7cd98630c4d0adf5d5a7f8ec30efca8453baec7bb1017de216f3825aa5aea55"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.json": {
+      "bytes": 487,
+      "sha256": "a32e9c58e082271eba2e82935f8c72a5fe08a9458ed541713a5d5237f12bdf7d"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stderr": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stdout": {
+      "bytes": 303,
+      "sha256": "4ffa9fc7343825f26866fe4edc08ab265b4c0bbace820788f90519e7f1983349"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/source-before.json": {
+      "bytes": 829305,
+      "sha256": "d6fc559070ecfc8d6801a5f08f92885cbd833066932bac1bae7e73acfa6ee7e8"
+    },
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw.tar.gz": {
+      "bytes": 257369,
+      "sha256": "acbbee9755d247340d8913f5de31747386986fc32c5eb36f7a5bb8d6ad904fcf"
+    },
+    "docs/research/measurements/managed-native-regions-v1/run-gnu-v1.py": {
+      "bytes": 12060,
+      "sha256": "98cdcf93647e94dbfbbf0ceb2d0965c977e0b7e5413d110a94312d827dcca673"
+    },
+    "docs/research/measurements/managed-native-regions-v1/run-gnu-v2.py": {
+      "bytes": 12093,
+      "sha256": "2f698cf827142ae5ca2d36fd703895edce2176928849f7e8bd6d221a9e4afb73"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/IMPORT.md": {
+      "bytes": 1247,
+      "sha256": "687eda4df175139a5ca2b04a882e140ecb762ffffdc489dd7adbf88147fe57a7"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/MANIFEST.json": {
+      "bytes": 1377,
+      "sha256": "554c2336636a4351e967f3ab2ebb4b73f00911f740cc38ecc189d4c467b32e73"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/PRODUCT.patch": {
+      "bytes": 18059,
+      "sha256": "18382e95b5926c3609f9dde3ef55d88b041b44856e9038b83e28d9f23871afea"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/after/crates/ipc/src/lib.rs": {
+      "bytes": 137433,
+      "sha256": "c3883fbb07a16cf8c2845738369d979b4c1aaa6c7ab0be38d5cbacb4f338e6bb"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/after/crates/ipc/src/locked_region/tests.rs": {
+      "bytes": 7228,
+      "sha256": "d975a1d8d20edbad2c627f3d8a19c52c74b5a0f8861f005f44c024836e470da4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/after/crates/ipc/src/locked_region.rs": {
+      "bytes": 9576,
+      "sha256": "a2b9a12a1f377087c2dfd49e761055760d9f860ff2bac064bb869fc3d0c085a5"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1.tar.gz": {
+      "bytes": 48852,
+      "sha256": "96d11689a9eb8559cc0d298a0f270e562ed40af5917e254a55f588b2fc20348c"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/DECISION.md": {
+      "bytes": 6077,
+      "sha256": "0df999077cda363cfd2e69dc953563bcc2a41222fd6f9bef73600c561eff6b21"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/MANIFEST.json": {
+      "bytes": 1299,
+      "sha256": "7bba57905e430e43175fa413dfa68c919ae75f313e9720c40607dc962786c704"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch": {
+      "bytes": 4315,
+      "sha256": "40b1c974230dda4ff01ca00c0190c2e24e32ec325287f5a3788713b64c4948db"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/PRODUCT.patch": {
+      "bytes": 17783,
+      "sha256": "f20b2c1ff8dae219470958d2cde03f2769936cdc0968bf963d829663a3399a25"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/README.md": {
+      "bytes": 8228,
+      "sha256": "5be9cc0a66dfe591475f645d5675d1f108cce7e83c29aea2e81f98ba0dd1d2d4"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/after/crates/ipc/src/locked_region/tests.rs": {
+      "bytes": 7125,
+      "sha256": "00df5f1b059e8d615a72c2a5fcdfd22ec4a1ed61d7a96cd89969cc6c4ba8d8f6"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/after/crates/ipc/src/locked_region.rs": {
+      "bytes": 9427,
+      "sha256": "02fe880924da4941251aea582136406529d027808cfec6a2211aafbc93fc8b1b"
+    },
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2.tar.gz": {
+      "bytes": 16618,
+      "sha256": "92d16d80f48c6b3247646a9493c0460492d1ad917984fffa1e4db03911702add"
+    }
+  },
+  "self_excluded": true
+}

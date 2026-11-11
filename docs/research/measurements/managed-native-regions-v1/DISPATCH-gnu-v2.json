@@ -1,0 +1,45 @@
+{
+  "scope": "root-native-regions-gnu-v2-1794401538334",
+  "input": "root-native-regions-gnu-v2-1794401538334-input",
+  "run": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "{\"stage\": \"policy\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"owned-format\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"ipc-check\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"ipc-test-build\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"ipc-test-list\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"new-region-case-0\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"new-region-case-1\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"new-region-case-2\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"ipc-all-target-strict\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"mutant-test-build\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"mutant-inheritance-case\", \"exit\": 101, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"stage\": \"restored-guard-case\", \"exit\": 0, \"timeout\": false, \"ready\": true, \"fd\": [9, 9]}\n{\"final\": {\"exit\": 0, \"failure\": null, \"elapsed_seconds\": 113.35801122197881, \"original_budget\": 600, \"unchanged_source_files\": 4746, \"unchanged_template_files\": 4658, \"unchanged_cache_files\": {\"registry\": 3528, \"git\": 1802}, \"new_cases_planned\": 3, \"mutation\": \"one private mapping-inheritance guard only\", \"held_scope_dispatches\": 0, \"actual_kernel_ancestor_backing\": \"Unproved\", \"frozen_binary\": {\"bytes\": 37350184, \"sha256\": \"f506d50779cbf040b04ce4c08488993239fe2b007cfd43d7b4ab9ca89acf468d\"}}, \"archive\": \"/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/raw.tar.gz\", \"bytes\": 257369, \"sha256\": \"acbbee9755d247340d8913f5de31747386986fc32c5eb36f7a5bb8d6ad904fcf\"}\n",
+    "running": false,
+    "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 32%",
+    "exit_code": 0
+  },
+  "command": "python3 - <<'REGION_V2'\nfrom pathlib import Path\nimport json,zlib,base64,hashlib,time,os,sys\np=Path.home()/'Projects/root-native-regions-gnu-v2-1794401538334-input';began=float((p/'began').read_text());assert time.monotonic()-began<585\nparts=sorted(p.glob('part-*'));assert len(parts)==4\nraw=b''.join(q.read_bytes() for q in parts);assert len(raw)==261954 and hashlib.sha256(raw).hexdigest()=='75a6f948f0d76ed4250624e250b4a222350923bda831d06442ef4e8a6aa4744f'\nplain=zlib.decompress(raw);assert hashlib.sha256(plain).hexdigest()=='ab206db627eb18b23e875be41ef55ce5dfebb9be9bcec8e1514b0816042edb91';delta=json.loads(plain)\nold=Path(delta['base_package']).read_bytes();assert hashlib.sha256(old).hexdigest()==delta['base_sha256'];spec=json.loads(zlib.decompress(old))\nfor n,d in delta['files'].items():\n olddata=base64.b64decode(spec['overlay_base64'][n],validate=True);assert hashlib.sha256(olddata).hexdigest()==d['before_sha256']\n b=base64.b64decode(d['base64'],validate=True);assert len(b)==d['bytes'] and hashlib.sha256(b).hexdigest()==d['after_sha256'];spec['overlay_base64'][n]=d['base64']\nfor k in ['source_manifest','source_manifest_sha256','driver_base64','driver_sha256']:spec[k]=delta[k]\nfull=json.dumps(spec,sort_keys=True).encode();assert hashlib.sha256(full).hexdigest()==delta['canonical_full_spec_sha256']=='29c040b3cdeae4e757d33c30a07c43c8de02d3cd896d85ef423fcc6b110c66ff'\nencoded=zlib.compress(full);package=p/'RUN-INPUT-v2.json.zlib';package.write_bytes(encoded);(p/'RUN-DELTA-v2.json.zlib').write_bytes(raw)\n(p/'RECONSTRUCTION.json').write_text(json.dumps({'source_manifest_sha256':spec['source_manifest_sha256'],'canonical_spec_sha256':hashlib.sha256(full).hexdigest(),'remote_compressed_spec_sha256':hashlib.sha256(encoded).hexdigest(),'original_base_read_only':delta['base_sha256'],'actual_source_changed_only_two_formatted_Rust_files':True},indent=2)+'\\n')\ndriver=base64.b64decode(spec['driver_base64'],validate=True);assert hashlib.sha256(driver).hexdigest()==spec['driver_sha256']=='2f698cf827142ae5ca2d36fd703895edce2176928849f7e8bd6d221a9e4afb73'\nscript=p/'run-gnu-v2.py';script.write_bytes(driver);os.environ['ROOT_REGIONS_BEGAN']=str(began)\nos.execv(sys.executable,[sys.executable,str(script),str(package),str(Path.home()/'Projects/root-native-regions-gnu-v2-1794401538334')])\nREGION_V2",
+  "transport": [
+    {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"part\": 0, \"bytes\": 80000, \"sha256\": \"2547ecb4d84bf5a02ad425cb3c7d2a53e225a9424050d381a5f3308b7c722a70\", \"elapsed\": 0.00022749498020857573}\n",
+      "running": false,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 30%",
+      "exit_code": 0
+    },
+    {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"part\": 1, \"bytes\": 80000, \"sha256\": \"69961ffa458f819d4c1bbe49da49748cf4b5a688d9dd22fd94e126820e472964\", \"elapsed\": 0.40911008103284985}\n",
+      "running": false,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 30%",
+      "exit_code": 0
+    },
+    {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"part\": 2, \"bytes\": 80000, \"sha256\": \"ca06f84080b92f2ba1d4ba2569561fa3f5166d72b4c532e7cd0e3ace04ab5dea\", \"elapsed\": 1.4531670829746872}\n",
+      "running": false,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 30%",
+      "exit_code": 0
+    },
+    {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"part\": 3, \"bytes\": 21954, \"sha256\": \"ca64ac81c6b4e0b27cfd869671de7c63fcf91bd9ecf05451cf512194678c1d37\", \"elapsed\": 1.87311567296274}\n",
+      "running": false,
+      "why": "linux/x86_64 · 28 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 30%",
+      "exit_code": 0
+    }
+  ],
+  "source_manifest_sha256": "9bbf9ed366bccbc78d937c1b06001ffe847e741bae896bb99bf9471e119c1457",
+  "driver_sha256": "2f698cf827142ae5ca2d36fd703895edce2176928849f7e8bd6d221a9e4afb73",
+  "meaning": "Fresh same authorized normal GNU envelope; v1 preserved. First three cases and one own mapping inheritance mutation; no held audit graph/five."
+}

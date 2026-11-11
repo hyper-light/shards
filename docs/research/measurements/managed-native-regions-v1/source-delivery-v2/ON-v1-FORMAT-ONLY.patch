@@ -1,0 +1,102 @@
+--- a/crates/ipc/src/locked_region.rs
++++ b/crates/ipc/src/locked_region.rs
+@@ -61,22 +61,14 @@
+ impl Extent {
+     fn checked(usable: NonZeroUsize, page: NonZeroUsize) -> Result<Self, Failure> {
+         let remainder = usable.get() % page.get();
+-        let extra = if remainder == 0 {
+-            0
+-        } else {
+-            page.get() - remainder
+-        };
++        let extra = if remainder == 0 { 0 } else { page.get() - remainder };
+         let mapped = usable
+             .get()
+             .checked_add(extra)
+             .filter(|bytes| isize::try_from(*bytes).is_ok())
+             .and_then(NonZeroUsize::new)
+             .ok_or(Failure::Length)?;
+-        Ok(Self {
+-            usable,
+-            mapped,
+-            page,
+-        })
++        Ok(Self { usable, mapped, page })
+     }
+ }
+ 
+@@ -259,22 +251,16 @@
+     }
+ 
+     pub fn bytes(&self) -> Result<&[u8], Failure> {
+-        let address =
+-            NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
++        let address = NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
+         // SAFETY: exact initialized usable extent, checked <=isize::MAX;
+         // the shared borrow keeps the uniquely owned mapping alive.
+-        Ok(unsafe {
+-            std::slice::from_raw_parts(address.as_ptr(), self.mapping.extent.usable.get())
+-        })
++        Ok(unsafe { std::slice::from_raw_parts(address.as_ptr(), self.mapping.extent.usable.get()) })
+     }
+ 
+     pub fn bytes_mut(&mut self) -> Result<&mut [u8], Failure> {
+-        let address =
+-            NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
++        let address = NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
+         // SAFETY: exclusive borrow of the same live initialized usable range.
+-        Ok(unsafe {
+-            std::slice::from_raw_parts_mut(address.as_ptr(), self.mapping.extent.usable.get())
+-        })
++        Ok(unsafe { std::slice::from_raw_parts_mut(address.as_ptr(), self.mapping.extent.usable.get()) })
+     }
+ 
+     /// A successful result witnesses this exact mapping's unmap, not release of
+--- a/crates/ipc/src/locked_region/tests.rs
++++ b/crates/ipc/src/locked_region/tests.rs
+@@ -10,10 +10,7 @@
+     for line in text.lines() {
+         if let Some((range, _)) = line.split_once(' ')
+             && let Some((first, last)) = range.split_once('-')
+-            && let (Ok(first), Ok(last)) = (
+-                usize::from_str_radix(first, 16),
+-                usize::from_str_radix(last, 16),
+-            )
++            && let (Ok(first), Ok(last)) = (usize::from_str_radix(first, 16), usize::from_str_radix(last, 16))
+         {
+             inside = (first..last).contains(&address);
+         }
+@@ -73,10 +70,7 @@
+         )
+     };
+     assert_eq!(returned, -1);
+-    assert_eq!(
+-        io::Error::last_os_error().raw_os_error(),
+-        Some(libc::ENOMEM)
+-    );
++    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ENOMEM));
+     let _ = writeln!(
+         std::io::stdout().lock(),
+         "REGION usable={} mapped={} page={} locked/resident observed; explicit unmap then mincore ENOMEM",
+@@ -121,8 +115,7 @@
+         let absent = result == -1 && errno == libc::ENOMEM;
+         let report = [u8::from(refused), u8::from(absent)];
+         // SAFETY: write a fixed initialized two-byte observation to our pipe.
+-        let written =
+-            unsafe { libc::write(writer.as_raw_fd(), report.as_ptr().cast(), report.len()) };
++        let written = unsafe { libc::write(writer.as_raw_fd(), report.as_ptr().cast(), report.len()) };
+         // SAFETY: terminate this raw child without parent owners/destructors.
+         unsafe {
+             libc::_exit(if written == 2 {
+@@ -159,10 +152,7 @@
+     // SAFETY: checking the same already-reaped child cannot consume another.
+     let again = unsafe { libc::waitpid(child, &raw mut status, libc::WNOHANG) };
+     assert_eq!(again, -1);
+-    assert_eq!(
+-        io::Error::last_os_error().raw_os_error(),
+-        Some(libc::ECHILD)
+-    );
++    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+     assert_eq!(region.bytes().unwrap(), &[0]);
+     region.release().unwrap();
+     let _ = writeln!(

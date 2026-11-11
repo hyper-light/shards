@@ -1,0 +1,8 @@
+{
+  "bytes": 2494928,
+  "sha256": "33ff7661eb4003f5e16e04002df0c4d2d99823b1c216855549fde867563216e3",
+  "decoded_sha256": "02fedd9d24b18d5ac9d618abeccae833f774f744493916ce832c3c4bf77870c4",
+  "driver_sha256": "98cdcf93647e94dbfbbf0ceb2d0965c977e0b7e5413d110a94312d827dcca673",
+  "source_manifest_sha256": "583961cff40f42d42306210b0d10095d9b3af2198946067dbcc25aca6010ee64",
+  "scope": "NEW ROOT normal GNU2CPU2GiB4GiB600incl15cleanup/j2; three ordinary mapping/storage cases and one exact private fork guard mutation/restored check; no held graph/five/helper/actor/VM"
+}

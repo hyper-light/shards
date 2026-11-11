@@ -1,0 +1,82 @@
+{
+  "format_receipt": {
+    "commands": [
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--version"
+        ],
+        "exit": 0,
+        "ready": true,
+        "waited_ECHILD": true,
+        "fd_before": 9,
+        "fd_after": 9
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--edition",
+          "2024",
+          "--config-path",
+          "rustfmt.toml",
+          "crates/ipc/src/locked_region.rs"
+        ],
+        "exit": 0,
+        "ready": true,
+        "waited_ECHILD": true,
+        "fd_before": 9,
+        "fd_after": 9
+      },
+      {
+        "command": [
+          "rustup",
+          "run",
+          "1.98.1",
+          "rustfmt",
+          "--edition",
+          "2024",
+          "--config-path",
+          "rustfmt.toml",
+          "--check",
+          "crates/ipc/src/locked_region.rs"
+        ],
+        "exit": 0,
+        "ready": true,
+        "waited_ECHILD": true,
+        "fd_before": 9,
+        "fd_after": 9
+      }
+    ],
+    "elapsed": 0.04805241199210286,
+    "compilers": 0,
+    "cases": 0,
+    "config": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa",
+    "version": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n"
+  },
+  "source_manifest_sha256": "9bbf9ed366bccbc78d937c1b06001ffe847e741bae896bb99bf9471e119c1457",
+  "driver_sha256": "2f698cf827142ae5ca2d36fd703895edce2176928849f7e8bd6d221a9e4afb73",
+  "changed_files": {
+    "crates/ipc/src/locked_region.rs": {
+      "before_sha256": "a2b9a12a1f377087c2dfd49e761055760d9f860ff2bac064bb869fc3d0c085a5",
+      "after_sha256": "02fe880924da4941251aea582136406529d027808cfec6a2211aafbc93fc8b1b",
+      "bytes": 9427
+    },
+    "crates/ipc/src/locked_region/tests.rs": {
+      "before_sha256": "d975a1d8d20edbad2c627f3d8a19c52c74b5a0f8861f005f44c024836e470da4",
+      "after_sha256": "00df5f1b059e8d615a72c2a5fcdfd22ec4a1ed61d7a96cd89969cc6c4ba8d8f6",
+      "bytes": 7125
+    }
+  },
+  "compact_bytes": 261954,
+  "compact_sha256": "75a6f948f0d76ed4250624e250b4a222350923bda831d06442ef4e8a6aa4744f",
+  "compact_decoded_sha256": "ab206db627eb18b23e875be41ef55ce5dfebb9be9bcec8e1514b0816042edb91",
+  "actual_local_full_spec_sha256": "cea80e726aaeff6a869d58a241a6a17e36b0fff808207f97057cc6170ac83ea2",
+  "canonical_full_spec_sha256": "29c040b3cdeae4e757d33c30a07c43c8de02d3cd896d85ef423fcc6b110c66ff",
+  "meaning": "Two Rust files changed only formatting and two reviewed optional trailing commas; one driver argument names actual unchanged rustfmt config. No API/expression/state/data changes. Original source/packet/raw/deadline retained."
+}

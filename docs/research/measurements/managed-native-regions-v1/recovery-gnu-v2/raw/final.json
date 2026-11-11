@@ -1,0 +1,20 @@
+{
+  "exit": 0,
+  "failure": null,
+  "elapsed_seconds": 113.35801122197881,
+  "original_budget": 600,
+  "unchanged_source_files": 4746,
+  "unchanged_template_files": 4658,
+  "unchanged_cache_files": {
+    "registry": 3528,
+    "git": 1802
+  },
+  "new_cases_planned": 3,
+  "mutation": "one private mapping-inheritance guard only",
+  "held_scope_dispatches": 0,
+  "actual_kernel_ancestor_backing": "Unproved",
+  "frozen_binary": {
+    "bytes": 37350184,
+    "sha256": "f506d50779cbf040b04ce4c08488993239fe2b007cfd43d7b4ab9ca89acf468d"
+  }
+}

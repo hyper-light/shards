@@ -1,0 +1,9 @@
+[
+  "rustfmt",
+  "--edition",
+  "2024",
+  "--config-path",
+  "rustfmt.toml",
+  "--check",
+  "crates/ipc/src/locked_region.rs"
+]

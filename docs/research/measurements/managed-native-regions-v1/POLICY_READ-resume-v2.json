@@ -1,0 +1,9 @@
+{
+  "role": "coordinator",
+  "revision": "28ba5083bd65a9a3bff4896921821cbbd4f1fee7",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "handoff_sha256": "85da0be72411fd80fbc0451398c2633f9998904f8e15a7f7b9e944e9e80d171c",
+  "task": "Recover failed region r61 formatter, preserve first raw, correct exact formatter mismatch before fresh bounded scope",
+  "scope": "ROOT owned region leaf/tests/Linux token/evidence only; both audit holds unchanged",
+  "time_ns": 1794401118189629000
+}

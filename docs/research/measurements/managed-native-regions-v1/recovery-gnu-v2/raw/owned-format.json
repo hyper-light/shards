@@ -1,0 +1,19 @@
+{
+  "command": [
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config-path",
+    "rustfmt.toml",
+    "--check",
+    "crates/ipc/src/locked_region.rs"
+  ],
+  "exit": 0,
+  "timeout": false,
+  "pidfd_ready": true,
+  "direct_child_waited_ECHILD": true,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed": 100.1024416689761,
+  "descendant_population": "Unknown"
+}

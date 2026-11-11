@@ -1,0 +1,19 @@
+{
+  "exit": 1,
+  "failure": {
+    "type": "RuntimeError",
+    "message": "owned-format stopped at first actual failure"
+  },
+  "elapsed_seconds": 60.84660003799945,
+  "original_budget": 600,
+  "unchanged_source_files": 4746,
+  "unchanged_template_files": 4658,
+  "unchanged_cache_files": {
+    "registry": 3528,
+    "git": 1802
+  },
+  "new_cases_planned": 3,
+  "mutation": "one private mapping-inheritance guard only",
+  "held_scope_dispatches": 0,
+  "actual_kernel_ancestor_backing": "Unproved"
+}

@@ -1,0 +1,116 @@
+{
+  "full_exit": 2,
+  "diagnostics": [
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:27: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:30: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:42: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch:53: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:72: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:75: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:87: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout:99: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stdout:12: new blank line at EOF."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stdout:7: new blank line at EOF."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stdout:7: new blank line at EOF."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stdout:6: new blank line at EOF."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stdout",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stdout:7: new blank line at EOF."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/PRODUCT.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/PRODUCT.patch:8: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:27: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:30: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:42: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch:53: trailing whitespace."
+    },
+    {
+      "path": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/PRODUCT.patch",
+      "authentic_retained_patch_or_raw": true,
+      "text": "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/PRODUCT.patch:8: trailing whitespace."
+    }
+  ],
+  "count": 19,
+  "affected_paths": [
+    "docs/research/measurements/managed-native-regions-v1/ON-v1-FORMAT-ONLY.patch",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v1/raw/owned-format.stdout",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/mutant-inheritance-case.stdout",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-0.stdout",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-1.stdout",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/new-region-case-2.stdout",
+    "docs/research/measurements/managed-native-regions-v1/recovery-gnu-v2/raw/restored-guard-case.stdout",
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v1/PRODUCT.patch",
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/ON-v1-FORMAT-ONLY.patch",
+    "docs/research/measurements/managed-native-regions-v1/source-delivery-v2/PRODUCT.patch"
+  ],
+  "nonraw_diagnostics": 0,
+  "unknown_lines": [],
+  "action": "Authentic frozen patch-context/raw format output retained byte-exact; current three source paths whitespace check0; no raw rewriting."
+}

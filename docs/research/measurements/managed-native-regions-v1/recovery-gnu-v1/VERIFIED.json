@@ -1,0 +1,28 @@
+{
+  "archive_bytes": 251361,
+  "archive_sha256": "12d17f7e492737caa6df59cc1ad6db7168ee335401f027eb72f1eee732e42ac0",
+  "payloads": 12,
+  "members": 13,
+  "all_safe_unique_regular_and_hashes_verified": true,
+  "compiler_cases_mutations": 0,
+  "stop": "owned-format1 before Cargo",
+  "actual_final": {
+    "exit": 1,
+    "failure": {
+      "type": "RuntimeError",
+      "message": "owned-format stopped at first actual failure"
+    },
+    "elapsed_seconds": 60.84660003799945,
+    "original_budget": 600,
+    "unchanged_source_files": 4746,
+    "unchanged_template_files": 4658,
+    "unchanged_cache_files": {
+      "registry": 3528,
+      "git": 1802
+    },
+    "new_cases_planned": 3,
+    "mutation": "one private mapping-inheritance guard only",
+    "held_scope_dispatches": 0,
+    "actual_kernel_ancestor_backing": "Unproved"
+  }
+}

@@ -1,0 +1,403 @@
+{
+  "transport": [
+    {
+      "part": 0,
+      "offset": 0,
+      "length": 40000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 0, \"bytes\": 40000, \"sha256\": \"2543a54b36b3de1a61282b6adb3be021a272c62f954ba2f1fd9fc445585facdf\", \"elapsed\": 0.00018590688705444336}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 1,
+      "offset": 40000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 1, \"bytes\": 80000, \"sha256\": \"4799a5364a62de4cb8fea48abc6a52e512b0a83e889fd452ed05b05cff1512f9\", \"elapsed\": 0.5256634339457378}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 2,
+      "offset": 120000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 2, \"bytes\": 80000, \"sha256\": \"c4dd4aea3568b5991ba8513e4663d3070346ae0a642e3cc47d85fb50cc3db750\", \"elapsed\": 0.8535597239388153}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 3,
+      "offset": 200000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 3, \"bytes\": 80000, \"sha256\": \"c949279f4bca04045315e1b686267fea7d95da056c6cf92d65d147398f37876d\", \"elapsed\": 1.3432411359390244}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 4,
+      "offset": 280000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 4, \"bytes\": 80000, \"sha256\": \"6a73bbae1d226dc701645a2a9afcc7069c1406c56a08250fed5d1f8c0d92d0b1\", \"elapsed\": 1.9959125278983265}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 5,
+      "offset": 360000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 5, \"bytes\": 80000, \"sha256\": \"83e40809b461f88f1a6b19673a8552d3e02419735091c3626de903f6b3ca957c\", \"elapsed\": 2.622519836993888}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 6,
+      "offset": 440000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 6, \"bytes\": 80000, \"sha256\": \"672f7c89d5a32a8eb0c51c333c1eae0d1791b853c04c72fdb0e4187eef9d1a85\", \"elapsed\": 3.303297526901588}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 7,
+      "offset": 520000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 7, \"bytes\": 80000, \"sha256\": \"c7af35643f966001b8c928f8bb263cc270cc777f0b402bb5eedb5311307cb2e8\", \"elapsed\": 3.8551711989566684}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 8,
+      "offset": 600000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 8, \"bytes\": 80000, \"sha256\": \"b48a465bb7895bc50c6120f5818b18676255d032a2264bd93514f3e3c4dc32d9\", \"elapsed\": 4.390210888930596}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 9,
+      "offset": 680000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 9, \"bytes\": 80000, \"sha256\": \"ca6c5a5ba200d4eb7d82b5d31e4772d3879a62033296333627b09bbd1c2f1c80\", \"elapsed\": 4.720655196928419}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 10,
+      "offset": 760000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 10, \"bytes\": 80000, \"sha256\": \"a5664f351b6e9038f6eccc0e78af32e61310701bc4c775e0d6dbeb59e56002e0\", \"elapsed\": 5.546779936994426}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 11,
+      "offset": 840000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 11, \"bytes\": 80000, \"sha256\": \"cbbdb6a704d3875bdebaedf834c05525431af587eedf04a1ff43f1716e069903\", \"elapsed\": 6.072064523934387}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 12,
+      "offset": 920000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 12, \"bytes\": 80000, \"sha256\": \"e89c241fda7c9855241091aafd69c049383e42475ee292416fbf0cf0112831cc\", \"elapsed\": 6.447409115964547}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 13,
+      "offset": 1000000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 13, \"bytes\": 80000, \"sha256\": \"a4fa9aa2aecdec79f281a7e9c7c8a70803fca9910e5d584e9be55a6016b93d53\", \"elapsed\": 7.022107422933914}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 14,
+      "offset": 1080000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 14, \"bytes\": 80000, \"sha256\": \"b9cafc0d6efa6a020aec009b734e021eb7fcf9648f82264cbf0049efd39ef27f\", \"elapsed\": 7.534610144910403}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 15,
+      "offset": 1160000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 15, \"bytes\": 80000, \"sha256\": \"28b58155bddcc6256be7664487e7c8babb3f935ad05c3b6c7cf134fcfca188d7\", \"elapsed\": 8.127246364951134}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 16,
+      "offset": 1240000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 16, \"bytes\": 80000, \"sha256\": \"38edb7deabfbda5b31cbec3fc8668ed967aa84a2f26742d488de17fb99868628\", \"elapsed\": 8.597498780931346}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 17,
+      "offset": 1320000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 17, \"bytes\": 80000, \"sha256\": \"cb7752b3c10c483c6388fe5b260ae619c7fbb3bde26b5fd3d280f918a71c3fe9\", \"elapsed\": 9.05436392989941}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 18,
+      "offset": 1400000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 18, \"bytes\": 80000, \"sha256\": \"e53feb8ccdd6a761829f8a1cfff092460d3d82828a067e0c8a9174b65d93e4d7\", \"elapsed\": 9.878541073994711}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 19,
+      "offset": 1480000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 19, \"bytes\": 80000, \"sha256\": \"bb7a4650993660d52d27f4b32c8a25eba89139672836b89158714511c444dd8c\", \"elapsed\": 10.427808769978583}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 20,
+      "offset": 1560000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 20, \"bytes\": 80000, \"sha256\": \"ae7ef5080b61b54358698c0a72780c1da4257bc40f53cbaedb4a2cbf57e422cf\", \"elapsed\": 10.958688543993048}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 21,
+      "offset": 1640000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 21, \"bytes\": 80000, \"sha256\": \"88fed91925107a3997177bc83a680745a834f18121c174eb39d2b25bb34be914\", \"elapsed\": 11.363108511897735}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 22,
+      "offset": 1720000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 22, \"bytes\": 80000, \"sha256\": \"09baa5735cb3062b4b90b2d95cca875cbe66d894cdce52c7742fe7337c32c8f4\", \"elapsed\": 12.403905940940604}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 23,
+      "offset": 1800000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 23, \"bytes\": 80000, \"sha256\": \"9a121eb1f8c476c8502521b1ec9f2925eb812d218100d28315e7efd0b79b64fc\", \"elapsed\": 13.347663584980182}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 24,
+      "offset": 1880000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 24, \"bytes\": 80000, \"sha256\": \"f96936bd04b538938e938e1deb5040a8282489fbe6a18d9f86b36cfc6068e904\", \"elapsed\": 14.107622094918042}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 25,
+      "offset": 1960000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 25, \"bytes\": 80000, \"sha256\": \"790ac6f74d88318ff74a0547456b6e762d0ff5556f62a3080d5cc5259439b288\", \"elapsed\": 14.575509544927627}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 26,
+      "offset": 2040000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 26, \"bytes\": 80000, \"sha256\": \"20d6d5c12b71022a6e732e5c6ae832b6fdd0946d9f714d42fda2ff43ed15a782\", \"elapsed\": 16.17676133592613}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 27,
+      "offset": 2120000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 27, \"bytes\": 80000, \"sha256\": \"3aca1eb3cf7aafd4042816e1b24cce544ad0a76ec18f137c415e52ffc6604e67\", \"elapsed\": 17.274668885977007}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 28,
+      "offset": 2200000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 28, \"bytes\": 80000, \"sha256\": \"c6b6c19cd4a10766060aa9f92fdbfe8c6aa6e302a76bdc4136d0e7bf28a29985\", \"elapsed\": 17.868965835892595}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 29,
+      "offset": 2280000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 29, \"bytes\": 80000, \"sha256\": \"f844507793f3b19508922490d7acd8c2a20f679813bad6630f0177f954bfcbc3\", \"elapsed\": 18.69620845397003}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 30,
+      "offset": 2360000,
+      "length": 80000,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 30, \"bytes\": 80000, \"sha256\": \"f0685841106faa8de08528ee45cc8ef1ed5d75b7a7d79db8c5bfc6841e162e01\", \"elapsed\": 19.5219310419634}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    },
+    {
+      "part": 31,
+      "offset": 2440000,
+      "length": 54928,
+      "result": {
+        "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+        "output": "{\"part\": 31, \"bytes\": 54928, \"sha256\": \"f6f0b8718275b8edbf7e090ba5f7a252a0b6d27258517d0460c3bb05e61e0fc9\", \"elapsed\": 20.161858269944787}\n",
+        "running": false,
+        "why": "linux/x86_64 · 27 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · 1 CI jobs · I/O pressure 32%",
+        "exit_code": 0
+      }
+    }
+  ],
+  "scope": "root-native-regions-gnu-v1-1794400171274",
+  "input": "root-native-regions-gnu-v1-1794400171274-input",
+  "command": "python3 - <<'REGION_RUN'\nimport pathlib,time,base64,zlib,json,hashlib,os,sys\np=pathlib.Path.home()/'Projects/root-native-regions-gnu-v1-1794400171274-input'\nbegan=float((p/'began').read_text());assert time.monotonic()-began<585\nparts=sorted(p.glob('part-*'));assert len(parts)==32\nraw=b''.join(q.read_bytes() for q in parts)\nassert len(raw)==2494928 and hashlib.sha256(raw).hexdigest()=='33ff7661eb4003f5e16e04002df0c4d2d99823b1c216855549fde867563216e3'\nplain=zlib.decompress(raw);assert hashlib.sha256(plain).hexdigest()=='02fedd9d24b18d5ac9d618abeccae833f774f744493916ce832c3c4bf77870c4'\nspec=json.loads(plain)\ndriver=base64.b64decode(spec['driver_base64'],validate=True);assert hashlib.sha256(driver).hexdigest()=='98cdcf93647e94dbfbbf0ceb2d0965c977e0b7e5413d110a94312d827dcca673'\npackage=p/'RUN-INPUT.json.zlib';package.write_bytes(raw)\nscript=p/'run-gnu-v1.py';script.write_bytes(driver)\nos.environ['ROOT_REGIONS_BEGAN']=str(began)\nos.execv(sys.executable,[sys.executable,str(script),str(package),str(pathlib.Path.home()/'Projects/root-native-regions-gnu-v1-1794400171274')])\nREGION_RUN",
+  "run": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "",
+    "running": true,
+    "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+    "id": "r61",
+    "why": "linux/x86_64 · 26 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · memory pressure 0% · I/O pressure 31%"
+  },
+  "case_count": 3,
+  "mutation": "ONE DONTFORK -> DOFORK mapping observer and guarded original restoration",
+  "holds": "Audit4819/five and all named holds unchanged",
+  "metadata_correction": "Initial DISPATCH write failed after actual r61 admission: V8 TextEncoder unavailable. No run replay; original run retained."
+}

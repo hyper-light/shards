@@ -1,0 +1,14 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "scripts/check-development-policy"
+  ],
+  "exit": 0,
+  "timeout": false,
+  "pidfd_ready": true,
+  "direct_child_waited_ECHILD": true,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed": 100.06855155597441,
+  "descendant_population": "Unknown"
+}

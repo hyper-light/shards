@@ -1,0 +1,5 @@
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/source/crates/abi)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/source/crates/testdir)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/source/crates/ipc)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.94s

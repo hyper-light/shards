@@ -1,0 +1,24 @@
+{
+  "scope": "ROOT owned storage/residency leaf source; formatter0, actual GNU batch pending. No Session/resource authority or ancestor/kernel coverage",
+  "base": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "files": {
+    "crates/ipc/src/lib.rs": {
+      "before_sha256": "5be698a61ace8d2ebd2837e256242800b4e85cbe930237212205e5e4cf2669fa",
+      "after_sha256": "c3883fbb07a16cf8c2845738369d979b4c1aaa6c7ab0be38d5cbacb4f338e6bb",
+      "bytes": 137433
+    },
+    "crates/ipc/src/locked_region.rs": {
+      "before_sha256": null,
+      "after_sha256": "a2b9a12a1f377087c2dfd49e761055760d9f860ff2bac064bb869fc3d0c085a5",
+      "bytes": 9576
+    },
+    "crates/ipc/src/locked_region/tests.rs": {
+      "before_sha256": null,
+      "after_sha256": "d975a1d8d20edbad2c627f3d8a19c52c74b5a0f8861f005f44c024836e470da4",
+      "bytes": 7228
+    }
+  },
+  "patch_sha256": "18382e95b5926c3609f9dde3ef55d88b041b44856e9038b83e28d9f23871afea",
+  "single_registry": "Existing IPC crate Linux module token; preserve current child_fds/sealed_body additions, do not whole-copy lib.rs",
+  "semantics": "Region::acquire_zeroed(NonZeroUsize)->Result<Region,Rejected>; bytes()/bytes_mut() checked original process; extent() observed lengths only; release(self)->Result<(),Retained>; Rejected::Retained owns unready mapping plus original cause; no growth/capability/FD/queue or default capacity"
+}

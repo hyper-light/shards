@@ -1,0 +1,12 @@
+[
+  "cargo",
+  "check",
+  "--locked",
+  "--offline",
+  "-p",
+  "shards-ipc",
+  "--target",
+  "x86_64-unknown-linux-gnu",
+  "-j2",
+  "--all-targets"
+]

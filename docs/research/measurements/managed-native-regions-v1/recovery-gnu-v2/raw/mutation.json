@@ -1,0 +1,9 @@
+{
+  "path": "/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/mutant-source/crates/ipc/src/locked_region.rs",
+  "before": "02fe880924da4941251aea582136406529d027808cfec6a2211aafbc93fc8b1b",
+  "after": {
+    "bytes": 9425,
+    "sha256": "8530977c24014c1685c26839a56a5c86e0f87855a0e933cbcffa82821cffb433"
+  },
+  "change": "ONE production madvise DONTFORK -> DOFORK; actual mapping observer must detect inheritance"
+}

@@ -1,0 +1,6 @@
+
+thread 'locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe' (1498706) panicked at crates/ipc/src/locked_region/tests.rs:164:5:
+assertion `left == right` failed: raw mincore observed a region inherited by the child
+  left: [1, 0]
+ right: [1, 1]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

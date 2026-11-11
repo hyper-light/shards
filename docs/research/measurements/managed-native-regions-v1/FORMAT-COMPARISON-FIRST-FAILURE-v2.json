@@ -1,0 +1,8 @@
+{
+  "kind": "AssertionError",
+  "assertion": "all non-whitespace characters equal",
+  "cause": "Rustfmt also removes optional trailing commas when collapsing tuples and struct expressions",
+  "before_product_writes": true,
+  "compiler_or_case_replayed": false,
+  "action": "Review exact Rustfmt diff; retain original source and failure; do not call raw non-whitespace bytes identical"
+}

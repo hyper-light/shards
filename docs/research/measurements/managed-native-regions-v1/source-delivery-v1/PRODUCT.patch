@@ -1,0 +1,506 @@
+diff --git a/crates/ipc/src/lib.rs b/crates/ipc/src/lib.rs
+index 02ee71fbf..5550e12b2 100644
+--- a/crates/ipc/src/lib.rs
++++ b/crates/ipc/src/lib.rs
+@@ -2171,6 +2171,9 @@ pub const MAX_FDS: usize = run_fds::CLIENT
+     + run_fds::SHARES
+     + run_fds::CAPTURE;
+ 
++#[cfg(target_os = "linux")]
++pub mod locked_region;
++
+ pub mod slots;
+ #[cfg(unix)]
+ mod spawner;
+diff --git a/crates/ipc/src/locked_region.rs b/crates/ipc/src/locked_region.rs
+new file mode 100644
+index 000000000..4aa8aa22a
+--- /dev/null
++++ b/crates/ipc/src/locked_region.rs
+@@ -0,0 +1,295 @@
++//! Acquired Linux storage, not a management grant or a future allocation promise.
++//!
++//! Each region owns an initialized private RW/NX mapping and ordinary mlock of
++//! its entire page-rounded extent. DONTFORK prevents a later child from adding
++//! COW obligations to these pages. Original owner/ancestor admission and induced
++//! kernel/transport resources remain the caller's independent responsibilities.
++//! See docs/research/measurements/managed-native-regions-v1/DECISION.md.
++
++use std::io;
++use std::num::NonZeroUsize;
++use std::ptr::NonNull;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Operation {
++    Map,
++    ExcludeChild,
++    Lock,
++    Release,
++}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Failure {
++    Length,
++    PageSize {
++        actual: libc::c_long,
++    },
++    NullAddress,
++    WrongProcess,
++    Native {
++        operation: Operation,
++        kind: io::ErrorKind,
++        errno: Option<i32>,
++    },
++}
++
++impl std::fmt::Display for Failure {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(out, "native storage: {self:?}")
++    }
++}
++
++impl std::error::Error for Failure {}
++
++fn native(operation: Operation) -> Failure {
++    let error = io::Error::last_os_error();
++    Failure::Native {
++        operation,
++        kind: error.kind(),
++        errno: error.raw_os_error(),
++    }
++}
++
++/// Sizes of the actual held representation; none is an entitlement or a limit.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct Extent {
++    pub usable: NonZeroUsize,
++    pub mapped: NonZeroUsize,
++    pub page: NonZeroUsize,
++}
++
++impl Extent {
++    fn checked(usable: NonZeroUsize, page: NonZeroUsize) -> Result<Self, Failure> {
++        let remainder = usable.get() % page.get();
++        let extra = if remainder == 0 {
++            0
++        } else {
++            page.get() - remainder
++        };
++        let mapped = usable
++            .get()
++            .checked_add(extra)
++            .filter(|bytes| isize::try_from(*bytes).is_ok())
++            .and_then(NonZeroUsize::new)
++            .ok_or(Failure::Length)?;
++        Ok(Self {
++            usable,
++            mapped,
++            page,
++        })
++    }
++}
++
++enum State {
++    Held {
++        address: *mut libc::c_void,
++        process: libc::pid_t,
++    },
++    Released,
++}
++
++struct Mapping {
++    state: State,
++    extent: Extent,
++}
++
++impl Mapping {
++    fn address(&self) -> Result<*mut libc::c_void, Failure> {
++        match self.state {
++            State::Held { address, process } => {
++                // SAFETY: getpid has no pointer argument or ownership side effect.
++                if unsafe { libc::getpid() } == process {
++                    Ok(address)
++                } else {
++                    Err(Failure::WrongProcess)
++                }
++            }
++            State::Released => Err(Failure::Length),
++        }
++    }
++
++    fn release(&mut self) -> Result<(), Failure> {
++        if matches!(self.state, State::Released) {
++            return Ok(());
++        }
++        let address = self.address()?;
++        // SAFETY: this is the exact still-owned mmap range; no slice survives
++        // the consuming public release. Successful unmap also removes its locks.
++        if unsafe { libc::munmap(address, self.extent.mapped.get()) } != 0 {
++            return Err(native(Operation::Release));
++        }
++        self.state = State::Released;
++        Ok(())
++    }
++}
++
++impl Drop for Mapping {
++    fn drop(&mut self) {
++        // Explicit release returns any failed cleanup to the real owner. Drop
++        // is only best effort, never a capacity-return or kernel-return receipt.
++        // address() also prevents a copied post-fork wrapper from unmapping an
++        // unrelated child allocation where the excluded region used to be.
++        let _ = self.release();
++    }
++}
++
++/// An unready or release-failed mapping that still needs explicit cleanup.
++pub struct Retained {
++    mapping: Mapping,
++    failure: Failure,
++}
++
++impl Retained {
++    pub fn extent(&self) -> Extent {
++        self.mapping.extent
++    }
++    pub fn failure(&self) -> Failure {
++        self.failure
++    }
++
++    /// Retry only at the actual owner's chosen cleanup event; no timer or loop.
++    pub fn release(mut self) -> Result<(), Self> {
++        match self.mapping.release() {
++            Ok(()) => Ok(()),
++            Err(failure) => {
++                self.failure = failure;
++                Err(self)
++            }
++        }
++    }
++}
++
++impl std::fmt::Debug for Retained {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        out.debug_struct("RetainedRegion")
++            .field("extent", &self.mapping.extent)
++            .field("failure", &self.failure)
++            .finish_non_exhaustive()
++    }
++}
++
++#[derive(Debug)]
++pub enum Rejected {
++    Refused(Failure),
++    Retained { cause: Failure, storage: Retained },
++}
++
++impl Rejected {
++    fn cleanup(mut mapping: Mapping, cause: Failure) -> Self {
++        match mapping.release() {
++            Ok(()) => Self::Refused(cause),
++            Err(failure) => Self::Retained {
++                cause,
++                storage: Retained { mapping, failure },
++            },
++        }
++    }
++}
++
++/// Initialized, resident private bytes. Not Clone; no descriptor or raw owner
++/// token can manufacture it. Kernel/ancestor guarantees are not implied.
++pub struct Region {
++    mapping: Mapping,
++}
++
++impl std::fmt::Debug for Region {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        out.debug_struct("LockedRegion")
++            .field("extent", &self.mapping.extent)
++            .finish_non_exhaustive()
++    }
++}
++
++impl Region {
++    /// Caller supplies the exact required representation length after separate
++    /// owner admission. This changes no limit, capability or global VM setting.
++    pub fn acquire_zeroed(bytes: NonZeroUsize) -> Result<Self, Rejected> {
++        // SAFETY: sysconf queries the running kernel/libc's actual page size.
++        let actual = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
++        let page = usize::try_from(actual)
++            .ok()
++            .and_then(NonZeroUsize::new)
++            .ok_or(Rejected::Refused(Failure::PageSize { actual }))?;
++        let extent = Extent::checked(bytes, page).map_err(Rejected::Refused)?;
++        // SAFETY: positive checked extent, no fixed address, file, executable
++        // permission or other existing mapping is changed.
++        let raw = unsafe {
++            libc::mmap(
++                std::ptr::null_mut(),
++                extent.mapped.get(),
++                libc::PROT_READ | libc::PROT_WRITE,
++                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
++                -1,
++                0,
++            )
++        };
++        if raw == libc::MAP_FAILED {
++            return Err(Rejected::Refused(native(Operation::Map)));
++        }
++        // SAFETY: getpid has no pointer argument or ownership side effect.
++        let process = unsafe { libc::getpid() };
++        let mapping = Mapping {
++            state: State::Held {
++                address: raw,
++                process,
++            },
++            extent,
++        };
++        let Some(address) = NonNull::new(raw.cast::<u8>()) else {
++            return Err(Rejected::cleanup(mapping, Failure::NullAddress));
++        };
++        // SAFETY: the complete live mapping is owned here. This is applied before
++        // locks/publication so future fork cannot create private-page COW debt.
++        if unsafe { libc::madvise(raw, extent.mapped.get(), libc::MADV_DONTFORK) } != 0 {
++            return Err(Rejected::cleanup(mapping, native(Operation::ExcludeChild)));
++        }
++        // SAFETY: exact accessible RW range. Ordinary mlock (not ONFAULT or
++        // MAP_LOCKED) must populate the complete range or report failure.
++        if unsafe { libc::mlock(raw, extent.mapped.get()) } != 0 {
++            return Err(Rejected::cleanup(mapping, native(Operation::Lock)));
++        }
++        // SAFETY: all mapped bytes belong to this initialized writable region;
++        // no borrow or child can observe the representation before completion.
++        unsafe { std::ptr::write_bytes(address.as_ptr(), 0, extent.mapped.get()) };
++        Ok(Self { mapping })
++    }
++
++    pub fn extent(&self) -> Extent {
++        self.mapping.extent
++    }
++
++    pub fn bytes(&self) -> Result<&[u8], Failure> {
++        let address =
++            NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
++        // SAFETY: exact initialized usable extent, checked <=isize::MAX;
++        // the shared borrow keeps the uniquely owned mapping alive.
++        Ok(unsafe {
++            std::slice::from_raw_parts(address.as_ptr(), self.mapping.extent.usable.get())
++        })
++    }
++
++    pub fn bytes_mut(&mut self) -> Result<&mut [u8], Failure> {
++        let address =
++            NonNull::new(self.mapping.address()?.cast::<u8>()).ok_or(Failure::NullAddress)?;
++        // SAFETY: exclusive borrow of the same live initialized usable range.
++        Ok(unsafe {
++            std::slice::from_raw_parts_mut(address.as_ptr(), self.mapping.extent.usable.get())
++        })
++    }
++
++    /// A successful result witnesses this exact mapping's unmap, not release of
++    /// other references, slots, memfds, SCM queues or an operation's lifetime.
++    pub fn release(mut self) -> Result<(), Retained> {
++        match self.mapping.release() {
++            Ok(()) => Ok(()),
++            Err(failure) => Err(Retained {
++                mapping: self.mapping,
++                failure,
++            }),
++        }
++    }
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
++mod tests;
+diff --git a/crates/ipc/src/locked_region/tests.rs b/crates/ipc/src/locked_region/tests.rs
+new file mode 100644
+index 000000000..6ccf9faff
+--- /dev/null
++++ b/crates/ipc/src/locked_region/tests.rs
+@@ -0,0 +1,185 @@
++use super::*;
++use std::fs::File;
++use std::io::{Read as _, Write as _};
++use std::os::fd::{AsRawFd as _, FromRawFd as _};
++
++fn smaps_for(address: usize) -> String {
++    let text = std::fs::read_to_string("/proc/self/smaps").unwrap();
++    let mut selected = String::new();
++    let mut inside = false;
++    for line in text.lines() {
++        if let Some((range, _)) = line.split_once(' ')
++            && let Some((first, last)) = range.split_once('-')
++            && let (Ok(first), Ok(last)) = (
++                usize::from_str_radix(first, 16),
++                usize::from_str_radix(last, 16),
++            )
++        {
++            inside = (first..last).contains(&address);
++        }
++        if inside {
++            selected.push_str(line);
++            selected.push('\n');
++        }
++    }
++    selected
++}
++
++fn kilobytes(smaps: &str, field: &str) -> usize {
++    smaps
++        .lines()
++        .find_map(|line| line.strip_prefix(field))
++        .unwrap()
++        .split_ascii_whitespace()
++        .next()
++        .unwrap()
++        .parse::<usize>()
++        .unwrap()
++        .checked_mul(1024)
++        .unwrap()
++}
++
++#[test]
++fn acquired_region_is_initialized_locked_writable_and_explicitly_released() {
++    let original = b"native owner storage\0\xff";
++    let mut region = Region::acquire_zeroed(NonZeroUsize::new(original.len()).unwrap()).unwrap();
++    let extent = region.extent();
++    assert_eq!(region.bytes().unwrap(), vec![0; original.len()]);
++    region.bytes_mut().unwrap().copy_from_slice(original);
++    assert_eq!(region.bytes().unwrap(), original);
++    let address = region.bytes().unwrap().as_ptr() as usize;
++    let smaps = smaps_for(address);
++    let flags = smaps
++        .lines()
++        .find_map(|line| line.strip_prefix("VmFlags:"))
++        .unwrap();
++    assert!(flags.split_ascii_whitespace().any(|flag| flag == "lo"));
++    assert!(flags.split_ascii_whitespace().any(|flag| flag == "dc"));
++    assert!(!flags.split_ascii_whitespace().any(|flag| flag == "ex"));
++    assert!(kilobytes(&smaps, "Rss:") >= extent.mapped.get());
++    assert!(kilobytes(&smaps, "Locked:") >= extent.mapped.get());
++    // The fixture payload fits one actual page; this is an observation vector
++    // size, not a production capacity or page-size default.
++    assert_eq!(extent.mapped, extent.page);
++    region.release().unwrap();
++    let mut residency = [0u8];
++    // SAFETY: mincore examines the now-unmapped numeric range without reading
++    // it, writing at most one byte for its one-page fixture extent.
++    let returned = unsafe {
++        libc::mincore(
++            address as *mut libc::c_void,
++            extent.mapped.get(),
++            residency.as_mut_ptr(),
++        )
++    };
++    assert_eq!(returned, -1);
++    assert_eq!(
++        io::Error::last_os_error().raw_os_error(),
++        Some(libc::ENOMEM)
++    );
++    let _ = writeln!(
++        std::io::stdout().lock(),
++        "REGION usable={} mapped={} page={} locked/resident observed; explicit unmap then mincore ENOMEM",
++        extent.usable,
++        extent.mapped,
++        extent.page
++    );
++}
++
++#[test]
++fn region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe() {
++    let region = Region::acquire_zeroed(NonZeroUsize::MIN).unwrap();
++    let address = region.bytes().unwrap().as_ptr();
++    let extent = region.extent();
++    assert_eq!(extent.mapped, extent.page);
++    let mut pipe = [-1; 2];
++    // SAFETY: pipe points at two initialized descriptor slots.
++    let pipe_result = unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) };
++    assert_eq!(pipe_result, 0);
++    // SAFETY: each successful pipe2 descriptor is taken exactly once.
++    let mut reader = unsafe { File::from_raw_fd(pipe[0]) };
++    // SAFETY: this is the other fresh pipe2 descriptor.
++    let writer = unsafe { File::from_raw_fd(pipe[1]) };
++    // SAFETY: the child executes only the bounded raw-observation branch below,
++    // never the test runtime, allocation, ordinary I/O, unwinding or destructors.
++    let child = unsafe { libc::fork() };
++    assert!(child >= 0);
++    if child == 0 {
++        let refused = matches!(region.bytes(), Err(Failure::WrongProcess));
++        let mut residency = [0u8];
++        // SAFETY: mincore does not dereference the excluded numeric region and
++        // has exactly one output byte for this one-page fixture extent.
++        let result = unsafe {
++            libc::mincore(
++                address.cast_mut().cast(),
++                extent.mapped.get(),
++                residency.as_mut_ptr(),
++            )
++        };
++        // SAFETY: Linux libc's thread-local errno pointer is valid in this child.
++        let errno = unsafe { *libc::__errno_location() };
++        let absent = result == -1 && errno == libc::ENOMEM;
++        let report = [u8::from(refused), u8::from(absent)];
++        // SAFETY: write a fixed initialized two-byte observation to our pipe.
++        let written =
++            unsafe { libc::write(writer.as_raw_fd(), report.as_ptr().cast(), report.len()) };
++        // SAFETY: terminate this raw child without parent owners/destructors.
++        unsafe {
++            libc::_exit(if written == 2 {
++                libc::EXIT_SUCCESS
++            } else {
++                libc::EXIT_FAILURE
++            })
++        };
++    }
++    drop(writer);
++    // SAFETY: obtain the actual child's pidfd while it remains waitable here.
++    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child, 0) };
++    let pidfd = i32::try_from(pidfd).unwrap();
++    assert!(pidfd >= 0);
++    // SAFETY: pidfd_open returned this unique new descriptor.
++    let pidfd = unsafe { File::from_raw_fd(pidfd) };
++    let mut report = [0; 2];
++    reader.read_exact(&mut report).unwrap();
++    let mut poll = libc::pollfd {
++        fd: pidfd.as_raw_fd(),
++        events: libc::POLLIN,
++        revents: 0,
++    };
++    // SAFETY: one initialized pollfd. The outer per-case deadline bounds a
++    // broken fixture; no production timeout or periodic population probe exists.
++    let ready = unsafe { libc::poll(&raw mut poll, 1, -1) };
++    assert_eq!(ready, 1);
++    let mut status = 0;
++    // SAFETY: this exact child belongs only to this test's reaper.
++    let waited = unsafe { libc::waitpid(child, &raw mut status, 0) };
++    assert_eq!(waited, child);
++    assert!(libc::WIFEXITED(status));
++    assert_eq!(libc::WEXITSTATUS(status), libc::EXIT_SUCCESS);
++    // SAFETY: checking the same already-reaped child cannot consume another.
++    let again = unsafe { libc::waitpid(child, &raw mut status, libc::WNOHANG) };
++    assert_eq!(again, -1);
++    assert_eq!(
++        io::Error::last_os_error().raw_os_error(),
++        Some(libc::ECHILD)
++    );
++    assert_eq!(region.bytes().unwrap(), &[0]);
++    region.release().unwrap();
++    let _ = writeln!(
++        std::io::stdout().lock(),
++        "REGION_CHILD process_refused={} mapping_absent={} pidfd_ready=true waited=true ECHILD=true",
++        report[0],
++        report[1]
++    );
++    assert_eq!(
++        report,
++        [1, 1],
++        "raw mincore observed a region inherited by the child"
++    );
++}
++
++#[test]
++fn unrepresentable_region_refuses_before_mapping_or_locking() {
++    let failure = Region::acquire_zeroed(NonZeroUsize::new(usize::MAX).unwrap()).unwrap_err();
++    assert!(matches!(failure, Rejected::Refused(Failure::Length)));
++}

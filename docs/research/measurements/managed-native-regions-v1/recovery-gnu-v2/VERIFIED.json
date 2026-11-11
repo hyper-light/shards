@@ -1,0 +1,90 @@
+{
+  "archive_bytes": 257369,
+  "archive_sha256": "acbbee9755d247340d8913f5de31747386986fc32c5eb36f7a5bb8d6ad904fcf",
+  "payloads": 55,
+  "members": 56,
+  "all_safe_unique_regular_length_hash_verified": true,
+  "direct_stages": [
+    {
+      "file": "ipc-all-target-strict.json",
+      "exit": 0
+    },
+    {
+      "file": "ipc-check.json",
+      "exit": 0
+    },
+    {
+      "file": "ipc-test-build.json",
+      "exit": 0
+    },
+    {
+      "file": "ipc-test-list.json",
+      "exit": 0
+    },
+    {
+      "file": "mutant-inheritance-case.json",
+      "exit": 101
+    },
+    {
+      "file": "mutant-test-build.json",
+      "exit": 0
+    },
+    {
+      "file": "new-region-case-0.json",
+      "exit": 0
+    },
+    {
+      "file": "new-region-case-1.json",
+      "exit": 0
+    },
+    {
+      "file": "new-region-case-2.json",
+      "exit": 0
+    },
+    {
+      "file": "owned-format.json",
+      "exit": 0
+    },
+    {
+      "file": "policy.json",
+      "exit": 0
+    },
+    {
+      "file": "restored-guard-case.json",
+      "exit": 0
+    }
+  ],
+  "three_new_cases": [
+    "\nrunning 1 test\ntest locked_region::tests::acquired_region_is_initialized_locked_writable_and_explicitly_released ... REGION usable=22 mapped=4096 page=4096 locked/resident observed; explicit unmap then mincore ENOMEM\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s\n\n",
+    "\nrunning 1 test\ntest locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe ... REGION_CHILD process_refused=1 mapping_absent=1 pidfd_ready=true waited=true ECHILD=true\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s\n\n",
+    "\nrunning 1 test\ntest locked_region::tests::unrepresentable_region_refuses_before_mapping_or_locking ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s\n\n"
+  ],
+  "actual_mutation_stdout": "\nrunning 1 test\ntest locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe ... REGION_CHILD process_refused=1 mapping_absent=0 pidfd_ready=true waited=true ECHILD=true\nFAILED\n\nfailures:\n\nfailures:\n    locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s\n\n",
+  "actual_restored_stdout": "\nrunning 1 test\ntest locked_region::tests::region_fork_guard_prevents_mapping_inheritance_and_reaps_the_probe ... REGION_CHILD process_refused=1 mapping_absent=1 pidfd_ready=true waited=true ECHILD=true\nok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.00s\n\n",
+  "frozen_elf": {
+    "path": "/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/artifacts/shards_ipc-c126d553cd7914f1",
+    "bytes": 37350184,
+    "sha256": "f506d50779cbf040b04ce4c08488993239fe2b007cfd43d7b4ab9ca89acf468d",
+    "source_manifest_sha256": "9bbf9ed366bccbc78d937c1b06001ffe847e741bae896bb99bf9471e119c1457"
+  },
+  "actual_final": {
+    "exit": 0,
+    "failure": null,
+    "elapsed_seconds": 113.35801122197881,
+    "original_budget": 600,
+    "unchanged_source_files": 4746,
+    "unchanged_template_files": 4658,
+    "unchanged_cache_files": {
+      "registry": 3528,
+      "git": 1802
+    },
+    "new_cases_planned": 3,
+    "mutation": "one private mapping-inheritance guard only",
+    "held_scope_dispatches": 0,
+    "actual_kernel_ancestor_backing": "Unproved",
+    "frozen_binary": {
+      "bytes": 37350184,
+      "sha256": "f506d50779cbf040b04ce4c08488993239fe2b007cfd43d7b4ab9ca89acf468d"
+    }
+  }
+}

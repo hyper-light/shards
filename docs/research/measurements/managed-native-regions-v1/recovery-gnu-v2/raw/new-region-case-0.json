@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/artifacts/shards_ipc-c126d553cd7914f1",
+    "--exact",
+    "locked_region::tests::acquired_region_is_initialized_locked_writable_and_explicitly_released",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit": 0,
+  "timeout": false,
+  "pidfd_ready": true,
+  "direct_child_waited_ECHILD": true,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed": 107.24637748103123,
+  "descendant_population": "Unknown"
+}

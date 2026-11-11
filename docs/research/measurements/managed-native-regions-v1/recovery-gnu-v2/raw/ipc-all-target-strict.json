@@ -1,0 +1,25 @@
+{
+  "command": [
+    "cargo",
+    "clippy",
+    "--locked",
+    "--offline",
+    "-p",
+    "shards-ipc",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "exit": 0,
+  "timeout": false,
+  "pidfd_ready": true,
+  "direct_child_waited_ECHILD": true,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed": 108.2683195839636,
+  "descendant_population": "Unknown"
+}

@@ -1,0 +1,7 @@
+[
+  "/home/adalundhe/Projects/root-native-regions-gnu-v2-1794401538334/artifacts/shards_ipc-c126d553cd7914f1",
+  "--exact",
+  "locked_region::tests::unrepresentable_region_refuses_before_mapping_or_locking",
+  "--nocapture",
+  "--test-threads=1"
+]

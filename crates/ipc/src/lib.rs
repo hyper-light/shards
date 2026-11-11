@@ -2171,6 +2171,9 @@ pub const MAX_FDS: usize = run_fds::CLIENT
     + run_fds::SHARES
     + run_fds::CAPTURE;
 
+#[cfg(target_os = "linux")]
+pub mod locked_region;
+
 pub mod slots;
 #[cfg(unix)]
 mod spawner;

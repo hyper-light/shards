@@ -1,0 +1,13 @@
+{
+  "policy_revision": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "ROOT coordinator",
+  "task": "Actual region storage/acquisition method only; no hard backing or Session issuance",
+  "owned_paths": [
+    "crates/ipc/src/locked_region.rs",
+    "crates/ipc/src/locked_region/tests.rs",
+    "crates/ipc/src/lib.rs",
+    "docs/research/measurements/managed-native-regions-v1/"
+  ],
+  "scope": "NEW GNU formatting-only preparation, no compiler/test/actor/helper/VM. Audit graph/five remain held. Original sources retained before formatter."
+}
