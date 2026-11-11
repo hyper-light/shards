@@ -16,3 +16,7 @@ pub mod platform;
 pub mod snapshot;
 pub mod sync;
 pub mod vm;
+
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[path = "../../../docs/research/measurements/managed-audit-wire-adversarial/native.rs"]
+mod managed_audit_wire_adversarial;

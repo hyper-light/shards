@@ -1,0 +1,24 @@
+{
+  "kind": "SourceChecksOnly_NoCompileOrNative",
+  "checks": [
+    {
+      "command": "lockf -t 0 /tmp/g121-mac.lock rustfmt --check --edition 2024 --config-path /Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml --config skip_children=true docs/research/measurements/managed-audit-wire-adversarial/native.rs crates/vmm/src/lib.rs",
+      "chunk_id": "175c3f",
+      "wall_time_seconds": 0.011436375,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    },
+    {
+      "command": "git diff --cached --check",
+      "chunk_id": "979090",
+      "wall_time_seconds": 0.000006125,
+      "exit_code": 0,
+      "original_token_count": 0,
+      "output": ""
+    }
+  ],
+  "builds": 0,
+  "clippy": 0,
+  "native_cases": 0
+}

@@ -1,6 +1,6 @@
 # Native private-audit wire fixture preparation
 
-**Preparation only; native cases0.** The original FIN campaign expired without
+**Source implementation for review; native cases0.** The original FIN campaign expired without
 the remaining gates; its preserved immutable pointers are in
 [FIN-CONTINUITY.md](FIN-CONTINUITY.md).
 
@@ -8,13 +8,19 @@ The new [PROPOSAL.md](PROPOSAL.md) describes one ordinary native complete FUSE
 frame → existing `fs::answer` → `Server::audited` → held-file sequence, exactly
 two gapped stable members, one shared codec-derived B, intentional duplicate
 controls, committed record bytes, retained Close extents and typed second-member
-refusal. No fixture/source registration, build, mount or actor ran.
+refusal. At that preparation checkpoint no fixture/include was applied and no
+build, mount or actor ran.
+
+The later explicit implementation GO is recorded in [IMPLEMENTATION.md](IMPLEMENTATION.md).
+The cfg(test) include and [native.rs](native.rs) are now present on this private
+candidate; compilation/Clippy/actors remain held for original corpus and ROOT
+source/dispatch review. Earlier proposal/unapplied patch records remain immutable.
 
 - [source-scope.json](source-scope.json): exact8c base, owner-confirmed frozen
   ba78 constructor/API document, inspected source blobs/hashes, policy, sparse
   worktree and unallocated future runner/target.
-- [include.patch](include.patch): minimal UNAPPLIED three-line cfg(test) token;
-  the proposed leaf `native.rs` is not implemented in this checkpoint.
+- [include.patch](include.patch): original three-line cfg(test) token proposal,
+  preserved exactly. The same token is now applied after the implementation GO.
 - [constructor-refinement.patch](constructor-refinement.patch): exact UNAPPLIED
   three-file ba78 refinement selection, preserving fallible typed construction.
 - [CODEC-INPUT-CONTRACT.md](CODEC-INPUT-CONTRACT.md): remaining actual private
