@@ -1,0 +1,15 @@
+{
+  "record": "POLICY_READ",
+  "context": "Resume after the session moved from Codex to Claude Code; AGENTS.md, development-rules.md and development-evidence.md re-read in full, handoff re-read in full (464 lines)",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "agents_sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+  "evidence_sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+  "byte_identical_previously_read": {"CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f", "docs/design/managed-runtime-plan.md": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241", "docs/research/managed-native-authority-decision.md": "a7a889114c5b9f43c0918f4ecfef4dd7bd4a0eae36e7432ca129824904530056"},
+  "handoff_sha256": "cbf18f08643385c667bf6cfb1c2996bb89d997e3837d9322dfb68a31dd5519aa",
+  "role": "coordinator",
+  "agent": "01a148884a4770fdaf0111f3f792a248",
+  "task": "Recover r8/r14 raw; GREEN typed refusal presentation on custody v10d with RED-v2 and custody-dropping mutant in one bounded ordinary job",
+  "owned_paths": ["docs/research/measurements/managed-native-custody-bridge-v1/ (isolated candidates only)", "/Users/adalundhe/g121-root-parallel-evidence-20261110/custody-raw-recovery-*"],
+  "holds_unchanged": "audit 4819 graph and five portable tests, step10 VM, WinARM, all other listed holds"
+}

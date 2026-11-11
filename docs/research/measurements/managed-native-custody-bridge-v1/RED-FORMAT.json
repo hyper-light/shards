@@ -1,0 +1,18 @@
+{
+  "command": [
+    "rustup",
+    "run",
+    "1.98.1",
+    "rustfmt",
+    "--edition",
+    "2024",
+    "--config",
+    "skip_children=true",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/crates/init/src/run.rs"
+  ],
+  "exit": 0,
+  "only_new_root_candidate": true,
+  "held_audit_graph_or_five": false,
+  "free_after": 61313482752,
+  "after_sha256": "f765d3308bee8afac9a6305a3f26113fd6a5af85cd1bde9426087525a04f8a86"
+}

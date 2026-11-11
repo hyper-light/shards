@@ -1,0 +1,164 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -122,6 +122,40 @@
+             }
+         }
+         failure => StartupFailure::UnreportedDomain(failure),
++    }
++}
++
++fn report_startup_failure(conn: &File, failure: &StartupFailure) -> Option<u32> {
++    match failure {
++        StartupFailure::OwnerState => {
++            let _ = writeln!(io::stderr(), "shards-init: run owner state is invalid");
++            None
++        }
++        StartupFailure::Setup(f) => {
++            let _ = send(conn, kind::SYSTEM_ERR, f.message.as_bytes());
++            Some(f.status)
++        }
++        StartupFailure::Management(report) => {
++            let _ = send(conn, kind::MANAGEMENT_REFUSED, &report.encode());
++            Some(NOT_RUN)
++        }
++        StartupFailure::Control { member, cause } => {
++            report_owner_control(*member, cause);
++            None
++        }
++        StartupFailure::UnreportedLaunch { member, failure } => {
++            // A missing protected binding/canonical cause cannot manufacture an
++            // Epoch or credential selection. The host retains VM-loss Unknown.
++            let _ = (member, failure);
++            None
++        }
++        StartupFailure::UnreportedDomain(failure) => {
++            use std::os::fd::AsFd as _;
++            if let Ok(fd) = io::stderr().as_fd().try_clone_to_owned() {
++                let _ = writeln!(File::from(fd), "shards-init: domain startup {failure}");
++            }
++            None
++        }
+     }
+ }
+ 
+@@ -440,35 +474,10 @@
+     // rejected mapping) stays owned alongside all members through power_off.
+     let status = match &outcome {
+         Ok(status) => *status,
+-        Err(StartupFailure::OwnerState) => {
+-            let _ = writeln!(io::stderr(), "shards-init: run owner state is invalid");
+-            power_off()
+-        }
+-        Err(StartupFailure::Setup(f)) => {
+-            let _ = send(&conn, kind::SYSTEM_ERR, f.message.as_bytes());
+-            f.status
+-        }
+-        Err(StartupFailure::Management(report)) => {
+-            let _ = send(&conn, kind::MANAGEMENT_REFUSED, &report.encode());
+-            NOT_RUN
+-        }
+-        Err(StartupFailure::Control { member, cause }) => {
+-            report_owner_control(*member, cause);
+-            power_off()
+-        }
+-        Err(StartupFailure::UnreportedLaunch { member, failure }) => {
+-            // A missing protected binding/canonical cause cannot manufacture an
+-            // Epoch or credential selection. The host retains VM-loss Unknown.
+-            let _ = (member, failure);
+-            power_off()
+-        }
+-        Err(StartupFailure::UnreportedDomain(failure)) => {
+-            use std::os::fd::AsFd as _;
+-            if let Ok(fd) = io::stderr().as_fd().try_clone_to_owned() {
+-                let _ = writeln!(File::from(fd), "shards-init: domain startup {failure}");
+-            }
+-            power_off()
+-        }
++        Err(failure) => match report_startup_failure(&conn, failure) {
++            Some(status) => status,
++            None => power_off(),
++        },
+     };
+     // Said by the relay already where joiners of its network outlived it (D119).
+     if !reported {
+@@ -6351,3 +6360,80 @@
+         assert!(!cut.sending(&Outbox::default()));
+     }
+ }
++
++#[cfg(test)]
++mod startup_custody_tests {
++    use super::*;
++    use std::os::unix::net::UnixStream;
++
++    fn connection() -> (File, UnixStream) {
++        let (writer, reader) = UnixStream::pair().unwrap();
++        (File::from(OwnedFd::from(writer)), reader)
++    }
++
++    fn system_error(reader: &mut UnixStream) -> Vec<u8> {
++        let mut header = [0; run::HEADER];
++        reader.read_exact(&mut header).unwrap();
++        let (kind, length) = run::parse_header(header).unwrap();
++        assert_eq!(kind, kind::SYSTEM_ERR);
++        let mut message = vec![0; length as usize];
++        reader.read_exact(&mut message).unwrap();
++        message
++    }
++
++    #[test]
++    fn clone_and_pid_refusals_report_system_error_and_not_run() {
++        let (conn, mut reader) = connection();
++        for cause in [
++            crate::domains::StartFailure::Clone {
++                member: 7,
++                actual: -1,
++                cause: io::Error::from_raw_os_error(libc::EPERM),
++            },
++            crate::domains::StartFailure::Pid {
++                member: 8,
++                actual: libc::c_long::MAX,
++            },
++        ] {
++            let expected = run::render_error(&cause);
++            let failure = domain_start_failed(cause, &Spec::default());
++            assert_eq!(report_startup_failure(&conn, &failure), Some(NOT_RUN));
++            assert_eq!(system_error(&mut reader), expected.as_bytes());
++        }
++        let unknown = domain_start_failed(crate::domains::StartFailure::MissingNativeOwner, &Spec::default());
++        assert_eq!(report_startup_failure(&conn, &unknown), None);
++        reader.set_nonblocking(true).unwrap();
++        let mut byte = [0];
++        assert_eq!(
++            reader.read(&mut byte).unwrap_err().kind(),
++            io::ErrorKind::WouldBlock
++        );
++    }
++
++    #[test]
++    fn rejected_parent_group_survives_system_error_until_owner_drop() {
++        let (group, peer) = UnixStream::pair().unwrap();
++        let group_fd = group.as_raw_fd();
++        let mut pending = crate::managed::PendingMember::new();
++        // The real vacant-phase guard rejects the actual descriptor before
++        // inspecting the PID; no member/child/cgroup or authority is fabricated.
++        let cause = match pending.parent(0, File::from(OwnedFd::from(group))) {
++            Ok(_) => panic!("vacant custody accepted a parent"),
++            Err(cause) => cause,
++        };
++        assert!(pending.vacant());
++        let original = crate::domains::StartFailure::OwnerParent { member: 9, cause };
++        let expected = run::render_error(&original);
++        let failure = domain_start_failed(original, &Spec::default());
++        let (conn, mut reader) = connection();
++        assert_eq!(report_startup_failure(&conn, &failure), Some(NOT_RUN));
++        assert_eq!(system_error(&mut reader), expected.as_bytes());
++        // SAFETY: F_GETFD only inspects this test's original descriptor number.
++        assert!(unsafe { libc::fcntl(group_fd, libc::F_GETFD) } >= 0);
++        drop(failure);
++        // SAFETY: no descriptor was opened since the owner dropped its group.
++        assert_eq!(unsafe { libc::fcntl(group_fd, libc::F_GETFD) }, -1);
++        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
++        drop(peer);
++    }
++}

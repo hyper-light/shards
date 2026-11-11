@@ -1,0 +1,4 @@
+candidate-*/
+source-*.tar.gz
+variants/
+__pycache__/

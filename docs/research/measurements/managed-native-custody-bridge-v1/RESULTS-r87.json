@@ -1,0 +1,290 @@
+{
+  "run": "r87",
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "scope": "root-custody-report-green-1794424717422",
+  "exit": 0,
+  "elapsed_seconds": 64.22190243995283,
+  "raw": {
+    "archive": "raw-r87.tar.xz",
+    "bytes": 448772,
+    "sha256": "b1f373a8f2611116f16df413ebd166b9c461fa3e5f1b6bbbf0b9eb7d04766f75",
+    "payloads_verified": 87,
+    "manifest_sha256": "1d0ea28693b9f5fe94041b163c7e0933da5c0ab1921bb8d8f66035486641834c"
+  },
+  "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "host": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "stages": [
+    {
+      "stage": "rustc",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 3.945
+    },
+    {
+      "stage": "cargo",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 3.96
+    },
+    {
+      "stage": "policy",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 3.974
+    },
+    {
+      "stage": "consumer-format",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 4.102
+    },
+    {
+      "stage": "actual-init-check",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 20.826
+    },
+    {
+      "stage": "actual-init-strict",
+      "exit": 101,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 26.703
+    },
+    {
+      "stage": "green-test-compile",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 47.986
+    },
+    {
+      "stage": "green-test-list",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 48.028
+    },
+    {
+      "stage": "green-case-0",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 48.03
+    },
+    {
+      "stage": "green-case-1",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 48.032
+    },
+    {
+      "stage": "red-v2-test-compile",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 54.289
+    },
+    {
+      "stage": "red-v2-test-list",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 54.333
+    },
+    {
+      "stage": "red-v2-case-0",
+      "exit": 101,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 54.335
+    },
+    {
+      "stage": "red-v2-case-1",
+      "exit": 101,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 54.337
+    },
+    {
+      "stage": "mutant-custody-test-compile",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 64.091
+    },
+    {
+      "stage": "mutant-custody-test-list",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 64.144
+    },
+    {
+      "stage": "mutant-custody-case-0",
+      "exit": 0,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 64.146
+    },
+    {
+      "stage": "mutant-custody-case-1",
+      "exit": 101,
+      "timeout": false,
+      "fd": [
+        9,
+        9
+      ],
+      "elapsed_scope": 64.148
+    }
+  ],
+  "strict": {
+    "stage": "actual-init-strict",
+    "exit": 101,
+    "diagnostics": 17,
+    "identical_to_r8_baseline": true,
+    "only_new": [],
+    "only_baseline": [],
+    "classification": "UNCHANGED known red (unconsumed input/RAW APIs), not a pass"
+  },
+  "variants": {
+    "green": {
+      "run_rs_sha256": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+      "elf_sha256": "60a21c300bc94a899129bd9e13f82cecb820e3f6c7d33c7140a0c33e97b00f71",
+      "elf_bytes": 76744672,
+      "cases": {
+        "clone_and_pid_refusals_report_system_error_and_not_run": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        },
+        "rejected_parent_group_survives_system_error_until_owner_drop": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        }
+      }
+    },
+    "red-v2": {
+      "run_rs_sha256": "b784b38ea704370b796c25ce37e53d168489373443cec239a23783eb7b0759e6",
+      "elf_sha256": "8eb2f9851b667174a644e18876f9796b2a28d2a23ea996c4c55317e58c1e078e",
+      "elf_bytes": 76742752,
+      "cases": {
+        "clone_and_pid_refusals_report_system_error_and_not_run": {
+          "exit": 101,
+          "expected": 101,
+          "matched": true
+        },
+        "rejected_parent_group_survives_system_error_until_owner_drop": {
+          "exit": 101,
+          "expected": 101,
+          "matched": true
+        }
+      }
+    },
+    "mutant-custody": {
+      "run_rs_sha256": "bec3bab837d12db8e1b7e6001aa990291d5605d20644e9aa466bb4f82b475912",
+      "elf_sha256": "5bc51b7daa84178274bed3b95cadb53dd00e6887c9b00524379b2481d86d11c9",
+      "elf_bytes": 76748832,
+      "cases": {
+        "clone_and_pid_refusals_report_system_error_and_not_run": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        },
+        "rejected_parent_group_survives_system_error_until_owner_drop": {
+          "exit": 101,
+          "expected": 101,
+          "matched": true
+        }
+      }
+    }
+  },
+  "failure_text": {
+    "red-v2-case-0": "shards-init: domain startup member 7 clone returned -1: PermissionDenied, OS Some(1)\n\nthread 'run::startup_custody_tests::clone_and_pid_refusals_report_system_error_and_not_run' (1444396) panicked at crates/init/src/run.rs:6400:13:\nassertion `left == right` failed: typed member refusal must answer SYSTEM_ERR with NOT_RUN\n  left: None\n right: Some(125)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "red-v2-case-1": "shards-init: domain startup member 9: member parent association State; rejected group held true\n\nthread 'run::startup_custody_tests::rejected_parent_group_survives_system_error_until_owner_drop' (1444401) panicked at crates/init/src/run.rs:6433:9:\nassertion `left == right` failed: typed member refusal must answer SYSTEM_ERR with NOT_RUN\n  left: None\n right: Some(125)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+    "mutant-custody-case-1": "\nthread 'run::startup_custody_tests::rejected_parent_group_survives_system_error_until_owner_drop' (1463449) panicked at crates/init/src/run.rs:6455:9:\nassertion `left == right` failed: rejected group was released before its startup failure\n  left: Ok(0)\n right: Err(WouldBlock)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+  },
+  "all_expectations_matched": true,
+  "restored_green_run_rs": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+  "postchecks": {
+    "source": {
+      "source_entries": 4789,
+      "source_manifest_sha256": "7e42d3ca78f97705b3ac00f610501f3a71098bac9a38dca0bb3f8a8d37c1d30d",
+      "all_source_hashes_unchanged": true,
+      "final_run_rs": "GREEN restored"
+    },
+    "template_cache": {
+      "template_files": 4790,
+      "cache_files": {
+        "registry": 3528,
+        "git": 1802
+      },
+      "unchanged": true
+    }
+  },
+  "not_established": "No VM, actor, helper, native child, cgroup, population, musl/aarch64, full shards-init suite, allocation or performance result. Unit cases exercise the real reporting/custody functions only."
+}

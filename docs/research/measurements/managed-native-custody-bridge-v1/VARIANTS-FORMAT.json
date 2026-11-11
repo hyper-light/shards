@@ -1,0 +1,65 @@
+{
+  "red-v2": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/red-v2/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "b784b38ea704370b796c25ce37e53d168489373443cec239a23783eb7b0759e6",
+    "after_sha256": "b784b38ea704370b796c25ce37e53d168489373443cec239a23783eb7b0759e6",
+    "bytes": 280916
+  },
+  "green": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/green/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+    "after_sha256": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+    "bytes": 281586
+  },
+  "mutant-custody": {
+    "command": [
+      "rustup",
+      "run",
+      "1.98.1",
+      "rustfmt",
+      "--edition",
+      "2024",
+      "--config-path",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/candidate-red/rustfmt.toml",
+      "--config",
+      "skip_children=true",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1/variants/mutant-custody/run.rs"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": "",
+    "before_sha256": "3aa4b477cda18032901f68a6afec613d4a24cfdeb579227f5ae59a3e50c24673",
+    "after_sha256": "bec3bab837d12db8e1b7e6001aa990291d5605d20644e9aa466bb4f82b475912",
+    "bytes": 281620
+  }
+}

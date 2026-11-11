@@ -1,0 +1,22 @@
+{
+  "run": "r87",
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "scope": "root-custody-report-green-1794424717422",
+  "admission": "normal 2CPU/2GiB/4GiB, -j2, ONE 600s budget from first Linux write (581.7s remaining at package verification)",
+  "driver_sha256": "fb34731d0883432a292e1834885d07799b98c6ae8627ce09e65adba14659d3dd",
+  "package_sha256": "9d613a8884cf594a601d14bd07bd0c10f268984772492be11da2739e7ecae7df",
+  "package_bytes": 533184,
+  "green_source_manifest": "7e42d3ca78f97705b3ac00f610501f3a71098bac9a38dca0bb3f8a8d37c1d30d",
+  "variants": {
+    "green": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+    "red-v2": "b784b38ea704370b796c25ce37e53d168489373443cec239a23783eb7b0759e6",
+    "mutant-custody": "bec3bab837d12db8e1b7e6001aa990291d5605d20644e9aa466bb4f82b475912"
+  },
+  "expected": {
+    "strict": "101 with r8 multiset unchanged",
+    "green": "both cases pass",
+    "red-v2": "both fail at SYSTEM_ERR/NOT_RUN assertion, left None",
+    "mutant-custody": "case-0 passes, case-1 fails: rejected group released before its startup failure"
+  },
+  "forbidden": "no helper/actor/native child/VM/cgroup/held audit graph/five; template/cache read only and verified before/after"
+}

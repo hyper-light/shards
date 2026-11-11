@@ -1,0 +1,13 @@
+{
+  "manifest_sha256": "7e42d3ca78f97705b3ac00f610501f3a71098bac9a38dca0bb3f8a8d37c1d30d",
+  "full_source_sha256": "40dcc8eeff3380fc36c76b5beef3b5cfe77b5f9fc68de6760b0618366ae7f9b7",
+  "package_sha256": "9d613a8884cf594a601d14bd07bd0c10f268984772492be11da2739e7ecae7df",
+  "package_bytes": 533184,
+  "source_files": 4789,
+  "variants": {
+    "green": "d1a383f8d2942a62d06910245b516f32089a6c3e0c5285b95fac7115e14d5976",
+    "red-v2": "b784b38ea704370b796c25ce37e53d168489373443cec239a23783eb7b0759e6",
+    "mutant-custody": "bec3bab837d12db8e1b7e6001aa990291d5605d20644e9aa466bb4f82b475912"
+  },
+  "strict_baseline_count": 17
+}

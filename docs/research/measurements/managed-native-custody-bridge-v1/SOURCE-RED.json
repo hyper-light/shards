@@ -1,0 +1,9 @@
+{
+  "manifest_sha256": "ffa7e771196a6beaa63dda1ab1827e7cf12a3e230cc414bb243fc164e0722f8c",
+  "full_source_sha256": "43ef5074980e8bae8573cca3a3e6cb9ab1ce29e0511623eb5f6c35abcdc3c86f",
+  "package_sha256": "dbc884bd57063cbe7d9291fc78a449dd4975a9d39d48a8a03f0512a27153d62b",
+  "package_bytes": 212020,
+  "new_cases": 2,
+  "source_files": 4789,
+  "old_custody_source_preserved": true
+}

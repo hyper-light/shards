@@ -1,0 +1,13 @@
+{
+  "record": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "coordinator",
+  "agent": "01a148884a4770fdaf0111f3f792a248",
+  "task": "New startup custody integration presentation; source observation, not reproduced production defect",
+  "owned_paths": [
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-custody-bridge-v1/docs/research/measurements/managed-native-custody-bridge-v1",
+    "isolated candidate crates/init/src/run.rs only"
+  ],
+  "scope": "Preserve existing SYSTEM_ERR/NOT_RUN presentation for new Clone/Pid/OwnerParent typed errors; retain original typed causes/FD owners; existing fallible run::render_error only. ROOT targeted ordinary checks, no held audit graph/five or helper/actor/VM."
+}

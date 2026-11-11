@@ -1,0 +1,91 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -50,6 +50,10 @@
+         member: Option<u32>,
+         cause: SignalFailure,
+     },
++    /// A member's typed start refusal whose untyped predecessor answered
++    /// SYSTEM_ERR with NOT_RUN. The original failure, including a rejected
++    /// parent group, stays owned here until power_off; reporting borrows it.
++    RefusedDomain(crate::domains::StartFailure),
+     UnreportedDomain(crate::domains::StartFailure),
+     UnreportedLaunch {
+         member: u32,
+@@ -121,6 +125,9 @@
+                 None => StartupFailure::UnreportedLaunch { member, failure },
+             }
+         }
++        failure @ (crate::domains::StartFailure::Clone { .. }
++        | crate::domains::StartFailure::Pid { .. }
++        | crate::domains::StartFailure::OwnerParent { .. }) => StartupFailure::RefusedDomain(failure),
+         failure => StartupFailure::UnreportedDomain(failure),
+     }
+ }
+@@ -139,6 +146,10 @@
+             let _ = send(conn, kind::MANAGEMENT_REFUSED, &report.encode());
+             Some(NOT_RUN)
+         }
++        StartupFailure::RefusedDomain(failure) => {
++            let _ = send(conn, kind::SYSTEM_ERR, run::render_error(failure).as_bytes());
++            Some(NOT_RUN)
++        }
+         StartupFailure::Control { member, cause } => {
+             report_owner_control(*member, cause);
+             None
+@@ -6397,7 +6408,11 @@
+         ] {
+             let expected = run::render_error(&cause);
+             let failure = domain_start_failed(cause, &Spec::default());
+-            assert_eq!(report_startup_failure(&conn, &failure), Some(NOT_RUN));
++            assert_eq!(
++                report_startup_failure(&conn, &failure),
++                Some(NOT_RUN),
++                "typed member refusal must answer SYSTEM_ERR with NOT_RUN"
++            );
+             assert_eq!(system_error(&mut reader), expected.as_bytes());
+         }
+         let unknown = domain_start_failed(crate::domains::StartFailure::MissingNativeOwner, &Spec::default());
+@@ -6412,8 +6427,8 @@
+ 
+     #[test]
+     fn rejected_parent_group_survives_system_error_until_owner_drop() {
+-        let (group, peer) = UnixStream::pair().unwrap();
+-        let group_fd = group.as_raw_fd();
++        let (group, mut peer) = UnixStream::pair().unwrap();
++        peer.set_nonblocking(true).unwrap();
+         let mut pending = crate::managed::PendingMember::new();
+         // The real vacant-phase guard rejects the actual descriptor before
+         // inspecting the PID; no member/child/cgroup or authority is fabricated.
+@@ -6426,14 +6441,25 @@
+         let expected = run::render_error(&original);
+         let failure = domain_start_failed(original, &Spec::default());
+         let (conn, mut reader) = connection();
+-        assert_eq!(report_startup_failure(&conn, &failure), Some(NOT_RUN));
++        assert_eq!(
++            report_startup_failure(&conn, &failure),
++            Some(NOT_RUN),
++            "typed member refusal must answer SYSTEM_ERR with NOT_RUN"
++        );
+         assert_eq!(system_error(&mut reader), expected.as_bytes());
+-        // SAFETY: F_GETFD only inspects this test's original descriptor number.
+-        assert!(unsafe { libc::fcntl(group_fd, libc::F_GETFD) } >= 0);
++        // The peer reads EOF only once the socket itself closes: this observes
++        // the rejected group's object, never a reusable descriptor number.
++        let mut byte = [0];
++        assert_eq!(
++            peer.read(&mut byte).map_err(|e| e.kind()),
++            Err(io::ErrorKind::WouldBlock),
++            "rejected group was released before its startup failure"
++        );
+         drop(failure);
+-        // SAFETY: no descriptor was opened since the owner dropped its group.
+-        assert_eq!(unsafe { libc::fcntl(group_fd, libc::F_GETFD) }, -1);
+-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+-        drop(peer);
++        assert_eq!(
++            peer.read(&mut byte).map_err(|e| e.kind()),
++            Ok(0),
++            "dropping the startup failure must release the rejected group"
++        );
+     }
+ }

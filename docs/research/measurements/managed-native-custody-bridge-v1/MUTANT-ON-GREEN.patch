@@ -1,0 +1,13 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -127,7 +127,9 @@
+         }
+         failure @ (crate::domains::StartFailure::Clone { .. }
+         | crate::domains::StartFailure::Pid { .. }
+-        | crate::domains::StartFailure::OwnerParent { .. }) => StartupFailure::RefusedDomain(failure),
++        | crate::domains::StartFailure::OwnerParent { .. }) => {
++            StartupFailure::from(run::render_error(&failure))
++        }
+         failure => StartupFailure::UnreportedDomain(failure),
+     }
+ }

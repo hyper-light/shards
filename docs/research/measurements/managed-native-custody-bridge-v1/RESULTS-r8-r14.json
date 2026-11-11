@@ -1,0 +1,65 @@
+{
+  "recovery": {
+    "archive": "raw-r8-r14.tar.xz",
+    "bytes": 446696,
+    "sha256": "1181daa03dc76b1b423a46f22d5eacbc8b380c6dd6bcb3522f8d971fa1fca69e",
+    "verified": {
+      "root-custody-report-red-1794423907582735000": {
+        "payloads_verified": 46,
+        "manifest_sha256": "6a1e33bd77048969e6e756f74538cd6fca7532d66177643293f9063e2c8198cc",
+        "final": 101
+      },
+      "root-custody-v10d-check-1794423492919687000": {
+        "payloads_verified": 31,
+        "manifest_sha256": "a176f8262af4cea882fdc4df8c5df0204b1dd09728d1b473d0924fbc8427b03a",
+        "final": 101
+      }
+    },
+    "method": "xz tar created on runner 451397, base64 moved Linux->Mac through kiln code_run without entering model context; every payload re-hashed against each run MANIFEST"
+  },
+  "r8": {
+    "run": "r8",
+    "scope": "root-custody-v10d-check-1794423492919687000",
+    "source_manifest": "9904e4bb89ed42018693448ed644213b27da7cea9094efc3d9447733fdde1d8f",
+    "stages": {
+      "rustc": 0,
+      "cargo": 0,
+      "policy": 0,
+      "consumer-format": 0,
+      "actual-init-check": 0,
+      "actual-init-strict": 101
+    },
+    "strict": "exit 101; diagnostic heading+location multiset IDENTICAL to v9b raw-regions-v9b (17 rendered headings; 15 bin + 11 bin-test errors): unconsumed input/RAW Session/owner_input dead code only. The v10b large_enum_variant at managed.rs:293 is gone. No custody/native/run.rs diagnostic. Not a pass.",
+    "cases": 0,
+    "source_template_cache": "all 4789 source hashes unchanged; template 4790 files, registry 3528, git 1802 unchanged",
+    "elapsed_seconds": 25.31061364605557
+  },
+  "r14": {
+    "run": "r14",
+    "scope": "root-custody-report-red-1794423907582735000",
+    "source_manifest": "ffa7e771196a6beaa63dda1ab1827e7cf12a3e230cc414bb243fc164e0722f8c",
+    "stages": {
+      "rustc": 0,
+      "cargo": 0,
+      "policy": 0,
+      "consumer-format": 0,
+      "actual-init-check": 0,
+      "new-test-compile": 0,
+      "new-test-list": 0,
+      "case-0": 101,
+      "case-1": 101
+    },
+    "elf": {
+      "path": "/home/adalundhe/Projects/root-custody-report-red-1794423907582735000/execution/target/x86_64-unknown-linux-gnu/debug/deps/shards_init-5f3258d62b8ecaec",
+      "bytes": 76763184,
+      "sha256": "b7626f96e1722e6b2f3f97ed6982e8ea89f6b5d4a0a715bede93e944854e0831",
+      "before_first_case": true
+    },
+    "red_symptom": {
+      "case-0": "shards-init: domain startup member 7 clone returned -1: PermissionDenied, OS Some(1)\n\nthread 'run::startup_custody_tests::clone_and_pid_refusals_report_system_error_and_not_run' (4008701) panicked at crates/init/src/run.rs:6400:13:\nassertion `left == right` failed\n  left: None\n right: Some(125)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+      "case-1": "shards-init: domain startup member 9: member parent association State; rejected group held true\n\nthread 'run::startup_custody_tests::rejected_parent_group_survives_system_error_until_owner_drop' (4008704) panicked at crates/init/src/run.rs:6429:9:\nassertion `left == right` failed\n  left: None\n right: Some(125)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    },
+    "meaning": "Exact baseline reproduction: typed Clone and OwnerParent start refusals reach the UnreportedDomain path (guest stderr + power_off = host VM loss) instead of SYSTEM_ERR + NOT_RUN(125) that v9b sent for the same failures as Setup strings. Unit-level live reproduction of the real reporting functions; no VM reproduction is claimed.",
+    "test_weakness_found": "case-1 checked liveness by descriptor number with fcntl; a reused number can falsely pass. Replaced by socket-peer EOF in RED-v2/GREEN tests before the fix was evaluated."
+  }
+}
