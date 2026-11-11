@@ -1,0 +1,437 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index 9bb496398..fc738ab1e 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -13912,4 +13912,213 @@ mod tests {
+             let _ = starting.run.join();
+         });
+     }
++
++    /// Starts microVM `name`'s run as a joiner of `provider`'s microVM (D119), on a
++    /// connection the test plays, and has it running.
++    fn joining<'s>(t: &In<'s, '_, Real>, name: &str, provider: &str) -> (String, Starting<'s>, UnixStream) {
++        let id = t.create(name);
++        let starting = t.start(&id);
++        let (mut ready, vm) = t.warm_vm(None);
++        ready.joined = Some(provider.to_string());
++        starting.warm.send(ready).unwrap();
++        assert_eq!(heard(&vm).0, kind::RUN);
++        say(&vm, kind::TAKEN, &[]);
++        say(&vm, kind::STARTED, &[]);
++        t.until("the joiner started", |d| {
++            lock(&d.containers)
++                .get(&id)
++                .is_some_and(|c| c.state == Life::Running)
++        });
++        (id, starting, vm)
++    }
++
++    /// `shards read metrics NAME` on a thread of its own, its OTLP document to `out`: its
++    /// status and errors, the errors read as the daemon says them.
++    fn metrics<'s>(
++        t: &In<'s, '_, Real>,
++        name: &str,
++        out: &Path,
++    ) -> std::thread::ScopedJoinHandle<'s, (u8, String)> {
++        let daemon = &t.t.daemon;
++        let (name, out) = (name.to_string(), File::create(out).unwrap());
++        t.threads.spawn(move || {
++            let (ours, theirs) = UnixStream::pair().unwrap();
++            let asker = commands::Asker {
++                client: 0,
++                registry_env: Vec::new(),
++                east_asian: false,
++                now: 0,
++                utc_offset: 0,
++                terminal: false,
++                width: 0,
++                color: false,
++                files: vec![OwnedFd::from(out)],
++                whose: String::new(),
++            };
++            std::thread::scope(|s| {
++                let errors = s.spawn(|| {
++                    let mut said = Vec::new();
++                    while let Ok(Some(m)) = shards_ipc::recv(&theirs) {
++                        if m.kind == kind::ERR {
++                            said.extend(m.payload);
++                        }
++                    }
++                    said
++                });
++                let status = daemon.read_metrics(std::slice::from_ref(&name), &asker, &commands::Reply(&ours));
++                drop(ours);
++                (status, String::from_utf8(errors.join().unwrap()).unwrap())
++            })
++        })
++    }
++
++    /// A joiner's metrics are read in its provider's microVM, which runs none of its guest
++    /// while paused: they are refused as paused at once, and nothing is asked of it (finding
++    /// 4 of audit-fix-host-v1: the provider's pause was not looked at, and the exec waited
++    /// for an answer its paused guest never gives).
++    #[test]
++    fn metrics_in_a_paused_providers_microvm_are_refused_at_once() {
++        let t = Test::new("metrics-paused");
++        t.run(|t| {
++            let (provider, provider_run, provider_vm) = running(t, "provider");
++            let (_, joiner_run, vm) = joining(t, "joiner", &provider);
++            // As `pause` leaves the provider it paused.
++            lock(&t.daemon.paused).insert(provider.clone());
++            let out = t.home.join("metrics.json");
++            let asked = metrics(t, "joiner", &out);
++            let refused = finishes(&asked);
++            if !refused {
++                // The exec it was sent ends, as it would once the provider went on.
++                let exec = heard_whole(&vm);
++                assert_eq!(exec.kind, kind::EXEC_RUN);
++                say(&UnixStream::from(exec.fds.into_iter().next().unwrap()), kind::EXIT, &[0]);
++            }
++            let (status, err) = joined(asked);
++            assert!(refused, "read metrics waited on a paused provider's microVM: {err:?}");
++            assert_eq!(
++                (status, err.as_str()),
++                (
++                    1,
++                    "shards: read metrics: joiner runs in provider's microVM, which is paused: \
++                     its metrics can be read once provider is unpaused\n"
++                )
++            );
++            assert!(std::fs::read(&out).unwrap().is_empty());
++            lock(&t.daemon.paused).remove(&provider);
++            for (vm, run) in [(vm, joiner_run), (provider_vm, provider_run)] {
++                say(&vm, kind::DONE, &[0]);
++                drop(vm);
++                let _ = run.run.join();
++            }
++        });
++    }
++
++    /// The exec of `read metrics` its microVM never answers is ended once the VM process has
++    /// run nothing for as long as the daemon judges it by: told SIGKILL, its end waited for,
++    /// and the read refused as stalled (finding 4 of audit-fix-host-v1: it was waited for
++    /// with no end, holding its client and a daemon thread).
++    #[test]
++    fn metrics_whose_microvm_runs_nothing_are_ended() {
++        let t = Test::new("metrics-stalled");
++        t.run(|t| {
++            let (_, starting, vm) = running(t, "stalled");
++            let out = t.home.join("metrics.json");
++            let asked = metrics(t, "stalled", &out);
++            let exec = heard_whole(&vm);
++            assert_eq!(exec.kind, kind::EXEC_RUN);
++            let conn = UnixStream::from(exec.fds.into_iter().next().unwrap());
++            // Its VM process, a sleep, runs nothing.
++            conn.set_read_timeout(Some(TAKE_TIMEOUT + PATIENCE)).unwrap();
++            let told = shards_ipc::recv(&conn).map(|m| m.map(|m| (m.kind, m.payload)));
++            // Ended as an exec told SIGKILL ends; or, told nothing, let go.
++            say(&conn, kind::EXIT, &[137]);
++            let (status, err) = joined(asked);
++            assert!(
++                matches!(&told, Ok(Some((kind::SIGNAL, n))) if n.as_slice() == 9u32.to_be_bytes()),
++                "an exec its microVM never answered was waited for with no end: {told:?}"
++            );
++            assert_eq!(
++                (status, err),
++                (
++                    1,
++                    format!(
++                        "shards: read metrics: stalled: its microVM ran nothing for {} s, so its \
++                         metrics were not read\n",
++                        TAKE_TIMEOUT.as_secs()
++                    )
++                )
++            );
++            say(&vm, kind::DONE, &[0]);
++            drop(vm);
++            let _ = starting.run.join();
++        });
++    }
++
++    /// `read metrics` passes its exec's errors on as they come: a microVM that writes more
++    /// of them than a pipe holds before it ends is not held up, and every byte reaches the
++    /// client (finding 4 of audit-fix-host-v1: they were read only once the exec ended,
++    /// which one held up writing them never did).
++    #[test]
++    fn metrics_errors_are_passed_on_as_they_come() {
++        let t = Test::new("metrics-errors");
++        t.run(|t| {
++            let (_, starting, vm) = running(t, "noisy");
++            let out = t.home.join("metrics.json");
++            let asked = metrics(t, "noisy", &out);
++            let exec = heard_whole(&vm);
++            assert_eq!(exec.kind, kind::EXEC_RUN);
++            let mut fds = exec.fds.into_iter();
++            let conn = UnixStream::from(fds.next().unwrap());
++            // Its stdin and stdout, then its stderr.
++            let mut errors = File::from(fds.nth(2).unwrap());
++            // Past any pipe's buffer: Linux's 64 KiB (pipe(7)), and macOS's at most.
++            let said = vec![b'e'; 1 << 20];
++            let writer = t.threads.spawn(move || errors.write_all(&said));
++            let written = finishes(&writer);
++            // Ended: had its errors waited for its end, read now.
++            say(&conn, kind::EXIT, &[0]);
++            joined(writer).unwrap();
++            let (status, err) = joined(asked);
++            assert!(written, "the exec's errors were not read until it ended, which it never did");
++            assert_eq!(status, 0);
++            assert!(err.len() == 1 << 20 && err.bytes().all(|b| b == b'e'));
++            say(&vm, kind::DONE, &[0]);
++            drop(vm);
++            let _ = starting.run.join();
++        });
++    }
++
++    /// `read metrics` refuses a microVM that does not run, or that is paused, saying so in
++    /// shards' words (finding 4 of audit-fix-host-v1: both were `NotConnected`).
++    #[test]
++    fn metrics_refusals_say_why() {
++        let t = Test::new("metrics-refused");
++        t.run(|t| {
++            let (_, ended, vm) = running(t, "ended");
++            say(&vm, kind::DONE, &[0]);
++            drop(vm);
++            // Its start's thread returns once its run is followed no more.
++            joined(ended.run).unwrap();
++            let out = t.home.join("metrics.json");
++            assert_eq!(
++                joined(metrics(t, "ended", &out)),
++                (1, "shards: read metrics: ended is not running\n".to_string())
++            );
++            let (id, starting, vm) = running(t, "frozen");
++            lock(&t.daemon.paused).insert(id.clone());
++            assert_eq!(
++                joined(metrics(t, "frozen", &out)),
++                (
++                    1,
++                    "shards: read metrics: frozen is paused: its metrics can be read once it is \
++                     unpaused\n"
++                        .to_string()
++                )
++            );
++            lock(&t.daemon.paused).remove(&id);
++            say(&vm, kind::DONE, &[0]);
++            drop(vm);
++            let _ = starting.run.join();
++        });
++    }
+ }
+diff --git a/crates/shards/src/daemon/commands.rs b/crates/shards/src/daemon/commands.rs
+index 9237c4cf9..fb0b72d68 100644
+--- a/crates/shards/src/daemon/commands.rs
++++ b/crates/shards/src/daemon/commands.rs
+@@ -697,7 +697,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
+             Ok(p) => p,
+             Err(e) => return refuse(format!("Error exporting container {given}: {e}")),
+         };
+-        let ended = self.exec_on(&id, &spec, false, [null.as_fd(), out.as_fd(), into.as_fd()]);
++        let ended = self.exec_on(
++            &id,
++            &spec,
++            false,
++            [null.as_fd(), out.as_fd(), into.as_fd()],
++            super::health::Wait::Ending,
++        );
+         drop(into);
+         let mut why = String::new();
+         let _ = said.read_to_string(&mut why);
+@@ -786,7 +792,7 @@ impl<D: crate::containers::Disk> Daemon<D> {
+             } else {
+                 [null.as_fd(), file.as_fd(), into.as_fd()]
+             };
+-            let ended = self.exec_on(&id, &spec, kind == builtin::EXTRACT, stdio);
++            let ended = self.exec_on(&id, &spec, kind == builtin::EXTRACT, stdio, super::health::Wait::Ending);
+             drop(into);
+             let mut said = Vec::new();
+             let _ = errs.read_to_end(&mut said);
+diff --git a/crates/shards/src/daemon/health.rs b/crates/shards/src/daemon/health.rs
+index 8c96eda7e..d598b0c22 100644
+--- a/crates/shards/src/daemon/health.rs
++++ b/crates/shards/src/daemon/health.rs
+@@ -470,16 +470,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
+ 
+     /// An exec of `spec` in microVM `id` on the asker's own descriptors: what it
+     /// reads (with `input`, its stdin; else nothing), and where its output and errors
+-    /// go; until it ends.
++    /// go; waited for as `wait` says.
+     pub(super) fn exec_on(
+         &self,
+         id: &str,
+         spec: &shards_abi::run::Spec,
+         input: bool,
+         stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
++        wait: Wait,
+     ) -> std::io::Result<Ended> {
+         let ours = self.send_exec(id, spec, None, input, stdio)?;
+-        Ok(await_exit(&ours, Wait::Ending))
++        Ok(await_exit(&ours, wait))
+     }
+ 
+     /// Sends microVM `id`'s VM an exec of `spec` with `stdio`, logging its events if
+diff --git a/crates/shards/src/daemon/metrics.rs b/crates/shards/src/daemon/metrics.rs
+index 40f1fd5af..a0d602b87 100644
+--- a/crates/shards/src/daemon/metrics.rs
++++ b/crates/shards/src/daemon/metrics.rs
+@@ -5,10 +5,20 @@ use std::io::{self, Write as _};
+ use shards_ipc::fd::{AsFd as _, OwnedFd};
+ 
+ use super::commands::{Asker, Reply};
+-use super::{Daemon, Disk, RunState, lock};
++use super::health::Wait;
++use super::{Daemon, Disk, RunState, TAKE_TIMEOUT, lock};
+ 
++/// Why a run's metrics were not read, as `read metrics` says it.
+ enum Failure {
+     Resolve(String),
++    /// The run named does not run.
++    NotRunning { given: String },
++    /// The microVM its metrics are read in is paused, running none of its guest: its own,
++    /// or that of the provider whose microVM it joined (D119), named as it is shown.
++    Paused { given: String, provider: Option<String> },
++    /// Its microVM's process ran nothing for as long as the read's wait judges it by
++    /// ([`Wait::WhileRuns`]): its exec was ended.
++    Stalled { given: String },
+     Io(io::Error),
+ }
+ 
+@@ -22,6 +32,27 @@ impl std::fmt::Display for Failure {
+     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+         match self {
+             Self::Resolve(error) => out.write_str(error),
++            Self::NotRunning { given } => write!(out, "{given} is not running"),
++            Self::Paused {
++                given,
++                provider: None,
++            } => write!(
++                out,
++                "{given} is paused: its metrics can be read once it is unpaused"
++            ),
++            Self::Paused {
++                given,
++                provider: Some(provider),
++            } => write!(
++                out,
++                "{given} runs in {provider}'s microVM, which is paused: its metrics can be read \
++                 once {provider} is unpaused"
++            ),
++            Self::Stalled { given } => write!(
++                out,
++                "{given}: its microVM ran nothing for {} s, so its metrics were not read",
++                TAKE_TIMEOUT.as_secs()
++            ),
+             Self::Io(error) => write!(out, "{:?}, native code {:?}", error.kind(), error.raw_os_error()),
+         }
+     }
+@@ -60,16 +91,19 @@ impl<D: Disk> Daemon<D> {
+     fn collect_metrics(&self, given: &str, out: &OwnedFd, reply: &Reply<'_>) -> Result<bool, Failure> {
+         let id = self.resolve(given).map_err(Failure::Resolve)?;
+         self.await_start(&id);
+-        if !self.running(&id) || lock(&self.paused).contains(&id) {
+-            return Err(io::Error::from(io::ErrorKind::NotConnected).into());
++        let not_running = || Failure::NotRunning {
++            given: given.to_owned(),
++        };
++        if !self.running(&id) {
++            return Err(not_running());
+         }
+         let allocation = |_| io::Error::from(io::ErrorKind::OutOfMemory);
+         let mut argv = Vec::new();
+         argv.try_reserve_exact(2).map_err(allocation)?;
+-        {
++        let (joined, vm) = {
+             let runs = lock(&self.runs);
+             let Some(RunState::Tracked(run)) = runs.get(&id) else {
+-                return Err(io::Error::from(io::ErrorKind::NotConnected).into());
++                return Err(not_running());
+             };
+             // join_vm already resolves this to the actual provider at admission;
+             // use its held relationship, not a second pathname walk or cache.
+@@ -80,6 +114,28 @@ impl<D: Disk> Daemon<D> {
+                 name.extend_from_slice(id.as_bytes());
+                 argv.push(name);
+             }
++            (run.joined.clone(), run.vm.id())
++        };
++        // Its microVM runs none of its guest while paused, which a joiner's own pause does
++        // not show: its provider's is looked at too.
++        let paused_provider = {
++            let paused = lock(&self.paused);
++            if paused.contains(&id) {
++                return Err(Failure::Paused {
++                    given: given.to_owned(),
++                    provider: None,
++                });
++            }
++            joined.filter(|provider| paused.contains(provider))
++        };
++        if let Some(provider) = paused_provider {
++            let shown = lock(&self.containers)
++                .get(&provider)
++                .map(|c| c.name.trim_start_matches('/').to_owned());
++            return Err(Failure::Paused {
++                given: given.to_owned(),
++                provider: Some(shown.unwrap_or(provider)),
++            });
+         }
+         let spec = shards_abi::run::Spec {
+             builtin: shards_abi::run::builtin::METRICS,
+@@ -88,9 +144,36 @@ impl<D: Disk> Daemon<D> {
+         };
+         let null = std::fs::File::open(crate::os::NULL)?;
+         let (mut errors, into) = std::io::pipe()?;
+-        let ended = self.exec_on(&id, &spec, false, [null.as_fd(), out.as_fd(), into.as_fd()]);
+-        drop(into);
+-        io::copy(&mut errors, &mut Diagnostics(reply))?;
+-        Ok(ended?.status == Some(0))
++        let ended = std::thread::scope(|scope| {
++            // Its errors passed on as they come, beside the wait for its end: an exec held
++            // up writing more of them than a pipe holds would never end. Once the asker can
++            // be told no more, the rest are read and dropped.
++            let drain = std::thread::Builder::new()
++                .name("metrics-errors".into())
++                .spawn_scoped(scope, move || {
++                    if io::copy(&mut errors, &mut Diagnostics(reply)).is_err() {
++                        let _ = io::copy(&mut errors, &mut io::sink());
++                    }
++                })?;
++            // Waited for as long as its microVM's process runs (D209): one that runs nothing
++            // (its guest paused since it was looked at, or stalled) is told SIGKILL, and its
++            // end waited for, so that its output never outlives its asker.
++            let ended = self.exec_on(
++                &id,
++                &spec,
++                false,
++                [null.as_fd(), out.as_fd(), into.as_fd()],
++                Wait::WhileRuns(vm),
++            );
++            drop(into);
++            let _ = drain.join();
++            ended
++        })?;
++        if ended.timed_out {
++            return Err(Failure::Stalled {
++                given: given.to_owned(),
++            });
++        }
++        Ok(ended.status == Some(0))
+     }
+ }
+diff --git a/crates/shards/tests/managed_output/metrics.rs b/crates/shards/tests/managed_output/metrics.rs
+index 4bdf3b5f5..2f23b28e9 100644
+--- a/crates/shards/tests/managed_output/metrics.rs
++++ b/crates/shards/tests/managed_output/metrics.rs
+@@ -408,7 +408,13 @@ fn cgroup_metrics_use_declared_scopes_without_merging_member_output() {
+         let unavailable = fixture.command(&["read", "metrics", &id], WITHIN);
+         save("paused.stdout", unavailable.stdout.as_bytes());
+         save("paused.stderr", unavailable.stderr.as_bytes());
+-        assert_ne!(unavailable.status, Some(0), "{unavailable}");
++        assert_eq!(unavailable.status, Some(1), "{unavailable}");
++        assert!(
++            unavailable.stderr.contains(&format!(
++                "shards: read metrics: {id} is paused: its metrics can be read once it is unpaused"
++            )),
++            "{unavailable}"
++        );
+         assert!(
+             unavailable.stdout.is_empty(),
+             "no fresh cached artifact while paused"

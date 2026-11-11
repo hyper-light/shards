@@ -1,0 +1,10 @@
+# Provenance of f4-linux-x86_64-clippy.raw.log, the verbatim log of kiln run r354.
+# runner: 451397fcc585f7f7cb9aaf00e42064bb (adacachy, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g, timeout_s 600
+# raw log: 12521 bytes, sha256 d34defbcc7ceb237d4621a41ef6a58928693216be2b243d12741e46cbd5c859c, equal to the runner's own
+#   `sha256sum target/audit-logs/f4-linux-x86_64-clippy.log` (fetched with cat over kiln, no cut at that size).
+# source: HEAD 759f0312bb9acada05f8e8e47f82f3b60df65c3e plus the uncommitted finding-4 diff saved beside this note
+#   (f4-linux-x86_64-clippy.diff); `git diff HEAD -- . ':(exclude)docs/research/measurements/audit-fix-host-v1' | sha256`
+#   = 63f6495fa02a87d0cf82ebd49c2213cdf888b0f55cfcd8c2879e67f52e4aa663 on the runner and in this worktree alike.
+# scope: --all-targets of shards, shards-remote, shards-vmm and shards-vm-process, which includes the Linux-only
+#   crates/shards/tests/managed_output.rs (and the managed_output/metrics.rs this finding tightens). Exit 0, no
+#   workspace warning; the aws-lc-sys lines are its vendored C build's notes, as on every Linux build.

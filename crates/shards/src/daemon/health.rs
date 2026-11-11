@@ -470,16 +470,17 @@ impl<D: crate::containers::Disk> super::Daemon<D> {
 
     /// An exec of `spec` in microVM `id` on the asker's own descriptors: what it
     /// reads (with `input`, its stdin; else nothing), and where its output and errors
-    /// go; until it ends.
+    /// go; waited for as `wait` says.
     pub(super) fn exec_on(
         &self,
         id: &str,
         spec: &shards_abi::run::Spec,
         input: bool,
         stdio: [shards_ipc::fd::BorrowedFd<'_>; 3],
+        wait: Wait,
     ) -> std::io::Result<Ended> {
         let ours = self.send_exec(id, spec, None, input, stdio)?;
-        Ok(await_exit(&ours, Wait::Ending))
+        Ok(await_exit(&ours, wait))
     }
 
     /// Sends microVM `id`'s VM an exec of `spec` with `stdio`, logging its events if
