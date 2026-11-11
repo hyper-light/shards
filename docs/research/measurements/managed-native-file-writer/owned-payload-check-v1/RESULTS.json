@@ -1,0 +1,290 @@
+{
+  "root": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000",
+  "archive_path": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/recovered-raw-v1.tar.gz",
+  "archive_bytes": 1768464,
+  "archive_sha256": "6b0504ca161e97e028f64270e901873d70fc6bea931ba74df480cf6d35f72043",
+  "raw_payloads": 49,
+  "archive_members": 50,
+  "base64_chars": 2357952,
+  "source_inventory": {
+    "source": {
+      "actual_file_count": 4357,
+      "expected_file_count": 4357,
+      "extra_paths": [],
+      "missing_paths": []
+    },
+    "template_source": {
+      "actual_file_count": 4357,
+      "expected_file_count": 4357,
+      "extra_paths": [],
+      "missing_paths": []
+    }
+  },
+  "summary": {
+    "results": [
+      {
+        "name": "rust-version",
+        "argv": [
+          "rustc",
+          "+1.98.1",
+          "-Vv"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1675557,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.06422542396467179,
+        "finished_wall": 1794396499.8043797,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "cargo-version",
+        "argv": [
+          "cargo",
+          "+1.98.1",
+          "-Vv"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1675565,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.06666207499802113,
+        "finished_wall": 1794396499.898744,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "compile",
+        "argv": [
+          "cargo",
+          "+1.98.1",
+          "test",
+          "-p",
+          "shards-server",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--profile",
+          "test-release",
+          "-j2",
+          "--bin",
+          "shards-server",
+          "--no-run",
+          "--message-format=json"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1675588,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 89.87303354497999,
+        "finished_wall": 1794396589.7991066,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "list",
+        "argv": [
+          "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/frozen/owned-writer-tests",
+          "--list"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1864022,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.001992742996662855,
+        "finished_wall": 1794396589.884493,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "case-0",
+        "argv": [
+          "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/frozen/owned-writer-tests",
+          "native_effects::write::tests::owned_request_bounds_refusal_returns_the_same_initialized_allocation",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1866964,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.001120051951147616,
+        "finished_wall": 1794396590.9715984,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "case-1",
+        "argv": [
+          "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/frozen/owned-writer-tests",
+          "native_effects::write::tests::owned_object_refusal_returns_the_same_descriptor_and_payload",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1866966,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.0010694869561120868,
+        "finished_wall": 1794396590.9728162,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "strict-tests",
+        "argv": [
+          "cargo",
+          "+1.98.1",
+          "clippy",
+          "-p",
+          "shards-server",
+          "--locked",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "--profile",
+          "test-release",
+          "-j2",
+          "--tests",
+          "--",
+          "-D",
+          "warnings"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1866968,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 3.971087828045711,
+        "finished_wall": 1794396594.944034,
+        "finished_before_original_work_deadline": true
+      },
+      {
+        "name": "format-owned",
+        "argv": [
+          "rustfmt",
+          "+1.98.1",
+          "--check",
+          "--edition",
+          "2024",
+          "--config",
+          "skip_children=true",
+          "crates/server/src/native_effects/write.rs",
+          "crates/server/src/native_effects/write/tests.rs"
+        ],
+        "cwd": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/source",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 1877837,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.0097001000540331,
+        "finished_wall": 1794396594.953928,
+        "finished_before_original_work_deadline": true
+      }
+    ],
+    "error": null,
+    "verification_error": null,
+    "actual_new_case_count": 2,
+    "exact_cases": [
+      "native_effects::write::tests::owned_request_bounds_refusal_returns_the_same_initialized_allocation",
+      "native_effects::write::tests::owned_object_refusal_returns_the_same_descriptor_and_payload"
+    ],
+    "old_seven_cases_executed": 0,
+    "held_audit_record_cases_executed": 0,
+    "held4819_graph_used": false,
+    "source_after_verified": true,
+    "template_source_cache_binary_unchanged": true,
+    "new_frozen_binary_unchanged": true,
+    "limits_before": {
+      "RLIMIT_AS": [
+        -1,
+        -1
+      ],
+      "RLIMIT_DATA": [
+        -1,
+        -1
+      ],
+      "RLIMIT_FSIZE": [
+        -1,
+        -1
+      ],
+      "RLIMIT_NOFILE": [
+        1048576,
+        1048576
+      ],
+      "RLIMIT_NPROC": [
+        503023,
+        503023
+      ],
+      "RLIMIT_CORE": [
+        -1,
+        -1
+      ]
+    },
+    "limits_after": {
+      "RLIMIT_AS": [
+        -1,
+        -1
+      ],
+      "RLIMIT_DATA": [
+        -1,
+        -1
+      ],
+      "RLIMIT_FSIZE": [
+        -1,
+        -1
+      ],
+      "RLIMIT_NOFILE": [
+        1048576,
+        1048576
+      ],
+      "RLIMIT_NPROC": [
+        503023,
+        503023
+      ],
+      "RLIMIT_CORE": [
+        -1,
+        -1
+      ]
+    },
+    "limits_unchanged": true,
+    "elapsed_seconds": 101.92333552695344,
+    "finished_wall": 1794396595.9606109,
+    "original_hard_deadline_wall": 1794397094.037273,
+    "finished_before_original_deadline": true,
+    "original_work_deadline_not_reset": true,
+    "requested_scope": "NEW distinct bounded TWO owned payload cases only; historical full original8b1 template and original matching manifest/lock, not current product lock or held4819 graph. NO old7 or audit-record tests.",
+    "tmp_entries": [
+      "shards-tests"
+    ],
+    "copy_backing_authority_readiness_or_leak_freedom_inferred": false
+  },
+  "binary_before": {
+    "path": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/frozen/owned-writer-tests",
+    "bytes": 38231928,
+    "sha256": "61cdf5438e85879340e9835105a2c6d71d65d11d186588be92c5ff3f2ba25348",
+    "header_hex": "7f454c4602010100000000000000000003003e00",
+    "is_elf": true,
+    "compiled_artifact": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000/target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-c75ce805a0470812"
+  },
+  "registry_files": 3243,
+  "precase_unselected_count": 99
+}

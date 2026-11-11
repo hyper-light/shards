@@ -1,0 +1,19 @@
+{
+  "policy_revision": "0d261aa931ae2e33e1f4a528b33f7e26b5ee7c90",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "agent": "01a1c9f8742d77d89711aa024bb3978d",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "receipt_sequence": 13307,
+  "owned_paths": [
+    "crates/server/src/native_effects/write.rs",
+    "crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/**"
+  ],
+  "full_current_policy_and_handoff_read": true,
+  "handoff_sha256": "52cc4e2d0bfabbda30dbe8e945454f6596c78d88c8aa8afd8f21525f03cb23e3",
+  "authorization": "NEW explicit distinct historical8b1 GNU closure+TWO new9c73 cases, test-target lint and ownedfmt; normal2CPU2GiB4GiB600/j2/compile180/case15, one deadline; stop upon automatic-review refusal, no alternate execution",
+  "no_children": true,
+  "no_old7_held5_held4819_helper_actor_VM_host_changes": true,
+  "no_payload_copy_backing_authority_readiness_inference": true
+}

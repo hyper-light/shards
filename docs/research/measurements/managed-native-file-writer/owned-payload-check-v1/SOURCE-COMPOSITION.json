@@ -1,0 +1,27 @@
+{
+  "historical_full_graph_revision": "8b1abae44d35ad7d82be296fc6cb15e3358fc5a3",
+  "historical_template_manifest_sha256": "f757aaf681629a7f26111141b5c3311f39313af5ed8dbccd5141e13e19002c84",
+  "exact_leaf_revision": "9c73f4b0cb594d39071454093c88e903194f4043",
+  "exact_overlays": [
+    {
+      "path": "crates/server/src/native_effects/write.rs",
+      "bytes": 8003,
+      "sha256": "ccd7c1c4820c15fccc152de7968f187e0965266fbb49cf9c85e461156ab95fef"
+    },
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 8766,
+      "sha256": "bc2d4f5564ea4d09b1f43828508e2a22159b624628680bdc05e2bc86bda9b2b5"
+    }
+  ],
+  "original_matching_manifest_and_lock": {
+    "Cargo.lock": "f4dd0fa9a0563349fe5b3fd6ce31119b6d227a446560716f252ee993570ee3da",
+    "Cargo.toml": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+  },
+  "current_product_lock_claimed": false,
+  "lock_regenerated": false,
+  "template_source_readonly": true,
+  "template_registry_readonly": true,
+  "fresh_source_cargo_target_tmp": true,
+  "source_json_provenance_note": "source.json preserves historical template baseline metadata; two per-file overlay origins and input.revision identify exact9c73 code. It is not an assertion that all4357files are current9c73/main or original198bd."
+}

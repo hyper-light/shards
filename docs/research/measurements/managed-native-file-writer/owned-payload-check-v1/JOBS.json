@@ -1,0 +1,29 @@
+{
+  "execution_jobs": [
+    {
+      "kind": "one bounded GNU whole-server TEST compile, two NEW exact cases, test lint and ownedfmt",
+      "root": "/home/adalundhe/Projects/managed-native-writer-owned-9c73-v1-01a1c9f8-1794396355451006000",
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "status": "completed",
+      "exit_code": 0,
+      "direct_child_command_count": 8,
+      "actual_selected_cases": [
+        "native_effects::write::tests::owned_request_bounds_refusal_returns_the_same_initialized_allocation",
+        "native_effects::write::tests::owned_object_refusal_returns_the_same_descriptor_and_payload"
+      ],
+      "normal_request": "2CPU2GiB4GiB600s/j2",
+      "one_original_deadline": true
+    }
+  ],
+  "read_only_or_artifact_evidence_jobs": {
+    "archive_creation": 1,
+    "archive_page_reads": 6,
+    "notes": "Own completed record files only; zero additional test/compiler/formatter/helper/actor/VM invocation."
+  },
+  "queued_execution_jobs": 0,
+  "active_execution_jobs": 0,
+  "automatic_review_refusals": 0,
+  "alternate_executions": 0,
+  "old_case_replays": 0,
+  "held_work_executed": 0
+}

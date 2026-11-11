@@ -1,0 +1,18 @@
+{
+  "archive_bytes": 1768464,
+  "archive_sha256": "6b0504ca161e97e028f64270e901873d70fc6bea931ba74df480cf6d35f72043",
+  "raw_payloads_verified": 49,
+  "archive_members": 50,
+  "original_manifest_verified": true,
+  "new_source_before_after_rows_verified": 4357,
+  "template_source_before_after_rows_verified": 4357,
+  "registry_template_before_after_files_verified": 3243,
+  "historical_and_new_binary_before_after_verified": true,
+  "exact_two_new_single_pass_stdout_verified": true,
+  "unselected_cases": 99,
+  "all_eight_direct_children_zero_ready_reaped_parent_fd9_return": true,
+  "limits_unchanged": true,
+  "finished_original600s_deadline": true,
+  "no_old7_or_held_tests": true,
+  "payload_copy_backing_authority_readiness_inferred": false
+}

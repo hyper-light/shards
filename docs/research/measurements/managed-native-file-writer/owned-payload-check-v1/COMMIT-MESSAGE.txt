@@ -1,0 +1,7 @@
+test(server): validate owned writer payload rejection paths
+
+Record actual whole-server TEST compilation of the immutable original8b1 closure with exact9c73 writer leaves, two new exact cases once, test-only Clippy and owned formatting. Preserve the original matching historical manifest/lock and all source/cache/ELF/raw/FD-wait/limit evidence.
+
+No old-seven replay, held audit graph/cases, helper/actor/VM or product-lock regeneration. These finite checks imply no internal-copy, backing, authority, readiness, integration or resource guarantees.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

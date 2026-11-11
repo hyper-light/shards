@@ -1,0 +1,114 @@
+{
+  "parent_source_revision": "9c73f4b0cb594d39071454093c88e903194f4043",
+  "named_paths": [
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/COMMIT-MESSAGE.txt",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/DISPATCH-ARGS.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/JOBS.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY-CHECK.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY-EVIDENCE.md",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY_READ.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RAW-VERIFICATION.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/README.md",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RESULTS.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RUN-RECEIPT.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/SOURCE-COMPOSITION.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/dispatch.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/input.json",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/overlay/crates/server/src/native_effects/write.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/overlay/crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/raw.tar.gz",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/run.py",
+    "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/NAMED-PATHS.json"
+  ],
+  "payloads": [
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/COMMIT-MESSAGE.txt",
+      "bytes": 606,
+      "sha256": "abee4261e0a5af1dc73c4098530cdddf0428031a861ed7b603c69cfaa1cdf789"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/DISPATCH-ARGS.json",
+      "bytes": 47768,
+      "sha256": "c95ef65de427a76464a893a1fda9216696ab8f42d749a54e492556808332e803"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/JOBS.json",
+      "bytes": 1126,
+      "sha256": "c4747da36970d930bcdb49a9af586e2a345e0684eeab35a9d79331364dcf95ea"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY-CHECK.json",
+      "bytes": 1748,
+      "sha256": "498070758e7a51e4ee920892f85b81d8050c02007923c78c726fb175ef06fc30"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY-EVIDENCE.md",
+      "bytes": 6144,
+      "sha256": "84e97c51eed648a31293d49a0a77ff33aff6febe9e5eeca412d000982e8f3eba"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/POLICY_READ.json",
+      "bytes": 1023,
+      "sha256": "50183dc8d2c2bc235fdcd993cf5c3311aa13eea4b451a8b025cf7b4bcc2418de"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RAW-VERIFICATION.json",
+      "bytes": 749,
+      "sha256": "eacdbff7c5df90ce2d0022d5d833cf12f411eb2bb57d7de0614b9054f35114b1"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/README.md",
+      "bytes": 7386,
+      "sha256": "af9fdf9e61f652db39c4287efcd6bd36ec66097b0f0d6080dedc694ef7b7a652"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RESULTS.json",
+      "bytes": 9451,
+      "sha256": "aa995385a9ecfacf7b270a5713a91f013d9b622da8218913aa2c3acde09de8f7"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/RUN-RECEIPT.json",
+      "bytes": 11572,
+      "sha256": "2a4f1cd1b05b312f1f386c37d1bfe49265122b82a2323ba7f3ad6f5270e16f49"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/SOURCE-COMPOSITION.json",
+      "bytes": 1299,
+      "sha256": "a530ef9f81d19b8dc62d3b4c8894e739e4b9d00752721b510222fac536739e00"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/dispatch.json",
+      "bytes": 789,
+      "sha256": "493c2b04588c30e8d2fcc2e750072b07d3d20acdec42d6e9a5c8618a67a858d1"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/input.json",
+      "bytes": 23960,
+      "sha256": "c643107b66d8122913b4b50118bc033d7d1bf773ecfd95dc614eca3b6dbbca06"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/overlay/crates/server/src/native_effects/write.rs",
+      "bytes": 8003,
+      "sha256": "ccd7c1c4820c15fccc152de7968f187e0965266fbb49cf9c85e461156ab95fef"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/overlay/crates/server/src/native_effects/write/tests.rs",
+      "bytes": 8766,
+      "sha256": "bc2d4f5564ea4d09b1f43828508e2a22159b624628680bdc05e2bc86bda9b2b5"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/raw.tar.gz",
+      "bytes": 1768464,
+      "sha256": "6b0504ca161e97e028f64270e901873d70fc6bea931ba74df480cf6d35f72043"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/owned-payload-check-v1/run.py",
+      "bytes": 15332,
+      "sha256": "62f199a26702eeff9f91ede2364077eb09bb5a20490e4e0d79dde32edcc59f96"
+    }
+  ],
+  "total_payload_bytes": 1914186,
+  "evidence_only": true,
+  "active_source_leaves_unchanged": true,
+  "protected_unselected": "All old source/raw/targets/cache/frozen binaries; new raw readable copies and remote complete new source/cargo/target/tmp/frozen/records remain intact."
+}

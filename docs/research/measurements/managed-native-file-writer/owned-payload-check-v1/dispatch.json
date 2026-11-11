@@ -1,0 +1,17 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "sync": false,
+  "outer_seconds": 600,
+  "compile_seconds": 180,
+  "case_seconds": 15,
+  "cargo_jobs": 2,
+  "input_bytes": 23960,
+  "input_sha256": "c643107b66d8122913b4b50118bc033d7d1bf773ecfd95dc614eca3b6dbbca06",
+  "driver_bytes": 15332,
+  "driver_sha256": "62f199a26702eeff9f91ede2364077eb09bb5a20490e4e0d79dde32edcc59f96",
+  "state": "prepared; no actual job admitted yet",
+  "automatic_review_refusal": "STOP; no alternate execution",
+  "immutable_template": "original8b1 closure-v4 full source and registry read-only; only9c73 leaf overlay; matching historical manifest/lock unmodified",
+  "cases": "exact TWO NEW owned payload cases only, each once; no old7 or audit-held5/4819"
+}
