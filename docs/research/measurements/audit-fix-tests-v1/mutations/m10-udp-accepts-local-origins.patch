@@ -1,0 +1,12 @@
+--- a/crates/testguest/src/managed_network/intercept/udp.rs
++++ b/crates/testguest/src/managed_network/intercept/udp.rs
+@@ -31,8 +31,7 @@
+         priority: &str,
+     ) -> io::Result<Self> {
+         match origin {
+-            "local" | "forward" => {}
+-            "local-loopback" | "local-self" => return Err(invalid(SAME_NAMESPACE_REPLY)),
++            "local" | "forward" | "local-loopback" | "local-self" => {}
+             _ => return Err(invalid("UDP experiment expects local or forward")),
+         }
+         Ok(Self {

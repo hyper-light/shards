@@ -1,0 +1,18 @@
+--- a/crates/testguest/src/managed_network/intercept.rs
++++ b/crates/testguest/src/managed_network/intercept.rs
+@@ -281,14 +281,7 @@
+                     match deadline.io(listener.as_raw_fd(), libc::POLLIN, || listener.accept()) {
+                         Ok(pair) => pair,
+                         // A stop only where this worker's cancellation was requested.
+-                        Err(e)
+-                            if e.kind() == io::ErrorKind::ConnectionAborted
+-                                && deadline
+-                                    .cancel
+-                                    .is_some_and(|cancel| cancellation_observed(&cancel)) =>
+-                        {
+-                            return Ok(());
+-                        }
++                        Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => return Ok(()),
+                         Err(e) => return Err(e),
+                     };
+                 report.accepted = report

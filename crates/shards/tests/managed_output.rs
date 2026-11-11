@@ -53,6 +53,11 @@ struct Fixture {
     record: Option<PathBuf>,
     observers: Vec<Observer>,
     observed: BTreeMap<(u32, u8), (u64, u64)>,
+    /// Every socket this fixture's observers opened, checked returned at shutdown.
+    observer_sockets: Vec<managed_capture::Held>,
+    /// A whole-process descriptor baseline, compared at shutdown: valid only for a caller that
+    /// runs alone in its process, as the coordinator's cost campaign does, which sets it. The
+    /// binary's other tests run beside each other, so the fixture never sets it.
     initial_fds: Option<usize>,
 }
 
@@ -68,6 +73,7 @@ impl Fixture {
             record: None,
             observers: Vec::new(),
             observed: BTreeMap::new(),
+            observer_sockets: Vec::new(),
             initial_fds: None,
         }
     }
@@ -203,7 +209,6 @@ impl Fixture {
         );
         self.record = Some(record);
         self.metadata = Some(metadata);
-        self.initial_fds = Some(std::fs::read_dir("/proc/self/fd").unwrap().count());
     }
 
     fn observe(
@@ -228,6 +233,7 @@ impl Fixture {
             metadata.endpoints[&(member, channel as u8)],
             until,
         );
+        self.observer_sockets.extend_from_slice(&observer.held);
         self.observers.push(observer);
         self.observers.len() - 1
     }
@@ -294,6 +300,16 @@ impl Fixture {
             }
         }
         self.observers.clear();
+        let open = managed_capture::not_returned(&self.observer_sockets);
+        let _ = writeln!(
+            std::io::stdout(),
+            "managed-owner observer_sockets opened={} not_returned={}",
+            self.observer_sockets.len(),
+            open.len()
+        );
+        if !open.is_empty() {
+            errors.push(format!("observer sockets not returned: {open:?}"));
+        }
         if let Some(before) = self.initial_fds {
             match std::fs::read_dir("/proc/self/fd") {
                 Ok(entries) => {
@@ -448,6 +464,106 @@ fn metadata_requires_unique_scoped_loopback_endpoints() {
     assert!(Metadata::parse(&format!("{header}{endpoint}{endpoint}")).is_none());
     assert!(Metadata::parse(&format!("{header}member 2 channel 1 address 192.0.2.1:12345\n")).is_none());
     assert!(Metadata::parse(&format!("{header}member 2 channel 3 address 127.0.0.1:12345\n")).is_none());
+}
+
+/// An observer whose endpoint never answers: a UDP socket on 127.0.0.2, apart from the
+/// 127.0.0.1 sockets observers open.
+fn unanswered_observer() -> (std::net::UdpSocket, Observer) {
+    let silent = std::net::UdpSocket::bind("127.0.0.2:0").unwrap();
+    let key = "01".repeat(32);
+    let metadata = Metadata::parse(&format!(
+        "shards managed output 1\nserver {key}\nowner {key}\nrun unanswered\ngeneration 1\ncapacity 64\nmember 1 channel 1 address {}\n",
+        silent.local_addr().unwrap()
+    ))
+    .unwrap();
+    let observer = Observer::start(
+        &Identity::generate().unwrap(),
+        &metadata,
+        metadata.scope(1, Channel::Stdout),
+        metadata.endpoints[&(1, 1)],
+        Instant::now() + WITHIN,
+    );
+    (silent, observer)
+}
+
+/// Sends `ask` once the observer's one admitted command slot is free: its driver frees it as
+/// it takes the Connect `Observer::start` sent.
+fn admit(observer: &Observer, ask: Ask) {
+    let until = Instant::now() + WITHIN;
+    let mut command = Command::Handler(ask);
+    while let Err(std::sync::mpsc::TrySendError::Full(back)) = observer.sender.try_send(command) {
+        assert!(Instant::now() < until, "observer driver took no command");
+        command = back;
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn a_lost_observer_stream_says_how_its_driver_ended() {
+    let lost = |observer: &Observer| {
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            observer.next(Instant::now() + WITHIN)
+        }))
+        .unwrap_err();
+        // A message with arguments is a String, a literal a &'static str.
+        panic
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| panic.downcast_ref::<&str>().map(|said| (*said).to_owned()))
+            .unwrap_or_default()
+    };
+    // A driver that ends normally: its observer's own cancel.
+    let (_silent, mut cancelled) = unanswered_observer();
+    admit(&cancelled, Ask::Cancel);
+    let said = lost(&cancelled);
+    assert!(said.contains("driver ended Ok"), "{said}");
+    cancelled.join(Instant::now() + WITHIN).unwrap();
+    // A driver whose thread panics: a second Connect finds its client config taken.
+    let (silent, mut panicked) = unanswered_observer();
+    admit(&panicked, Ask::Connect(silent.local_addr().unwrap()));
+    let said = lost(&panicked);
+    assert!(said.contains("panicked"), "{said}");
+    assert!(panicked.join(Instant::now() + WITHIN).is_err());
+}
+
+/// The binary's tests share this process: another test's descriptors come and go while an
+/// observer lives. Its own sockets, told apart by inode, are what its shutdown checks.
+#[test]
+fn observer_sockets_are_checked_by_identity_beside_other_tests_descriptors() {
+    use std::os::fd::FromRawFd as _;
+    let count = || std::fs::read_dir("/proc/self/fd").unwrap().count();
+    // As another test's would: a descriptor open across the baseline, closed in the window.
+    let neighbor = std::fs::File::open("/proc/self/stat").unwrap();
+    let before = count();
+    let (silent, mut observer) = unanswered_observer();
+    let held = observer.held.clone();
+    assert_eq!(
+        managed_capture::not_returned(&held),
+        held,
+        "both open while it lives"
+    );
+    // A leak: a second descriptor for one of its sockets, kept past the observer's end.
+    let leaked = held[0];
+    // SAFETY: dup(2) of a descriptor this live observer holds.
+    let copy = unsafe { libc::dup(leaked.fd) };
+    assert!(copy >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: the descriptor dup(2) just returned, owned here once.
+    let copy = unsafe { std::os::fd::OwnedFd::from_raw_fd(copy) };
+    admit(&observer, Ask::Cancel);
+    observer.join(Instant::now() + WITHIN).unwrap();
+    drop((silent, observer, neighbor));
+    let after = count();
+    // Alone in its process this prints equal counts beside the leak; beside the binary's other
+    // tests the count also moves with theirs. Neither is asserted.
+    let _ = writeln!(
+        std::io::stdout(),
+        "process descriptors before={before} after={after} equal={}",
+        before == after
+    );
+    assert_eq!(managed_capture::not_returned(&held), [leaked]);
+    drop(copy);
+    let returned = managed_capture::not_returned(&held);
+    assert!(returned.is_empty(), "{returned:?}");
 }
 
 #[path = "../../../docs/research/measurements/managed-output-cost/fixture.rs"]

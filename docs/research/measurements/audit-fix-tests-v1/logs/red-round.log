@@ -1,0 +1,94 @@
+# kiln run on 451397fcc585f7f7cb9aaf00e42064bb (adacachy, linux/x86_64); synced tree = bff3015 + the red tests only
+# (crates/shards/tests/managed_output.rs, crates/testguest/src/managed_network/intercept{.rs,/tcp_forward.rs,/udp.rs}),
+# no fix applied. command: sh docs/research/measurements/audit-fix-tests-v1/logs/red-round.sh 2>&1 | tail -c 28000
+# Findings 6, 10 and 13: each new test fails for its defect (reproduced). Finding 8: this run's test failed
+# for a different reason (my test sent Cancel into the observer's single occupied command slot), so it is NOT
+# finding 8's reproduction; that is mutation m08 in final-round.log (the original Observer::next restored).
+# aws-lc-sys build-script warning lines are kept as returned.
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ M crates/shards/tests/managed_output.rs
+ M crates/testguest/src/managed_network/intercept.rs
+ M crates/testguest/src/managed_network/intercept/tcp_forward.rs
+ M crates/testguest/src/managed_network/intercept/udp.rs
+?? docs/research/measurements/audit-fix-tests-v1/
+== testguest (findings 6, 10, 13)
+$ cargo test -p shards-testguest -j2 -- late_write_waits_out an_aborted_accept_without inputs_have_explicit_local_roles
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/vendor/aws-lc-sys)
+   Compiling serde v1.0.229
+   Compiling rustls v0.23.46
+   Compiling once_cell v1.21.4
+   Compiling shards-seccomp v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/seccomp)
+[aws-lc-sys build-script warnings elided: environment, dynamic crypto library, c11/stdalign/builtin_swap/linux_random_h checks, two assembler .note.GNU-stack notices]
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/vendor/aws-lc-rs)
+   Compiling rustls-webpki v0.103.16
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/testguest)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 33.13s
+     Running unittests src/lib.rs (target/debug/deps/shards_testguest-1ad4d095dd5ad679)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/shards_testguest-0f767b8571881371)
+
+running 3 tests
+test managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence ... FAILED
+test managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer ... FAILED
+test managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error ... FAILED
+
+failures:
+
+---- managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence stdout ----
+
+thread 'managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence' (1196686) panicked at crates/testguest/src/managed_network/intercept/udp.rs:769:99:
+called `Result::unwrap_err()` on an `Ok` value: Inputs { network: Inputs { family: Ipv4, origin: LocalLoopback, relay: Present, within: 1s, mark: 1, table: 1000, priority: 100 }, mode: Connected }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer stdout ----
+
+thread 'managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer' (1196684) panicked at crates/testguest/src/managed_network/intercept/tcp_forward.rs:1220:9:
+Ok(Failed(WouldBlock, Some(11)))
+
+---- managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error stdout ----
+
+thread 'managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error' (1196685) panicked at crates/testguest/src/managed_network/intercept.rs:1101:9:
+assertion `left == right` failed: Ok(())
+  left: Stopped
+ right: Error
+
+
+failures:
+    managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer
+    managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error
+    managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-testguest --bin shards-testguest`
+[exit 101]
+== managed_output (finding 8)
+$ cargo test -p shards -j2 --test managed_output -- a_lost_observer_stream_says_how_its_driver_ended
+[aws-lc-sys build-script warnings elided as above]
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/shards)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.63s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+test a_lost_observer_stream_says_how_its_driver_ended ... FAILED
+
+failures:
+
+---- a_lost_observer_stream_says_how_its_driver_ended stdout ----
+
+thread 'a_lost_observer_stream_says_how_its_driver_ended' (1201621) panicked at crates/shards/tests/managed_output.rs:484:58:
+called `Result::unwrap()` on an `Err` value: Error("the driver's admitted command slots are full")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_lost_observer_stream_says_how_its_driver_ended
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_output`
+[exit 101]

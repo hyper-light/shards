@@ -1,0 +1,75 @@
+== host
+Linux adacachy 7.2.9-2-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000 x86_64 GNU/Linux
+bff3015182ad754274f1048ce393ac12cb6cd91f
+Python 3.14.8
+rustc 1.98.1 (48a229cea 2026-09-01)
+== f01 process-wide descriptor count
+$ python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f01_fd_count.py
+case=spurious before=9 after=10 count_check=FAIL truth=every observer socket closed
+case=masked before=10 after=10 count_check=pass truth=one observer socket leaked
+[exit 0]
+== f04 line before rename
+$ python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f04_rename_order.py 2000
+natural trials=2000 line-before-rename observed=56 names=['confined-ready', 'python3']
+held trial: name after the line = 'python3' (renamed: False)
+[exit 0]
+== f11 PID reuse after reap
+$ unshare -Urpf --mount-proc python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f11_pid_reuse.py
+A=2 reaped; B=2, an unrelated child, reuses A's PID: True
+pidfd check of A: ECHILD: this exact process was reaped; B alive afterwards: True
+old check of A: waitpid(WNOHANG)=0 rescue_ran=True; B is gone (killed and reaped by the old check)
+old check verdict: assertion 'waited == -1' fails although A was correctly reaped
+[exit 0]
+== f12 gate exposure and route probe
+$ python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f12_gate.py route
+old gate 0.0.0.0:57205: first peer accepted unverified: ('127.0.0.1', 39904) (route address 192.168.1.90)
+new gate 192.168.1.90:40063: loopback refused (not bound there)
+new gate: a peer from 127.0.0.1 reached 192.168.1.90; verified=False -> refused without the release
+new gate: a peer from this host's route address 192.168.1.77; verified=False -> released
+[exit 0]
+$ unshare -rn python3 -I docs/research/measurements/audit-fix-tests-v1/demos/f12_gate.py no-route
+route probe without a default route: OSError errno=101 (ENETUNREACH): the old .unwrap() panics here
+[exit 0]
+== f02 early return in an ignored campaign
+$ rustc --edition 2024 --test -o /tmp/afv1-phase-a.YoR542/f02 docs/research/measurements/audit-fix-tests-v1/demos/f02_early_return.rs
+[exit 0]
+$ /tmp/afv1-phase-a.YoR542/f02 --ignored --test-threads=1
+
+running 2 tests
+test fixed_campaign_asserts_its_hypervisor ... FAILED
+test old_campaign_returns_early ... ok
+
+failures:
+
+---- fixed_campaign_asserts_its_hypervisor stdout ----
+SKIP: simulated host without a hypervisor
+
+thread 'fixed_campaign_asserts_its_hypervisor' (1907880) panicked at docs/research/measurements/audit-fix-tests-v1/demos/f02_early_return.rs:22:5:
+real hypervisor required
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    fixed_campaign_asserts_its_hypervisor
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[exit 101]
+== f05 records directory reuse
+$ rustc --edition 2024 -o /tmp/afv1-phase-a.YoR542/f05 docs/research/measurements/audit-fix-tests-v1/demos/f05_records_dir.rs
+[exit 0]
+$ /tmp/afv1-phase-a.YoR542/f05 /tmp/afv1-phase-a.YoR542/records
+old: create_dir_all(existing) = Ok(())
+old: the earlier run's case.stdout is still there for this run's reader: true
+new: create_dir(existing) = Err(AlreadyExists)
+[exit 0]
+== f09 vacuous negative check
+$ rustc --edition 2024 -o /tmp/afv1-phase-a.YoR542/f09 docs/research/measurements/audit-fix-tests-v1/demos/f09_vacuous.rs
+[exit 0]
+$ /tmp/afv1-phase-a.YoR542/f09
+empty output: old predicate passes = true
+header only: no member rows at all: old predicate passes = true
+neighbor's live row, ended member absent: old predicate passes = true
+columns differ: uid is not the third field: old predicate passes = true
+ended member left a zombie: old predicate passes = false
+[exit 0]

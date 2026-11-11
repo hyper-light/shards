@@ -1,0 +1,61 @@
+# kiln run on adacachy (451397fcc585f7f7cb9aaf00e42064bb); synced tree = all 13 fixes, before `cargo fmt`.
+# command: sh docs/research/measurements/audit-fix-tests-v1/logs/green-round.sh 2>&1 | grep -v '^warning: aws-lc-sys\|^   Compiling ' | tail -c 29000
+# Outcome, kept because it is evidence too:
+# - fmt: diffs in my new code (fixed by `cargo fmt --all`, which touched only these 13 files).
+# - testguest intercept unit tests: 28 passed, 6 ignored (the three new tests green).
+# - managed_output: a_lost_observer_stream_says_how_its_driver_ended FAILED only because `panic!("literal")`
+#   carries a &'static str and the test downcast to String (its message, printed above the failure, was
+#   already the fixed one: "observer events ended before deadline: driver ended Ok"). Test fixed to read both.
+# - observer_sockets_are_checked_by_identity_beside_other_tests_descriptors passed while the binary's other
+#   selected tests ran beside it, and printed `process descriptors before=15 after=10 equal=false`: the
+#   process-wide count moved by -5 with the concurrent tests' descriptors (finding 1's mechanism, live).
+# - managed_network 8 passed / 13 ignored; managed_cleanup's new unix test passed; --no-run all five built.
+# - the runner's zig is 0.17.0; the lint round used the repo-pinned 0.16.0 (scripts/install-zig).
+== fmt
+$ cargo fmt --all --check
+[13 diff hunks in managed_cleanup.rs, managed_network.rs, common/managed_capture.rs, managed_output/broker_effects.rs,
+ managed_output/tenant_exit.rs, managed_output.rs, testguest intercept/udp.rs, testguest intercept.rs: line wrapping only]
+[exit 1]
+== testguest-intercept-unit
+$ cargo test -p shards-testguest -j2 -- managed_network::intercept
+test result: ok. 28 passed; 0 failed; 6 ignored; 0 measured; 11 filtered out; finished in 0.20s
+[exit 0]
+== managed_output-unit
+$ cargo test -p shards -j2 --test managed_output -- a_lost_observer_stream observer_sockets_are_checked ended_member_absence the_gate_releases metadata_requires
+running 5 tests
+test tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies ... ok
+test metadata_requires_unique_scoped_loopback_endpoints ... ok
+test broker_effects::the_gate_releases_only_a_peer_of_this_host ... ok
+test a_lost_observer_stream_says_how_its_driver_ended ... FAILED
+process descriptors before=15 after=10 equal=false
+test observer_sockets_are_checked_by_identity_beside_other_tests_descriptors ... ok
+
+failures:
+
+---- a_lost_observer_stream_says_how_its_driver_ended stdout ----
+
+thread 'a_lost_observer_stream_says_how_its_driver_ended' (3434435) panicked at crates/shards/tests/common/managed_capture.rs:432:33:
+observer events ended before deadline: driver ended Ok
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'a_lost_observer_stream_says_how_its_driver_ended' (3434435) panicked at crates/shards/tests/managed_output.rs:514:5:
+
+
+
+failures:
+    a_lost_observer_stream_says_how_its_driver_ended
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+[exit 101]
+== managed_network-unit
+$ cargo test -p shards -j2 --test managed_network
+test result: ok. 8 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[exit 0]
+== managed_cleanup-unit
+$ cargo test -p shards -j2 --test managed_cleanup -- a_child_reaped_through_its_client_is_returned
+test native::a_child_reaped_through_its_client_is_returned ... ok
+[exit 0]
+== no-run
+$ cargo test -p shards --no-run -j2 --test managed_output --test managed_network --test managed_limits --test managed_cleanup --test build
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.16s
+[exit 0]

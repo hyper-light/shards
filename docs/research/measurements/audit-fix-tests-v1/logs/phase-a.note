@@ -1,0 +1,1 @@
+note: in the f12 'route' run above, the last line's '-> released' text is static in the first demo script; its verified=False is the finding: on this multi-address host a local connection to the gate's route address 192.168.1.90 came from 192.168.1.77, so an equality check would refuse the guest. demos/f12_gate.py was then corrected (see phase-a-f12b.log).

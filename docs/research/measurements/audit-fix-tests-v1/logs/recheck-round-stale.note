@@ -1,0 +1,10 @@
+# The first recheck run (after the observer-socket attribution rewrite; EXPECTED_DIFF d289de9b...) is not
+# evidence of a test result, and is kept only as this note. Its green step ran a stale testguest binary that
+# still held mutation m13: the failure it printed is at intercept.rs:1120, the first assertion's line only
+# with m13's 8-line guard collapsed to 1 (the fixed file has it at line 1127), and cargo had not rebuilt
+# ("Finished ... in 0.04s"). Cause: the previous round built the m13 mutant last and reverted the source;
+# the next kiln sync restored the file with the local, older mtime, so cargo kept the mutant build (the
+# pitfall in the operator's notes: restored files keep an old mtime). Every other step of that run, and
+# all 8 mutations, matched the green run below. Harness fix: runner-prelude.sh touches every file a
+# mutation patches before anything builds, and final-round.sh touches a mutation's files after reverting
+# it. recheck-round.log is the run after that fix.

@@ -1,0 +1,15 @@
+exit=0
+[... earlier Compiling lines elided by the tail ...]
+   Compiling shards-testguest v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/testguest)
+   Compiling shards-api v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/api)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/crates/testdir)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4m 01s
+  Executable tests/build.rs (target/debug/deps/build-75d1abae8ea2b29e)
+  Executable tests/managed_cleanup.rs (target/debug/deps/managed_cleanup-7f77f338e4d55c9a)
+  Executable tests/managed_limits.rs (target/debug/deps/managed_limits-f66c9012de730c28)
+  Executable tests/managed_network.rs (target/debug/deps/managed_network-2cfa858454becbdc)
+  Executable tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+real	4m2.075s
+user	3m38.108s
+sys	0m29.663s

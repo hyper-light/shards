@@ -110,12 +110,79 @@ type Output = shards_ipc::Stream;
 
 struct Client {
     child: Child,
+    /// Taken before anything could reap the child.
+    #[cfg(unix)]
+    identity: Option<ProcessIdentity>,
     output: Option<BufReader<Output>>,
     poller: Poller,
     exit: Option<ExitWatch>,
     status: Option<ExitStatus>,
     state: ClientState,
     ready_by: Instant,
+}
+
+/// A child as the kernel knows it, so a check after its reap never names another process
+/// that reused its PID: its pidfd on Linux (pidfd_open(2)).
+#[cfg(target_os = "linux")]
+struct ProcessIdentity {
+    pidfd: std::os::fd::OwnedFd,
+}
+
+/// macOS has no process descriptor: the PID with the start time the kernel gave it, which a
+/// process reusing the PID after the reap does not have.
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct ProcessIdentity {
+    pid: libc::pid_t,
+    started: (u64, u64),
+}
+
+#[cfg(target_os = "linux")]
+impl ProcessIdentity {
+    fn of(pid: u32) -> io::Result<Self> {
+        use std::os::fd::FromRawFd as _;
+        // SAFETY: pidfd_open(2) of an unreaped child of this process, without flags.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        if raw < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let raw = i32::try_from(raw).map_err(io::Error::other)?;
+        // SAFETY: the descriptor pidfd_open(2) just returned, owned once.
+        let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+        Ok(Self { pidfd })
+    }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(Self {
+            pidfd: self.pidfd.try_clone()?,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl ProcessIdentity {
+    fn of(pid: u32) -> io::Result<Self> {
+        let pid = libc::pid_t::try_from(pid).map_err(io::Error::other)?;
+        let started = started(pid).ok_or_else(io::Error::last_os_error)?;
+        Ok(Self { pid, started })
+    }
+
+    fn try_clone(&self) -> io::Result<Self> {
+        Ok(*self)
+    }
+}
+
+/// When the kernel started process `pid`, running or an unreaped zombie: proc_pidinfo(2)'s
+/// PROC_PIDTBSDINFO with argument 1, which finds zombies too (xnu bsd/kern/proc_info.c;
+/// audit-fix-tests-v1/logs/f11-macos-identity.log).
+#[cfg(target_os = "macos")]
+fn started(pid: libc::pid_t) -> Option<(u64, u64)> {
+    // SAFETY: proc_bsdinfo is plain data, for which all zeroes is a value.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = i32::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
+    // SAFETY: a buffer of exactly `size` bytes for proc_pidinfo(2) to fill.
+    let filled = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 1, (&raw mut info).cast(), size) };
+    (filled == size).then_some((info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
 impl Client {
@@ -137,6 +204,8 @@ impl Client {
         // Ownership exists before taking stdout or installing any fallible watch.
         let mut client = Self {
             child,
+            #[cfg(unix)]
+            identity: None,
             output: None,
             poller,
             exit: None,
@@ -144,6 +213,11 @@ impl Client {
             state: ClientState::Starting,
             ready_by: deadline,
         };
+        // Before the first try_wait, which may reap the child and free its PID.
+        #[cfg(unix)]
+        {
+            client.identity = Some(ProcessIdentity::of(client.child.id())?);
+        }
         #[cfg(unix)]
         let output = client.child.stdout.take().ok_or(ClientError::MissingStdout)?;
         #[cfg(unix)]
@@ -562,10 +636,11 @@ mod native {
         .unwrap()
     }
 
-    /// One waitpid snapshot, not a probe loop. A failing mutation is rescued before
+    /// One observation of the controlled child, through its identity held from spawn, never
+    /// a PID it may have given up, and not a probe loop. A failing mutation is rescued before
     /// asserting so this test never leaves its own controlled child behind.
     #[cfg(unix)]
-    struct Returned(u32);
+    struct Returned(ProcessIdentity);
     #[cfg(windows)]
     struct Returned(std::os::windows::io::OwnedHandle);
 
@@ -573,7 +648,8 @@ mod native {
         fn of(client: &Client) -> Self {
             #[cfg(unix)]
             {
-                Self(client.child.id())
+                let held = client.identity.as_ref().expect("identity taken at spawn");
+                Self(held.try_clone().unwrap())
             }
             #[cfg(windows)]
             {
@@ -593,25 +669,74 @@ mod native {
             assert_eq!(ended, WAIT_OBJECT_0);
         }
 
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         fn check(self) {
-            let pid = self.0;
-            let pid = libc::pid_t::try_from(pid).unwrap();
-            let mut status = 0;
-            // SAFETY: exactly the controlled direct child's PID, never wait-any.
-            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            let fd = self.0.pidfd.as_raw_fd();
+            let id = libc::id_t::try_from(fd).unwrap();
+            // SAFETY: siginfo_t is plain data, for which all zeroes is a value.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: waitid(2) on this exact child's pidfd, without waiting.
+            let waited =
+                unsafe { libc::waitid(libc::P_PIDFD, id, &raw mut info, libc::WEXITED | libc::WNOHANG) };
             let error = io::Error::last_os_error();
-            if waited == 0 {
-                // SAFETY: waitpid established this is still our unreaped child; no
-                // concurrent waiter exists, so its PID cannot be reassigned.
+            // SAFETY: si_pid of the siginfo waitid(2) filled, zero where nothing changed.
+            if waited == 0 && unsafe { info.si_pid() } == 0 {
+                // Still running: ended through its own pidfd, then reaped.
+                // SAFETY: pidfd_send_signal(2) and waitid(2) on this exact child's pidfd.
                 unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                    libc::waitpid(pid, &mut status, 0);
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        fd,
+                        libc::SIGKILL,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0,
+                    );
+                    libc::waitid(libc::P_PIDFD, id, &raw mut info, libc::WEXITED);
                 }
             }
+            // A zombie was reaped by the waitid above (waited 0, si_pid set): also a rescue.
             assert_eq!(waited, -1, "controlled child needed explicit rescue: {waited}");
             assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
         }
+
+        #[cfg(target_os = "macos")]
+        fn check(self) {
+            let ProcessIdentity { pid, started: at } = self.0;
+            // Still ours, running or an unreaped zombie: a process that reused the PID after
+            // the reap started at another time.
+            let unreaped = started(pid) == Some(at);
+            if unreaped {
+                let mut status = 0;
+                // SAFETY: an unreaped child of this process keeps its PID until reaped here.
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                    libc::waitpid(pid, &raw mut status, 0);
+                }
+            }
+            assert!(!unreaped, "controlled child needed explicit rescue");
+        }
+    }
+
+    /// The identity taken at spawn still names the child once `finish` has reaped it, and the
+    /// check sees it returned (Linux: waitid(P_PIDFD) answers ECHILD; macOS: no process of
+    /// its PID and start time).
+    #[cfg(unix)]
+    #[test]
+    fn a_child_reaped_through_its_client_is_returned() {
+        let mut client = Client::spawn(
+            Command::new("/bin/sh")
+                .args(["-c", "echo ready"])
+                .stdin(Stdio::null())
+                .stderr(Stdio::inherit()),
+            PATIENCE,
+        )
+        .unwrap();
+        let returned = Returned::of(&client);
+        client.await_ready().unwrap();
+        let completed = client.finish(PATIENCE).unwrap();
+        assert!(completed.status.success());
+        drop(client);
+        returned.check();
     }
 
     fn rejected(mode: &str, deadline: bool) {

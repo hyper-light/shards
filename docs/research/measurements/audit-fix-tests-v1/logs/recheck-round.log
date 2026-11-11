@@ -1,0 +1,393 @@
+# kiln run on 451397fcc585f7f7cb9aaf00e42064bb (adacachy, linux/x86_64, CachyOS 7.2.9), cwd = worktree root (synced)
+# command: sh docs/research/measurements/audit-fix-tests-v1/logs/recheck-round.sh 2>&1
+# env: EXPECTED_DIFF=d289de9b66f07581022a27f0efb78a77d711aab3285cbb575295b5348bc28f50 (sha256 of the local `git diff`,
+# the final sources); runner-prelude.sh touches every mutation target first (recheck-round-stale.note).
+# exit_code 0. Output as kiln returned it (Compiling / Checking / aws-lc-sys build-script lines filtered by step()).
+tree matches the local diff d289de9b66f07581022a27f0efb78a77d711aab3285cbb575295b5348bc28f50 at bff3015182ad754274f1048ce393ac12cb6cd91f
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ M crates/shards/tests/build.rs
+ M crates/shards/tests/common/managed_capture.rs
+ M crates/shards/tests/managed_cleanup.rs
+ M crates/shards/tests/managed_limits.rs
+ M crates/shards/tests/managed_network.rs
+ M crates/shards/tests/managed_network/cancel.rs
+ M crates/shards/tests/managed_network/tcp_forward.rs
+ M crates/shards/tests/managed_output.rs
+ M crates/shards/tests/managed_output/broker_effects.rs
+ M crates/shards/tests/managed_output/tenant_exit.rs
+ M crates/testguest/src/managed_network/intercept.rs
+ M crates/testguest/src/managed_network/intercept/tcp_forward.rs
+ M crates/testguest/src/managed_network/intercept/udp.rs
+?? docs/research/measurements/audit-fix-tests-v1/
+== fmt
+$ cargo fmt --all --check
+[exit 0]
+== finding 1 alone
+$ cargo test -p shards -j2 --test managed_output -- --exact observer_sockets_are_checked_by_identity_beside_other_tests_descriptors --nocapture
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.02s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+process descriptors before=10 after=10 equal=true
+test observer_sockets_are_checked_by_identity_beside_other_tests_descriptors ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+[exit 0]
+== managed_output-unit
+$ cargo test -p shards -j2 --test managed_output -- a_lost_observer_stream observer_sockets_are_checked ended_member_absence the_gate_releases metadata_requires
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 5 tests
+test tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies ... ok
+test metadata_requires_unique_scoped_loopback_endpoints ... ok
+test broker_effects::the_gate_releases_only_a_peer_of_this_host ... ok
+process descriptors before=15 after=12 equal=false
+test observer_sockets_are_checked_by_identity_beside_other_tests_descriptors ... ok
+test a_lost_observer_stream_says_how_its_driver_ended ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.00s
+
+[exit 0]
+== managed_network-unit
+$ cargo test -p shards -j2 --test managed_network
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.71s
+     Running tests/managed_network.rs (target/debug/deps/managed_network-2cfa858454becbdc)
+
+running 21 tests
+test cancel::direct_guest_udp4_cancels_after_backend_receipt_before_work_deadline ... ignored, coordinator alone executes real upstream-receive cancellation and cleanup
+test cancel::direct_guest_udp4_precommit_cancel_requires_no_backend_effect ... ignored, coordinator alone checks pending cancellation before actual next upstream send
+test buffered_relay_source_witness_rejects_client_correct_direct_bypass ... ok
+test common::port_probe ... ignored, a process of its own for port_free and hold_port, which run it
+test direct_guest_capabilities_are_separate_from_payload_results ... ignored, coordinator runs direct experimental-kernel VMs
+test direct_guest_native_pairs_preserve_binary_empty_and_half_close ... ignored, coordinator runs direct experimental-kernel VMs
+test direct_guest_socket_address_udp4_requires_original_native_tuple ... ignored, coordinator alone loads hooks and runs actual guest compatibility comparison
+test direct_guest_two_leg_udp4_records_buffers_and_backend_source_change ... ignored, coordinator alone executes real two-leg buffered guest comparison
+test experimental_tcp4_interception_has_distinct_backend_and_relay_observations ... ignored, coordinator runs isolated IPv4 TCP interception experiment; no production adoption
+test experimental_tcp6_interception_has_distinct_backend_and_relay_observations ... ignored, coordinator runs isolated IPv6 TCP interception experiment; no production adoption
+test experimental_udp4_interception_has_datagram_and_original_tuple_observations ... ignored, coordinator runs isolated UDP4 compatibility experiment; no production adoption
+test experimental_udp6_interception_has_datagram_and_original_tuple_observations ... ignored, coordinator runs isolated UDP6 compatibility experiment; no production adoption
+test cancel::precommit_record_rejects_an_actual_upstream_send ... ok
+test cancel::cancellation_record_rejects_work_expiry_and_preserves_sent_fact ... ok
+test a_guest_verdict_is_its_pass_line_not_the_exit_status ... ok
+test fixture_cmdline_and_config_preserve_empty_and_missing_evidence ... ok
+test tcp_forward::managed_engine_half_close_records_actual_host_finish ... ignored, finite one-VM old/new init engine compatibility measurement
+test tcp_forward::managed_tcp_forward_preserves_both_half_closes ... ignored, caller supplies finite KVM, artifact, byte and time envelopes
+test socket_address_presentation_profile_has_no_default ... ok
+test socket_address_record_parser_keeps_actual_tuple_and_failed_verdict ... ok
+test interception_records_keep_distinct_bytes_and_typed_counts ... ok
+
+test result: ok. 8 passed; 0 failed; 13 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[exit 0]
+== managed_cleanup-unit
+$ cargo test -p shards -j2 --test managed_cleanup -- a_child_reaped_through_its_client_is_returned
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running tests/managed_cleanup.rs (target/debug/deps/managed_cleanup-7f77f338e4d55c9a)
+
+running 1 test
+test native::a_child_reaped_through_its_client_is_returned ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+[exit 0]
+== testguest-intercept-unit
+$ cargo test -p shards-testguest -j2 -- managed_network::intercept
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.89s
+     Running unittests src/lib.rs (target/debug/deps/shards_testguest-1ad4d095dd5ad679)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/shards_testguest-0f767b8571881371)
+
+running 34 tests
+test managed_network::intercept::sock_addr::bpf::tests::exact_selectors_and_network_order_writes ... ok
+test managed_network::intercept::sock_addr::tests::buffered_comparison_requires_explicit_envelope_and_preserves_client_roles ... ok
+test managed_network::intercept::sock_addr::bpf::tests::reverse_program_and_hook_errors_preserve_exact_endpoint_and_cause ... ok
+test managed_network::intercept::sock_addr::tests::cancel_command_is_explicit_and_fixes_only_the_existing_presentation ... ok
+test managed_network::intercept::sock_addr::tests::finite_hook_plans_are_explicit_and_mode_specific ... ok
+test managed_network::intercept::sock_addr::tests::missing_or_unknown_profile_is_typed_invalid_input ... ok
+test managed_network::intercept::sock_addr::tests::finite_parser_and_strict_original_port ... ok
+test managed_network::intercept::tcp_forward::native_tests::native_engine_unix_half_close_matches_original_body ... ignored, finite Unix-only old engine body/shared-pump half-close comparison; not VSOCK
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_cancel_after_backend_receipt ... ignored, private finite native prefix/early-backend-completion cancellation campaign
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_client_reset_matches_direct_peer ... ignored, finite native client-origin reset with independent backend error/prefix witnesses
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_extra_client_byte_is_not_forwarded ... ignored, finite caller byte boundary with an independent backend EOF/extra-byte witness
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_pump_both_half_closes ... ignored, private native socket campaign supplies release FD and finite byte/time inputs
+test managed_network::intercept::tcp_forward::native_tests::native_tcp_reset_matches_direct_peer ... ignored, finite native direct/mediated reset compatibility with independent prefix receipts
+test managed_network::intercept::sock_addr::tests::precommit_command_selects_only_its_explicit_control ... ok
+test managed_network::intercept::tests::absence_never_counts_success_or_unknown_errors_as_refusal ... ok
+test managed_network::intercept::tests::deadline_verdict_requires_baseline_counts_and_known_terminal ... ok
+test managed_network::intercept::tests::inputs_refuse_conflicting_or_out_of_width_routing_objects ... ok
+test managed_network::intercept::udp::forward::tests::before_send_expectation_rejects_any_observed_attempt_or_send ... ok
+test managed_network::intercept::udp::forward::tests::cancellation_witness_keeps_send_facts_and_rejects_expiry_or_wrong_stage ... ok
+test managed_network::intercept::tests::ipv6_family_uses_the_same_finite_origins_and_input_authority ... ok
+test managed_network::intercept::udp::forward::tests::empty_and_truncated_borrowed_messages_stay_distinct ... ok
+test managed_network::intercept::udp::forward::tests::payload_envelope_and_single_peer_are_explicit ... ok
+test managed_network::intercept::udp::tests::empty_is_a_consumed_datagram_and_truncation_or_unknown_metadata_never_matches ... ok
+test managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence ... ok
+test managed_network::intercept::wire::tests::acks_reject_wrong_identity_duplicate_truncation_and_errno ... ok
+test managed_network::intercept::wire::tests::route_and_selector_keep_exact_ipv4_and_tcp_port ... ok
+test managed_network::intercept::wire::tests::ipv6_route_address_and_policy_fields_match_their_abi ... ok
+test managed_network::intercept::wire::tests::same_namespace_targets_keep_their_actual_destination_in_both_messages ... ok
+test managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error ... ok
+test managed_network::intercept::wire::tests::fallback_is_a_separate_appended_exact_selector_drop ... ok
+test managed_network::intercept::wire::tests::udp_selector_and_separate_drop_match_actual_family_destination_and_port ... ok
+test managed_network::intercept::wire::tests::ipv6_exact_selector_and_separate_drop_share_actual_family ... ok
+test managed_network::intercept::wire::tests::ipv4_encoding_matches_checked_baseline ... ok
+test managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer ... ok
+
+test result: ok. 28 passed; 0 failed; 6 ignored; 0 measured; 11 filtered out; finished in 0.20s
+
+   Doc-tests shards_testguest
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[exit 0]
+== mutation m01-identity-check-blind (must fail)
+$ timeout 240 cargo test -p shards -j2 --test managed_output -- observer_sockets_are_checked
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.63s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+test observer_sockets_are_checked_by_identity_beside_other_tests_descriptors ... FAILED
+
+failures:
+
+---- observer_sockets_are_checked_by_identity_beside_other_tests_descriptors stdout ----
+
+thread 'observer_sockets_are_checked_by_identity_beside_other_tests_descriptors' (3064613) panicked at crates/shards/tests/managed_output.rs:540:5:
+assertion `left == right` failed: both open while it lives
+  left: []
+ right: [Held { fd: 5, inode: 1046368123 }, Held { fd: 6, inode: 1046368124 }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    observer_sockets_are_checked_by_identity_beside_other_tests_descriptors
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_output`
+[exit 101]
+== mutation m03-status-only-verdict (must fail)
+$ timeout 240 cargo test -p shards -j2 --test managed_network -- a_guest_verdict_is_its_pass_line
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+     Running tests/managed_network.rs (target/debug/deps/managed_network-2cfa858454becbdc)
+
+running 1 test
+test a_guest_verdict_is_its_pass_line_not_the_exit_status ... FAILED
+
+failures:
+
+---- a_guest_verdict_is_its_pass_line_not_the_exit_status stdout ----
+
+thread 'a_guest_verdict_is_its_pass_line_not_the_exit_status' (3067809) panicked at crates/shards/tests/managed_network.rs:199:5:
+assertion failed: !passed("SHARDS-TEST FAIL managed-network probe failed; see its errno/state record\r\n")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    a_guest_verdict_is_its_pass_line_not_the_exit_status
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 20 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_network`
+[exit 101]
+== mutation m06-late-write-no-retry (must fail)
+$ timeout 240 cargo test -p shards-testguest -j2 -- late_write_waits_out
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.05s
+     Running unittests src/lib.rs (target/debug/deps/shards_testguest-1ad4d095dd5ad679)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/shards_testguest-0f767b8571881371)
+
+running 1 test
+test managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer ... FAILED
+
+failures:
+
+---- managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer stdout ----
+
+thread 'managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer' (3070793) panicked at crates/testguest/src/managed_network/intercept/tcp_forward.rs:1222:9:
+Ok(Failed(WouldBlock, Some(11)))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    managed_network::intercept::tcp_forward::late_write_tests::late_write_waits_out_transient_errors_and_records_the_peers_answer
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-testguest --bin shards-testguest`
+[exit 101]
+== mutation m08-next-hides-driver (must fail)
+$ timeout 240 cargo test -p shards -j2 --test managed_output -- a_lost_observer_stream
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.47s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+test a_lost_observer_stream_says_how_its_driver_ended ... FAILED
+
+failures:
+
+---- a_lost_observer_stream_says_how_its_driver_ended stdout ----
+
+thread 'a_lost_observer_stream_says_how_its_driver_ended' (3076287) panicked at crates/shards/tests/common/managed_capture.rs:448:37:
+observer event before deadline: channel is empty and sending half is closed
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'a_lost_observer_stream_says_how_its_driver_ended' (3076287) panicked at crates/shards/tests/managed_output.rs:519:5:
+observer event before deadline: channel is empty and sending half is closed
+
+
+failures:
+    a_lost_observer_stream_says_how_its_driver_ended
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_output`
+[exit 101]
+== mutation m09-no-positive-control (must fail)
+$ timeout 240 cargo test -p shards -j2 --test managed_output -- ended_member_absence
+warning: unused variable: `neighbor`
+   --> crates/shards/tests/managed_output/tenant_exit.rs:184:48
+    |
+184 | fn ended_member_rows(table: &str, ended: &str, neighbor: &str) -> Result<(), String> {
+    |                                                ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_neighbor`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `shards` (test "managed_output") generated 1 warning (run `cargo fix --test "managed_output" -p shards` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.07s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+test tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies ... FAILED
+
+failures:
+
+---- tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies stdout ----
+
+thread 'tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies' (3087664) panicked at crates/shards/tests/managed_output/tenant_exit.rs:215:9:
+"PID PPID UID NLWP STAT COMMAND\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tenant_exit::ended_member_absence_needs_a_live_neighbor_and_names_zombies
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_output`
+[exit 101]
+== mutation m10-udp-accepts-local-origins (must fail)
+$ timeout 240 cargo test -p shards-testguest -j2 -- inputs_have_explicit_local_roles
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running unittests src/lib.rs (target/debug/deps/shards_testguest-1ad4d095dd5ad679)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/shards_testguest-0f767b8571881371)
+
+running 1 test
+test managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence ... FAILED
+
+failures:
+
+---- managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence stdout ----
+
+thread 'managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence' (3090534) panicked at crates/testguest/src/managed_network/intercept/udp.rs:762:89:
+called `Result::unwrap_err()` on an `Ok` value: Inputs { network: Inputs { family: Ipv4, origin: LocalLoopback, relay: Present, within: 1s, mark: 1, table: 1000, priority: 100 }, mode: Connected }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    managed_network::intercept::udp::tests::inputs_have_explicit_local_roles_and_do_not_inherit_tcp_absence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-testguest --bin shards-testguest`
+[exit 101]
+== mutation m12-gate-admits-any-peer (must fail)
+$ timeout 240 cargo test -p shards -j2 --test managed_output -- the_gate_releases
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.03s
+     Running tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+
+running 1 test
+test broker_effects::the_gate_releases_only_a_peer_of_this_host ... FAILED
+
+failures:
+
+---- broker_effects::the_gate_releases_only_a_peer_of_this_host stdout ----
+
+thread 'broker_effects::the_gate_releases_only_a_peer_of_this_host' (3094950) panicked at crates/shards/tests/managed_output/broker_effects.rs:262:5:
+assertion `left == right` failed
+  left: 127.0.0.2:53413
+ right: 127.0.0.1:52963
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    broker_effects::the_gate_releases_only_a_peer_of_this_host
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --test managed_output`
+[exit 101]
+== mutation m13-abort-is-a-stop (must fail)
+$ timeout 240 cargo test -p shards-testguest -j2 -- an_aborted_accept_without
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.71s
+     Running unittests src/lib.rs (target/debug/deps/shards_testguest-1ad4d095dd5ad679)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/shards_testguest-0f767b8571881371)
+
+running 1 test
+test managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error ... FAILED
+
+failures:
+
+---- managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error stdout ----
+
+thread 'managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error' (3099627) panicked at crates/testguest/src/managed_network/intercept.rs:1120:9:
+assertion `left == right` failed: Ok(())
+  left: Stopped
+ right: Error
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    managed_network::intercept::tests::an_aborted_accept_without_cancellation_is_a_worker_error
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-testguest --bin shards-testguest`
+[exit 101]
+== tree restored after mutations: yes
+== no-run
+$ cargo test -p shards --no-run -j2 --test managed_output --test managed_network --test managed_limits --test managed_cleanup --test build
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.98s
+  Executable tests/build.rs (target/debug/deps/build-75d1abae8ea2b29e)
+  Executable tests/managed_cleanup.rs (target/debug/deps/managed_cleanup-7f77f338e4d55c9a)
+  Executable tests/managed_limits.rs (target/debug/deps/managed_limits-f66c9012de730c28)
+  Executable tests/managed_network.rs (target/debug/deps/managed_network-2cfa858454becbdc)
+  Executable tests/managed_output.rs (target/debug/deps/managed_output-b7ce6a4da550e51d)
+[exit 0]
+tree matches the local diff d289de9b66f07581022a27f0efb78a77d711aab3285cbb575295b5348bc28f50 at bff3015182ad754274f1048ce393ac12cb6cd91f
+== clippy-shards-tests
+$ cargo clippy -p shards -j2 --test managed_output --test managed_network --test managed_limits --test managed_cleanup --test build -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.23s
+[exit 0]

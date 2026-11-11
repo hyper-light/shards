@@ -1,0 +1,42 @@
+# kiln run on 451397fcc585f7f7cb9aaf00e42064bb (adacachy, linux/x86_64), sync false, in the synced worktree copy
+# command: cd /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225 && sh docs/research/measurements/audit-fix-tests-v1/logs/lint-round.sh 2>&1
+# env: EXPECTED_DIFF=cc526a0cd58d9caa42fe84ba35ed4b834c1c3cd69af14eb8f109b53693d74ebe
+# exit_code 0. Output as kiln returned it (Compiling / Checking / aws-lc-sys build-script lines filtered by step()).
+tree matches the local diff cc526a0cd58d9caa42fe84ba35ed4b834c1c3cd69af14eb8f109b53693d74ebe at bff3015182ad754274f1048ce393ac12cb6cd91f
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ M crates/shards/tests/build.rs
+ M crates/shards/tests/common/managed_capture.rs
+ M crates/shards/tests/managed_cleanup.rs
+ M crates/shards/tests/managed_limits.rs
+ M crates/shards/tests/managed_network.rs
+ M crates/shards/tests/managed_network/cancel.rs
+ M crates/shards/tests/managed_network/tcp_forward.rs
+ M crates/shards/tests/managed_output.rs
+ M crates/shards/tests/managed_output/broker_effects.rs
+ M crates/shards/tests/managed_output/tenant_exit.rs
+ M crates/testguest/src/managed_network/intercept.rs
+ M crates/testguest/src/managed_network/intercept/tcp_forward.rs
+ M crates/testguest/src/managed_network/intercept/udp.rs
+?? docs/research/measurements/audit-fix-tests-v1/
+== clippy-shards-tests
+$ cargo clippy -p shards -j2 --test managed_output --test managed_network --test managed_limits --test managed_cleanup --test build -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 05s
+[exit 0]
+== clippy-testguest-host
+$ cargo clippy -p shards-testguest -j2 --all-targets -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 41.80s
+[exit 0]
+/tmp/zig-x86_64-linux-0.16.0.tar.xz: OK
+zig 0.16.0 at /tmp/zig-x86_64-linux-0.16.0
+== clippy-testguest-x86_64-unknown-linux-musl
+$ env CC_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-cc AR_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo clippy -p shards-testguest -j2 --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 54.24s
+[exit 0]
+== clippy-testguest-aarch64-unknown-linux-musl
+$ env CC_aarch64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-cc AR_aarch64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-ar ZIG_TARGET=aarch64-linux-musl cargo clippy -p shards-testguest -j2 --all-targets --target aarch64-unknown-linux-musl -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 19s
+[exit 0]
+== guest-build-x86_64-musl
+$ env CC_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-cc AR_x86_64_unknown_linux_musl=/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-tests-v1-96343d4225/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo build -p shards-testguest -j2 --profile guest --target x86_64-unknown-linux-musl
+    Finished `guest` profile [optimized] target(s) in 1m 28s
+[exit 0]

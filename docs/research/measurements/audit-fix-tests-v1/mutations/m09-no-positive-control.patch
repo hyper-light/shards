@@ -1,0 +1,15 @@
+--- a/crates/shards/tests/managed_output/tenant_exit.rs
++++ b/crates/shards/tests/managed_output/tenant_exit.rs
+@@ -190,12 +190,6 @@
+     let rows: Vec<Vec<&str>> = lines.map(|line| line.split_whitespace().collect()).collect();
+     let of = |uid: &str| -> Vec<&Vec<&str>> { rows.iter().filter(|row| row.get(2) == Some(&uid)).collect() };
+     let zombie = |row: &&Vec<&str>| row.get(4).is_some_and(|stat| stat.starts_with('Z'));
+-    if !of(neighbor).iter().any(|row| !zombie(row)) {
+-        return Err(
+-            "no live row of the continuing neighbor: the snapshot cannot show the ended member's absence"
+-                .into(),
+-        );
+-    }
+     let ended = of(ended);
+     if let Some(row) = ended.iter().find(|row| zombie(row)) {
+         return Err(format!("the ended member left an unreaped zombie: {row:?}"));

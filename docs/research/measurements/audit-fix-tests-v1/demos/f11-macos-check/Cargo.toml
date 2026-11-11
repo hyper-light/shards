@@ -1,0 +1,12 @@
+# A harness, not a workspace member: finding 11's macOS identity code, copied verbatim from
+# crates/shards/tests/managed_cleanup.rs, run on the cases its check meets.
+[package]
+name = "afv1-f11-macos-check"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "=0.2.189"
+
+[workspace]

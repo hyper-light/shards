@@ -1103,6 +1103,34 @@ fn unix_connect(
     Ok(stream)
 }
 
+/// The host-fin-first probe: one write after the engine's EOF, its answer recorded. An
+/// interrupted write and EAGAIN are transient: Deadline::io retries the first and waits for
+/// POLLOUT after the second, within the deadline. Any other answer is the probe's outcome.
+fn late_write(
+    stream: &std::os::unix::net::UnixStream,
+    bytes: &[u8],
+    deadline: &Deadline,
+) -> io::Result<LateWrite> {
+    let sent = deadline.io(stream.as_raw_fd(), libc::POLLOUT, || {
+        let mut writer = stream;
+        match writer.write(bytes) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                Err(error)
+            }
+            answer => Ok(answer),
+        }
+    })?;
+    Ok(match sent {
+        Ok(n) => LateWrite::Accepted(n),
+        Err(error) => LateWrite::Failed(error.kind(), error.raw_os_error()),
+    })
+}
+
 pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::Result<()> {
     let deadline = Deadline::new(input.within)?;
     let before = descriptor_count()?;
@@ -1128,15 +1156,7 @@ pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::
                 return Err(invalid("actual engine response suffix differs"));
             }
             if input.half == EngineHalf::HostFinFirst {
-                let sent = deadline.io(
-                    stream.as_raw_fd(),
-                    libc::POLLOUT,
-                    || Ok(stream.write(&input.late)),
-                )?;
-                late = match sent {
-                    Ok(n) => LateWrite::Accepted(n),
-                    Err(error) => LateWrite::Failed(error.kind(), error.raw_os_error()),
-                };
+                late = late_write(&stream, &input.late, &deadline)?;
             }
             Ok(())
         })();
@@ -1189,6 +1209,47 @@ pub(in crate::managed_network) fn engine_half_close(input: EngineInputs) -> io::
         return Err(invalid("engine probe descriptors did not return"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod late_write_tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
+
+    // Test patience: long enough to reach the first write on a loaded host. Nothing drains
+    // the full queue below, so a probe that waits for POLLOUT waits all of it.
+    const PATIENCE: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn late_write_waits_out_transient_errors_and_records_the_peers_answer() {
+        let (writer, reader) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        let mut filler = &writer;
+        while filler.write(&[0; 4096]).is_ok() {}
+        while filler.write(&[0]).is_ok() {}
+        // A full queue answers EAGAIN, which is transient: never the recorded outcome.
+        let waited = late_write(&writer, b"X", &Deadline::new(PATIENCE).unwrap());
+        assert!(
+            matches!(&waited, Err(error) if error.kind() == io::ErrorKind::TimedOut),
+            "{waited:?}"
+        );
+        // The engine closes both halves before its EOF: the late byte meets EPIPE.
+        drop(reader);
+        let closed = late_write(&writer, b"X", &Deadline::new(PATIENCE).unwrap()).unwrap();
+        assert!(
+            matches!(
+                closed,
+                LateWrite::Failed(io::ErrorKind::BrokenPipe, Some(libc::EPIPE))
+            ),
+            "{closed:?}"
+        );
+        // A peer that ended only its own writing still reads: the byte is accepted.
+        let (writer, reader) = UnixStream::pair().unwrap();
+        writer.set_nonblocking(true).unwrap();
+        reader.shutdown(std::net::Shutdown::Write).unwrap();
+        let accepted = late_write(&writer, b"X", &Deadline::new(PATIENCE).unwrap()).unwrap();
+        assert!(matches!(accepted, LateWrite::Accepted(1)), "{accepted:?}");
+    }
 }
 
 #[cfg(test)]

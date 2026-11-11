@@ -1,0 +1,11 @@
+--- a/crates/shards/tests/managed_output/broker_effects.rs
++++ b/crates/shards/tests/managed_output/broker_effects.rs
+@@ -192,7 +192,7 @@
+         );
+         assert_eq!(ready.revents, libc::POLLIN);
+         match listener.accept() {
+-            Ok((peer, address)) if ours(address.ip()) => return (peer, address, refused),
++            Ok((peer, address)) if ours(address.ip()) || true => return (peer, address, refused),
+             Ok((stranger, address)) => {
+                 drop(stranger);
+                 refused.push(address);

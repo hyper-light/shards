@@ -1,0 +1,24 @@
+--- a/crates/shards/tests/common/managed_capture.rs
++++ b/crates/shards/tests/common/managed_capture.rs
+@@ -443,19 +443,9 @@
+     }
+ 
+     pub(super) fn next(&self, until: Instant) -> Event {
+-        match self
+-            .events
++        self.events
+             .recv_timeout(until.saturating_duration_since(Instant::now()))
+-        {
+-            Ok(event) => event,
+-            // The handler holds the event sender and drops with the driver once it ends.
+-            Err(mpsc::RecvTimeoutError::Disconnected) => match self.outcome(Duration::ZERO) {
+-                Some(Ok(())) => panic!("observer events ended before deadline: driver ended Ok"),
+-                Some(Err(error)) => panic!("observer events ended before deadline: driver {error}"),
+-                None => panic!("observer events ended before deadline: driver result not yet sent"),
+-            },
+-            Err(error) => panic!("observer event before deadline: {error}"),
+-        }
++            .unwrap_or_else(|error| panic!("observer event before deadline: {error}"))
+     }
+ 
+     /// How the driver ended, once it has, taken from its thread within `within` and kept.

@@ -1,7 +1,7 @@
 //! Native code-mode results through the existing owner-private capture transport.
 use super::*;
 use serde_json::{Value, json};
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream};
 use std::os::fd::AsRawFd as _;
 
 struct Inputs {
@@ -132,17 +132,52 @@ impl Capture {
     }
 }
 
-fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
-    let until = until.min(Instant::now().checked_add(inputs.call).unwrap());
+/// This host's IPv4 addresses (getifaddrs(3)). The guest's egress reaches the gate from one
+/// of them, the kernel's choice of source: on a host with several, not always the gate's own
+/// (adacachy: a connection to 192.168.1.90 came from 192.168.1.77).
+fn host_addresses() -> std::collections::BTreeSet<IpAddr> {
+    let mut list: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs(3) fills `list`, freed below by freeifaddrs(3) alone.
+    let status = unsafe { libc::getifaddrs(&raw mut list) };
+    assert_eq!(status, 0, "getifaddrs: {}", std::io::Error::last_os_error());
+    let mut addresses = std::collections::BTreeSet::new();
+    let mut entry = list;
+    while !entry.is_null() {
+        // SAFETY: a node of the list getifaddrs(3) returned, live until freeifaddrs(3).
+        let node = unsafe { &*entry };
+        // SAFETY: a non-null ifa_addr points at a sockaddr of its sa_family.
+        if !node.ifa_addr.is_null() && i32::from(unsafe { (*node.ifa_addr).sa_family }) == libc::AF_INET {
+            // SAFETY: an AF_INET sockaddr is a sockaddr_in.
+            let v4 = unsafe { &*node.ifa_addr.cast::<libc::sockaddr_in>() };
+            addresses.insert(IpAddr::from(Ipv4Addr::from(u32::from_be(v4.sin_addr.s_addr))));
+        }
+        entry = node.ifa_next;
+    }
+    // SAFETY: the list getifaddrs(3) returned, freed once.
+    unsafe { libc::freeifaddrs(list) };
+    addresses
+}
+
+/// The first connection on `listener` whose peer `ours` admits, before `until`. A peer it
+/// does not is closed unanswered and returned among the refused.
+fn accept_from(
+    listener: &TcpListener,
+    ours: impl Fn(IpAddr) -> bool,
+    until: Instant,
+) -> (TcpStream, SocketAddr, Vec<SocketAddr>) {
     listener.set_nonblocking(true).unwrap();
     let mut ready = libc::pollfd {
         fd: listener.as_raw_fd(),
         events: libc::POLLIN,
         revents: 0,
     };
+    let mut refused = Vec::new();
     loop {
-        let left = until.saturating_duration_since(Instant::now()).min(inputs.call);
-        assert!(!left.is_zero(), "original gate deadline");
+        let left = until.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "original gate deadline; refused peers {refused:?}"
+        );
         let ms = i32::try_from(left.as_millis().checked_add(1).unwrap()).unwrap();
         // SAFETY: one initialized pollfd borrowing the live owned listener; finite timeout.
         let result = unsafe { libc::poll(&raw mut ready, 1, ms) };
@@ -156,9 +191,23 @@ fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
             std::io::Error::last_os_error()
         );
         assert_eq!(ready.revents, libc::POLLIN);
-        break;
+        match listener.accept() {
+            Ok((peer, address)) if ours(address.ip()) => return (peer, address, refused),
+            Ok((stranger, address)) => {
+                drop(stranger);
+                refused.push(address);
+            }
+            // A connection reset between readiness and accept leaves none to take.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("gate accept: {error}"),
+        }
     }
-    let (mut peer, address) = listener.accept().unwrap();
+}
+
+fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
+    let until = until.min(Instant::now().checked_add(inputs.call).unwrap());
+    let host = host_addresses();
+    let (mut peer, address, refused) = accept_from(listener, |ip| host.contains(&ip), until);
     peer.set_write_timeout(Some(
         until.saturating_duration_since(Instant::now()).min(inputs.call),
     ))
@@ -166,7 +215,64 @@ fn release_gate(listener: &TcpListener, inputs: &Inputs, until: Instant) {
     peer.write_all(b"after-helper-results\n").unwrap();
     peer.shutdown(std::net::Shutdown::Write).unwrap();
     drop(peer);
-    inputs.write("gate-release.json", json!({"peer":address.to_string(),"after":"helper canonical result footer and independent main exec","bytes":"after-helper-results\n","socket_drop_close_return":"unobserved; later harness hear result is delivery receipt"}));
+    inputs.write("gate-release.json", json!({"peer":address.to_string(),"gate":listener.local_addr().unwrap().to_string(),"refused_peers_not_of_this_host":refused.iter().map(ToString::to_string).collect::<Vec<_>>(),"after":"helper canonical result footer and independent main exec","bytes":"after-helper-results\n","socket_drop_close_return":"unobserved; later harness hear result is delivery receipt"}));
+}
+
+/// A TCP connection to `to` from `source`, which std cannot bind before it connects.
+fn connect_from(source: Ipv4Addr, to: SocketAddr) -> TcpStream {
+    use std::os::fd::FromRawFd as _;
+    let SocketAddr::V4(to) = to else {
+        panic!("an IPv4 gate");
+    };
+    let address = |ip: Ipv4Addr, port: u16| libc::sockaddr_in {
+        sin_family: libc::sa_family_t::try_from(libc::AF_INET).unwrap(),
+        sin_port: port.to_be(),
+        sin_addr: libc::in_addr {
+            s_addr: u32::from(ip).to_be(),
+        },
+        sin_zero: [0; 8],
+    };
+    let size = libc::socklen_t::try_from(size_of::<libc::sockaddr_in>()).unwrap();
+    // SAFETY: socket(2) returning a new descriptor, owned by the stream below.
+    let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+    assert!(fd >= 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: the descriptor socket(2) just returned, owned once.
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+    let from = address(source, 0);
+    // SAFETY: an initialized sockaddr_in of its exact size.
+    let bound = unsafe { libc::bind(fd, (&raw const from).cast(), size) };
+    assert_eq!(bound, 0, "{}", std::io::Error::last_os_error());
+    let peer = address(*to.ip(), to.port());
+    // SAFETY: an initialized sockaddr_in of its exact size; a blocking connect.
+    let connected = unsafe { libc::connect(fd, (&raw const peer).cast(), size) };
+    assert_eq!(connected, 0, "{}", std::io::Error::last_os_error());
+    stream
+}
+
+#[test]
+fn the_gate_releases_only_a_peer_of_this_host() {
+    use std::io::Read as _;
+    let gate = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let at = gate.local_addr().unwrap();
+    // 127.0.0.2 stands in for a peer on another host, 127.0.0.1 for this host's own.
+    let mut elsewhere = connect_from(Ipv4Addr::new(127, 0, 0, 2), at);
+    let own = connect_from(Ipv4Addr::LOCALHOST, at);
+    let ours = |ip: IpAddr| ip == IpAddr::from(Ipv4Addr::LOCALHOST);
+    let (_peer, address, refused) = accept_from(&gate, ours, Instant::now() + WITHIN);
+    assert_eq!(address, own.local_addr().unwrap());
+    assert_eq!(refused, [elsewhere.local_addr().unwrap()]);
+    let mut byte = [0];
+    assert_eq!(
+        elsewhere.read(&mut byte).unwrap(),
+        0,
+        "a refused peer gets nothing"
+    );
+    // This host's addresses: its loopback, and its address on a route out where it has one.
+    let host = host_addresses();
+    assert!(host.contains(&IpAddr::from(Ipv4Addr::LOCALHOST)), "{host:?}");
+    if let Some(route) = common::routable_v4() {
+        assert!(host.contains(&IpAddr::from(route)), "{host:?}");
+    }
 }
 
 fn expect_line<'a>(text: &'a str, prefix: &str) -> &'a str {
@@ -233,14 +339,7 @@ fn main_progress(fixture: &Fixture, inputs: &Inputs, name: &str, until: Instant)
 }
 
 fn run(fixture: &mut Fixture, inputs: &Inputs, gate: &TcpListener, until: Instant) {
-    // UDP connect performs route selection without transmitting a datagram.
-    let route = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
-    route.connect((Ipv4Addr::new(192, 0, 2, 1), 9)).unwrap();
-    let address = SocketAddr::new(
-        route.local_addr().unwrap().ip(),
-        gate.local_addr().unwrap().port(),
-    );
-    drop(route);
+    let address = gate.local_addr().unwrap();
     let port = address.port();
     let helper = r#"const me=await shards.whoami(); const peers=await shards.peers(); let refused; try { await shards.send("harness driver","forbidden-broker-effects-nonce"); } catch(e) { refused=e.message; } return {me,peers,refused};"#;
     let timeout = format!("{}|while(true) {{}}", inputs.timeout_ms);
@@ -381,7 +480,11 @@ fn native_program_results_have_private_capture_and_owned_worker_cleanup() {
     let inputs = Inputs::read();
     let until = Instant::now().checked_add(inputs.case).unwrap();
     let work_until = until.checked_sub(inputs.cleanup).unwrap();
-    let gate = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+    // The guest's egress reaches the gate at this host's address on its route out (its own
+    // loopback is the guest's), so the gate listens there alone.
+    let route = common::routable_v4()
+        .unwrap_or_else(|| panic!("the gate needs this host's IPv4 address on a route out; there is none"));
+    let gate = TcpListener::bind((route, 0)).unwrap();
     let mut fixture = Fixture::new();
     inputs.write(
         "owned-home.json",

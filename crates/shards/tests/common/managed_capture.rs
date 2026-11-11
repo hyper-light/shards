@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::sync::mpsc;
+use std::sync::{OnceLock, mpsc};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use hyper_quic::{ClientConfig, StreamId};
 use sha2::{Digest as _, Sha256};
@@ -250,11 +250,127 @@ impl Handler for Client {
     }
 }
 
+/// A socket an owner observer opened, by the inode `/proc/self/fd` names it by, with the
+/// descriptor number it had. A process-wide descriptor count also moves with every test
+/// running beside it; an inode is this observer's socket alone.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Held {
+    pub(super) fd: i32,
+    pub(super) inode: u64,
+}
+
+/// One observer at a time takes its waker's identity: a clone of its sender duplicates the
+/// waker, and the duplicate must be told from another observer's.
+#[cfg(target_os = "linux")]
+static CLONING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// This process's sockets: each inode with the descriptors that hold it.
+#[cfg(target_os = "linux")]
+fn sockets() -> BTreeMap<u64, Vec<i32>> {
+    let mut held = BTreeMap::<u64, Vec<i32>>::new();
+    for entry in std::fs::read_dir("/proc/self/fd").unwrap() {
+        let entry = entry.unwrap();
+        // A descriptor closed since the listing has no link left to read.
+        let Ok(target) = std::fs::read_link(entry.path()) else {
+            continue;
+        };
+        let Some(inode) = target
+            .to_str()
+            .and_then(|t| t.strip_prefix("socket:["))
+            .and_then(|t| t.strip_suffix(']'))
+        else {
+            continue;
+        };
+        let fd = entry.file_name().to_str().unwrap().parse().unwrap();
+        held.entry(inode.parse().unwrap()).or_default().push(fd);
+    }
+    held
+}
+
+/// This network namespace's IPv4 UDP sockets, each local address with its inode
+/// (/proc/net/udp, whose address is the `__be32` printed as a host-order integer).
+#[cfg(target_os = "linux")]
+fn udp_sockets() -> Vec<(std::net::SocketAddrV4, u64)> {
+    let table = std::fs::read_to_string("/proc/net/udp").unwrap();
+    table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            let (address, port) = fields.get(1)?.split_once(':')?;
+            let ip = std::net::Ipv4Addr::from(u32::from_str_radix(address, 16).ok()?.to_ne_bytes());
+            let port = u16::from_str_radix(port, 16).ok()?;
+            Some((
+                std::net::SocketAddrV4::new(ip, port),
+                fields.get(9)?.parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// An observer's two sockets (crates/remote/src/net.rs, bind_with_limits), each by its own
+/// mark, whatever other tests of the process open meanwhile: the endpoint's, by the address
+/// it is bound to; the waker's, as the one socket a clone of the sender duplicates.
+#[cfg(target_os = "linux")]
+fn observer_sockets(endpoint: SocketAddr, sender: &Sender<Ask>) -> Vec<Held> {
+    let held = |inode: u64, fds: &BTreeMap<u64, Vec<i32>>| Held {
+        fd: fds[&inode][0],
+        inode,
+    };
+    let SocketAddr::V4(at) = endpoint else {
+        panic!("an IPv4 observer endpoint: {endpoint}");
+    };
+    let bound: Vec<_> = udp_sockets()
+        .into_iter()
+        .filter(|(local, _)| *local == at)
+        .map(|(_, inode)| inode)
+        .collect();
+    let [endpoint] = bound[..] else {
+        panic!("one UDP socket at the observer's endpoint {at}: {bound:?}");
+    };
+    let cloning = CLONING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let before = sockets();
+    let clone = sender.try_clone().unwrap();
+    let after = sockets();
+    drop((clone, cloning));
+    let loopback: Vec<_> = udp_sockets()
+        .into_iter()
+        .filter(|(local, _)| *local.ip() == std::net::Ipv4Addr::LOCALHOST)
+        .map(|(_, inode)| inode)
+        .collect();
+    let duplicated: Vec<_> = after
+        .iter()
+        .filter(|(inode, fds)| loopback.contains(inode) && fds.len() > before.get(inode).map_or(0, Vec::len))
+        .map(|(inode, _)| *inode)
+        .collect();
+    let [waker] = duplicated[..] else {
+        panic!("one waker duplicated by the sender's clone: {duplicated:?}");
+    };
+    vec![held(endpoint, &before), held(waker, &before)]
+}
+
+/// Which of `held` are not yet returned: still behind a descriptor of this process, or
+/// still a socket the kernel lists.
+#[cfg(target_os = "linux")]
+pub(super) fn not_returned(held: &[Held]) -> Vec<Held> {
+    let ours = sockets();
+    let listed: Vec<_> = udp_sockets().into_iter().map(|(_, inode)| inode).collect();
+    held.iter()
+        .copied()
+        .filter(|socket| ours.contains_key(&socket.inode) || listed.contains(&socket.inode))
+        .collect()
+}
+
 pub(super) struct Observer {
     pub(super) scope: Scope,
     pub(super) sender: Sender<Ask>,
     pub(super) events: mpsc::Receiver<Event>,
+    /// Its driver's QUIC socket and its waker's.
+    #[cfg(target_os = "linux")]
+    pub(super) held: Vec<Held>,
     ended: mpsc::Receiver<Result<(), shards_remote::Error>>,
+    outcome: OnceLock<Result<(), String>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -304,6 +420,8 @@ impl Observer {
             },
         )
         .unwrap();
+        #[cfg(target_os = "linux")]
+        let held = observer_sockets(driver.local().unwrap(), &sender);
         let (finished, ended) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("managed-owner-observer".into())
@@ -316,15 +434,43 @@ impl Observer {
             scope,
             sender,
             events,
+            #[cfg(target_os = "linux")]
+            held,
             ended,
+            outcome: OnceLock::new(),
             thread: Some(thread),
         }
     }
 
     pub(super) fn next(&self, until: Instant) -> Event {
-        self.events
+        match self
+            .events
             .recv_timeout(until.saturating_duration_since(Instant::now()))
-            .unwrap_or_else(|error| panic!("observer event before deadline: {error}"))
+        {
+            Ok(event) => event,
+            // The handler holds the event sender and drops with the driver once it ends.
+            Err(mpsc::RecvTimeoutError::Disconnected) => match self.outcome(Duration::ZERO) {
+                Some(Ok(())) => panic!("observer events ended before deadline: driver ended Ok"),
+                Some(Err(error)) => panic!("observer events ended before deadline: driver {error}"),
+                None => panic!("observer events ended before deadline: driver result not yet sent"),
+            },
+            Err(error) => panic!("observer event before deadline: {error}"),
+        }
+    }
+
+    /// How the driver ended, once it has, taken from its thread within `within` and kept.
+    fn outcome(&self, within: Duration) -> Option<&Result<(), String>> {
+        if self.outcome.get().is_none() {
+            let ended = match self.ended.recv_timeout(within) {
+                Ok(result) => result.map_err(|e| format!("failed: {e}")),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Err("ended without a result: its thread panicked".into())
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => return None,
+            };
+            let _ = self.outcome.set(ended);
+        }
+        self.outcome.get()
     }
 
     pub(super) fn exact(&self, label: &str, expected: &[u8], until: Instant) -> (u64, u64) {
@@ -390,13 +536,11 @@ impl Observer {
         if self.thread.is_none() {
             return Ok(());
         }
-        let result = match self
-            .ended
-            .recv_timeout(until.saturating_duration_since(Instant::now()))
-        {
-            Ok(result) => result.map_err(|e| e.to_string()),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err("observer completion disconnected".into()),
-            Err(mpsc::RecvTimeoutError::Timeout) => return Err("observer completion deadline".into()),
+        let Some(result) = self
+            .outcome(until.saturating_duration_since(Instant::now()))
+            .cloned()
+        else {
+            return Err("observer completion deadline".into());
         };
         let joined = self
             .thread

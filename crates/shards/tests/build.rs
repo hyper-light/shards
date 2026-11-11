@@ -13442,31 +13442,57 @@ return { me, peers, sent, refused };"#;
             }
         }
         save("capture-cuts.json", &serde_json::to_vec_pretty(&cuts).unwrap());
-        // Canonical output is the readiness event. The original worker/actor conditions
-        // remain an independent kernel snapshot, rather than periodic top probes.
-        let top = shards(&["top", "aw-code", "-o", "pid,caught,comm"]);
-        save("guest-processes.log", top.to_string().as_bytes());
-        assert_eq!(top.status, Some(0), "{top}");
-        let rows: Vec<Vec<_>> = top
-            .stdout
-            .lines()
-            .skip(1)
-            .map(|line| line.split_whitespace().collect())
-            .collect();
-        let count = |name: &str| rows.iter().filter(|row| row.last() == Some(&name)).count();
-        assert_eq!(count("confined-ready"), 3, "{top}");
-        assert_eq!(count("shards-server"), 3, "{top}");
-        assert_eq!(count("shards-sandbox"), 3, "{top}");
-        assert_eq!(count("shards-program"), 0, "{top}");
+        // The canonical output is the readiness event, but its last line comes before two steps
+        // that leave nothing to wait on: each agent names itself confined-ready after writing
+        // it (testguest workload.rs), and the server ends an abandoned session's program
+        // worker as it finds the client gone. So the process table is read again, each
+        // snapshot kept, until it shows both or the original deadline passes.
+        fn table(stdout: &str) -> Vec<Vec<&str>> {
+            stdout
+                .lines()
+                .skip(1)
+                .map(|line| line.split_whitespace().collect())
+                .collect()
+        }
+        fn count(rows: &[Vec<&str>], name: &str) -> usize {
+            rows.iter().filter(|row| row.last() == Some(&name)).count()
+        }
         // Linux guest SIGUSR1 is 10, the same caught-mask handshake run_watching used.
-        assert!(
-            rows.iter().any(|row| row.last() == Some(&"testguest")
-                && row
-                    .get(1)
-                    .and_then(|mask| u64::from_str_radix(mask.trim_start_matches('<'), 16).ok())
-                    .is_some_and(|mask| mask & (1 << (10 - 1)) != 0)),
-            "main awaits its owner signal: {top}"
-        );
+        fn main_awaits(rows: &[Vec<&str>]) -> bool {
+            rows.iter().any(|row| {
+                row.last() == Some(&"testguest")
+                    && row
+                        .get(1)
+                        .and_then(|mask| u64::from_str_radix(mask.trim_start_matches('<'), 16).ok())
+                        .is_some_and(|mask| mask & (1 << (10 - 1)) != 0)
+            })
+        }
+        fn settled(rows: &[Vec<&str>]) -> bool {
+            count(rows, "confined-ready") == 3
+                && count(rows, "shards-server") == 3
+                && count(rows, "shards-sandbox") == 3
+                && count(rows, "shards-program") == 0
+                && main_awaits(rows)
+        }
+        let mut snapshot = 0;
+        let top = loop {
+            let top = shards(&["top", "aw-code", "-o", "pid,caught,comm"]);
+            save(
+                &format!("guest-processes-{snapshot}.log"),
+                top.to_string().as_bytes(),
+            );
+            assert_eq!(top.status, Some(0), "{top}");
+            if settled(&table(&top.stdout)) || Instant::now() >= until {
+                break top;
+            }
+            snapshot += 1;
+        };
+        let rows = table(&top.stdout);
+        assert_eq!(count(&rows, "confined-ready"), 3, "snapshot {snapshot}: {top}");
+        assert_eq!(count(&rows, "shards-server"), 3, "snapshot {snapshot}: {top}");
+        assert_eq!(count(&rows, "shards-sandbox"), 3, "snapshot {snapshot}: {top}");
+        assert_eq!(count(&rows, "shards-program"), 0, "snapshot {snapshot}: {top}");
+        assert!(main_awaits(&rows), "main awaits its owner signal: {top}");
         let sent = shards(&["kill", "-s", "USR1", "aw-code"]);
         save("signal.log", sent.to_string().as_bytes());
         assert_eq!(sent.status, Some(0), "{sent}");
