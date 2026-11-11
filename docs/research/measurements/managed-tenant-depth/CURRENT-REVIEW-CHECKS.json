@@ -1,0 +1,31 @@
+{
+  "result": 0,
+  "kind": "Local immutable metadata binding only; no build/test/actor/remote action",
+  "preliminary_metadata_failures": [
+    {
+      "tool_chunk": "b16b8f",
+      "reason": "Current plan differed from older0c full-read baseline; assertion failed before packet write",
+      "correction": "Read complete current7a plan; preserve changed-since-read identity instead of asserting unchanged"
+    },
+    {
+      "tool_chunk": "f62083",
+      "reason": "Original r79 archive retains raw-expiry-v1 prefix; assumed root MANIFEST.json was absent",
+      "correction": "Read existing archive member metadata and use exact original manifest name; no archive regeneration"
+    }
+  ],
+  "source_patch_exact": true,
+  "canonical_preimage_exact": true,
+  "current_source_exact": true,
+  "numstat": [
+    "28",
+    "1"
+  ],
+  "archive_counts": {
+    "raw-expiry-v1": 64,
+    "raw-diagnostic-light-r2-v1": 14,
+    "raw-diagnostic-build-r5-v1": 25
+  },
+  "r2_subset_r5_exact": true,
+  "compile_clippy_status_and_hold_bound_to_original_receipt": true,
+  "no_remote_or_runtime_action": true
+}

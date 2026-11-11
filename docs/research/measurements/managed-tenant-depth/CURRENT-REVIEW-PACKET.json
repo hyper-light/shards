@@ -1,0 +1,243 @@
+{
+  "review_packet_scope": "Existing immutable diagnostic source/patch/manifests/checks only; runtime hold unchanged",
+  "current_main_reference": "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+  "role": "assigned-adversarial/implementer",
+  "policy": {
+    "AGENTS.md": {
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "unchanged_from_previous_full_read": true
+    },
+    "docs/development-rules.md": {
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "unchanged_from_previous_full_read": true
+    },
+    "docs/development-evidence.md": {
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "unchanged_from_previous_full_read": true
+    },
+    "CLAUDE.md": {
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "unchanged_from_previous_full_read": true
+    },
+    "docs/design/managed-runtime-plan.md": {
+      "sha256": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241",
+      "unchanged_from_previous_full_read": false
+    },
+    "resources/supported-targets.txt": {
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a",
+      "unchanged_from_previous_full_read": true
+    }
+  },
+  "current_plan_read_in_full_after_identity_difference": true,
+  "current_handoff": {
+    "path": "/Users/adalundhe/g121-handoff.md",
+    "sha256": "bf888c6fa240fae8fe4ae524bf8d336801e857d765d2854a1f38a293ab288a50",
+    "lines": 239,
+    "read_in_full": true
+  },
+  "source": {
+    "commit": "249dc4cf047586bcb040ae7895bc95769cde5b57",
+    "path": "crates/shards/tests/managed_output/tenant_exit.rs",
+    "sha256": "cfe3d4abab06045babce3f6574c7528fcfdba0311f1234c9962ca63d75c00b52",
+    "signature_header_present": true,
+    "signature_verification": "ROOT/Kiln independent review; header presence is not a new cryptographic verification",
+    "required_attribution_present": true
+  },
+  "patch": {
+    "path": "docs/research/measurements/managed-tenant-depth/event-diagnostic.diff",
+    "base": "29189b6a8406f0f670c164abc6bffd9de19ec6ea",
+    "head": "249dc4cf047586bcb040ae7895bc95769cde5b57",
+    "bytes": 2117,
+    "sha256": "6b8cb049218fc44b25444894f1d8036d015ef5b904c0eeffd6b015d50081a538",
+    "files": 1,
+    "added_lines": 28,
+    "removed_lines": 1,
+    "scope": "Capture::receive only",
+    "current_main_target_preimage_sha256": "65c774ad64b36c934bd5d72610be6f9c63d47e001465c7c52e6839b992550938",
+    "preimage_matches_base": true,
+    "integration": "Narrow patch only; no whole branch/production adoption or apply/build action performed"
+  },
+  "archives": {
+    "raw-expiry-v1": {
+      "path": "docs/research/measurements/managed-tenant-depth/raw-expiry-v1.tar.gz",
+      "bytes": 37056,
+      "sha256": "17a785e9b59502797cfe1f6371ab26c18caf51562961acccc1fb650e40c7c66d",
+      "manifest_member": "raw-expiry-v1/MANIFEST.json",
+      "original_files": 64,
+      "safe_unique_regular_members": 65
+    },
+    "raw-diagnostic-light-r2-v1": {
+      "path": "docs/research/measurements/managed-tenant-depth/raw-diagnostic-light-r2-v1.tar.gz",
+      "bytes": 13999,
+      "sha256": "5c6c86031ca4b6fa8b2a7a9cee55719a6403f1ae650b8f4c0833fdb1ad6403af",
+      "manifest_member": "MANIFEST.json",
+      "original_files": 14,
+      "safe_unique_regular_members": 15
+    },
+    "raw-diagnostic-build-r5-v1": {
+      "path": "docs/research/measurements/managed-tenant-depth/raw-diagnostic-build-r5-v1.tar.gz",
+      "bytes": 36354,
+      "sha256": "560be08c4f75bea2d44c8cf3bfd8facd229d2c7343dd0c8ccaa0ea9879d0a856",
+      "manifest_member": "MANIFEST.json",
+      "original_files": 25,
+      "safe_unique_regular_members": 26
+    }
+  },
+  "manifest_relationship": {
+    "r2_originals_are_exact_subset_of_r5": true,
+    "r2_originals_not_additional_to_r5_original_count": 14,
+    "r5_unique_original_count": 25,
+    "runtime_test_count_is_not_archive_member_count": true
+  },
+  "actual_checks": {
+    "r2_policy_fixture_crosscheck_format_diff": "exit0 before Clippy in set-e driver",
+    "r2_strict_host_clippy_exit": 0,
+    "r5_host_normal_carried_compile_exit": 0,
+    "r5_static_musl_testguest_compile_exit": 0,
+    "r5_frozen_product_guard_exit": 1,
+    "r5_original_product_matches": 1,
+    "r5_original_product_mismatches": 5,
+    "r5_product_total": 6,
+    "current_diagnostic_runtime_cases": 0,
+    "current_diagnostic_runtime_passes": 0
+  },
+  "executable_identity": {
+    "base": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2",
+    "records": "records/build-v1/artifacts.json",
+    "preservation_readback": "records/r5-preservation-readback.json",
+    "frozen": "frozen/249dc4cf0-v1/manifest.json",
+    "all_seven_copies_verified": true,
+    "artifacts": [
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/deps/managed_output-87d4844abdafeb5c",
+        "bytes": 62957584,
+        "sha256": "00deeb697fbda8a0645317a51056efab24bc9cdb8f3a9011a09ca8464daf5068"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/shards",
+        "bytes": 231536808,
+        "sha256": "e545c09b186ec1da0b8a4d8039a0787b0f5718a6ac489a65afef7dc5aaf9e83e"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/source/target/guest/x86_64-unknown-linux-musl/guest/shards-testguest",
+        "bytes": 3313400,
+        "sha256": "ec671fa1696f7efe187b2acf9a0ee3366e0a588a7c173f270a72781f7ca9c882"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+        "bytes": 2385488,
+        "sha256": "0e9ad98daaf04af349531e086698c0baeb7c3493631b2327027f572992fedca9"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+        "bytes": 3280840,
+        "sha256": "f87803aa8b26421ad423c37e31e59a9486635516a3c724aa0fe57964f2cdeca4"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+        "bytes": 30935232,
+        "sha256": "91b1f7b9a392a81886b2d818332c3f4135f4c7c15bc771b704030a7da7d39218"
+      },
+      {
+        "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+        "bytes": 7908816,
+        "sha256": "cbcd6418eecc4dd3666824812d5858bc9652bc9d8df94f0c29de2bbd4907ffd1"
+      }
+    ],
+    "product_comparison": [
+      {
+        "name": "shards",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/shards",
+          "bytes": 231536808,
+          "sha256": "e545c09b186ec1da0b8a4d8039a0787b0f5718a6ac489a65afef7dc5aaf9e83e"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/shards",
+          "bytes": 231444416,
+          "sha256": "d96435be206f910f876d093e0e05c8e92a8a55bb1cf0ec4613fc824cb6186404"
+        },
+        "equal": false
+      },
+      {
+        "name": "shards-testguest",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/source/target/guest/x86_64-unknown-linux-musl/guest/shards-testguest",
+          "bytes": 3313400,
+          "sha256": "ec671fa1696f7efe187b2acf9a0ee3366e0a588a7c173f270a72781f7ca9c882"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/source/target/guest/x86_64-unknown-linux-musl/guest/shards-testguest",
+          "bytes": 3312376,
+          "sha256": "a9266f916668f0c960e69aef3e32b6acd2ce55540a3cfdc178de80e1e01d0f15"
+        },
+        "equal": false
+      },
+      {
+        "name": "shards-init",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+          "bytes": 2385488,
+          "sha256": "0e9ad98daaf04af349531e086698c0baeb7c3493631b2327027f572992fedca9"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-init",
+          "bytes": 2385488,
+          "sha256": "0e9ad98daaf04af349531e086698c0baeb7c3493631b2327027f572992fedca9"
+        },
+        "equal": true
+      },
+      {
+        "name": "shards-server",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+          "bytes": 3280840,
+          "sha256": "f87803aa8b26421ad423c37e31e59a9486635516a3c724aa0fe57964f2cdeca4"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/shards-server",
+          "bytes": 3292136,
+          "sha256": "1abbb05a417aea21c6a59b350e03c8985322e06aca8209650ac71acb37b67a63"
+        },
+        "equal": false
+      },
+      {
+        "name": "shards-vm",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+          "bytes": 30935232,
+          "sha256": "91b1f7b9a392a81886b2d818332c3f4135f4c7c15bc771b704030a7da7d39218"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-vm",
+          "bytes": 30928096,
+          "sha256": "ec2ab75283e41402749e8bee033ca809791307b71c52a6ae807888b49f6893b8"
+        },
+        "equal": false
+      },
+      {
+        "name": "shards-net",
+        "actual": {
+          "path": "/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+          "bytes": 7908816,
+          "sha256": "cbcd6418eecc4dd3666824812d5858bc9652bc9d8df94f0c29de2bbd4907ffd1"
+        },
+        "original": {
+          "path": "/home/adalundhe/managed-tenant-depth-a920-01a1c5d2-v1/target/test-release/build/shards-530092e3dcf4aac9/out/helpers/shards-net",
+          "bytes": 7908696,
+          "sha256": "0fe34219001a7b665c13dd7fe45501a3cf1bb70ce168f9b37d9431146d01f5cc"
+        },
+        "equal": false
+      }
+    ]
+  },
+  "hold": {
+    "reason": "CLI/testguest/server/VM/net differ from original frozen r79 identities; init matches",
+    "difference_cause": "Unknown",
+    "behavioral_equivalence": "Unknown",
+    "remaining_owner_input": "ROOT resolution of the existing original-frozen-product identity hold. No new runtime/rebuild/alternate-input action is authorized.",
+    "agent_scope": "Immutable metadata/log/manifest recovery only",
+    "current_main_vm_gate": "Not claimed; held D2 diagnostic unrun",
+    "overall_lane_management_closure": "Open"
+  }
+}

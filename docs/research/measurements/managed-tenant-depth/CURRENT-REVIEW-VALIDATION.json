@@ -1,0 +1,32 @@
+{
+  "kind": "Metadata packet validation and mechanical policy/diff only",
+  "policy": {
+    "command": [
+      "lockf",
+      "-t",
+      "0",
+      "/tmp/g121-mac.lock",
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit": 0,
+    "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "stderr": ""
+  },
+  "diff": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "packet_sha256": "366ebe5ebb8ca61298720d11263f91663d4396e7cd4ac06f3aeedb591475eeaf",
+  "patch_and_archive_bindings_match": true,
+  "local_free_bytes": 35904405504,
+  "new_builds": 0,
+  "new_runtime_cases": 0,
+  "remote_actions": 0
+}
