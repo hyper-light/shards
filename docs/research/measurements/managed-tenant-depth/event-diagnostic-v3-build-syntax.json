@@ -1,0 +1,17 @@
+{
+  "command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "bash",
+    "-n",
+    "docs/research/measurements/managed-tenant-depth/event-diagnostic-v3-build.command"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": "",
+  "actors_started": false,
+  "local_build": false,
+  "note": "Preparation only; normal build must wait for actual r2 pass and a new normal resource admission"
+}

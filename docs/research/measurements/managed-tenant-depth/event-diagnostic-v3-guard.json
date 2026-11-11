@@ -1,0 +1,8 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "output": "",
+  "running": true,
+  "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+  "id": "r2",
+  "why": "linux/x86_64 · 25 of 32 cores idle · 94 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk · I/O pressure 23%"
+}

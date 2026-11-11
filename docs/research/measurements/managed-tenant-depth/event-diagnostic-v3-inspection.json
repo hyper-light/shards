@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "{\n  \"owned_scopes\": [\n    {\n      \"scope\": \"/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v1\",\n      \"exists\": false,\n      \"runtime_witnesses\": []\n    },\n    {\n      \"scope\": \"/home/adalundhe/managed-tenant-event-diag-01a1c5d2-v2\",\n      \"exists\": false,\n      \"runtime_witnesses\": []\n    }\n  ],\n  \"read_only\": true,\n  \"no_runtime_witnesses\": true\n}\n",
+    "running": false,
+    "why": "linux/x86_64 · 26 of 32 cores idle · 94 GB free · room for 2 CPUs, 4 GiB of memory, 24 GiB of disk · I/O pressure 26%",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}
