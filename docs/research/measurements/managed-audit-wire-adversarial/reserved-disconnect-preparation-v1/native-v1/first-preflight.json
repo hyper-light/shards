@@ -1,0 +1,17 @@
+{
+  "status": "FirstPreflightRefusedBeforeScopeCreation",
+  "actual_free_bytes": 36004241408,
+  "floor_bytes": 32212254720,
+  "new_disk_ask_bytes": 4294967296,
+  "floor_plus_ask_bytes": 36507222016,
+  "shortfall_bytes": 502980608,
+  "private_root_exists": false,
+  "source_copies": 0,
+  "targets": 0,
+  "cargo_builds": 0,
+  "native_case_attempts": 0,
+  "runner_changed": false,
+  "disk_ask_reduced": false,
+  "deadline_reset": false,
+  "kiln_admission": "exact2CPU2GiB4GiB admitted; stricter additive30GiB floor check stopped before mkdir"
+}

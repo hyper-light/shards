@@ -1,0 +1,9 @@
+{
+  "status": "OfflineCheckScriptFailure_NoBuildOrActor",
+  "exit_code": 1,
+  "stderr": "Traceback (most recent call last):\n  File \"<stdin>\", line 11, in <module>\nTypeError: sequence item 0: expected a bytes-like object, list found\n",
+  "cause": "one offline reconstruction join used lists rather than byte lines",
+  "correction": "flatten only equal source spans before joining; actual native source unchanged",
+  "native_builds": 0,
+  "native_case_attempts": 0
+}

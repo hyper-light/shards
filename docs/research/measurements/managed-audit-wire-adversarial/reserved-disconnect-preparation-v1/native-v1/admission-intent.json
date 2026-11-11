@@ -1,0 +1,12 @@
+{
+  "start_epoch": 1794373434.098521,
+  "deadline_epoch": 1794374034.098521,
+  "scope_seconds": 600,
+  "needs": "macos/aarch64,cpus=2,mem=2g,disk=4g,tool:cargo",
+  "on": "e30189ea29182644fe5a4b2e06c7dac2",
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "package_sha256": "ba43fd22a2036de11268aa4ae49e2b9ce748b5bee7bbd3fcb615a86237b86b63",
+  "native_case_attempts_so_far": 0,
+  "runtime_retries_allowed": 0,
+  "runner_change_allowed": false
+}

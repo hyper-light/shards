@@ -1,0 +1,10 @@
+{
+  "command": "python3 /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/setup-and-build.py 1794373434.098521 1794374034.098521",
+  "on": "e30189ea29182644fe5a4b2e06c7dac2",
+  "needs": "macos/aarch64,cpus=2,mem=2g,disk=4g,tool:cargo",
+  "sync": false,
+  "cwd": "/Users/adalundhe",
+  "timeout_s": 595,
+  "reuse": false,
+  "effect": "first preflight stopped before mkdir; no build/actor"
+}

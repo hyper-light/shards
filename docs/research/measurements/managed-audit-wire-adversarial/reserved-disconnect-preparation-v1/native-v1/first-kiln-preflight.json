@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"e30189ea29182644fe5a4b2e06c7dac2\",\n    \"output\": \"Traceback (most recent call last):\\n  File \\\"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/setup-and-build.py\\\", line 20, in <module>\\n    assert free >= (30 + 4) * 1024**3, (\\\"30GiB floor plus full new disk ask unavailable\\\", free)\\nAssertionError: ('30GiB floor plus full new disk ask unavailable', 36004241408)\\n\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 · 18 of 18 cores idle · 86 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine\",\n    \"exit_code\": 1\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.start\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+      "output": "Traceback (most recent call last):\n  File \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/setup-and-build.py\", line 20, in <module>\n    assert free >= (30 + 4) * 1024**3, (\"30GiB floor plus full new disk ask unavailable\", free)\nAssertionError: ('30GiB floor plus full new disk ask unavailable', 36004241408)\n",
+      "running": false,
+      "why": "macos/aarch64 · 18 of 18 cores idle · 86 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine",
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.start",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

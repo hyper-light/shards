@@ -1,0 +1,14 @@
+{
+  "status": "EveryPreflightPayloadVerified_NoNativeProof",
+  "archive_bytes": 4494,
+  "archive_sha256": "263ee5e3807cb4c8f5e5f6140848230018ed5252b2645c0eff1c081c676711b0",
+  "manifest_sha256": "64ec4c8467e6f21722c4fe5b4627db81e56a02f28947dc81c045248dbaa9143f",
+  "payloads": 9,
+  "total_members": 10,
+  "source_payloads_verified": 176,
+  "source_package_sha256": "ba43fd22a2036de11268aa4ae49e2b9ce748b5bee7bbd3fcb615a86237b86b63",
+  "native_builds": 0,
+  "native_case_attempts": 0,
+  "at_epoch": 1794373609.470315,
+  "original_deadline_epoch": 1794374034.098521
+}

@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "status": "PreflightRefusedBeforeSourceAllocation_BuildAndCaseUnrun",
+  "native_builds": 0,
+  "native_case_attempts": 0,
+  "runtime_retries": 0,
+  "original_deadline_epoch": 1794374034.098521,
+  "files": [
+    {
+      "path": "admission-intent.json",
+      "bytes": 462,
+      "sha256": "897e62ff7f258976abb6c5a3c68ef12d4f2484815223cbf189b3e51a5b76fea5"
+    },
+    {
+      "path": "first-preflight-command.json",
+      "bytes": 524,
+      "sha256": "9a0f265b61a14ea44da1d1a4f0f60ef4cd0e0c372a72f4ecd4a83d2bb691143d"
+    },
+    {
+      "path": "first-kiln-preflight.json",
+      "bytes": 1789,
+      "sha256": "f7d4b9708ff44a4b9ff3ee8d7e0522a06c1f7d8474d7c688d090ef0d370186f3"
+    },
+    {
+      "path": "first-preflight.json",
+      "bytes": 542,
+      "sha256": "17c1cc004ca7fba2df292062ce1b9fe8c06cc42f912d1012dd778406fa9cd485"
+    },
+    {
+      "path": "policy-read.json",
+      "bytes": 1802,
+      "sha256": "b137aee397e0e11c1457c4247e136d8c649557005558594357dc3bf50c61de41"
+    },
+    {
+      "path": "source-freeze.json",
+      "bytes": 856,
+      "sha256": "cba08f5a0a37560701a5033d13f0c19b09152e91748dce3ec4f673b9ac814b9d"
+    },
+    {
+      "path": "source-checks.json",
+      "bytes": 1265,
+      "sha256": "8fa07c639992be64ccb8da7c548e58a638f1327fc713dfb4424a4b28fd153a5a"
+    },
+    {
+      "path": "static-checks-v2.failure.json",
+      "bytes": 470,
+      "sha256": "75ea05f80d5add4dc15373c492e3f19afd9e74565b93611f925c5fa3eb0aef77"
+    },
+    {
+      "path": "static-checks-v3.json",
+      "bytes": 2679,
+      "sha256": "8d94fc6c7d8eb5b9641edcf3b7179cba54115aa42a1df8afe453adeebd7d7200"
+    }
+  ]
+}

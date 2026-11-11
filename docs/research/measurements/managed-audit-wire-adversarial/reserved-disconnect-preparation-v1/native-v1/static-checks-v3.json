@@ -1,0 +1,62 @@
+{
+  "status": "AllStaticChecks0_NativeBuildAndCaseUnrun",
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "leaf_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+  "predecessor_sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e",
+  "old_entire_source_recovered_removing_only_insertions": true,
+  "production_files_byte_exact_ba78": {
+    "crates/abi/src/run/audit.rs": "7a4f80ff0a780bed72c425cf6b8e935806a82a7989395a9ae460bb2b2b4d66ea",
+    "crates/vmm/src/devices/virtio/fs/audit.rs": "48f5f487121df35d1632c7e923435fb2539e43287db0a795a16dd04cf009a172",
+    "crates/vmm/src/devices/virtio/fs/server.rs": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64",
+    "crates/vmm/src/devices/virtio/fs/mod.rs": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b",
+    "crates/ipc/src/unix.rs": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37"
+  },
+  "python_scripts_syntax_valid": 6,
+  "free_bytes": 35971248128,
+  "commands": {
+    "rustfmt": {
+      "argv": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config-path",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+        "--config",
+        "skip_children=true",
+        "docs/research/measurements/managed-audit-wire-adversarial/native.rs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "elapsed_s": 0.19807100296020508
+    },
+    "policy": {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": "",
+      "elapsed_s": 0.02732086181640625
+    },
+    "package_source_only": {
+      "argv": [
+        "/opt/homebrew/bin/python3.12",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/verify-native-records.py",
+        "--source-only"
+      ],
+      "exit_code": 0,
+      "stdout": "{\n  \"status\": \"SourcePackageVerified_CompilationAndCaseUnrun\",\n  \"source_revision\": \"342bcef5855084a58a7257654d88e9917cef016e\",\n  \"source_payloads\": 176,\n  \"package_sha256\": \"ba43fd22a2036de11268aa4ae49e2b9ce748b5bee7bbd3fcb615a86237b86b63\",\n  \"native_case_attempts\": 0\n}\n",
+      "stderr": "",
+      "elapsed_s": 0.17594313621520996
+    }
+  },
+  "native_builds": 0,
+  "native_case_attempts": 0
+}
