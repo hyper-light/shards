@@ -101,7 +101,7 @@ impl Fixture {
             scope,
             address: endpoint.address,
             control,
-            metadata: Arc::new(Mutex::new(file)),
+            metadata: shared_metadata(file).unwrap(),
             life: Mutex::new(Life::Serving),
             credits: Arc::downgrade(&credits),
             index: 0,
@@ -141,17 +141,17 @@ impl Fixture {
     }
 
     fn expected(&self, life: Life) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        life.write(
-            &mut bytes,
+        let mut buffer = [0; TERMINAL_MOST];
+        life.record(
             self.output.scope,
             Progress {
                 accepted: 0,
                 consumed: 0,
             },
+            &mut buffer,
         )
-        .unwrap();
-        bytes
+        .unwrap()
+        .to_vec()
     }
 
     fn finish(&self, terminal: Terminal) {
@@ -327,10 +327,14 @@ fn native_readonly_file_error_keeps_logical_completion_and_retires_driver() {
     fixture.pass(case);
 }
 
+/// The limit cuts the canonical record's write short: the record is cut back to its last
+/// whole line (none, as this fixture's record has no header), so that no channel's line
+/// follows a torn one (audit-fix-host-v1 finding 2; this fixture pinned the part that
+/// stayed before).
 #[cfg(unix)]
 #[test]
 #[ignore = "ROOT isolated child only: caller sets RLIMIT_FSIZE and ignores SIGXFSZ"]
-fn native_file_limit_retains_partial_append_and_known_canonical_errno() {
+fn native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno() {
     let case = "file-limit";
     let mut fixture = Fixture::new(case, Metadata::Writable);
     let prefix: usize = std::env::var("SHARDS_TERMINAL_ORDER_PREFIX_BYTES")
@@ -357,23 +361,27 @@ fn native_file_limit_retains_partial_append_and_known_canonical_errno() {
     let logged = super::super::LOGGED.load(std::sync::atomic::Ordering::Relaxed);
     fixture.output.complete();
     assert_eq!(*lock(&fixture.output.life), expected_life);
-    assert_eq!(fixture.bytes(), expected.get(..prefix).unwrap());
+    assert!(fixture.bytes().is_empty());
+    assert_eq!(lock(&fixture.output.metadata).whole, Whole::To(0));
     assert_eq!(
         super::super::LOGGED.load(std::sync::atomic::Ordering::Relaxed),
         logged + 1
     );
     fixture.driver_returned();
-    // A separate actual File probe records errno after the original publish
-    // error (whose real error is retained by the daemon log above).
-    let error = lock(&fixture.output.metadata).write(b"x").unwrap_err();
+    fixture.output.abort();
+    fixture.output.complete();
+    assert_eq!(*lock(&fixture.output.life), expected_life);
+    assert!(fixture.bytes().is_empty());
+    // A separate actual File probe, of a file beside the record, records the limit's
+    // errno past the prefix (the original publish error is retained by the daemon log
+    // above).
+    let probe = fixture.path.with_file_name("limit-probe");
+    let error = File::create(&probe).unwrap().write_all(&expected).unwrap_err();
     println!(
         "TERMINAL_ORDER event=independent-file-error-probe errno={:?}",
         error.raw_os_error()
     );
     assert_eq!(error.raw_os_error(), Some(libc::EFBIG));
-    fixture.output.abort();
-    fixture.output.complete();
-    assert_eq!(*lock(&fixture.output.life), expected_life);
-    assert_eq!(fixture.bytes(), expected.get(..prefix).unwrap());
+    assert!(fixture.bytes().is_empty());
     fixture.pass(case);
 }

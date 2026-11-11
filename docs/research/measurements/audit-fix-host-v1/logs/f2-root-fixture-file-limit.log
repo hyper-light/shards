@@ -1,0 +1,21 @@
+# command: python3 -I docs/research/measurements/audit-fix-host-v1/terminal-fixture.py /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-fixtures/file-limit-2 20000 50
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: f6258de43e66aeebee25affd50d724d926fb8c5e
+# source diff vs HEAD (excluding this evidence directory): 508 lines, sha256 d3ed3f76c556b76fd289f30a7f257404e8a2d7a16186e921718e2979a412f53f
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:20:25Z
+argv ['/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d', '--exact', 'daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno', '--ignored', '--nocapture', '--test-threads=1'] prefix 50
+
+running 1 test
+test daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno ... TERMINAL_ORDER event=main-enter case=file-limit semantics=empty-unsubscribed
+shards daemon 16892: managed output metadata member 0 channel 1: File too large (os error 27)
+TERMINAL_ORDER event=driver-return result=Ok(())
+TERMINAL_ORDER event=independent-file-error-probe errno=Some(27)
+TERMINAL_ORDER result=pass case=file-limit bytes=0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 706 filtered out; finished in 0.04s
+
+exit 0
+metadata bytes b''
+# exit: 0 at 2026-11-11T21:20:25Z

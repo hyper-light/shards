@@ -1,0 +1,200 @@
+diff --git a/crates/shards/src/daemon/managed.rs b/crates/shards/src/daemon/managed.rs
+index 0f137d26e..d86d2fd1b 100644
+--- a/crates/shards/src/daemon/managed.rs
++++ b/crates/shards/src/daemon/managed.rs
+@@ -276,7 +276,7 @@ struct Output {
+     scope: Scope,
+     address: std::net::SocketAddr,
+     control: Control,
+-    metadata: Arc<Mutex<File>>,
++    metadata: Arc<Mutex<Ledger>>,
+     life: Mutex<Life>,
+     credits: std::sync::Weak<Credits>,
+     index: usize,
+@@ -854,7 +854,7 @@ impl<D: Disk> Daemon<D> {
+             )?;
+         }
+         metadata.sync_all()?;
+-        let metadata = Arc::new(Mutex::new(metadata));
++        let metadata = shared_metadata(metadata)?;
+         let mut outputs = Vec::new();
+         let mut producers = Vec::new();
+         let mut endpoints = Vec::new();
+@@ -1266,6 +1266,12 @@ fn record_capacity(labels: &[String], active: &[u32]) -> io::Result<usize> {
+         })
+ }
+ 
++type Ledger = File;
++
++fn shared_metadata(file: File) -> io::Result<Arc<Mutex<Ledger>>> {
++    Ok(Arc::new(Mutex::new(file)))
++}
++
+ /// The byte quantum a channel's credit climbs in (D226), from the run's first record. A
+ /// record crosses two frames, each bounded by its protocol: the run's from the guest
+ /// (`run::MAX_PAYLOAD`) and the endpoint's data frame to the owner (`RECORD_MOST`, its
+@@ -1896,6 +1902,124 @@ mod tests {
+         assert!(encoded(0, Channel::Stderr, 0, Event::Aborted(5)).len() <= capacity);
+     }
+ 
++    /// A run's record (its first line) and two of its channels' terminal records: member 0's
++    /// stdout aborted with a canonical errno, then its stderr ended.
++    #[cfg(unix)]
++    const TORN_HEADER: &str = "shards managed output 1\n";
++    #[cfg(unix)]
++    const ABORTED_RECORD: &str = "member 0 channel 1 canonical aborted errno 5\n\
++        member 0 channel 1 state aborted accepted 20 consumed 20 tail unknown\n";
++    #[cfg(unix)]
++    const ENDED_RECORD: &str = "member 0 channel 2 state ended accepted 7 consumed 7 tail complete\n";
++
++    /// A channel's terminal record whose append fails part-way leaves the run's record of
++    /// whole lines: the next channel's record starts a line of its own, and the failed one is
++    /// there whole or not at all (finding 2 of audit-fix-host-v1: its part stayed, and the
++    /// next channel's line was written onto it). Its child lowers its own process's file
++    /// size limit partway through the first record, as a full disk cuts a write short, and
++    /// raises it again before the second, as a disk's room comes back.
++    #[cfg(unix)]
++    #[test]
++    fn a_terminal_record_that_fails_part_way_leaves_whole_lines() {
++        let dir = shards_testdir::TempDir::new("managed-torn").unwrap();
++        let path = dir.join("metadata");
++        let child = std::process::Command::new(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "daemon::managed::tests::torn_append_child",
++                "--ignored",
++                "--nocapture",
++                "--test-threads=1",
++            ])
++            .env("SHARDS_MANAGED_TORN", &path)
++            .output()
++            .unwrap();
++        let said = format!(
++            "{}{}",
++            String::from_utf8_lossy(&child.stdout),
++            String::from_utf8_lossy(&child.stderr)
++        );
++        assert!(child.status.success(), "{said}");
++        assert!(said.contains(" 1 passed"), "the child ran no case: {said}");
++        let record = std::fs::read_to_string(&path).unwrap();
++        let whole = [
++            format!("{TORN_HEADER}{ENDED_RECORD}"),
++            format!("{TORN_HEADER}{ABORTED_RECORD}{ENDED_RECORD}"),
++        ];
++        assert!(
++            whole.contains(&record),
++            "a terminal append that failed part-way left a torn line, the next channel's \
++             written onto it:\n{record}"
++        );
++    }
++
++    /// The child of `a_terminal_record_that_fails_part_way_leaves_whole_lines`, alone in its
++    /// process, whose file size limit it sets.
++    #[cfg(unix)]
++    #[test]
++    #[ignore = "child of a_terminal_record_that_fails_part_way_leaves_whole_lines: sets its process's RLIMIT_FSIZE"]
++    fn torn_append_child() {
++        let Some(path) = std::env::var_os("SHARDS_MANAGED_TORN") else {
++            return;
++        };
++        let server = identity::Identity::generate().unwrap();
++        let mut file = private_record(Path::new(&path)).unwrap();
++        file.write_all(TORN_HEADER.as_bytes()).unwrap();
++        let metadata = shared_metadata(file).unwrap();
++        let charge = Arc::new(Charge {
++            budget: Arc::new(Mutex::new(Some(0))),
++            bytes: Mutex::new(0),
++        });
++        let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
++        let at = |n| Progress {
++            accepted: n,
++            consumed: n,
++        };
++        let [aborted, ended] = [
++            (
++                Channel::Stdout,
++                Life::Aborted(Some(Terminal::Aborted(5))),
++                State::Aborted(at(20)),
++            ),
++            (Channel::Stderr, Life::Ended, State::Finished(at(7))),
++        ]
++        .map(|(channel, life, state)| {
++            let (scope, endpoint, _producer, control) =
++                bound(&server, server.fingerprint(), channel, capacity);
++            let output = output(
++                scope,
++                &endpoint,
++                control,
++                capture_quantum(capacity).unwrap(),
++                capacity,
++                &metadata,
++                std::sync::Weak::new(),
++                0,
++                &charge,
++            );
++            // Resolved already, as `complete` resolves a channel before it publishes.
++            *lock(&output.life) = life;
++            (output, life, state)
++        });
++        // SAFETY: SIG_IGN for SIGXFSZ, so that a write past the limit fails with EFBIG
++        // rather than ending this child.
++        unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
++        let mut limit = libc::rlimit {
++            rlim_cur: 0,
++            rlim_max: 0,
++        };
++        // SAFETY: reads this process's limit into a valid local.
++        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) }, 0);
++        let given = limit;
++        limit.rlim_cur = libc::rlim_t::try_from(TORN_HEADER.len() + ABORTED_RECORD.len() / 2).unwrap();
++        // SAFETY: lowers this process's own soft limit, from a valid local.
++        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
++        aborted.0.publish(Some((aborted.1, aborted.2)));
++        // SAFETY: restores this process's own soft limit, from a valid local.
++        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &given) }, 0);
++        ended.0.publish(Some((ended.1, ended.2)));
++    }
++
+     /// Test patience for the real transport below, as the daemon's own tests wait.
+     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+ 
+@@ -1941,7 +2065,7 @@ mod tests {
+         control: Control,
+         quantum: shards_registry::Quantum,
+         capacity: usize,
+-        metadata: &Arc<Mutex<File>>,
++        metadata: &Arc<Mutex<Ledger>>,
+         credits: std::sync::Weak<Credits>,
+         index: usize,
+         charge: &Arc<Charge>,
+@@ -1998,7 +2122,7 @@ mod tests {
+             bound(&server, server.fingerprint(), Channel::Stdout, capacity);
+         let storage = producer.storage_capacity();
+         let dir = shards_testdir::TempDir::new("managed-refused").unwrap();
+-        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
++        let metadata = shared_metadata(File::create(dir.join("metadata")).unwrap()).unwrap();
+         let budget = Arc::new(Mutex::new(Some(0)));
+         let charge = Arc::new(Charge {
+             budget: Arc::clone(&budget),
+@@ -2145,7 +2269,7 @@ mod tests {
+             assert!(producer.admit(most + 1).is_err());
+         }
+         let dir = shards_testdir::TempDir::new("managed-climb").unwrap();
+-        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
++        let metadata = shared_metadata(File::create(dir.join("metadata")).unwrap()).unwrap();
+         let charge = Arc::new(Charge {
+             budget: Arc::new(Mutex::new(Some(0))),
+             bytes: Mutex::new(0),
+diff --git a/crates/shards/src/daemon/managed/terminal_order_tests.rs b/crates/shards/src/daemon/managed/terminal_order_tests.rs
+index e22dbedfc..362c8067e 100644
+--- a/crates/shards/src/daemon/managed/terminal_order_tests.rs
++++ b/crates/shards/src/daemon/managed/terminal_order_tests.rs
+@@ -101,7 +101,7 @@ impl Fixture {
+             scope,
+             address: endpoint.address,
+             control,
+-            metadata: Arc::new(Mutex::new(file)),
++            metadata: shared_metadata(file).unwrap(),
+             life: Mutex::new(Life::Serving),
+             credits: Arc::downgrade(&credits),
+             index: 0,

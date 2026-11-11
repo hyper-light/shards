@@ -251,32 +251,60 @@ impl Life {
         Some(next)
     }
 
-    fn write(self, metadata: &mut impl io::Write, scope: Scope, at: Progress) -> io::Result<()> {
+    /// Its terminal record, formatted whole into `buffer` to be appended at once: the
+    /// canonical errno it knows, then its state; nothing while it is not terminal.
+    fn record(self, scope: Scope, at: Progress, buffer: &mut [u8; TERMINAL_MOST]) -> io::Result<&[u8]> {
         let (state, tail) = match self {
             Self::Ended => ("ended", "complete"),
             Self::Aborted(_) => ("aborted", "unknown"),
-            _ => return Ok(()),
+            _ => return Ok(&[]),
         };
+        let mut rest = buffer.as_mut_slice();
         if let Self::Aborted(Some(Terminal::Aborted(errno))) = self {
             writeln!(
-                metadata,
+                rest,
                 "member {} channel {} canonical aborted errno {errno}",
                 scope.member, scope.channel as u8
             )?;
         }
         writeln!(
-            metadata,
+            rest,
             "member {} channel {} state {state} accepted {} consumed {} tail {tail}",
             scope.member, scope.channel as u8, at.accepted, at.consumed
-        )
+        )?;
+        let used = TERMINAL_MOST.saturating_sub(rest.len());
+        buffer
+            .get(..used)
+            .ok_or_else(|| io::Error::other("managed output terminal record overflow"))
     }
 }
+
+/// The most bytes one channel's terminal record takes ([`Life::record`]): its canonical
+/// errno line and its state line, their words as written, each number at its type's widest
+/// in decimal (a u32 member, a u8 channel, an i32 errno with its sign, two u64 cursors), and
+/// the longer of each word that varies (`aborted`, `complete`).
+const TERMINAL_MOST: usize = {
+    let member = u32::MAX.ilog10() as usize + 1;
+    let channel = u8::MAX.ilog10() as usize + 1;
+    let errno = i32::MIN.unsigned_abs().ilog10() as usize + 2;
+    let cursor = u64::MAX.ilog10() as usize + 1;
+    "member  channel  canonical aborted errno \n".len()
+        + member
+        + channel
+        + errno
+        + "member  channel  state  accepted  consumed  tail \n".len()
+        + member
+        + channel
+        + "aborted".len()
+        + 2 * cursor
+        + "complete".len()
+};
 
 struct Output {
     scope: Scope,
     address: std::net::SocketAddr,
     control: Control,
-    metadata: Arc<Mutex<File>>,
+    metadata: Arc<Mutex<Ledger>>,
     life: Mutex<Life>,
     credits: std::sync::Weak<Credits>,
     index: usize,
@@ -359,7 +387,10 @@ impl Output {
 
     fn publish(&self, terminal: Option<(Life, State)>) {
         let Some((life, state)) = terminal else { return };
-        let result = life.write(&mut *lock(&self.metadata), self.scope, state.progress());
+        let mut buffer = [0; TERMINAL_MOST];
+        let result = life
+            .record(self.scope, state.progress(), &mut buffer)
+            .and_then(|record| lock(&self.metadata).append(record));
         if let Err(error) = result {
             // Logical consumption is sticky, but a failed append is not publication.
             // Retire this transport without holding metadata/Life/credit locks.
@@ -854,7 +885,7 @@ impl<D: Disk> Daemon<D> {
             )?;
         }
         metadata.sync_all()?;
-        let metadata = Arc::new(Mutex::new(metadata));
+        let metadata = shared_metadata(metadata)?;
         let mut outputs = Vec::new();
         let mut producers = Vec::new();
         let mut endpoints = Vec::new();
@@ -1266,6 +1297,62 @@ fn record_capacity(labels: &[String], active: &[u32]) -> io::Result<usize> {
         })
 }
 
+/// The run's metadata record, which its channels append their terminal records to: whole
+/// lines only, each a record an owner reads alone. A channel's record is formatted whole
+/// and written at once; one whose write fails part-way is cut back to the last whole line
+/// before another channel appends.
+#[derive(Debug)]
+struct Ledger {
+    file: File,
+    whole: Whole,
+}
+
+/// How far the run's metadata record is whole lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Whole {
+    /// Every byte before this offset, where the next record starts.
+    To(u64),
+    /// A record's write failed part-way and could not be cut back: no line may follow its
+    /// part, so no record is appended.
+    Torn,
+}
+
+impl Ledger {
+    fn new(mut file: File) -> io::Result<Self> {
+        let at = file.stream_position()?;
+        Ok(Self {
+            file,
+            whole: Whole::To(at),
+        })
+    }
+
+    fn append(&mut self, record: &[u8]) -> io::Result<()> {
+        let Whole::To(at) = self.whole else {
+            return Err(io::Error::other("the managed output record ends in a torn line"));
+        };
+        let end = u64::try_from(record.len())
+            .ok()
+            .and_then(|len| at.checked_add(len))
+            .ok_or_else(|| io::Error::other("managed output record length overflow"))?;
+        if let Err(error) = self.file.write_all(record) {
+            let cut = self
+                .file
+                .set_len(at)
+                .and_then(|()| self.file.seek(io::SeekFrom::Start(at)));
+            if cut.is_err() {
+                self.whole = Whole::Torn;
+            }
+            return Err(error);
+        }
+        self.whole = Whole::To(end);
+        Ok(())
+    }
+}
+
+fn shared_metadata(file: File) -> io::Result<Arc<Mutex<Ledger>>> {
+    Ledger::new(file).map(|ledger| Arc::new(Mutex::new(ledger)))
+}
+
 /// The byte quantum a channel's credit climbs in (D226), from the run's first record. A
 /// record crosses two frames, each bounded by its protocol: the run's from the guest
 /// (`run::MAX_PAYLOAD`) and the endpoint's data frame to the owner (`RECORD_MOST`, its
@@ -1495,11 +1582,11 @@ mod terminal_tests {
             let remote = State::Finished(at(wire, wire));
             // The actual r668 ordering: End/ACK/EOF, delayed publication, then stop.
             assert_eq!(life.resolve(remote, Resolve::Stop), Some(Life::Ended));
-            let mut metadata = Vec::new();
-            life.write(&mut metadata, scope(), remote.progress()).unwrap();
+            let mut buffer = [0; TERMINAL_MOST];
             assert_eq!(
-                String::from_utf8(metadata).unwrap(),
+                life.record(scope(), remote.progress(), &mut buffer).unwrap(),
                 format!("member 1 channel 1 state ended accepted {wire} consumed {wire} tail complete\n")
+                    .as_bytes()
             );
             assert_eq!(life.resolve(State::Aborted(at(wire, wire)), Resolve::Stop), None);
             assert_eq!(life.resolve(remote, Resolve::Complete), None);
@@ -1558,35 +1645,83 @@ mod terminal_tests {
             life.resolve(State::Finished(at(20, 20)), Resolve::Complete),
             Some(Life::Aborted(Some(Terminal::Aborted(5))))
         );
-        let mut metadata = Vec::new();
-        life.write(&mut metadata, scope(), at(20, 20)).unwrap();
+        let mut buffer = [0; TERMINAL_MOST];
         assert_eq!(
-            String::from_utf8(metadata).unwrap(),
-            "member 1 channel 1 canonical aborted errno 5\nmember 1 channel 1 state aborted accepted 20 consumed 20 tail unknown\n"
+            life.record(scope(), at(20, 20), &mut buffer).unwrap(),
+            b"member 1 channel 1 canonical aborted errno 5\nmember 1 channel 1 state aborted accepted 20 consumed 20 tail unknown\n"
         );
         assert_eq!(life.resolve(State::Finished(at(20, 20)), Resolve::Stop), None);
     }
 
     #[test]
     fn metadata_failure_is_returned_without_changing_the_logical_winner() {
-        struct Refuse;
-        impl io::Write for Refuse {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::StorageFull.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
+        let dir = shards_testdir::TempDir::new("managed-refuse").unwrap();
+        File::create(dir.join("metadata")).unwrap();
         for life in [Life::Ended, Life::Aborted(Some(Terminal::Aborted(5)))] {
-            assert_eq!(
-                life.write(&mut Refuse, scope(), at(20, 20)).unwrap_err().kind(),
-                io::ErrorKind::StorageFull
-            );
+            // A record its file refuses: one opened for reading alone.
+            let mut ledger = Ledger::new(File::open(dir.join("metadata")).unwrap()).unwrap();
+            let mut buffer = [0; TERMINAL_MOST];
+            let record = life.record(scope(), at(20, 20), &mut buffer).unwrap();
+            assert!(ledger.append(record).is_err());
             let mut sticky = life;
             assert_eq!(sticky.resolve(State::Aborted(at(20, 20)), Resolve::Stop), None);
             assert_eq!(sticky, life);
         }
+    }
+
+    /// A channel's record at its widest, every number at its type's most, fits the record's
+    /// buffer.
+    #[test]
+    fn the_widest_terminal_record_fits_its_buffer() {
+        let scope = Scope {
+            member: u32::MAX,
+            channel: Channel::Stderr,
+            ..scope()
+        };
+        let mut buffer = [0; TERMINAL_MOST];
+        let record = Life::Aborted(Some(Terminal::Aborted(i32::MIN)))
+            .record(scope, at(u64::MAX, u64::MAX), &mut buffer)
+            .unwrap();
+        assert_eq!(
+            record,
+            format!(
+                "member {0} channel 2 canonical aborted errno {1}\n\
+                 member {0} channel 2 state aborted accepted {2} consumed {2} tail unknown\n",
+                u32::MAX,
+                i32::MIN,
+                u64::MAX
+            )
+            .as_bytes()
+        );
+        // The channel's one digit two short of a u8's three, on each of the two lines, and
+        // `unknown` one short of `complete`.
+        assert_eq!(record.len(), TERMINAL_MOST - 5);
+        let mut buffer = [0; TERMINAL_MOST];
+        assert!(
+            Life::Serving
+                .record(scope, at(1, 1), &mut buffer)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A record whose failed write cannot be cut back takes no more lines: none may follow
+    /// the part a failed write may have left.
+    #[test]
+    fn a_record_that_cannot_be_cut_back_takes_no_more_lines() {
+        let dir = shards_testdir::TempDir::new("managed-torn-state").unwrap();
+        File::create(dir.join("metadata")).unwrap();
+        // Opened for reading alone: its writes and its cuts both fail.
+        let mut ledger = Ledger::new(File::open(dir.join("metadata")).unwrap()).unwrap();
+        assert_eq!(ledger.whole, Whole::To(0));
+        assert!(ledger.append(b"member 1 channel 1 state ended\n").is_err());
+        assert_eq!(ledger.whole, Whole::Torn);
+        assert!(ledger.append(b"member 1 channel 2 state ended\n").is_err());
+        let mut whole = Ledger::new(File::create(dir.join("whole")).unwrap()).unwrap();
+        whole.append(b"a\n").unwrap();
+        whole.append(b"bc\n").unwrap();
+        assert_eq!(whole.whole, Whole::To(5));
+        assert_eq!(std::fs::read(dir.join("whole")).unwrap(), b"a\nbc\n");
     }
 
     #[test]
@@ -1896,6 +2031,124 @@ mod tests {
         assert!(encoded(0, Channel::Stderr, 0, Event::Aborted(5)).len() <= capacity);
     }
 
+    /// A run's record (its first line) and two of its channels' terminal records: member 0's
+    /// stdout aborted with a canonical errno, then its stderr ended.
+    #[cfg(unix)]
+    const TORN_HEADER: &str = "shards managed output 1\n";
+    #[cfg(unix)]
+    const ABORTED_RECORD: &str = "member 0 channel 1 canonical aborted errno 5\n\
+        member 0 channel 1 state aborted accepted 20 consumed 20 tail unknown\n";
+    #[cfg(unix)]
+    const ENDED_RECORD: &str = "member 0 channel 2 state ended accepted 7 consumed 7 tail complete\n";
+
+    /// A channel's terminal record whose append fails part-way leaves the run's record of
+    /// whole lines: the next channel's record starts a line of its own, and the failed one is
+    /// there whole or not at all (finding 2 of audit-fix-host-v1: its part stayed, and the
+    /// next channel's line was written onto it). Its child lowers its own process's file
+    /// size limit partway through the first record, as a full disk cuts a write short, and
+    /// raises it again before the second, as a disk's room comes back.
+    #[cfg(unix)]
+    #[test]
+    fn a_terminal_record_that_fails_part_way_leaves_whole_lines() {
+        let dir = shards_testdir::TempDir::new("managed-torn").unwrap();
+        let path = dir.join("metadata");
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "daemon::managed::tests::torn_append_child",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("SHARDS_MANAGED_TORN", &path)
+            .output()
+            .unwrap();
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(child.status.success(), "{said}");
+        assert!(said.contains(" 1 passed"), "the child ran no case: {said}");
+        let record = std::fs::read_to_string(&path).unwrap();
+        let whole = [
+            format!("{TORN_HEADER}{ENDED_RECORD}"),
+            format!("{TORN_HEADER}{ABORTED_RECORD}{ENDED_RECORD}"),
+        ];
+        assert!(
+            whole.contains(&record),
+            "a terminal append that failed part-way left a torn line, the next channel's \
+             written onto it:\n{record}"
+        );
+    }
+
+    /// The child of `a_terminal_record_that_fails_part_way_leaves_whole_lines`, alone in its
+    /// process, whose file size limit it sets.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "child of a_terminal_record_that_fails_part_way_leaves_whole_lines: sets its process's RLIMIT_FSIZE"]
+    fn torn_append_child() {
+        let Some(path) = std::env::var_os("SHARDS_MANAGED_TORN") else {
+            return;
+        };
+        let server = identity::Identity::generate().unwrap();
+        let mut file = private_record(Path::new(&path)).unwrap();
+        file.write_all(TORN_HEADER.as_bytes()).unwrap();
+        let metadata = shared_metadata(file).unwrap();
+        let charge = Arc::new(Charge {
+            budget: Arc::new(Mutex::new(Some(0))),
+            bytes: Mutex::new(0),
+        });
+        let capacity = record_capacity(&["agent".into()], &[0]).unwrap();
+        let at = |n| Progress {
+            accepted: n,
+            consumed: n,
+        };
+        let [aborted, ended] = [
+            (
+                Channel::Stdout,
+                Life::Aborted(Some(Terminal::Aborted(5))),
+                State::Aborted(at(20)),
+            ),
+            (Channel::Stderr, Life::Ended, State::Finished(at(7))),
+        ]
+        .map(|(channel, life, state)| {
+            let (scope, endpoint, _producer, control) =
+                bound(&server, server.fingerprint(), channel, capacity);
+            let output = output(
+                scope,
+                &endpoint,
+                control,
+                capture_quantum(capacity).unwrap(),
+                capacity,
+                &metadata,
+                std::sync::Weak::new(),
+                0,
+                &charge,
+            );
+            // Resolved already, as `complete` resolves a channel before it publishes.
+            *lock(&output.life) = life;
+            (output, life, state)
+        });
+        // SAFETY: SIG_IGN for SIGXFSZ, so that a write past the limit fails with EFBIG
+        // rather than ending this child.
+        unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reads this process's limit into a valid local.
+        assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) }, 0);
+        let given = limit;
+        limit.rlim_cur = libc::rlim_t::try_from(TORN_HEADER.len() + ABORTED_RECORD.len() / 2).unwrap();
+        // SAFETY: lowers this process's own soft limit, from a valid local.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &limit) }, 0);
+        aborted.0.publish(Some((aborted.1, aborted.2)));
+        // SAFETY: restores this process's own soft limit, from a valid local.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_FSIZE, &given) }, 0);
+        ended.0.publish(Some((ended.1, ended.2)));
+    }
+
     /// Test patience for the real transport below, as the daemon's own tests wait.
     const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -1941,7 +2194,7 @@ mod tests {
         control: Control,
         quantum: shards_registry::Quantum,
         capacity: usize,
-        metadata: &Arc<Mutex<File>>,
+        metadata: &Arc<Mutex<Ledger>>,
         credits: std::sync::Weak<Credits>,
         index: usize,
         charge: &Arc<Charge>,
@@ -1998,7 +2251,7 @@ mod tests {
             bound(&server, server.fingerprint(), Channel::Stdout, capacity);
         let storage = producer.storage_capacity();
         let dir = shards_testdir::TempDir::new("managed-refused").unwrap();
-        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
+        let metadata = shared_metadata(File::create(dir.join("metadata")).unwrap()).unwrap();
         let budget = Arc::new(Mutex::new(Some(0)));
         let charge = Arc::new(Charge {
             budget: Arc::clone(&budget),
@@ -2145,7 +2398,7 @@ mod tests {
             assert!(producer.admit(most + 1).is_err());
         }
         let dir = shards_testdir::TempDir::new("managed-climb").unwrap();
-        let metadata = Arc::new(Mutex::new(File::create(dir.join("metadata")).unwrap()));
+        let metadata = shared_metadata(File::create(dir.join("metadata")).unwrap()).unwrap();
         let charge = Arc::new(Charge {
             budget: Arc::new(Mutex::new(Some(0))),
             bytes: Mutex::new(0),

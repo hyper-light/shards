@@ -1,0 +1,29 @@
+# command: python3 -I docs/research/measurements/audit-fix-host-v1/terminal-fixture.py /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-fixtures/file-limit-mutant 20000 50
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: f6258de43e66aeebee25affd50d724d926fb8c5e
+# source diff vs HEAD (excluding this evidence directory): 501 lines, sha256 19b06fdf08beb5a4494999aa693af07a3aa350aa779ba3e3092d261a3818b85c
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:20:51Z
+argv ['/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/deps/shards-590c76d8cc8bee5d', '--exact', 'daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno', '--ignored', '--nocapture', '--test-threads=1'] prefix 50
+
+running 1 test
+test daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno ... TERMINAL_ORDER event=main-enter case=file-limit semantics=empty-unsubscribed
+shards daemon 21691: managed output metadata member 0 channel 1: File too large (os error 27)
+
+thread 'daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno' (66251290) panicked at crates/shards/src/daemon/managed/terminal_order_tests.rs:364:5:
+assertion failed: fixture.bytes().is_empty()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+TERMINAL_ORDER event=cleanup-driver-return result=Ok(())
+TERMINAL_ORDER event=cleanup-join result=Ok(())
+FAILED
+
+failures:
+
+failures:
+    daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 706 filtered out; finished in 0.01s
+
+exit 101
+metadata bytes b'member 0 channel 1 canonical aborted errno 5\nmembe'
+# exit: 101 at 2026-11-11T21:20:55Z
