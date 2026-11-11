@@ -1,0 +1,4 @@
+docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/collector-build-info.stdout:3: trailing whitespace.
++	mod	github.com/open-telemetry/opentelemetry-collector-releases/core	(devel)	
+docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/collector-build-info.stdout:3: trailing whitespace.
++	mod	github.com/open-telemetry/opentelemetry-collector-releases/core	(devel)	

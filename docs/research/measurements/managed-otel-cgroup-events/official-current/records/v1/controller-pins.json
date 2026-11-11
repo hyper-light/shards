@@ -1,0 +1,10 @@
+{
+  "files": {
+    "run.py": "be8b52fec912a1cb994643bdedd10ed4d417621e6156c60479ffcc65572c407b",
+    "observe-collector.py": "6f0fbf6acf6e9882ae52aa67c381d75cfd7c6951327dafd583222efec8d0cea6"
+  },
+  "controller_archive_sha256": "8313f5616da0b899740baeb0cda05b1093b955bd9dbc21da6a82e4d93cc43e31",
+  "source_archive_sha256": "c5886d1a487158ecbb9ac670a1c857fe50a3b2c4f71ae52f6f8b4ea639192ede",
+  "command_sha256": "f25948463b5c529727ca631f42ef96d8d9ddd5d6f19f43fcfd76c20ee2ab8637",
+  "command_bytes": 24651
+}

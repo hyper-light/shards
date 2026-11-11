@@ -1,0 +1,27 @@
+{
+  "name": "metrics-second-decode",
+  "argv": [
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle",
+    "-max-bytes",
+    "17129",
+    "-input",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/second.json"
+  ],
+  "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+  "timeout_s": 345.62936656799866,
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "exit_code": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ]
+}

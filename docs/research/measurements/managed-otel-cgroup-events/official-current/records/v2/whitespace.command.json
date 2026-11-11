@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "docs/research/measurements/managed-otel-cgroup-events/official-current"
+  ],
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-otel-limits",
+  "exit_code": 2
+}

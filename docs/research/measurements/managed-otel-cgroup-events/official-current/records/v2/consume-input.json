@@ -1,0 +1,9 @@
+{
+  "on": "451397fcc585f7f7cb9aaf00e42064bb",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "sync": false,
+  "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+  "timeout_s": 600,
+  "reuse": false,
+  "command": "python3 - <<'PY'\nfrom pathlib import Path\nimport hashlib,subprocess\nassert hashlib.sha256(Path('run.py').read_bytes()).hexdigest()=='df5fc5fc3d8b316a6db8e767185a04f9eaf6a52ffbe198d3b2ee4800bb910670'\nassert hashlib.sha256(Path('observe-collector.py').read_bytes()).hexdigest()=='6f0fbf6acf6e9882ae52aa67c381d75cfd7c6951327dafd583222efec8d0cea6'\nraise SystemExit(subprocess.run(['python3','run.py','consume'],stdin=subprocess.DEVNULL,check=False).returncode)\nPY\n"
+}

@@ -1,0 +1,24 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"451397fcc585f7f7cb9aaf00e42064bb\",\n    \"output\": \"{\\\"phase\\\": \\\"preparation\\\", \\\"base\\\": \\\"/home/adalundhe/Projects/shards-managed-events-official-current-v1\\\", \\\"budget\\\": {\\\"cpus\\\": 2, \\\"memory_bytes\\\": 2147483648, \\\"disk_bytes\\\": 4294967296, \\\"timeout_s\\\": 600, \\\"jobs\\\": 2, \\\"startup_s\\\": 10, \\\"request_s\\\": 10, \\\"cleanup_s\\\": 15, \\\"deadline_monotonic\\\": 521576.782052556}, \\\"source_sha256\\\": \\\"c5886d1a487158ecbb9ac670a1c857fe50a3b2c4f71ae52f6f8b4ea639192ede\\\", \\\"controller_hashes\\\": {\\\"run.py\\\": \\\"be8b52fec912a1cb994643bdedd10ed4d417621e6156c60479ffcc65572c407b\\\", \\\"observe-collector.py\\\": \\\"6f0fbf6acf6e9882ae52aa67c381d75cfd7c6951327dafd583222efec8d0cea6\\\"}, \\\"test_or_collector_calls\\\": 0}\\n{\\\"command\\\": \\\"go-version\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"go-environment\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"module-download\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"module-verify\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"module-list\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"source-format\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"source-vet\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"oracle-build\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"oracle-test-build\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"oracle-list\\\", \\\"exit_code\\\": 0}\\n{\\\"command\\\": \\\"collector-build-info\\\", \\\"exit_code\\\": 0}\\n{\\\"phase\\\": \\\"prepare\\\", \\\"outcome\\\": 1, \\\"failure\\\": {\\\"type\\\": \\\"AssertionError\\\", \\\"message\\\": \\\"\\\"}, \\\"cases\\\": 0, \\\"runtime_attempts\\\": 0, \\\"archive\\\": {\\\"bytes\\\": 39434, \\\"sha256\\\": \\\"1af48b8c288babe9410b74e594eac55c978cd40a8b29b085f3a13d83ec6b8046\\\"}, \\\"base\\\": \\\"/home/adalundhe/Projects/shards-managed-events-official-current-v1\\\"}\\n\",\n    \"running\": false,\n    \"why\": \"linux/x86_64 \u00b7 25 of 32 cores idle \u00b7 93 GB free \u00b7 room for 2 CPUs, 2 GiB of memory, 4 GiB of disk \u00b7 I/O pressure 24%\",\n    \"exit_code\": 1\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"phase\": \"preparation\", \"base\": \"/home/adalundhe/Projects/shards-managed-events-official-current-v1\", \"budget\": {\"cpus\": 2, \"memory_bytes\": 2147483648, \"disk_bytes\": 4294967296, \"timeout_s\": 600, \"jobs\": 2, \"startup_s\": 10, \"request_s\": 10, \"cleanup_s\": 15, \"deadline_monotonic\": 521576.782052556}, \"source_sha256\": \"c5886d1a487158ecbb9ac670a1c857fe50a3b2c4f71ae52f6f8b4ea639192ede\", \"controller_hashes\": {\"run.py\": \"be8b52fec912a1cb994643bdedd10ed4d417621e6156c60479ffcc65572c407b\", \"observe-collector.py\": \"6f0fbf6acf6e9882ae52aa67c381d75cfd7c6951327dafd583222efec8d0cea6\"}, \"test_or_collector_calls\": 0}\n{\"command\": \"go-version\", \"exit_code\": 0}\n{\"command\": \"go-environment\", \"exit_code\": 0}\n{\"command\": \"module-download\", \"exit_code\": 0}\n{\"command\": \"module-verify\", \"exit_code\": 0}\n{\"command\": \"module-list\", \"exit_code\": 0}\n{\"command\": \"source-format\", \"exit_code\": 0}\n{\"command\": \"source-vet\", \"exit_code\": 0}\n{\"command\": \"oracle-build\", \"exit_code\": 0}\n{\"command\": \"oracle-test-build\", \"exit_code\": 0}\n{\"command\": \"oracle-list\", \"exit_code\": 0}\n{\"command\": \"collector-build-info\", \"exit_code\": 0}\n{\"phase\": \"prepare\", \"outcome\": 1, \"failure\": {\"type\": \"AssertionError\", \"message\": \"\"}, \"cases\": 0, \"runtime_attempts\": 0, \"archive\": {\"bytes\": 39434, \"sha256\": \"1af48b8c288babe9410b74e594eac55c978cd40a8b29b085f3a13d83ec6b8046\"}, \"base\": \"/home/adalundhe/Projects/shards-managed-events-official-current-v1\"}\n",
+      "running": false,
+      "why": "linux/x86_64 \u00b7 25 of 32 cores idle \u00b7 93 GB free \u00b7 room for 2 CPUs, 2 GiB of memory, 4 GiB of disk \u00b7 I/O pressure 24%",
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

@@ -1,0 +1,275 @@
+{
+	"Path": "shards-research/managed-otel-oracle",
+	"Main": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/source/oracle",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/source/oracle/go.mod",
+	"GoVersion": "1.26.0"
+}
+{
+	"Path": "github.com/davecgh/go-spew",
+	"Version": "v1.1.1",
+	"Time": "2018-02-21T23:26:28Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/davecgh/go-spew@v1.1.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/davecgh/go-spew/@v/v1.1.1.mod",
+	"Sum": "h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=",
+	"GoModSum": "h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38="
+}
+{
+	"Path": "github.com/google/gofuzz",
+	"Version": "v1.0.0",
+	"Time": "2019-04-08T17:44:45Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/google/gofuzz@v1.0.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/google/gofuzz/@v/v1.0.0.mod",
+	"GoVersion": "1.12",
+	"Sum": "h1:A8PeW59pxE9IoFRqBp37U+mSNaQoZ46F1f0f863XSXw=",
+	"GoModSum": "h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg="
+}
+{
+	"Path": "github.com/hashicorp/go-version",
+	"Version": "v1.9.0",
+	"Time": "2026-03-30T11:17:49Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/hashicorp/go-version@v1.9.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/hashicorp/go-version/@v/v1.9.0.mod",
+	"Sum": "h1:CeOIz6k+LoN3qX9Z0tyQrPtiB1DFYRPfCIBtaXPSCnA=",
+	"GoModSum": "h1:fltr4n8CU8Ke44wwGCBoEymUuxUHl09ZGVZPK5anwXA="
+}
+{
+	"Path": "github.com/json-iterator/go",
+	"Version": "v1.1.12",
+	"Time": "2021-09-11T02:17:26Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/json-iterator/go@v1.1.12",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/json-iterator/go/@v/v1.1.12.mod",
+	"GoVersion": "1.12",
+	"Sum": "h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=",
+	"GoModSum": "h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo="
+}
+{
+	"Path": "github.com/modern-go/concurrent",
+	"Version": "v0.0.0-20180306012644-bacd9c7ef1dd",
+	"Time": "2018-03-06T01:26:44Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/modern-go/concurrent@v0.0.0-20180306012644-bacd9c7ef1dd",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/modern-go/concurrent/@v/v0.0.0-20180306012644-bacd9c7ef1dd.mod",
+	"Sum": "h1:TRLaZ9cD/w8PVh93nsPXa1VrQ6jlwL5oN8l14QlcNfg=",
+	"GoModSum": "h1:6dJC0mAP4ikYIbvyc7fijjWJddQyLn8Ig3JB5CqoB9Q="
+}
+{
+	"Path": "github.com/modern-go/reflect2",
+	"Version": "v1.0.3-0.20250322232337-35a7c28c31ee",
+	"Time": "2025-03-22T23:23:37Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/modern-go/reflect2@v1.0.3-0.20250322232337-35a7c28c31ee",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/modern-go/reflect2/@v/v1.0.3-0.20250322232337-35a7c28c31ee.mod",
+	"GoVersion": "1.12",
+	"Sum": "h1:W5t00kpgFdJifH4BDsTlE89Zl93FEloxaWZfGcifgq8=",
+	"GoModSum": "h1:yWuevngMOJpCy52FWWMvUC8ws7m/LJsjYzDa0/r8luk="
+}
+{
+	"Path": "github.com/pmezard/go-difflib",
+	"Version": "v1.0.0",
+	"Time": "2016-01-10T10:55:54Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/pmezard/go-difflib@v1.0.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/pmezard/go-difflib/@v/v1.0.0.mod",
+	"Sum": "h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=",
+	"GoModSum": "h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4="
+}
+{
+	"Path": "github.com/stretchr/objx",
+	"Version": "v0.1.0",
+	"Time": "2018-01-06T01:13:53Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/stretchr/objx@v0.1.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/stretchr/objx/@v/v0.1.0.mod",
+	"Sum": "h1:4G4v2dO3VZwixGIRoQ5Lfboy6nUhCyYzaqnIAPPhYs4=",
+	"GoModSum": "h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME="
+}
+{
+	"Path": "github.com/stretchr/testify",
+	"Version": "v1.12.1",
+	"Time": "2026-08-17T08:24:05Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/github.com/stretchr/testify@v1.12.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/github.com/stretchr/testify/@v/v1.12.1.mod",
+	"GoVersion": "1.17",
+	"Sum": "h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=",
+	"GoModSum": "h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg="
+}
+{
+	"Path": "go.opentelemetry.io/collector/featuregate",
+	"Version": "v1.71.0",
+	"Time": "2026-11-06T23:11:16Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/collector/featuregate@v1.71.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/collector/featuregate/@v/v1.71.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:6s5QhoU11lK5QxaikFhPzsANjRwz1Yh/28ULqAIWX4w=",
+	"GoModSum": "h1:dRYifiJa2vQ6LWpPwHny4mL82mnGWsWEVeVWw+DhYJw="
+}
+{
+	"Path": "go.opentelemetry.io/collector/internal/testutil",
+	"Version": "v0.165.0",
+	"Time": "2026-11-06T23:11:16Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/collector/internal/testutil@v0.165.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/collector/internal/testutil/@v/v0.165.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:8U77MGduFyPTJ8s8Sby55lMI3OENrAGPMnUW/i4bqIQ=",
+	"GoModSum": "h1:XOOdyfLpa+2/hPViP/4YVhz0+l8Me5WVLocyw/FxxDs="
+}
+{
+	"Path": "go.opentelemetry.io/collector/pdata",
+	"Version": "v1.71.0",
+	"Time": "2026-11-06T23:11:16Z",
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/collector/pdata@v1.71.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/collector/pdata/@v/v1.71.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:b2Ob4A/wPppiqLz7ut5gjGeWsqovIy7CNaoWADHc4GQ=",
+	"GoModSum": "h1:+NX4Fk1UXIAxYDCV/V5ei3OLdVvIFYKqCOphAr3Ga98="
+}
+{
+	"Path": "go.opentelemetry.io/proto/slim/otlp",
+	"Version": "v1.11.1",
+	"Time": "2026-09-30T16:27:58Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/proto/slim/otlp@v1.11.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/proto/slim/otlp/@v/v1.11.1.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:qf2OA3kQcIDXh3q7b6kc0IzRe8BFXlVIlH5uaOACrVQ=",
+	"GoModSum": "h1:15pWfj6/rYjQzyrC3ZGQoZ0rNgLqI/Lk+jFgYgV4UIE="
+}
+{
+	"Path": "go.opentelemetry.io/proto/slim/otlp/collector/profiles/v1development",
+	"Version": "v0.4.1",
+	"Time": "2026-09-30T16:27:58Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/proto/slim/otlp/collector/profiles/v1development@v0.4.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/proto/slim/otlp/collector/profiles/v1development/@v/v0.4.1.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:pgPIbi29ViNY/gE//bHlHuLyqHE+PDhhw7jAhItWIaM=",
+	"GoModSum": "h1:MSbd82YGFGySHE+GsR2J7+RvMf7mgnknr7IFjsxfoTs="
+}
+{
+	"Path": "go.opentelemetry.io/proto/slim/otlp/profiles/v1development",
+	"Version": "v0.4.1",
+	"Time": "2026-09-30T16:27:58Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.opentelemetry.io/proto/slim/otlp/profiles/v1development@v0.4.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.opentelemetry.io/proto/slim/otlp/profiles/v1development/@v/v0.4.1.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:pso/53PWXaoGeW+/ww9WHKxoWTbTJBSmUH1VsiEmelU=",
+	"GoModSum": "h1:axuN0N02xZ3l+3zFqWXXRBTC6766vGQ0PbeCh46kuXA="
+}
+{
+	"Path": "go.uber.org/goleak",
+	"Version": "v1.3.0",
+	"Time": "2023-10-24T16:28:03Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.uber.org/goleak@v1.3.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.uber.org/goleak/@v/v1.3.0.mod",
+	"GoVersion": "1.20",
+	"Sum": "h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=",
+	"GoModSum": "h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE="
+}
+{
+	"Path": "go.uber.org/multierr",
+	"Version": "v1.11.0",
+	"Time": "2023-03-29T23:00:37Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.uber.org/multierr@v1.11.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.uber.org/multierr/@v/v1.11.0.mod",
+	"GoVersion": "1.19",
+	"Sum": "h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=",
+	"GoModSum": "h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y="
+}
+{
+	"Path": "go.yaml.in/yaml/v3",
+	"Version": "v3.0.5",
+	"Time": "2026-07-26T14:51:55Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/go.yaml.in/yaml/v3@v3.0.5",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/go.yaml.in/yaml/v3/@v/v3.0.5.mod",
+	"GoVersion": "1.16",
+	"Sum": "h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=",
+	"GoModSum": "h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg="
+}
+{
+	"Path": "golang.org/x/net",
+	"Version": "v0.60.0",
+	"Time": "2026-10-08T17:22:58Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/golang.org/x/net@v0.60.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/golang.org/x/net/@v/v0.60.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=",
+	"GoModSum": "h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg="
+}
+{
+	"Path": "golang.org/x/sys",
+	"Version": "v0.48.0",
+	"Time": "2026-08-31T19:43:43Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/golang.org/x/sys@v0.48.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/golang.org/x/sys/@v/v0.48.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=",
+	"GoModSum": "h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og="
+}
+{
+	"Path": "golang.org/x/text",
+	"Version": "v0.42.0",
+	"Time": "2026-09-08T16:29:55Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/golang.org/x/text@v0.42.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/golang.org/x/text/@v/v0.42.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=",
+	"GoModSum": "h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E="
+}
+{
+	"Path": "google.golang.org/genproto/googleapis/rpc",
+	"Version": "v0.0.0-20260817212433-ac3dfec99bb1",
+	"Time": "2026-08-17T21:24:33Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/google.golang.org/genproto/googleapis/rpc@v0.0.0-20260817212433-ac3dfec99bb1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/google.golang.org/genproto/googleapis/rpc/@v/v0.0.0-20260817212433-ac3dfec99bb1.mod",
+	"GoVersion": "1.25.0",
+	"Sum": "h1:utmqiUzZAEINbLmRyAt1QjVkMyLQ+lvIwCpLaB1rZfw=",
+	"GoModSum": "h1:4Hqkh8ycfw05ld/3BWL7rJOSfebL2Q+DVDeRgYgxUU8="
+}
+{
+	"Path": "google.golang.org/grpc",
+	"Version": "v1.85.0",
+	"Time": "2026-10-27T09:27:04Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/google.golang.org/grpc@v1.85.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/google.golang.org/grpc/@v/v1.85.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:BPBCfuVRQ1qvBhKDOq9uvQllMvO59rKsYhXpp7Dd8vw=",
+	"GoModSum": "h1:0rQrOD58yjal/0EaVbGBANindixsCZNQPDV3VKtaKuQ="
+}
+{
+	"Path": "google.golang.org/protobuf",
+	"Version": "v1.36.12",
+	"Time": "2026-08-10T13:29:45Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/google.golang.org/protobuf@v1.36.12",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/google.golang.org/protobuf/@v/v1.36.12.mod",
+	"GoVersion": "1.23",
+	"Sum": "h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=",
+	"GoModSum": "h1:HTf+CrKn2C3g5S8VImy6tdcUvCska2kB7j23XfzDpco="
+}
+{
+	"Path": "gopkg.in/yaml.v3",
+	"Version": "v3.0.1",
+	"Time": "2022-05-27T08:35:30Z",
+	"Indirect": true,
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/gopkg.in/yaml.v3@v3.0.1",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/gomodcache/cache/download/gopkg.in/yaml.v3/@v/v3.0.1.mod",
+	"Sum": "h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=",
+	"GoModSum": "h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM="
+}

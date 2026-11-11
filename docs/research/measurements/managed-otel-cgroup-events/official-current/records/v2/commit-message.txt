@@ -1,0 +1,13 @@
+test: retain current event official consumer acceptance
+
+Verify ROOT completed sourcea8ad and copy only the nine authorized metric JSON
+artifacts byte-for-byte. Each passes official pdata1.71 decoding and one pinned
+Collector0.165 loopback POST with exact fields/counts, no partial rejection,
+held-child pidfd/reap and FD cleanup. Retain the positive oracle unit, original
+Go checksum preparation refusal, unchanged sources and all original raw members.
+
+Evidence/fixture only: no product, dependency, assertion or profile-input change,
+VM/own-cgroup replay or performance claim. ROOT owns signing/review and remaining
+kernel/mutation/matrix/cost/adoption gates.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

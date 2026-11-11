@@ -1,0 +1,11 @@
+{
+	"GOAUTH": "off",
+	"GOCACHE": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gocache",
+	"GOENV": "",
+	"GOMODCACHE": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gomodcache",
+	"GOPROXY": "https://proxy.golang.org",
+	"GOROOT": "/home/adalundhe/.gvm/gos/go1.27.2",
+	"GOSUMDB": "sum.golang.org",
+	"GOTOOLCHAIN": "local",
+	"GOVERSION": "go1.27.2"
+}

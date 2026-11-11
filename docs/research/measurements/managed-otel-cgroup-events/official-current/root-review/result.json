@@ -1,0 +1,38 @@
+{
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "snapshot_files_verified": 261,
+  "snapshot_archive": {
+    "bytes": 377256,
+    "sha256": "a0ef6a1d3b826199aef8a52826d309c37b53455b567db6e886d3fa5686960eab"
+  },
+  "original_archives": {
+    "v1/prepare": {
+      "payloads": 44,
+      "manifest": 1,
+      "bytes": 39434,
+      "sha256": "1af48b8c288babe9410b74e594eac55c978cd40a8b29b085f3a13d83ec6b8046"
+    },
+    "v2/prepare": {
+      "payloads": 44,
+      "manifest": 1,
+      "bytes": 36795,
+      "sha256": "c6a90c345d0db7e3dffe4b8fb0f39733ab9751b4e9abeb38de625e3b3bf63030"
+    },
+    "v2/consume": {
+      "payloads": 121,
+      "manifest": 1,
+      "bytes": 53257,
+      "sha256": "69206783c82a734cf316512095b8c25079ba8b443dd6707d61005adfaec930e2"
+    }
+  },
+  "official_decodes_and_posts": 9,
+  "direct_command_pidfd_reaping_and_fd_return": 19,
+  "official_consumer_sources_equal_committed": 6,
+  "runtime_replay": false,
+  "limits": [
+    "Component interoperability only",
+    "Production exporter delivery, kernel backing, continuity, full management and costs remain open"
+  ]
+}

@@ -1,0 +1,1046 @@
+{
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/README.md": {
+    "bytes": 15169,
+    "sha256": "b2f8786caae87e46165c0b8462181d1adc2c4275611939fd6a0ece828adf68b1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/observe-collector.py": {
+    "bytes": 3224,
+    "sha256": "6f0fbf6acf6e9882ae52aa67c381d75cfd7c6951327dafd583222efec8d0cea6"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/controller-pins.json": {
+    "bytes": 506,
+    "sha256": "75522985373e6f4f2957eff9da90a13f74e55248fd9ae78be4f43ba86ac30ab4"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/controllers.tar.xz": {
+    "bytes": 6708,
+    "sha256": "8313f5616da0b899740baeb0cda05b1093b955bd9dbc21da6a82e4d93cc43e31"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/go.sum.tool-appended": {
+    "bytes": 5052,
+    "sha256": "4adc4aa8e0c9e9709aa1d7154759a7381789e324a181149a007758ac7f20eb6a"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/inventory.json": {
+    "bytes": 2872,
+    "sha256": "27c7913ccbbe1cfc93ab0ad35b58053b8fb0c92dbeca92ecc62f9e33e3a25289"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/policy.json": {
+    "bytes": 1792,
+    "sha256": "40fec48e5cabbd6b1a7ab05907db9452b12f6dc796ae5d6249b6ec68f348b40e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-admission.json": {
+    "bytes": 4340,
+    "sha256": "6fc02259aa2dd14fff2747ddfaa4a85743389d471bfdf3f2a996f17827447b56"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-input.json": {
+    "bytes": 24867,
+    "sha256": "c9a43b91d47572337c6513c2bfcca69bdbc18abb894ea0726b095a663082edf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-raw.tar.gz": {
+    "bytes": 39434,
+    "sha256": "1af48b8c288babe9410b74e594eac55c978cd40a8b29b085f3a13d83ec6b8046"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-read-admission.json": {
+    "bytes": 433,
+    "sha256": "7e1863208d55ee2ea2f66d80fc90adcf8433690b6f1eae04d97cf799bc72ead1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-read-input.json": {
+    "bytes": 700,
+    "sha256": "460796274257acab949df7046344a40ef357156ffd65a88b7919bb2e5a1e92ce"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-read-response.json": {
+    "bytes": 52652,
+    "sha256": "143e3b5743369cf49b1a9e31f18ae8585facf6077bec1758abc5e073b6c99024"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare-verified.json": {
+    "bytes": 7290,
+    "sha256": "3ce8d04f1cd34ff15970c75d7f4fc724511bd0a8def6d9197df5af2a0bc6ce17"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/ROOT-completed.json": {
+    "bytes": 269,
+    "sha256": "109302476e90b35c1db5218f00ddc86fedaf4eaa84d5915e5b7a69c69b953833"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/collector-build-info.command.json": {
+    "bytes": 517,
+    "sha256": "62648fabd27b7c888188923b63275a4eff46ae8037a67ded990130943c26cce4"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/collector-build-info.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/collector-build-info.stdout": {
+    "bytes": 48805,
+    "sha256": "7bb019659ad52235620b1f516f9860675b0886268e8260c38d9b0ade16b4d3a7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/events/after-refusal.json": {
+    "bytes": 17273,
+    "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/events/before.json": {
+    "bytes": 17129,
+    "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/events/finite.json": {
+    "bytes": 17273,
+    "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/joiner/joiner.json": {
+    "bytes": 4112,
+    "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/joiner/provider.json": {
+    "bytes": 17135,
+    "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/metrics/finite.json": {
+    "bytes": 17273,
+    "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/metrics/first.json": {
+    "bytes": 17129,
+    "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/metrics/second.json": {
+    "bytes": 17129,
+    "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/copied-inputs/metrics/unbounded.json": {
+    "bytes": 17129,
+    "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-environment.command.json": {
+    "bytes": 562,
+    "sha256": "2c50e3614ff36f6cb6192d0836f17dce2f60bb6d797b90f92327f33030214c55"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-environment.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-environment.stdout": {
+    "bytes": 390,
+    "sha256": "6a338d00120781b987ffcafd1291cbcf3eeee62aa52ac5c82c66abf76b9f4136"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-version.command.json": {
+    "bytes": 409,
+    "sha256": "c40a07f74646f0d4817ed5d2cd898849782ed092d45b09f0dd03cb565e72cfa0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/go-version.stdout": {
+    "bytes": 32,
+    "sha256": "ed4307d760c597256afdc696a61d47d13e832615d7741ead11c64966a440b376"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/members.json": {
+    "bytes": 5992,
+    "sha256": "22e153b632c2581410fc227027acb039ce82accffabbe78cd0c52d153c75d062"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-download.command.json": {
+    "bytes": 464,
+    "sha256": "307cb686712d9c86f394f3855361d640464577ca743c74acc6d4e8e31f34e82e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-download.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-download.stdout": {
+    "bytes": 19685,
+    "sha256": "773fab82d1750891dc3b13b225fec9ff8533c3ae8c4f84e244bd4a176f067f8d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-list.command.json": {
+    "bytes": 455,
+    "sha256": "6adbc3fd1667b6028cd9cc2ae1a72145eaf8f99452ff3df8f2ad58421f6dd6eb"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-list.stdout": {
+    "bytes": 14005,
+    "sha256": "d64170d7d79358c1dc04db0e8e4d1d3eb412e310a0ca4f131bdc3e1d19bebb33"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-verify.command.json": {
+    "bytes": 436,
+    "sha256": "bb6c86b31d3bb0aee2f4d05a167eaeec62a92055f09d59c35b7c6d39310ffb1b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-verify.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/module-verify.stdout": {
+    "bytes": 21,
+    "sha256": "b4537ed75f533f993f371954de47e42a793b8e5b0587577de7e27fb3e50696bd"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-build.command.json": {
+    "bytes": 548,
+    "sha256": "2bffbae495c4fc9170c15fa7b5de891d739d89f2caafe918779b56124fb86475"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-list.command.json": {
+    "bytes": 467,
+    "sha256": "26fd0c859bef1f5dc510456d65954638421cfb5c088cd7dad867d44421109615"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-list.stdout": {
+    "bytes": 165,
+    "sha256": "08a45ec75a3a62af35deee54bfb462164d3f43baf7f4ef0e1e6ee659a62c8e15"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-test-build.command.json": {
+    "bytes": 568,
+    "sha256": "9bc0806946d4823601ea68a1b9a9dbc6e4586a7877c61538a85a8510d33367b9"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-test-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/oracle-test-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/result.json": {
+    "bytes": 15291,
+    "sha256": "31f160df26dfdd7909742a23f4f22ea9740a508ec6ab4017bfed577c78b5b990"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-format.command.json": {
+    "bytes": 607,
+    "sha256": "56d92a6a0e7a585cf2bfbfe90a5ae077e9917eba8a4b0a5916627719432a4a77"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-format.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-format.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-vet.command.json": {
+    "bytes": 451,
+    "sha256": "be1862d71eb5d7ed668f1baa85dbee1d479a25d77f147ac2cc07ce2e40989e3b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-vet.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/prepare/source-vet.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/source-pins.json": {
+    "bytes": 897,
+    "sha256": "3dd95c173c1cabb722bc0b1dbffc7267e9217ec0b9095d371b84850cbcc3959e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v1/source.tar.xz": {
+    "bytes": 9212,
+    "sha256": "c5886d1a487158ecbb9ac670a1c857fe50a3b2c4f71ae52f6f8b4ea639192ede"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/commit-message.txt": {
+    "bytes": 720,
+    "sha256": "d5e6c7528c2c1a39102188155425a434c6f971b78979ea9bc582ef6dfae433bb"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-admission.json": {
+    "bytes": 5310,
+    "sha256": "ca351a50615deb42c1796c2481937028b24fe8702a550e0d8b7ad9fb601d7ad5"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-input.json": {
+    "bytes": 716,
+    "sha256": "e3038b53f909aefd478ab022dfbf0a31a48658ddc53ca0c5db087d3d60042784"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-raw.tar.gz": {
+    "bytes": 53257,
+    "sha256": "69206783c82a734cf316512095b8c25079ba8b443dd6707d61005adfaec930e2"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-read-admission.json": {
+    "bytes": 407,
+    "sha256": "1cfa9065543aaccb414d0503c5667d5b29798e1cd88f06d09ae6ca45e66a98ad"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-read-input.json": {
+    "bytes": 703,
+    "sha256": "fd368936e6f7cc9af9c0bb8f7f614c93fd591af8116edaca54299b6dc202283e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-read-response.json": {
+    "bytes": 71084,
+    "sha256": "31f05d5d2204b12962c08a8530d022724878076fc11b4bde515d68503e3da753"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume-verified.json": {
+    "bytes": 20411,
+    "sha256": "744a971f681e88c2ecf190ada1b252d7525ed7b0fff989c7a6544c38338ad3b2"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-collector.command.json": {
+    "bytes": 1364,
+    "sha256": "a9a4cda775967c99a31fb4671d66df428237027f960a0cbecb752359e961fb87"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-collector.stdout": {
+    "bytes": 2395,
+    "sha256": "902043235e490be1a92ac47764877f7ebfa384160a7ce245723f83b759a240ad"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-decode.command.json": {
+    "bytes": 611,
+    "sha256": "fc45dcbc0931686745c546a7c440c397427e593c076aeecdf11086c5491fcf4f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal-decode.stdout": {
+    "bytes": 20953,
+    "sha256": "1bb216fa6dc1500d64d42330f501e1a5b1b00030c17525661600cc963caeb4bd"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/collector.log": {
+    "bytes": 27253,
+    "sha256": "25d2d24559a1ba5241e5d43fc11054e0e0c7dc41520f4a7b9cf5fa0372c02b9d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/command.json": {
+    "bytes": 219,
+    "sha256": "8bde5db69125f245587d10fdd8be784e7ca6b87a6224a81be319f5b4c1491376"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/config.json": {
+    "bytes": 578,
+    "sha256": "26f5f9b5128d70b9b940d9edc2c2747db03a8e9b585bcddc74b3a1f6b6e904a9"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/request.json": {
+    "bytes": 17273,
+    "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/http/result.json": {
+    "bytes": 2395,
+    "sha256": "902043235e490be1a92ac47764877f7ebfa384160a7ce245723f83b759a240ad"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-after-refusal/pidfd.json": {
+    "bytes": 793,
+    "sha256": "15fdaa9842aad0fbcd7ee97a73782ff827879f3111837f91b93795bf5eeb16a1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-collector.command.json": {
+    "bytes": 1336,
+    "sha256": "38b4937950d5cf3994cc4c1e7e2213ba31766f19a4c3b981ae5fbdc345390a66"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-collector.stdout": {
+    "bytes": 2304,
+    "sha256": "60877be215ace35f5fad297c239c6626a35d32148820472525033d943043da0e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-decode.command.json": {
+    "bytes": 597,
+    "sha256": "b8744b1183808840ce13a8c28d7223b561c095a90c8253d0772ba0d9c6f9c2c8"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before-decode.stdout": {
+    "bytes": 20759,
+    "sha256": "6ba6cf756d9c6e7a280ac88b574df838fe3b888d8579a84773e5441a817b0e1d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/collector.log": {
+    "bytes": 27008,
+    "sha256": "29f7b47427218dc5c7ac298637e5988279114779ff8253e3dcb0d2e374b5a818"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/command.json": {
+    "bytes": 212,
+    "sha256": "c07617cbe59984cc4fb364f50bab329df1ae9db1b5a3c5a8d81b6815fd91a7a1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/config.json": {
+    "bytes": 578,
+    "sha256": "531ca72186106af1c4d64febab835ee83f879ae423076ca0ab051b6662de57d3"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/request.json": {
+    "bytes": 17129,
+    "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/http/result.json": {
+    "bytes": 2304,
+    "sha256": "60877be215ace35f5fad297c239c6626a35d32148820472525033d943043da0e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-before/pidfd.json": {
+    "bytes": 786,
+    "sha256": "e1a871ee30383d2ce16b065851f76b792cc92346a51a367d38c120540ef00c14"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-collector.command.json": {
+    "bytes": 1335,
+    "sha256": "3f29fe52fbaa0b0be03da0465549a54cb484eb88ad7a6b9afd1b006bb310ab0a"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-collector.stdout": {
+    "bytes": 2374,
+    "sha256": "0f2e9d0ae49f6642bf81c29d62b89e1eb18195f01d34f203fa9adfc452590149"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-decode.command.json": {
+    "bytes": 597,
+    "sha256": "7f1e5298bea30b81575e1be814b843d1e54910346480ab9a08e122a7cc49217f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite-decode.stdout": {
+    "bytes": 20953,
+    "sha256": "263ee270ec7ce6fd23bfe7403677f94cb9106fcef71d82e4e516171fa1e81702"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/collector.log": {
+    "bytes": 27234,
+    "sha256": "603c62bfd648391548fcbc56ffd6759509e774df0be5674ac568069c42bd4c88"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/command.json": {
+    "bytes": 212,
+    "sha256": "3712630a478791884d45ac2153b6a785dd47a1e8f9ef4c3782881c98ff22fced"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/config.json": {
+    "bytes": 578,
+    "sha256": "3a17b92bf402c6db3c4d6c5d6ad1a64931513bfab1360fd5aaea7b7444855e5d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/request.json": {
+    "bytes": 17273,
+    "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/http/result.json": {
+    "bytes": 2374,
+    "sha256": "0f2e9d0ae49f6642bf81c29d62b89e1eb18195f01d34f203fa9adfc452590149"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/events-finite/pidfd.json": {
+    "bytes": 786,
+    "sha256": "8addd74df0db4ac152caf2add8fe282c15b3734c8729cba9efd008dd3e88e57a"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-collector.command.json": {
+    "bytes": 1336,
+    "sha256": "4d8c3b2d0d0fc0b962c8c339a77b284efb7d8bce8001d1b1a82692457a2c8b3b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-collector.stdout": {
+    "bytes": 2220,
+    "sha256": "903f55802db30a3a549b8fe7011c0d45f8afb632d74845a9807bad4f72194af0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-decode.command.json": {
+    "bytes": 596,
+    "sha256": "46ec76f9dbdc4e049b16ca0060381216472149bf183f7c9ad23cc83f1a20cad4"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner-decode.stdout": {
+    "bytes": 5062,
+    "sha256": "524f53384d4c2b5a66fea04320dc9126b7c07d807f67031d966dd809aba192ab"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/collector.log": {
+    "bytes": 9143,
+    "sha256": "727e3fb49067a944d0bd4a7047eda5d825e86bc2ccd513ee0fb02a5cec55f75c"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/command.json": {
+    "bytes": 212,
+    "sha256": "6cede2cde0e3f10de7b30be6c453e95273c652d0780206490904ac6a7e5ec0a0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/config.json": {
+    "bytes": 578,
+    "sha256": "120a6fffa94f784891ff15541a341e3143065dcce14e76e13867e6c648c46885"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/request.json": {
+    "bytes": 4112,
+    "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/http/result.json": {
+    "bytes": 2220,
+    "sha256": "903f55802db30a3a549b8fe7011c0d45f8afb632d74845a9807bad4f72194af0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-joiner/pidfd.json": {
+    "bytes": 786,
+    "sha256": "a4a4008d82e072e56e78eccd2375cad25d8709922cb96e043047bffce83ddde3"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-collector.command.json": {
+    "bytes": 1343,
+    "sha256": "7ae89762bd16b63c1b2381692e4af331195787f3bbfa73f4fe61a18012eaca7e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-collector.stdout": {
+    "bytes": 2310,
+    "sha256": "9b7a86098868f9cbbcad672d549f67119c27dd3a80ff1d9a14331ce4ad719d42"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-decode.command.json": {
+    "bytes": 601,
+    "sha256": "030b59544405c051019b364fff3d8650bda80597614cf679801c68693e2f0955"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider-decode.stdout": {
+    "bytes": 20764,
+    "sha256": "e50449809d66670eb2d303c2ceec26b33e7c4e0addb106de98a722cf39ab3868"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/collector.log": {
+    "bytes": 26995,
+    "sha256": "2958f9ea24813fb2620202f9e80ff9413a4ee5e2ee2571633af6aa61c7d25ebf"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/command.json": {
+    "bytes": 214,
+    "sha256": "f50fe4f69da6ce88f68044499d373373ec20df8b24148bb92cf4e06388f833d5"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/config.json": {
+    "bytes": 578,
+    "sha256": "9576de1a8506cdd26cca710a5fde3a9d562c6d24f5946cfd2b90b260fe6b7d94"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/request.json": {
+    "bytes": 17135,
+    "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/http/result.json": {
+    "bytes": 2310,
+    "sha256": "9b7a86098868f9cbbcad672d549f67119c27dd3a80ff1d9a14331ce4ad719d42"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/joiner-provider/pidfd.json": {
+    "bytes": 788,
+    "sha256": "d35506d7c15550f74499d46344f542fcddb50ae707e32ccd0b1e965304b70d03"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/members.json": {
+    "bytes": 17417,
+    "sha256": "3715c821a91a60475f8d8262d16ff3c03c53048341bc8195ce81056d68529cda"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-collector.command.json": {
+    "bytes": 1340,
+    "sha256": "07fe21c4161dbe89e44e252ae0d5699e1dbbd4df01c557d9d37ea045a74178a0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-collector.stdout": {
+    "bytes": 2377,
+    "sha256": "a50c10555406af7e7d701bd07dc60edddacfe74a93442ed7557c6a5f4cfe3816"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-decode.command.json": {
+    "bytes": 600,
+    "sha256": "2ca9c44cbaf35ca4822a4c08c923da5f1e785a4b2698be76a929e7865ed52061"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite-decode.stdout": {
+    "bytes": 20953,
+    "sha256": "b9ac2df7ca4b5d338d77e93c53b8d2d928af85e85d7ad79e8c59615f136f1802"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/collector.log": {
+    "bytes": 27272,
+    "sha256": "1d7f7c5efdc0c472e6599b8733a6850bd1eda371a9f6f40babf199ccf17e1ee3"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/command.json": {
+    "bytes": 213,
+    "sha256": "219475f2348480e9b8b6e5d28e2aacffc47fd7c082286d5e097d92da060cedac"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/config.json": {
+    "bytes": 578,
+    "sha256": "798f3264800e4ef91b678990af50f0d3f04b93f863abd53007e514ee59640a8f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/request.json": {
+    "bytes": 17273,
+    "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/http/result.json": {
+    "bytes": 2377,
+    "sha256": "a50c10555406af7e7d701bd07dc60edddacfe74a93442ed7557c6a5f4cfe3816"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-finite/pidfd.json": {
+    "bytes": 787,
+    "sha256": "6e202bc7a015b03e78f951c8eb390d4123feb174a0ef29eb339c8f230fb596ee"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-collector.command.json": {
+    "bytes": 1336,
+    "sha256": "1ad85d18d924d2b126f593a12f4e98ee5c6235ea3639b5c6c760f24e8d099c69"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-collector.stdout": {
+    "bytes": 2304,
+    "sha256": "bffc0954e7556e15f9079de1a1a584a8171673572d159b918c84c6806ce9a25c"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-decode.command.json": {
+    "bytes": 597,
+    "sha256": "c9876007215f92e0590047c36a7b2ab82a3edec001fbc7016764091d8c63f054"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first-decode.stdout": {
+    "bytes": 20759,
+    "sha256": "bd0f14bbed84cf76072696fe0334c29161f372c4ad526b30ff4120a2c9caa9f1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/collector.log": {
+    "bytes": 27008,
+    "sha256": "639af70a86dcbadaba00ed037785a2170f0806c3f29fe214c63fd595fd681a37"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/command.json": {
+    "bytes": 212,
+    "sha256": "f83219b6b27180f98ec54dbdec41451571a403201b2c55b6d9ea1abcc7819473"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/config.json": {
+    "bytes": 578,
+    "sha256": "c9b39755228592214841c5ff03c135ade3eb956df4e888f3b6f1df6b92a6578b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/request.json": {
+    "bytes": 17129,
+    "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/http/result.json": {
+    "bytes": 2304,
+    "sha256": "bffc0954e7556e15f9079de1a1a584a8171673572d159b918c84c6806ce9a25c"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-first/pidfd.json": {
+    "bytes": 786,
+    "sha256": "dc723789802e857ad3164d8de6da3dba183bcc933542455fb4948d6d84e9ada7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-collector.command.json": {
+    "bytes": 1339,
+    "sha256": "c23a8f348b88b144a925fd1037e6be8d6266df82e72fd44ed8dafc4f421b3d80"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-collector.stdout": {
+    "bytes": 2307,
+    "sha256": "b13a78b8ce55e3be1419a01da6119e3153ab242292e30195490ed964b6806db7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-decode.command.json": {
+    "bytes": 600,
+    "sha256": "c29d0ecf25d4487eb2e85701dfe63553384a92dac074b61af5380796fb3f1d9b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second-decode.stdout": {
+    "bytes": 20759,
+    "sha256": "8e5d1e548c5c5ebcf3090697b8f2d1faf1d2213c4bbed0912d4bd4b991443424"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/collector.log": {
+    "bytes": 27008,
+    "sha256": "4005853b2556e4d2b56aafa55e34f03e2c4aaf07e84e8e4e44a3cabe36bfc813"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/command.json": {
+    "bytes": 213,
+    "sha256": "3c4117fedcc3d65ec139b82c2f8366e8cc30252cd1606e50cb05ee25a7bc0315"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/config.json": {
+    "bytes": 578,
+    "sha256": "3ae4bfe416220962f1366a4762c9651852fe8f45d4626d7104a213b3a8614c3f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/request.json": {
+    "bytes": 17129,
+    "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/http/result.json": {
+    "bytes": 2307,
+    "sha256": "b13a78b8ce55e3be1419a01da6119e3153ab242292e30195490ed964b6806db7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-second/pidfd.json": {
+    "bytes": 787,
+    "sha256": "4681059647fccdf7fdcdf5c22f2a55d53a3d67e64cdd296f05b19f7ae806f11a"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-collector.command.json": {
+    "bytes": 1352,
+    "sha256": "d98df1edbe45b93628e424f7af864557d5f621f7afafd0d8ee6b37a206e7974e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-collector.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-collector.stdout": {
+    "bytes": 2316,
+    "sha256": "6fd8febd3689e48d4b21d012371d32296b746859f3f28aebe874397f96760a86"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-decode.command.json": {
+    "bytes": 605,
+    "sha256": "3a4ce50b996b099ca3df140d721065974d70521f6f20c6ae0c315daa9e1d84c4"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-decode.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded-decode.stdout": {
+    "bytes": 20759,
+    "sha256": "5ec4bbac3b2eda74ac9c38e288288bcd72ffaf6ad6aec4c318c8626e916fec0f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/collector.log": {
+    "bytes": 26989,
+    "sha256": "092a438f094d207c050c340d021c89cb7878d1a086c98c389d300689d353c34f"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/command.json": {
+    "bytes": 216,
+    "sha256": "0d351c5b7d33e165c42a139c188d524fa30c35889bbd34751301236d92730055"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/config.json": {
+    "bytes": 578,
+    "sha256": "f6bcc8d01d017fd6ca618db3d8585333a290e5c77f07e42149c4839c7f606975"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/request.json": {
+    "bytes": 17129,
+    "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/response.json": {
+    "bytes": 21,
+    "sha256": "f56b35823a693646bf987ca07c9cbc4ff72a83b79b34595b20546b539795fdf0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/http/result.json": {
+    "bytes": 2316,
+    "sha256": "6fd8febd3689e48d4b21d012371d32296b746859f3f28aebe874397f96760a86"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/metrics-unbounded/pidfd.json": {
+    "bytes": 790,
+    "sha256": "9faebd9d8554662f832538a0216af1770d9af831f1f46c76ede256bf6e7e5ec8"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/positive-oracle-unit.command.json": {
+    "bytes": 542,
+    "sha256": "f652e9b8b8b28201aaa03989d85a5e438050260d04605bba0bfb45b6acb836f5"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/positive-oracle-unit.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/positive-oracle-unit.stdout": {
+    "bytes": 83,
+    "sha256": "7c006c06c951738fdc47e33cc7f54e3779569302117ceafb67d8b71438ca3ea0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/consume/result.json": {
+    "bytes": 46264,
+    "sha256": "4a47e40efad2521af37e38f05d4deff5906b5f903b737f996d9f0187d5973ce0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/controllers.tar.xz": {
+    "bytes": 6736,
+    "sha256": "1ced50f2197d34d2c773de9102d7207a60521ab98c19c60eda34064fbbb50221"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/gits-add.command.json": {
+    "bytes": 278,
+    "sha256": "12f8ea0d1c8d775a27adad2de5ea0737ac4d9871d25847d9dcdec7fc97e88b78"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/gits-add.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/gits-add.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/go-sum-refusal-association.json": {
+    "bytes": 1907,
+    "sha256": "24905ada29e9e559af506f115122a172e84cdec3b8acd963645716ac94afc172"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/policy-check.command.json": {
+    "bytes": 221,
+    "sha256": "00b193da5801c5404e08570424384d186b5bb5a8cb373d6cda5be63eb7029083"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/policy-check.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/policy-check.stdout": {
+    "bytes": 81,
+    "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/pre-runtime-send.json": {
+    "bytes": 843,
+    "sha256": "05615265966cdbe8007300ffab6cc60ff5ed6eb628b709326afb51b9a0842bcc"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/preparation-receipt.json": {
+    "bytes": 5621,
+    "sha256": "db5cc1eba68875e516e93d7cb15ab00493f9e15767a23cb23786f9064df616fa"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-admission.json": {
+    "bytes": 4246,
+    "sha256": "0f2546996f7cac2837ef1ea6b2a9ce2afb88ae4b671dd235c004f1ac64498177"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-input.json": {
+    "bytes": 24906,
+    "sha256": "a8de3f1282014809e401464a69afa1ed5a94982f56414033a97ad324083c0205"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-raw.tar.gz": {
+    "bytes": 36795,
+    "sha256": "c6a90c345d0db7e3dffe4b8fb0f39733ab9751b4e9abeb38de625e3b3bf63030"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-read-admission.json": {
+    "bytes": 407,
+    "sha256": "1b337444e8c1c2710214c0afc06133393da16fb7117b06984017d532cf7511d3"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-read-input.json": {
+    "bytes": 1007,
+    "sha256": "047997ede3456b5caf739fd5b7827f309e49fc26bd379f6dc4beefbcdc17332d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-read-response.json": {
+    "bytes": 55908,
+    "sha256": "bd9c9aaed318c963ae1bab5c387ed847e96a852ce382cc93dada480e74f329df"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare-verified.json": {
+    "bytes": 7287,
+    "sha256": "5e4d15ef3d5c06422b176daf80ba6deb2f1d594317074d36e449afc2339b14aa"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/ROOT-completed.json": {
+    "bytes": 269,
+    "sha256": "109302476e90b35c1db5218f00ddc86fedaf4eaa84d5915e5b7a69c69b953833"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/collector-build-info.command.json": {
+    "bytes": 524,
+    "sha256": "bdd7bcfdaaf9b310c8851b6dc7e036cbc43c9063d926fa88abf17e102aa3e7ad"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/collector-build-info.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/collector-build-info.stdout": {
+    "bytes": 48808,
+    "sha256": "11d42e80ac56a90b71bbc465738c314d8912e580eead31bc65b3ff544ad7f0e3"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/events/after-refusal.json": {
+    "bytes": 17273,
+    "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/events/before.json": {
+    "bytes": 17129,
+    "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/events/finite.json": {
+    "bytes": 17273,
+    "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/joiner/joiner.json": {
+    "bytes": 4112,
+    "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/joiner/provider.json": {
+    "bytes": 17135,
+    "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/metrics/finite.json": {
+    "bytes": 17273,
+    "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/metrics/first.json": {
+    "bytes": 17129,
+    "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/metrics/second.json": {
+    "bytes": 17129,
+    "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/copied-inputs/metrics/unbounded.json": {
+    "bytes": 17129,
+    "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-environment.command.json": {
+    "bytes": 566,
+    "sha256": "a17b8f363c1cd1aa688d03f9a7a34ea142012acc7c3a674e9766d31e6b4c3058"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-environment.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-environment.stdout": {
+    "bytes": 396,
+    "sha256": "c3090409f2749e52572cb6bba7e1f74d70819c59b545e04e1f865dffa692f3d7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-version.command.json": {
+    "bytes": 413,
+    "sha256": "b2b5508dadf5df3fca4ab5df7fd27318771d6c1f1c8173fd757f218b4156d8e5"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/go-version.stdout": {
+    "bytes": 32,
+    "sha256": "ed4307d760c597256afdc696a61d47d13e832615d7741ead11c64966a440b376"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/members.json": {
+    "bytes": 5989,
+    "sha256": "46f26cae2ea1871d7c332dae9dccadc3502c47863a48b89f694b0bb49e5ab7ea"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-download.command.json": {
+    "bytes": 457,
+    "sha256": "e3d958fe0fd21a18801195b88b49bf9935ad379af1b13847f37ba453129c66c1"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-download.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-download.stdout": {
+    "bytes": 5797,
+    "sha256": "d4d7c40e69b9ae05833caef1718ae552ad9473def0e58755cb68460caed109e5"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-list.command.json": {
+    "bytes": 491,
+    "sha256": "42d21a9fc1888e25ef62a8529840102f87296241b28c5afed30e5b3f8abf2d59"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-list.stdout": {
+    "bytes": 550,
+    "sha256": "93af639e94e18b95d2709d0e27279f856a17896f53ebcdf54d3763f82b9996c9"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-verify.command.json": {
+    "bytes": 440,
+    "sha256": "7d5b108b475c23e0467be51191a158cc13409717e3361a092bb7426038d8d3a8"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-verify.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/module-verify.stdout": {
+    "bytes": 21,
+    "sha256": "b4537ed75f533f993f371954de47e42a793b8e5b0587577de7e27fb3e50696bd"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-build.command.json": {
+    "bytes": 554,
+    "sha256": "c89892c57569c82cf8220339401bd7b958c862c4422492943b5e1fa8fa3ad13c"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-list.command.json": {
+    "bytes": 474,
+    "sha256": "4eb408e9d22ac14aa29e6befce92514ffd34fdca2fe490de965a2852995b05a7"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-list.stdout": {
+    "bytes": 165,
+    "sha256": "08a45ec75a3a62af35deee54bfb462164d3f43baf7f4ef0e1e6ee659a62c8e15"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-test-build.command.json": {
+    "bytes": 574,
+    "sha256": "68d8bb4398567b07994d9abc276d2e1d70be5a80d6ad7541a27a7640de1a1ab8"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-test-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/oracle-test-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/result.json": {
+    "bytes": 25798,
+    "sha256": "52045c8752de318a0895066edb5223005f9e88f822866147178220033fa0701c"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-format.command.json": {
+    "bytes": 616,
+    "sha256": "35aff6ee9184ca68e8dd5f1c4e4a6717339de3a1065fc9bce31311c3d9a1ce59"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-format.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-format.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-vet.command.json": {
+    "bytes": 455,
+    "sha256": "2c5b7d9933c3178bbd57609383cf5eff60713a084c915a99b3c16f8c7ab967c0"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-vet.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prepare/source-vet.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/pretest-driver.diff.json": {
+    "bytes": 2428,
+    "sha256": "8eedf9bec533c7fbce68759532adc8e0f4456f317154f18a00cc712e128fab59"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/primary-source-lookup-first-error.json": {
+    "bytes": 412,
+    "sha256": "698e1edd9cc1ae8c764b08006bfb5351c7bde29b947dc065e4a7c4e43b9041aa"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/prior-frozen-patches.json": {
+    "bytes": 126,
+    "sha256": "5d04c0868d3313dcee6f48835c38bbc3d6f55072082806c4be8e2c36cea4aeec"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/summary.json": {
+    "bytes": 4002,
+    "sha256": "8536abb6cc755ddc46678d78aaaaf5ba1d72a65992486eefed95fe4286501064"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/whitespace.command.json": {
+    "bytes": 262,
+    "sha256": "ff9b9110a5c16ec1d400fd5bbb30b31ad7545efe2c05be33e2de4471dfb8f45a"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/whitespace.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/records/v2/whitespace.stdout": {
+    "bytes": 442,
+    "sha256": "7755e1f89b7575ba5e45a25acdff61ea57a473bcca5a07a1ce37cbd652e12b6d"
+  },
+  "docs/research/measurements/managed-otel-cgroup-events/official-current/run.py": {
+    "bytes": 19321,
+    "sha256": "df5fc5fc3d8b316a6db8e767185a04f9eaf6a52ffbe198d3b2ee4800bb910670"
+  }
+}

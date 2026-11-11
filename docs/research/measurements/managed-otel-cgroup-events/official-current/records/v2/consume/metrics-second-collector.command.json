@@ -1,0 +1,41 @@
+{
+  "name": "metrics-second-collector",
+  "argv": [
+    "/usr/bin/python3",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/observe-collector.py",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/collector-http.py",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/consume/metrics-second/pidfd.json",
+    "--collector",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+    "--input",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/second.json",
+    "--out",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/consume/metrics-second/http",
+    "--collector-sha256",
+    "14e254a6a0880d9b6f94487658e49fc9f3b0e14c62e82253be78da08e8c1ddd8",
+    "--startup-seconds",
+    "10",
+    "--request-seconds",
+    "10",
+    "--cleanup-seconds",
+    "15"
+  ],
+  "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+  "timeout_s": 345.6241825869656,
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "exit_code": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ]
+}

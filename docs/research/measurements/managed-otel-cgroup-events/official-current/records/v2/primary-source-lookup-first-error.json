@@ -1,0 +1,6 @@
+{
+  "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/e883d737e49935984df6b064e512eed6cdc0d289/exporter/debugexporter/debug_exporter.go",
+  "result": "404 Not Found",
+  "actual_source_url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector/e883d737e49935984df6b064e512eed6cdc0d289/exporter/debugexporter/exporter.go",
+  "runtime_started_by_lookup": false
+}

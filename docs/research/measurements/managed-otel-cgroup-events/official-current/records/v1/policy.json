@@ -1,0 +1,46 @@
+{
+  "role": "implementer/light interoperability tester",
+  "policy": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "full_loaded_current_reads": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+    },
+    "docs/design/managed-runtime-plan.md": {
+      "bytes": 53785,
+      "sha256": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241"
+    },
+    "docs/research/measurements/managed-combined-0ae/README.md": {
+      "bytes": 12707,
+      "sha256": "23c3838d70f241a4530d4007b78c1ed4b1a7d252e1acf231dd30e093d3630da8"
+    },
+    "/Users/adalundhe/g121-handoff.md": {
+      "bytes": 86214,
+      "sha256": "25d06376432c89f2faf6564344877b6564dc075996d8c38f796930cd5121324a"
+    }
+  },
+  "same_context_full_reads_unchanged": true,
+  "AGENTS_rules_reread_this_turn": true,
+  "receipt_seq": 10207,
+  "owned_paths": [
+    "docs/research/measurements/managed-otel-cgroup-events/official-current/**"
+  ],
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "new_private_root": "~/Projects/shards-managed-events-official-current-v1",
+  "envelope": "2CPU/2GiB/4GiB/600total/j2",
+  "ROOT_artifact_read_permission": "completed.json source first +only9 declared JSON files",
+  "own_signer_present": false
+}

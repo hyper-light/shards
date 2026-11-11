@@ -1,0 +1,15 @@
+{
+  "result": {
+    "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+    "output": "Stored losslessly in prepare-read-response.json",
+    "running": false,
+    "why": "linux/x86_64 \u00b7 25 of 32 cores idle \u00b7 93 GB free \u00b7 room for 1 CPU, 256 MiB of memory, 1 GiB of disk \u00b7 memory pressure 0% \u00b7 I/O pressure 30%",
+    "exit_code": 0
+  },
+  "calls": [
+    {
+      "name": "machines.run",
+      "ok": true
+    }
+  ]
+}

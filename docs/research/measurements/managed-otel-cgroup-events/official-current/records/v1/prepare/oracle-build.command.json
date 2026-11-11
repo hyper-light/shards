@@ -1,0 +1,29 @@
+{
+  "name": "oracle-build",
+  "argv": [
+    "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+    "build",
+    "-p",
+    "2",
+    "-o",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1/tools/oracle",
+    "."
+  ],
+  "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1/source/oracle",
+  "timeout_s": 580.2180802609655,
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "exit_code": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ]
+}

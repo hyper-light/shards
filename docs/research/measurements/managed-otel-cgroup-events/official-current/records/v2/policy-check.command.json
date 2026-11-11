@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "scripts/check-development-policy"
+  ],
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-otel-limits",
+  "exit_code": 0,
+  "scope": "local pure policy check; no compile/VM/profile"
+}

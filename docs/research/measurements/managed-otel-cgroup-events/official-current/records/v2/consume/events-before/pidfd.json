@@ -1,0 +1,37 @@
+{
+  "harness_exit": 0,
+  "failure": null,
+  "children": [
+    {
+      "pid": 2607530,
+      "argv": [
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+        "--config",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/consume/events-before/http/config.json"
+      ],
+      "pidfd_opened": true,
+      "pidfd_closed_before_harness_fd_check": true,
+      "waits": [
+        {
+          "returncode": 0,
+          "pidfd_exit_ready": true,
+          "direct_child_reaped": true
+        }
+      ]
+    }
+  ],
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_sets_include_enumeration": true,
+  "assertions_and_harness_source_unchanged": true
+}

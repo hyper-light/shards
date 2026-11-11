@@ -1,0 +1,80 @@
+{
+  "role": "implementer/light tester",
+  "scope": "completed explicit nine-artifact official consumer interoperability only",
+  "task_state": "finished tested evidence; ROOT review/sign/adoption pending",
+  "current_main_context": "7a897def2ac3bb041da584d1d6854fa066ad7fc2 docs-only; no fetch/rebase/rebuild",
+  "current_policy_hashes_equal_full_loaded_0a6": {
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+    "docs/design/managed-runtime-plan.md": "2bf13d754e4912018ebe09bad4243260f9349a66e4aadd1e662d507ae5037241"
+  },
+  "latest_authoritative_handoff": {
+    "path": "/Users/adalundhe/g121-handoff.md",
+    "bytes": 16857,
+    "sha256": "bf888c6fa240fae8fe4ae524bf8d336801e857d765d2854a1f38a293ab288a50",
+    "full_read": true
+  },
+  "immutable_ROOT_artifact_source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "immutable_consumer_source": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "source_branch": "p/managed-otel-memory-limit-v1",
+  "source_HEAD": "df656aec3f06eb52a286d6f774dc0226d99cc0a7",
+  "only_pending_patch_path": "docs/research/measurements/managed-otel-cgroup-events/official-current/**",
+  "patch_manifest_artifacts": {
+    "official-consumers.patch": {
+      "bytes": 1823622,
+      "sha256": "b5f711a34b74e0ff7561490329eb1829a6d274319478fac297b9a4a7da134622"
+    },
+    "owned-files.tar.xz": {
+      "bytes": 377256,
+      "sha256": "a0ef6a1d3b826199aef8a52826d309c37b53455b567db6e886d3fa5686960eab"
+    },
+    "MANIFEST.json": {
+      "bytes": 59345,
+      "sha256": "8cc23f6e1011c65f88129afab0a983a8ef27683b1105b23cf06ebdaa027c767a"
+    }
+  },
+  "checks": {
+    "positive_unit_passed": 1,
+    "positive_unit_exit": 0,
+    "other_oracle_units_unrun": 4,
+    "exact_decodes_passed": 9,
+    "Collector_HTTP200_no_partial_rejection": 9,
+    "exact_source_fields_and_actual_Collector_counts_match": true,
+    "all_owned_child_pidfds_exit_ready_reaped_and_FDsets_returned": true,
+    "format_vet_build_list": 0,
+    "policy_script": 0,
+    "source_whitespace": 0,
+    "full_whitespace": 2,
+    "full_whitespace_reason": "only original Go build-info empty checksum tabs and retained diagnostic echo",
+    "runtime_failures": 0,
+    "runtime_retries": 0,
+    "absolute_total_deadline_not_reset": true
+  },
+  "raw_original_payloads_and_manifests": {
+    "v1_prepare": [
+      44,
+      1
+    ],
+    "v2_prepare": [
+      44,
+      1
+    ],
+    "v2_consumers": [
+      121,
+      1
+    ]
+  },
+  "signature": "frozen unsigned; own signer absent; ROOT own signer required; no borrowing/disable/retry",
+  "missing_peer_or_owner_input_for_completed_consumer_scope": [],
+  "ROOT_actions_remaining": [
+    "independent evidence/code review",
+    "own signature and selective adoption",
+    "current data-integrity mutation/combined matrix and all cost gates, not claimed here"
+  ],
+  "full_G25_P0_P13_complete": false,
+  "prior_native_Unavailable_and_reference_handoffs_unchanged": true,
+  "new_source_index_worktree_build_or_runtime_change": false,
+  "latest_frozen_delivery_seq": 10358
+}

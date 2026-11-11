@@ -1,0 +1,151 @@
+{
+  "source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "outcome": 0,
+  "runtime_attempts": 19,
+  "case_count": 9,
+  "cases": [
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "metrics/first.json",
+      "input_identity": {
+        "bytes": 17129,
+        "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+      },
+      "metrics": 32,
+      "points": 76,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "metrics/second.json",
+      "input_identity": {
+        "bytes": 17129,
+        "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+      },
+      "metrics": 32,
+      "points": 76,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "metrics/finite.json",
+      "input_identity": {
+        "bytes": 17273,
+        "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+      },
+      "metrics": 33,
+      "points": 77,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "metrics/unbounded.json",
+      "input_identity": {
+        "bytes": 17129,
+        "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+      },
+      "metrics": 32,
+      "points": 76,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "joiner/provider.json",
+      "input_identity": {
+        "bytes": 17135,
+        "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+      },
+      "metrics": 32,
+      "points": 76,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "joiner/joiner.json",
+      "input_identity": {
+        "bytes": 4112,
+        "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+      },
+      "metrics": 8,
+      "points": 19,
+      "resources": 1
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "events/before.json",
+      "input_identity": {
+        "bytes": 17129,
+        "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+      },
+      "metrics": 32,
+      "points": 76,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "events/finite.json",
+      "input_identity": {
+        "bytes": 17273,
+        "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+      },
+      "metrics": 33,
+      "points": 77,
+      "resources": 4
+    },
+    {
+      "all_official_decoded_fields_equal_source": true,
+      "child_reaped": true,
+      "collector_counts_equal": true,
+      "http": 200,
+      "input": "events/after-refusal.json",
+      "input_identity": {
+        "bytes": 17273,
+        "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+      },
+      "metrics": 33,
+      "points": 77,
+      "resources": 4
+    }
+  ],
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "source_binary_unchanged": true,
+  "payloads": 121,
+  "manifest": 1,
+  "no_retry": true,
+  "remaining_original_s_after_all_runtime_and_archive": 296.9860226010205
+}

@@ -1,0 +1,27 @@
+{
+  "name": "events-after-refusal-decode",
+  "argv": [
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle",
+    "-max-bytes",
+    "17273",
+    "-input",
+    "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/events/after-refusal.json"
+  ],
+  "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+  "timeout_s": 343.6912317299866,
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "exit_code": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ]
+}

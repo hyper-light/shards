@@ -1,0 +1,9 @@
+{
+  "on": "451397fcc585f7f7cb9aaf00e42064bb",
+  "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "sync": false,
+  "cwd": "/tmp",
+  "timeout_s": 60,
+  "reuse": false,
+  "command": "python3 - <<'PY'\nfrom pathlib import Path\nimport base64,hashlib,json,time\nbase=Path('/home/adalundhe/Projects/shards-managed-events-official-current-v1');data=(base/'prepare-raw.tar.gz').read_bytes();assert len(data)==39434 and hashlib.sha256(data).hexdigest()=='1af48b8c288babe9410b74e594eac55c978cd40a8b29b085f3a13d83ec6b8046'\nprint(json.dumps({'archive_base64':base64.b64encode(data).decode(),'original_remaining_s':json.loads((base/'budget.json').read_text())['deadline_monotonic']-time.monotonic()}))\nPY\n"
+}

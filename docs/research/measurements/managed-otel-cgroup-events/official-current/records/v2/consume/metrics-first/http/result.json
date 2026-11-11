@@ -1,0 +1,69 @@
+{
+  "collector": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+  "collector_sha256": "14e254a6a0880d9b6f94487658e49fc9f3b0e14c62e82253be78da08e8c1ddd8",
+  "input": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/first.json",
+  "input_bytes": 17129,
+  "input_sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302",
+  "expected_resources": 4,
+  "expected_metrics": 32,
+  "expected_points": 76,
+  "names": [
+    "shards.cgroup.collection.error",
+    "shards.cgroup.collection.error.count",
+    "shards.cgroup.cpu.time",
+    "shards.cgroup.disk.io",
+    "shards.cgroup.limit.state",
+    "shards.cgroup.memory.events",
+    "shards.cgroup.memory.usage",
+    "shards.cgroup.task.count",
+    "shards.cgroup.task.events"
+  ],
+  "port": 39741,
+  "bounds": {
+    "collector": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+    "input": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/first.json",
+    "out": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/consume/metrics-first/http",
+    "collector_sha256": "14e254a6a0880d9b6f94487658e49fc9f3b0e14c62e82253be78da08e8c1ddd8",
+    "startup_seconds": 10.0,
+    "request_seconds": 10.0,
+    "cleanup_seconds": 15.0
+  },
+  "started_unix_ns": 1794372620378754334,
+  "http_passed": true,
+  "listeners": [
+    {
+      "protocol": "tcp",
+      "address": "0100007F",
+      "port": 39741,
+      "inode": "754901839"
+    }
+  ],
+  "status": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "Date": "Wed, 11 Nov 2026 04:50:20 GMT",
+    "Content-Length": "21",
+    "Connection": "close"
+  },
+  "cleanup_signals": [
+    15
+  ],
+  "collector_exit": 0,
+  "log_reader_joined": true,
+  "controller_fds": {
+    "before": 4,
+    "after": 4
+  },
+  "collector_named_metric_witness": {
+    "shards.cgroup.collection.error": true,
+    "shards.cgroup.collection.error.count": true,
+    "shards.cgroup.cpu.time": true,
+    "shards.cgroup.disk.io": true,
+    "shards.cgroup.limit.state": true,
+    "shards.cgroup.memory.events": true,
+    "shards.cgroup.memory.usage": true,
+    "shards.cgroup.task.count": true,
+    "shards.cgroup.task.events": true
+  },
+  "passed": true
+}

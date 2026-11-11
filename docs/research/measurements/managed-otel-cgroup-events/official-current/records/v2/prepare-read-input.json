@@ -1,0 +1,9 @@
+{
+  "on": "451397fcc585f7f7cb9aaf00e42064bb",
+  "needs": "linux/amd64,cpus=1,mem=256m,disk=1g",
+  "sync": false,
+  "cwd": "/tmp",
+  "timeout_s": 60,
+  "reuse": false,
+  "command": "python3 - <<'PY'\nfrom pathlib import Path\nimport base64,hashlib,json,time\nbase=Path('/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2');data=(base/'prepare-raw.tar.gz').read_bytes();assert len(data)==36795 and hashlib.sha256(data).hexdigest()=='c6a90c345d0db7e3dffe4b8fb0f39733ab9751b4e9abeb38de625e3b3bf63030'\nold=Path('/home/adalundhe/Projects/shards-managed-events-official-current-v1/source/oracle/go.sum').read_bytes();assert len(old)==5052 and hashlib.sha256(old).hexdigest()=='4adc4aa8e0c9e9709aa1d7154759a7381789e324a181149a007758ac7f20eb6a'\nprint(json.dumps({'archive_base64':base64.b64encode(data).decode(),'v1_go_sum_tool_appended_base64':base64.b64encode(old).decode(),'original_remaining_s':json.loads((base/'budget.json').read_text())['deadline_monotonic']-time.monotonic()}))\nPY\n"
+}

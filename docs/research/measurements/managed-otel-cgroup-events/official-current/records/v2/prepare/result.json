@@ -1,0 +1,801 @@
+{
+  "ROOT_source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "artifacts": {
+    "oracle": {
+      "bytes": 5684036,
+      "path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle",
+      "sha256": "ed6bf1b70098006ef36867d90e02745a33f1713285a3cf0d8c8133f91a6f6174"
+    },
+    "oracle-tests": {
+      "bytes": 6795989,
+      "path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle-tests",
+      "sha256": "066f328270f9a5f08ea893f8d70b4727c3032984e6e6b8e76d25094fb606a6c4"
+    },
+    "otelcol": {
+      "bytes": 180580512,
+      "path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol",
+      "sha256": "14e254a6a0880d9b6f94487658e49fc9f3b0e14c62e82253be78da08e8c1ddd8"
+    }
+  },
+  "base": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+  "budget": {
+    "cleanup_s": 15,
+    "cpus": 2,
+    "deadline_monotonic": 521576.782052556,
+    "disk_bytes": 4294967296,
+    "jobs": 2,
+    "memory_bytes": 2147483648,
+    "request_s": 10,
+    "startup_s": 10,
+    "timeout_s": 600
+  },
+  "build_environment": {
+    "GOAUTH": "off",
+    "GOCACHE": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gocache",
+    "GOENV": "off",
+    "GOFLAGS": "-mod=readonly",
+    "GOMAXPROCS": "2",
+    "GOMEMLIMIT": "2GiB",
+    "GOMODCACHE": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gomodcache",
+    "GONOPROXY": "",
+    "GONOSUMDB": "",
+    "GOPATH": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gopath",
+    "GOPRIVATE": "",
+    "GOPROXY": "https://proxy.golang.org",
+    "GOSUMDB": "sum.golang.org",
+    "GOTMPDIR": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tmp",
+    "GOTOOLCHAIN": "local",
+    "GOVCS": "*:off",
+    "GOWORK": "off",
+    "LANG": "en_US.UTF-8",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TMPDIR": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tmp",
+    "XDG_CACHE_HOME": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/xdg-cache",
+    "XDG_CONFIG_HOME": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/xdg-config"
+  },
+  "cases": [],
+  "collector_download": {
+    "archive": {
+      "bytes": 47698347,
+      "sha256": "78570dd4bd6570bc41eb327869ef913bbf91b87dd8170ebebbf43bec71f6370d"
+    },
+    "checksum": {
+      "bytes": 64,
+      "sha256": "b26b4931eb134e95d9f9182de894e63b0662c740572996f42d5d29d0d6ce590a"
+    },
+    "checksum_url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.165.0/otelcol_0.165.0_linux_amd64.tar.gz.sha256",
+    "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.165.0/otelcol_0.165.0_linux_amd64.tar.gz"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "version"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "go-version",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 442.96623201697366
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "env",
+        "-json",
+        "GOVERSION",
+        "GOROOT",
+        "GOCACHE",
+        "GOMODCACHE",
+        "GOAUTH",
+        "GOENV",
+        "GOTOOLCHAIN",
+        "GOPROXY",
+        "GOSUMDB"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "go-environment",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 442.96222218702314
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "mod",
+        "download",
+        "-json"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "module-download",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 442.95830796600785
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "mod",
+        "verify"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "module-verify",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 441.58976711001014
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "list",
+        "-m",
+        "-json",
+        "go.opentelemetry.io/collector/pdata"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "module-list",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 441.55723069497617
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/gofmt",
+        "-l",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle/main.go",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle/main_test.go"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "source-format",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 441.5533297879738
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "vet",
+        "-p",
+        "2",
+        "./..."
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "source-vet",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 441.54975884599844
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "build",
+        "-p",
+        "2",
+        "-o",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle",
+        "."
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "oracle-build",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 431.3076982470229
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "test",
+        "-p",
+        "2",
+        "-c",
+        "-o",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle-tests",
+        "."
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/source/oracle",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "oracle-test-build",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 429.6890719680232
+    },
+    {
+      "argv": [
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/oracle-tests",
+        "-test.list",
+        "."
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "oracle-list",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 426.91526540601626
+    },
+    {
+      "argv": [
+        "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+        "version",
+        "-m",
+        "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/tools/otelcol"
+      ],
+      "cwd": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2",
+      "direct_child_reaped": true,
+      "exit_code": 0,
+      "fd_after": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "fd_before": [
+        "0",
+        "1",
+        "2",
+        "3"
+      ],
+      "name": "collector-build-info",
+      "pidfd_exit_ready": true,
+      "source_after": {
+        "collector-http.py": {
+          "bytes": 6862,
+          "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+        },
+        "oracle/go.mod": {
+          "bytes": 486,
+          "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+        },
+        "oracle/go.sum": {
+          "bytes": 3691,
+          "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+        },
+        "oracle/main.go": {
+          "bytes": 8649,
+          "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+        },
+        "oracle/main_test.go": {
+          "bytes": 5300,
+          "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+        },
+        "oracle/upstream.json": {
+          "bytes": 1586,
+          "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+        }
+      },
+      "timeout_s": 423.86711570300395
+    }
+  ],
+  "environment": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64",
+    ""
+  ],
+  "fd_after": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_before": [
+    "0",
+    "1",
+    "2",
+    "3"
+  ],
+  "fd_sets_include_enumeration": true,
+  "go_binary": {
+    "bytes": 17164055,
+    "path": "/home/adalundhe/.gvm/gos/go1.27.2/bin/go",
+    "sha256": "548d3c32f83fa81152f543eb1526be7884cfe0526eb5e9ce29d3eca14786e7e0"
+  },
+  "inputs": {
+    "events/after-refusal.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/events/after-refusal.json",
+      "bytes": 17273,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/events/after-refusal.json",
+      "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+    },
+    "events/before.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/events/before.json",
+      "bytes": 17129,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/events/before.json",
+      "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+    },
+    "events/finite.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/events/finite.json",
+      "bytes": 17273,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/events/finite.json",
+      "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+    },
+    "joiner/joiner.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/joiner/joiner.json",
+      "bytes": 4112,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/joiner/joiner.json",
+      "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+    },
+    "joiner/provider.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/joiner/provider.json",
+      "bytes": 17135,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/joiner/provider.json",
+      "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+    },
+    "metrics/finite.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/metrics/finite.json",
+      "bytes": 17273,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/finite.json",
+      "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+    },
+    "metrics/first.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/metrics/first.json",
+      "bytes": 17129,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/first.json",
+      "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+    },
+    "metrics/second.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/metrics/second.json",
+      "bytes": 17129,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/second.json",
+      "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+    },
+    "metrics/unbounded.json": {
+      "ROOT_path": "/home/adalundhe/root-managed-events-a8ad1ce8718b-v1/metrics/unbounded.json",
+      "bytes": 17129,
+      "private_path": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/inputs/metrics/unbounded.json",
+      "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+    }
+  },
+  "listed_tests": [
+    "TestExactNumbersAndScope",
+    "TestGaugeDoubleAndSignedBoundary",
+    "TestOfficialParserVersusAddedSemanticChecks",
+    "TestRejectMalformedAndUnsupported",
+    "TestCallerBoundAndInputModes"
+  ],
+  "outcome": 0,
+  "phase": "prepare",
+  "retry": false,
+  "runtime_attempts": 0,
+  "source_after": {
+    "collector-http.py": {
+      "bytes": 6862,
+      "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+    },
+    "oracle/go.mod": {
+      "bytes": 486,
+      "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+    },
+    "oracle/go.sum": {
+      "bytes": 3691,
+      "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+    },
+    "oracle/main.go": {
+      "bytes": 8649,
+      "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+    },
+    "oracle/main_test.go": {
+      "bytes": 5300,
+      "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+    },
+    "oracle/upstream.json": {
+      "bytes": 1586,
+      "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+    }
+  },
+  "source_before": {
+    "collector-http.py": {
+      "bytes": 6862,
+      "sha256": "feff897fd072117d0f066797ac27e1b8e40ba0c98709b48bd8ed8828dd9c7931"
+    },
+    "oracle/go.mod": {
+      "bytes": 486,
+      "sha256": "244a158ab3df46213335e5e95e1ec7b790745dee596520e2721a032aef0a8312"
+    },
+    "oracle/go.sum": {
+      "bytes": 3691,
+      "sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087"
+    },
+    "oracle/main.go": {
+      "bytes": 8649,
+      "sha256": "f68d26fad446e8fe0a78517fbe9d7e8296775368da2b1bbf2829a3108925012d"
+    },
+    "oracle/main_test.go": {
+      "bytes": 5300,
+      "sha256": "cf2d9f451117ebad413caec8a716fb2f9db1512f06b47e4ee2a7e6092dc50195"
+    },
+    "oracle/upstream.json": {
+      "bytes": 1586,
+      "sha256": "fcbfaab8904b2706f4ff4f71abb70a9e9976b687e4050c90b8f4aa69cd9e7c0a"
+    }
+  }
+}

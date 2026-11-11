@@ -1,0 +1,10 @@
+{
+	"Path": "go.opentelemetry.io/collector/pdata",
+	"Version": "v1.71.0",
+	"Time": "2026-11-06T23:11:16Z",
+	"Dir": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gomodcache/go.opentelemetry.io/collector/pdata@v1.71.0",
+	"GoMod": "/home/adalundhe/Projects/shards-managed-events-official-current-v1-v2/gomodcache/cache/download/go.opentelemetry.io/collector/pdata/@v/v1.71.0.mod",
+	"GoVersion": "1.26.0",
+	"Sum": "h1:b2Ob4A/wPppiqLz7ut5gjGeWsqovIy7CNaoWADHc4GQ=",
+	"GoModSum": "h1:+NX4Fk1UXIAxYDCV/V5ei3OLdVvIFYKqCOphAr3Ga98="
+}

@@ -1,0 +1,178 @@
+{
+  "ROOT-completed.json": {
+    "bytes": 269,
+    "sha256": "109302476e90b35c1db5218f00ddc86fedaf4eaa84d5915e5b7a69c69b953833"
+  },
+  "go-version.stdout": {
+    "bytes": 32,
+    "sha256": "ed4307d760c597256afdc696a61d47d13e832615d7741ead11c64966a440b376"
+  },
+  "go-version.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "go-version.command.json": {
+    "bytes": 413,
+    "sha256": "b2b5508dadf5df3fca4ab5df7fd27318771d6c1f1c8173fd757f218b4156d8e5"
+  },
+  "go-environment.stdout": {
+    "bytes": 396,
+    "sha256": "c3090409f2749e52572cb6bba7e1f74d70819c59b545e04e1f865dffa692f3d7"
+  },
+  "go-environment.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "go-environment.command.json": {
+    "bytes": 566,
+    "sha256": "a17b8f363c1cd1aa688d03f9a7a34ea142012acc7c3a674e9766d31e6b4c3058"
+  },
+  "module-download.stdout": {
+    "bytes": 5797,
+    "sha256": "d4d7c40e69b9ae05833caef1718ae552ad9473def0e58755cb68460caed109e5"
+  },
+  "module-download.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "module-download.command.json": {
+    "bytes": 457,
+    "sha256": "e3d958fe0fd21a18801195b88b49bf9935ad379af1b13847f37ba453129c66c1"
+  },
+  "module-verify.stdout": {
+    "bytes": 21,
+    "sha256": "b4537ed75f533f993f371954de47e42a793b8e5b0587577de7e27fb3e50696bd"
+  },
+  "module-verify.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "module-verify.command.json": {
+    "bytes": 440,
+    "sha256": "7d5b108b475c23e0467be51191a158cc13409717e3361a092bb7426038d8d3a8"
+  },
+  "module-list.stdout": {
+    "bytes": 550,
+    "sha256": "93af639e94e18b95d2709d0e27279f856a17896f53ebcdf54d3763f82b9996c9"
+  },
+  "module-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "module-list.command.json": {
+    "bytes": 491,
+    "sha256": "42d21a9fc1888e25ef62a8529840102f87296241b28c5afed30e5b3f8abf2d59"
+  },
+  "source-format.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source-format.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source-format.command.json": {
+    "bytes": 616,
+    "sha256": "35aff6ee9184ca68e8dd5f1c4e4a6717339de3a1065fc9bce31311c3d9a1ce59"
+  },
+  "source-vet.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source-vet.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "source-vet.command.json": {
+    "bytes": 455,
+    "sha256": "2c5b7d9933c3178bbd57609383cf5eff60713a084c915a99b3c16f8c7ab967c0"
+  },
+  "oracle-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "oracle-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "oracle-build.command.json": {
+    "bytes": 554,
+    "sha256": "c89892c57569c82cf8220339401bd7b958c862c4422492943b5e1fa8fa3ad13c"
+  },
+  "oracle-test-build.stdout": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "oracle-test-build.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "oracle-test-build.command.json": {
+    "bytes": 574,
+    "sha256": "68d8bb4398567b07994d9abc276d2e1d70be5a80d6ad7541a27a7640de1a1ab8"
+  },
+  "oracle-list.stdout": {
+    "bytes": 165,
+    "sha256": "08a45ec75a3a62af35deee54bfb462164d3f43baf7f4ef0e1e6ee659a62c8e15"
+  },
+  "oracle-list.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "oracle-list.command.json": {
+    "bytes": 474,
+    "sha256": "4eb408e9d22ac14aa29e6befce92514ffd34fdca2fe490de965a2852995b05a7"
+  },
+  "collector-build-info.stdout": {
+    "bytes": 48808,
+    "sha256": "11d42e80ac56a90b71bbc465738c314d8912e580eead31bc65b3ff544ad7f0e3"
+  },
+  "collector-build-info.stderr": {
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "collector-build-info.command.json": {
+    "bytes": 524,
+    "sha256": "bdd7bcfdaaf9b310c8851b6dc7e036cbc43c9063d926fa88abf17e102aa3e7ad"
+  },
+  "result.json": {
+    "bytes": 25798,
+    "sha256": "52045c8752de318a0895066edb5223005f9e88f822866147178220033fa0701c"
+  },
+  "copied-inputs/metrics/first.json": {
+    "bytes": 17129,
+    "sha256": "3343eb3a9da61bd0cbbe7ad0a9a7bd766833dbd831218cd4f3e99138ef1f6302"
+  },
+  "copied-inputs/metrics/second.json": {
+    "bytes": 17129,
+    "sha256": "51f2d3b40f449ba1c1a25e0ef83b4285a24e432f2826cd169d2cc8b760914b61"
+  },
+  "copied-inputs/metrics/finite.json": {
+    "bytes": 17273,
+    "sha256": "e77733b26787e0ca6a1adfdeaa572e08707530701e6acc26a74a3421b42c84dc"
+  },
+  "copied-inputs/metrics/unbounded.json": {
+    "bytes": 17129,
+    "sha256": "5a536857f657e8bad7cee45108fdd24bf199a9428dd2729e4f6c3ab3ec718a03"
+  },
+  "copied-inputs/joiner/provider.json": {
+    "bytes": 17135,
+    "sha256": "f41f382d32d6552738e870471577f29d80f3422acddb5487ee5993e9938bb394"
+  },
+  "copied-inputs/joiner/joiner.json": {
+    "bytes": 4112,
+    "sha256": "f8d93cb9364d44dd902f86102011bc91b0a7365985350f3b3a09213dd60902ba"
+  },
+  "copied-inputs/events/before.json": {
+    "bytes": 17129,
+    "sha256": "45f8fce1045926a0b3a0a4c9a9a41d0c35003fde5099335b06929b9d7802a47e"
+  },
+  "copied-inputs/events/finite.json": {
+    "bytes": 17273,
+    "sha256": "0ef33411c2852b4147a9892d2f1a3a82fe3865ee9805983682e71c36bc47688b"
+  },
+  "copied-inputs/events/after-refusal.json": {
+    "bytes": 17273,
+    "sha256": "dfd3e6c0b27b1bf10b8295cef7a67df261d92c221df295b58a34e159954e3c38"
+  }
+}

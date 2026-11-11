@@ -1,0 +1,26 @@
+{
+  "original_sha256": "84a3ae9a5eff3702ce4dfca65ce3f3cb5e5cc9c96519f61d06ce1904b4d9e087",
+  "v1_tool_appended_sha256": "4adc4aa8e0c9e9709aa1d7154759a7381789e324a181149a007758ac7f20eb6a",
+  "removed_lines": [],
+  "added_lines": [
+    "github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=",
+    "github.com/google/gofuzz v1.0.0 h1:A8PeW59pxE9IoFRqBp37U+mSNaQoZ46F1f0f863XSXw=",
+    "github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=",
+    "github.com/stretchr/objx v0.1.0 h1:4G4v2dO3VZwixGIRoQ5Lfboy6nUhCyYzaqnIAPPhYs4=",
+    "golang.org/x/net v0.60.0 h1:79p50tfZlm0J9YfoDsSi639qSXNGVwEzOPLCxM2FsYU=",
+    "golang.org/x/net v0.60.0/go.mod h1:2DA/G1UfVbCpQPeWTmMPGY7Cs2PkBkwu743bVX5PIVg=",
+    "golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=",
+    "golang.org/x/sys v0.48.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=",
+    "golang.org/x/text v0.42.0 h1:JbOZXgfeCPU9gacVtYliJqOhD+zhrEqK4LfdpmlUZqI=",
+    "golang.org/x/text v0.42.0/go.mod h1:ojzP1Z+2QtioaF8DTtO8K5q7JWVVYwZKenzujK0Zd0E=",
+    "google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 h1:utmqiUzZAEINbLmRyAt1QjVkMyLQ+lvIwCpLaB1rZfw=",
+    "google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1/go.mod h1:4Hqkh8ycfw05ld/3BWL7rJOSfebL2Q+DVDeRgYgxUU8=",
+    "google.golang.org/grpc v1.85.0 h1:BPBCfuVRQ1qvBhKDOq9uvQllMvO59rKsYhXpp7Dd8vw=",
+    "google.golang.org/grpc v1.85.0/go.mod h1:0rQrOD58yjal/0EaVbGBANindixsCZNQPDV3VKtaKuQ=",
+    "gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=",
+    "gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM="
+  ],
+  "v2_original_source_unchanged": true,
+  "no_tidy_modfile_dependency_or_assertion_changes": true,
+  "precise_v1_responsible_command": "not isolated; bulk-prefetch/list explanation is an inference"
+}
