@@ -19,9 +19,6 @@ use crate::platform::{AsRawSocket, RawSocket, UnixStream};
 /// Receive buffer advertised per connection (`buf_alloc`), which bounds what we hold for
 /// a host socket that is not reading. Firecracker's CONN_TX_BUF_SIZE.
 pub const BUF_ALLOC: u32 = 64 * 1024;
-/// A credit update goes out once the guest's view of our free space falls below this.
-/// Firecracker's CONN_CREDIT_UPDATE_THRESHOLD.
-const CREDIT_UPDATE_THRESHOLD: u32 = 4 * 1024;
 /// How long the guest has to answer a request, and to finish a shutdown.
 /// Firecracker's CONN_REQUEST_TIMEOUT_MS and CONN_SHUTDOWN_TIMEOUT_MS.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -44,7 +41,10 @@ struct Pending {
     request: bool,
     shutdown: u32,
     rw: bool,
+    /// A credit update our forwarding owes the guest, unless a later packet carried it.
     credit_update: bool,
+    /// The answer to the guest's CREDIT_REQUEST, owed whatever it last heard.
+    credit_answer: bool,
 }
 
 pub struct Conn {
@@ -154,7 +154,7 @@ impl Conn {
 
     pub fn has_pending_rx(&self) -> bool {
         let p = self.pending;
-        p.rst || p.response || p.request || p.shutdown != 0 || p.rw || p.credit_update
+        p.rst || p.response || p.request || p.shutdown != 0 || p.rw || p.credit_update || p.credit_answer
     }
 
     pub fn expiry(&self) -> Option<Instant> {
@@ -244,10 +244,21 @@ impl Conn {
         (Wrapping(self.guest_buf_alloc) - (self.rx_cnt - self.guest_fwd_cnt)).0
     }
 
-    /// Whether the guest's view of our free buffer space has fallen below the threshold.
+    /// The most the guest may send us unacknowledged: our buffer, or its own where that is
+    /// less. Linux caps a socket's TX credit at its own buf_alloc
+    /// (net/vmw_vsock/virtio_transport_common.c `virtio_transport_tx_buf_size`, 8ee784fdf006,
+    /// in the pinned 6.18.48), so a guest may stop well inside the window we give it.
+    fn guest_window(&self) -> u32 {
+        BUF_ALLOC.min(self.guest_buf_alloc)
+    }
+
+    /// Whether to tell the guest what we have forwarded since it last heard: once that is
+    /// half the window it may use, a receiver's window update at Fr = 1/2 of its buffer
+    /// (RFC 1122 §4.2.3.3). It is then credited before it runs out, has the other half to
+    /// send while the update travels, and hears at most twice a window.
     fn guest_needs_credit(&self) -> bool {
-        let seen_free = Wrapping(BUF_ALLOC) - (self.fwd_cnt - self.last_fwd_cnt_to_guest);
-        seen_free.0 < CREDIT_UPDATE_THRESHOLD
+        let unseen = (self.fwd_cnt - self.last_fwd_cnt_to_guest).0;
+        unseen > 0 && unseen >= self.guest_window().div_ceil(2)
     }
 
     fn header(&mut self, op: u16) -> Header {
@@ -295,10 +306,13 @@ impl Conn {
         {
             return Some(h);
         }
-        if self.pending.credit_update {
+        if self.pending.credit_update || self.pending.credit_answer {
+            let asked = std::mem::take(&mut self.pending.credit_answer);
             self.pending.credit_update = false;
-            // A packet sent since it was queued may already have carried the credit.
-            if self.guest_needs_credit() {
+            // A packet sent since an update was queued may already have carried the credit;
+            // the guest's own request is answered whatever it last heard: "the reply to this
+            // query is a VIRTIO_VSOCK_OP_CREDIT_UPDATE packet" (virtio 1.3 §5.10.6.3).
+            if asked || self.guest_needs_credit() {
                 return Some(self.header(op::CREDIT_UPDATE));
             }
         }
@@ -389,7 +403,7 @@ impl Conn {
             }
             (op::CREDIT_UPDATE, _) => {}
             (op::CREDIT_REQUEST, Phase::Established | Phase::PeerInit) => {
-                self.pending.credit_update = true;
+                self.pending.credit_answer = true;
             }
             _ => debug!(
                 "vsock: dropping op {} for port {} in {:?}",
@@ -624,21 +638,65 @@ mod tests {
     fn guest_data_reaches_the_host_and_credit_flows_back() {
         let g = Guest::new();
         let (mut c, mut host) = established(&g, 256 * 1024);
-        let data: Vec<u8> = (0..60_000u32).map(|i| i as u8).collect();
+        // The guest may use our whole 64 KiB window: the update is owed at half of it.
+        let half = (BUF_ALLOC / 2) as usize;
+        let data: Vec<u8> = (0..half - 1).map(|i| i as u8).collect();
         g.mem.access().unwrap().write(BASE, &data).unwrap();
         let h = Guest::guest_header(op::RW, data.len() as u32, 256 * 1024, 0);
         c.on_guest_packet(&h, &[g.span(BASE, data.len())], &g.mem);
         assert_eq!(pump(&mut c, &mut host, data.len()), data);
-        // 60,000 forwarded: the guest sees 5,536 free, above the threshold.
+        // A byte short of half the window forwarded: nothing is owed yet.
         assert!(!c.has_pending_rx());
-        let more = Guest::guest_header(op::RW, 2000, 256 * 1024, 0);
-        c.on_guest_packet(&more, &[g.span(BASE, 2000)], &g.mem);
-        assert_eq!(pump(&mut c, &mut host, 2000).len(), 2000);
-        // 3,536 free as the guest sees it: a credit update is owed.
+        let more = Guest::guest_header(op::RW, 1, 256 * 1024, 0);
+        c.on_guest_packet(&more, &[g.span(BASE, 1)], &g.mem);
+        assert_eq!(pump(&mut c, &mut host, 1).len(), 1);
+        // Half the window forwarded: a credit update is owed.
         let upd = c.next_rx(&[g.span(BASE, 4096)]).unwrap();
         assert_eq!(
             (upd.op, upd.fwd_cnt, upd.buf_alloc),
-            (op::CREDIT_UPDATE, 62_000, BUF_ALLOC)
+            (op::CREDIT_UPDATE, half as u32, BUF_ALLOC)
+        );
+    }
+
+    /// A guest that may hold back less than our window is credited before it runs out.
+    /// Linux sends no more than the lesser of our buffer and its own unacknowledged
+    /// (virtio_transport_tx_buf_size, 8ee784fdf006; in the pinned 6.18.48), so a credit
+    /// owed only once our whole window is forwarded never comes and it waits for ever.
+    #[test]
+    fn a_guest_buffer_below_the_window_is_credited_before_it_is_used_up() {
+        let g = Guest::new();
+        let small: u32 = 16 * 1024;
+        let (mut c, mut host) = established(&g, small);
+        // The guest sends its whole buffer, then waits for credit.
+        g.mem
+            .access()
+            .unwrap()
+            .write(BASE, &vec![5u8; small as usize])
+            .unwrap();
+        let h = Guest::guest_header(op::RW, small, small, 0);
+        c.on_guest_packet(&h, &[g.span(BASE, small as usize)], &g.mem);
+        assert_eq!(pump(&mut c, &mut host, small as usize).len(), small as usize);
+        let owed = c.next_rx(&[g.span(BASE, 4096)]).map(|h| (h.op, h.fwd_cnt));
+        assert_eq!(
+            owed,
+            Some((op::CREDIT_UPDATE, small)),
+            "a guest whose buffer is used up waits for a credit update that never comes"
+        );
+    }
+
+    /// A guest's CREDIT_REQUEST is answered whatever it last heard: "the reply to this
+    /// query is a VIRTIO_VSOCK_OP_CREDIT_UPDATE packet" (virtio 1.3 §5.10.6.3).
+    #[test]
+    fn a_credit_request_is_answered() {
+        let g = Guest::new();
+        let (mut c, _host) = established(&g, 256 * 1024);
+        let ask = Guest::guest_header(op::CREDIT_REQUEST, 0, 256 * 1024, 0);
+        c.on_guest_packet(&ask, &[], &g.mem);
+        let answer = c.next_rx(&[g.span(BASE, 4096)]).map(|h| (h.op, h.buf_alloc));
+        assert_eq!(
+            answer,
+            Some((op::CREDIT_UPDATE, BUF_ALLOC)),
+            "a guest's credit request went unanswered"
         );
     }
 

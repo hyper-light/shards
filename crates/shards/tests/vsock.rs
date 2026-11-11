@@ -223,3 +223,57 @@ fn restored_copies_find_held_connections_closed() {
         echo(&sock, ECHO_PORT, salt, 1 << 20, None).unwrap();
     }
 }
+
+/// The port the test guest's `vsock_bench` serves on.
+const BENCH_PORT: u32 = 1240;
+
+/// A guest socket whose own vsock buffer is smaller than the device's window streams to the
+/// host whole. Linux sends no more than the lesser of the device's window and its own buffer
+/// unacknowledged (virtio_transport_tx_buf_size, 8ee784fdf006, in the pinned 6.18.48): the
+/// device must credit it before forwarding a whole window, or it waits for ever. The test
+/// guest's `T` measurement sends from a 16 KiB socket buffer, a quarter of the window.
+#[test]
+fn a_guest_socket_with_less_buffer_than_the_window_streams_whole() {
+    if cannot_run_vms() {
+        return;
+    }
+    let dir = TempDir::new("vsock-small");
+    let sock = dir.join("v.sock");
+    let mut vm = Vm::spawn(&os(&guest_args("vsock_bench", &sock)));
+    vm.wait_for("SHARDS-TEST READY", TIMEOUT);
+    within("a stream from a small guest buffer", STREAMING, &vm, move || {
+        let bytes = 1 << 20;
+        let mut s = bench_open(&sock, b'T', bytes);
+        // Whole in a moment once credited; a stall waits for credit that never comes.
+        s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+        let mut buf = vec![0u8; 64 << 10];
+        read_bytes(&mut s, &mut buf, bytes);
+        s.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut rest = Vec::new();
+        s.read_to_end(&mut rest).unwrap();
+        assert!(rest.is_empty(), "{} bytes past the stream", rest.len());
+    });
+}
+
+/// A connection to the test guest's `vsock_bench`, asking for `op` of `bytes` bytes.
+fn bench_open(sock: &Path, op: u8, bytes: u64) -> UnixStream {
+    let mut s = vsock_connect(sock, BENCH_PORT, TIMEOUT).unwrap();
+    let mut head = [0u8; 9];
+    head[0] = op;
+    head[1..].copy_from_slice(&bytes.to_le_bytes());
+    s.write_all(&head).unwrap();
+    s
+}
+
+/// Reads `bytes` bytes of `s` through `buf`, failing where a read waits past its timeout.
+fn read_bytes(s: &mut UnixStream, buf: &mut [u8], bytes: u64) {
+    let mut left = bytes;
+    while left > 0 {
+        let n = (buf.len() as u64).min(left) as usize;
+        let got = s
+            .read(&mut buf[..n])
+            .unwrap_or_else(|e| panic!("stalled with {left} of {bytes} bytes left: {e}"));
+        assert_ne!(got, 0, "the guest ended {left} bytes early");
+        left -= got as u64;
+    }
+}

@@ -25,6 +25,8 @@ pub fn main() {
             "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
+            // The vsock path's measurements (docs/research/measurements/vsock-path-v1).
+            "vsock_bench" => vsock_bench(),
             // Serves the echo alone, until stopped: shards-api's conformance suite.
             "echo" => vsock_listen(ECHO_PORT).and_then(|l| serve_echo(&l)),
             "vsock_snapshot" => vsock_snapshot(),
@@ -3670,6 +3672,173 @@ fn vsock() -> Result<(), String> {
     drop(host);
     let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
     serve_echo(&listener)
+}
+
+/// The port [`vsock_bench`] serves its measurements on.
+const BENCH_PORT: u32 = 1240;
+/// `T`'s guest socket buffer: a quarter of the VMM's 64 KiB window, so the guest may hold
+/// back less than the window while the VMM waits for more before crediting it.
+const SMALL_VSOCK_BUFFER: u64 = 16 << 10;
+
+/// Serves the vsock path's measurements (docs/research/measurements/vsock-path-v1), a
+/// thread a connection. Each connection names its measurement in its first byte and a byte
+/// count in the next eight (little-endian), then moves that many bytes: `E` echoes them,
+/// `K` takes them and answers the count, `S` sends them, `T` sends them from a socket whose
+/// own vsock buffer is [`SMALL_VSOCK_BUFFER`], each then ending its writes and waiting for
+/// the host's end.
+fn vsock_bench() -> Result<(), String> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let listener = vsock_listen(BENCH_PORT)?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST READY");
+    loop {
+        // SAFETY: accept(2) on our listening socket, without the peer address.
+        let fd = unsafe {
+            libc::accept4(
+                listener.as_raw_fd(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                libc::SOCK_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(format!("vsock accept: {}", io::Error::last_os_error()));
+        }
+        // SAFETY: a fresh descriptor nothing else owns.
+        let conn = unsafe { std::fs::File::from_raw_fd(fd) };
+        thread::Builder::new()
+            .name("bench".into())
+            .spawn(move || {
+                if let Err(e) = bench_connection(conn) {
+                    let _ = writeln!(io::stdout(), "vsock bench: {e}");
+                }
+            })
+            .map_err(|e| format!("a bench thread: {e}"))?;
+    }
+}
+
+fn bench_connection(mut conn: std::fs::File) -> Result<(), String> {
+    use std::io::Read as _;
+    let mut head = [0u8; 9];
+    conn.read_exact(&mut head)
+        .map_err(|e| format!("reading the measurement: {e}"))?;
+    let [op, count @ ..] = head;
+    let count = u64::from_le_bytes(count);
+    match op {
+        b'E' | b'K' | b'S' => bench_serve(op, count, &mut conn),
+        // A guest socket whose own buffer is smaller than the host's window: Linux sends no
+        // more than that buffer unacknowledged (virtio_transport_tx_buf_size, 8ee784fdf006).
+        b'T' => {
+            use std::os::fd::AsRawFd as _;
+            // include/uapi/linux/vm_sockets.h: SO_VM_SOCKETS_BUFFER_SIZE, a u64, at level AF_VSOCK.
+            const SO_VM_SOCKETS_BUFFER_SIZE: libc::c_int = 0;
+            let size: u64 = SMALL_VSOCK_BUFFER;
+            // SAFETY: setsockopt(2) of this connection's u64 option from a live local.
+            let rc = unsafe {
+                libc::setsockopt(
+                    conn.as_raw_fd(),
+                    libc::AF_VSOCK,
+                    SO_VM_SOCKETS_BUFFER_SIZE,
+                    (&raw const size).cast(),
+                    std::mem::size_of::<u64>() as libc::socklen_t,
+                )
+            };
+            if rc != 0 {
+                return Err(format!(
+                    "SO_VM_SOCKETS_BUFFER_SIZE: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            bench_serve(b'S', count, &mut conn)
+        }
+        other => Err(format!("no measurement {other}")),
+    }
+}
+
+/// One measurement's guest end on `conn`.
+fn bench_serve<C>(op: u8, count: u64, conn: &mut C) -> Result<(), String>
+where
+    C: io::Read + Write + std::os::fd::AsRawFd,
+{
+    let mut buf = vec![0x5au8; 64 << 10];
+    let mut left = count;
+    match op {
+        b'E' => {
+            while left > 0 {
+                let want = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+                let chunk = buf.get_mut(..want).ok_or("echo slice")?;
+                let n = conn.read(chunk).map_err(|e| format!("echo read: {e}"))?;
+                if n == 0 {
+                    return Err(format!("the host ended {left} bytes early"));
+                }
+                conn.write_all(chunk.get(..n).ok_or("echo slice")?)
+                    .map_err(|e| format!("echo write: {e}"))?;
+                left -= n as u64;
+            }
+        }
+        b'K' => {
+            while left > 0 {
+                let want = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+                let n = conn
+                    .read(buf.get_mut(..want).ok_or("sink slice")?)
+                    .map_err(|e| format!("sink read: {e}"))?;
+                if n == 0 {
+                    return Err(format!("the host ended {left} bytes early"));
+                }
+                left -= n as u64;
+            }
+            conn.write_all(&count.to_le_bytes())
+                .map_err(|e| format!("sink answer: {e}"))?;
+        }
+        b'S' => {
+            // Measurement diagnostics: where a stream stops, what the guest still holds
+            // unsent (SIOCOUTQ, vvs->bytes_unsent) says whether it waits for credit or for
+            // the device.
+            let written = std::sync::atomic::AtomicU64::new(0);
+            let done = std::sync::atomic::AtomicBool::new(false);
+            let fd = conn.as_raw_fd();
+            thread::scope(|scope| -> Result<(), String> {
+                scope.spawn(|| {
+                    let mut last = u64::MAX;
+                    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                        thread::sleep(Duration::from_secs(2));
+                        let now = written.load(std::sync::atomic::Ordering::Relaxed);
+                        if now == last {
+                            let mut unsent: libc::c_int = -1;
+                            // SAFETY: SIOCOUTQ (TIOCOUTQ) fills one int for this socket.
+                            let rc = unsafe { libc::ioctl(fd, libc::TIOCOUTQ, &raw mut unsent) };
+                            let _ = writeln!(
+                                io::stdout(),
+                                "vsock bench S: no progress at {now} bytes; unsent {unsent} (rc {rc})"
+                            );
+                        }
+                        last = now;
+                    }
+                });
+                let result = (|| {
+                    while left > 0 {
+                        let n = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+                        conn.write_all(buf.get(..n).ok_or("source slice")?)
+                            .map_err(|e| format!("source write: {e}"))?;
+                        left -= n as u64;
+                        written.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok::<(), String>(())
+                })();
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                result
+            })?;
+        }
+        other => return Err(format!("no measurement {other}")),
+    }
+    // SAFETY: shutdown(2) of the connection this measurement owns: no more writes.
+    unsafe { libc::shutdown(conn.as_raw_fd(), libc::SHUT_WR) };
+    // Until the host ends it, so that nothing it still sends is cut.
+    loop {
+        match conn.read(&mut buf) {
+            Ok(0) | Err(_) => return Ok(()),
+            Ok(_) => {}
+        }
+    }
 }
 
 /// Listens, asks for a snapshot, and serves the echo in every restored copy: its
