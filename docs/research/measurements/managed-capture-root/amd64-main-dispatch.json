@@ -1,0 +1,8 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "output": "hint: Using 'master' as the name for the initial branch. This default branch name\nhint: will change to \"main\" in Git 3.0. To configure the initial branch name\nhint: to use in all of your new repositories, which will suppress this warning,\nhint: call:\nhint:\nhint: \tgit config --global init.defaultBranch <name>\nhint:\nhint: Names commonly chosen instead of 'master' are 'main', 'trunk' and\nhint: 'development'. The just-created branch can be renamed via this command:\nhint:\nhint: \tgit branch -m <name>\nhint:\nhint: Disable this message with \"git config set advice.defaultBranchName false\"\nInitialized empty Git repository in /home/adalundhe/root-managed-capture-main-0c-source-v1/.git/\n",
+  "running": true,
+  "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+  "id": "r37",
+  "why": "linux/x86_64 \u00b7 21 of 32 cores idle \u00b7 95 GB free \u00b7 room for 4 CPUs, 16 GiB of memory, 64 GiB of disk \u00b7 I/O pressure 17%"
+}
