@@ -1,0 +1,56 @@
+# Final gates on the committed source: policy, fmt, clippy -D warnings (gnu, all targets), the whole suite (gnu), cargo check and clippy -D warnings (musl, zig 0.17.0; CLAUDE.md pins 0.16.0, not installed here).
+# command: L=/tmp/afs1-15.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; sha256sum crates/server/src/*.rs; touch crates/server/src/*.rs; <policy; fmt --check; clippy gnu -D warnings; cargo test gnu | grep -v ' ... ok$'>; echo "zig $(zig version) ..."; env CC_x86_64_unknown_linux_musl=$PWD/scripts/zig-cc AR_x86_64_unknown_linux_musl=$PWD/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 | grep -v '^    Checking \|^   Compiling '; <the same env> cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings | <same filter>; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# result: every gate exit 0; 44 passed. The musl lines' filter hid 'Checking shards-server', so 16 reruns the musl pair unfiltered.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: cf6ae51618d87ed0a2fe5a6e76a3aa998750232e2c4e3ad995013e3f51833755 (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 803 insertions(+), 62 deletions(-)
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+--- python3 scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+--- cargo fmt -p shards-server -- --check
+fmt_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.83s
+clippy_gnu_exit=0
+--- cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.55s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 44 tests
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+
+test_gnu_exit=0
+zig 0.17.0 (CLAUDE.md pins 0.16.0; not installed here)
+--- cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 (zig-cc/zig-ar, ZIG_TARGET=x86_64-linux-musl)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s
+check_musl_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings (same env)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.32s
+clippy_musl_exit=0
+
+# ---- 16: the musl pair again, unfiltered, after touching the sources ----
+# command: L=/tmp/afs1-16.log; { echo "HEAD=..."; sha256sum crates/server/src/*.rs; touch crates/server/src/*.rs; <the musl check and clippy of 15, unfiltered> } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: 95293a7f36fbea45e3032d60552ced846506ff1eb1f426539fe2bc0a9635db4d (verified identical)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+--- cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 (zig 0.17.0 via scripts/zig-cc, scripts/zig-ar; ZIG_TARGET=x86_64-linux-musl)
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+check_musl_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings (same env)
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.33s
+clippy_musl_exit=0

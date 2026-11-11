@@ -1,0 +1,51 @@
+# R09 red runs for the optional findings 5 and 6: new sandbox.rs tests against unmodified production code.
+# TRANSCRIPT: copied by hand from the kiln tool result before the sha256 check was adopted (one slip, 1.67s for 1.66s in 04, was found and corrected); not hash-verified. The same outcomes recur hash-verified in 06a-c, 17 (red symptoms under each mutant) and 18 (green).
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f plus test-only additions in crates/server/src/{broker,sandbox,server}.rs (production code unmodified; bff3015 + 03-red-state-tests.patch rebuilds the red state; at this run the server.rs test lacked only the later read.is_ok() assertion)
+# command:
+#   echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 --no-run 2>&1 | grep -v '^warning: aws-lc-sys' | tail -3; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 -- --nocapture a_programs_broker_results_keep_their_receipt a_worker_not_reaped_ends_no_other 2>&1 | grep -v '^warning: aws-lc-sys'; echo "exit=${PIPESTATUS[0]}"
+#
+# Run A (first version of a_worker_not_reaped_ends_no_other, without the failure-report pipe), raw:
+#   REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=true helper_code=3 helper_signal=0
+#   BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",null]")
+#   test result: FAILED. 0 passed; 2 failed; ... finished in 1.70s
+# Run A could not tell a failed reap from another early helper failure, so the test was amended to have
+# the forked helper write its HelperFailure text to a pipe (Run B, the definitive red below).
+#
+# Run B raw stdout+stderr:
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/server/src/broker.rs  | 158 ++++++++++++++++++++++++++
+ crates/server/src/sandbox.rs | 165 +++++++++++++++++++++++++++
+ crates/server/src/server.rs  | 258 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 581 insertions(+)
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.68s
+  Executable unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 2 tests
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",null]")
+
+thread 'sandbox::tests::a_programs_broker_results_keep_their_receipt' (3719183) panicked at crates/server/src/sandbox.rs:971:9:
+assertion `left == right` failed
+  left: Ok("[\"agent a may not send agent c requests\",null]")
+ right: Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... FAILED
+REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false second=[] control_closed_later=true worker_two_ended=true helper_exited=true helper_code=3 helper_signal=0 helper_failure="reaping a worker: Uncategorized, OS Some(10); 2 workers not known reaped, first 2: reaping a worker: Uncategorized, OS Some(10)"
+
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (3719184) panicked at crates/server/src/sandbox.rs:1117:9:
+the helper ended for one worker it could not reap
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+
+failures:
+
+failures:
+    sandbox::tests::a_programs_broker_results_keep_their_receipt
+    sandbox::tests::a_worker_not_reaped_ends_no_other
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.13s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+exit=101

@@ -1,0 +1,16 @@
+# Both fork tests' children non-dumpable (the new test's helper child too, inherited by its workers): 60 whole-suite runs, cores counted.
+# command: as 13, for 60 runs.
+# result: 0 of 60 failed, 0 new cores (before both changes: 3 failures in 104 runs and 2-3 cores per run).
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 38bef1208ce7c890d3694c8d95fb0b1c201a45b301f3f84795e1c5485cac0da0 (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 803 insertions(+), 62 deletions(-)
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+test-binary cores before: 438
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+full-suite runs failed: 0 of 60
+test-binary cores after: 438 (new: 0)

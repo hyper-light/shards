@@ -1,0 +1,75 @@
+# Final gate B: cargo check and clippy -D warnings for x86_64-unknown-linux-musl (shards-server's production target), C built through scripts/zig-cc and scripts/zig-ar as scripts/lint does.
+# NOTE: ran on an intermediate source; superseded by 15-final-gates.log and 18-final-green-after-restore.log on the committed source.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# toolchain note: the runner's zig is 0.17.0; CLAUDE.md pins 0.16.0 (scripts/install-zig), which is not installed there and was not installed (task limit). Both passed with 0.17.0; the pinned-zig musl build remains unverified.
+# command:
+#   L=/tmp/afs1-08b.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; echo "zig $(zig version) at $(command -v zig) (CLAUDE.md pins 0.16.0; none installed here)"; rustup target list --installed | grep musl; echo "--- cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 (CC/AR via scripts/zig-cc, scripts/zig-ar; ZIG_TARGET=x86_64-linux-musl, as scripts/lint sets them)"; env CC_x86_64_unknown_linux_musl=$PWD/scripts/zig-cc AR_x86_64_unknown_linux_musl=$PWD/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 2>&1 | grep -v '^warning: aws-lc-sys'; echo "check_musl_exit=${PIPESTATUS[0]}"; echo "--- cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings (same env)"; env CC_x86_64_unknown_linux_musl=$PWD/scripts/zig-cc AR_x86_64_unknown_linux_musl=$PWD/scripts/zig-ar ZIG_TARGET=x86_64-linux-musl cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings 2>&1 | grep -v '^warning: aws-lc-sys'; echo "clippy_musl_exit=${PIPESTATUS[0]}"; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: 271ed745dbd1dce0738332443ac0fa6a7ba96c174e32536646efdb4812069fa6 (this copy verified identical)
+# result: check musl 0, clippy musl 0
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 787 insertions(+), 59 deletions(-)
+zig 0.17.0 at /home/adalundhe/.local/bin/zig (CLAUDE.md pins 0.16.0; none installed here)
+aarch64-unknown-linux-musl
+x86_64-unknown-linux-musl
+--- cargo check -p shards-server --target x86_64-unknown-linux-musl -j2 (CC/AR via scripts/zig-cc, scripts/zig-ar; ZIG_TARGET=x86_64-linux-musl, as scripts/lint sets them)
+   Compiling aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-sys)
+    Checking zeroize v1.9.0
+   Compiling rquickjs-sys v0.14.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/rquickjs-sys)
+    Checking rustls-pki-types v1.15.1
+    Checking num-conv v0.2.2
+    Checking powerfmt v0.2.0
+    Checking time-core v0.1.9
+    Checking allocator-api2 v0.2.21
+    Checking foldhash v0.2.0
+    Checking deranged v0.5.8
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.17.1
+    Checking time v0.3.55
+    Checking untrusted v0.9.0
+    Checking base64 v0.23.1
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking yasna v0.6.0
+   Compiling libc v0.2.189
+    Checking subtle v2.6.1
+    Checking once_cell v1.21.4
+    Checking rquickjs v0.14.0
+   Compiling aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-rs)
+   Compiling rustls v0.23.46
+    Checking rustls-webpki v0.103.16
+    Checking rcgen v0.14.10
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 49.37s
+check_musl_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-musl -j2 --all-targets -- -D warnings (same env)
+    Checking zeroize v1.9.0
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-sys)
+    Checking rustls-pki-types v1.15.1
+    Checking deranged v0.5.8
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-rs)
+    Checking time-core v0.1.9
+    Checking num-conv v0.2.2
+    Checking foldhash v0.2.0
+    Checking powerfmt v0.2.0
+    Checking allocator-api2 v0.2.21
+    Checking equivalent v1.0.2
+    Checking hashbrown v0.17.1
+    Checking time v0.3.55
+    Checking rquickjs-sys v0.14.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/rquickjs-sys)
+    Checking base64 v0.23.1
+    Checking untrusted v0.9.0
+    Checking yasna v0.6.0
+    Checking rustls-webpki v0.103.16
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking libc v0.2.189
+    Checking subtle v2.6.1
+    Checking once_cell v1.21.4
+    Checking rustls v0.23.46
+    Checking rquickjs v0.14.0
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/testdir)
+    Checking rcgen v0.14.10
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.79s
+clippy_musl_exit=0

@@ -1,0 +1,99 @@
+# Green run: the new tests and the whole shards-server crate with all six fixes applied.
+# TRANSCRIPT: copied by hand from the kiln tool result before the sha256 check was adopted (one slip, 1.67s for 1.66s in 04, was found and corrected); not hash-verified. The same outcomes recur hash-verified in 06a-c, 17 (red symptoms under each mutant) and 18 (green).
+# NOTE: ran before rustfmt line-wrapping and the later refinements; 18-final-green-after-restore.log is the committed source's green.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f + the fix and test diff before rustfmt line-wrapping (05-fmt-clippy.log); 08a-final-gate-gnu.log reruns all 44 tests on the final, committed source
+# command:
+#   echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 --no-run 2>&1 | grep -v '^warning: aws-lc-sys' | tail -30; echo "--- new tests"; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 -- --nocapture a_program_answers_a_request_that_closes_its_connection a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can a_gone_clients_program_is_stopped_though_the_helper_was_full a_refusal_without_storage_says_it_was_refused a_small_hand_reserves_what_its_file_holds a_file_longer_than_its_size_says_is_handed_as_before a_programs_broker_results_keep_their_receipt a_worker_not_reaped_ends_no_other 2>&1 | grep -v '^warning: aws-lc-sys'; echo "exit=${PIPESTATUS[0]}"; echo "--- whole crate"; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 2>&1 | grep -v '^warning: aws-lc-sys'; echo "exit=${PIPESTATUS[0]}"
+# raw stdout+stderr:
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/server/src/broker.rs  | 254 ++++++++++++++++++++++++++----
+ crates/server/src/sandbox.rs | 190 ++++++++++++++++++++++-
+ crates/server/src/server.rs  | 361 ++++++++++++++++++++++++++++++++++++++++---
+ 3 files changed, 746 insertions(+), 59 deletions(-)
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.83s
+  Executable unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+--- new tests
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 8 tests
+REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some("refused") effect=Some("not_started") reply={"error":"refused before any effect; its response is unavailable","broker":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Program path=display_refusal literal=true outcome=Some("refused") effect=Some("not_started") reply={"error":"refused before any effect; its response is unavailable","broker":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Mcp path=refused literal=true outcome=Some("refused") effect=Some("not_started") reply={"content":[{"type":"text","text":"refused before any effect; its response is unavailable"}],"isError":true,"structuredContent":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+REFUSAL_FALLBACK format=Mcp path=display_refusal literal=true outcome=Some("refused") effect=Some("not_started") reply={"content":[{"type":"text","text":"refused before any effect; its response is unavailable"}],"isError":true,"structuredContent":{"outcome":"refused","effect":{"kind":"not_started"},"cause":{"kind":"response_capacity"}}}
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+HAND_GROWN limit=212943 outcome=Completed effect=KernelAccepted { bytes: 1593 }
+HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=16 capacity_after_read=27
+HAND_GROWN limit=16 outcome=Failed(Refusal { phase: Executing, reason: TooLong }) effect=NotStarted
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+BROKER_RECEIPT thrown=Ok("[\"agent a may not send agent c requests\",{\"principal\":\"agent a\",\"peer\":\"agent c\",\"operation\":null,\"request\":null,\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"phase\":\"validated\",\"cause\":{\"kind\":\"grant\"}}]")
+BROKER_RECEIPT returned=Ok("[{\"id\":1},{\"principal\":\"agent a\",\"peer\":\"agent b\",\"operation\":\"send\",\"request\":1,\"outcome\":\"completed\",\"effect\":{\"kind\":\"kernel_accepted\",\"bytes\":10},\"phase\":\"terminal\",\"cause\":null}]")
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[1]
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+CONNECTION_CLOSE program=1 program_frame_read=true worker_done_written=true client_read=Ok(162) answer_bytes=162 stops=[]
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[1] answered_ended=true
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+REAP_UNKNOWN first=[(1, 0, 10)] control_closed=false worker_two_ran_on=true second=[(2, 0, 10)] control_closed_later=false worker_two_ended=true helper_exited=true helper_code=0 helper_signal=0 helper_failure=""
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 1.18s
+
+exit=0
+--- whole crate
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 44 tests
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test sandbox::tests::frames_are_read_whole_and_within_their_bound ... ok
+test server::json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test server::tests::a_peers_file_is_heard_as_granted ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::base64_is_rfc_4648s ... ok
+test server::tests::a_peer_is_heard_only_as_granted ... ok
+test server::tests::strings_are_quoted_as_json_writes_them ... ok
+test server::tests::an_unusable_helper_control_is_not_admitted ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test server::tests::a_cancellation_names_a_request_in_its_own_session ... ok
+test server::tests::what_the_current_revision_refuses ... ok
+test server::tests::requests_past_their_bounds_are_refused ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::initialize_begins_a_session ... ok
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::the_current_revision_is_answered_request_by_request ... ok
+test server::tests::only_a_regular_file_of_the_scratch_is_handed ... ok
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test server::tests::an_instance_answers_its_own_caller_alone ... ok
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+test sandbox::tests::the_call_beneath_the_tools_is_out_of_reach ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+exit=0

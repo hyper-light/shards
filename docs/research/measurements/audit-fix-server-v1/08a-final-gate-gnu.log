@@ -1,0 +1,74 @@
+# Final gate A: policy check, fmt, clippy -D warnings (x86_64-unknown-linux-gnu, all targets) and the whole shards-server test suite, after every mutant was restored (sources touched so cargo rebuilds them).
+# NOTE: ran on an intermediate source; superseded by 15-final-gates.log and 18-final-green-after-restore.log on the committed source.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1; rustfmt 1.9.0-stable
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f + the fixed, formatted diff (identical to the branch's fix commit)
+# command:
+#   L=/tmp/afs1-08a.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; touch crates/server/src/*.rs; echo "--- python3 scripts/check-development-policy"; python3 scripts/check-development-policy 2>&1; echo "policy_exit=$?"; echo "--- cargo fmt -p shards-server -- --check"; cargo fmt -p shards-server -- --check 2>&1; echo "fmt_exit=$?"; echo "--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings"; cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings 2>&1 | grep -v '^warning: aws-lc-sys'; echo "clippy_gnu_exit=${PIPESTATUS[0]}"; echo "--- cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2"; cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 2>&1 | grep -v '^warning: aws-lc-sys'; echo "test_gnu_exit=${PIPESTATUS[0]}"; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: cfe469ec896a2ece203dcd3bf7cab2723f8fba9c74a4ec378c84dad1b82babe7 (this copy verified identical)
+# result: policy 0, fmt 0, clippy gnu 0, tests 44 passed / 0 failed
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 787 insertions(+), 59 deletions(-)
+--- python3 scripts/check-development-policy
+Development policy checks passed; evidence/coordinator review is still required.
+policy_exit=0
+--- cargo fmt -p shards-server -- --check
+fmt_exit=0
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.61s
+clippy_gnu_exit=0
+--- cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.73s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 44 tests
+test broker::tests::a_refusal_without_storage_says_it_was_refused ... ok
+test broker::tests::broker_rejects_bad_arguments_ownership_and_exhausted_identity_before_send ... ok
+test broker::tests::broker_completion_consumes_only_the_owned_request_once ... ok
+test broker::tests::broker_local_send_failure_preserves_cause_without_reusing_identity ... ok
+test broker::tests::a_small_hand_reserves_what_its_file_holds ... ok
+test broker::tests::broker_required_durable_refuses_before_opening_or_sending ... ok
+test broker::tests::broker_reservation_precedes_actual_send_and_retains_local_receipt ... ok
+test broker::tests::a_file_longer_than_its_size_says_is_handed_as_before ... ok
+test sandbox::tests::frames_are_read_whole_and_within_their_bound ... ok
+test server::json::tests::reads_what_rfc_8259_writes_and_no_more ... ok
+test server::tests::a_peers_file_is_heard_as_granted ... ok
+test broker::tests::broker_prebuilt_error_capacity_covers_actual_escaped_completion ... ok
+test server::tests::a_program_is_reserved_before_its_helper_receives_authority ... ok
+test server::tests::a_refused_native_release_does_not_reuse_its_issued_identity ... ok
+test server::tests::a_typed_program_refusal_formats_without_requesting_storage ... ok
+test server::tests::an_exhausted_program_identity_cannot_release_another_worker ... ok
+test server::tests::an_expired_program_is_refused_before_native_release ... ok
+test server::tests::an_unusable_helper_control_is_not_admitted ... ok
+test server::tests::base64_is_rfc_4648s ... ok
+test server::tests::each_refused_program_allocation_precedes_native_worker_release ... ok
+test server::tests::strings_are_quoted_as_json_writes_them ... ok
+test server::tests::a_programs_call_is_its_callers ... ok
+test sandbox::tests::the_call_beneath_the_tools_is_out_of_reach ... ok
+test server::tests::the_current_revision_is_answered_request_by_request ... ok
+test server::tests::requests_past_their_bounds_are_refused ... ok
+test server::tests::broker_exhausted_caller_identity_refuses_before_packet ... ok
+test server::tests::a_cancellation_names_a_request_in_its_own_session ... ok
+test server::tests::earlier_revisions_and_what_every_revision_refuses ... ok
+test server::tests::headers_that_differ_from_their_body_are_refused ... ok
+test server::tests::broker_http_and_program_callers_share_the_actual_peer_admission ... ok
+test server::tests::a_peer_is_heard_only_as_granted ... ok
+test server::tests::initialize_begins_a_session ... ok
+test server::tests::only_a_regular_file_of_the_scratch_is_handed ... ok
+test server::tests::what_the_current_revision_refuses ... ok
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... ok
+test sandbox::tests::what_a_program_came_to ... ok
+test server::tests::an_instance_answers_its_own_caller_alone ... ok
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... ok
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... ok
+test sandbox::tests::a_program_calls_its_tools_over_its_socket ... ok
+test sandbox::tests::a_programs_broker_results_keep_their_receipt ... ok
+test sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses ... ok
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... ok
+test sandbox::tests::a_refused_call_is_thrown ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.27s
+
+test_gnu_exit=0

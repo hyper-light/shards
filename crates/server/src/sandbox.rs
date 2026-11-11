@@ -37,6 +37,11 @@ pub const RUN: u8 = b'R';
 pub const STOP: u8 = b'S';
 pub const ENDED: u8 = b'E';
 
+/// ENDED's code for a worker that ended, as its pidfd said, whose status waitid did not give
+/// (the kernel reaped it, SIGCHLD ignored): none of waitid's (`CLD_*`, 1 to 6, include/uapi/
+/// asm-generic/siginfo.h) nor creation refusal's -1. Its status is waitid's errno, or 0.
+pub const END_UNKNOWN: i32 = 0;
+
 /// The most a frame holds: what its length, a big-endian u32, says at most. A worker's
 /// frames, its calls and its value, are held as they come, as a request's body is
 /// (`server::HEAD_MAX`): the worker is its instance's child, in its caller's domain, whose
@@ -50,12 +55,19 @@ pub const CONTROL_FD: RawFd = 3;
 
 /// What the program runs in: `shards`, its tools, each an async function that asks the
 /// instance and throws what it refuses; the native call it is made of taken out of reach.
+/// A broker tool's typed receipt is the cause of what it throws, and, not enumerable, so
+/// that the value's JSON is as declared, the `broker` of what it returns.
 const PRELUDE: &str = r#"const shards = (() => {
   const call = globalThis.__call;
   delete globalThis.__call;
   const tool = (name, args) => {
     const r = JSON.parse(call(name, JSON.stringify(args)));
-    if (r.error !== undefined) throw new Error(r.error);
+    if (r.error !== undefined) {
+      throw r.broker === undefined ? new Error(r.error) : new Error(r.error, { cause: r.broker });
+    }
+    if (r.broker !== undefined && typeof r.value === "object" && r.value !== null) {
+      Object.defineProperty(r.value, "broker", { value: r.broker });
+    }
     return r.value;
   };
   return Object.freeze({
@@ -569,10 +581,13 @@ fn serve_helper() -> Result<(), HelperFailure> {
                     continue;
                 }
                 let w = workers.get(i).ok_or(HelperCause::Control)?;
-                let (code, status) = w
-                    .reap(0)
-                    .map_err(|e| HelperCause::io("reaping a worker", e))?
-                    .ok_or(HelperCause::Control)?;
+                // Its pidfd says it ended. Where waitid gives no status of it, it is said to
+                // have ended unknown and is waited for no more; the others are served on.
+                let (code, status) = match w.reap(0) {
+                    Ok(Some(ended)) => ended,
+                    Ok(None) => (END_UNKNOWN, 0),
+                    Err(e) => (END_UNKNOWN, e.raw_os_error().unwrap_or(0)),
+                };
                 // get(i) above checked this index; no mutation intervened.
                 let w = workers.swap_remove(i);
                 Worker::said(control, w.id, code, status)?;
@@ -887,6 +902,7 @@ fn described<'js>(ctx: &rquickjs::Ctx<'js>, caught: rquickjs::CaughtError<'js>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read as _;
     use std::os::unix::net::UnixStream;
 
     /// `source` run as a worker runs it, the instance's side played by `answer`, which
@@ -955,6 +971,192 @@ return { me, sent };"#,
         assert_eq!(calls.len(), 1);
         assert!(calls.first() == Some(&expected), "the large call arrived changed");
         assert_eq!(came, Ok(r#"{"id":1}"#.to_string()));
+    }
+
+    /// A broker tool's typed receipt reaches the program: on the Error it throws, as its
+    /// cause, and on the value it returns.
+    #[test]
+    fn a_programs_broker_results_keep_their_receipt() {
+        let refused = r#"{"principal":"agent a","peer":"agent c","operation":null,"request":null,"outcome":"refused","effect":{"kind":"not_started"},"phase":"validated","cause":{"kind":"grant"}}"#;
+        let (_, came) = ran(
+            r#"try { await shards.send("agent c", "x"); } catch (e) { return [e.message, e.cause ?? null]; }"#,
+            |_| format!(r#"{{"error":"agent a may not send agent c requests","broker":{refused}}}"#),
+        );
+        eprintln!("BROKER_RECEIPT thrown={came:?}");
+        assert_eq!(
+            came,
+            Ok(format!(r#"["agent a may not send agent c requests",{refused}]"#))
+        );
+        let sent = r#"{"principal":"agent a","peer":"agent b","operation":"send","request":1,"outcome":"completed","effect":{"kind":"kernel_accepted","bytes":10},"phase":"terminal","cause":null}"#;
+        let (_, came) = ran(
+            r#"const v = await shards.send("agent b", "x"); return [v, v.broker ?? null];"#,
+            |_| format!(r#"{{"value":{{"id":1}},"broker":{sent}}}"#),
+        );
+        eprintln!("BROKER_RECEIPT returned={came:?}");
+        assert_eq!(came, Ok(format!(r#"[{{"id":1}},{sent}]"#)));
+    }
+
+    /// Whether `fd` is readable within `ms` milliseconds.
+    fn readable(fd: &OwnedFd, ms: i32) -> bool {
+        let mut p = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: poll(2) of one pollfd of ours.
+        unsafe { libc::poll(&raw mut p, 1, ms) == 1 }
+    }
+
+    /// A control message naming program `id`: its kind, and the ID.
+    fn naming(kind: u8, id: u64) -> Vec<u8> {
+        [&[kind][..], &id.to_be_bytes()].concat()
+    }
+
+    /// The helper's ENDED messages within five seconds, until one names `id`: each one's ID,
+    /// code and status; and whether its control socket closed meanwhile.
+    fn ended_until(instance: &OwnedFd, id: u64) -> (Vec<(u64, i32, i32)>, bool) {
+        let mut ended = Vec::new();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ended.iter().any(|(e, _, _)| *e == id) && std::time::Instant::now() < until {
+            if !readable(instance, 100) {
+                continue;
+            }
+            match recv_control(instance.as_raw_fd()) {
+                Ok(Some((msg, _))) if msg.first() == Some(&ENDED) => ended.push((
+                    u64::from_be_bytes(msg[1..9].try_into().unwrap()),
+                    i32::from_be_bytes(msg[9..13].try_into().unwrap()),
+                    i32::from_be_bytes(msg[13..17].try_into().unwrap()),
+                )),
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) => return (ended, true),
+            }
+        }
+        (ended, false)
+    }
+
+    /// Whether `socket`'s other end is still open: nothing to read, and no end, for `ms`.
+    fn open_for(socket: &UnixStream, ms: u64) -> bool {
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_millis(ms)))
+            .unwrap();
+        matches!((&*socket).read(&mut [0u8; 1]), Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut))
+    }
+
+    /// One worker the helper cannot reap ends no other. Run as the helper is, but ignoring
+    /// SIGCHLD, so that the kernel reaps each worker as it ends and no waitid finds it, the
+    /// helper says the one that ended did and serves on: the worker it still runs runs on,
+    /// and ends when stopped.
+    #[test]
+    fn a_worker_not_reaped_ends_no_other() {
+        let mut fds = [0 as RawFd; 2];
+        // SAFETY: socketpair(2) into a two-element array.
+        let rc = unsafe {
+            libc::socketpair(
+                libc::AF_UNIX,
+                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                0,
+                fds.as_mut_ptr(),
+            )
+        };
+        assert_eq!(rc, 0);
+        // SAFETY: both were just made, and are owned here alone.
+        let (instance, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let mut pipe = [0 as RawFd; 2];
+        // SAFETY: pipe2(2) into a two-element array.
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+        // SAFETY: both were just made, and are owned here alone.
+        let (said, report) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
+        // SAFETY: fork(2) of the test process. The child moves its end of the control socket
+        // to CONTROL_FD and the pipe's to the next, closes every other descriptor it inherited,
+        // ignores SIGCHLD, serves as the helper (glibc's fork leaves malloc usable in the
+        // child), writes why the helper failed if it did, and _exits, returning into no test.
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            // SAFETY: as above, in the child alone.
+            unsafe {
+                let control = libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64);
+                let out = libc::fcntl(report.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64);
+                if control < 0
+                    || out < 0
+                    || libc::dup2(control, CONTROL_FD) != CONTROL_FD
+                    || libc::dup2(out, CONTROL_FD + 1) != CONTROL_FD + 1
+                {
+                    libc::_exit(2);
+                }
+                libc::syscall(libc::SYS_close_range, CONTROL_FD + 2, u32::MAX, 0);
+                libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+                // Nor its workers dump a core: a dump holds the dying worker's end, and with
+                // it its ENDED, for seconds (systemd-coredump). A debug build's worker 1 ends
+                // by SIGSYS, OwnedFd's debug check of its socket being an fcntl(2) its filter
+                // refuses; a release build's exits.
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+                let code = match serve_helper() {
+                    Ok(()) => 0,
+                    Err(why) => {
+                        let why = why.to_string();
+                        libc::write(CONTROL_FD + 1, why.as_ptr().cast(), why.len());
+                        3
+                    }
+                };
+                libc::_exit(code);
+            }
+        }
+        drop(theirs);
+        drop(report);
+        // Program 2's worker waits for the program its socket never brings.
+        let (two, two_worker) = UnixStream::pair().unwrap();
+        send_control(
+            instance.as_raw_fd(),
+            &naming(RUN, 2),
+            Some(two_worker.as_raw_fd()),
+        )
+        .unwrap();
+        drop(two_worker);
+        // Program 1's worker finds its socket's end at once, and exits.
+        let (one, one_worker) = UnixStream::pair().unwrap();
+        drop(one);
+        send_control(
+            instance.as_raw_fd(),
+            &naming(RUN, 1),
+            Some(one_worker.as_raw_fd()),
+        )
+        .unwrap();
+        drop(one_worker);
+        let (first, closed) = ended_until(&instance, 1);
+        let two_ran_on = open_for(&two, 300);
+        let (second, closed_later) = if closed {
+            (Vec::new(), true)
+        } else {
+            let _ = send_control(instance.as_raw_fd(), &naming(STOP, 2), None);
+            ended_until(&instance, 2)
+        };
+        let two_ended = !open_for(&two, 1000);
+        drop(instance);
+        let mut status = 0;
+        // SAFETY: waitpid(2) of the child forked above.
+        assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+        let mut why = String::new();
+        std::fs::File::from(said).read_to_string(&mut why).unwrap();
+        eprintln!(
+            "REAP_UNKNOWN first={first:?} control_closed={closed} worker_two_ran_on={two_ran_on} second={second:?} control_closed_later={closed_later} worker_two_ended={two_ended} helper_exited={} helper_code={} helper_signal={} helper_failure={why:?}",
+            libc::WIFEXITED(status),
+            libc::WEXITSTATUS(status),
+            if libc::WIFSIGNALED(status) {
+                libc::WTERMSIG(status)
+            } else {
+                0
+            }
+        );
+        assert!(!closed, "the helper ended for one worker it could not reap");
+        assert!(first.iter().any(|(id, _, _)| *id == 1), "{first:?}");
+        assert!(two_ran_on, "the other worker was ended with it");
+        assert!(second.iter().any(|(id, _, _)| *id == 2), "{second:?}");
+        assert!(two_ended);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{status:#x}"
+        );
     }
 
     /// The native call `shards` is made of is out of the program's reach, and `shards`
@@ -1030,6 +1232,11 @@ return [typeof __call, typeof globalThis.__call, Object.isFrozen(shards), change
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0);
             if pid == 0 {
+                // No core of it: dumped as SIGSYS ends it (seconds, through systemd-coredump),
+                // it would hold every descriptor this test process had open, other tests'
+                // sockets too, past their ends.
+                // SAFETY: prctl(2) with constant arguments.
+                unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
                 let code = if confine(&filter).is_ok() {
                     call();
                     0

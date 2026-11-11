@@ -1,0 +1,620 @@
+diff --git a/crates/server/src/broker.rs b/crates/server/src/broker.rs
+index aaecd8f64..8407adec2 100644
+--- a/crates/server/src/broker.rs
++++ b/crates/server/src/broker.rs
+@@ -1217,6 +1217,164 @@ mod tests {
+         assert!(!tmp.join("does-not-exist").exists());
+     }
+ 
++    /// A refusal is made before any effect: one whose answer finds no storage still says it
++    /// was refused, no effect begun, as the run tool's refusals do.
++    #[test]
++    fn a_refusal_without_storage_says_it_was_refused() {
++        let refusal = Refusal::at(Phase::Validated, Reason::Grant);
++        for format in [Format::Program, Format::Mcp] {
++            // Each one's first allocation refused: that of its answer.
++            let (refused, _) = crate::program_admission_allocation::during(1, || {
++                format.refused(refusal, "agent caller", "agent peer")
++            });
++            let (displayed, _) = crate::program_admission_allocation::during(1, || {
++                format.display_refusal(format_args!("code mode is not available here"))
++            });
++            for (path, reply) in [("refused", refused), ("display_refusal", displayed)] {
++                let literal = matches!(reply, Reply::Literal(_));
++                let json = parse_args(reply.as_bytes());
++                let metadata = json
++                    .get(match format {
++                        Format::Program => "broker",
++                        Format::Mcp => "structuredContent",
++                    })
++                    .unwrap();
++                let outcome = metadata.get("outcome").and_then(Value::str);
++                let effect = metadata
++                    .get("effect")
++                    .and_then(|e| e.get("kind"))
++                    .and_then(Value::str);
++                eprintln!(
++                    "REFUSAL_FALLBACK format={format:?} path={path} literal={literal} outcome={outcome:?} effect={effect:?} reply={}",
++                    reply.as_str()
++                );
++                assert!(literal, "{path}: {reply}");
++                assert_eq!(outcome, Some("refused"), "{path}: {reply}");
++                assert_eq!(effect, Some("not_started"), "{path}: {reply}");
++            }
++        }
++    }
++
++    /// What one message on `fd` holds, as the instance reads it (`server::message_most`):
++    /// its SO_SNDBUF less the 32 bytes the kernel keeps of it.
++    fn channel_most(fd: &OwnedFd) -> usize {
++        let mut size: libc::c_int = 0;
++        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
++        // SAFETY: getsockopt(2) of an int into one of ours, its length given.
++        let rc = unsafe {
++            libc::getsockopt(
++                fd.as_raw_fd(),
++                libc::SOL_SOCKET,
++                libc::SO_SNDBUF,
++                (&raw mut size).cast(),
++                &raw mut len,
++            )
++        };
++        assert_eq!(rc, 0);
++        usize::try_from(size).unwrap() - 32
++    }
++
++    /// A hand of a small file holds what the file does, and its probe byte: not what the
++    /// largest message to its peer would.
++    #[test]
++    fn a_small_hand_reserves_what_its_file_holds() {
++        let (fd, _other) = pair();
++        let tmp = shards_testdir::TempDir::new("hand-size").unwrap();
++        std::fs::write(tmp.join("small"), b"ten bytes!").unwrap();
++        let root = std::fs::File::open(&*tmp).unwrap();
++        let mut ledger = Ledger {
++            last: 0,
++            sent: vec![],
++            asked: vec![],
++        };
++        let mut peer = ledger.peer(&fd);
++        peer.most = channel_most(&fd);
++        let most = peer.most;
++        let context = Context {
++            principal: "agent caller",
++            scratch: Some(root.as_fd()),
++            evidence: Evidence::MemoryOnly,
++        };
++        let args = parse_args(br#"{"to":"agent peer","path":"/tmp/small"}"#);
++        let mut reserved = Request::receive("hand", Some(&args))
++            .unwrap()
++            .unwrap()
++            .authorize(context, Some(peer))
++            .unwrap()
++            .reserve(Format::Program)
++            .unwrap();
++        let at_admission = reserved.packet.capacity();
++        // As execute makes it: its kind and ID, then the file's name and bytes.
++        append(&mut reserved.packet, &[crate::server::REQUEST_FILE]).unwrap();
++        append(&mut reserved.packet, &1u64.to_be_bytes()).unwrap();
++        let ReservedBody::Hand(hand) = &reserved.body else {
++            panic!("a hand reserves no file");
++        };
++        hand.read(&mut reserved.packet).unwrap();
++        let packet = crate::server::MESSAGE_HEAD + 2 + "small".len() + 10;
++        eprintln!(
++            "HAND_RESERVATION channel_most={most} file_bytes=10 packet_len={} reserved_at_admission={at_admission} capacity_after_read={}",
++            reserved.packet.len(),
++            reserved.packet.capacity()
++        );
++        assert_eq!(reserved.packet.len(), packet);
++        assert!(
++            reserved.packet.capacity() <= packet + 1,
++            "a {packet}-byte hand held {} bytes",
++            reserved.packet.capacity()
++        );
++    }
++
++    /// A file that holds more than its size says (procfs says 0 bytes of each, and reads it
++    /// whole) is handed whole within its peer's limit, and refused past it, as before.
++    #[test]
++    fn a_file_longer_than_its_size_says_is_handed_as_before() {
++        let (fd, other) = pair();
++        let root = std::fs::File::open("/proc/self").unwrap();
++        assert_eq!(std::fs::metadata("/proc/self/status").unwrap().len(), 0);
++        let head = crate::server::MESSAGE_HEAD + 2 + "status".len();
++        let mut ledger = Ledger {
++            last: 0,
++            sent: vec![],
++            asked: vec![],
++        };
++        for (limit, whole) in [(channel_most(&fd) - head, true), (16, false)] {
++            let mut peer = ledger.peer(&fd);
++            peer.most = head + limit;
++            let context = Context {
++                principal: "agent caller",
++                scratch: Some(root.as_fd()),
++                evidence: Evidence::MemoryOnly,
++            };
++            let args = parse_args(br#"{"to":"agent peer","path":"/tmp/status"}"#);
++            let terminal = Request::receive("hand", Some(&args))
++                .unwrap()
++                .unwrap()
++                .authorize(context, Some(peer))
++                .unwrap()
++                .reserve(Format::Program)
++                .unwrap()
++                .execute();
++            eprintln!(
++                "HAND_GROWN limit={limit} outcome={:?} effect={:?}",
++                terminal.outcome, terminal.receipt.effect
++            );
++            if whole {
++                assert_eq!(terminal.outcome, Outcome::Completed);
++                let got = received(&other);
++                let bytes = &got[head..];
++                assert!(bytes.starts_with(b"Name:"), "{:?}", String::from_utf8_lossy(bytes));
++                assert!(bytes.len() > 16, "{}", bytes.len());
++            } else {
++                assert_eq!(
++                    terminal.outcome,
++                    Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong))
++                );
++                empty(&other);
++            }
++        }
++    }
++
+     #[test]
+     fn broker_prebuilt_error_capacity_covers_actual_escaped_completion() {
+         for format in [Format::Program, Format::Mcp] {
+diff --git a/crates/server/src/sandbox.rs b/crates/server/src/sandbox.rs
+index 8fb394c82..5fd79cc25 100644
+--- a/crates/server/src/sandbox.rs
++++ b/crates/server/src/sandbox.rs
+@@ -887,6 +887,7 @@ fn described<'js>(ctx: &rquickjs::Ctx<'js>, caught: rquickjs::CaughtError<'js>)
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::io::Read as _;
+     use std::os::unix::net::UnixStream;
+ 
+     /// `source` run as a worker runs it, the instance's side played by `answer`, which
+@@ -957,6 +958,170 @@ return { me, sent };"#,
+         assert_eq!(came, Ok(r#"{"id":1}"#.to_string()));
+     }
+ 
++    /// A broker tool's typed receipt reaches the program: on the Error it throws, as its
++    /// cause, and on the value it returns.
++    #[test]
++    fn a_programs_broker_results_keep_their_receipt() {
++        let refused = r#"{"principal":"agent a","peer":"agent c","operation":null,"request":null,"outcome":"refused","effect":{"kind":"not_started"},"phase":"validated","cause":{"kind":"grant"}}"#;
++        let (_, came) = ran(
++            r#"try { await shards.send("agent c", "x"); } catch (e) { return [e.message, e.cause ?? null]; }"#,
++            |_| format!(r#"{{"error":"agent a may not send agent c requests","broker":{refused}}}"#),
++        );
++        eprintln!("BROKER_RECEIPT thrown={came:?}");
++        assert_eq!(
++            came,
++            Ok(format!(r#"["agent a may not send agent c requests",{refused}]"#))
++        );
++        let sent = r#"{"principal":"agent a","peer":"agent b","operation":"send","request":1,"outcome":"completed","effect":{"kind":"kernel_accepted","bytes":10},"phase":"terminal","cause":null}"#;
++        let (_, came) = ran(
++            r#"const v = await shards.send("agent b", "x"); return [v, v.broker ?? null];"#,
++            |_| format!(r#"{{"value":{{"id":1}},"broker":{sent}}}"#),
++        );
++        eprintln!("BROKER_RECEIPT returned={came:?}");
++        assert_eq!(came, Ok(format!(r#"[{{"id":1}},{sent}]"#)));
++    }
++
++    /// Whether `fd` is readable within `ms` milliseconds.
++    fn readable(fd: &OwnedFd, ms: i32) -> bool {
++        let mut p = libc::pollfd {
++            fd: fd.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        // SAFETY: poll(2) of one pollfd of ours.
++        unsafe { libc::poll(&raw mut p, 1, ms) == 1 }
++    }
++
++    /// A control message naming program `id`: its kind, and the ID.
++    fn naming(kind: u8, id: u64) -> Vec<u8> {
++        [&[kind][..], &id.to_be_bytes()].concat()
++    }
++
++    /// The helper's ENDED messages within five seconds, until one names `id`: each one's ID,
++    /// code and status; and whether its control socket closed meanwhile.
++    fn ended_until(instance: &OwnedFd, id: u64) -> (Vec<(u64, i32, i32)>, bool) {
++        let mut ended = Vec::new();
++        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
++        while !ended.iter().any(|(e, _, _)| *e == id) && std::time::Instant::now() < until {
++            if !readable(instance, 100) {
++                continue;
++            }
++            match recv_control(instance.as_raw_fd()) {
++                Ok(Some((msg, _))) if msg.first() == Some(&ENDED) => ended.push((
++                    u64::from_be_bytes(msg[1..9].try_into().unwrap()),
++                    i32::from_be_bytes(msg[9..13].try_into().unwrap()),
++                    i32::from_be_bytes(msg[13..17].try_into().unwrap()),
++                )),
++                Ok(Some(_)) => {}
++                Ok(None) | Err(_) => return (ended, true),
++            }
++        }
++        (ended, false)
++    }
++
++    /// Whether `socket`'s other end is still open: nothing to read, and no end, for `ms`.
++    fn open_for(socket: &UnixStream, ms: u64) -> bool {
++        socket
++            .set_read_timeout(Some(std::time::Duration::from_millis(ms)))
++            .unwrap();
++        matches!((&*socket).read(&mut [0u8; 1]), Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut))
++    }
++
++    /// One worker the helper cannot reap ends no other. Run as the helper is, but ignoring
++    /// SIGCHLD, so that the kernel reaps each worker as it ends and no waitid finds it, the
++    /// helper says the one that ended did and serves on: the worker it still runs runs on,
++    /// and ends when stopped.
++    #[test]
++    fn a_worker_not_reaped_ends_no_other() {
++        let mut fds = [0 as RawFd; 2];
++        // SAFETY: socketpair(2) into a two-element array.
++        let rc = unsafe {
++            libc::socketpair(
++                libc::AF_UNIX,
++                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
++                0,
++                fds.as_mut_ptr(),
++            )
++        };
++        assert_eq!(rc, 0);
++        // SAFETY: both were just made, and are owned here alone.
++        let (instance, theirs) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
++        let mut pipe = [0 as RawFd; 2];
++        // SAFETY: pipe2(2) into a two-element array.
++        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
++        // SAFETY: both were just made, and are owned here alone.
++        let (said, report) = unsafe { (OwnedFd::from_raw_fd(pipe[0]), OwnedFd::from_raw_fd(pipe[1])) };
++        // SAFETY: fork(2) of the test process. The child moves its end of the control socket
++        // to CONTROL_FD and the pipe's to the next, closes every other descriptor it inherited,
++        // ignores SIGCHLD, serves as the helper (glibc's fork leaves malloc usable in the
++        // child), writes why the helper failed if it did, and _exits, returning into no test.
++        let child = unsafe { libc::fork() };
++        assert!(child >= 0);
++        if child == 0 {
++            // SAFETY: as above, in the child alone.
++            unsafe {
++                let control = libc::fcntl(theirs.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64);
++                let out = libc::fcntl(report.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 64);
++                if control < 0
++                    || out < 0
++                    || libc::dup2(control, CONTROL_FD) != CONTROL_FD
++                    || libc::dup2(out, CONTROL_FD + 1) != CONTROL_FD + 1
++                {
++                    libc::_exit(2);
++                }
++                libc::syscall(libc::SYS_close_range, CONTROL_FD + 2, u32::MAX, 0);
++                libc::signal(libc::SIGCHLD, libc::SIG_IGN);
++                let code = match serve_helper() {
++                    Ok(()) => 0,
++                    Err(why) => {
++                        let why = why.to_string();
++                        libc::write(CONTROL_FD + 1, why.as_ptr().cast(), why.len());
++                        3
++                    }
++                };
++                libc::_exit(code);
++            }
++        }
++        drop(theirs);
++        drop(report);
++        // Program 2's worker waits for the program its socket never brings.
++        let (two, two_worker) = UnixStream::pair().unwrap();
++        send_control(instance.as_raw_fd(), &naming(RUN, 2), Some(two_worker.as_raw_fd())).unwrap();
++        drop(two_worker);
++        // Program 1's worker finds its socket's end at once, and exits.
++        let (one, one_worker) = UnixStream::pair().unwrap();
++        drop(one);
++        send_control(instance.as_raw_fd(), &naming(RUN, 1), Some(one_worker.as_raw_fd())).unwrap();
++        drop(one_worker);
++        let (first, closed) = ended_until(&instance, 1);
++        let two_ran_on = open_for(&two, 300);
++        let (second, closed_later) = if closed {
++            (Vec::new(), true)
++        } else {
++            let _ = send_control(instance.as_raw_fd(), &naming(STOP, 2), None);
++            ended_until(&instance, 2)
++        };
++        let two_ended = !open_for(&two, 1000);
++        drop(instance);
++        let mut status = 0;
++        // SAFETY: waitpid(2) of the child forked above.
++        assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
++        let mut why = String::new();
++        std::fs::File::from(said).read_to_string(&mut why).unwrap();
++        eprintln!(
++            "REAP_UNKNOWN first={first:?} control_closed={closed} worker_two_ran_on={two_ran_on} second={second:?} control_closed_later={closed_later} worker_two_ended={two_ended} helper_exited={} helper_code={} helper_signal={} helper_failure={why:?}",
++            libc::WIFEXITED(status),
++            libc::WEXITSTATUS(status),
++            if libc::WIFSIGNALED(status) { libc::WTERMSIG(status) } else { 0 }
++        );
++        assert!(!closed, "the helper ended for one worker it could not reap");
++        assert!(first.iter().any(|(id, _, _)| *id == 1), "{first:?}");
++        assert!(two_ran_on, "the other worker was ended with it");
++        assert!(second.iter().any(|(id, _, _)| *id == 2), "{second:?}");
++        assert!(two_ended);
++        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "{status:#x}");
++    }
++
+     /// The native call `shards` is made of is out of the program's reach, and `shards`
+     /// cannot be changed.
+     #[test]
+diff --git a/crates/server/src/server.rs b/crates/server/src/server.rs
+index 92777cac7..1bc4d0650 100644
+--- a/crates/server/src/server.rs
++++ b/crates/server/src/server.rs
+@@ -2852,4 +2852,263 @@ mod tests {
+         // SAFETY: getgid(2).
+         prepare(d.to_str().unwrap(), "agent t", unsafe { libc::getgid() }).unwrap()
+     }
++
++    /// A control socket's two ends, as `spawn_helper` makes them: sequenced packets.
++    fn control_pair() -> (OwnedFd, OwnedFd) {
++        let mut fds = [0 as RawFd; 2];
++        // SAFETY: socketpair(2) into a two-element array.
++        let rc = unsafe {
++            libc::socketpair(
++                libc::AF_UNIX,
++                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
++                0,
++                fds.as_mut_ptr(),
++            )
++        };
++        assert_eq!(rc, 0);
++        // SAFETY: both were just made, and are owned here alone.
++        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
++    }
++
++    /// Whether `fd` is readable within `ms` milliseconds.
++    fn readable(fd: &OwnedFd, ms: i32) -> bool {
++        let mut p = libc::pollfd {
++            fd: fd.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        // SAFETY: poll(2) of one pollfd of ours.
++        unsafe { libc::poll(&raw mut p, 1, ms) == 1 }
++    }
++
++    /// An instance in `dir`, served on a thread of its own, code mode's helper played by the
++    /// test: the helper's end of its control socket, and another handle on the instance's.
++    fn served_with_helper(dir: &str) -> (OwnedFd, OwnedFd) {
++        let (instance, helper) = control_pair();
++        let also = instance.try_clone().unwrap();
++        // SAFETY: getgid(2).
++        let p = prepare(dir, "agent t", unsafe { libc::getgid() }).unwrap();
++        let programs = Programs::new(Ok(instance));
++        std::thread::spawn(move || serve(&p, &mut Vec::new(), programs));
++        (helper, also)
++    }
++
++    /// A client of the instance in `dir`, with the certificate it issued its caller.
++    fn client(dir: &str) -> rustls::StreamOwned<rustls::ClientConnection, UnixStream> {
++        use rustls::pki_types::ServerName;
++        use rustls::pki_types::pem::PemObject as _;
++        let ca = CertificateDer::from_pem_file(format!("{dir}/ca.pem")).unwrap();
++        let mut roots = rustls::RootCertStore::empty();
++        roots.add(ca).unwrap();
++        let cert = CertificateDer::from_pem_file(format!("{dir}/cert.pem")).unwrap();
++        let key = PrivateKeyDer::from_pem_file(format!("{dir}/key.pem")).unwrap();
++        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
++        let config = rustls::ClientConfig::builder_with_provider(provider)
++            .with_protocol_versions(&[&rustls::version::TLS13])
++            .unwrap()
++            .with_root_certificates(roots)
++            .with_client_auth_cert(vec![cert], key)
++            .unwrap();
++        let tls = rustls::ClientConnection::new(Arc::new(config), ServerName::try_from(NAME).unwrap()).unwrap();
++        let sock = UnixStream::connect(format!("{dir}/server.sock")).unwrap();
++        sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
++        rustls::StreamOwned::new(tls, sock)
++    }
++
++    /// A `tools/call` of `run` with `arguments`, its head carrying `headers` (each ending CRLF).
++    fn run_request(arguments: &str, headers: &str) -> String {
++        let body = format!(
++            r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"run","arguments":{arguments}}}}}"#
++        );
++        format!(
++            "POST /mcp HTTP/1.1\r\n{headers}Content-Length: {}\r\n\r\n{body}",
++            body.len()
++        )
++    }
++
++    /// The helper's next control message, within five seconds, and the program ID it names.
++    fn next_control(helper: &OwnedFd) -> (Vec<u8>, Option<OwnedFd>, u64) {
++        assert!(readable(helper, 5000), "the helper was sent nothing");
++        let (msg, fd) = sandbox::recv_control(helper.as_raw_fd()).unwrap().unwrap();
++        let id = u64::from_be_bytes(msg[1..9].try_into().unwrap());
++        (msg, fd, id)
++    }
++
++    /// The first frame a worker reads from its program's socket; None at the socket's end.
++    fn first_frame(socket: &mut UnixStream) -> Option<(u8, Vec<u8>)> {
++        let mut got = Vec::new();
++        let mut buf = [0u8; 4096];
++        loop {
++            if let Ok(Some((kind, bytes, _))) = sandbox::parse_frame(&got) {
++                return Some((kind, bytes.to_vec()));
++            }
++            match socket.read(&mut buf) {
++                Ok(0) | Err(_) => return None,
++                Ok(n) => got.extend_from_slice(&buf[..n]),
++            }
++        }
++    }
++
++    /// One HTTP answer read from `client`, head and body, or what came before its end.
++    fn response(client: &mut impl Read) -> String {
++        let mut got = Vec::new();
++        let mut buf = [0u8; 4096];
++        loop {
++            if let Some(end) = got.windows(4).position(|w| w == b"\r\n\r\n") {
++                let head = String::from_utf8_lossy(&got[..end]).into_owned();
++                let length: usize = head
++                    .lines()
++                    .find_map(|l| l.strip_prefix("Content-Length: "))
++                    .and_then(|n| n.parse().ok())
++                    .unwrap_or(0);
++                if got.len() >= end + 4 + length {
++                    break;
++                }
++            }
++            match client.read(&mut buf) {
++                Ok(0) | Err(_) => break,
++                Ok(n) => got.extend_from_slice(&buf[..n]),
++            }
++        }
++        String::from_utf8_lossy(&got).into_owned()
++    }
++
++    /// Sends on `instance`, a handle on the instance's end of the control socket, until the
++    /// socket takes no more: how many it took.
++    fn fill(instance: &OwnedFd) -> usize {
++        let mut taken = 0;
++        loop {
++            match sandbox::send_control(instance.as_raw_fd(), b"x", None) {
++                Ok(()) => taken += 1,
++                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return taken,
++                Err(e) => panic!("filling the control socket: {e}"),
++            }
++        }
++    }
++
++    /// What the helper reads within five seconds, until a STOP: how many other messages,
++    /// and the IDs its STOPs name.
++    fn drain_until_stop(helper: &OwnedFd) -> (usize, Vec<u64>) {
++        let (mut others, mut stops) = (0, Vec::new());
++        let until = Instant::now() + Duration::from_secs(5);
++        while stops.is_empty() && Instant::now() < until {
++            if !readable(helper, 100) {
++                continue;
++            }
++            let Some((msg, _)) = sandbox::recv_control(helper.as_raw_fd()).unwrap() else {
++                break;
++            };
++            match msg.first() {
++                Some(&sandbox::STOP) => stops.push(u64::from_be_bytes(msg[1..9].try_into().unwrap())),
++                _ => others += 1,
++            }
++        }
++        (others, stops)
++    }
++
++    /// A program's request that closes its connection (`Connection: close`, as a client
++    /// without keep-alive sends each) is answered once the program ends, and then the
++    /// connection closes; the program is not stopped for it.
++    #[test]
++    fn a_program_answers_a_request_that_closes_its_connection() {
++        let tmp = shards_testdir::TempDir::new("close").unwrap();
++        let dir = tmp.to_str().unwrap();
++        let (helper, _instance) = served_with_helper(dir);
++        let mut client = client(dir);
++        let req = run_request(r#"{"code":"return 42;"}"#, "Connection: close\r\n");
++        client.write_all(req.as_bytes()).unwrap();
++        // The helper is asked to run it; its worker, played here, returns 42.
++        let (run, program, id) = next_control(&helper);
++        assert_eq!(run.first(), Some(&sandbox::RUN));
++        let mut program = UnixStream::from(program.unwrap());
++        program.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
++        let sent = first_frame(&mut program);
++        let wrote = program.write_all(&sandbox::frame(sandbox::DONE, b"42").unwrap());
++        let mut answer = Vec::new();
++        let read = client.read_to_end(&mut answer);
++        let answer = String::from_utf8_lossy(&answer).into_owned();
++        let mut stops = Vec::new();
++        while readable(&helper, 100) {
++            let Some((msg, _)) = sandbox::recv_control(helper.as_raw_fd()).unwrap() else {
++                break;
++            };
++            if msg.first() == Some(&sandbox::STOP) {
++                stops.push(u64::from_be_bytes(msg[1..9].try_into().unwrap()));
++            }
++        }
++        eprintln!(
++            "CONNECTION_CLOSE program={id} program_frame_read={} worker_done_written={} client_read={read:?} answer_bytes={} stops={stops:?}",
++            sent.is_some(),
++            wrote.is_ok(),
++            answer.len()
++        );
++        assert!(
++            answer.contains(r#""text":"42""#),
++            "no answer to the program's request: {answer:?}"
++        );
++        assert!(read.is_ok(), "the connection did not close after its answer: {read:?}");
++        assert!(stops.is_empty(), "its program was stopped: {stops:?}");
++    }
++
++    /// A program run past its time is answered as ended, and its worker's STOP reaches the
++    /// helper though the helper's socket was full as it was due: once the helper has read
++    /// what filled it.
++    #[test]
++    fn a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can() {
++        let tmp = shards_testdir::TempDir::new("stop").unwrap();
++        let dir = tmp.to_str().unwrap();
++        let (helper, instance) = served_with_helper(dir);
++        let mut client = client(dir);
++        let req = run_request(r#"{"code":"for (;;) {}","timeout_ms":500}"#, "");
++        client.write_all(req.as_bytes()).unwrap();
++        // Its worker, played here, runs on: its socket held, never answering.
++        let (run, _program, id) = next_control(&helper);
++        assert_eq!(run.first(), Some(&sandbox::RUN));
++        let filled = fill(&instance);
++        let answer = response(&mut client);
++        let (drained, stops) = drain_until_stop(&helper);
++        eprintln!(
++            "LOST_STOP_DEADLINE program={id} control_messages_filling={filled} drained={drained} stops={stops:?} answered_ended={}",
++            answer.contains("ran past its 500 ms, and was ended")
++        );
++        assert!(answer.contains("ran past its 500 ms, and was ended"), "{answer}");
++        assert_eq!(
++            stops,
++            [id],
++            "the worker answered as ended has no STOP: it runs on"
++        );
++    }
++
++    /// A client gone ends the program it awaited: its worker's STOP reaches the helper though
++    /// the helper's socket was full as the client went.
++    #[test]
++    fn a_gone_clients_program_is_stopped_though_the_helper_was_full() {
++        let tmp = shards_testdir::TempDir::new("gone").unwrap();
++        let dir = tmp.to_str().unwrap();
++        let (helper, instance) = served_with_helper(dir);
++        let mut client = client(dir);
++        client
++            .write_all(run_request(r#"{"code":"for (;;) {}"}"#, "").as_bytes())
++            .unwrap();
++        let (run, program, id) = next_control(&helper);
++        assert_eq!(run.first(), Some(&sandbox::RUN));
++        let mut program = UnixStream::from(program.unwrap());
++        program.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
++        let sent = first_frame(&mut program);
++        let filled = fill(&instance);
++        drop(client);
++        // The instance lets the program go: its end of the program's socket closes.
++        let let_go = matches!(program.read(&mut [0u8; 1]), Ok(0));
++        let (drained, stops) = drain_until_stop(&helper);
++        eprintln!(
++            "LOST_STOP_GONE program={id} program_frame_read={} control_messages_filling={filled} program_let_go={let_go} drained={drained} stops={stops:?}",
++            sent.is_some()
++        );
++        assert!(let_go);
++        assert_eq!(
++            stops,
++            [id],
++            "the gone client's worker has no STOP: it runs on"
++        );
++    }
+ }

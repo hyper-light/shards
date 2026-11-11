@@ -1,0 +1,133 @@
+{
+  "task": "audit-fix-server-v1: verified audit findings in the in-VM server (shards-server)",
+  "identity": {
+    "policy_read": "POLICY_READ.json (origin/main bff3015182ad754274f1048ce393ac12cb6cd91f, docs/development-rules.md sha256 df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3)",
+    "role": "implementer (coordinator: ROOT)",
+    "branch": "p/audit-fix-server-v1, based on bff3015182ad754274f1048ce393ac12cb6cd91f",
+    "owned_paths": ["crates/server/src/{server,broker,sandbox}.rs", "docs/research/measurements/audit-fix-server-v1/"],
+    "runner": "kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy): CachyOS, Linux 7.2.9-2-cachyos x86_64, 32 cores; runs asked cpus=2,mem=2g,disk=4g",
+    "toolchain": "rustc/cargo 1.98.1 (rust-toolchain.toml), rustfmt 1.9.0-stable; zig 0.17.0 for musl C (CLAUDE.md pins 0.16.0, absent on the runner, not installed)",
+    "committed_source_sha256": {
+      "crates/server/src/broker.rs": "c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0",
+      "crates/server/src/sandbox.rs": "3be073815859fe2fb8a8961d396e8e71eb66fb1dd6be021d38f4513e3c9a4aca",
+      "crates/server/src/server.rs": "4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145"
+    },
+    "red_state": "bff3015 + 03-red-state-tests.patch (tests only) rebuilds the red state"
+  },
+  "findings": [
+    {
+      "id": 1,
+      "title": "Connection: close cancels a run",
+      "status": "fixed",
+      "red_test": "server::tests::a_program_answers_a_request_that_closes_its_connection (real serve loop over mutual TLS; the test plays code mode's helper and worker)",
+      "red": "01-red-unmodified.log: CONNECTION_CLOSE program=1 program_frame_read=false worker_done_written=false client_read=Ok(0) answer_bytes=0 stops=[1]; panicked: no answer to the program's request: \"\"",
+      "fix": "server.rs: Conn.waiting is Option<(u64, AfterAnswer)>, AfterAnswer {Read, Close}. A deferred (Reply::Later) request that said Connection: close records AfterAnswer::Close instead of closing; serve sends close_notify right after writing that program's answer (or its cancellation answer). RFC 9112 section 9.6.",
+      "green": "18-final-green-after-restore.log (44/44); 04-green-fixed.log: client_read=Ok(162) answer_bytes=162 stops=[]",
+      "mutations": {
+        "M1a (deferred answer closes at once again)": "killed: answer_bytes=0 stops=[1] (17, 06a)",
+        "M1b (no close after the answer)": "killed: client_read=Err(WouldBlock) after 5 s, the connection not closed (17, 06a)"
+      },
+      "unchanged": "A client that ends its TLS stream or socket (EOF/error) while its program runs still cancels the program: the existing 'connection gone' rule."
+    },
+    {
+      "id": 2,
+      "title": "A lost STOP leaves a worker running",
+      "status": "fixed",
+      "red_tests": [
+        "server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can (deadline path)",
+        "server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full (connection-gone path)"
+      ],
+      "red": "01-red-unmodified.log: LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[] answered_ended=true and LOST_STOP_GONE ... stops=[] (the instance answered 'was ended' with no STOP ever reaching the helper)",
+      "fix": "server.rs: Programs.unstopped, an owned set of STOPs the full control socket refused (WouldBlock); serve polls the control socket for POLLOUT while it is non-empty and sends them as it has room (Programs::send_stops). Its capacity is reserved at admission beside cancelled (one place per live program; a program is let go of once), so the push never allocates. The connection-gone path now stops only a program still running, and removes it, sends or queues its STOP, then drops its socket, as the deadline/failure and rpc-cancel paths already did.",
+      "green": "both tests stops=[1] (04, 18)",
+      "mutations": {
+        "M2 (WouldBlock dropped as before)": "killed by both tests, 3 of 3 rounds on the reordered source (10) and again on the committed source (17); on an intermediate source (09) only the deadline test killed it, which led to the reorder"
+      },
+      "remaining_gap": "A STOP refused for another cause (ENOBUFS, EPIPE) is still let go of, as before. EPIPE means the helper is gone and its workers with it (PR_SET_PDEATHSIG); ENOBUFS was not reproduced and is not addressed."
+    },
+    {
+      "id": 3,
+      "title": "The refusal fallback claims uncertainty",
+      "status": "fixed",
+      "red_test": "broker::tests::a_refusal_without_storage_says_it_was_refused (first allocation refused through the existing test allocator)",
+      "red": "01-red-unmodified.log: REFUSAL_FALLBACK format=Program path=refused literal=true outcome=Some(\"uncertain\") effect=Some(\"unknown\")",
+      "fix": "broker.rs: Format::refusal_literal (outcome refused, effect not_started, cause response_capacity), used by refused() and display_refusal(); executed answers (ResponseSlot::render) keep the uncertain literal.",
+      "green": "both formats and both paths: outcome refused, effect not_started (04, 18)",
+      "mutations": {"M3 (fallback to the uncertain literal)": "killed: outcome uncertain (17, 06b)"}
+    },
+    {
+      "id": 4,
+      "title": "hand allocates and zero-fills about 208 KiB every time",
+      "status": "fixed",
+      "red_test": "broker::tests::a_small_hand_reserves_what_its_file_holds (real SEQPACKET peer, its limit read as the instance reads it: SO_SNDBUF - 32)",
+      "red": "01-red-unmodified.log: HAND_RESERVATION channel_most=212960 file_bytes=10 packet_len=26 reserved_at_admission=212961 capacity_after_read=212961",
+      "fix": "broker.rs: reserve() holds a hand's head only (kind, ID, name length, name: Hand.head); Hand::read reserves after fstat for the file's size plus the probe byte, reads into the vector's spare capacity with read(2) (no zero-fill), and, if the file proves longer than its size said yet within the limit, widens to the old limit-plus-probe and reads on, so the size limit and probe semantics are as before.",
+      "green": "reserved_at_admission=16 capacity_after_read=27 for the 26-byte packet (04, 17)",
+      "semantics_guard": "broker::tests::a_file_longer_than_its_size_says_is_handed_as_before: /proc/self/status (fstat size 0) handed whole within the limit and refused TooLong past a 16-byte limit; passes before and after the fix",
+      "mutations": {
+        "M4 (read sized to the peer's limit)": "killed: capacity_after_read=212961 (17, 06b)",
+        "M4b (no widening when longer than its size)": "killed: the procfs file refused TooLong (17, 06b)"
+      },
+      "not_measured": "Allocation counts, page faults and time (R14, coordinator-owned). The zero-fill is gone by construction (no resize); only capacity was observed."
+    },
+    {
+      "id": 5,
+      "title": "Programs lose the typed broker result",
+      "status": "fixed (optional)",
+      "red_test": "sandbox::tests::a_programs_broker_results_keep_their_receipt (QuickJS program, the instance played by the test)",
+      "red": "02-red-optional-unmodified.log: BROKER_RECEIPT thrown=Ok(\"[\\\"agent a may not send agent c requests\\\",null]\")",
+      "fix": "sandbox.rs PRELUDE: a reply's broker receipt is the thrown Error's cause (ES2022 Error cause) and a non-enumerable broker property of the returned value, so the value's JSON stays as declared; server.rs: the run tool's description says so.",
+      "green": "thrown [message, receipt]; returned [{\"id\":1}, receipt] (04, 18)",
+      "mutations": {"M5a (no cause)": "killed (17, 06c)", "M5b (no broker on the value)": "killed (17, 06c)"},
+      "api_note": "The run tool's description (tools/list) gained one sentence; no test elsewhere compares it."
+    },
+    {
+      "id": 6,
+      "title": "One failed reap ends the whole helper",
+      "status": "fixed (optional)",
+      "red_test": "sandbox::tests::a_worker_not_reaped_ends_no_other (forks the test process to run the real helper loop with SIGCHLD ignored, so the kernel reaps workers and waitid fails with ECHILD; the failure text comes back over a pipe)",
+      "red": "02-red-optional-unmodified.log: REAP_UNKNOWN first=[] control_closed=true worker_two_ran_on=false ... helper_code=3 helper_failure=\"reaping a worker: Uncategorized, OS Some(10); 2 workers not known reaped, first 2: ...\"",
+      "fix": "sandbox.rs: a worker whose pidfd says it ended but whose status waitid does not give is reported in ENDED as END_UNKNOWN (code 0, status the errno) and untracked, and the helper serves on; server.rs worker_end renders END_UNKNOWN as 'how is not known (waitid: OS n)'. END_UNKNOWN = 0 lies outside waitid's CLD_* codes (1-6, include/uapi/asm-generic/siginfo.h) and apart from creation refusal's -1.",
+      "green": "first=[(1, 0, 10)] control_closed=false worker_two_ran_on=true second=[(2, 0, 10)] helper_code=0 (04, 18)",
+      "mutations": {"M6 (fatal reap restored)": "killed: helper_code=3, the other worker ended with it (17, 06c)"}
+    }
+  ],
+  "test_only_change_outside_the_findings": {
+    "what": "sandbox::tests::a_worker_is_ended_for_a_call_its_filter_refuses: its forked children call prctl(PR_SET_DUMPABLE, 0) before they confine themselves.",
+    "why": "On this runner (core_pattern |systemd-coredump, ulimit -c unlimited) its SIGSYS children each dumped a core; a dumping task keeps every descriptor it inherited from the multithreaded test process for the seconds the dump takes, so a socket another test closed stayed open. Observed: 398 SIGSYS cores of the test binary in 90 minutes; one failure of the existing test a_refused_native_release_does_not_reuse_its_issued_identity (10); the new fork test's own worker also dumped (a debug build's OwnedFd check calls fcntl, which the worker filter refuses), which the same prctl in that test's forked helper removes.",
+    "result": "before: 3 failures in 104 whole-suite runs and 2-3 cores per run (12); with the existing test's prctl alone: 0 of 40, 1 core per run (13); with both: 0 of 60, 0 cores (14).",
+    "coordinator_decision": "It edits an existing test the findings did not name; drop it if unwanted (the new fork test's own prctl suffices for its stability; the existing test's hazard then remains)."
+  },
+  "observation_not_fixed": "In debug builds of production code, a worker dies by SIGSYS when it drops an OwnedFd: std's debug_assert_fd_is_open calls fcntl(2), which worker_calls() does not allow (core stack in 13). Release builds (guest profile, test-release) compile that check out; not reproduced in a production configuration, so not changed (R09).",
+  "rules": {
+    "R01": "No new panic paths in production: checked arithmetic or saturating_sub, try_reserve_exact, read(2) into spare capacity with set_len only of what read returned (both unsafe blocks documented). unstopped.push and cancelled.push rely on capacity reserved at admission, as running.push already did. clippy -D warnings clean on gnu and musl.",
+    "R02": "Specs cited: RFC 9112 section 9.6 (close after the response), waitid CLD_* codes (siginfo.h), ES2022 Error cause; kernel unix_dgram_poll writability for POLLOUT (wmem at most sndbuf/4).",
+    "R03": "One production literal: END_UNKNOWN = 0 (derivation above). Test waits (5 s, 300 ms, 1 s, 500 ms deadline) are fixtures only.",
+    "R04": "Typed states: AfterAnswer {Read, Close}; the unstopped set; END_UNKNOWN on the ENDED wire, rendered by worker_end; refusal literal kept apart from the uncertain literal.",
+    "R05": "POLLOUT readiness drives STOP retries (no periodic probe); no cache added.",
+    "R06/R07/R13": "Focused diffs at the existing seams; comments carry only rationale and sources.",
+    "R08/R14": "Not applicable to an implementer: no benchmark or profile run. Capacity values come from unit-test output.",
+    "R09/R10": "Red on unmodified code, then green, then each guard removed (9 mutants) and the fix restored, for all six findings, with logs in this directory.",
+    "R11": "shards-server is Linux-only. x86_64 gnu tested, x86_64 musl checked and linted. aarch64 Linux (gnu and musl) not built: unverified. macOS and Windows build only the stub main, unchanged and not built here.",
+    "R12": "No platform-specific additions.",
+    "R15": "Implementer, light tests only: no VM E2E, benchmarks or profiling. About 224 whole-suite runs of the light unit suite were made to find and fix a flake in the new tests (11-14), with no VMs.",
+    "R16": "Runner: about 440 SIGSYS cores (about 100 MB) of the test binary from these runs sit in /var/lib/systemd/coredump (root-owned, systemd vacuums them; not deleted). Debug target dirs for x86_64 gnu and musl remain in the runner's synced copy, regenerable and kept for reuse."
+  },
+  "gates_on_committed_source": {
+    "check-development-policy": "pass (15)",
+    "cargo fmt -p shards-server --check": "pass (15)",
+    "clippy x86_64-unknown-linux-gnu --all-targets -D warnings": "pass (15)",
+    "cargo test x86_64-unknown-linux-gnu": "44 passed (15, 18); 60 of 60 whole-suite runs (14)",
+    "cargo check x86_64-unknown-linux-musl": "pass with zig 0.17.0 (15, 16)",
+    "clippy x86_64-unknown-linux-musl --all-targets -D warnings": "pass with zig 0.17.0 (15, 16)"
+  },
+  "not_run": [
+    "VM E2E (code mode in a real guest), benchmarks, profiling: outside an implementer's light scope",
+    "aarch64 Linux builds and tests; the pinned zig 0.16.0 musl build",
+    "scripts/lint over all seven targets (only shards-server on x86_64 gnu and musl)",
+    "the whole workspace's tests"
+  ],
+  "lessons": [
+    "kiln resyncs reset restored files' mtimes to the local ones; a runner build after a mutation run must touch the sources, or cargo keeps the mutant (11, invalid run)."
+  ]
+}

@@ -253,7 +253,8 @@ pub(crate) struct Authorized<'a, 'b> {
     context: Context<'b>,
     peer: Peer<'b>,
 }
-/// This token owns the actual packet, success/error reply and pending-ID capacity.
+/// This token owns the actual packet (a hand's file bytes once their size is read),
+/// success/error reply and pending-ID capacity.
 pub(crate) struct Reserved<'a, 'b> {
     body: ReservedBody<'a, 'b>,
     peer: Peer<'b>,
@@ -288,16 +289,13 @@ impl<'a, 'b> Authorized<'a, 'b> {
             )?),
             Body::Text(text) => ReservedBody::Text(text),
         };
-        let packet_bytes = match self.request.body {
-            Body::Text(text) => crate::server::MESSAGE_HEAD
+        let packet_bytes = match &body {
+            ReservedBody::Text(text) => crate::server::MESSAGE_HEAD
                 .checked_add(text.len())
                 .filter(|n| *n <= self.peer.most)
                 .ok_or(Refusal::at(Phase::Authorized, Reason::TooLong))?,
-            Body::Hand(_) => self
-                .peer
-                .most
-                .checked_add(1)
-                .ok_or(Refusal::at(Phase::Authorized, Reason::TooLong))?,
+            // The file's bytes once its size is read (Hand::read).
+            ReservedBody::Hand(hand) => hand.head,
         };
         let mut packet = Vec::new();
         packet
@@ -502,11 +500,23 @@ impl Format {
             }
         })
     }
+    /// A refusal's answer where its own finds no storage: every refusal comes before any
+    /// effect, so its outcome is known, unlike an executed answer's ([`Format::literal`]).
+    fn refusal_literal(self) -> Reply {
+        Reply::Literal(match self {
+            Self::Program => {
+                "{\"error\":\"refused before any effect; its response is unavailable\",\"broker\":{\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"cause\":{\"kind\":\"response_capacity\"}}}"
+            }
+            Self::Mcp => {
+                "{\"content\":[{\"type\":\"text\",\"text\":\"refused before any effect; its response is unavailable\"}],\"isError\":true,\"structuredContent\":{\"outcome\":\"refused\",\"effect\":{\"kind\":\"not_started\"},\"cause\":{\"kind\":\"response_capacity\"}}}"
+            }
+        })
+    }
     pub fn refused(self, error: Refusal, principal: &str, peer: &str) -> Reply {
         let mut out = Growing(String::new());
         match self.response(&mut out, principal, peer, None, Outcome::Refused(error)) {
             Ok(()) => Reply::Owned(out.0),
-            Err(_) => self.literal(),
+            Err(_) => self.refusal_literal(),
         }
     }
     /// Outer presentation for the actual run-tool error bridge. The Display producer
@@ -518,7 +528,7 @@ impl Format {
             .and_then(|()| fmt::Write::write_str(&mut out, "}"))
         {
             Ok(()) => Reply::Owned(out.0),
-            Err(_) => self.literal(),
+            Err(_) => self.refusal_literal(),
         }
     }
 }
@@ -682,6 +692,9 @@ struct Hand<'a, 'b> {
     root: BorrowedFd<'b>,
     path: std::ffi::CString,
     name: &'a str,
+    /// What its message holds before the file's bytes: its kind and ID, and the file's
+    /// name and that name's length.
+    head: usize,
     limit: usize,
 }
 impl<'a, 'b> Hand<'a, 'b> {
@@ -712,12 +725,12 @@ impl<'a, 'b> Hand<'a, 'b> {
             root,
             path,
             name,
+            head,
             limit,
         })
     }
 
     fn read(&self, packet: &mut Vec<u8>) -> Result<(), Refusal> {
-        use std::io::Read as _;
         use std::os::fd::{FromRawFd as _, OwnedFd, RawFd};
         let failed = |reason| Refusal::at(Phase::Executing, reason);
         // Existing open_how layout and held-scratch resolution policy (D139).
@@ -746,7 +759,7 @@ impl<'a, 'b> Hand<'a, 'b> {
         }
         let fd = RawFd::try_from(fd).map_err(|_| failed(Reason::FileIo(None)))?;
         // SAFETY: the successful native open transferred this descriptor here alone.
-        let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
         let meta = file
             .metadata()
             .map_err(|e| failed(Reason::FileIo(e.raw_os_error())))?;
@@ -760,32 +773,59 @@ impl<'a, 'b> Hand<'a, 'b> {
         append(packet, &len.to_be_bytes())?;
         append(packet, self.name.as_bytes())?;
         let head = packet.len();
-        let end = head
-            .checked_add(self.limit)
-            .and_then(|n| n.checked_add(1))
-            .ok_or_else(|| failed(Reason::TooLong))?;
-        if end > packet.capacity() {
-            return Err(failed(Reason::Capacity));
-        }
-        // One probe byte detects growth beyond the admitted packet; resize stays inside the reservation.
-        packet.resize(end, 0);
-        let mut used = head;
+        // Room for `bytes` of the file and one probe byte past them, which finds it longer.
+        let room = |bytes: usize| {
+            head.checked_add(bytes)
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| failed(Reason::TooLong))
+        };
+        let full = room(self.limit)?;
+        // What its size says first: within the limit, checked above.
+        let mut end = room(usize::try_from(meta.len()).map_err(|_| failed(Reason::TooLong))?)?;
+        let reserve = |packet: &mut Vec<u8>, end: usize| {
+            packet
+                .try_reserve_exact(end.saturating_sub(packet.len()))
+                .map_err(|_| failed(Reason::Capacity))
+        };
+        reserve(packet, end)?;
         loop {
-            let target = packet.get_mut(used..end).ok_or_else(|| failed(Reason::TooLong))?;
-            match file.read(target) {
-                Ok(0) => break,
-                Ok(n) => {
-                    used = used.checked_add(n).ok_or_else(|| failed(Reason::TooLong))?;
-                    if used.saturating_sub(head) > self.limit {
-                        return Err(failed(Reason::TooLong));
-                    }
+            let unread = end.saturating_sub(packet.len());
+            let spare = packet.spare_capacity_mut();
+            // SAFETY: read(2) of the held file into the vector's spare capacity, of no more
+            // bytes than that capacity holds.
+            let n = unsafe {
+                libc::read(
+                    file.as_raw_fd(),
+                    spare.as_mut_ptr().cast(),
+                    unread.min(spare.len()),
+                )
+            };
+            let Ok(n) = usize::try_from(n) else {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => return Err(failed(Reason::FileIo(e.raw_os_error()))),
+                return Err(failed(Reason::FileIo(e.raw_os_error())));
+            };
+            if n == 0 {
+                return Ok(());
+            }
+            let used = packet
+                .len()
+                .checked_add(n)
+                .ok_or_else(|| failed(Reason::TooLong))?;
+            // SAFETY: read(2) initialized these n bytes of the spare capacity it was given.
+            unsafe { packet.set_len(used) };
+            if used.saturating_sub(head) > self.limit {
+                return Err(failed(Reason::TooLong));
+            }
+            if used == end {
+                // Longer than its size said, and within the limit: room for all the limit
+                // admits, and its probe byte.
+                end = full;
+                reserve(packet, end)?;
             }
         }
-        packet.truncate(used);
-        Ok(())
     }
 }
 
@@ -1215,6 +1255,168 @@ mod tests {
         assert_eq!(ledger.last, 0);
         empty(&other);
         assert!(!tmp.join("does-not-exist").exists());
+    }
+
+    /// A refusal is made before any effect: one whose answer finds no storage still says it
+    /// was refused, no effect begun, as the run tool's refusals do.
+    #[test]
+    fn a_refusal_without_storage_says_it_was_refused() {
+        let refusal = Refusal::at(Phase::Validated, Reason::Grant);
+        for format in [Format::Program, Format::Mcp] {
+            // Each one's first allocation refused: that of its answer.
+            let (refused, _) = crate::program_admission_allocation::during(1, || {
+                format.refused(refusal, "agent caller", "agent peer")
+            });
+            let (displayed, _) = crate::program_admission_allocation::during(1, || {
+                format.display_refusal(format_args!("code mode is not available here"))
+            });
+            for (path, reply) in [("refused", refused), ("display_refusal", displayed)] {
+                let literal = matches!(reply, Reply::Literal(_));
+                let json = parse_args(reply.as_bytes());
+                let metadata = json
+                    .get(match format {
+                        Format::Program => "broker",
+                        Format::Mcp => "structuredContent",
+                    })
+                    .unwrap();
+                let outcome = metadata.get("outcome").and_then(Value::str);
+                let effect = metadata
+                    .get("effect")
+                    .and_then(|e| e.get("kind"))
+                    .and_then(Value::str);
+                eprintln!(
+                    "REFUSAL_FALLBACK format={format:?} path={path} literal={literal} outcome={outcome:?} effect={effect:?} reply={}",
+                    reply.as_str()
+                );
+                assert!(literal, "{path}: {reply}");
+                assert_eq!(outcome, Some("refused"), "{path}: {reply}");
+                assert_eq!(effect, Some("not_started"), "{path}: {reply}");
+            }
+        }
+    }
+
+    /// What one message on `fd` holds, as the instance reads it (`server::message_most`):
+    /// its SO_SNDBUF less the 32 bytes the kernel keeps of it.
+    fn channel_most(fd: &OwnedFd) -> usize {
+        let mut size: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        // SAFETY: getsockopt(2) of an int into one of ours, its length given.
+        let rc = unsafe {
+            libc::getsockopt(
+                fd.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_SNDBUF,
+                (&raw mut size).cast(),
+                &raw mut len,
+            )
+        };
+        assert_eq!(rc, 0);
+        usize::try_from(size).unwrap() - 32
+    }
+
+    /// A hand of a small file holds what the file does, and its probe byte: not what the
+    /// largest message to its peer would.
+    #[test]
+    fn a_small_hand_reserves_what_its_file_holds() {
+        let (fd, _other) = pair();
+        let tmp = shards_testdir::TempDir::new("hand-size").unwrap();
+        std::fs::write(tmp.join("small"), b"ten bytes!").unwrap();
+        let root = std::fs::File::open(&*tmp).unwrap();
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        let mut peer = ledger.peer(&fd);
+        peer.most = channel_most(&fd);
+        let most = peer.most;
+        let context = Context {
+            principal: "agent caller",
+            scratch: Some(root.as_fd()),
+            evidence: Evidence::MemoryOnly,
+        };
+        let args = parse_args(br#"{"to":"agent peer","path":"/tmp/small"}"#);
+        let mut reserved = Request::receive("hand", Some(&args))
+            .unwrap()
+            .unwrap()
+            .authorize(context, Some(peer))
+            .unwrap()
+            .reserve(Format::Program)
+            .unwrap();
+        let at_admission = reserved.packet.capacity();
+        // As execute makes it: its kind and ID, then the file's name and bytes.
+        append(&mut reserved.packet, &[crate::server::REQUEST_FILE]).unwrap();
+        append(&mut reserved.packet, &1u64.to_be_bytes()).unwrap();
+        let ReservedBody::Hand(hand) = &reserved.body else {
+            panic!("a hand reserves no file");
+        };
+        hand.read(&mut reserved.packet).unwrap();
+        let packet = crate::server::MESSAGE_HEAD + 2 + "small".len() + 10;
+        eprintln!(
+            "HAND_RESERVATION channel_most={most} file_bytes=10 packet_len={} reserved_at_admission={at_admission} capacity_after_read={}",
+            reserved.packet.len(),
+            reserved.packet.capacity()
+        );
+        assert_eq!(reserved.packet.len(), packet);
+        assert!(
+            reserved.packet.capacity() <= packet + 1,
+            "a {packet}-byte hand held {} bytes",
+            reserved.packet.capacity()
+        );
+    }
+
+    /// A file that holds more than its size says (procfs says 0 bytes of each, and reads it
+    /// whole) is handed whole within its peer's limit, and refused past it, as before.
+    #[test]
+    fn a_file_longer_than_its_size_says_is_handed_as_before() {
+        let (fd, other) = pair();
+        let root = std::fs::File::open("/proc/self").unwrap();
+        assert_eq!(std::fs::metadata("/proc/self/status").unwrap().len(), 0);
+        let head = crate::server::MESSAGE_HEAD + 2 + "status".len();
+        let mut ledger = Ledger {
+            last: 0,
+            sent: vec![],
+            asked: vec![],
+        };
+        for (limit, whole) in [(channel_most(&fd) - head, true), (16, false)] {
+            let mut peer = ledger.peer(&fd);
+            peer.most = head + limit;
+            let context = Context {
+                principal: "agent caller",
+                scratch: Some(root.as_fd()),
+                evidence: Evidence::MemoryOnly,
+            };
+            let args = parse_args(br#"{"to":"agent peer","path":"/tmp/status"}"#);
+            let terminal = Request::receive("hand", Some(&args))
+                .unwrap()
+                .unwrap()
+                .authorize(context, Some(peer))
+                .unwrap()
+                .reserve(Format::Program)
+                .unwrap()
+                .execute();
+            eprintln!(
+                "HAND_GROWN limit={limit} outcome={:?} effect={:?}",
+                terminal.outcome, terminal.receipt.effect
+            );
+            if whole {
+                assert_eq!(terminal.outcome, Outcome::Completed);
+                let got = received(&other);
+                let bytes = &got[head..];
+                assert!(
+                    bytes.starts_with(b"Name:"),
+                    "{:?}",
+                    String::from_utf8_lossy(bytes)
+                );
+                assert!(bytes.len() > 16, "{}", bytes.len());
+            } else {
+                assert_eq!(
+                    terminal.outcome,
+                    Outcome::Failed(Refusal::at(Phase::Executing, Reason::TooLong))
+                );
+                empty(&other);
+            }
+        }
     }
 
     #[test]

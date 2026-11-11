@@ -1,0 +1,59 @@
+# fmt check and clippy -D warnings (x86_64-unknown-linux-gnu, all targets) on the fixed source, first pass.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64); rustfmt 1.9.0-stable (48a229ceae 2026-09-01); rustc 1.98.1
+# command:
+#   L=/tmp/afs1-05.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server; echo "--- cargo fmt -p shards-server -- --check"; cargo fmt -p shards-server -- --check 2>&1; echo "fmt_exit=$?"; echo "--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings"; cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings 2>&1 | grep -v '^warning: aws-lc-sys'; echo "clippy_exit=${PIPESTATUS[0]}"; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: 8104514e321ee53440cf852e419aae0bb9a806bb10e37f006133cc0dccdb2eab (this copy verified identical)
+# result: clippy clean (exit 0); fmt reported one hunk in a test assertion, applied before the final gate (see 08a-final-gate-gnu.log).
+# (An earlier fmt --check, not kept, listed only line-wrapping hunks in the new code; they were applied by hand as shown.)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/server/src/broker.rs  | 267 ++++++++++++++++++++++++++----
+ crates/server/src/sandbox.rs | 207 +++++++++++++++++++++++-
+ crates/server/src/server.rs  | 376 ++++++++++++++++++++++++++++++++++++++++---
+ 3 files changed, 791 insertions(+), 59 deletions(-)
+--- cargo fmt -p shards-server -- --check
+Diff in /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server/src/server.rs:3180:
+             sent.is_some()
+         );
+         assert!(let_go);
+-        assert_eq!(
+-            stops,
+-            [id],
+-            "the gone client's worker has no STOP: it runs on"
+-        );
++        assert_eq!(stops, [id], "the gone client's worker has no STOP: it runs on");
+     }
+ }
+ 
+fmt_exit=1
+--- cargo clippy -p shards-server --target x86_64-unknown-linux-gnu -j2 --all-targets -- -D warnings
+    Checking zeroize v1.9.0
+    Checking aws-lc-sys v0.45.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-sys)
+    Checking aws-lc-rs v1.18.1 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/aws-lc-rs)
+    Checking rustls-pki-types v1.15.1
+    Checking deranged v0.5.8
+    Checking time-core v0.1.9
+    Checking num-conv v0.2.2
+    Checking equivalent v1.0.2
+    Checking foldhash v0.2.0
+    Checking allocator-api2 v0.2.21
+    Checking powerfmt v0.2.0
+    Checking hashbrown v0.17.1
+    Checking time v0.3.55
+    Checking rquickjs-sys v0.14.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/vendor/rquickjs-sys)
+    Checking untrusted v0.9.0
+    Checking base64 v0.23.1
+    Checking rustls-webpki v0.103.16
+    Checking pem v4.0.0
+    Checking rquickjs-core v0.14.0
+    Checking yasna v0.6.0
+    Checking libc v0.2.189
+    Checking subtle v2.6.1
+    Checking once_cell v1.21.4
+    Checking rustls v0.23.46
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/testdir)
+    Checking rcgen v0.14.10
+    Checking rquickjs v0.14.0
+    Checking shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.96s
+clippy_exit=0

@@ -1,0 +1,61 @@
+# Light-suite flake diagnosis (the whole shards-server unit suite repeated; no VM, no benchmark), sources touched so cargo rebuilt them.
+# command: as 11, with 'touch crates/server/src/*.rs' and sha256sum of the sources before the build, and Compiling lines kept.
+# result: the new fork test a_worker_not_reaped_ends_no_other failed in 2 of 10 whole-suite runs; 0 of 10 with it skipped; 0 of 10 with both fork tests skipped.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# runner sha256 of the raw part below: 921aa01ff32aeb1a69ae761aa33b54ecf413182fb57feabfa352946d4121993f (this copy verified identical to the hash the runner printed)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 793 insertions(+), 62 deletions(-)
+c0ae08844df9e2a374d18e55516ed03ced853ba40517ef1e2597a69c972163e0  crates/server/src/broker.rs
+0ae9a897e4c71850c8087ee85c9fe18dc0262cb9d6d6e521c7ab8f448a5bc2c7  crates/server/src/main.rs
+6ba8ff3ad4c9bbb0a1186d1d1edb34480f231065a706cfbe84772a317c02e73e  crates/server/src/sandbox.rs
+4955bc45693d6b88859d74c25c8d2576cadd3cba3ece353003739dd3ab710145  crates/server/src/server.rs
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+  Executable unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+all run 5: test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+all run 6: test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+all: 2 of 10 runs failed
+skip-new: 0 of 10 runs failed
+skip-both-forks: 0 of 10 runs failed
+# ---- further runs, same runner, verbatim tool output (not tee'd, so not hashed) ----
+# command: touch crates/server/src/*.rs; cargo test ... --no-run | grep 'Compiling shards-server'; for i in $(seq 12); do out=$(cargo test -p shards-server --target x86_64-unknown-linux-gnu -j2 2>&1); if ! echo "$out" | grep -q '^test result: ok'; then echo "=== run $i failed:"; echo "$out" | sed -n '/^failures:/,/^test result/p' | head -30; fi; done; echo done
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+done
+# command: the same loop for 25 runs, counting
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+failed runs: 0 of 25
+# command: the same loop for up to 60 runs, stopping at the first failure and printing its failures section
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+=== run 57 failed:
+failures:
+
+---- sandbox::tests::a_worker_not_reaped_ends_no_other stdout ----
+REAP_UNKNOWN first=[] control_closed=false worker_two_ran_on=true second=[(1, 0, 10), (2, 0, 10)] control_closed_later=false worker_two_ended=true helper_exited=true helper_code=0 helper_signal=0 helper_failure=""
+
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (3358770) panicked at crates/server/src/sandbox.rs:1147:9:
+[]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    sandbox::tests::a_worker_not_reaped_ends_no_other
+
+test result: FAILED. 43 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.42s
+stopped after run 57
+# reading: the helper did report worker 1 (ENDED code 0 = END_UNKNOWN, errno 10 = ECHILD) and served on, but only after the
+# test's 5 s window: worker 1's end came late. Tally so far: the fork test failed 3 times in 104 whole-suite runs.
+# ---- core dumps on the runner (sync: false), verbatim ----
+# command: cat /proc/sys/kernel/core_pattern; ulimit -c; coredumpctl list --no-pager --since "-90min" | grep -i -E "shards_server|TIME" | tail -15; coredumpctl list --no-pager --since "-90min" | grep -c shards_server; coredumpctl info --no-pager -1 | grep -E "Signal|Executable|Timestamp|Disk Size|Storage" | head -8
+|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %d %F %I
+unlimited
+(15 rows like the following, 2026-11-11 14:17:02 to 14:17:34 PST, each SIGSYS, present, 149.5K to 433.9K:)
+Wed 2026-11-11 14:17:34 PST 3363317 1000 1000 SIGSYS present  /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406 414.7K
+398
+        Signal: 31 (SYS) si_code: SYS_SECCOMP
+     Timestamp: Wed 2026-11-11 14:17:34 PST (3min 33s ago)
+    Executable: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406
+       Storage: /var/lib/systemd/coredump/core.sandbox::tests:.1000.b3e2706b28b74615b1a268a6e9e100ef.3363317.1794435454000000.zst (present)
+# reading: 398 SIGSYS cores of the test binary in 90 minutes, named for the thread "sandbox::tests:" (the existing fork test
+# a_worker_is_ended_for_a_call_its_filter_refuses, whose openat and x32 children die by seccomp SIGSYS by design). systemd-coredump
+# takes seconds per core, and a dying task keeps every descriptor it inherited (all of the test process's, other tests' sockets
+# too) until the dump ends: a socket another test closed stays open meanwhile. See 13 for its fix and 14 for the fork test's own.

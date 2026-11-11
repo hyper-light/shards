@@ -1,0 +1,121 @@
+# Guard-removal mutations, batch 1: findings 1 (M1a, M1b) and 2 (M2). Harness: mutate.py, mutations.sh (this directory).
+# NOTE: ran on an intermediate source (before control_at became an Option, the connection-gone reorder and the test-only PR_SET_DUMPABLE lines); 17-final-mutations.log reruns all nine mutants on the committed source.
+# runner: kiln 451397fcc585f7f7cb9aaf00e42064bb (adacachy, CachyOS, Linux 7.2.9-2-cachyos x86_64), needs cpus=2,mem=2g,disk=4g; rustc 1.98.1
+# source: bff3015182ad754274f1048ce393ac12cb6cd91f + the fixed, formatted diff (the branch's fix commit); each mutant applied to it alone, then restored
+# command:
+#   L=/tmp/afs1-06a.log; { echo "HEAD=$(git rev-parse HEAD)"; git diff --stat -- crates/server | tail -1; docs/research/measurements/audit-fix-server-v1/mutations.sh M1a M1b M2; } > $L 2>&1; cat $L; echo "SHA256 $(sha256sum < $L)"
+# runner sha256 of the raw part below: 36080a85380b242d15dc30988018636b1dffcf1cf0ea31005b8c33d8ad293c70 (this copy verified identical)
+# result: every mutant killed, each for its finding's reason (M1a: no answer, STOP sent; M1b: answered, connection not closed; M2: STOP lost on both paths)
+# ---- raw ----
+HEAD=bff3015182ad754274f1048ce393ac12cb6cd91f
+ 3 files changed, 787 insertions(+), 59 deletions(-)
+=== M1a: crates/server/src/server.rs
+@@ -1299,6 +1299,10 @@
+                         AfterAnswer::Read
+                     };
+                     c.waiting = Some((id, after));
++                    if close {
++                        c.closing = true;
++                        c.tls.send_close_notify();
++                    }
+                 }
+             }
+         }
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.67s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+CONNECTION_CLOSE program=1 program_frame_read=false worker_done_written=false client_read=Ok(0) answer_bytes=0 stops=[1]
+
+thread 'server::tests::a_program_answers_a_request_that_closes_its_connection' (2905933) panicked at crates/server/src/server.rs:3121:9:
+no answer to the program's request: ""
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+
+failures:
+
+failures:
+    server::tests::a_program_answers_a_request_that_closes_its_connection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 0.10s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M1a: cargo test exit 101 (non-zero: the mutant is killed)
+=== M1a: crates/server/src/server.rs restored
+=== M1b: crates/server/src/server.rs
+@@ -1015,7 +1015,9 @@
+         for (conn, answer) in answers {
+             if let Some(c) = conns.iter_mut().find(|c| c.id == conn) {
+                 let _ = c.tls.writer().write_all(&answer);
+-                if let Some((_, AfterAnswer::Close)) = c.waiting.take() {
++                if let Some((_, AfterAnswer::Close)) = c.waiting.take()
++                    && false
++                {
+                     c.closing = true;
+                     c.tls.send_close_notify();
+                 }
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 1 test
+CONNECTION_CLOSE program=1 program_frame_read=true worker_done_written=true client_read=Err(Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" }) answer_bytes=162 stops=[]
+
+thread 'server::tests::a_program_answers_a_request_that_closes_its_connection' (2908742) panicked at crates/server/src/server.rs:3123:9:
+the connection did not close after its answer: Err(Os { code: 11, kind: WouldBlock, message: "Resource temporarily unavailable" })
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_program_answers_a_request_that_closes_its_connection ... FAILED
+
+failures:
+
+failures:
+    server::tests::a_program_answers_a_request_that_closes_its_connection
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 43 filtered out; finished in 5.51s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M1b: cargo test exit 101 (non-zero: the mutant is killed)
+=== M1b: crates/server/src/server.rs restored
+=== M2: crates/server/src/server.rs
+@@ -486,7 +486,6 @@
+                 *slot = byte;
+             }
+             match sandbox::send_control(c.as_raw_fd(), &stop, None) {
+-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                 // Sent, or refused for a cause no wait for room ends, as a STOP was before.
+                 _ => {
+                     self.unstopped.pop();
+   Compiling shards-server v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-server-v1-ff81d3b6a0/crates/server)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.14s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_server-00a53db5e64b5406)
+
+running 2 tests
+LOST_STOP_GONE program=1 program_frame_read=true control_messages_filling=278 program_let_go=true drained=278 stops=[]
+
+thread 'server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full' (2921856) panicked at crates/server/src/server.rs:3182:9:
+assertion `left == right` failed: the gone client's worker has no STOP: it runs on
+  left: []
+ right: [1]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full ... FAILED
+LOST_STOP_DEADLINE program=1 control_messages_filling=278 drained=278 stops=[] answered_ended=true
+
+thread 'server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can' (2921858) panicked at crates/server/src/server.rs:3149:9:
+assertion `left == right` failed: the worker answered as ended has no STOP: it runs on
+  left: []
+ right: [1]
+test server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can ... FAILED
+
+failures:
+
+failures:
+    server::tests::a_gone_clients_program_is_stopped_though_the_helper_was_full
+    server::tests::a_stop_the_helper_cannot_yet_take_reaches_it_once_it_can
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 42 filtered out; finished in 5.51s
+
+error: test failed, to rerun pass `-p shards-server --bin shards-server`
+=== M2: cargo test exit 101 (non-zero: the mutant is killed)
+=== M2: crates/server/src/server.rs restored
+=== source after:  3 files changed, 787 insertions(+), 59 deletions(-)

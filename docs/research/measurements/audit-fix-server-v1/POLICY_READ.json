@@ -1,0 +1,31 @@
+{
+  "POLICY_READ": true,
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "source": "origin/main (read with git show from the managed-main-landing worktree, nothing checked out)",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+    "CLAUDE.md": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT",
+  "task": "Fix verified audit findings in the in-VM server (shards-server): (1) Connection: close cancels a run, (2) a lost STOP leaves a worker running, (3) refusal fallback claims uncertainty, (4) hand allocates and zero-fills ~208 KiB every time, (5 optional) programs lose the typed broker result, (6 optional) one failed reap ends the whole helper. Each under R09: red test on unmodified code, fix, green, guard-removal mutation, restore; not reproduced => not fixed.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-server-v1",
+  "branch": "p/audit-fix-server-v1",
+  "base": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "owned_paths": [
+    "crates/server/** (only the files the findings need, and their tests)",
+    "docs/research/measurements/audit-fix-server-v1/"
+  ],
+  "limits": [
+    "light tests only: crates/server unit tests and light in-process tests, cargo fmt --check, clippy -D warnings for shards-server",
+    "no VM E2E, benchmarks or profiling",
+    "cargo only on kiln runner 451397fcc585f7f7cb9aaf00e42064bb, needs cpus=2,mem=2g,disk=4g, timeout_s <= 600, no background runs, -j2 --target x86_64-unknown-linux-gnu; musl check -p shards-server --target x86_64-unknown-linux-musl -j2 (record unverified if toolchain unavailable, no installs)",
+    "no other worktrees, main or policy files; no agents spawned or messaged; no push, merge or rebase",
+    "commits via /Users/adalundhe/.kiln-run/bin/gits -C W commit --only with named paths; final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>; never force, never --no-verify, never disable signing"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist read in full",
+  "read_at": "2026-11-11"
+}
