@@ -1,0 +1,33 @@
+# runner: kiln run on 451397fcc585f7f7cb9aaf00e42064bb (adacachy), needs cpus=2,mem=2g,disk=4g, timeout_s 600, repository synced from this worktree (17737 files)
+# source: HEAD d1f892fc40c555a82bc34ef02a1e124f1d692bde plus the uncommitted finding-3 diff saved beside this log (f3-green-linux-x86_64-vmm.diff)
+# command: set -u; echo "host $(uname -srm)"; git log -1 --format='head %H'; git diff --stat HEAD | tail -1; rustc --version; cargo --version; cargo test -j2 -p shards-vmm --lib -- vm::cmdline:: vm::tests::a_command_line_start_error_preserves_the_cause_and_message vm::tests::quiet_goes_before_inits_arguments_which_name_no_level vm::tests::a_console_nobody_reads_is_told_only_errors 2>&1; echo "exit $?"
+# raw output (kiln run's combined stdout and stderr):
+host Linux 7.2.9-2-cachyos x86_64
+head d1f892fc40c555a82bc34ef02a1e124f1d692bde
+ 3 files changed, 153 insertions(+), 30 deletions(-)
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/vmm)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/ipc)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/syscall-filter)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-host-v1-6dbc7e6ebf/crates/testdir)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.63s
+     Running unittests src/lib.rs (target/debug/deps/shards_vmm-766f1eb79724ca80)
+
+running 9 tests
+test vm::cmdline::tests::delimiter_matches_kernel_quotes_and_values ... ok
+test vm::cmdline::tests::kernel_options_precede_the_first_delimiter_on_every_architecture ... ok
+test vm::cmdline::tests::the_kernels_part_ends_at_the_first_delimiter ... ok
+test vm::cmdline::tests::required_options_precede_only_the_first_delimiter_and_keep_raw_tail ... ok
+test vm::cmdline::tests::without_delimiter_existing_order_and_spacing_are_unchanged ... ok
+test vm::cmdline::tests::command_line_max_includes_the_nul_and_overflow_is_typed ... ok
+test vm::tests::a_command_line_start_error_preserves_the_cause_and_message ... ok
+test vm::tests::quiet_goes_before_inits_arguments_which_name_no_level ... ok
+test vm::tests::a_console_nobody_reads_is_told_only_errors ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 416 filtered out; finished in 0.00s
+
+exit 0

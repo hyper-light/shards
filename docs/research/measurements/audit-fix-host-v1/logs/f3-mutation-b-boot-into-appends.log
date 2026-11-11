@@ -1,0 +1,33 @@
+# command: lockf /tmp/g121-mac.lock cargo test -j2 -p shards-vm-process --bin shards-vm -- --exact vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: d1f892fc40c555a82bc34ef02a1e124f1d692bde
+# source diff vs HEAD (excluding this evidence directory): 286 lines, sha256 1bb2efbe3c1db986ad34019c938c8b937743e1830def35e1c89c7120b869423d
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:27:00Z
+# free GiB on /Users/adalundhe: 34
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm)
+   Compiling shards-vm-process v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vm-process)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.74s
+     Running unittests src/main.rs (target/debug/deps/shards_vm-9f74ba2411604028)
+
+running 1 test
+test vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels ... FAILED
+
+failures:
+
+---- vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels stdout ----
+
+thread 'vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels' (66353691) panicked at crates/vm-process/src/../../shards/src/vm_run.rs:2977:9:
+assertion `left == right` failed
+  left: "console=ttyS0 -- managed-network capabilities quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0 shards_template=1"
+ right: "console=ttyS0 quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0 shards_template=1 -- managed-network capabilities"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    vm_run::tests::a_boot_into_an_image_keeps_its_options_the_kernels
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 28 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-vm-process --bin shards-vm`
+# exit: 101 at 2026-11-11T21:27:04Z

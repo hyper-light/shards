@@ -1,0 +1,69 @@
+diff --git a/crates/shards/src/vm_run.rs b/crates/shards/src/vm_run.rs
+index e4f8c05f4..36bf8359b 100644
+--- a/crates/shards/src/vm_run.rs
++++ b/crates/shards/src/vm_run.rs
+@@ -2954,6 +2954,34 @@ mod tests {
+             assert!(e.contains(why), "{bad}: {e}");
+         }
+     }
++
++    /// A boot into an image tells the kernel its options before Linux's init-argument
++    /// delimiter, where it reads them and where init finds those it takes from its
++    /// environment (`shards_root`, `shards_template`); a command line given `--` keeps what
++    /// follows it init's, whole (finding 3 of audit-fix-host-v1: they became init's
++    /// arguments). One without the delimiter has them appended, as it always had.
++    #[test]
++    fn a_boot_into_an_image_keeps_its_options_the_kernels() {
++        let booted = |cmdline: &str, template: bool| {
++            let mut cfg = Config::new(PathBuf::from("k"), None);
++            cfg.cmdline = cmdline.into();
++            boot_into(&mut cfg, PathBuf::from("rootfs"), template);
++            cfg.cmdline
++        };
++        let options = "quiet noautogroup rt_group_sched=0 shards_root=/dev/pmem0";
++        assert_eq!(
++            booted("console=ttyS0 -- managed-network capabilities", true),
++            format!("console=ttyS0 {options} shards_template=1 -- managed-network capabilities")
++        );
++        assert_eq!(
++            booted("console=ttyS0 \"--\"\tx  'y z'", false),
++            format!("console=ttyS0 {options} \"--\"\tx  'y z'")
++        );
++        assert_eq!(
++            booted("console=ttyS0 earlycon panic=-1", true),
++            format!("console=ttyS0 earlycon panic=-1 {options} shards_template=1")
++        );
++    }
+     use std::os::unix::ffi::OsStrExt as _;
+ 
+     /// Each flag `spec::RUN_VALUED` names is one `run` reads a value after: given last, with none,
+diff --git a/crates/vmm/src/vm/mod.rs b/crates/vmm/src/vm/mod.rs
+index a075a0f6f..9eb85d56f 100644
+--- a/crates/vmm/src/vm/mod.rs
++++ b/crates/vmm/src/vm/mod.rs
+@@ -2778,6 +2778,25 @@ mod tests {
+         assert_eq!(told(&other, Console::Discard), format!("{other} quiet"));
+     }
+ 
++    /// The kernel is told `quiet` before Linux's init-argument delimiter, where it reads it,
++    /// and only its own words tell it a level: past `--` they are init's arguments, which it
++    /// keeps whole (finding 3 of audit-fix-host-v1: `quiet` became init's last argument).
++    #[test]
++    fn quiet_goes_before_inits_arguments_which_name_no_level() {
++        let told = |cmdline: &str| {
++            let mut cfg = Config::new("k".into(), None);
++            cfg.cmdline = cmdline.into();
++            cfg.console = Console::Discard;
++            kernel_cmdline(&cfg).into_owned()
++        };
++        assert_eq!(
++            told("console=ttyS0 -- managed-network capabilities"),
++            "console=ttyS0 quiet -- managed-network capabilities"
++        );
++        assert_eq!(told("console=ttyS0 -- quiet"), "console=ttyS0 quiet -- quiet");
++        assert_eq!(told("loglevel=7 -- x"), "loglevel=7 -- x");
++    }
++
+     /// BARs are placed from the window's start, each at the next multiple of its size,
+     /// and one past the window's end is refused, the window as it was.
+     #[test]

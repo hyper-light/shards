@@ -1,0 +1,40 @@
+# command: cargo fmt --all --check
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: d1f892fc40c555a82bc34ef02a1e124f1d692bde
+# source diff vs HEAD (excluding this evidence directory): 285 lines, sha256 d2b0d9ce380704f7f74f5a9e283d6669e546834f28664d08ee721602c2b1616e
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T21:37:04Z
+# free GiB on /Users/adalundhe: 34
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vm-process/src/../../shards/src/vm_run.rs:1196:
+     // Each the kernel's, before init's arguments where its command line has them (`--`):
+     // the kernel reads them there, and init finds `shards_root` and `shards_template` in
+     // its environment.
+-    let options = ["quiet", "noautogroup", "rt_group_sched=0", "shards_root=/dev/pmem0"]
+-        .into_iter()
+-        .chain(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus).split_whitespace())
+-        .chain(template.then_some("shards_template=1"));
++    let options = [
++        "quiet",
++        "noautogroup",
++        "rt_group_sched=0",
++        "shards_root=/dev/pmem0",
++    ]
++    .into_iter()
++    .chain(shards_vmm::vm::late_cpus_cmdline(cfg.vcpus).split_whitespace())
++    .chain(template.then_some("shards_template=1"));
+     cfg.cmdline = shards_vmm::vm::with_kernel_options(&cfg.cmdline, options);
+ }
+ 
+Diff in /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/crates/vmm/src/vm/cmdline.rs:190:
+                 format!("{prefix}quiet shards_root=/dev/pmem0 {tail}")
+             );
+         }
+-        assert_eq!(with_kernel_options("-- init", options), "quiet shards_root=/dev/pmem0 -- init");
++        assert_eq!(
++            with_kernel_options("-- init", options),
++            "quiet shards_root=/dev/pmem0 -- init"
++        );
+         for (told, expected) in [
+             ("", " quiet shards_root=/dev/pmem0"),
+             ("a  ", "a   quiet shards_root=/dev/pmem0"),
+# exit: 1 at 2026-11-11T21:37:11Z
