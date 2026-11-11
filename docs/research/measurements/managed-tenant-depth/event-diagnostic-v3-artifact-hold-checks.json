@@ -1,0 +1,20 @@
+{
+  "command": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "python3",
+    "-c",
+    "import json,subprocess\ncmds={\"policy\":[\"python3\",\"scripts/check-development-policy\"],\"diff\":[\"git\",\"diff\",\"--check\"]}\nresult={}\nfor name,cmd in cmds.items():\n p=subprocess.run(cmd,capture_output=True,text=True);result[name]={\"command\":cmd,\"exit\":p.returncode,\"stdout\":p.stdout,\"stderr\":p.stderr}\nprint(json.dumps(result,indent=2))\nraise SystemExit(any(v[\"exit\"]!=0 for v in result.values()))"
+  ],
+  "exit": 0,
+  "stdout": "{\n  \"policy\": {\n    \"command\": [\n      \"python3\",\n      \"scripts/check-development-policy\"\n    ],\n    \"exit\": 0,\n    \"stdout\": \"Development policy checks passed; evidence/coordinator review is still required.\\n\",\n    \"stderr\": \"\"\n  },\n  \"diff\": {\n    \"command\": [\n      \"git\",\n      \"diff\",\n      \"--check\"\n    ],\n    \"exit\": 0,\n    \"stdout\": \"\",\n    \"stderr\": \"\"\n  }\n}\n",
+  "stderr": "",
+  "original_archive_unchanged": true,
+  "crate_source_unchanged_from_249dc": true,
+  "local_free_bytes": 66520940544,
+  "vm_runs": 0,
+  "build_retry": false,
+  "binary_diagnosis": false
+}
