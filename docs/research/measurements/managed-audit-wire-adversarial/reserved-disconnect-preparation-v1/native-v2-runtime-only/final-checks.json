@@ -1,0 +1,13 @@
+{
+  "at_epoch": 1794375095.891299,
+  "policy_exit": 0,
+  "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+  "stderr": "",
+  "evidence_python_syntax_valid": 5,
+  "three_execution_controllers_exact_signed31e": true,
+  "native_source_unchanged_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+  "offline_verifier": "offline-verification.json exit0",
+  "actual_runtime_attempts": 1,
+  "runtime_retries": 0,
+  "no_cargo_or_additional_case": true
+}

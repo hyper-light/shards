@@ -1,0 +1,25 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"e30189ea29182644fe5a4b2e06c7dac2\",\n    \"output\": \"\",\n    \"running\": true,\n    \"told\": \"kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.\",\n    \"id\": \"r47\",\n    \"why\": \"macos/aarch64 · 12 of 18 cores idle · 87 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine\"\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.start\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+      "output": "",
+      "running": true,
+      "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+      "id": "r47",
+      "why": "macos/aarch64 · 12 of 18 cores idle · 87 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine"
+    },
+    "calls": [
+      {
+        "name": "machines.start",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

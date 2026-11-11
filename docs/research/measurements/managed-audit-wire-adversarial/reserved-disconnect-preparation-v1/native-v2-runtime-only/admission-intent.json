@@ -1,0 +1,9 @@
+{
+  "start_epoch": 1794374801.432727,
+  "deadline_epoch": 1794375401.432727,
+  "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+  "needs": "macos/aarch64,cpus=2,mem=2g,disk=4g,tool:cargo",
+  "runtime_attempts": 0,
+  "runtime_retries_allowed": 0,
+  "new_scope_separate_from_expired_v1": true
+}

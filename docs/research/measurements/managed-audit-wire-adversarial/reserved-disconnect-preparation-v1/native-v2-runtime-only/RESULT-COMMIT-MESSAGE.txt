@@ -1,0 +1,5 @@
+test: prove native Reserved audit disconnect with frozen caller
+
+Run the selected eight-frame ordinary disconnect case once from the verified frozen binary in a new runtime-only scope. Preserve actual same-owner accounting, held byte/object identities and end/join/FD/root-deletion proof, with individual lease/cursors Unobserved. Verify all 47 raw and 176 source payloads; retain expired v1 unchanged and make no main/VM/physical/durability/cost claim.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

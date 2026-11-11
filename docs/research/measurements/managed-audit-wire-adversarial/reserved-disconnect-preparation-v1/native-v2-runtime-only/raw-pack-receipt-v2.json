@@ -1,0 +1,13 @@
+{
+  "status": "AllActualRawVerified_NoActorRerun",
+  "archive": "/Users/adalundhe/managed-audit-wire-reserved-disconnect-runtime-v2/raw-runtime-v2.tar.gz",
+  "bytes": 9556,
+  "sha256": "ad0831c428eab641d3469b7137797213143bb46f7f803c22768105a599590afb",
+  "manifest_sha256": "add36bb58f75ece4ce0f1375c28d4df26746aca2260038279216137e7663794b",
+  "payloads": 47,
+  "total_members": 48,
+  "runtime_attempts": 1,
+  "runtime_retries": 0,
+  "packed_at_epoch": 1794374877.4111512,
+  "scope_deadline_epoch": 1794375401.432727
+}
