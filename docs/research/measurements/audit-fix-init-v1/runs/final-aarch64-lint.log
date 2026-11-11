@@ -1,0 +1,63 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/capture.sh bash -c 'git rev-parse HEAD; git status --short -- crates; s=0; for t in aarch64-unknown-linux-gnu aarch64-unknown-linux-musl; do echo "== cargo clippy -p shards-init --all-targets --target $t -j2 -- -D warnings"; cargo clippy -p shards-init --all-targets --target $t -j2 -- -D warnings 2>&1; r=$?; echo "== exit $r: $t"; [ $r -eq 0 ] || s=1; done; echo "== cargo check -p shards-init --target aarch64-unknown-linux-musl -j2"; cargo check -p shards-init --target aarch64-unknown-linux-musl -j2 2>&1; r=$?; echo "== exit $r: check aarch64-unknown-linux-musl"; [ $r -eq 0 ] || s=1; exit $s'
+# tree: 351af179 (all three findings committed), crates clean
+# result: clippy -D warnings (all targets) on aarch64 gnu and musl, and the aarch64 musl check, all exit 0 (check only: no aarch64 test binary was run)
+# this copy's body hashes to the runner's capture-sha256 (checked locally)
+351af1790f44415a19edd3e21482eabf2624a494
+== cargo clippy -p shards-init --all-targets --target aarch64-unknown-linux-gnu -j2 -- -D warnings
+   Compiling num-traits v0.2.19
+   Compiling libc v0.2.189
+    Checking memchr v2.8.3
+    Checking aho-corasick v1.1.5
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/abi)
+    Checking regex-syntax v0.8.11
+    Checking regex-automata v0.4.18
+    Checking num-integer v0.1.47
+    Checking num-bigint v0.4.8
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/template)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/cmdline)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/testdir)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/devcgroup)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/user)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/dns)
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.98s
+== exit 0: aarch64-unknown-linux-gnu
+== cargo clippy -p shards-init --all-targets --target aarch64-unknown-linux-musl -j2 -- -D warnings
+   Compiling num-traits v0.2.19
+   Compiling libc v0.2.189
+    Checking memchr v2.8.3
+    Checking aho-corasick v1.1.5
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/abi)
+    Checking regex-syntax v0.8.11
+    Checking regex-automata v0.4.18
+    Checking num-integer v0.1.47
+    Checking num-bigint v0.4.8
+    Checking regex v1.13.1
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/template)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/cmdline)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/testdir)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/user)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/devcgroup)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/erofs)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/dns)
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.75s
+== exit 0: aarch64-unknown-linux-musl
+== cargo check -p shards-init --target aarch64-unknown-linux-musl -j2
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/abi)
+    Checking shards-template v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/template)
+    Checking shards-archive v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/archive)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/cmdline)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/devcgroup)
+    Checking shards-dns v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/dns)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/user)
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.18s
+== exit 0: check aarch64-unknown-linux-musl
+capture-sha256 a3d092b13a5aedba71b71b2264f22dc82d2a7d43fd1d319b43e2bde9c7113c10 exit 0

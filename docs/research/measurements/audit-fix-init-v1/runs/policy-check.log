@@ -1,0 +1,4 @@
+# local run on this Mac (kiln runner e30189ea29182644fe5a4b2e06c7dac2, adas-macbook-pro-2.local), worktree at 351af1790f44415a19edd3e21482eabf2624a494, tree clean except untracked evidence
+# command: python3 scripts/check-development-policy; echo "exit=$?"
+Development policy checks passed; evidence/coordinator review is still required.
+exit=0

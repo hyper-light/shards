@@ -1,0 +1,268 @@
+{
+ "type": "EVIDENCE",
+ "task": "audit-fix-init-v1: verified guest-init audit findings 1-3 fixed under R09; 4 deferred",
+ "identity": {
+  "policy_read": "POLICY_READ.json",
+  "policy_revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT",
+  "branch": "p/audit-fix-init-v1",
+  "base": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "commits": {
+   "finding_1": "d0d1585a244756ab13245bdc4caeef9e52d05ed9",
+   "finding_2": "c8439a5dbb68e08481da667e4fd3410db39406b1",
+   "finding_3": "351af1790f44415a19edd3e21482eabf2624a494",
+   "evidence_index": "the commit adding this file (child of 351af179)"
+  },
+  "owned_paths": [
+   "crates/init/src/metrics.rs",
+   "crates/init/src/metrics/otlp.rs",
+   "crates/init/src/metrics/tests.rs",
+   "crates/init/src/engine.rs",
+   "docs/research/measurements/audit-fix-init-v1/**"
+  ],
+  "not_touched": "crates/init/src/relay.rs (path-shared with testguest), domains/admission.rs, every other crate and worktree",
+  "runner": {
+   "kiln": "451397fcc585f7f7cb9aaf00e42064bb",
+   "host": "adacachy",
+   "kernel": "Linux 7.2.9-2-cachyos x86_64",
+   "distribution": "CachyOS",
+   "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01), cargo 1.98.1 (repo pin; targets incl. x86_64/aarch64 musl already installed)",
+   "settings": "needs cpus=2,mem=2g,disk=4g; timeout_s<=600; -j2; RUSTUP_AUTO_INSTALL=0; no background runs",
+   "log": "runs/env-probe.log"
+  },
+  "guest_kernel": "Linux 6.18.48 (crates/shards/src/kernel.rs); resources/kernel/firecracker-{x86_64,aarch64}-6.18.config set CONFIG_BLK_CGROUP=y, CONFIG_BLK_DEV_THROTTLING=y, CONFIG_BLK_CGROUP_IOCOST=y; the shards delta configs do not override them"
+ },
+ "baseline": {
+  "logs": [
+   "runs/00-baseline-build.log",
+   "runs/01-baseline-tests.log"
+  ],
+  "result": "shards-init unit suite at unmodified bff3015: 145 passed, 0 failed, 1 ignored"
+ },
+ "findings": [
+  {
+   "id": 1,
+   "title": "io.stat: a device line with neither rbytes= nor wbytes= made the whole cgroup Missing",
+   "status": "fixed",
+   "commit": "d0d1585a244756ab13245bdc4caeef9e52d05ed9",
+   "files": [
+    "crates/init/src/metrics.rs",
+    "crates/init/src/metrics/tests.rs"
+   ],
+   "sources": [
+    "Linux v6.18 block/blk-cgroup.c 1178-1227 (blkcg_print_one_stat: '%s ' then the byte fields only if rbytes||wbytes||rios||wios, 1206-1210)",
+    "Linux v6.18 block/blk-iocost.c 3048-3070 (ioc_pd_stat: ' cost.usage=' may follow a device with no byte fields)"
+   ],
+   "live_input": "runs/cgroup-io-probe.sh/.log (read-only, Linux 7.2.9): 28 device-only lines, e.g. a real io.stat '253:0 \\n' followed by four full lines (bytes shown by od); 0 lines with exactly one of the pair",
+   "red": {
+    "test": "metrics::tests::device_lines_without_byte_fields_add_zero",
+    "tree": "bff3015 + patches/f1-red-tests-only.patch (tests only)",
+    "command": "cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- metrics::tests::device_lines_without_byte_fields_add_zero metrics::tests::a_device_line_with_one_byte_field_is_missing",
+    "log": "runs/f1-1-red.log",
+    "key_output": "left: (Err(Missing), Err(Missing)) / right: (Ok(727859200), Ok(0)) for the live io.stat bytes"
+   },
+   "green": {
+    "tree": "patches/f1-green.patch",
+    "log": "runs/f1-2-green.log",
+    "result": "37 of 37 metrics tests pass"
+   },
+   "mutation": {
+    "removed": "only the match arm (None, None) => (0, 0)",
+    "tree": "patches/f1-mutation.patch",
+    "log": "runs/f1-3-mutation.log",
+    "result": "the same red failure (Err(Missing), Err(Missing)); guard restored, tree hash rechecked"
+   },
+   "retained_behavior": "metrics::tests::a_device_line_with_one_byte_field_is_missing: exactly one of the pair present stays Failure::Missing (passes before and after)",
+   "lint_logs": [
+    "runs/f1-4-lint-fmt-fail.log (rustfmt layout of the new test only)",
+    "runs/f1-5-lint-and-tests.log"
+   ]
+  },
+  {
+   "id": 2,
+   "title": "members (io not delegated) recorded two Io(ENOENT) collection errors on every snapshot",
+   "status": "fixed",
+   "commit": "c8439a5dbb68e08481da667e4fd3410db39406b1",
+   "files": [
+    "crates/init/src/metrics.rs",
+    "crates/init/src/metrics/otlp.rs",
+    "crates/init/src/metrics/tests.rs"
+   ],
+   "change": "Snapshot.read_bytes/write_bytes: Result<IoBytes, Failure>, IoBytes::{Counted(u64), NotDelegated}; NotDelegated is omitted from shards.cgroup.disk.io and not counted in shards.cgroup.collection.error.count. The reader consults the cgroup's own cgroup.controllers only after io.stat fails ENOENT; a listing without io gives NotDelegated; a listing with io, an unreadable listing, or any other failure keeps the failure. Delegated controllers unchanged.",
+   "sources": [
+    "Linux v6.18 Documentation/admin-guide/cgroup-v2.rst 484-489 (enabling a controller creates its interface files in the children) and 935-940 (cgroup.controllers)",
+    "crates/init/src/domains/admission.rs enable(): members get +pids +memory only",
+    "crates/init/src/run.rs cgroups(): root and run enable +io one at a time, a missing controller stays off"
+   ],
+   "live_premise": "runs/cgroup-io-probe.log: io.stat present exactly where cgroup.controllers lists io in 1150 of 1150 live cgroups (983 listed+present, 167 unlisted+absent)",
+   "alternatives": [
+    "static per-scope rule (Member => not delegated): rejected, it copies admission's delegation into metrics as a hidden cross-module obligation (R05/R06) and would silently drop io if members were ever given it",
+    "read cgroup.controllers for every scope before io.stat: rejected, extra syscalls on run and workload scopes where io.stat exists",
+    "chosen: read the kernel's listing only after ENOENT (authoritative, no cache, no cost where io.stat exists)"
+   ],
+   "red": {
+    "test": "metrics::tests::a_member_without_the_io_controller_reports_no_collection_error",
+    "tree": "d0d1585a + patches/f2-red-tests-only.patch (tests only)",
+    "command": "cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- metrics::tests::a_member_without_the_io_controller_reports_no_collection_error",
+    "log": "runs/f2-1-red.log",
+    "key_output": "member OTLP shards.cgroup.collection.error.count asInt \"2\" (disk.io read and write, error.type io, errno 2); left: \"2\" right: \"0\""
+   },
+   "green": {
+    "tree": "patches/f2-green.patch",
+    "log": "runs/f2-2-green.log",
+    "result": "39 of 39 metrics tests pass"
+   },
+   "mutation": {
+    "removed": "only the arm Err(Failure::Io(ENOENT)) if self.enabled(group, b\"io\") == Ok(false) => NotDelegated",
+    "tree": "patches/f2-mutation.patch",
+    "log": "runs/f2-3-mutation.log",
+    "result": "reproduction red again (count \"2\"); pinned test red at Member(7) 'memory pids' with (Err(Io(2)), Err(Io(2))); guard restored, tree hash rechecked"
+   },
+   "pinned_test_update": "metrics::tests::empty_io_is_zero_but_missing_io_remains_an_io_failure became empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated: NotDelegated where the listing leaves io out (member and run scope), Io(ENOENT) where it names io (workload, member) or is unreadable, Io(ELOOP) stays for a symlinked io.stat",
+   "lint_logs": [
+    "runs/f2-4-lint-fmt-fail.log (rustfmt layout only)",
+    "runs/f2-5-lint-and-tests.log"
+   ],
+   "cost_note": "by code path, a member snapshot now also opens cgroup.controllers (1 openat, 2 read, 1 close) after the failing io.stat openat; run/workload scopes unchanged; not measured (no strace on the runner; profiling is ROOT's)"
+  },
+  {
+   "id": 3,
+   "title": "engine relay logged a client's normal departure as a fault",
+   "status": "fixed",
+   "commit": "351af1790f44415a19edd3e21482eabf2624a494",
+   "files": [
+    "crates/init/src/engine.rs"
+   ],
+   "change": "relay() passes its post-HELLO part to forward(conn, host, slots, log), which reads the pump's typed result as End::{Ended, ClientDeparted, Fault(Fault)} and says only Fault. ClientDeparted = client leg, Read with ECONNRESET, or Write with EPIPE or ECONNRESET. relay.rs (shared pump), buffer size and threading unchanged.",
+   "sources": [
+    "Linux v6.18 net/unix/af_unix.c 696-711 (a closing peer sets the relay socket's shutdown both ways, and sk_err ECONNRESET if it left bytes unread)",
+    "af_unix.c 2433-2434 and 2529-2532 (unix_stream_sendmsg: SEND_SHUTDOWN gives EPIPE)",
+    "af_unix.c 2995 (unix_stream_read_generic: sock_error before EOF gives ECONNRESET)",
+    "Linux v6.18 net/core/sock.c 2945-2947 (sock_alloc_send_pskb returns sock_error first: a write racing the close can see ECONNRESET)",
+    "the pre-pump relay ignored copy errors (git show 1be384ecb -- crates/init/src/engine.rs)"
+   ],
+   "alternatives": [
+    "Termination::ClientDeparted inside the pump: rejected, relay.rs is path-shared with testguest's TCP fixture, where a client-leg ECONNRESET is a fault it acts on (reset_peer), and ROOT's carried evidence pins the pump's hash",
+    "chosen: the engine caller's typed reading of the pump's result (relay.rs: terminal policy comes from the caller)"
+   ],
+   "seam": "patches/f3-seam-only.patch: behavior-preserving extraction of forward(conn, host, slots, log); relay passes io::stderr()",
+   "red": {
+    "tests": [
+     "engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault",
+     "engine::tests::a_client_gone_before_the_next_line_is_not_a_fault"
+    ],
+    "tree": "c8439a5d + patches/f3-red.patch (seam + socket tests)",
+    "command": "cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- engine::tests::  then the built test binary 200 times",
+    "log": "runs/f3-4-red.log",
+    "key_output": "left: \"shards-init: engine relay: Native { leg: Client, operation: Read, kind: ConnectionReset, errno: Some(104) }\\n\" and \"... operation: Write, kind: BrokenPipe, errno: Some(32) }\\n\", right: \"\"; 200 of 200 repeats red"
+   },
+   "green": {
+    "tree": "patches/f3-green.patch",
+    "log": "runs/f3-5-green.log",
+    "result": "4 of 4 engine tests pass; 200 of 200 repeats"
+   },
+   "mutation": {
+    "removed": "only the ClientDeparted arm of End::of",
+    "tree": "patches/f3-mutation.patch",
+    "log": "runs/f3-6-mutation.log",
+    "result": "both departures said again with the red text, table test red; 200 of 200 repeats; guard restored, tree hash rechecked"
+   },
+   "retained_behavior": "engine::tests::an_engine_reset_is_still_said: an engine-leg ECONNRESET is still logged and the client's connection still ended",
+   "test_design_correction": "runs/f3-1..3-*-first-design.log and patches/f3-*-first-design.patch: the first departure script dropped the engine end right after the client; 1 of 200 mutation runs then saw the engine's EOF first (Termination::BackendEnded, nothing said). Tests now hold the engine end open until the relay ends, as a streaming engine does; red/green/mutation rerun.",
+   "lint_logs": [
+    "runs/f3-7-lint-fmt-fail.log (rustfmt layout of forward's signature)",
+    "runs/f3-8-lint-and-tests.log"
+   ]
+  },
+  {
+   "id": 4,
+   "title": "optional: admission has_word one byte per read(2), enable() reopens files, Committed opens cgroup.kill/cgroup.events again opened by Launch::new",
+   "status": "deferred",
+   "verified_in_source": [
+    "domains/admission.rs has_word reads one byte per read; enable() opens cgroup.controllers twice and cgroup.subtree_control up to four times to read (once more to write where a controller is missing); it runs twice per Parent::prepare (run and domains), once per domains start (domains.rs 1380)",
+    "Prepared::commit opens cgroup.kill and cgroup.events as _kill/_events, never used, dropped by into_file after clone3; managed.rs Launch::new (265-266) opens both again, once per member (domains.rs 1617-1618, 1779)"
+   ],
+   "why_deferred": [
+    "no strace on the runner (runs/env-probe.log), so no strace -c before/after",
+    "a buffered has_word needs a production buffer bound derived under R03 (candidate: at most 16 subsystems, v6.18 kernel/cgroup/cgroup.c 6354, of at most 32-byte names, include/linux/cgroup-defs.h 37) and a read-count seam: a design change beyond a light fix",
+    "dropping Committed's opens moves a documented reservation ('Reserve the existing lifecycle controls before the first release') and its typed Refusal/rollback point into managed::Launch, an ownership/API decision for ROOT (R02/R05)",
+    "the costs are on the domain start path, whose profiling ROOT owns"
+   ]
+  }
+ ],
+ "final_checks_at_351af179": {
+  "fmt": "cargo fmt --all --check: exit 0 (runs/f3-8-lint-and-tests.log)",
+  "clippy_x86_64_gnu": "cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings: exit 0 (runs/f3-8)",
+  "clippy_x86_64_musl": "cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings: exit 0 (runs/f3-8)",
+  "check_x86_64_musl": "cargo check -p shards-init --target x86_64-unknown-linux-musl -j2: exit 0 (runs/f3-8)",
+  "clippy_aarch64_gnu_and_musl": "cargo clippy -p shards-init --all-targets --target aarch64-unknown-linux-{gnu,musl} -j2 -- -D warnings: exit 0 (runs/final-aarch64-lint.log)",
+  "check_aarch64_musl": "cargo check -p shards-init --target aarch64-unknown-linux-musl -j2: exit 0 (runs/final-aarch64-lint.log)",
+  "unit_suite": "cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2: 153 passed, 0 failed, 1 ignored (baseline 145/0/1 + 8 new tests) (runs/f3-8)",
+  "policy_script": "python3 scripts/check-development-policy: passed (runs/policy-check.log)"
+ },
+ "not_run": [
+  "VM E2E of any finding (light-test scope): io.max before I/O in a real guest, a real member cgroup's metrics, the engine relay over the real vsock host leg",
+  "aarch64 unit tests (aarch64 targets checked and linted only; no aarch64 Linux test host used)",
+  "testguest build/lint (relay.rs, the only shared file, is unchanged)",
+  "the seven-target scripts/lint and the workspace clippy (only shards-init was linted; the changes sit in Linux-only modules)",
+  "any benchmark, profiling or syscall measurement (ROOT); finding 2's added member-snapshot syscalls are a code-path count, unmeasured"
+ ],
+ "rules": {
+  "R01": "no unwrap/expect/indexing/slicing/unchecked arithmetic in the new production code (checked_add kept; total matches); workspace panic lints via clippy -D warnings pass on x86_64/aarch64 gnu/musl",
+  "R02": "primary sources and live data per finding above; alternatives recorded per finding",
+  "R03": "no new production literal beyond kernel names/errnos (the controller name io, ENOENT/EPIPE/ECONNRESET) and the additive identity for a device with no byte fields, each cited",
+  "R04": "IoBytes::{Counted, NotDelegated}; End::{Ended, ClientDeparted, Fault}; callers match variants, text only at presentation",
+  "R05": "no cache, poll or wait added; finding 2 reads the kernel's authoritative listing only after ENOENT",
+  "R06": "small total matches, no new nesting beyond one match level",
+  "R07": "comments carry source/derivation only",
+  "R08": "no performance claim",
+  "R09": "each finding red on unmodified behavior (finding 3 through a behavior-preserving seam), green, guard-only mutation red; finding 3 repeated 200x each",
+  "R10": "this directory: commands, raw logs, patches of every tree state, probes, log-integrity tools",
+  "R11": "shards-init is Linux guest only; x86_64 gnu/musl tested+linted, aarch64 gnu/musl linted+checked; aarch64 tests unverified",
+  "R12": "existing Reader::tokens and the shared pump reused; relay.rs unchanged",
+  "R13": "three focused changes; finding 4 deferred rather than widened",
+  "R14": "profiling is ROOT's; no heap allocation added on the changed production paths (the reader's one page and the pump's mapped slots are reused as before)",
+  "R15": "implementer, light tests only, no agents spawned or messaged, signed commits with named paths, no push/merge/rebase",
+  "R16": "no cleanup needed; runner build output stays in the kiln-synced copy's target/ (runner /home had 197 GB free)"
+ },
+ "log_integrity": {
+  "method": "logs from capture.sh runs carry the runner's sha256 of the raw output, checked against the saved copy (runs/log-tools/verify.py); logs saved earlier by hand were rechecked against the tool's verbatim output (runs/log-tools/compare.py): all identical",
+  "hand_saved_and_rechecked": [
+   "env-probe.log",
+   "cgroup-io-probe.log",
+   "00-baseline-build.log",
+   "01-baseline-tests.log",
+   "f1-1-red.log",
+   "f1-2-green.log",
+   "f1-3-mutation.log",
+   "f1-4-lint-fmt-fail.log",
+   "f1-5-lint-and-tests.log",
+   "f2-2-green.log",
+   "f2-5-lint-and-tests.log"
+  ],
+  "decoded_from_verbatim_output": [
+   "f2-1-red.log",
+   "f2-3-mutation.log",
+   "f2-4-lint-fmt-fail.log",
+   "f3-1-red-first-design.log"
+  ],
+  "hash_checked": [
+   "f3-2-green-first-design.log",
+   "f3-3-mutation-first-design.log",
+   "f3-4-red.log",
+   "f3-5-green.log",
+   "f3-6-mutation.log",
+   "f3-7-lint-fmt-fail.log",
+   "f3-8-lint-and-tests.log",
+   "final-aarch64-lint.log"
+  ],
+  "correction": "f3-1-red-first-design.log was first retyped with a wrong summary line (1 failed for 2 failed); caught before commit and rewritten from the verbatim output"
+ },
+ "followups_for_root": [
+  "docs/research/managed-runtime-otel-metrics.md (io.stat -> shards.cgroup.disk.io row) does not yet say a scope without the io controller omits disk.io without a diagnostic (outside this lane's paths)",
+  "host-side consumers: crates/shards/tests/managed_output/metrics.rs only requires the error-count gauge, which remains; no host code read member io errors",
+  "finding 4 needs a design decision (buffer bound, Launch descriptor hand-off) and before/after syscall evidence on a host with strace or a kernel counter"
+ ]
+}
