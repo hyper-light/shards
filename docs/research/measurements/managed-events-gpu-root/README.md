@@ -43,3 +43,10 @@ R15: ROOT owns this integration, audit, gates, profiles and merge; no prior sour
 result is relabelled. R16: fresh source tree, no local Rust build and no source,
 evidence, frozen binary or library deletion. Paused WinARM and all held campaigns
 remain untouched. FullP0–P13/G25 is incomplete.
+
+The subsequent [GPU test readiness change](../managed-virtio-gpu/event-wait-v1/README.md)
+uses existing Log/IRQ notifications and Thread park/unpark. ROOT verified all43
+selected files and actual14/0/0 native stdout, eight child-reap/FD10→10 records,
+unchanged production prefix and original five-second/assertion contract. It adds
+no readiness counter or queue. Other platform runtime and combined gates remain
+open at this new composed test source.

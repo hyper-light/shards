@@ -1,0 +1,16 @@
+{
+  "actual_target_file_bytes": 591839537,
+  "target_file_bytes_below_4GiB": true,
+  "frozen_binary_verified": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-event-wait-v1/frozen/shards-vmm-gpu-tests",
+    "bytes": 18506928,
+    "sha256": "b625af811ce0063d80ee714be90f75c3a58d215787bb25667065fe3c4b4e5692"
+  },
+  "all8_direct_children_reaped": true,
+  "every_controller_fd_pair_equal": true,
+  "whole_population_kernel_return": "Unknown",
+  "source_unchanged_since_native_execution": true,
+  "old286_manifest_unchanged": true,
+  "active_jobs": 0,
+  "cleanup_or_cache_deletion": false
+}

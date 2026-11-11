@@ -16,5 +16,7 @@
   "gpu_renderer_selector_L2_imported": false,
   "new_dependencies_or_ABI": false,
   "combined_compile_runtime_cost_gates": "OPEN",
-  "event_data_integrity_campaign": "r61 in flight at original a8ad source; not a new candidate pass"
+  "event_data_integrity_campaign": "r61 completed baseline0/mutant101/restored0; source byte-restored;111 original payloads verified",
+  "gpu_event_wait_patch_sha256": "cb36b10a656b0b27e212b21f7d41725afa8ea1d8440bc2cacf649d3b1c792fde",
+  "gpu_event_wait_production_prefix_byte_equal": true
 }

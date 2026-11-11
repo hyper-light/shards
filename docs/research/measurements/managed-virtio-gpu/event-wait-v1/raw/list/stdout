@@ -1,0 +1,16 @@
+devices::virtio::gpu::protocol::tests::a_request_cannot_claim_more_than_it_holds: test
+devices::virtio::gpu::protocol::tests::a_request_reads_across_its_buffers: test
+devices::virtio::gpu::protocol::tests::answers_echo_their_fence: test
+devices::virtio::gpu::protocol::tests::answers_span_empty_descriptors: test
+devices::virtio::gpu::protocol::tests::answers_stop_at_short_or_inaccessible_buffers: test
+devices::virtio::gpu::protocol::tests::requests_skip_empty_descriptors: test
+devices::virtio::gpu::tests::a_blobs_entries_are_guest_ram: test
+devices::virtio::gpu::tests::a_gpu_is_saved_only_with_nothing_of_its_host_drivers: test
+devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence: test
+devices::virtio::gpu::tests::blobs_map_where_the_window_is_free: test
+devices::virtio::gpu::tests::capsets_are_offered_by_index: test
+devices::virtio::gpu::tests::contexts_are_of_the_capsets_offered: test
+devices::virtio::gpu::tests::fenced_answers_wait_their_turn: test
+devices::virtio::gpu::tests::the_worker_uses_a_fenced_request_once_signalled: test
+
+14 tests, 0 benchmarks

@@ -1,0 +1,9 @@
+{
+  "production_prefix_byte_equal": true,
+  "all_original_phase_predicates_and_used_heads_preserved": true,
+  "five_second_guard_preserved": true,
+  "new_case_has_sleep": false,
+  "source_sha256": "084920513d4689ab7683f2f1d027d653da08d7ccba98eb2394b07c2ab85d6352",
+  "patch_bytes": 3108,
+  "patch_sha256": "cb36b10a656b0b27e212b21f7d41725afa8ea1d8440bc2cacf649d3b1c792fde"
+}

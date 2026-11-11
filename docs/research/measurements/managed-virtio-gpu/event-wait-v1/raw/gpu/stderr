@@ -1,0 +1,1 @@
+[43675          0us WARN] virtio-gpu: the guest mapped a blob 0x2000 into its window, which the host maps in pages of 16384 bytes: its driver does not align blobs (VIRTIO_GPU_F_BLOB_ALIGNMENT, Linux 7.2)

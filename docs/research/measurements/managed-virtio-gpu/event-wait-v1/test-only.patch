@@ -1,0 +1,84 @@
+diff --git a/crates/vmm/src/devices/virtio/gpu/mod.rs b/crates/vmm/src/devices/virtio/gpu/mod.rs
+index f463fcff63bc58667d0ce1517c4189d16c43782a..9a7256bfbdbed244b78e67ab9f78727c032f76ae 100644
+--- a/crates/vmm/src/devices/virtio/gpu/mod.rs
++++ b/crates/vmm/src/devices/virtio/gpu/mod.rs
+@@ -917,9 +917,16 @@ mod tests {
+         worker: Option<Thread>,
+         signal_on_destroy: Option<Signal>,
+         drained_signals: usize,
++        observer: Option<Thread>,
+     }
+ 
+     impl Log {
++        fn notify_observer(&self) {
++            if let Some(observer) = &self.observer {
++                observer.unpark();
++            }
++        }
++
+         fn signal(log: &Mutex<Log>, ctx: u32, ring: u8, fence: u64) {
+             let mut l = log.lock().unwrap();
+             l.signals.push(Signal { ctx, ring, fence });
+@@ -938,7 +945,9 @@ mod tests {
+ 
+     impl Fake {
+         fn note(&self, call: String) {
+-            self.log.lock().unwrap().calls.push(call);
++            let mut log = self.log.lock().unwrap();
++            log.calls.push(call);
++            log.notify_observer();
+         }
+     }
+ 
+@@ -994,8 +1003,11 @@ mod tests {
+         }
+         fn signals(&mut self, into: &mut Vec<Signal>) {
+             let mut log = self.log.lock().unwrap();
+-            log.drained_signals += log.signals.len();
+-            into.append(&mut log.signals);
++            if !log.signals.is_empty() {
++                log.drained_signals += log.signals.len();
++                into.append(&mut log.signals);
++                log.notify_observer();
++            }
+         }
+         fn wake(&mut self, worker: Thread) {
+             self.log.lock().unwrap().worker = Some(worker);
+@@ -1482,7 +1494,19 @@ mod tests {
+ 
+     #[test]
+     fn a_recreated_context_waits_for_its_own_fence() {
++        struct Wake(Thread);
++
++        impl crate::devices::Interrupt for Wake {
++            fn set_level(&self, level: bool) {
++                if level {
++                    self.0.unpark();
++                }
++            }
++        }
++
+         let (served, log, mem) = served();
++        let observer = thread::current();
++        log.lock().unwrap().observer = Some(observer.clone());
+         let mem = Arc::new(mem);
+         let mut gpu = Gpu::new(served);
+         let mut control = Ring::new(RAM + 0x80000, 16);
+@@ -1490,7 +1514,7 @@ mod tests {
+         gpu.activate(Activation {
+             memory: mem.clone(),
+             queues: vec![control.queue(&mem), cursor.queue(&mem)],
+-            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Line))),
++            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Wake(observer)))),
+             features: gpu.features(),
+             restored: false,
+         })
+@@ -1502,7 +1526,7 @@ mod tests {
+                     Instant::now() < end,
+                     "the worker did not reach the requested state"
+                 );
+-                thread::sleep(Duration::from_millis(1));
++                thread::park_timeout(end.saturating_duration_since(Instant::now()));
+             }
+         };
+         let mut create_fields = le(&[0, 4]);
