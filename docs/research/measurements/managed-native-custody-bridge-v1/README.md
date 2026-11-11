@@ -7,7 +7,7 @@ df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3
 directory and its ignored isolated candidates. No active peer file and no main
 production file changed. This is ROOT composition onto the runtime owner's
 unadopted custody v10d source (manifest 9904e4bb, owner 01a1c99e), not an
-adoption of v10d. The final delta is `ROOT-RUN-ON-v10d-v2.patch`.
+adoption of v10d. The final delta is `ROOT-RUN-ON-v10d-v3.patch` (v3 section below).
 
 ## Finding
 
@@ -156,3 +156,26 @@ the same 17 headings as v9b, zero cases); r8 and r14 raw `raw-r8-r14.tar.xz`
 - Strict 101 (unconsumed input/RAW/owner_input) remains owed by those consumers.
 - musl, aarch64, the full shards-init suite and real-VM startup failures are
   unverified; the `asked_to_save` allocation is recorded, not fixed.
+
+## v3 (final): every pre-birth refusal answers NOT_RUN
+
+The runtime owner's F10 answer (`DECISION-RUNTIME-OWNER-F10.json`, from ROOT's audit) extends the
+same reasoning to the pre-birth refusals that v9b already routed to VM loss: `MissingStartup`,
+`MissingNativeOwner`, `OwnerPreparation`, `HelperPreparation`, `Preparation`, `NativePreparation`,
+`InputPreparation` now join `RefusedDomain`. `run()` calls `shutdown_storage` for
+`RefusedDomain` as well as `UnreportedDomain`, so `NativePreparation`'s retained mappings are
+still shut down before power-off. `InputAttachment`, `NativeOwner` and `Audit` stay unreported.
+
+`ROOT-RUN-ON-v10d-v3.patch` (sha256 92473d04…, v10d run.rs c5b8d0d8 -> aae543a1; fresh
+check/apply 0, postimage exact); `GREEN-V3-ON-V2.patch` is the step from v2. New case
+`pre_birth_refusals_report_system_error_and_not_run` covers six of the seven (all but
+`NativePreparation`, which cannot be built without a real `birth::Member`); the
+unreported-path control moved to the post-birth `NativeOwner`.
+
+r269 (scope root-custody-report-green-v3-1794430198083, 38.3 s of ONE 600 s budget, every stage
+FD 9 -> 9): policy/format/check 0; strict 101 identical to r8's 17 headings; GREEN-v3 ELF
+a87c14b5 3/3 pass; RED (v2 production, v3 tests) ELF bef62392 fails only the new case,
+`left: [None, None, None, None, None, None]`, each refusal printing its unreported stderr line.
+Raw `raw-r269.tar.xz` d184f51f (77 payloads + manifest 37c6bb90 verified), `RESULTS-r269.json`.
+`MUSL-CHECK-v3.md`: the composed tree checks 0 for x86_64 and aarch64 musl (strict 101, same
+counts). Owed: a guest-VM run for `NativePreparation` routing and storage shutdown.

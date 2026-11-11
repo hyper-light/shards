@@ -1,0 +1,16 @@
+{
+  "green-v3": {
+    "exit": 0,
+    "stderr": "",
+    "before": "59f283aac53188bd27be3456186cc5f9401c7af821dc20981fe4ed04d2e0e71b",
+    "after": "aae543a1c33d1fd894b618c2429d62aaefbc9896de8b0a152902223fe200e197",
+    "bytes": 284456
+  },
+  "red-v2-on-v3-tests": {
+    "exit": 0,
+    "stderr": "",
+    "before": "782aef3bb30218ec45f6f3c913b46cd8aca649cf1681e4d26e5b1de0a2ab6669",
+    "after": "71197172adb2593d1a4dbc966f11d753ac6384456665d82d6565b4a8c334fb99",
+    "bytes": 283945
+  }
+}

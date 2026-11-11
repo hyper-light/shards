@@ -1,0 +1,76 @@
+{
+  "run": "r269",
+  "scope": "root-custody-report-green-v3-1794430198083",
+  "exit": 0,
+  "elapsed_seconds": 38.27495212096255,
+  "raw": {
+    "archive": "raw-r269.tar.xz",
+    "bytes": 448052,
+    "sha256": "d184f51f39bf53d0baa52a13f78a341e1a3564ecec0451e396de4436525288bc",
+    "payloads_verified": 77,
+    "manifest_sha256": "37c6bb90dc9c1f5eaf6128944477d5921b17248f7358d999f98786da05215a0d"
+  },
+  "strict": {
+    "stage": "actual-init-strict",
+    "exit": 101,
+    "diagnostics": 17,
+    "identical_to_r8_baseline": true,
+    "only_new": [],
+    "only_baseline": [],
+    "classification": "UNCHANGED known red (unconsumed input/RAW APIs), not a pass"
+  },
+  "variants": {
+    "green-v3": {
+      "run_rs_sha256": "aae543a1c33d1fd894b618c2429d62aaefbc9896de8b0a152902223fe200e197",
+      "elf_sha256": "a87c14b599b0f23bf56becf2aa8db12a38129bca0a03a7f7d09f9ea6d4528f84",
+      "cases": {
+        "member_start_refusals_report_system_error_and_not_run": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        },
+        "pre_birth_refusals_report_system_error_and_not_run": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        },
+        "rejected_parent_group_survives_system_error_until_owner_drop": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        }
+      }
+    },
+    "red-v2-on-v3-tests": {
+      "run_rs_sha256": "71197172adb2593d1a4dbc966f11d753ac6384456665d82d6565b4a8c334fb99",
+      "elf_sha256": "bef623920c318b8e29617fea009a982f46a6d9073ca9909caaec92c8fed97217",
+      "cases": {
+        "member_start_refusals_report_system_error_and_not_run": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        },
+        "pre_birth_refusals_report_system_error_and_not_run": {
+          "exit": 101,
+          "expected": 101,
+          "matched": true
+        },
+        "rejected_parent_group_survives_system_error_until_owner_drop": {
+          "exit": 0,
+          "expected": 0,
+          "matched": true
+        }
+      }
+    }
+  },
+  "red_failure_text": "shards-init: domain startup nonempty domain startup has no held owner control\nshards-init: domain startup native domain startup has no protected original context\nshards-init: domain startup member 12: a member launch is already retained\nshards-init: domain startup member 13: initial input: Member\nshards-init: domain startup member 14 helper preparation: Map(Capacity)\nshards-init: domain startup member 15 declared path preparation: Nul\n\nthread 'run::startup_custody_tests::pre_birth_refusals_report_system_error_and_not_run' (3095723) panicked at crates/init/src/run.rs:6482:9:\nassertion `left == right` failed: pre-birth refusal must answer SYSTEM_ERR with NOT_RUN\n  left: [None, None, None, None, None, None]\n right: [Some(125), Some(125), Some(125), Some(125), Some(125), Some(125)]\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+  "all_expectations_matched": true,
+  "restored_green_run_rs": "aae543a1c33d1fd894b618c2429d62aaefbc9896de8b0a152902223fe200e197",
+  "patch": {
+    "name": "ROOT-RUN-ON-v10d-v3.patch",
+    "sha256": "92473d042453e4dc558998f25c3d1de73d7bc27a3f657ea28ab1b1f4f1473558",
+    "preimage": "c5b8d0d8a109a8377164f45b38236e922f8bf88229aff5d480ca8cd7ec4f54db",
+    "postimage": "aae543a1c33d1fd894b618c2429d62aaefbc9896de8b0a152902223fe200e197"
+  },
+  "not_established": "NativePreparation routing and its storage shutdown under RefusedDomain are source-verified only: no NativePreparationFailure can be built without a real birth::Member (owed: guest VM). No VM, musl compile of init in this job (GNU only here), full suite or performance result."
+}

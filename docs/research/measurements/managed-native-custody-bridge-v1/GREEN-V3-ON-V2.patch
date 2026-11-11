@@ -1,0 +1,104 @@
+--- a/crates/init/src/run.rs
++++ b/crates/init/src/run.rs
+@@ -52,8 +52,8 @@
+     },
+     /// A member's typed start refusal. SYSTEM_ERR with NOT_RUN says the run
+     /// failed to start, not that no member was born or that cleanup finished.
+-    /// The original failure, including a rejected parent group, stays owned
+-    /// here until power_off; reporting borrows it.
++    /// The original failure, including a rejected parent group or retained
++    /// native storage, stays owned here until power_off; reporting borrows it.
+     RefusedDomain(crate::domains::StartFailure),
+     UnreportedDomain(crate::domains::StartFailure),
+     UnreportedLaunch {
+@@ -126,7 +126,14 @@
+                 None => StartupFailure::UnreportedLaunch { member, failure },
+             }
+         }
+-        failure @ (crate::domains::StartFailure::StartupState
++        failure @ (crate::domains::StartFailure::MissingStartup
++        | crate::domains::StartFailure::MissingNativeOwner
++        | crate::domains::StartFailure::OwnerPreparation { .. }
++        | crate::domains::StartFailure::HelperPreparation { .. }
++        | crate::domains::StartFailure::Preparation { .. }
++        | crate::domains::StartFailure::NativePreparation { .. }
++        | crate::domains::StartFailure::InputPreparation { .. }
++        | crate::domains::StartFailure::StartupState
+         | crate::domains::StartFailure::StartupAllocation
+         | crate::domains::StartFailure::MetadataAllocation { .. }
+         | crate::domains::StartFailure::Clone { .. }
+@@ -482,7 +489,9 @@
+     if let Some(workload) = &mut workload_owner {
+         shutdown_members(&mut workload.domains);
+     }
+-    if let Err(StartupFailure::UnreportedDomain(failure)) = &mut outcome {
++    if let Err(StartupFailure::UnreportedDomain(failure) | StartupFailure::RefusedDomain(failure)) =
++        &mut outcome
++    {
+         failure.shutdown_storage();
+     }
+     // Borrow presentation: the original typed failure (including any actual
+@@ -6428,7 +6437,13 @@
+             [Some(NOT_RUN); 5],
+             "typed member refusal must answer SYSTEM_ERR with NOT_RUN"
+         );
+-        let unknown = domain_start_failed(crate::domains::StartFailure::MissingNativeOwner, &Spec::default());
++        let unknown = domain_start_failed(
++            crate::domains::StartFailure::NativeOwner {
++                member: 11,
++                cause: crate::managed::NativeFailure::State,
++            },
++            &Spec::default(),
++        );
+         assert_eq!(report_startup_failure(&conn, &unknown), None);
+         reader.set_nonblocking(true).unwrap();
+         let mut byte = [0];
+@@ -6439,6 +6454,48 @@
+     }
+ 
+     #[test]
++    fn pre_birth_refusals_report_system_error_and_not_run() {
++        let (conn, mut reader) = connection();
++        let refusals = [
++            crate::domains::StartFailure::MissingStartup,
++            crate::domains::StartFailure::MissingNativeOwner,
++            crate::domains::StartFailure::OwnerPreparation {
++                member: 12,
++                cause: crate::managed::PreparationFailure::State,
++            },
++            crate::domains::StartFailure::InputPreparation {
++                member: 13,
++                cause: crate::input::startup::Failure::Member,
++            },
++            crate::domains::StartFailure::HelperPreparation {
++                member: 14,
++                cause: crate::domains::HelperPreparationFailure::Map(
++                    shards_ipc::child_fds::Failure::Capacity,
++                ),
++            },
++            crate::domains::StartFailure::Preparation {
++                member: 15,
++                cause: crate::domains::DeclaredPathFailure::Nul,
++            },
++        ];
++        let mut answers = Vec::new();
++        for cause in refusals {
++            let expected = run::render_error(&cause);
++            let failure = domain_start_failed(cause, &Spec::default());
++            let answer = report_startup_failure(&conn, &failure);
++            if answer.is_some() {
++                assert_eq!(system_error(&mut reader), expected.as_bytes());
++            }
++            answers.push(answer);
++        }
++        assert_eq!(
++            answers,
++            [Some(NOT_RUN); 6],
++            "pre-birth refusal must answer SYSTEM_ERR with NOT_RUN"
++        );
++    }
++
++    #[test]
+     fn rejected_parent_group_survives_system_error_until_owner_drop() {
+         let (group, mut peer) = UnixStream::pair().unwrap();
+         peer.set_nonblocking(true).unwrap();

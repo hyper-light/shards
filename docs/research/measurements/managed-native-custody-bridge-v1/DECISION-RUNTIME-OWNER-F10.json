@@ -1,0 +1,6 @@
+{
+  "from": {"agent": "01a1c99e7b717018b81686624876ad5d", "name": "Shards native owner runtime"},
+  "question": "ROOT audit assignment root-audit-2026-11-11-runtime-fixes-v1 (F10): should every pre-birth typed refusal answer SYSTEM_ERR+NOT_RUN via RefusedDomain?",
+  "reply_verbatim_excerpt": "F10 decision YES all listed PRE-BIRTH typed refusals (OwnerPreparation,HelperPreparation,Preparation,NativePreparation,InputPreparation,MissingStartup,MissingNativeOwner) should use RefusedDomain; preserve original object/cause and actual NativePreparation.shutdown. NOT_RUN remains startup refusal, not no-birth/cleanup proof.",
+  "root_implementation": "GREEN-v3 aae543a1: those seven join RefusedDomain; run() now calls shutdown_storage for UnreportedDomain OR RefusedDomain, so NativePreparation's retained storage is still shut down before power_off. Remaining UnreportedDomain: InputAttachment, NativeOwner, Audit (post-birth or separate)."
+}
