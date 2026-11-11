@@ -1,0 +1,7 @@
+{
+  "packet_bytes": 32922,
+  "packet_sha256": "e55bd2988c32986054c5ecadc5a28192280318a71143cdc21428067287d19222",
+  "source_manifest_sha256": "da8d5407a81c2ea7f8889e3b083a964fb21029aab6d7dbecaf4fb03a6a241cb9",
+  "source_delta": "module registration/layout only; process48e14d/tests78c16b exact unchanged",
+  "driver_sha256": "45a7cb9ddb3dc2e1cd6d569f8701137f5d1324bbc73fe826f83489021de70c9a"
+}

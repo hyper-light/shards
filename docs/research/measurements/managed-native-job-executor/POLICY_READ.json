@@ -1,0 +1,35 @@
+{
+  "type": "POLICY_READ",
+  "revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "owned_paths": [
+    "crates/server/src/native_effects/process.rs",
+    "crates/server/src/native_effects/process/tests.rs",
+    "docs/research/measurements/managed-native-job-executor/**"
+  ],
+  "full_read": [
+    "AGENTS.md",
+    "docs/development-rules.md R01-R16",
+    "docs/development-evidence.md",
+    "CLAUDE.md",
+    "docs/design/managed-runtime-plan.md",
+    "docs/research/managed-native-authority-decision.md",
+    "/Users/adalundhe/g121-handoff.md",
+    "native PROCESS-WRITE-OPERATIONS-HANDOFF-v1.md"
+  ],
+  "root_receipt": 11462,
+  "native_receipt": 11463,
+  "parent_receipt": 11465,
+  "resource_receipt": 11466,
+  "worktree": "managed-native-job-executor-v1 supplied clean at7d7",
+  "branch": "p/managed-native-job-executor-v1",
+  "remote_planned_root": "/home/adalundhe/native-job-executor-7d7-v1",
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "native_bounds": "private2CPU2GiB4GiB600/j2 ordinary only",
+  "local_free_bytes": 37293993984,
+  "local_builds": 0,
+  "children": 0,
+  "mechanics_not_authority": true,
+  "initial_transport_failures": "first4messages not connected, preserved; identical stablekeys delivered on recovery"
+}

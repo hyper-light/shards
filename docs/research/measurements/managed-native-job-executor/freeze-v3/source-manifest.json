@@ -1,0 +1,18 @@
+{
+  "base": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "status": "IMPLEMENTED_UNBUILT",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/process.rs",
+      "bytes": 10980,
+      "sha256": "48e14dd942b1a14c15011a559aecc947850c83f0850e102012497637097de028"
+    },
+    {
+      "path": "crates/server/src/native_effects/process/tests.rs",
+      "bytes": 10362,
+      "sha256": "78c16b2c6f4e71b65053c354d7b9ca13a00720ac2afbde261d3d11d0dfedde92"
+    }
+  ],
+  "patch_sha256": "0a19500c6ddac29aae3e25dcfe00a3352bb39fdeef77b2ef0a713072a2e6a935",
+  "delta_from_v2": "only rename staged_status accessor to ROOT requested launch_status_before_install; exact old freeze retained"
+}

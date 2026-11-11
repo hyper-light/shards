@@ -1,0 +1,35 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded libc v0.2.189
+   Compiling libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-job-executor-7d7-v2/source/crates/testdir)
+    Checking native-job-leaf-check v0.0.0 (/home/adalundhe/native-job-executor-7d7-v2/source)
+error[E0583]: file not found for module `exec_tests`
+   --> src/dependencies/ipc/child_fds.rs:170:1
+    |
+170 | mod exec_tests;
+    | ^^^^^^^^^^^^^^^
+    |
+    = help: to create the module `exec_tests`, create file "src/dependencies/ipc/exec_tests.rs" or "src/dependencies/ipc/exec_tests/mod.rs"
+    = note: if there is a `mod exec_tests` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `tests`
+   --> src/dependencies/native_effects/file.rs:165:1
+    |
+165 | mod tests;
+    | ^^^^^^^^^^
+    |
+    = help: to create the module `tests`, create file "src/dependencies/native_effects/tests.rs" or "src/dependencies/native_effects/tests/mod.rs"
+    = note: if there is a `mod tests` elsewhere in the crate already, import it with `use crate::...` instead
+
+error[E0583]: file not found for module `tests`
+   --> src/dependencies/native_effects/process.rs:314:1
+    |
+314 | mod tests;
+    | ^^^^^^^^^^
+    |
+    = help: to create the module `tests`, create file "src/dependencies/native_effects/tests.rs" or "src/dependencies/native_effects/tests/mod.rs"
+    = note: if there is a `mod tests` elsewhere in the crate already, import it with `use crate::...` instead
+
+For more information about this error, try `rustc --explain E0583`.
+error: could not compile `native-job-leaf-check` (lib test) due to 3 previous errors

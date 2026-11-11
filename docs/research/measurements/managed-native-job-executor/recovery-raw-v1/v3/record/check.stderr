@@ -1,0 +1,18 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded libc v0.2.189
+   Compiling libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-job-executor-7d7-v3/source/crates/testdir)
+    Checking native-job-leaf-check v0.0.0 (/home/adalundhe/native-job-executor-7d7-v3/source)
+warning: irrefutable `if let` pattern
+   --> src/native_effects/process/tests.rs:170:16
+    |
+170 |             if let Err(failure) = plan.exec_in_child() {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this pattern will always match, so the `if let` is useless
+    = help: consider replacing the `if let` with a `let`
+    = note: `#[warn(irrefutable_let_patterns)]` on by default
+
+warning: `native-job-leaf-check` (lib test) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.80s

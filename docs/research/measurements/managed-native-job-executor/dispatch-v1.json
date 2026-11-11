@@ -1,0 +1,12 @@
+{
+  "id": "r1",
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "private_root": "/home/adalundhe/native-job-executor-7d7-v1",
+  "target": "/home/adalundhe/native-job-executor-7d7-v1/target",
+  "resource_ask": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "scope_seconds": 600,
+  "native_cases_started": 0,
+  "local_targets": [],
+  "packet_sha256": "365312ba01952b8bcd02691adc4eaac7e63dee80264586e9c09cf52da0653894",
+  "status": "admitted build; await actual completion; no inferred pass"
+}

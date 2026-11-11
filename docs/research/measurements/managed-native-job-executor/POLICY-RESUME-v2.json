@@ -1,0 +1,26 @@
+{
+  "kind": "POLICY_READ",
+  "revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "owned_paths": [
+    "crates/server/src/native_effects/process.rs",
+    "crates/server/src/native_effects/process/tests.rs",
+    "docs/research/measurements/managed-native-job-executor/**"
+  ],
+  "full_read": [
+    "AGENTS.md",
+    "docs/development-rules.md R01-R16",
+    "docs/development-evidence.md",
+    "CLAUDE.md",
+    "docs/design/managed-runtime-plan.md",
+    "docs/research/managed-native-authority-decision.md",
+    "/Users/adalundhe/g121-handoff.md"
+  ],
+  "native_contract_receipt": 11611,
+  "audit_contract_receipt": 11612,
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "target": "/home/adalundhe/native-job-executor-7d7-v1/target",
+  "resources": "2CPU/2GiB/4GiB/600s/j2 ordinary only",
+  "local_targets": []
+}

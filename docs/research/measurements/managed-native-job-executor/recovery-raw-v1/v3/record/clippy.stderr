@@ -1,0 +1,25 @@
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-job-executor-7d7-v3/source/crates/testdir)
+    Checking native-job-leaf-check v0.0.0 (/home/adalundhe/native-job-executor-7d7-v3/source)
+error: irrefutable `if let` pattern
+   --> src/native_effects/process/tests.rs:170:16
+    |
+170 |             if let Err(failure) = plan.exec_in_child() {
+    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this pattern will always match, so the `if let` is useless
+    = help: consider replacing the `if let` with a `let`
+    = note: `-D irrefutable-let-patterns` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(irrefutable_let_patterns)]`
+
+error: the `Err`-variant returned from this function is very large
+   --> src/native_effects/process.rs:154:63
+    |
+154 |     pub fn prepare(request: Request, streams: Streams<'_>) -> Result<Self, Rejected> {
+    |                                                               ^^^^^^^^^^^^^^^^^^^^^^ the `Err`-variant is at least 144 bytes
+    |
+    = help: try reducing the size of `native_effects::process::Rejected`, for example by boxing large elements or replacing it with `Box<native_effects::process::Rejected>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: could not compile `native-job-leaf-check` (lib test) due to 2 previous errors

@@ -1,0 +1,1 @@
+{"command": ["git", "diff", "--cached", "--check"], "status": 2}

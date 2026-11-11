@@ -1,0 +1,12 @@
+{
+  "state": "FAILED",
+  "phase": "build",
+  "error": {
+    "type": "RuntimeError",
+    "detail": "phase failed: format"
+  },
+  "traceback": "Traceback (most recent call last):\n  File \"/home/adalundhe/native-job-executor-7d7-v1/native_batch.py\", line 146, in <module>\n    build()\n    ~~~~~^^\n  File \"/home/adalundhe/native-job-executor-7d7-v1/native_batch.py\", line 79, in build\n    phase(\"format\", [\"rustfmt\", \"--check\", \"--edition\", \"2024\", \"src/dependencies/native_effects/process.rs\", \"child_fixture.rs\"])\n    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/adalundhe/native-job-executor-7d7-v1/native_batch.py\", line 72, in phase\n    raise RuntimeError(\"phase failed: \" + name)\nRuntimeError: phase failed: format\n",
+  "fd_after": 9,
+  "original_remaining_ns": 599980116674,
+  "kernel_population_return": "Unknown"
+}

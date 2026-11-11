@@ -1,0 +1,19 @@
+{
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/process.rs",
+      "bytes": 11104,
+      "sha256": "05ccf9552e4ad4521584cc6e5fe222eb5c3d4315d63151954e2f9412781c3eec"
+    },
+    {
+      "path": "crates/server/src/native_effects/process/tests.rs",
+      "bytes": 10555,
+      "sha256": "eb4c09e9841f30a59ffa577cb27c9f4e8b16b788e84e5d3b9b9772326bbe64a9"
+    }
+  ],
+  "patch_sha256": "5d0dae2d64d2288ff7e36da2824e3554a8fb4edf7dcb54b141c152dd92603cb5",
+  "packet_bytes": 33002,
+  "packet_sha256": "961e9c6943b35e996f40d228d777980564b8ba5f7fe9247e466120291a1deed2",
+  "source_manifest_sha256": "e6a465bcab52dfbfce7484c2d00ea01ceecb3ffbd4a470c1be005d7d582515e5",
+  "driver_sha256": "45a7cb9ddb3dc2e1cd6d569f8701137f5d1324bbc73fe826f83489021de70c9a"
+}

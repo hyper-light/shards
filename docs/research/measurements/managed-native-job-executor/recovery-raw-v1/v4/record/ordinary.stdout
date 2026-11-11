@@ -1,0 +1,7 @@
+
+running 1 test
+test native_effects::process::tests::ordinary_literal_job_has_exact_bytes_environment_workdir_and_owned_reap ... NATIVE_JOB pid=3493560 pidfd_exit_ready=true wait=3493560 rewait=-1 errno=10 native_status=0 status_eof=true stdout_hex=24286e6f742d612d636f6d6d616e64293b2a0aff004f4e4c593d6c69746572616c3d24484f4d453bff00696e70757400ff0a002f686f6d652f6164616c756e6468652f6e61746976652d6a6f622d6578656375746f722d3764372d76342f746d702f7368617264732d74657374732f333439333535332f6e61746976652d6a6f622d6f7264696e6172792d302f72656e616d65642d776f726b00 stderr_hex=73746465727200ff fd_before=4 fd_after=4 staged_fds=6 literal_bytes=173 gate_fd=12 executable=53:623882964 workdir=53:623882963 kernel_population=Unknown authority=MechanicsOnly
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 16 filtered out; finished in 0.01s
+

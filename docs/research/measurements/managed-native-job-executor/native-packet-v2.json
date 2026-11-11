@@ -1,0 +1,8 @@
+{
+  "packet_bytes": 35031,
+  "packet_sha256": "036cd82dfcfe7e9efe0854d7ce1f91e7192b5f7d824347d97c3e273fe1a58b1f",
+  "source_manifest_sha256": "db368e1f52880f46cc75bd3732035a11df01dc95b204166dd6fc34237feae751",
+  "driver_sha256": "678d391081069fc6e540ddc81aacc0a2eba1c7a15bc2864e0c8ac3fc5a125613",
+  "original_scope": "v1 budget.json copied byte-exact and NOT extended",
+  "source_delta": "canonical rustfmt.toml only; process48e14d/tests78c16b unchanged"
+}

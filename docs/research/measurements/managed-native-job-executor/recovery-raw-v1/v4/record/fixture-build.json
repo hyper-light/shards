@@ -1,0 +1,21 @@
+{
+  "phase": "fixture-build",
+  "command": [
+    "rustc",
+    "--edition",
+    "2024",
+    "-Ccodegen-units=2",
+    "child_fixture.rs",
+    "-o",
+    "/home/adalundhe/native-job-executor-7d7-v4/artifacts/child-fixture"
+  ],
+  "pid": 3413479,
+  "status": 0,
+  "pidfd_exit_ready": true,
+  "direct_reaped": true,
+  "forced_owned_cleanup": false,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed_ns": 61870159,
+  "original_remaining_ns": 219133008045
+}

@@ -1,0 +1,4 @@
+   Compiling libc v0.2.189
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/native-job-executor-7d7-v4/source/crates/testdir)
+   Compiling native-job-leaf-check v0.0.0 (/home/adalundhe/native-job-executor-7d7-v4/source)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.32s

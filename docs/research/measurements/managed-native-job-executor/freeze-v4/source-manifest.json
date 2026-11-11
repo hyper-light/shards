@@ -1,0 +1,18 @@
+{
+  "base": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "status": "IMPLEMENTED_UNBUILT",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/process.rs",
+      "bytes": 11104,
+      "sha256": "05ccf9552e4ad4521584cc6e5fe222eb5c3d4315d63151954e2f9412781c3eec"
+    },
+    {
+      "path": "crates/server/src/native_effects/process/tests.rs",
+      "bytes": 10555,
+      "sha256": "eb4c09e9841f30a59ffa577cb27c9f4e8b16b788e84e5d3b9b9772326bbe64a9"
+    }
+  ],
+  "patch_sha256": "5d0dae2d64d2288ff7e36da2824e3554a8fb4edf7dcb54b141c152dd92603cb5",
+  "delta": "actual strict Clippy largeErr corrected with Preparation enum, no allocation/suppression; test irrefutable pattern corrected; v3 preserved"
+}

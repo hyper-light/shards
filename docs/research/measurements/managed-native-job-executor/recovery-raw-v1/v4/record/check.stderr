@@ -1,0 +1,7 @@
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded libc v0.2.189
+   Compiling libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-job-executor-7d7-v4/source/crates/testdir)
+    Checking native-job-leaf-check v0.0.0 (/home/adalundhe/native-job-executor-7d7-v4/source)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.19s

@@ -1,0 +1,35 @@
+{
+  "commit": "46ab5f60b03d61bb7a53ac404a38d8c477d65727",
+  "files": {
+    "crates/server/src/native_effects/file.rs": {
+      "bytes": 6050,
+      "sha256": "4ab73715229f6699c940151c99b92a59afe97526539193fb83fcff8739ab84c2"
+    },
+    "crates/server/src/native_effects/objects.rs": {
+      "bytes": 5033,
+      "sha256": "653cfac6623ae6abe4895395dd867b10e4e389c48918d3d66327dc275ffb3bda"
+    },
+    "crates/server/src/native_effects/literals.rs": {
+      "bytes": 7614,
+      "sha256": "cf639b85533d9ff67e3b0ee232635d00da48943a6880cb5b0c56efa234d60096"
+    },
+    "crates/ipc/src/child_fds.rs": {
+      "bytes": 18453,
+      "sha256": "dfd298a44d2d1912a82bf109c7a556ad3ad7fdc786b325a8efce7d4b49d33f3a"
+    },
+    "crates/ipc/src/lib.rs": {
+      "bytes": 137429,
+      "sha256": "310cc8403fb560696b5e6d579b2316242db23f51b1552cb411c115aaabb10dd7"
+    },
+    "crates/ipc/src/child_fds/exec_tests.rs": {
+      "bytes": 13220,
+      "sha256": "8100a02268c244f325b5541d42bbd0180e0d63ce1c604f1ad61718c725111dca"
+    }
+  },
+  "archive": {
+    "bytes": 49585,
+    "sha256": "1dc3cb04b6c9c2bd6efd137505c58b5d38813eec0ca8f7c4dac111b7842be2f5"
+  },
+  "kind": "mechanism DATA/held objects only; no execution/write admission or current issuer",
+  "consume": "only exact owned leaves as dependencies, no old whole main/lib replacement; IPC mapper single canonical implementation, existing token only"
+}

@@ -1,0 +1,12 @@
+{
+  "state": "COMPLETED",
+  "first_pure_exit": 0,
+  "first_ordinary_exit": 0,
+  "source_manifest_sha256": "e6a465bcab52dfbfce7484c2d00ea01ceecb3ffbd4a470c1be005d7d582515e5",
+  "binary_sha256_after": "3e4160b34da111d6398a825237925078facf5296ebbd2a2f4a8c372ac3b4ffca",
+  "fixture_sha256_after": "4d5ee74d2113851d9256173ed9dbb13d2377f35d8231bffa878d20fb5960dcea",
+  "fd_after": 9,
+  "original_remaining_ns": 188507318697,
+  "kernel_population_return": "Unknown",
+  "owner_admission": "Not exercised by mechanics-only fixture"
+}

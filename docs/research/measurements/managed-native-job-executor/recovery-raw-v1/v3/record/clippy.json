@@ -1,0 +1,23 @@
+{
+  "phase": "clippy",
+  "command": [
+    "cargo",
+    "clippy",
+    "--tests",
+    "--locked",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2",
+    "--",
+    "-Dwarnings"
+  ],
+  "pid": 3228498,
+  "status": 101,
+  "pidfd_exit_ready": true,
+  "direct_reaped": true,
+  "forced_owned_cleanup": false,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed_ns": 745314986,
+  "original_remaining_ns": 291304008363
+}

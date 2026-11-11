@@ -1,0 +1,1 @@
+{"command": ["git", "diff", "--no-index", "--check", "--", "/dev/null", "crates/server/src/native_effects/process/tests.rs"], "status": 1}

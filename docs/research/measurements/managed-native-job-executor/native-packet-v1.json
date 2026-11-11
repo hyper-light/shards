@@ -1,0 +1,20 @@
+{
+  "freeze": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-job-executor-v1/docs/research/measurements/managed-native-job-executor/freeze-v3",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/process.rs",
+      "bytes": 10980,
+      "sha256": "48e14dd942b1a14c15011a559aecc947850c83f0850e102012497637097de028"
+    },
+    {
+      "path": "crates/server/src/native_effects/process/tests.rs",
+      "bytes": 10362,
+      "sha256": "78c16b2c6f4e71b65053c354d7b9ca13a00720ac2afbde261d3d11d0dfedde92"
+    }
+  ],
+  "patch_sha256": "0a19500c6ddac29aae3e25dcfe00a3352bb39fdeef77b2ef0a713072a2e6a935",
+  "packet_bytes": 34897,
+  "packet_sha256": "365312ba01952b8bcd02691adc4eaac7e63dee80264586e9c09cf52da0653894",
+  "source_manifest_sha256": "c36bcde9380d41fc21907459e94b6f4802456b1f3d8bf84eb2358573162d7391",
+  "driver_sha256": "0e6243f181eab5095327e7a122aeebb97f4e175e459f3d3298663bf72a695813"
+}

@@ -1,0 +1,18 @@
+{
+  "phase": "list-pure",
+  "command": [
+    "/home/adalundhe/native-job-executor-7d7-v4/artifacts/native-gnu",
+    "--list",
+    "--exact",
+    "native_effects::process::tests::denied_literal_request_and_script_access_preserve_objects_before_birth"
+  ],
+  "pid": 3417629,
+  "status": 0,
+  "pidfd_exit_ready": true,
+  "direct_reaped": true,
+  "forced_owned_cleanup": false,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed_ns": 7093294,
+  "original_remaining_ns": 217795320923
+}

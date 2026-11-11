@@ -1,0 +1,29 @@
+Diff in /home/adalundhe/native-job-executor-7d7-v1/source/src/dependencies/native_effects/process/tests.rs:164:
+         // any prepared exec call; all return paths raw-exit this owned child.
+         unsafe {
+             let mut word = 0u8;
+-            if libc::read(release_read.as_raw_fd(), (&raw mut word).cast(), 1) != 1 || word != b'R' {
++            if libc::read(release_read.as_raw_fd(), (&raw mut word).cast(), 1) != 1 || word != b'R'
++            {
+                 libc::_exit(1);
+             }
+             if let Err(failure) = plan.exec_in_child() {
+Diff in /home/adalundhe/native-job-executor-7d7-v1/source/src/dependencies/native_effects/process.rs:159:
+                 ExecutableLifetime::ImageOnly => Inheritance::SetupOnly,
+                 ExecutableLifetime::ReadOnlyScript => {
+                     // SAFETY: inspect this held executable without changing it.
+-                    let flags = unsafe { libc::fcntl(request.executable.fd().as_raw_fd(), libc::F_GETFL) };
++                    let flags =
++                        unsafe { libc::fcntl(request.executable.fd().as_raw_fd(), libc::F_GETFL) };
+                     if flags < 0 {
+                         return Err(native(Operation::ExecutableAccess));
+                     }
+Diff in /home/adalundhe/native-job-executor-7d7-v1/source/src/dependencies/native_effects/process.rs:166:
+                     if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
+-                        return Err(Failure::ScriptRequiresReadOnly { actual_flags: flags });
++                        return Err(Failure::ScriptRequiresReadOnly {
++                            actual_flags: flags,
++                        });
+                     }
+                     Inheritance::RetainAcrossExec
+                 }

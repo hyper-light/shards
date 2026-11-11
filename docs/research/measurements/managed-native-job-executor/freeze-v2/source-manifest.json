@@ -1,0 +1,20 @@
+{
+  "base": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "status": "IMPLEMENTED_UNBUILT",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/process.rs",
+      "bytes": 10965,
+      "sha256": "6651177ec0745fd3d476247dae5a72aed02a04723721622baa2bb28ebd2bdc14"
+    },
+    {
+      "path": "crates/server/src/native_effects/process/tests.rs",
+      "bytes": 10347,
+      "sha256": "075805a71de6d35475e26bedf9e1f952fca37c6e9837b8355744a413b5a50b07"
+    }
+  ],
+  "patch_sha256": "6fc425ff21b51a565a543b344bbc5d4fa3cfe87b7f021fbb913450310945a880",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "sole_owner": "01a1c5d2ee0e7248982c95a59f1fd905",
+  "previous_transfer": "superseded by latest explicit user; session peer zero source edits, disjoint docs fixture"
+}

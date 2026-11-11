@@ -1,0 +1,16 @@
+{
+  "phase": "toolchain",
+  "command": [
+    "rustc",
+    "-vV"
+  ],
+  "pid": 3075113,
+  "status": 0,
+  "pidfd_exit_ready": true,
+  "direct_reaped": true,
+  "forced_owned_cleanup": false,
+  "fd_before": 9,
+  "fd_after": 9,
+  "elapsed_ns": 9013850,
+  "original_remaining_ns": 350515914003
+}

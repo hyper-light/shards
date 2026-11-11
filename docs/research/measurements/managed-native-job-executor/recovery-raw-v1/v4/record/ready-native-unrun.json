@@ -1,0 +1,21 @@
+{
+  "state": "READY_NATIVE_UNRUN",
+  "native_cases_started": 0,
+  "source_manifest_sha256": "e6a465bcab52dfbfce7484c2d00ea01ceecb3ffbd4a470c1be005d7d582515e5",
+  "process_sha256": "05ccf9552e4ad4521584cc6e5fe222eb5c3d4315d63151954e2f9412781c3eec",
+  "tests_sha256": "eb4c09e9841f30a59ffa577cb27c9f4e8b16b788e84e5d3b9b9772326bbe64a9",
+  "binary_sha256": "3e4160b34da111d6398a825237925078facf5296ebbd2a2f4a8c372ac3b4ffca",
+  "binary_bytes": 9529304,
+  "fixture_sha256": "4d5ee74d2113851d9256173ed9dbb13d2377f35d8231bffa878d20fb5960dcea",
+  "original_remaining_ns": 217782489595,
+  "affinity": [
+    0,
+    1
+  ],
+  "rlimit_as": [
+    2147483648,
+    2147483648
+  ],
+  "physical_kernel_caps": "Unverified",
+  "consumer": "leaf projection; real helper/owner integration remains Native/ROOT"
+}

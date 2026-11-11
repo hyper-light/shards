@@ -1,0 +1,12 @@
+{
+  "state": "FAILED",
+  "phase": "build-inherited",
+  "error": {
+    "type": "RuntimeError",
+    "detail": "phase failed: clippy"
+  },
+  "traceback": "Traceback (most recent call last):\n  File \"/home/adalundhe/native-job-executor-7d7-v3/native_batch.py\", line 146, in <module>\n    build()\n    ~~~~~^^\n  File \"/home/adalundhe/native-job-executor-7d7-v3/native_batch.py\", line 81, in build\n    phase(\"clippy\", [\"cargo\", \"clippy\", \"--tests\", *common, \"--\", \"-Dwarnings\"])\n    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/adalundhe/native-job-executor-7d7-v3/native_batch.py\", line 72, in phase\n    raise RuntimeError(\"phase failed: \" + name)\nRuntimeError: phase failed: clippy\n",
+  "fd_after": 9,
+  "original_remaining_ns": 291303302004,
+  "kernel_population_return": "Unknown"
+}

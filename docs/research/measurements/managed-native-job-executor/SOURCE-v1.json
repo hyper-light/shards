@@ -1,0 +1,17 @@
+{
+  "status": "IMPLEMENTED_SYSCALL_MECHANICS_NATIVE_UNRUN_REAL_CONSUMER_INTEGRATION_PENDING",
+  "source": "crates/server/src/native_effects/process.rs",
+  "bytes": 7604,
+  "sha256": "fa918369218790a475d1df4063ea1242e5ff280c2c161fe61f12a4f0aa1071ed",
+  "dependency_commit": "46ab5f60b03d61bb7a53ac404a38d8c477d65727",
+  "actual_api": [
+    "Prepared::prepare(Request, Streams)->Result<Prepared,Rejected>",
+    "Prepared::retained()->Retained",
+    "unsafe Prepared::exec_in_child(&self)->Result<Infallible,Failure>"
+  ],
+  "authority": "none minted here; actual owner/scope/job/audit commit required by caller",
+  "clone_reap_poll_or_cgroup_creation": false,
+  "caller_owned_lifecycle": "existing Worker/owner returns NotStarted/Started/Uncertain retaining real handles; module returns typed syscall failure only",
+  "native_cases": 0,
+  "format_attempt_before_tests": "initial rustfmt refused missingtests; correctedskip_children=true, originalsourceuncompiled"
+}

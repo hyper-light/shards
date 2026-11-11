@@ -1,0 +1,4 @@
+error: gpg failed to sign the data:
+kiln-git-sign: the runner holding this agent's key didn't sign: not in a kiln shell: KILN_HARNESS_SOCK is not set (open a terminal in kiln, or on a machine running a kiln runner)
+
+fatal: failed to write commit object
