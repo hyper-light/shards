@@ -322,6 +322,14 @@ pub(crate) fn attempt<T>(
     }
 }
 
+/// The most one virtio-vsock packet carries: Linux's transport splits any larger send
+/// into packets of exactly this size (v6.18 include/linux/virtio_vsock.h
+/// VIRTIO_VSOCK_MAX_PKT_BUF_SIZE; net/vmw_vsock/virtio_transport_common.c,
+/// virtio_transport_send_pkt_info). A relay turn of this size moves one whole packet.
+/// Measured over Unix sockets, throughput rises with the slot up to this size and is
+/// flat beyond it (docs/research/measurements/managed-engine-relay-throughput-v1).
+const VSOCK_PACKET: usize = 64 << 10;
+
 pub(crate) struct Slots {
     to_backend: Storage,
     to_client: Storage,
@@ -330,6 +338,21 @@ pub(crate) struct Slots {
 impl Slots {
     pub(crate) fn capacities(&self) -> [usize; 2] {
         [self.to_backend.len(), self.to_client.len()]
+    }
+
+    /// One whole vsock packet per direction, page-rounded, with no growth/cache.
+    pub(crate) fn vsock_packet() -> Result<Self, Fault> {
+        // SAFETY: existing Linux page-size fact, no configuration change.
+        let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = usize::try_from(value).map_err(|_| Fault::Bounds)?;
+        let size = VSOCK_PACKET
+            .checked_next_multiple_of(page)
+            .filter(|size| *size != 0 && *size <= isize::MAX as usize)
+            .ok_or(Fault::Bounds)?;
+        Ok(Self {
+            to_backend: Storage::Mapped(Mapping::new(size)?),
+            to_client: Storage::Mapped(Mapping::new(size)?),
+        })
     }
 
     /// One minimum private OS mapping unit per direction, with no growth/cache.
@@ -712,5 +735,177 @@ pub(crate) fn pump(
             backend.as_raw_fd(),
             interest(&report.to_client, &report.to_backend),
         )?;
+    }
+}
+
+/// ROOT measurement only (never merged): the engine relay's own byte path, the
+/// current pump against the two-thread io::copy relay it replaced (842460aa
+/// engine.rs), over identical Unix socket pairs with identical endpoints.
+#[cfg(test)]
+mod throughput_measurement {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    fn total() -> usize {
+        std::env::var("RELAY_MIB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(256) << 20
+    }
+
+    /// The client: writes `total` bytes, half-closes, then drains until the relay closes it.
+    fn client(mut s: UnixStream, total: usize) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            let chunk = vec![0x5a_u8; 1 << 16];
+            let mut left = total;
+            while left > 0 {
+                let n = left.min(chunk.len());
+                s.write_all(&chunk[..n]).unwrap();
+                left -= n;
+            }
+            s.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut sink = [0u8; 4096];
+            while s.read(&mut sink).unwrap_or(0) > 0 {}
+        })
+    }
+
+    /// The engine: reads to EOF, then closes, as the host engine ends a request.
+    fn engine(mut s: UnixStream) -> std::thread::JoinHandle<usize> {
+        std::thread::spawn(move || {
+            let mut buf = vec![0u8; 1 << 16];
+            let mut got = 0;
+            loop {
+                let n = s.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                got += n;
+            }
+            got
+        })
+    }
+
+    fn cpu() -> Duration {
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        // SAFETY: one initialized rusage output for this process.
+        assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) }, 0);
+        let tv = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
+        tv(usage.ru_utime) + tv(usage.ru_stime)
+    }
+
+    fn round(new: bool, slot: Option<usize>) -> (Duration, Duration) {
+        let total = total();
+        let (client_far, conn) = UnixStream::pair().unwrap();
+        let (host, engine_far) = UnixStream::pair().unwrap();
+        let writer = client(client_far, total);
+        let reader = engine(engine_far);
+        let (cpu0, start) = (cpu(), Instant::now());
+        if new {
+            let mut report = Report::new();
+            pump(
+                [conn.as_fd(), host.as_fd()],
+                match slot {
+                    Some(0) => Slots::vsock_packet().unwrap(),
+                    Some(bytes) => Slots::reserve(bytes, bytes).unwrap(),
+                    None => Slots::minimum_mapped().unwrap(),
+                },
+                [ByteLimit::PeerEnd; 2],
+                Control::ProcessOwned,
+                EndPolicy::EnginePeerEnd,
+                &mut report,
+            )
+            .unwrap();
+        } else {
+            std::thread::scope(|s| {
+                let up = std::thread::Builder::new().spawn_scoped(s, || {
+                    let _ = io::copy(&mut &conn, &mut &host);
+                    // SAFETY: shutdown(2) of a descriptor this thread borrows.
+                    unsafe { libc::shutdown(host.as_raw_fd(), libc::SHUT_WR) };
+                });
+                if up.is_ok() {
+                    let _ = io::copy(&mut &host, &mut &conn);
+                }
+                let _ = conn.shutdown(std::net::Shutdown::Both);
+            });
+        }
+        let got = reader.join().unwrap();
+        let (wall, used) = (start.elapsed(), cpu() - cpu0);
+        drop(conn);
+        drop(host);
+        writer.join().unwrap();
+        assert_eq!(got, total);
+        (wall, used)
+    }
+
+    #[test]
+    #[ignore = "ROOT measurement"]
+    fn engine_relay_throughput_pump_against_replaced_copy_threads() {
+        let rounds: usize = std::env::var("RELAY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(21);
+        let (mut new, mut old, mut fixed) = (Vec::new(), Vec::new(), Vec::new());
+        round(true, None);
+        round(false, None);
+        round(true, Some(0));
+        for i in 0..rounds {
+            // Rotate the order each round so drift and warmth fall on all three.
+            for k in 0..3 {
+                match (i + k) % 3 {
+                    0 => new.push(round(true, None)),
+                    1 => old.push(round(false, None)),
+                    _ => fixed.push(round(true, Some(0))),
+                }
+            }
+        }
+        let mib = (total() >> 20) as f64;
+        for (name, samples) in [("pump-main", &new), ("pump-vsock-packet", &fixed), ("copy-threads", &old)] {
+            let mut wall: Vec<f64> = samples.iter().map(|(w, _)| w.as_secs_f64() * 1e3).collect();
+            let mut cpu: Vec<f64> = samples.iter().map(|(_, c)| c.as_secs_f64() * 1e3).collect();
+            wall.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            cpu.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let at = |v: &[f64], p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+            println!(
+                "RELAY {name} n={} MiB={} wall_ms p50={:.1} p90={:.1} p99={:.1} max={:.1} | cpu_ms p50={:.1} p90={:.1} max={:.1} | MiB/s@p50={:.0}",
+                wall.len(), mib, at(&wall, 0.5), at(&wall, 0.9), at(&wall, 0.99), wall[wall.len() - 1],
+                at(&cpu, 0.5), at(&cpu, 0.9), cpu[cpu.len() - 1], mib / (at(&wall, 0.5) / 1e3)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "ROOT measurement"]
+    fn engine_relay_pump_slot_sweep() {
+        let rounds: usize = std::env::var("RELAY_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(15);
+        let sizes: Vec<usize> = std::env::var("RELAY_SLOT_KIB")
+            .unwrap_or_else(|_| "4,8,16,32,64,128,256,1024".into())
+            .split(',')
+            .map(|k| k.trim().parse::<usize>().unwrap() << 10)
+            .collect();
+        let mib = (total() >> 20) as f64;
+        let mut base = Vec::new();
+        let mut by: Vec<Vec<(Duration, Duration)>> = sizes.iter().map(|_| Vec::new()).collect();
+        round(false, None);
+        for i in 0..rounds {
+            base.push(round(false, None));
+            // Rotate the size order each round so no size always runs first.
+            for k in 0..sizes.len() {
+                let j = (i + k) % sizes.len();
+                by[j].push(round(true, Some(sizes[j])));
+            }
+        }
+        let show = |name: String, samples: &[(Duration, Duration)]| {
+            let mut wall: Vec<f64> = samples.iter().map(|(w, _)| w.as_secs_f64() * 1e3).collect();
+            let mut cpu: Vec<f64> = samples.iter().map(|(_, c)| c.as_secs_f64() * 1e3).collect();
+            wall.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            cpu.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let at = |v: &[f64], p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
+            println!(
+                "SWEEP {name} n={} wall_ms p50={:.1} p90={:.1} p99={:.1} max={:.1} | cpu_ms p50={:.1} | MiB/s@p50={:.0}",
+                wall.len(), at(&wall, 0.5), at(&wall, 0.9), at(&wall, 0.99), wall[wall.len() - 1],
+                at(&cpu, 0.5), mib / (at(&wall, 0.5) / 1e3)
+            );
+        };
+        show("copy-threads".into(), &base);
+        for (size, samples) in sizes.iter().zip(&by) {
+            show(format!("pump-{}KiB", size >> 10), samples);
+        }
     }
 }
