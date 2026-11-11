@@ -1,0 +1,61 @@
+diff --git a/crates/shards/src/daemon.rs b/crates/shards/src/daemon.rs
+index 3a36b40f5..5ad0932ee 100644
+--- a/crates/shards/src/daemon.rs
++++ b/crates/shards/src/daemon.rs
+@@ -13992,11 +13992,7 @@ mod tests {
+                 // The exec it was sent ends, as it would once the provider went on.
+                 let exec = heard_whole(&vm);
+                 assert_eq!(exec.kind, kind::EXEC_RUN);
+-                say(
+-                    &UnixStream::from(exec.fds.into_iter().next().unwrap()),
+-                    kind::EXIT,
+-                    &[0],
+-                );
++                say(&stream_of(exec.fds.first().unwrap()), kind::EXIT, &[0]);
+             }
+             let (status, err) = joined(asked);
+             assert!(
+@@ -14034,12 +14030,14 @@ mod tests {
+             let asked = metrics(t, "stalled", &out);
+             let exec = heard_whole(&vm);
+             assert_eq!(exec.kind, kind::EXEC_RUN);
+-            let conn = UnixStream::from(exec.fds.into_iter().next().unwrap());
++            let conn = stream_of(exec.fds.first().unwrap());
+             // Its VM process, a sleep, runs nothing.
+             conn.set_read_timeout(Some(TAKE_TIMEOUT + PATIENCE)).unwrap();
+             let told = shards_ipc::recv(&conn).map(|m| m.map(|m| (m.kind, m.payload)));
+-            // Ended as an exec told SIGKILL ends; or, told nothing, let go.
++            // Ended as an exec told SIGKILL ends; or, told nothing, let go. Its stdio let go of
++            // with its end, as a VM lets an exec's go.
+             say(&conn, kind::EXIT, &[137]);
++            drop(exec);
+             let (status, err) = joined(asked);
+             assert!(
+                 matches!(&told, Ok(Some((kind::SIGNAL, n))) if n.as_slice() == 9u32.to_be_bytes()),
+@@ -14075,10 +14073,9 @@ mod tests {
+             let asked = metrics(t, "noisy", &out);
+             let exec = heard_whole(&vm);
+             assert_eq!(exec.kind, kind::EXEC_RUN);
+-            let mut fds = exec.fds.into_iter();
+-            let conn = UnixStream::from(fds.next().unwrap());
+-            // Its stdin and stdout, then its stderr.
+-            let mut errors = File::from(fds.nth(2).unwrap());
++            let conn = stream_of(exec.fds.first().unwrap());
++            // Its connection, stdin and stdout, then its stderr.
++            let mut errors = File::from(exec.fds.into_iter().nth(3).unwrap());
+             // Past any pipe's buffer: Linux's 64 KiB (pipe(7)), and macOS's at most.
+             let said = vec![b'e'; 1 << 20];
+             let writer = t.threads.spawn(move || errors.write_all(&said));
+diff --git a/crates/shards/src/daemon/metrics.rs b/crates/shards/src/daemon/metrics.rs
+index 4bb6d09c3..1f3c40a25 100644
+--- a/crates/shards/src/daemon/metrics.rs
++++ b/crates/shards/src/daemon/metrics.rs
+@@ -170,7 +170,7 @@ impl<D: Disk> Daemon<D> {
+                 &spec,
+                 false,
+                 [null.as_fd(), out.as_fd(), into.as_fd()],
+-                Wait::WhileRuns(vm),
++                Wait::Ending,
+             );
+             drop(into);
+             let _ = drain.join();

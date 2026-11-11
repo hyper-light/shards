@@ -1,0 +1,8 @@
+# command: cargo fmt --all --check
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: 3c46eb7a91e7addf32b543b84adb4d95099fa605
+# source diff vs HEAD (excluding this evidence directory): 48 lines, sha256 20e9f01021397d4db7a8ef37fe8761b981ccb6255aa45ccb2a91d490ed8f5a0f
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T22:20:00Z
+# free GiB on /Users/adalundhe: 30
+# exit: 0 at 2026-11-11T22:20:07Z

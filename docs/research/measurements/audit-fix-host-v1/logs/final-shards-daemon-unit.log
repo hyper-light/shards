@@ -1,0 +1,482 @@
+# command: lockf /tmp/g121-mac.lock env SHARDS_HELPERS=skip SHARDS_INIT_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-init SHARDS_SERVER_BINARY=/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/audit-placeholders/shards-server cargo test -j2 -p shards --bin shards -- daemon::
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: 3c46eb7a91e7addf32b543b84adb4d95099fa605
+# source diff vs HEAD (excluding this evidence directory): 0 lines, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T22:01:03Z
+# free GiB on /Users/adalundhe: 33
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1/target/debug/build/aws-lc-sys-b6386435ff75fc3f/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.77s
+     Running unittests src/main.rs (target/debug/deps/shards-590c76d8cc8bee5d)
+
+running 334 tests
+test daemon::budget::tests::a_guests_ram_its_host_took_back_is_no_room ... ok
+test daemon::budget::tests::the_files_a_budgets_processes_map_are_held ... ok
+test daemon::budget::tests::a_budgets_room_hears_what_each_process_maps ... ok
+test daemon::commands::tests::log_timestamps_print_in_full ... ok
+test daemon::budget::tests::a_microvms_most_resident_is_kept_until_it_gives_back ... ok
+test daemon::budget::tests::what_its_hosts_pressure_had_it_give_back_is_counted_for_its_word ... ok
+test daemon::commands::tests::durations_read_as_go_units_writes_them ... ok
+test daemon::commands::tests::signals_are_taken_by_name_and_number ... ok
+test daemon::demand::tests::a_pool_keeps_what_its_bursts_need_while_it_is_used ... ok
+test daemon::commands::tests::commands_show_quoted_in_listings ... ok
+test daemon::commands::tests::log_windows_filter_what_is_forwarded ... ok
+test daemon::demand::tests::a_pools_keep_alive_counts_from_its_last_runs_end ... ok
+test daemon::demand::tests::a_burst_is_what_arrives_within_a_refill ... ok
+test daemon::commands::tests::memory_is_shown_as_go_units_shows_it ... ok
+test daemon::demand::tests::refill_times_are_smoothed_as_round_trips_are ... ok
+test daemon::commands::tests::top_refuses_pid_headers_on_other_fields ... ok
+test daemon::commands::tests::tables_align_as_go_tabwriter_aligns_them ... ok
+test daemon::builder_prune::tests::prune_tables_are_tabbed ... ok
+test daemon::budget::tests::a_builders_room_holds_only_what_its_budget_is_charged ... ok
+test daemon::engine::build::tests::a_failed_build_says_its_last_error ... ok
+test daemon::engine::http::tests::frames_say_their_stream_and_length ... ok
+test daemon::builder_prune::tests::a_cache_mounts_record_is_said ... ok
+test daemon::devices::tests::a_functions_node_and_rules_are_read ... ok
+test daemon::devices::tests::a_spec_is_split_at_its_path ... ok
+test daemon::devices::tests::sizes_read_in_bytes_or_binary_units ... ok
+test daemon::engine::files::tests::a_copys_refusals_are_said_with_their_status ... ok
+test daemon::engine::build::tests::a_builds_credentials_are_a_clients_auth_config ... ok
+test daemon::commands::tests::ps_tables_and_ports_print_byte_for_byte ... ok
+test daemon::engine::tests::errors_are_answered_with_their_status ... ok
+test daemon::ends::tests::a_hosts_ends_are_learned_and_kept_in_its_home ... ok
+test daemon::engine::tests::queries_are_read_as_go_reads_them ... ok
+test daemon::engine::http::tests::answers_and_streams_are_written_as_gos_server_writes_them ... ok
+test daemon::builder_prune::tests::prune_filters_are_asked ... ok
+test daemon::engine::tests::versions_compare_part_by_part ... ok
+test daemon::engine::scope::tests::a_scope_sees_its_own_containers_by_their_names_there ... ok
+test daemon::events::tests::events_print_line_by_line ... ok
+test daemon::groups::tests::a_cpu_budget_of_every_cpu_holds_nothing ... ok
+test daemon::groups::tests::a_group_is_named_as_a_file_of_the_home_alone ... ok
+test daemon::engine::tests::a_microvms_engine_holds_its_share_of_the_daemons_clients ... ok
+test daemon::engine::watch::tests::a_clients_cpu_percentage_is_the_share_of_its_vcpus ... ok
+test daemon::events::tests::events_are_kept_in_the_homes_journal_for_the_next_daemon ... ok
+test daemon::events::tests::a_line_cut_short_is_passed_by ... ok
+test daemon::engine::create::tests::what_only_the_api_gives_is_kept_or_refused ... ok
+test daemon::groups::tests::cpu_budgets_read_as_the_kernel_reads_them ... ok
+test daemon::groups::tests::memory_budgets_read_as_the_kernel_reads_them ... ok
+test daemon::engine::scope::tests::a_create_stays_in_its_microvm ... ok
+test daemon::engine::images::tests::a_pulls_credentials_are_a_clients_auth_config ... ok
+test daemon::events::tests::events_are_filtered ... ok
+test daemon::events::tests::a_listener_reads_what_came_before_and_hears_what_comes_after ... ok
+test daemon::health::tests::output_is_kept_to_its_limit ... ok
+test daemon::health::tests::probe_results_move_the_health_status ... ok
+test daemon::health::tests::probes_come_at_their_intervals ... ok
+test daemon::health::tests::the_start_period_forgives_failures_until_the_first_success ... ok
+test daemon::health::tests::checks_run_their_command_or_none ... ok
+test daemon::budget::tests::a_budgets_room_is_the_least_any_cgroup_over_a_microvm_leaves ... ok
+test daemon::groups::tests::a_group_is_made_once_and_kept_as_its_user_left_it ... ok
+test daemon::health::tests::the_last_five_results_are_kept ... ok
+test daemon::images::tests::reference_filters_match_familiar_and_canonical_names ... ok
+test daemon::images::tests::images_resolve_by_digest_id_and_name ... ok
+test daemon::info::tests::info_says_the_registries_daemon_json_names ... ok
+test daemon::images::tests::the_manifest_runs_use_is_the_one_in_use ... ok
+test daemon::info::tests::a_kernels_release_is_read_from_its_banner ... ok
+test daemon::images::tests::sizes_read_as_go_units_writes_them ... ok
+test daemon::inspect::tests::json_indents_as_go_indents_it ... ok
+test daemon::layers::tests::the_t_tests_tail_is_students ... ok
+test daemon::images::tests::image_trees_show_their_platforms ... ok
+test daemon::engine::create::tests::create_bodies_become_the_runs_the_cli_makes ... ok
+test daemon::commands::tests::logs_output_is_gathered_by_stream_in_order ... ok
+test daemon::layers::tests::a_restart_goes_the_way_this_hosts_restarts_say_is_quicker ... ok
+test daemon::layers::tests::a_layer_is_made_and_goes_with_its_handle ... ok
+test daemon::layers::tests::records_held_out_are_kept_and_merge_back ... ok
+test daemon::layers::tests::a_line_follows_its_host_when_its_level_or_slope_moves ... ok
+test daemon::logs::tests::a_reader_goes_on_past_a_next_segment_gone ... ok
+test daemon::logs::tests::a_tail_reads_only_its_lines ... ok
+test daemon::logs::tests::a_segment_finished_as_it_is_read_is_read_to_its_end ... ok
+test daemon::logs::tests::a_segment_removed_as_it_is_opened_is_gone ... ok
+test daemon::events::tests::the_journal_keeps_its_history_and_lets_the_oldest_go ... ok
+test daemon::logs::tests::a_reader_reads_on_past_removed_segments ... ok
+test daemon::layers::tests::a_layer_takes_of_its_disk_what_is_written ... ok
+test daemon::managed::terminal_order_tests::native_completion_wins_then_owner_stops_while_metadata_locked ... ignored, ROOT native fixture: pauses the explicit resolve-to-publish seam
+test daemon::managed::terminal_order_tests::native_file_limit_cuts_back_a_partial_append_and_keeps_known_canonical_errno ... ignored, ROOT isolated child only: caller sets RLIMIT_FSIZE and ignores SIGXFSZ
+test daemon::managed::terminal_order_tests::native_owner_stop_after_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_owner_stop_before_finish_while_metadata_locked ... ignored, ROOT native fixture: requires exact caller binary, directory and deadlines
+test daemon::managed::terminal_order_tests::native_readonly_file_error_keeps_logical_completion_and_retires_driver ... ignored, ROOT native fixture: real read-only File append error
+test daemon::layers::tests::a_line_keeps_its_records_through_noise_alone ... ok
+test daemon::managed::terminal_tests::captured_storage_submits_while_its_endpoint_is_the_explicit_borrower ... ok
+test daemon::managed::terminal_tests::drain_wait_rechecks_the_predicate_across_the_atomic_condvar_release ... ok
+test daemon::managed::terminal_tests::draining_completion_is_actionable_without_capacity_and_only_once ... ok
+test daemon::managed::terminal_tests::endpoint_loss_in_serving_or_drain_converges_without_waiting_for_capacity ... ok
+test daemon::managed::terminal_tests::fully_consumed_canonical_abort_keeps_errno_and_unknown_tail ... ok
+test daemon::managed::terminal_tests::issued_capture_storage_survives_revocation_until_its_record_is_drained ... ok
+test daemon::managed::terminal_tests::known_normal_completion_survives_stop_before_the_worker_publishes ... ok
+test daemon::layers::tests::what_a_layer_holds_is_its_blocks_past_an_empty_ones ... ok
+test daemon::managed::terminal_tests::pending_or_aborted_equal_cursors_cannot_publish_normal_completion ... ok
+test daemon::managed::terminal_tests::prepared_growth_rolls_back_or_commits_the_replacement_charge ... ok
+test daemon::logs::tests::a_tail_reads_only_the_segments_of_its_lines ... ok
+test daemon::managed::terminal_tests::readiness_is_derived_and_a_spurious_wake_does_not_issue_credit ... ok
+test daemon::managed::terminal_tests::stop_before_ack_is_sticky_and_retains_the_known_canonical_failure ... ok
+test daemon::managed::terminal_tests::the_widest_terminal_record_fits_its_buffer ... ok
+test daemon::managed::tests::a_blocked_channel_does_not_take_another_channels_credit ... ok
+test daemon::managed::terminal_tests::revocation_and_close_wake_a_drain_without_reopening_it ... ok
+test daemon::managed::terminal_tests::metadata_failure_is_returned_without_changing_the_logical_winner ... ok
+test daemon::managed::terminal_tests::a_record_that_cannot_be_cut_back_takes_no_more_lines ... ok
+test daemon::managed::tests::an_unknown_remote_owner_never_falls_back_to_the_home_key ... ok
+test daemon::layers::tests::a_restores_layer_is_its_generations_clone_where_files_clone ... ok
+test daemon::logs::tests::damage_is_refused_and_a_torn_end_left_out ... ok
+test daemon::managed::tests::the_initial_record_fits_actual_metadata_and_terminal_errno ... ok
+test daemon::managed::tests::image_identity_and_channel_offsets_are_checked_independently ... ok
+test daemon::managed::tests::torn_append_child ... ignored, child of a_terminal_record_that_fails_part_way_leaves_whole_lines: sets its process's RLIMIT_FSIZE
+test daemon::moves::tests::a_baseline_masks_the_features_of_the_registers_it_names ... ok
+test daemon::moves::tests::a_cpu_lacking_what_its_guest_may_have_used_is_named ... ok
+test daemon::moves::tests::a_stream_puts_only_what_its_plan_names ... ok
+test daemon::managed::tests::a_terminal_record_that_fails_part_way_leaves_whole_lines ... ok
+test daemon::managed::tests::growth_the_endpoint_refuses_keeps_the_current_window ... ok
+test daemon::managed::tests::a_climbed_capture_credit_fits_one_endpoint_record_and_aborts_no_channel ... ok
+test daemon::managed::tests::generation_is_persisted_and_never_wraps_or_reuses_a_bad_record ... ok
+test daemon::network::tests::a_joiners_network_mode_is_checked ... ok
+test daemon::network::tests::interface_sysctls_are_endpoints ... ok
+test daemon::network::tests::the_bridge_is_the_one_elected ... ok
+test daemon::network::tests::the_hosts_network_is_taken_alone ... ok
+test daemon::networks::tests::a_member_is_answered_the_names_it_reaches_alone ... ok
+test daemon::network::tests::run_networks_are_checked ... ok
+test daemon::networks::tests::ipam_configs_are_consolidated ... ok
+test daemon::network::tests::what_shards_does_not_do_yet_is_refused_up_front ... ok
+test daemon::hostnet::tests::a_guests_bind_is_the_hosts ... ok
+test daemon::moves::tests::a_live_moves_last_round_lays_over_its_rounds_page_by_page ... ok
+test daemon::packed::tests::retention_removes_packed_segments_too ... ok
+test daemon::moves::tests::a_volumes_files_move_as_its_guest_saw_them ... ok
+test daemon::parents::tests::a_parent_is_refused_before_anything_starts_where_it_cannot_be_served ... ok
+test daemon::parents::tests::a_slice_is_named_as_systemd_names_one ... ok
+test daemon::processes::tests::records_are_shown_with_their_names ... ok
+test daemon::packed::tests::the_rotated_segments_are_those_before_the_newest ... ok
+test daemon::ps::tests::exit_codes_parse_as_atoi_does ... ok
+test daemon::ps::tests::port_ranges_parse ... ok
+test daemon::publish::tests::a_containers_port_is_refused_before_any_bind ... ok
+test daemon::processes::tests::the_record_is_kept_in_segments_as_the_log_is ... ok
+test daemon::publish::tests::a_host_without_ipv6_publishes_at_ipv4_alone ... ok
+test daemon::publish::tests::a_mapped_address_is_ipv4s ... ok
+test daemon::publish::tests::a_picked_port_taken_at_ipv6_is_picked_again ... ok
+test daemon::publish::tests::bindings_overlap_across_a_familys_addresses ... ok
+test daemon::publish::tests::a_port_at_no_address_takes_its_networks ... ok
+test daemon::publish::tests::listeners_are_close_on_exec_and_nonblocking ... ok
+test daemon::publish::tests::ipv6_listeners_take_no_ipv4 ... ok
+test daemon::publish::tests::ports_bind_on_the_host ... ok
+test daemon::publish::tests::publish_all_binds_every_exposed_port_without_a_binding ... ok
+test daemon::publish::tests::sctp_ports_are_refused_until_shards_carries_them ... ok
+test daemon::publish::tests::udp_ports_bind_apart_from_tcp ... ok
+test daemon::publish::tests::tcp_ports_bind_again_after_their_connections_close ... ok
+test daemon::reclaim::tests::a_give_back_says_what_it_gave_or_why_it_gave_nothing ... ok
+test daemon::push::tests::blobs_mount_from_the_closest_repository ... ok
+test daemon::remote::tests::a_client_may_not_run_its_hosts_own_commands ... ok
+test daemon::remote::tests::a_clients_command_takes_shards_settings_alone ... ok
+test daemon::remote::tests::an_agent_connection_ends_with_its_step_once_the_build_has_it ... ok
+test daemon::restart::tests::a_cold_host_doubles_its_waits_on ... ok
+test daemon::restart::tests::a_host_learns_what_restarts_cost ... ok
+test daemon::moves::tests::a_tree_moves_whole_and_as_sparse ... ok
+test daemon::restart::tests::idle_is_the_slope_of_warm_vms_cpu ... ok
+test daemon::restart::tests::restart_waits_come_from_what_a_restart_costs ... ok
+test daemon::restart::tests::restarts_are_decided_by_policy ... ok
+test daemon::rmi::tests::a_platform_goes_unless_a_microvm_of_it_holds_it ... ok
+test daemon::rmi::tests::images_are_untagged_and_removed ... ok
+test daemon::rmi::tests::names_with_digests_and_short_ids_resolve ... ok
+test daemon::ends::tests::an_end_is_followed_while_its_vm_process_runs ... ok
+test daemon::packed::tests::a_segment_removed_as_it_is_packed_leaves_nothing ... ok
+test daemon::restart::tests::a_processs_cpu_is_read_on_this_host ... ok
+test daemon::layers::tests::a_kept_layers_freed_blocks_go_back_to_its_disk ... ok
+test daemon::ship::gcplogs::tests::partial_successes_say_what_they_refused ... ok
+test daemon::inspect_doc::tests::inspect_documents_hold_what_each_microvm_was_made_with ... ok
+test daemon::ship::fluentd::tests::an_event_acked_on_no_connection_is_refused_as_too_long ... ok
+test daemon::ship::fluentd::tests::a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing ... ok
+test daemon::ship::oslog::tests::lines_go_in_parts_os_log_keeps_whole ... ok
+test daemon::ship::learned::tests::a_destinations_bound_is_learned_from_its_refusals_and_kept ... ok
+test daemon::ship::renewal::tests::the_margin_is_learned_from_answers_and_expiries ... ok
+test daemon::ship::splunk::tests::batches_go_full_or_as_the_log_is_caught_up_with ... ok
+test daemon::ship::splunk::tests::indexed_is_delivered ... ok
+test daemon::ship::splunk::tests::posts_follow_what_hec_refuses_as_too_large ... ok
+test daemon::health::tests::an_exec_is_waited_for_as_long_as_its_microvm_runs ... ok
+test daemon::remote::tests::what_a_command_writes_to_its_terminal_is_read_however_late ... ok
+test daemon::load::tests::archive_json_is_read ... ok
+test daemon::packed::tests::packing_without_flushes_makes_the_same_file ... ok
+test daemon::packed::tests::a_damaged_packed_segment_is_refused ... ok
+test daemon::ship::stream::tests::a_stream_ends_once_its_receiver_has_ended_its_side ... ok
+test daemon::ship::gelf::tests::a_message_its_receiver_ends_connections_on_is_sent_again_cut ... ok
+test daemon::ship::tests::a_message_refused_as_too_long_is_cut_again ... ok
+test daemon::ship::tests::a_part_never_cuts_a_character_in_two ... ok
+test daemon::ship::tests::a_place_is_kept_as_far_as_its_messages_are_delivered ... ok
+test daemon::ship::tests::a_shippers_place_is_kept ... ok
+test daemon::ship::tests::long_lines_go_in_parts_as_long_as_their_receiver_takes ... ok
+test daemon::ship::stream::tests::a_stream_trusts_a_ca_given_beside_the_platforms ... ok
+test daemon::ship::tests::parts_are_the_longest_their_receiver_takes_as_written ... ok
+test daemon::ship::tests::segments_wholly_sent_go ... ok
+test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+test daemon::snapshots::tests::a_crashs_ghosts_are_removed_and_nothing_else ... ok
+test daemon::snapshots::tests::a_resume_record_is_within_the_longest_this_build_writes ... ok
+test daemon::snapshots::tests::a_start_removes_snapshots_cut_short ... ok
+test daemon::snapshots::tests::snapshots_are_named_as_checkpoints_are ... ok
+test daemon::tests::a_change_while_a_record_is_written_is_written_before_it_is_seen ... ok
+test daemon::ship::stream::tests::a_tls_receivers_close_notify_ends_its_connection ... ok
+test daemon::tests::a_client_hears_its_session_end_though_it_says_nothing ... ok
+test daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare ... FAILED
+test daemon::tests::a_client_that_waits_long_counts_no_more_once ... ok
+test daemon::tests::a_client_whose_request_never_went_hears_its_restart ... ok
+test daemon::tests::a_clients_end_and_interrupt_are_seen_and_nothing_else_it_sent_is_taken ... ok
+test daemon::tests::a_closed_daemon_is_not_held_by_a_slot_whose_answer_is_said ... ok
+test daemon::tests::a_closed_daemon_refills_nothing ... ok
+test daemon::tests::a_change_while_its_record_is_written_is_written_after ... ok
+test daemon::ship::gelf::tests::a_runs_last_message_refused_at_close_is_sent_again_cut ... ok
+test daemon::ship::stream::tests::a_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+shards daemon 40163: ending warm VM 40623 of /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/cold: 1 warm VMs are kept at most (SHARDS_WARM_MAX)
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: starting a warm VM of /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rebalance-10-109/hot: starting shards-vm: No such file or directory (os error 2)
+test daemon::tests::a_colder_pools_vm_ready_gives_way_to_a_hotter_pool ... ok
+test daemon::tests::a_collection_never_makes_a_removed_home_again ... ok
+test daemon::ship::fluentd::tests::a_lines_parts_still_to_come_go_after_a_part_cut_again ... ok
+test daemon::tests::a_command_sees_a_container_whose_record_is_being_written ... ok
+test daemon::tests::a_command_waiting_for_an_arrival_sees_it_taken_out ... ok
+test daemon::tests::a_container_being_removed_is_listed_so ... ok
+test daemon::tests::a_closed_daemon_waits_for_what_a_slot_it_passed_on_has_yet_to_hear ... ok
+test daemon::tests::a_daemon_stepping_aside_sends_unread_clients_on ... ok
+shards daemon 40163: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-rl-18-117/requests was removed; offering slots there again
+test daemon::tests::a_daemon_told_to_stop_never_offers_again ... ok
+shards daemon 40163: container ded149d70749c993f6c8cd5b518f516231239504c802c9bfeeb40865e5f567b7: its record is behind: a failing disk
+shards daemon 40163: container ded149d70749c993f6c8cd5b518f516231239504c802c9bfeeb40865e5f567b7: its record is written again
+test daemon::tests::a_detached_runs_client_hears_its_start_once_recorded_or_why_not ... ok
+test daemon::tests::a_command_waits_for_a_handoff_only_once_the_vm_has_taken_it ... ok
+shards daemon 40163: warm VM 40638 did not take a run: it ended first
+test daemon::tests::a_container_whose_record_is_being_written_is_found ... ok
+shards daemon 40163: warm VM 40640 may have taken a run: it said message kind 12 instead of TAKEN; ending it
+shards daemon 40163: VM 40640 ended before its command started
+test daemon::tests::a_handoff_is_retried_only_where_the_run_surely_did_not_start ... ok
+test daemon::tests::a_microvm_is_followed_while_a_client_waits_on_it ... ok
+test daemon::ship::stream::tests::a_unix_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+shards daemon 40163: the host is short of memory: its microVMs gave back 1 MiB they held cold of their files, and asked to unplug 0 MiB they held plugged past twice what they use and their peak since, in 1 passes over 422.541µs
+test daemon::tests::a_handed_over_connection_survives_until_taken ... ok
+test daemon::tests::a_name_is_let_go_only_once_its_removal_is_durable ... ok
+shards daemon 40163: VM 40647 ended with Ok(137)
+test daemon::tests::a_pool_is_the_listeners_duty_once_it_would_expire ... ok
+shards daemon 40163: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-made-again-27-126/bare: no root filesystem recorded; no warm VM restores it
+test daemon::tests::a_pool_made_again_restores_its_templates_root_filesystem ... ok
+shards daemon 40163: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-replaced-28-127/template: its root filesystem was replaced; no warm VM restores it
+test daemon::tests::a_pool_restores_no_replaced_root_filesystem ... ok
+test daemon::tests::a_port_of_a_run_being_handed_over_is_seen_through_its_handoff ... ok
+test daemon::tests::a_name_held_by_a_run_being_handed_over_is_seen_through_its_handoff ... ok
+shards daemon 40163: 0.0.0.0:1: 34e88ba4e5a8ae936af9e776ff7f6fd17ec0a9a8e7bdc4a982a41490ce7571d2's, its run ended: waiting for its network process
+shards daemon 40163: 0.0.0.0:1: freed after 1.926875ms
+test daemon::tests::a_record_behind_is_written_before_a_command_is_answered ... ok
+test daemon::tests::a_port_of_a_run_that_has_said_done_is_not_allocated ... ok
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: starting a warm VM of /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-planned-33-132/template: starting shards-vm: No such file or directory (os error 2)
+test daemon::tests::a_refills_vms_count_as_starting_once_planned ... ok
+test daemon::tests::a_removal_completes_where_no_completer_runs ... ok
+test daemon::ship::stream::tests::what_a_dropped_connection_had_not_delivered_goes_on_the_next ... ok
+test daemon::tests::a_requests_wait_is_learned_from_its_clients ... ok
+shards daemon 40163: container cdea38db82768a5601bff7f4a79ef75fddef95dce82502638f0603b44725e37b: removing it: a failing set-aside
+test daemon::tests::a_rm_container_that_cannot_be_set_aside_is_back_as_it_ended ... ok
+test daemon::tests::a_rm_containers_name_is_free_once_its_run_ends ... ok
+test daemon::tests::a_rm_run_that_ends_before_its_record_is_written_is_removed ... ok
+test daemon::tests::a_run_that_ends_before_its_record_is_written_keeps_its_end ... ok
+test daemon::tests::a_run_that_publishes_nothing_holds_nothing ... ok
+test daemon::tests::a_run_whose_ports_are_closed_holds_them_no_longer ... ok
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: starting a warm VM of /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-unstartable-42-141/template: starting shards-vm: No such file or directory (os error 2)
+test daemon::tests::a_run_whose_vm_cannot_start_is_told_why_at_once ... ok
+test daemon::tests::a_runs_end_waits_for_the_relays_of_its_output ... ok
+test daemon::tests::a_records_write_holds_up_only_the_answers_that_need_it ... ok
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container af3a2bb83a23f70424c38b57cff407259c7bc723c1bd0d3e1b92faa04d5064c6: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-files-off-loop-44-143/template: its working set: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-files-off-loop-44-143/template: no snapshot here
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+test daemon::tests::a_runs_files_are_made_off_the_followers_loop ... ok
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+test daemon::tests::a_shares_window_by_default_follows_its_host ... ok
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+shards daemon 40163: container 1efc559aebde4a80c928e8ba6e7c38a5989fa9ef4cfc27519dda4fb693c62782: a VM asked for a log segment out of turn
+test daemon::tests::a_runs_log_segments_are_made_in_turn ... ok
+test daemon::tests::a_closed_daemon_waits_for_its_clients_to_take_their_answers ... ok
+test daemon::tests::a_starting_vm_progresses_by_more_cpu_than_an_idle_one_takes ... ok
+test daemon::tests::a_shutdown_waits_for_a_removal_taken_out_and_not_yet_queued ... ok
+test daemon::tests::a_stop_signals_a_run_its_own_way_before_its_record_is_written ... ok
+shards daemon 40163: stepping aside: a test asked it to stop
+test daemon::tests::a_stopping_daemon_ends_the_clients_it_would_wait_for ... ok
+test daemon::tests::a_stopping_daemon_starts_no_pending_run ... ok
+test daemon::tests::a_stopping_daemon_stops_a_run_being_handed_over ... ok
+test daemon::tests::a_stops_escalation_ends_with_the_last_run ... ok
+test daemon::tests::a_vm_gone_before_the_wait_surely_never_took_the_run ... ok
+test daemon::tests::a_vm_stopped_partway_through_a_message_holds_up_no_command ... ok
+test daemon::tests::a_vm_that_answers_otherwise_may_have_taken_the_run ... ok
+test daemon::tests::a_vm_that_ended_with_its_run_unread_surely_never_took_it ... ok
+test daemon::tests::a_vm_that_ends_before_taking_a_run_fails_the_hand_over ... ok
+test daemon::tests::a_network_process_is_ended_past_its_grace_and_the_ports_freed ... ok
+shards daemon 40163: VM 40733 ended with Ok(137)
+test daemon::tests::a_vms_pid_is_kept_until_its_ports_are_freed ... ok
+test daemon::tests::a_vms_windows_keep_every_range_within_the_hosts_mappings ... ok
+test daemon::tests::a_waiter_that_stops_waiting_is_forgotten ... ok
+test daemon::tests::a_warm_vm_coming_ready_wakes_the_listener ... ok
+shards daemon 40163: warm VM 40754 ended while it waited (Ok(137))
+test daemon::tests::a_warm_vm_ending_as_it_waits_is_reaped_and_leaves_its_pool ... ok
+test daemon::tests::an_asked_address_is_free_once_its_holder_has_said_its_end ... ok
+shards daemon 40163: container 3c572fc26d1b95e90cb55db780ef4c43f0718d3fce6df34491db47dc1979455e: an engine connection from a run with no engine of its own
+test daemon::tests::an_engine_connection_is_served_for_a_run_with_its_own_engine_alone ... ok
+test daemon::tests::clients_are_what_the_threads_hold ... ok
+shards daemon 40163: request slot 0: its request not whole in 1.03016243s; its client asks again
+test daemon::tests::a_request_cut_tells_its_client_to_ask_again ... ok
+test daemon::ship::tests::parts_are_cut_where_the_ratio_of_written_bytes_says ... ok
+shards daemon 40163: VM 40728 ended with Ok(137)
+test daemon::tests::a_vm_ended_before_it_is_followed_is_reaped ... ok
+test daemon::tests::cold_boots_take_their_turns_in_order ... ok
+test daemon::tests::ended_runs_are_followed_no_more ... ok
+shards daemon 40163: collected template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-collect-templates-60-159/templates/def
+shards daemon 40163: collected template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-collect-templates-60-159/templates/abc.new-1-0
+test daemon::tests::errors_short_of_descriptors_are_known_by_their_code ... ok
+test daemon::tests::collections_remove_templates_nothing_can_use ... ok
+shards daemon 40163: container 6b74eb1e12da9a75b64fc2f3fb6566f872b89203b657d4f58ba47028ebbd88bf: 7 bytes of its output could not be kept in its log
+test daemon::tests::logs_say_what_they_do_not_hold ... ok
+test daemon::tests::makers_at_once_leave_one_spare ... ok
+test daemon::tests::metrics_errors_are_passed_on_as_they_come ... ok
+test daemon::tests::metrics_in_a_paused_providers_microvm_are_refused_at_once ... ok
+test daemon::tests::metrics_refusals_say_why ... ok
+test daemon::tests::container_commands_wait_for_records_and_image_commands_do_not ... ok
+test daemon::tests::cold_boots_wait_their_turn ... ok
+shards daemon 40163: collected 0 blobs, 0 root filesystems and 1 files left in ingest/: 11 bytes, in 1.096292ms
+test daemon::tests::no_collection_starts_while_the_listener_is_starved ... ok
+shards daemon 40163: VM 40981 ended with Ok(137)
+test daemon::tests::ports_are_freed_as_the_vm_ends_after_its_network_process ... ok
+test daemon::tests::references_to_microvms_are_trimmed_and_checked ... ok
+test daemon::tests::removals_ending_together_take_one_sync ... ok
+test daemon::logs::tests::a_reader_following_a_log_shows_each_line_once ... ok
+shards daemon 40163: ending warm VM 40918 of cold: idle for 100ms (SHARDS_POOL_KEEP)
+test daemon::tests::pools_unclaimed_past_their_keep_alive_end_their_vms ... ok
+test daemon::tests::rm_cancels_a_run_no_vm_was_committed_to ... ok
+test daemon::tests::rm_force_kills_a_run_being_handed_over_once_it_runs ... ok
+test daemon::tests::rm_waits_for_a_run_being_handed_over ... ok
+shards daemon 40163: container 671035b1b40815d45ec46fdf98d15128e7f93b772117eec186bb65d88dcfb797: removing it: a failing disk
+test daemon::tests::rm_sets_aside_out_of_the_registrys_lock ... ok
+test daemon::tests::start_takes_the_end_a_run_s_client_has_seen ... ok
+test daemon::tests::senders_on_a_run_socket_take_turns ... ok
+test daemon::tests::a_sleeping_process_runs_nothing_a_boot_does_and_a_busy_one_runs ... ok
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: reading the template /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template: its files are not held open: /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/shards-tests/40163/daemon-refiller-83-183/template/g-1/state: malformed snapshot state: truncated u8
+shards daemon 40163: VM 41053: Invalid argument (os error 22); its process ended with status 137 (0x89)
+test daemon::tests::rotated_segments_left_as_written_are_compressed_at_start ... ok
+shards daemon 40163: VM 41053 ended with Ok(137)
+test daemon::tests::the_refiller_starts_what_a_pool_keeps_and_the_spare ... ok
+shards daemon 40163: exiting
+test daemon::tests::the_files_asked_for_are_made_before_the_daemon_exits ... ok
+test daemon::top::args::tests::errors_are_the_first_pass_errors ... ok
+test daemon::top::args::tests::formats_are_built_as_sortformat_builds_them ... ok
+test daemon::top::clock::tests::civil_time_matches_glibc ... ok
+test daemon::top::dump::tests::command_lines_are_joined_and_escaped ... ok
+test daemon::top::dump::tests::numbers_read_as_strtol_reads_them ... ok
+test daemon::top::dump::tests::terminals_are_named_as_devname_names_them ... ok
+test daemon::top::output::tests::escapes_as_the_c_locale_does ... ok
+test daemon::top::output::tests::versions_compare_as_glibc_compares_them ... ok
+test daemon::top::tests::long_names_are_cut_with_a_plus ... ok
+test daemon::top::tests::options_ps_refuses_with_q_run_without_it ... ok
+test daemon::top::tests::start_times_follow_the_zone_and_now ... ok
+test daemon::tests::working_sets_are_gathered_whole_and_bounded ... ok
+test daemon::top::tests::top_failures_read_as_reported ... ok
+test daemon::top::tests::top_tables_are_taken_apart ... ok
+test daemon::update::tests::selected_pids_reset_survives_update_merge_and_shared_mapping ... ok
+test daemon::update::tests::updates_merge_with_the_limits_set ... ok
+test daemon::volume::tests::invalid_volume_filters_are_refused ... ok
+test daemon::tests::wait_stop_and_kill_see_a_start_through ... ok
+test daemon::top::tests::top_lays_out_every_recorded_case ... ok
+test daemon::logs::tests::a_reader_following_segments_shows_each_line_once ... ok
+test daemon::tests::logs_deliver_lines_of_any_length ... ok
+shards daemon 40163: container 49aead6b0cc70fa3369ecd1142dd3a1280b6b2ecc55ce4f512f98c2f1908c94e: giving back what it holds cold: answered after 10.002220542s, its microVM running
+shards daemon 40163: container 49aead6b0cc70fa3369ecd1142dd3a1280b6b2ecc55ce4f512f98c2f1908c94e: giving back what it holds cold: no answer within 10s, and so it was ended
+shards daemon 40163: VM 40645 ended before its command did
+test daemon::tests::a_microvm_that_does_not_give_back_keeps_no_other_waiting ... ok
+test daemon::tests::a_closed_daemon_waits_for_a_client_taking_its_answer_slowly ... ok
+test daemon::tests::metrics_whose_microvm_runs_nothing_are_ended ... ok
+test daemon::logs::tests::a_reader_resumed_where_another_got_to_shows_the_rest ... ok
+test daemon::packed::tests::a_packed_segment_reads_back_as_written ... ok
+test daemon::tests::stop_ends_every_container_at_once ... ok
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... ok
+test daemon::ship::stream::tests::a_stream_closed_delivers_all_it_wrote ... ok
+test daemon::tests::a_vm_that_reads_nothing_fails_its_handoff ... ok
+test daemon::ship::oslog::tests::what_os_log_keeps_whole_is_learned_from_the_log ... ok
+test daemon::logs::tests::logs_in_packed_segments_read_as_their_records_do has been running for over 60 seconds
+test daemon::logs::tests::logs_in_segments_read_as_their_records_do has been running for over 60 seconds
+test daemon::logs::tests::logs_read_as_the_plain_way_reads_them has been running for over 60 seconds
+test daemon::logs::tests::logs_in_packed_segments_read_as_their_records_do ... ok
+test daemon::logs::tests::logs_in_segments_read_as_their_records_do ... ok
+test daemon::logs::tests::logs_read_as_the_plain_way_reads_them ... ok
+
+failures:
+
+---- daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare stdout ----
+
+thread 'daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare' (66864131) panicked at crates/shards/src/daemon.rs:11583:49:
+called `Result::unwrap()` on an `Err` value: Os { code: 22, kind: InvalidInput, message: "Invalid argument" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    daemon::tests::a_client_no_descriptor_is_left_for_is_refused_with_the_spare
+
+test result: FAILED. 326 passed; 1 failed; 7 ignored; 0 measured; 377 filtered out; finished in 121.26s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+# exit: 101 at 2026-11-11T22:03:07Z

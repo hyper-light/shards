@@ -1,0 +1,8 @@
+# command: scripts/check-development-policy
+# cwd: /Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-host-v1
+# head: 3c46eb7a91e7addf32b543b84adb4d95099fa605
+# source diff vs HEAD (excluding this evidence directory): 0 lines, sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+# host: Darwin 25.4.0 arm64
+# started: 2026-11-11T22:04:36Z
+Development policy checks passed; evidence/coordinator review is still required.
+# exit: 0 at 2026-11-11T22:04:37Z
