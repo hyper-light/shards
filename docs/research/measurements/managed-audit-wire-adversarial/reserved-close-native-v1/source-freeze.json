@@ -1,0 +1,20 @@
+{
+  "base_source": "33ea5a816ae1d4f9656762d2acedc98ec00ccc34",
+  "frozen_previous_leaf_sha256": "75427cca006a347f7b6a02ef88203e3b947db3d5f74157192001d1dc097e8a00",
+  "leaf_sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e",
+  "applied_diff_sha256": "d1f7f0c649b6ce11b62274e7462c5955b422efbb4ff83497b31947f4e446f4c3",
+  "canonical_format": 0,
+  "original24_sequence_body_exact_without_new_selector": true,
+  "wire_snapshot_helpers_exact": true,
+  "cleanup_body_exact_except_scenario_forwarding": true,
+  "production_files_exact_ba78": [
+    "crates/abi/src/run/audit.rs",
+    "crates/vmm/src/devices/virtio/fs/audit.rs",
+    "crates/vmm/src/devices/virtio/fs/server.rs"
+  ],
+  "selected_filter": "managed_audit_wire_adversarial::reserved_close_retains_extent_and_refuses_reopening",
+  "original24_filter_retained": true,
+  "new_native_cases_run": 0,
+  "policy_revision": "b6af4ec8efa246c8a12fb44abd10425a5adc9af5",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+}
