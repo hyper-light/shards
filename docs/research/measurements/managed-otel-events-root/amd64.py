@@ -68,6 +68,8 @@ assert run("checkout", ["git", "checkout", "--detach", source], 120) == 0
 assert sha(repo / "docs/development-rules.md") == "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
 assert os.access("/dev/kvm", os.R_OK | os.W_OK)
 (out / "identity.json").write_text(json.dumps({"role": "coordinator", "source": source, "policy_sha256": sha(repo / "docs/development-rules.md"), "uname": list(os.uname()), "load": os.getloadavg(), "disk_free": shutil.disk_usage(repo).free, "admission": "4CPU/16GiB/64GiB/j4; not a hard physical/kernel cap", "sources": {p: sha(repo / p) for p in ["crates/remote/src/managed.rs", "crates/shards/src/daemon/managed.rs", "crates/init/src/metrics.rs", "crates/init/src/metrics/otlp.rs", "crates/init/src/metrics/events.rs", "crates/shards/tests/managed_output/metrics.rs", "crates/shards/src/daemon/metrics.rs"]}}, indent=2) + "\n")
+assert run("rustc", ["rustc", "--version", "--verbose"], 60) == 0
+assert run("cargo", ["cargo", "--version"], 60) == 0
 assert run("policy", ["python3", "scripts/check-development-policy"], 60) == 0
 assert run("metrics-unit", ["cargo", "test", "--locked", "-p", "shards-init", "--profile", "test-release", "-j4", "--", "metrics::", "--nocapture", "--test-threads=1"], 900) == 0
 assert run("native-clippy", ["env", "SHARDS_HELPERS=skip", "cargo", "clippy", "--locked", "-p", "shards-init", "-p", "shards", "--all-targets", "-j4", "--", "-D", "warnings"], 1200) == 0
