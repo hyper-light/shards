@@ -1,0 +1,44 @@
+{
+  "kind": "Delayed Kiln completion notification delivered by user",
+  "run": "r35",
+  "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+  "reported_elapsed": "1m 6s",
+  "exit_code": 0,
+  "output_tail": {
+    "status": "BuiltListedExactlyOne_NoCaseRun",
+    "executable": "/Users/adalundhe/managed-audit-wire-reserved-close-v1/artifacts/shards-vmm-native",
+    "sha256": "85a6853df89ab49b01b6823ff9216492441e2445fb067773adf3cf1258dfc6e5",
+    "filter": "managed_audit_wire_adversarial::reserved_close_retains_extent_and_refuses_reopening",
+    "selected_count": 1,
+    "original_deadline_epoch": 1794368579.162,
+    "argv": [
+      "/Users/adalundhe/managed-audit-wire-reserved-close-v1/artifacts/shards-vmm-native",
+      "managed_audit_wire_adversarial::reserved_close_retains_extent_and_refuses_reopening",
+      "--exact",
+      "--ignored",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "case_environment": {
+      "SHARDS_AUDIT_WIRE_CORPUS": "/Users/adalundhe/managed-audit-wire-reserved-close-v1/input/data",
+      "SHARDS_AUDIT_WIRE_RECORDS": "/Users/adalundhe/managed-audit-wire-reserved-close-v1/native-records-v1",
+      "TMPDIR": "/Users/adalundhe/managed-audit-wire-reserved-close-v1/native-tmp-v1"
+    },
+    "case_parent_seconds": 45,
+    "native_cases_run": 0
+  },
+  "phase": "Build/list/Clippy complete before actor; not a new current case counter",
+  "tested_checkpoint": "e5b3a9bdb59ed1919f1547fef6dfaac329be077c",
+  "actual_runtime_attempts_in_tested_checkpoint": 1,
+  "actual_runtime_result": "1 passed; 0 failed; 0 ignored; no timeout or retry",
+  "prior_records_preserved": [
+    "preflight-run-lost.json",
+    "r35-registry-lost.json",
+    "restart-inspection.json",
+    "preflight-recovered.json",
+    "first-case-tool.json",
+    "raw-native-v1.tar.gz",
+    "raw-manifest-v1.json"
+  ],
+  "handling": "Supplement only. No output lookup, rebuild, rebase, actor, retry or deadline extension was triggered."
+}
