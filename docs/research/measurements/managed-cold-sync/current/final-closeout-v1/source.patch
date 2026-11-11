@@ -1,0 +1,1131 @@
+diff --git a/crates/api/src/client.rs b/crates/api/src/client.rs
+index a44297d5ece80cb2acf0ec261ad8cce5aa5f3cb8..874c01d0a989cea097d255508624242e3409a82f 100644
+--- a/crates/api/src/client.rs
++++ b/crates/api/src/client.rs
+@@ -18,8 +18,11 @@ use std::io::{self, Read as _, Write as _};
+ use std::path::{Path, PathBuf};
+ use std::process::{Child, Command, Stdio};
+ use std::sync::atomic::{AtomicU64, Ordering};
+-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
++use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+ use std::time::{Duration, Instant};
++use triomphe::Arc as ControlArc;
++
++use crate::sync::{self, Condvar, Guard, Mutex as ControlMutex};
+ 
+ use crate::stream::{self, Socket};
+ use crate::{
+@@ -100,44 +103,30 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
+     // Shared: its watcher thread waits on it for the guest's life, past this call, as the guest kills it.
+     let process = Arc::new(process);
+     // Shared: the guest and its watcher thread, which outlives this call, each hold it while either lives.
+-    let shared = Arc::new(Shared {
+-        state: Mutex::new(State {
+-            exited: false,
+-            stopping: false,
+-            ready: true,
+-            end: None,
+-            said: String::new(),
+-            ended_as: String::new(),
+-            status: None,
+-        }),
+-        changed: Condvar::new(),
+-        tail: Mutex::new(Tail {
+-            bytes: VecDeque::new(),
+-            keep: 0,
+-            drained: true,
+-            output: None,
+-        }),
+-        drained: Condvar::new(),
+-        end_mark: end_mark(),
+-    });
++    let shared = Shared::prepare(true, 0, true)?;
+     let (watched, watcher) = (process.clone(), shared.clone());
+     std::thread::Builder::new()
+         .name("shards-api-taken".into())
+         .spawn(move || {
+             let awaited = watched.exited();
+-            let mut state = lock(&watcher.state);
+-            state.status = Some(Err(match awaited {
+-                Ok(()) => NOT_ITS_PARENT.into(),
+-                Err(e) => format!("waiting for it: {e}"),
+-            }));
+-            state.exited = true;
+-            watcher.changed.notify_all();
++            if let Ok(mut state) = watcher.state.lock() {
++                state.status = Some(Err(match awaited {
++                    Ok(()) => NOT_ITS_PARENT.into(),
++                    Err(e) => format!("waiting for it: {e}"),
++                }));
++                state.exited = true;
++                if let Err(failure) = watcher.changed.notify_all() {
++                    state.failure = Some(failure);
++                }
++                let _ = state.release();
++            }
+         })
+         .map_err(|e| Refusal::Boot(format!("taking it back, a thread to watch it: {e}")))?;
+     Ok(ShardsGuest {
+         ports: spec.ports.clone(),
+         vsock: identity.vsock.clone(),
+         pid: identity.pid,
++        child: None,
+         taken: Some(Taken {
+             identity: identity.clone(),
+             process,
+@@ -181,6 +170,7 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
+         writer.try_clone().map_err(piped)?,
+         writer.try_clone().map_err(piped)?,
+     );
++    let shared = Shared::prepare(false, tail(said), false)?;
+     let child = Command::new(&binary)
+         .args(&args)
+         .stdin(Stdio::null())
+@@ -188,27 +178,6 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
+         .stderr(stderr)
+         .spawn()
+         .map_err(|e| Refusal::Boot(format!("{}: {e}", binary.display())))?;
+-    // Shared: the guest, its drain and its watcher, threads that outlive this call, each hold it.
+-    let shared = Arc::new(Shared {
+-        state: Mutex::new(State {
+-            exited: false,
+-            stopping: false,
+-            ready: false,
+-            end: None,
+-            said: String::new(),
+-            ended_as: String::new(),
+-            status: None,
+-        }),
+-        changed: Condvar::new(),
+-        tail: Mutex::new(Tail {
+-            bytes: VecDeque::new(),
+-            keep: tail(said),
+-            drained: false,
+-            output: None,
+-        }),
+-        drained: Condvar::new(),
+-        end_mark: end_mark(),
+-    });
+     #[cfg(unix)]
+     let pid = child.id();
+     // Shared: the watcher, which outlives this call, reaps it; on Windows the guest kills it too.
+@@ -228,6 +197,8 @@ fn start(spec: &GuestSpec) -> Result<ShardsGuest, Refusal> {
+         #[cfg(windows)]
+         child,
+         #[cfg(unix)]
++        child: Some(child),
++        #[cfg(unix)]
+         taken: None,
+         shared,
+         _dir: Some(dir),
+@@ -377,10 +348,10 @@ impl Drop for PrivateDir {
+ /// What a guest's watchers and callers share.
+ #[derive(Debug)]
+ struct Shared {
+-    state: Mutex<State>,
++    state: ControlMutex<State>,
+     /// Signalled as the process ends.
+     changed: Condvar,
+-    tail: Mutex<Tail>,
++    tail: ControlMutex<Tail>,
+     /// Signalled as its output is drained.
+     drained: Condvar,
+     /// What this process writes into shards' output once shards has ended ([`end_mark`]).
+@@ -402,6 +373,8 @@ struct State {
+     ended_as: String,
+     /// Its exit status, as the watcher reaped it.
+     status: Option<Result<std::process::ExitStatus, String>>,
++    /// Observer failure is uncertain, rather than a fabricated guest exit.
++    failure: Option<sync::Failure>,
+ }
+ 
+ #[derive(Debug)]
+@@ -429,19 +402,88 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+     m.lock().unwrap_or_else(PoisonError::into_inner)
+ }
+ 
++fn synchronization(failure: sync::Failure) -> Refusal {
++    if failure.code.is_none() {
++        Refusal::Allocation {
++            what: "guest synchronization storage",
++        }
++    } else {
++        Refusal::Synchronization { failure }
++    }
++}
++
++impl Shared {
++    fn prepare(ready: bool, keep: usize, drained: bool) -> Result<ControlArc<Self>, Refusal> {
++        // No live Child is consumed by fallible preparation. Both native pairs
++        // are initialized at stable addresses before the command is spawned.
++        let shared = Self {
++            state: ControlMutex::new(State {
++                exited: false,
++                stopping: false,
++                ready,
++                end: None,
++                said: String::new(),
++                ended_as: String::new(),
++                status: None,
++                failure: None,
++            })
++            .map_err(|(_, failure)| synchronization(failure))?,
++            changed: Condvar::new().map_err(synchronization)?,
++            tail: ControlMutex::new(Tail {
++                bytes: VecDeque::new(),
++                keep,
++                drained,
++                output: None,
++            })
++            .map_err(|(_, failure)| synchronization(failure))?,
++            drained: Condvar::new().map_err(synchronization)?,
++            end_mark: end_mark(),
++        };
++        ControlArc::try_new(shared).map_err(|_| Refusal::Allocation {
++            what: "guest shared state",
++        })
++    }
++
++    fn failed(&self, failure: sync::Failure) -> Result<(), sync::Failure> {
++        // Tail is released before State, preserving the original lock order.
++        if let Ok(mut tail) = self.tail.lock() {
++            tail.drained = true;
++            let notified = self.drained.notify_all();
++            tail.release()?;
++            notified?;
++        }
++        let mut state = self.state.lock()?;
++        state.failure = Some(failure);
++        let notified = self.changed.notify_all();
++        state.release()?;
++        notified
++    }
++}
++
++fn finish<T, R>(guard: Guard<'_, T>, result: Result<R, Refusal>) -> Result<R, Refusal> {
++    guard.release().map_err(synchronization)?;
++    result
++}
++
+ /// Starts the thread that reads shards' output into the tail, and the one that waits for it
+ /// to exit.
+ fn start_threads(
+-    shared: &Arc<Shared>,
++    shared: &ControlArc<Shared>,
+     child: &Arc<Mutex<Child>>,
+     output: io::PipeReader,
+     writer: io::PipeWriter,
+ ) -> io::Result<()> {
+     let exit = Exit::of(child)?;
+     let drainer = shared.clone();
++    let draining_child = child.clone();
+     std::thread::Builder::new()
+         .name("shards-api-drain".into())
+-        .spawn(move || drain(&drainer, output))?;
++        .spawn(move || {
++            if let Err(failure) = drain(&drainer, output) {
++                let _ = drainer.failed(failure);
++                let _ = lock(&draining_child).kill();
++            }
++        })?;
+     let shared = shared.clone();
+     std::thread::Builder::new()
+         .name("shards-api-wait".into())
+@@ -453,16 +495,18 @@ fn start_threads(
+ /// keeps ([`Tail::keep`]). What follows the
+ /// mark is not shards': a child it left holding its output (macOS's grants broker, until it
+ /// exits) holds no refusal back.
+-fn drain(shared: &Shared, mut output: io::PipeReader) {
++fn drain(shared: &Shared, mut output: io::PipeReader) -> Result<(), sync::Failure> {
+     let mark = shared.end_mark.as_slice();
+-    let keep = lock(&shared.tail).keep;
++    let tail = shared.tail.lock()?;
++    let keep = tail.keep;
++    tail.release()?;
+     // A read never returns more than the tail keeps (never nothing: [`tail`]'s report).
+     let mut buf = vec![0u8; keep];
+     loop {
+         match output.read(&mut buf) {
+             Ok(0) => break,
+             Ok(n) => {
+-                let mut tail = lock(&shared.tail);
++                let mut tail = shared.tail.lock()?;
+                 tail.bytes.extend(buf.get(..n).unwrap_or_default());
+                 // The mark may have begun in an earlier read.
+                 let from = tail.bytes.len().saturating_sub(n.saturating_add(mark.len()));
+@@ -476,6 +520,7 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
+                 }
+                 let over = tail.bytes.len().saturating_sub(keep);
+                 tail.bytes.drain(..over);
++                tail.release()?;
+                 if at.is_some() {
+                     break;
+                 }
+@@ -484,10 +529,12 @@ fn drain(shared: &Shared, mut output: io::PipeReader) {
+             Err(_) => break,
+         }
+     }
+-    let mut tail = lock(&shared.tail);
++    let mut tail = shared.tail.lock()?;
+     tail.drained = true;
+     tail.output = Some(output);
+-    shared.drained.notify_all();
++    let notified = shared.drained.notify_all();
++    tail.release()?;
++    notified
+ }
+ 
+ /// The process's exit, awaited without reaping it, so that its pid stays its own (and a
+@@ -559,24 +606,25 @@ impl Exit {
+     /// Waits for the process to exit, then for its last words, and says how it ended. Its
+     /// words end at the end mark this writes after its exit: the drain reaches the mark
+     /// through what is in the pipe ahead of it, which is finite, with no clock.
+-    fn watch(self, shared: &Shared, mut writer: io::PipeWriter) {
++    fn watch(self, shared: &Shared, writer: io::PipeWriter) {
+         let awaited = self.awaited();
+-        let drained = lock(&shared.tail).drained;
+-        // Where the drain has ended (an error), the pipe holds the mark unread, as its
+-        // reader is kept open.
+-        if !drained && writer.write_all(&shared.end_mark).is_err() {
+-            lock(&shared.tail).drained = true;
+-        }
+-        drop(writer);
+-        let mut tail = lock(&shared.tail);
+-        while !tail.drained {
+-            tail = shared.drained.wait(tail).unwrap_or_else(PoisonError::into_inner);
+-        }
+-        let said = String::from_utf8_lossy(tail.bytes.make_contiguous())
+-            .trim()
+-            .to_string();
+-        drop(tail);
+-        let mut state = lock(&shared.state);
++        let captured = Self::capture(shared, writer);
++        let mut state = match shared.state.lock() {
++            Ok(state) => state,
++            Err(_) => {
++                // A failed native State mutex remains refused. No later caller
++                // can enter its old PID state after this independent owned reap.
++                let _ = lock(&self.child).wait();
++                return;
++            }
++        };
++        let said = match captured {
++            Ok(said) => said,
++            Err(failure) => {
++                state.failure = Some(failure);
++                String::new()
++            }
++        };
+         if let Err(e) = awaited {
+             state.end = Some(End::Failed(format!("waiting for shards: {e}")));
+             state.ended_as = format!("waiting for shards: {e}");
+@@ -586,7 +634,37 @@ impl Exit {
+         state.status = Some(lock(&self.child).wait().map_err(|e| e.to_string()));
+         state.said = said;
+         state.exited = true;
+-        shared.changed.notify_all();
++        if let Err(failure) = shared.changed.notify_all() {
++            state.failure = Some(failure);
++        }
++        let _ = state.release();
++    }
++
++    fn capture(shared: &Shared, mut writer: io::PipeWriter) -> Result<String, sync::Failure> {
++        let tail = shared.tail.lock()?;
++        let drained = tail.drained;
++        tail.release()?;
++        if !drained && writer.write_all(&shared.end_mark).is_err() {
++            let mut tail = shared.tail.lock()?;
++            tail.drained = true;
++            tail.release()?;
++        }
++        drop(writer);
++        let mut tail = shared.tail.lock()?;
++        while !tail.drained {
++            // SAFETY: drained is paired only with Shared::tail, at stable storage.
++            let (next, waited) = unsafe { shared.drained.wait(tail, None) };
++            tail = next;
++            if let Err(failure) = waited {
++                tail.release()?;
++                return Err(failure);
++            }
++        }
++        let said = String::from_utf8_lossy(tail.bytes.make_contiguous())
++            .trim()
++            .to_string();
++        tail.release()?;
++        Ok(said)
+     }
+ }
+ 
+@@ -599,10 +677,13 @@ struct ShardsGuest {
+     /// Ended through it on Windows, which sends a process no signal; the watcher reaps it.
+     #[cfg(windows)]
+     child: Arc<Mutex<Child>>,
++    /// The same Child owner as the reaper, for cleanup if native State access fails.
++    #[cfg(unix)]
++    child: Option<Arc<Mutex<Child>>>,
+     /// What it was taken back by, where it was: its VM process is not this one's child.
+     #[cfg(unix)]
+     taken: Option<Taken>,
+-    shared: Arc<Shared>,
++    shared: ControlArc<Shared>,
+     /// Its socket's directory, removed as it drops: none where a guest taken back was given
+     /// a socket in a directory this client does not make.
+     _dir: Option<PrivateDir>,
+@@ -616,6 +697,29 @@ struct Taken {
+ }
+ 
+ impl ShardsGuest {
++    fn with_state<R>(&self, action: impl FnOnce(&mut State) -> Result<R, Refusal>) -> Result<R, Refusal> {
++        let mut state = self.shared.state.lock().map_err(synchronization)?;
++        let result = action(&mut state);
++        finish(state, result)
++    }
++
++    fn stop_without_state(&self) {
++        #[cfg(unix)]
++        if let Some(taken) = &self.taken {
++            taken.process.kill();
++            return;
++        }
++        // Child's recorded status protects against PID reuse if State failed.
++        #[cfg(unix)]
++        if let Some(child) = &self.child {
++            let _ = lock(child).kill();
++        }
++        #[cfg(windows)]
++        {
++            let _ = lock(&self.child).kill();
++        }
++    }
++
+     /// Its end, once the process has exited and its watcher reaped it.
+     fn end(&self, state: &mut State) -> Option<End> {
+         if !state.exited {
+@@ -643,6 +747,9 @@ impl ShardsGuest {
+     /// The refusal for a guest that has ended: `Boot`, with shards' exit and last words,
+     /// where it failed or reset before any `CONNECT` was answered, else `Ended`.
+     fn gone(&self, state: &mut State) -> Option<Refusal> {
++        if let Some(failure) = state.failure {
++            return Some(synchronization(failure));
++        }
+         let end = self.end(state)?;
+         // A failure or a reset (a kernel's panic) before any answer is the boot's; a power-off
+         // or a stop is a normal end.
+@@ -1107,7 +1214,7 @@ impl Guest for ShardsGuest {
+         let deadline = began.checked_add(patience);
+         let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
+         let last = loop {
+-            if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
++            if let Some(refusal) = self.with_state(|state| Ok(self.gone(state)))? {
+                 return Err(refusal);
+             }
+             let mut cost = Duration::ZERO;
+@@ -1116,7 +1223,10 @@ impl Guest for ShardsGuest {
+             let wait = left().filter(|l| !l.is_zero());
+             match handshake(&self.vsock, port, wait, &mut cost) {
+                 Ok(s) => {
+-                    lock(&self.shared.state).ready = true;
++                    self.with_state(|state| {
++                        state.ready = true;
++                        Ok(())
++                    })?;
+                     return s.boxed().map_err(|_| Refusal::Allocation {
+                         what: "connection storage",
+                     });
+@@ -1131,13 +1241,17 @@ impl Guest for ShardsGuest {
+                 Err(Attempt::Again(_)) => {}
+             }
+             // Waits out the pause, woken at once by the process's end.
+-            let state = lock(&self.shared.state);
++            let state = self.shared.state.lock().map_err(synchronization)?;
+             if !state.exited {
+                 let pause = pause(cost, began.elapsed(), left().unwrap_or(Duration::MAX));
+-                let _ = self.shared.changed.wait_timeout(state, pause);
++                // SAFETY: changed is paired only with Shared::state.
++                let (state, waited) = unsafe { self.shared.changed.wait(state, Some(pause)) };
++                finish(state, waited.map(|_| ()).map_err(synchronization))?;
++            } else {
++                finish(state, Ok(()))?;
+             }
+         };
+-        if let Some(refusal) = self.gone(&mut lock(&self.shared.state)) {
++        if let Some(refusal) = self.with_state(|state| Ok(self.gone(state)))? {
+             return Err(refusal);
+         }
+         Err(Refusal::Channel {
+@@ -1151,12 +1265,17 @@ impl Guest for ShardsGuest {
+     }
+ 
+     fn stop(&self) -> Result<(), Refusal> {
+-        let mut state = lock(&self.shared.state);
+-        if !state.exited {
+-            state.stopping = true;
+-            self.signal(&state);
++        let result = self.with_state(|state| {
++            if !state.exited {
++                state.stopping = true;
++                self.signal(state);
++            }
++            Ok(())
++        });
++        if result.is_err() {
++            self.stop_without_state();
+         }
+-        Ok(())
++        result
+     }
+ 
+     /// Its VM process's pid and start, as the OS counts it, read while the process is this
+@@ -1168,18 +1287,19 @@ impl Guest for ShardsGuest {
+         if let Some(taken) = &self.taken {
+             return Ok(taken.identity.clone());
+         }
+-        let mut state = lock(&self.shared.state);
+-        if let Some(refusal) = self.gone(&mut state) {
+-            return Err(refusal);
+-        }
+-        #[cfg(unix)]
+-        let (pid, started) = (self.pid, crate::taken::started(self.pid));
+-        #[cfg(windows)]
+-        let (pid, started) = {
+-            let child = lock(&self.child);
+-            (child.id(), created(&child))
+-        };
+-        drop(state);
++        let (pid, started) = self.with_state(|state| {
++            if let Some(refusal) = self.gone(state) {
++                return Err(refusal);
++            }
++            #[cfg(unix)]
++            let identity = (self.pid, crate::taken::started(self.pid));
++            #[cfg(windows)]
++            let identity = {
++                let child = lock(&self.child);
++                (child.id(), created(&child))
++            };
++            Ok(identity)
++        })?;
+         Ok(Identity {
+             pid,
+             started: started.map_err(|e| Refusal::Gone {
+@@ -1193,26 +1313,25 @@ impl Guest for ShardsGuest {
+     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
+         // None: past `Instant`'s range (`Duration::MAX`): until it ends.
+         let deadline = Instant::now().checked_add(timeout);
+-        let mut state = lock(&self.shared.state);
++        let mut state = self.shared.state.lock().map_err(synchronization)?;
+         loop {
++            if let Some(failure) = state.failure {
++                return finish(state, Err(synchronization(failure)));
++            }
+             if let Some(end) = self.end(&mut state) {
+-                return Ok(Some(end));
++                return finish(state, Ok(Some(end)));
++            }
++            let left = deadline.map(|d| d.saturating_duration_since(Instant::now()));
++            if left.is_some_and(|left| left.is_zero()) {
++                return finish(state, Ok(None));
++            }
++            // SAFETY: changed is paired only with Shared::state. The original
++            // absolute deadline remains authoritative across every spurious wake.
++            let (next, waited) = unsafe { self.shared.changed.wait(state, left) };
++            state = next;
++            if let Err(failure) = waited {
++                return finish(state, Err(synchronization(failure)));
+             }
+-            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
+-                Some(left) if left.is_zero() => return Ok(None),
+-                Some(left) => {
+-                    self.shared
+-                        .changed
+-                        .wait_timeout(state, left)
+-                        .unwrap_or_else(PoisonError::into_inner)
+-                        .0
+-                }
+-                None => self
+-                    .shared
+-                    .changed
+-                    .wait(state)
+-                    .unwrap_or_else(PoisonError::into_inner),
+-            };
+         }
+     }
+ }
+@@ -1220,10 +1339,8 @@ impl Guest for ShardsGuest {
+ impl Drop for ShardsGuest {
+     /// Ends the guest, if it has not ended: no VM outlives its owner.
+     fn drop(&mut self) {
+-        let mut state = lock(&self.shared.state);
+-        if !state.exited {
+-            state.stopping = true;
+-            self.signal(&state);
++        if self.stop().is_err() {
++            self.stop_without_state();
+         }
+     }
+ }
+@@ -1478,11 +1595,14 @@ mod tests {
+     /// names a zombie as a process, and a reaped pid as none.
+     #[cfg(unix)]
+     fn reaped_once_exited(pid: u32, shared: &Shared) -> bool {
+-        let mut state = lock(&shared.state);
++        let mut state = shared.state.lock().unwrap();
+         while !state.exited {
+-            state = shared.changed.wait(state).unwrap();
++            // SAFETY: same State/CV pair as the production wait loop.
++            let (next, waited) = unsafe { shared.changed.wait(state, None) };
++            waited.unwrap();
++            state = next;
+         }
+-        drop(state);
++        state.release().unwrap();
+         let alive = Command::new("kill")
+             .args(["-0", &pid.to_string()])
+             .stderr(Stdio::null())
+@@ -1809,6 +1929,9 @@ mod tests {
+             pid, expected_started, failure: crate::ProcessFailure::Exited | crate::ProcessFailure::Os {
+                 operation: crate::ProcessOperation::PidfdOpen | crate::ProcessOperation::RegisterExit | crate::ProcessOperation::ReadStat,
+                 code: libc::ESRCH,
++            } | crate::ProcessFailure::Os {
++                operation: crate::ProcessOperation::OpenStat,
++                code: libc::ENOENT,
+             }
+         }) if pid == identity.pid && expected_started == identity.started),
+             "{:?}",
+diff --git a/crates/api/src/lib.rs b/crates/api/src/lib.rs
+index 99d5454b19ea32538c42a108cd8a605bb385d939..c30ca5806aec17af6378e02a0b502ec7093c572b 100644
+--- a/crates/api/src/lib.rs
++++ b/crates/api/src/lib.rs
+@@ -33,6 +33,7 @@ pub mod conformance;
+ mod said;
+ pub mod sim;
+ mod stream;
++mod sync;
+ #[cfg(unix)]
+ mod taken;
+ #[cfg(test)]
+@@ -43,6 +44,7 @@ mod while_runs;
+ mod proc_allocation;
+ 
+ pub use client::{Shards, connect_borrowed};
++pub use sync::{Failure as SyncFailure, Operation as SyncOperation};
+ 
+ /// A guest to boot.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -339,7 +341,7 @@ impl std::error::Error for BorrowFailure {
+ /// What can't be done, and why.
+ ///
+ /// Exhaustive consumers must handle [`Refusal::Process`], [`Refusal::Borrowed`]
+-/// and [`Refusal::Allocation`] as well as the existing variants. `Clone`,
++/// [`Refusal::Allocation`] and [`Refusal::Synchronization`] as well as the existing variants. `Clone`,
+ /// `PartialEq` and `Eq` remain available; match typed failures rather than text.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub enum Refusal {
+@@ -369,8 +371,11 @@ pub enum Refusal {
+     },
+     /// A finite borrowed connection failed without acquiring the guest's lifetime.
+     Borrowed { port: u32, failure: BorrowFailure },
+-    /// A post-boot connection resource could not be allocated.
++    /// A required client resource could not be allocated.
+     Allocation { what: &'static str },
++    /// Native synchronization preparation or use failed. No terminal outcome is
++    /// inferred from this failure; its operation and native cause are preserved.
++    Synchronization { failure: SyncFailure },
+ }
+ 
+ /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
+@@ -408,6 +413,7 @@ impl std::fmt::Display for Refusal {
+             }
+             Refusal::Borrowed { port, failure } => write!(f, "vsock port {port}: {failure}"),
+             Refusal::Allocation { what } => write!(f, "cannot allocate {what}"),
++            Refusal::Synchronization { failure } => std::fmt::Display::fmt(failure, f),
+         }
+     }
+ }
+@@ -417,6 +423,7 @@ impl std::error::Error for Refusal {
+         match self {
+             Self::Process { failure, .. } => std::error::Error::source(failure),
+             Self::Borrowed { failure, .. } => Some(failure),
++            Self::Synchronization { failure } => Some(failure),
+             _ => None,
+         }
+     }
+diff --git a/crates/api/src/sync.rs b/crates/api/src/sync.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..2095db9e924ba36327aeb7e3f38b5f7364595142
+--- /dev/null
++++ b/crates/api/src/sync.rs
+@@ -0,0 +1,471 @@
++//! State/Tail synchronization. Darwin requires fallible stable native storage;
++//! the other supported targets retain std's existing inline futex implementation.
++//! Decision and native cold red: managed-cold-sync/current/BINDING.md.
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum Operation {
++    Storage,
++    MutexAttributes,
++    MutexType,
++    MutexInit,
++    MutexLock,
++    MutexUnlock,
++    MutexDestroy,
++    CondvarInit,
++    CondvarWait,
++    CondvarNotify,
++    CondvarDestroy,
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct Failure {
++    pub operation: Operation,
++    /// None denotes allocation refusal; native failures retain their actual code.
++    pub code: Option<i32>,
++    pub cleanup_code: Option<i32>,
++}
++
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub(crate) enum WaitStatus {
++    NotifiedOrSpurious,
++    TimedOut,
++}
++
++#[cfg(target_vendor = "apple")]
++impl Failure {
++    fn native(operation: Operation, code: i32) -> Self {
++        Self {
++            operation,
++            code: Some(code),
++            cleanup_code: None,
++        }
++    }
++}
++
++impl std::fmt::Display for Failure {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(out, "guest synchronization {:?}", self.operation)?;
++        if let Some(code) = self.code {
++            write!(out, ": native code {code}")?;
++        }
++        if let Some(code) = self.cleanup_code {
++            write!(out, "; cleanup code {code}")?;
++        }
++        Ok(())
++    }
++}
++impl std::error::Error for Failure {}
++
++pub(crate) use implementation::{Condvar, Guard, Mutex};
++
++#[cfg(target_vendor = "apple")]
++mod implementation {
++    use super::{Failure, Operation, WaitStatus};
++    use std::alloc::{Layout, alloc, dealloc};
++    use std::cell::UnsafeCell;
++    use std::marker::PhantomData;
++    use std::mem::{ManuallyDrop, MaybeUninit};
++    use std::ops::{Deref, DerefMut};
++    use std::ptr::{self, NonNull};
++    use std::sync::atomic::{AtomicI32, Ordering};
++    use std::time::Duration;
++
++    struct Inner<T> {
++        raw: UnsafeCell<libc::pthread_mutex_t>,
++        value: UnsafeCell<T>,
++    }
++
++    pub(crate) struct Mutex<T> {
++        inner: ManuallyDrop<Box<Inner<T>>>,
++        // Native failure is permanent for this object. In particular, a reaper may
++        // clean its Child after lock refusal without a later caller entering stale
++        // State. These are synchronization errors, not guest lifecycle mirrors.
++        lock_failure: AtomicI32,
++        unlock_failure: AtomicI32,
++    }
++
++    impl<T> std::fmt::Debug for Mutex<T> {
++        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++            out.write_str("Mutex { .. }")
++        }
++    }
++
++    // SAFETY: value is accessed only under the native exclusive guard; moving this
++    // wrapper does not move the initialized native mutex allocation.
++    unsafe impl<T: Send> Send for Mutex<T> {}
++    // SAFETY: concurrent access to T requires the same native exclusive mutex.
++    unsafe impl<T: Send> Sync for Mutex<T> {}
++
++    impl<T> Mutex<T> {
++        pub(crate) fn new(value: T) -> Result<Self, (T, Failure)> {
++            let layout = Layout::new::<Inner<T>>();
++            // SAFETY: nonzero correctly aligned layout (native mutex is nonzero).
++            let memory = unsafe { alloc(layout) }.cast::<Inner<T>>();
++            let Some(memory) = NonNull::new(memory) else {
++                return Err((
++                    value,
++                    Failure {
++                        operation: Operation::Storage,
++                        code: None,
++                        cleanup_code: None,
++                    },
++                ));
++            };
++            // SAFETY: only the allocated field's address is formed; no uninitialized
++            // value is read. pthread initialization occurs at the final stable address.
++            let raw = unsafe { ptr::addr_of_mut!((*memory.as_ptr()).raw).cast::<libc::pthread_mutex_t>() };
++            // SAFETY: initialize every opaque Rust byte before native init, as Rust
++            // PAL does. Native init need not write every byte of an opaque C object.
++            unsafe { raw.write(libc::PTHREAD_MUTEX_INITIALIZER) };
++            let mut attributes = MaybeUninit::<libc::pthread_mutexattr_t>::uninit();
++            // SAFETY: writable attribute storage supplied for initialization.
++            let attr = unsafe { libc::pthread_mutexattr_init(attributes.as_mut_ptr()) };
++            let initialized = if attr == 0 {
++                // SAFETY: attributes were initialized above. NORMAL prevents the
++                // DEFAULT recursive-lock UB described by the pinned Rust PAL source.
++                let kind = unsafe {
++                    libc::pthread_mutexattr_settype(attributes.as_mut_ptr(), libc::PTHREAD_MUTEX_NORMAL)
++                };
++                let init = if kind == 0 {
++                    // SAFETY: stable allocated native storage and live attributes.
++                    unsafe { libc::pthread_mutex_init(raw, attributes.as_ptr()) }
++                } else {
++                    kind
++                };
++                // SAFETY: attributes are initialized and no longer needed by init.
++                let cleaned = unsafe { libc::pthread_mutexattr_destroy(attributes.as_mut_ptr()) };
++                if init != 0 {
++                    let mut failure = Failure::native(
++                        if kind == 0 {
++                            Operation::MutexInit
++                        } else {
++                            Operation::MutexType
++                        },
++                        init,
++                    );
++                    failure.cleanup_code = (cleaned != 0).then_some(cleaned);
++                    Err(failure)
++                } else if cleaned != 0 {
++                    // SAFETY: successfully initialized but unpublished, never locked.
++                    let destroyed = unsafe { libc::pthread_mutex_destroy(raw) };
++                    let mut failure = Failure::native(Operation::MutexAttributes, cleaned);
++                    failure.cleanup_code = (destroyed != 0).then_some(destroyed);
++                    if destroyed != 0 {
++                        // Preserve the live native allocation rather than free an
++                        // object whose destruction failed. No T was moved into it.
++                        return Err((value, failure));
++                    }
++                    Err(failure)
++                } else {
++                    Ok(())
++                }
++            } else {
++                Err(Failure::native(Operation::MutexAttributes, attr))
++            };
++            if let Err(failure) = initialized {
++                // SAFETY: native init failed or its unpublished object was destroyed;
++                // T remains owned by the caller and was never written into memory.
++                unsafe { dealloc(memory.as_ptr().cast(), layout) };
++                return Err((value, failure));
++            }
++            // SAFETY: mutex is initialized at its final address. Initialize the last
++            // field before constructing Box, with exactly the allocator/layout used.
++            unsafe {
++                ptr::addr_of_mut!((*memory.as_ptr()).value).write(UnsafeCell::new(value));
++                Ok(Self {
++                    inner: ManuallyDrop::new(Box::from_raw(memory.as_ptr())),
++                    lock_failure: AtomicI32::new(0),
++                    unlock_failure: AtomicI32::new(0),
++                })
++            }
++        }
++
++        pub(crate) fn lock(&self) -> Result<Guard<'_, T>, Failure> {
++            self.checked()?;
++            // SAFETY: initialized stable mutex retained by self and guarded lifetime.
++            let code = unsafe { libc::pthread_mutex_lock(self.inner.raw.get()) };
++            if code != 0 {
++                self.lock_failure.store(code, Ordering::Release);
++                return Err(Failure::native(Operation::MutexLock, code));
++            }
++            if let Err(failure) = self.checked() {
++                // SAFETY: this thread acquired the native lock above, but another
++                // acquisition reported a failure. Never expose the protected value.
++                self.unlocked(unsafe { libc::pthread_mutex_unlock(self.inner.raw.get()) })?;
++                return Err(failure);
++            }
++            Ok(Guard {
++                owner: self,
++                held: true,
++                not_send: PhantomData,
++            })
++        }
++
++        fn checked(&self) -> Result<(), Failure> {
++            for (code, operation) in [
++                (self.lock_failure.load(Ordering::Acquire), Operation::MutexLock),
++                (
++                    self.unlock_failure.load(Ordering::Acquire),
++                    Operation::MutexUnlock,
++                ),
++            ] {
++                if code != 0 {
++                    return Err(Failure::native(operation, code));
++                }
++            }
++            Ok(())
++        }
++
++        fn unlocked(&self, code: i32) -> Result<(), Failure> {
++            if code == 0 {
++                Ok(())
++            } else {
++                self.unlock_failure.store(code, Ordering::Release);
++                Err(Failure::native(Operation::MutexUnlock, code))
++            }
++        }
++    }
++
++    impl<T> Drop for Mutex<T> {
++        fn drop(&mut self) {
++            // SAFETY: no unforgotten guard outlives self. A forgotten guard may leave
++            // it locked; in that case preserve the allocation, as std also does.
++            let code = unsafe { libc::pthread_mutex_destroy(self.inner.raw.get()) };
++            if code == 0 {
++                // SAFETY: native object is quiescent and successfully destroyed.
++                unsafe { ManuallyDrop::drop(&mut self.inner) };
++            }
++        }
++    }
++
++    pub(crate) struct Guard<'a, T> {
++        owner: &'a Mutex<T>,
++        /// Owns only this native acquisition, not a duplicate guest lifecycle fact.
++        held: bool,
++        not_send: PhantomData<*mut ()>,
++    }
++
++    impl<T> Guard<'_, T> {
++        pub(crate) fn release(mut self) -> Result<(), Failure> {
++            // SAFETY: Guard is not Send and only constructed after successful lock.
++            let code = unsafe { libc::pthread_mutex_unlock(self.owner.inner.raw.get()) };
++            self.held = false;
++            self.owner.unlocked(code)
++        }
++    }
++
++    impl<T> Deref for Guard<'_, T> {
++        type Target = T;
++        fn deref(&self) -> &T {
++            // SAFETY: this guard owns the native mutex's exclusive acquisition.
++            unsafe { &*self.owner.inner.value.get() }
++        }
++    }
++
++    impl<T> DerefMut for Guard<'_, T> {
++        fn deref_mut(&mut self) -> &mut T {
++            // SAFETY: mutable guard access and native acquisition exclude aliases.
++            unsafe { &mut *self.owner.inner.value.get() }
++        }
++    }
++
++    impl<T> Drop for Guard<'_, T> {
++        fn drop(&mut self) {
++            if self.held {
++                // SAFETY: lifetime/thread ownership as in release. Explicit release
++                // reports native errors; this unwind/forgotten-release path is best
++                // effort and does not claim native cleanup/error propagation proof.
++                let _ = self
++                    .owner
++                    .unlocked(unsafe { libc::pthread_mutex_unlock(self.owner.inner.raw.get()) });
++            }
++        }
++    }
++
++    pub(crate) struct Condvar {
++        raw: ManuallyDrop<Box<UnsafeCell<libc::pthread_cond_t>>>,
++    }
++
++    // SAFETY: initialized stable condition variable supports concurrent wait/notify.
++    unsafe impl Send for Condvar {}
++    // SAFETY: native calls synchronize; Rust never independently mutates its bytes.
++    unsafe impl Sync for Condvar {}
++
++    impl Condvar {
++        pub(crate) fn new() -> Result<Self, Failure> {
++            let layout = Layout::new::<UnsafeCell<libc::pthread_cond_t>>();
++            // SAFETY: nonzero aligned native object storage.
++            let memory = unsafe { alloc(layout) }.cast::<UnsafeCell<libc::pthread_cond_t>>();
++            let Some(memory) = NonNull::new(memory) else {
++                return Err(Failure {
++                    operation: Operation::Storage,
++                    code: None,
++                    cleanup_code: None,
++                });
++            };
++            // SAFETY: all opaque bytes have a valid initialized Rust representation
++            // before pthread_cond_init writes its implementation-specific fields.
++            unsafe {
++                memory
++                    .as_ptr()
++                    .write(UnsafeCell::new(libc::PTHREAD_COND_INITIALIZER))
++            };
++            // SAFETY: stable writable native storage; default native attributes.
++            let code = unsafe { libc::pthread_cond_init(memory.as_ptr().cast(), ptr::null()) };
++            if code != 0 {
++                // SAFETY: failed init did not construct a native object.
++                unsafe { dealloc(memory.as_ptr().cast(), layout) };
++                return Err(Failure::native(Operation::CondvarInit, code));
++            }
++            Ok(Self {
++                // SAFETY: initialized same-allocation native object, no relocation.
++                raw: ManuallyDrop::new(unsafe { Box::from_raw(memory.as_ptr()) }),
++            })
++        }
++
++        pub(crate) fn notify_all(&self) -> Result<(), Failure> {
++            // SAFETY: initialized condition variable retained by self.
++            let code = unsafe { libc::pthread_cond_broadcast(self.raw.get()) };
++            if code == 0 {
++                Ok(())
++            } else {
++                Err(Failure::native(Operation::CondvarNotify, code))
++            }
++        }
++
++        /// Private caller pairs this CV with the same mutex for all overlapping waits.
++        /// Returns its still-owned guard along with the native result; no error creates
++        /// a guard for an acquisition that never succeeded.
++        /// # Safety
++        /// The private caller uses this CV with one mutex for all overlapping waits.
++        pub(crate) unsafe fn wait<'a, T>(
++            &self,
++            guard: Guard<'a, T>,
++            timeout: Option<Duration>,
++        ) -> (Guard<'a, T>, Result<WaitStatus, Failure>) {
++            // Darwin's relative timed wait is monotonic. Cap only to its u64
++            // nanosecond representation, as pinned Rust PAL does; caller retains its
++            // original deadline and predicate loop, not a reset timeout policy.
++            let code = unsafe {
++                // SAFETY: the guard holds the native mutex; both objects are pinned
++                // by allocations and private caller pairing is a required precondition.
++                if let Some(duration) = timeout {
++                    let duration = duration.min(Duration::from_nanos(u64::MAX));
++                    let timespec = libc::timespec {
++                        tv_sec: duration.as_secs() as libc::time_t,
++                        tv_nsec: duration.subsec_nanos().into(),
++                    };
++                    libc::pthread_cond_timedwait_relative_np(
++                        self.raw.get(),
++                        guard.owner.inner.raw.get(),
++                        &timespec,
++                    )
++                } else {
++                    libc::pthread_cond_wait(self.raw.get(), guard.owner.inner.raw.get())
++                }
++            };
++            let result = if code == 0 {
++                Ok(WaitStatus::NotifiedOrSpurious)
++            } else if code == libc::ETIMEDOUT {
++                Ok(WaitStatus::TimedOut)
++            } else {
++                Err(Failure::native(Operation::CondvarWait, code))
++            };
++            (guard, result)
++        }
++    }
++
++    impl Drop for Condvar {
++        fn drop(&mut self) {
++            // SAFETY: native object is initialized. Preserve allocation if native
++            // destruction refuses; no leak-free claim follows from this destructor.
++            let code = unsafe { libc::pthread_cond_destroy(self.raw.get()) };
++            if code == 0 {
++                // SAFETY: successful native destruction proves no active waiters.
++                unsafe { ManuallyDrop::drop(&mut self.raw) };
++            }
++        }
++    }
++
++    impl std::fmt::Debug for Condvar {
++        fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++            out.write_str("Condvar { .. }")
++        }
++    }
++}
++
++#[cfg(not(target_vendor = "apple"))]
++mod implementation {
++    use super::{Failure, WaitStatus};
++    use std::ops::{Deref, DerefMut};
++    use std::sync::{self, PoisonError};
++    use std::time::Duration;
++
++    #[derive(Debug)]
++    pub(crate) struct Mutex<T>(sync::Mutex<T>);
++    impl<T> Mutex<T> {
++        pub(crate) fn new(value: T) -> Result<Self, (T, Failure)> {
++            Ok(Self(sync::Mutex::new(value)))
++        }
++        pub(crate) fn lock(&self) -> Result<Guard<'_, T>, Failure> {
++            Ok(Guard(self.0.lock().unwrap_or_else(PoisonError::into_inner)))
++        }
++    }
++    pub(crate) struct Guard<'a, T>(sync::MutexGuard<'a, T>);
++    impl<T> Guard<'_, T> {
++        pub(crate) fn release(self) -> Result<(), Failure> {
++            drop(self);
++            Ok(())
++        }
++    }
++    impl<T> Deref for Guard<'_, T> {
++        type Target = T;
++        fn deref(&self) -> &T {
++            &self.0
++        }
++    }
++    impl<T> DerefMut for Guard<'_, T> {
++        fn deref_mut(&mut self) -> &mut T {
++            &mut self.0
++        }
++    }
++    #[derive(Debug)]
++    pub(crate) struct Condvar(sync::Condvar);
++    impl Condvar {
++        pub(crate) fn new() -> Result<Self, Failure> {
++            Ok(Self(sync::Condvar::new()))
++        }
++        pub(crate) fn notify_all(&self) -> Result<(), Failure> {
++            self.0.notify_all();
++            Ok(())
++        }
++        /// # Safety
++        /// All overlapping waits on this CV use the same mutex, as on Darwin.
++        pub(crate) unsafe fn wait<'a, T>(
++            &self,
++            guard: Guard<'a, T>,
++            timeout: Option<Duration>,
++        ) -> (Guard<'a, T>, Result<WaitStatus, Failure>) {
++            match timeout {
++                Some(duration) => {
++                    let (guard, status) = self
++                        .0
++                        .wait_timeout(guard.0, duration)
++                        .unwrap_or_else(PoisonError::into_inner);
++                    (
++                        Guard(guard),
++                        Ok(if status.timed_out() {
++                            WaitStatus::TimedOut
++                        } else {
++                            WaitStatus::NotifiedOrSpurious
++                        }),
++                    )
++                }
++                None => (
++                    Guard(self.0.wait(guard.0).unwrap_or_else(PoisonError::into_inner)),
++                    Ok(WaitStatus::NotifiedOrSpurious),
++                ),
++            }
++        }
++    }
++}

@@ -1,0 +1,302 @@
+{
+  "evidence": [
+    {
+      "bytes": 13827,
+      "git_blob": "5a88efd02948b1673bb2be7ee9eff18c66618fe3",
+      "path": "docs/research/measurements/managed-cold-sync/current/BINDING.md",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "4ad10dadf757a65d698dafa1fa11fa7c30e12902e86bc7e78740dca2f4e5b243"
+    },
+    {
+      "bytes": 8067,
+      "git_blob": "8e22ec4046e987bf47f665db40d33ec9df81aec7",
+      "path": "docs/research/measurements/managed-cold-sync/current/MUTATION.md",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "e1670f7b897f6aa56581c25ba578032cc59a7a735121ab32d09a74fe16090b0f"
+    },
+    {
+      "bytes": 9662,
+      "git_blob": "cb9a0ff38c53fa1359f3ba73577b8cebcc901907",
+      "path": "docs/research/measurements/managed-cold-sync/current/CONCURRENT.md",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "4165841c8e9a218195738f8caf61d1d0a6902acbfcfb45615f67d6ba48cdee40"
+    },
+    {
+      "bytes": 13964,
+      "git_blob": "8defafdf717bc2849542195d33cb32e91b793795",
+      "path": "docs/research/measurements/managed-cold-sync/current/linux/README.md",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "18078f35c4f25a250a7a571d29189e023e2255c18c89de8f7216fffce0010315"
+    },
+    {
+      "bytes": 1341,
+      "git_blob": "02bced672df513e06ac886f710895711f2dea991",
+      "path": "docs/research/measurements/managed-cold-sync/current/linux/archives.json",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "c8f1f8474d54f26b78c6f03d1cb3388579789e41eec3a87820ac68bf26e3bf7e"
+    },
+    {
+      "bytes": 12444,
+      "git_blob": "d7e76eea26b87449c9e2b4a31c98abcfe717174b",
+      "path": "docs/research/measurements/managed-cold-sync/current/windows/README.md",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "9157a1ae238f4c159cb5411df939daf401720c099a36f6c13aced3cfe6a5e3f8"
+    },
+    {
+      "bytes": 578,
+      "git_blob": "a487ce29ef1760cee1654052baeca8aab77f6de0",
+      "path": "docs/research/measurements/managed-cold-sync/current/windows/archive.json",
+      "present": true,
+      "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+      "sha256": "de6eab87f5eba676fb2cb434df5ee697d43a92161bbd0753ec7ac75728bf2fcd"
+    }
+  ],
+  "existing_revision_scoped_checks": [
+    {
+      "cold_selected": 2,
+      "failed": 0,
+      "ordinary_selected": 5,
+      "rerun_this_batch": false,
+      "scope": "native Darwin binding r54; cd0649 product",
+      "strict_api_lib_tests": 0
+    },
+    {
+      "mutant_result": "SIGABRT(-6), first refused64B; expected violation",
+      "rerun_this_batch": false,
+      "restored_cold_selected": 2,
+      "restored_ordinary_selected": 5,
+      "scope": "native Darwin adapter removal r97; cd0649"
+    },
+    {
+      "lib": {
+        "failed": 0,
+        "filtered": 0,
+        "ignored": 6,
+        "passed": 52
+      },
+      "musl_execution": "UNRUN",
+      "musl_x86_linkcompile": 0,
+      "rerun_this_batch": false,
+      "scope": "native GNU r250; final f08 bytes",
+      "sim": {
+        "failed": 0,
+        "filtered": 0,
+        "ignored": 2,
+        "passed": 15
+      },
+      "strict_api_afunix_all_targets": 0
+    },
+    {
+      "cold_refusal_rerun": false,
+      "failed": 0,
+      "ordinary_selected": 8,
+      "rerun_this_batch": false,
+      "scope": "native Darwin r251; final portability bytes",
+      "strict_api_lib_tests": 0
+    },
+    {
+      "handle_return": "UNVERIFIED",
+      "lib": {
+        "failed": 0,
+        "filtered": 0,
+        "ignored": 0,
+        "passed": 29
+      },
+      "native_owning_zero_MAX": "cfg excluded, UNRUN",
+      "rerun_this_batch": false,
+      "scope": "native Windows amd64 r505; exact f08",
+      "sim": {
+        "failed": 0,
+        "filtered": 0,
+        "ignored": 0,
+        "passed": 4
+      },
+      "strict_api_afunix_all_targets": 0
+    }
+  ],
+  "files": [
+    {
+      "base": {
+        "bytes": 78689,
+        "git_blob": "a44297d5ece80cb2acf0ec261ad8cce5aa5f3cb8",
+        "present": true,
+        "sha256": "8d8b2dac91a3c419956bb41168705c5a15f21d51d7c043b6dd7f4f027443121b"
+      },
+      "candidate": {
+        "bytes": 83513,
+        "git_blob": "874c01d0a989cea097d255508624242e3409a82f",
+        "present": true,
+        "sha256": "3941532a6ab8c450ba532001b19dca657a6327391c04c3666ee69b3635ad9a32"
+      },
+      "path": "crates/api/src/client.rs",
+      "windows_evidence_source": {
+        "bytes": 83513,
+        "git_blob": "874c01d0a989cea097d255508624242e3409a82f",
+        "present": true,
+        "sha256": "3941532a6ab8c450ba532001b19dca657a6327391c04c3666ee69b3635ad9a32"
+      }
+    },
+    {
+      "base": {
+        "bytes": 28337,
+        "git_blob": "99d5454b19ea32538c42a108cd8a605bb385d939",
+        "present": true,
+        "sha256": "b104a092604c73276eca05c387ecc93aa4a81d092b8b6a6f3e56dc5cc245106c"
+      },
+      "candidate": {
+        "bytes": 28800,
+        "git_blob": "c30ca5806aec17af6378e02a0b502ec7093c572b",
+        "present": true,
+        "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01"
+      },
+      "path": "crates/api/src/lib.rs",
+      "windows_evidence_source": {
+        "bytes": 28800,
+        "git_blob": "c30ca5806aec17af6378e02a0b502ec7093c572b",
+        "present": true,
+        "sha256": "b8d330ac62c6eda930bb581d2a925285d8d33ad3bdd60d83cfd0dfa3fb187e01"
+      }
+    },
+    {
+      "base": {
+        "present": false
+      },
+      "candidate": {
+        "bytes": 18757,
+        "git_blob": "2095db9e924ba36327aeb7e3f38b5f7364595142",
+        "present": true,
+        "sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c"
+      },
+      "path": "crates/api/src/sync.rs",
+      "windows_evidence_source": {
+        "bytes": 18757,
+        "git_blob": "2095db9e924ba36327aeb7e3f38b5f7364595142",
+        "present": true,
+        "sha256": "303be4efd0ce83b54fbe7ae36cf7f7202d0f791bc7126e8aac533ff202026e4c"
+      }
+    }
+  ],
+  "kind": "immutable existing tested-source closeout; not new runtime validation",
+  "mechanical_checks": {
+    "actual": [
+      {
+        "argv": [
+          "git",
+          "apply",
+          "--numstat",
+          "--",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch"
+        ],
+        "exit_code": 0,
+        "name": "patch_syntax",
+        "stderr": "",
+        "stdout": "246\t123\tcrates/api/src/client.rs\n9\t2\tcrates/api/src/lib.rs\n471\t0\tcrates/api/src/sync.rs\n"
+      },
+      {
+        "argv": [
+          "python3",
+          "scripts/check-development-policy"
+        ],
+        "exit_code": 0,
+        "name": "policy",
+        "stderr": "",
+        "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n"
+      },
+      {
+        "argv": [
+          "git",
+          "diff",
+          "--cached",
+          "--check",
+          "--",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/README.md",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/manifest.json"
+        ],
+        "exit_code": 2,
+        "name": "full_staged_whitespace",
+        "stderr": "",
+        "stdout": "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:15: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:141: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:146: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:277: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:360: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:378: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:460: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:479: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:611: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:614: trailing whitespace.\n+ \ndocs/research/measurements/managed-cold-sync/current/final-closeout-v1/source.patch:637: trailing whitespace.\n+ \n"
+      },
+      {
+        "argv": [
+          "git",
+          "diff",
+          "--cached",
+          "--check",
+          "--",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/README.md",
+          "docs/research/measurements/managed-cold-sync/current/final-closeout-v1/manifest.json"
+        ],
+        "exit_code": 0,
+        "name": "nonpatch_staged_whitespace",
+        "stderr": "",
+        "stdout": ""
+      }
+    ],
+    "candidate_files_vs_ec494": "all3 identical",
+    "check_result_details": "named diff/policy and patch-parser results returned with signed checkpoint; no new runtime test result",
+    "source_patch_regenerated_from_git_objects": "exact generated bytes saved, not replayed"
+  },
+  "new_builds": 0,
+  "new_native_tests": 0,
+  "open": [
+    "ROOT current composed source review and exhaustive new public Refusal arm handling",
+    "ROOT combined seven-target and native integration gates",
+    "Native init/lock/wait/notify/unlock/destroy refusal paths; storage can remain retained on destroy failure; not leak-free",
+    "Exceptional in-flight cancellation/stale-State safety remains unverified; ordinary defect not reproduced",
+    "r612 overall controller gate FAILED: FD4->5 and final signal EPERM; no source in this patch selected from r612",
+    "Held Windows42e eight-case fixture remains unexecuted; all existing campaign holds and paused WinARM unchanged",
+    "Full child population/kernel resource return and cost/profile claims unproved"
+  ],
+  "patch": {
+    "base_revision": "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+    "bytes": 45680,
+    "candidate_revision": "f08cc06b009158a5eafce00d3bc806b702a8aff7",
+    "file": "source.patch",
+    "generation_argv": [
+      "git",
+      "diff",
+      "--no-ext-diff",
+      "--no-color",
+      "--no-renames",
+      "--binary",
+      "--full-index",
+      "--unified=3",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+      "f08cc06b009158a5eafce00d3bc806b702a8aff7",
+      "--",
+      "crates/api/src/client.rs",
+      "crates/api/src/lib.rs",
+      "crates/api/src/sync.rs"
+    ],
+    "paths": [
+      "crates/api/src/client.rs",
+      "crates/api/src/lib.rs",
+      "crates/api/src/sync.rs"
+    ],
+    "sha256": "9ed124d63d5ebc1bbc158afb2151ffc3b83771e441bf4ac83fafb8a8996c860f"
+  },
+  "policy": {
+    "current_concise_handoff_read_full": true,
+    "full_policy_contents_same_as_prior_full_read": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+    "revision": "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+    "role": "implementer",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+  },
+  "production_files_edited": [],
+  "source_comparisons": {
+    "candidate_three_files_equal_ec494": true,
+    "current_main_runtime_result_inferred": false,
+    "main_7a_api_and_afunix_equal_reproduced_33df": true,
+    "source_application_or_build_this_batch": false
+  }
+}
