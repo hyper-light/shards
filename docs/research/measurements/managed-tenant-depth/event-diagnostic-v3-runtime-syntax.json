@@ -1,0 +1,33 @@
+{
+  "checks": {
+    "prepare": {
+      "command": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "bash",
+        "-n",
+        "docs/research/measurements/managed-tenant-depth/event-diagnostic-v3-prepare.command"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    "live": {
+      "command": [
+        "lockf",
+        "-t",
+        "0",
+        "/tmp/g121-mac.lock",
+        "bash",
+        "-n",
+        "docs/research/measurements/managed-tenant-depth/event-diagnostic-v3-live.command"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "execution": "Preparation only; no VM/guest/kernel or binary was executed locally"
+}

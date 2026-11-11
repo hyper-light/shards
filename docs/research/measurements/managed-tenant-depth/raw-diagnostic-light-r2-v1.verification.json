@@ -1,0 +1,80 @@
+{
+  "archive_bytes": 13999,
+  "archive_sha256": "5c6c86031ca4b6fa8b2a7a9cee55719a6403f1ae650b8f4c0833fdb1ad6403af",
+  "safe_unique_regular_members": 15,
+  "verified_originals": 14,
+  "source": "249dc4cf047586bcb040ae7895bc95769cde5b57",
+  "files": [
+    {
+      "path": "cargo.txt",
+      "bytes": 36,
+      "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+    },
+    {
+      "path": "checkout.log",
+      "bytes": 84,
+      "sha256": "96009c779120fda2dc946b943163876dcd2cb0b1b4ce5228194f9cab3f2250e9"
+    },
+    {
+      "path": "current-fixture-crosscheck.diff",
+      "bytes": 32416,
+      "sha256": "4c6259b30dcc7e62e3707114df7e398f3db08a33fc5c65541c73682b71858407"
+    },
+    {
+      "path": "diff-check.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "fetch.log",
+      "bytes": 263,
+      "sha256": "1a8cbd9d337e211576d50f506b28107b05f59313357120460c4febc195c511ea"
+    },
+    {
+      "path": "host-clippy.exit",
+      "bytes": 2,
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "host-clippy.log",
+      "bytes": 15072,
+      "sha256": "4bc507846ab15a1ab0af138422a5c94edc87b3551c8a119439ab616e8215f7e0"
+    },
+    {
+      "path": "policy.log",
+      "bytes": 81,
+      "sha256": "3a46ca7e5d44c84125cf48808d3166a29de5f7072cbcd38f04c332e95118cfc7"
+    },
+    {
+      "path": "result.json",
+      "bytes": 288,
+      "sha256": "ecf5e9c9f118d4ce43ed4892a58edd23bb61c584cce138a666fce6466743bdd0"
+    },
+    {
+      "path": "rustc.txt",
+      "bytes": 196,
+      "sha256": "778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37"
+    },
+    {
+      "path": "rustfmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "source-readback.json",
+      "bytes": 2545,
+      "sha256": "cead95f70c23ade0cdabe8652f4e868a790c57973dc82384cfad066dcc9a7f1b"
+    },
+    {
+      "path": "started.txt",
+      "bytes": 21,
+      "sha256": "1a1bb29381d642bb9c8738d9190d8ad23e6256f2513128a440a01449e4536de1"
+    },
+    {
+      "path": "tools.txt",
+      "bytes": 91,
+      "sha256": "004251782247b7e4d94c9223dde85a29362a2cfac5f4ffe98a35ea2723683c90"
+    }
+  ],
+  "new_vm_executions": 0
+}
