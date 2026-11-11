@@ -1,0 +1,205 @@
+diff --git a/crates/init/src/engine.rs b/crates/init/src/engine.rs
+index 36648ea15..9a2dc7865 100644
+--- a/crates/init/src/engine.rs
++++ b/crates/init/src/engine.rs
+@@ -10,7 +10,7 @@
+ //! refused), and relays the bytes each way until either side ends.
+ 
+ use std::io::{self, Write as _};
+-use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd};
++use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd, RawFd};
+ use std::os::unix::net::{UnixListener, UnixStream};
+ 
+ use shards_abi::run;
+@@ -137,18 +137,185 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
+     if (&host).write_all(&hello).is_err() {
+         return;
+     }
++    forward(&conn, host.as_fd(), slots, &mut io::stderr());
++}
++
++/// How the pump ended one connection, read from its typed result.
++#[derive(Debug)]
++enum End {
++    /// The pump's own end (EndPolicy::EnginePeerEnd): the engine ended its stream.
++    Ended,
++    /// The run's client closed its connection first, as one that stops following a
++    /// stream does (`docker logs -f` interrupted). Linux says so on the relay's socket as
++    /// ECONNRESET to a read where the client left bytes unread, else EPIPE to a write, or
++    /// ECONNRESET where that write races the close (v6.18 net/unix/af_unix.c 696-711,
++    /// 2433-2434, 2995; net/core/sock.c 2945-2947).
++    ClientDeparted,
++    Fault(native_relay::Fault),
++}
++
++impl End {
++    fn of(result: Result<native_relay::Termination, native_relay::Fault>) -> Self {
++        use native_relay::{Fault, Leg, Operation};
++        match result {
++            Ok(_) => Self::Ended,
++            Err(
++                Fault::Native {
++                    leg: Leg::Client,
++                    operation: Operation::Read,
++                    errno: Some(libc::ECONNRESET),
++                    ..
++                }
++                | Fault::Native {
++                    leg: Leg::Client,
++                    operation: Operation::Write,
++                    errno: Some(libc::EPIPE | libc::ECONNRESET),
++                    ..
++                },
++            ) => Self::ClientDeparted,
++            Err(fault) => Self::Fault(fault),
++        }
++    }
++}
++
++/// After HELLO: the bytes each way until either side ends; only a fault is said on `log`.
++fn forward(conn: &UnixStream, host: BorrowedFd<'_>, slots: native_relay::Slots, log: &mut impl io::Write) -> End {
+     let mut report = native_relay::Report::new();
+-    let result = native_relay::pump(
+-        [conn.as_fd(), host.as_fd()],
++    let end = End::of(native_relay::pump(
++        [conn.as_fd(), host],
+         slots,
+         [native_relay::ByteLimit::PeerEnd; 2],
+         native_relay::Control::ProcessOwned,
+         native_relay::EndPolicy::EnginePeerEnd,
+         &mut report,
+-    );
+-    if let Err(error) = result {
++    ));
++    match &end {
+         // Successful engine EOF already ended both Unix halves in the pump.
+-        let _ = conn.shutdown(std::net::Shutdown::Both);
+-        let _ = writeln!(io::stderr(), "shards-init: engine relay: {error:?}");
++        End::Ended => {}
++        End::ClientDeparted => {
++            let _ = conn.shutdown(std::net::Shutdown::Both);
++        }
++        End::Fault(fault) => {
++            let _ = conn.shutdown(std::net::Shutdown::Both);
++            let _ = writeln!(log, "shards-init: engine relay: {fault:?}");
++        }
++    }
++    end
++}
++
++#[cfg(test)]
++#[allow(clippy::unwrap_used)]
++mod tests {
++    use super::*;
++    use std::io::Read as _;
++
++    // What `docker logs -f` asks of the engine; the relay carries it as bytes.
++    const REQUEST: &[u8] = b"GET /v1.47/containers/c/logs?follow=1&stdout=1 HTTP/1.1\r\nHost: api\r\n\r\n";
++    const LINE: &[u8] = b"a log line\n";
++
++    /// `forward` between a client's end and an engine's end of two socketpairs, as `relay`
++    /// runs it after HELLO, while `script` plays both ends: what it said on its log.
++    fn relayed(script: impl FnOnce(UnixStream, UnixStream)) -> String {
++        let (client, conn) = UnixStream::pair().unwrap();
++        let (host, engine) = UnixStream::pair().unwrap();
++        let slots = native_relay::Slots::minimum_mapped().unwrap();
++        let worker = std::thread::spawn(move || {
++            let mut log = Vec::new();
++            forward(&conn, host.as_fd(), slots, &mut log);
++            log
++        });
++        script(client, engine);
++        String::from_utf8(worker.join().unwrap()).unwrap()
++    }
++
++    fn readable(stream: &UnixStream) {
++        let mut ready = libc::pollfd {
++            fd: stream.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        };
++        // SAFETY: one initialized pollfd of a socket this test holds.
++        assert_eq!(unsafe { libc::poll(&raw mut ready, 1, -1) }, 1);
++    }
++
++    /// `docker logs -f` interrupted while a line waits for it unread: Linux makes the
++    /// relay's next read of its socket ECONNRESET (v6.18 net/unix/af_unix.c 707-709, 2995).
++    #[test]
++    fn a_client_that_leaves_a_line_unread_is_not_a_fault() {
++        let said = relayed(|mut client, mut engine| {
++            client.write_all(REQUEST).unwrap();
++            let mut request = [0u8; REQUEST.len()];
++            engine.read_exact(&mut request).unwrap();
++            assert_eq!(request.as_slice(), REQUEST);
++            engine.write_all(LINE).unwrap();
++            readable(&client);
++            drop(client);
++        });
++        assert_eq!(said, "");
++    }
++
++    /// `docker logs -f` interrupted between lines: the relay's send of the next is EPIPE
++    /// (af_unix.c 2433-2434).
++    #[test]
++    fn a_client_gone_before_the_next_line_is_not_a_fault() {
++        let said = relayed(|mut client, mut engine| {
++            client.write_all(REQUEST).unwrap();
++            let mut request = [0u8; REQUEST.len()];
++            engine.read_exact(&mut request).unwrap();
++            drop(client);
++            // The client's end reaches the engine as the end of its request.
++            assert_eq!(engine.read(&mut [0u8; 1]).unwrap(), 0);
++            engine.write_all(LINE).unwrap();
++        });
++        assert_eq!(said, "");
++    }
++
++    /// Only the client's reset read or broken write is its departure; every other result
++    /// keeps its own type.
++    #[test]
++    fn departure_is_only_the_clients_reset_read_or_broken_write() {
++        use native_relay::{Fault, Leg, Operation, Termination};
++        let native = |leg, operation, errno: i32| -> Result<Termination, Fault> {
++            Err(Fault::Native {
++                leg,
++                operation,
++                kind: io::Error::from_raw_os_error(errno).kind(),
++                errno: Some(errno),
++            })
++        };
++        for (result, departed) in [
++            (native(Leg::Client, Operation::Read, libc::ECONNRESET), true),
++            (native(Leg::Client, Operation::Write, libc::EPIPE), true),
++            (native(Leg::Client, Operation::Write, libc::ECONNRESET), true),
++            (native(Leg::Client, Operation::Read, libc::EPIPE), false),
++            (native(Leg::Client, Operation::Read, libc::EIO), false),
++            (native(Leg::Client, Operation::Wait, libc::ECONNRESET), false),
++            (native(Leg::Backend, Operation::Read, libc::ECONNRESET), false),
++            (native(Leg::Backend, Operation::Write, libc::EPIPE), false),
++        ] {
++            let end = End::of(result);
++            assert_eq!(matches!(end, End::ClientDeparted), departed, "{end:?}");
++        }
++        assert!(matches!(End::of(Ok(Termination::BackendEnded)), End::Ended));
++        assert!(matches!(End::of(Err(Fault::Bounds)), End::Fault(Fault::Bounds)));
++    }
++
++    /// The engine's end reset is no client's departure: it is still said, and the relay
++    /// still ends the client's connection.
++    #[test]
++    fn an_engine_reset_is_still_said() {
++        let said = relayed(|mut client, engine| {
++            client.write_all(REQUEST).unwrap();
++            readable(&engine);
++            drop(engine);
++            assert_eq!(client.read(&mut [0u8; 1]).unwrap(), 0);
++        });
++        assert_eq!(
++            said,
++            format!(
++                "shards-init: engine relay: Native {{ leg: Backend, operation: Read, kind: ConnectionReset, errno: Some({}) }}\n",
++                libc::ECONNRESET
++            )
++        );
+     }
+ }

@@ -1,0 +1,47 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/capture.sh bash -c 'git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- engine::tests:: 2>&1 | grep -v "^warning\|^ *|\|^ *= \|^ *-->\|^$"; rc=${PIPESTATUS[0]}; bin=target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496; echo "repeat 200x: $bin -q engine::tests::"; for i in $(seq 200); do $bin -q engine::tests:: 2>&1 | grep "^test result" | sed "s/finished in .*//"; done | sort | uniq -c; exit $rc'
+#   (the grep drops rustc's expected warnings under the mutation: ClientDeparted never constructed, Leg/Operation unused)
+# tree: c8439a5d + patches/f3-mutation.patch (sha256 e61ff7fd2f3386010d94862cdcfa42fc490fe4b642423a3331bff21edc3dd5fa) = green minus only the ClientDeparted arm of End::of
+# result: FAILS for the relevant reason (cargo exit 101), and in 200 of 200 repeats: both client departures are said again with the exact red-run text; the table test fails on its first departure row; the engine reset is still said. Guard restored afterwards.
+# this copy's body hashes to the runner's capture-sha256 (checked locally)
+c8439a5dbb68e08481da667e4fd3410db39406b1
+ crates/init/src/engine.rs | 172 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 165 insertions(+), 7 deletions(-)
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+159 |         use native_relay::{Fault, Leg, Operation};
+145 | enum End {
+...
+153 |     ClientDeparted,
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.62s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+running 4 tests
+test engine::tests::departure_is_only_the_clients_reset_read_or_broken_write ... FAILED
+test engine::tests::an_engine_reset_is_still_said ... ok
+test engine::tests::a_client_gone_before_the_next_line_is_not_a_fault ... FAILED
+test engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault ... FAILED
+failures:
+---- engine::tests::departure_is_only_the_clients_reset_read_or_broken_write stdout ----
+thread 'engine::tests::departure_is_only_the_clients_reset_read_or_broken_write' (365489) panicked at crates/init/src/engine.rs:289:13:
+assertion `left == right` failed: Fault(Native { leg: Client, operation: Read, kind: ConnectionReset, errno: Some(104) })
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+---- engine::tests::a_client_gone_before_the_next_line_is_not_a_fault stdout ----
+thread 'engine::tests::a_client_gone_before_the_next_line_is_not_a_fault' (365486) panicked at crates/init/src/engine.rs:261:9:
+assertion `left == right` failed
+  left: "shards-init: engine relay: Native { leg: Client, operation: Write, kind: BrokenPipe, errno: Some(32) }\n"
+ right: ""
+---- engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault stdout ----
+thread 'engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault' (365487) panicked at crates/init/src/engine.rs:245:9:
+assertion `left == right` failed
+  left: "shards-init: engine relay: Native { leg: Client, operation: Read, kind: ConnectionReset, errno: Some(104) }\n"
+ right: ""
+failures:
+    engine::tests::a_client_gone_before_the_next_line_is_not_a_fault
+    engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault
+    engine::tests::departure_is_only_the_clients_reset_read_or_broken_write
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 150 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+repeat 200x: target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496 -q engine::tests::
+    200 test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 150 filtered out; 
+capture-sha256 65a17357f14e855167271bf5651a1479c2d63bcaa5dc645f1b45c580c70fd68e exit 101

@@ -1,0 +1,27 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/capture.sh bash -c 'git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- engine::tests:: 2>&1; rc=$?; bin=target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496; ls -l $bin | cut -c1-10; echo "repeat 200x: $bin -q engine::tests::"; for i in $(seq 200); do $bin -q engine::tests:: 2>&1 | grep "^test result" | sed "s/finished in .*//"; done | sort | uniq -c; exit $rc'
+# tree: c8439a5d + patches/f3-green-first-design.patch (sha256 0d470b5d35004a015b7c0063b812f45d8d9f91d0f71e294fef27a9a72e87707c)
+# result (first test design, superseded by f3-4..f3-6): GREEN (cargo exit 0): 4 engine tests pass; the two departure reproductions are unchanged from the red run; 200 of 200 repeated runs pass
+# this copy's body hashes to the runner's capture-sha256 (checked locally)
+c8439a5dbb68e08481da667e4fd3410db39406b1
+ crates/init/src/engine.rs | 181 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 174 insertions(+), 7 deletions(-)
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.49s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 4 tests
+test engine::tests::departure_is_only_the_clients_reset_read_or_broken_write ... ok
+test engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault ... ok
+test engine::tests::an_engine_reset_is_still_said ... ok
+test engine::tests::a_client_gone_before_the_next_line_is_not_a_fault ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 150 filtered out; finished in 0.00s
+
+-rwxr-xr-x
+repeat 200x: target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496 -q engine::tests::
+    200 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 150 filtered out; 
+capture-sha256 c5df86846da0f985757dccf018f185636f1d306b07bd57781b165616986ff6b4 exit 0

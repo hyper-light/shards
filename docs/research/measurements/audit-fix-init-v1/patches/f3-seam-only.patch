@@ -1,0 +1,37 @@
+diff --git a/crates/init/src/engine.rs b/crates/init/src/engine.rs
+index 36648ea15..6530fc7e4 100644
+--- a/crates/init/src/engine.rs
++++ b/crates/init/src/engine.rs
+@@ -10,7 +10,7 @@
+ //! refused), and relays the bytes each way until either side ends.
+ 
+ use std::io::{self, Write as _};
+-use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd};
++use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd, RawFd};
+ use std::os::unix::net::{UnixListener, UnixStream};
+ 
+ use shards_abi::run;
+@@ -137,9 +137,14 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
+     if (&host).write_all(&hello).is_err() {
+         return;
+     }
++    forward(&conn, host.as_fd(), slots, &mut io::stderr());
++}
++
++/// After HELLO: the bytes each way until either side ends, an error said on `log`.
++fn forward(conn: &UnixStream, host: BorrowedFd<'_>, slots: native_relay::Slots, log: &mut impl io::Write) {
+     let mut report = native_relay::Report::new();
+     let result = native_relay::pump(
+-        [conn.as_fd(), host.as_fd()],
++        [conn.as_fd(), host],
+         slots,
+         [native_relay::ByteLimit::PeerEnd; 2],
+         native_relay::Control::ProcessOwned,
+@@ -149,6 +154,6 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
+     if let Err(error) = result {
+         // Successful engine EOF already ended both Unix halves in the pump.
+         let _ = conn.shutdown(std::net::Shutdown::Both);
+-        let _ = writeln!(io::stderr(), "shards-init: engine relay: {error:?}");
++        let _ = writeln!(log, "shards-init: engine relay: {error:?}");
+     }
+ }
