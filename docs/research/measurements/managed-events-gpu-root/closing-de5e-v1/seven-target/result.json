@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "timeout": false,
+  "direct_child_reaped": true,
+  "elapsed_seconds": 1180.6781128339999,
+  "after_free_bytes": 165661257728,
+  "whole_population_kernel_return": "Unknown"
+}
