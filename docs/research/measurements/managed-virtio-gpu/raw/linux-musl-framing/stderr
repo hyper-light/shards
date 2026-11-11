@@ -1,0 +1,10 @@
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/abi)
+   Compiling shards-vmm v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/vmm)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/ipc)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/testdir)
+   Compiling shards-netring v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/netring)
+   Compiling shards-syscall-filter v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-virtio-gpu-kiln-d1ae1dd089/crates/syscall-filter)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.51s
+     Running unittests src/lib.rs (target/managed-virtio-gpu-light/x86_64-unknown-linux-musl/debug/deps/shards_vmm-5a4f1b9aa1c715da)
+[2089999          0us WARN] virtio-gpu: the guest mapped a blob 0x2000 into its window, which the host maps in pages of 16384 bytes: its driver does not align blobs (VIRTIO_GPU_F_BLOB_ALIGNMENT, Linux 7.2)

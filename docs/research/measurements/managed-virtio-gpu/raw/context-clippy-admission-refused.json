@@ -1,0 +1,8 @@
+{
+  "operation": "final native VMM lib/tests strict Clippy launch",
+  "requested_command": "lockf -t 0 /tmp/g121-mac.lock python3 docs/research/measurements/managed-virtio-gpu/light-check.py clippy-context-final cargo clippy --locked -j2 -p shards-vmm --lib --tests -- -D warnings",
+  "needs": "macos/arm64,cpus=2,mem=2g,disk=4g",
+  "result": "refused: kiln couldn't be asked whether it's session 01a1c76784eb72ccaf9096c88182efb7's to do: not connected to the kiln server",
+  "running": false,
+  "interpretation": "no Clippy job launched; not a lint pass; no admission bypass"
+}

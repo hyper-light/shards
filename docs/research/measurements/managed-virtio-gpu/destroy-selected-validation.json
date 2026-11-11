@@ -1,0 +1,38 @@
+{
+  "source_head": "d89663e85d9dc34ec4b3059dc6f168a227e555ec",
+  "peer_source": "de0a0e6eca64539910da46fd95ba8ff8c7b7fa81",
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "source_only": true,
+  "renderer_execution": false,
+  "native_tests": false,
+  "results": [
+    {
+      "name": "sources",
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-virtio-gpu/verify-destroy-sources.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "policy",
+      "argv": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "authored-staged-whitespace",
+      "exit": 0,
+      "raw": "raw/destroy-selected-authored-check.stdout"
+    },
+    {
+      "name": "full-staged-whitespace",
+      "exit": 2,
+      "raw": "raw/destroy-selected-full-check.stdout"
+    }
+  ],
+  "full_whitespace_scope": "Verbatim retained patches/adapter/script; no source bytes rewritten"
+}

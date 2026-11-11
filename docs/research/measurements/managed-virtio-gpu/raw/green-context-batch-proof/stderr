@@ -1,0 +1,9 @@
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.10s
+     Running unittests src/lib.rs (target/managed-virtio-gpu-light/debug/deps/shards_vmm-4c1e918450b93796)
+
+thread 'devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence' (48887676) panicked at crates/vmm/src/devices/virtio/gpu/mod.rs:1461:26:
+called `Result::unwrap()` on an `Err` value: Reentered
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[76305          0us WARN] virtio-gpu: the guest mapped a blob 0x2000 into its window, which the host maps in pages of 16384 bytes: its driver does not align blobs (VIRTIO_GPU_F_BLOB_ALIGNMENT, Linux 7.2)
+error: test failed, to rerun pass `-p shards-vmm --lib`

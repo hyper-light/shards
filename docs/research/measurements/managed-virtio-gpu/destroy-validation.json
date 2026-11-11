@@ -1,0 +1,49 @@
+{
+  "source_head": "6e34c5872d11b1c831038c13ebcdd36ccc2c338b",
+  "policy_revision": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "policy_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "source_check_only": true,
+  "renderer_execution": false,
+  "results": [
+    {
+      "name": "sources",
+      "argv": [
+        "python3",
+        "docs/research/measurements/managed-virtio-gpu/verify-destroy-sources.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "policy",
+      "argv": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "authored-handoff-whitespace",
+      "exit": 0
+    },
+    {
+      "name": "authored-contract-whitespace",
+      "exit": 1,
+      "classification": "no-index added-file comparison returned1 with empty diagnostics; actual staged authored check below"
+    },
+    {
+      "name": "product-source-diff-versus-6e34",
+      "exit": 0
+    },
+    {
+      "name": "staged-authored-whitespace",
+      "exit": 0,
+      "raw": "raw/destroy-staged-authored.stdout"
+    },
+    {
+      "name": "staged-retained-source-whitespace",
+      "exit": 2,
+      "raw": "raw/destroy-staged-all.stdout",
+      "classification": "verbatim upstream whitespace preserved"
+    }
+  ]
+}

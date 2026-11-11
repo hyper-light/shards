@@ -1,0 +1,30 @@
+{
+  "source_manifest": "source-manifest.json",
+  "raw_payloads_checked": 42,
+  "free_bytes_before": 38462865408,
+  "free_bytes_after": 38462504960,
+  "admission": "Kiln 2CPU/2GiB/4GiB/600s; Mac lockf; no Cargo build/test",
+  "results": [
+    {
+      "name": "policy",
+      "argv": [
+        "scripts/check-development-policy"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "format",
+      "argv": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs"
+      ],
+      "exit": 0
+    }
+  ],
+  "native_tests_started": false,
+  "renderer_executed": false
+}

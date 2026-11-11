@@ -1,0 +1,7 @@
+No new native runtime, VM, renderer, fault, mutation, profile or benchmark attempt. Existing raw failures remain indexed.
+
+Two documentation-only HANDOFF apply_patch attempts failed exact-context/order verification and applied no files. The intended two-line current-policy replacement was then applied without the unrelated context, followed by a separate closeout insertion. Product source was never changed.
+
+Large policy/source reads exceeded output display budgets; the missing plan/source spans and own handoff were re-read in bounded chunks. No omitted suffix was claimed read.
+
+Private-index code application/check and admitted source/raw/policy/format validation returned0. No signer attempt was made because this shell has no own signer. No credentials/socket/key were borrowed or signing disabled.

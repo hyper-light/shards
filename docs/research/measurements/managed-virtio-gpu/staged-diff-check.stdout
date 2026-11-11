@@ -1,0 +1,13 @@
+docs/research/measurements/managed-virtio-gpu/raw/clippy-final-framing/source.diff:64: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/clippy-first/source.diff:58: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-boundaries/source.diff:64: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-boundaries/stdout:18: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/green-empty-descriptors/source.diff:58: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-empty-descriptors/stdout:17: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/red-empty-descriptors/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/red-empty-descriptors/stdout:16: new blank line at EOF.

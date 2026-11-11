@@ -1,0 +1,44 @@
+{
+  "base": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "steps": [
+    {
+      "step": "read-tree",
+      "argv": [
+        "git",
+        "read-tree",
+        "0a6d91b3de0f10a8397868aa3794adab1e09afdc"
+      ],
+      "exit": 0
+    },
+    {
+      "step": "check",
+      "argv": [
+        "git",
+        "apply",
+        "--cached",
+        "--check",
+        "docs/research/measurements/managed-virtio-gpu/closeout-0a6-v1/owned-code.patch"
+      ],
+      "exit": 0
+    },
+    {
+      "step": "apply-private-index",
+      "argv": [
+        "git",
+        "apply",
+        "--cached",
+        "docs/research/measurements/managed-virtio-gpu/closeout-0a6-v1/owned-code.patch"
+      ],
+      "exit": 0
+    }
+  ],
+  "applied_owned_source_hashes_match": [
+    "crates/vmm/src/devices/virtio/gpu/mod.rs",
+    "crates/vmm/src/devices/virtio/gpu/protocol.rs",
+    "crates/vmm/src/devices/virtio/gpu/window.rs",
+    "crates/vmm/src/devices/virtio/gpu/render_log.c"
+  ],
+  "private_index": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-owned-closeout-0a6-v1/source-application.index",
+  "production_worktree_or_main_mutated": false,
+  "native_tests_started": false
+}

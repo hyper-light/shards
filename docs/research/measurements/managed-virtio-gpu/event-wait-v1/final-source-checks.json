@@ -1,0 +1,9 @@
+{
+  "production_prefix_bytes": 33455,
+  "production_prefix_sha256": "6311fddd5a2941e9c69781e9d6927c66fb6b9b3a7362debfb079c01d35fc9d2d",
+  "production_prefix_unchanged": true,
+  "entire_original_phase_request_assertion_suffix_equal": true,
+  "old_manifest_sha256": "2483aeb20ac0e4b20e432a90e9b4a488b8b59ad1f3e91dd6cc5d66d5e2fe6565",
+  "old_manifest_unchanged": true,
+  "own_signer_present": false
+}

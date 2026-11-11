@@ -1,0 +1,183 @@
+{
+  "status": "contract proposal; no event production code edited",
+  "policy_main": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "branch_parent": "81632cc92fcaa7b11d3844e0309dcc94fa397345",
+  "root_source": "4299285281a0b588ed04b854842c1c14b0950260",
+  "root_metrics_exact_c298": {
+    "crates/init/src/metrics.rs": {
+      "bytes": 10201,
+      "sha256": "427146bd2d8838d647b281ea1cb58ae99b8bafdada8988022f499aab937fd7d0"
+    },
+    "crates/init/src/metrics/otlp.rs": {
+      "bytes": 22937,
+      "sha256": "0c7fc47a67b70dbbb16b94de4a0b43cd9bb2c6605a527f94e97b2af378c713da"
+    },
+    "crates/init/src/metrics/tests.rs": {
+      "bytes": 15236,
+      "sha256": "7211b1570c857d374f4ca261755e86cf52f2eca1a4985ff944321c9b4d9141bb"
+    }
+  },
+  "pins": {
+    "google/cadvisor": {
+      "tag": "v0.60.6",
+      "commit": "5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7"
+    },
+    "opencontainers/cgroups": {
+      "tag": "v0.1.0",
+      "commit": "30a2293c0b0325280ea70a86fe991ec1e87b5d00"
+    },
+    "gregkh/linux": {
+      "tag": "v6.18.48",
+      "commit": "5bbb9c9f8f808710e2123f2b30f0d61d7d698f52"
+    }
+  },
+  "primary_downloads": [
+    {
+      "url": "https://api.github.com/repos/google/cadvisor/git/ref/tags/v0.60.6",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/google-cadvisor-tag.json",
+      "bytes": 341,
+      "sha256": "6eb9d3e37c93e03b12fd3eb144d29155c84fcc17513ed5171601c5e4931088de",
+      "result": "read"
+    },
+    {
+      "url": "https://api.github.com/repos/google/cadvisor/git/trees/5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7?recursive=1",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/google-cadvisor-tree.json",
+      "bytes": 885937,
+      "sha256": "4ffef1e4b320db7039477a1399cc6952521b437bf61f169d5ead2ba7c571ea01",
+      "result": "read"
+    },
+    {
+      "url": "https://api.github.com/repos/opencontainers/cgroups/git/ref/tags/v0.1.0",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/opencontainers-cgroups-tag.json",
+      "bytes": 345,
+      "sha256": "8540ca27df3eea6dab85287787b039f59561ecc5c3bd7472838311855f80cd73",
+      "result": "read"
+    },
+    {
+      "url": "https://api.github.com/repos/opencontainers/cgroups/git/trees/30a2293c0b0325280ea70a86fe991ec1e87b5d00?recursive=1",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/opencontainers-cgroups-tree.json",
+      "bytes": 28447,
+      "sha256": "c8038d6847493a8432f65af1305ea2b1242660781ea159ef34a05e5dd6d68e8d",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/google/cadvisor/5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7/lib/metrics/prometheus.go",
+      "revision": "5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/google-cadvisor-lib-metrics-prometheus.go",
+      "bytes": 85189,
+      "sha256": "273caffb25ea603127bec0227299e41fb8292e874ef37b38028582f363572336",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/google/cadvisor/5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7/lib/container/libcontainer/handler.go",
+      "revision": "5bf5d43ac6f60d7ee36a13b4d5b4a78ad2d0abc7",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/google-cadvisor-lib-container-libcontainer-handler.go",
+      "bytes": 29944,
+      "sha256": "675f44c532ababb24a1d41abc7fb83b92b8c86d201a1f34774a32d97845b7f82",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/opencontainers/cgroups/30a2293c0b0325280ea70a86fe991ec1e87b5d00/fs2/memory.go",
+      "revision": "30a2293c0b0325280ea70a86fe991ec1e87b5d00",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/opencontainers-cgroups-fs2-memory.go",
+      "bytes": 6453,
+      "sha256": "5307e4bf4d14d8d6a50a30f537208d80a2515d04cac1bc5e4872e80056a00699",
+      "result": "read"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/git/ref/tags/v6.18.48",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/linux-tag.json",
+      "bytes": 335,
+      "sha256": "e27c3bc7c101237a9eb2d2066ab1a9ec85cb2fee9eded4af9a59213fc5f4b344",
+      "result": "read"
+    },
+    {
+      "url": "https://api.github.com/repos/gregkh/linux/git/tags/2e57d67d62e9b5e54f352e48166b791524762f71",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/linux-tag-object.json",
+      "bytes": 2584,
+      "sha256": "2b4bd19fb4d579d146404e1b0fe4576981264c29cec37ae26587eb7267a64c38",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/Documentation/admin-guide/cgroup-v2.rst",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/kernel-Documentation-admin-guide-cgroup-v2.rst",
+      "bytes": 128518,
+      "sha256": "e81d1d9be76afdc6ee0a28f109353b1fd0a1f94df0397652988eac0bce4b87cd",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/kernel/cgroup/pids.c",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/kernel-kernel-cgroup-pids.c",
+      "bytes": 11827,
+      "sha256": "802a4643e30c5cedd8bd67f5dec91ee28bec802cec9b1169a448ee2f233fd634",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/mm/memcontrol.c",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/kernel-mm-memcontrol.c",
+      "bytes": 148271,
+      "sha256": "c59d28df0d0141e5b16ef634cfddff4c859d49584a27e63081f0217119f12436",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/gregkh/linux/5bbb9c9f8f808710e2123f2b30f0d61d7d698f52/include/linux/memcontrol.h",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/kernel-include-linux-memcontrol.h",
+      "bytes": 48726,
+      "sha256": "6913aa8a3bb1b498a0cdfb6e5b2b24e8a3f2f12ed613660acc44927a81b876f8",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-specification/18c5c1706e346fec3bdb5e135a6e3a78f461e586/specification/metrics/data-model.md",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/otel-data-model.source",
+      "bytes": 62383,
+      "sha256": "33fc0b88a7574501db5bda1c52624d9a0095e258edce39590bef9b1dd04fb1ea",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-proto/b3f75588eb23c5fca62264edd05d382de49beb1a/opentelemetry/proto/metrics/v1/metrics.proto",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/otel-proto.source",
+      "bytes": 31935,
+      "sha256": "9663b2670f980041e73a71a7c09fdf4fe0bc64056be762f2fcbd2642c4d112a3",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/fb30ca17193b551473b1f43c315482918ab6987c/docs/system/container-metrics.md",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/semconv-container.source",
+      "bytes": 26589,
+      "sha256": "97fb8880711a5a38bcce463b422cc6f712122dce0c92bd4faf7232a078320a6e",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/open-telemetry/semantic-conventions/fb30ca17193b551473b1f43c315482918ab6987c/docs/general/metrics.md",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/semconv-naming.source",
+      "bytes": 7043,
+      "sha256": "948fe831ec6fcc153d8fcf089477e7beefb968ac7beafe100610fda7e93d7c26",
+      "result": "read"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector-contrib/6083b2c53d78b21d0925b703194aaed920c01af5/receiver/dockerstatsreceiver/metadata.yaml",
+      "local": "/tmp/managed-cgroup-events-primary-81632-v1/collector-docker-metadata.source",
+      "bytes": 28002,
+      "sha256": "9d51b2f483dd82650ff6f30636a05067c82a9489c0b90e7c33561162b590e87b",
+      "result": "read"
+    }
+  ],
+  "earlier_discovery_failures": [
+    {
+      "tool": "web open",
+      "urls": [
+        "https://api.github.com/repos/google/cadvisor/releases/latest",
+        "https://api.github.com/repos/opencontainers/cgroups/releases/latest"
+      ],
+      "result": "Internal Error; official API later read successfully with urllib; no speculative version assumed"
+    },
+    {
+      "operation": "rg sparse materialized init sources for cgroup2",
+      "exit_code": 1,
+      "cause": "run.rs not materialized; exact Git object searched/read instead"
+    }
+  ],
+  "private_source_copies": "/tmp/managed-cgroup-events-primary-81632-v1",
+  "skill": "research; explicit user no-child instruction overrides skill background-agent step; no delegation"
+}

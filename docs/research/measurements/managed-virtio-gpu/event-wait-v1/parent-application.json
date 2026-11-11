@@ -1,0 +1,38 @@
+{
+  "parent": "8aceafd2cd9b9c62319ec0e06423e5d33d7f59b5",
+  "steps": [
+    {
+      "name": "freeze-parent",
+      "argv": [
+        "git",
+        "read-tree",
+        "8aceafd2cd9b9c62319ec0e06423e5d33d7f59b5"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "patch-check",
+      "argv": [
+        "git",
+        "apply",
+        "--cached",
+        "--check",
+        "docs/research/measurements/managed-virtio-gpu/event-wait-v1/test-only.patch"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "patch-private-apply",
+      "argv": [
+        "git",
+        "apply",
+        "--cached",
+        "docs/research/measurements/managed-virtio-gpu/event-wait-v1/test-only.patch"
+      ],
+      "exit": 0
+    }
+  ],
+  "result_sha256": "084920513d4689ab7683f2f1d027d653da08d7ccba98eb2394b07c2ab85d6352",
+  "matches_native_tested_source": true,
+  "ROOT_worktree_or_candidate_modified": false
+}

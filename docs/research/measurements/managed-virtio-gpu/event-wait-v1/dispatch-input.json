@@ -1,0 +1,9 @@
+{
+  "command": "lockf -t 0 /tmp/g121-mac.lock python3 docs/research/measurements/managed-virtio-gpu/event-wait-v1/run.py",
+  "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+  "needs": "macos/arm64 cpus=2 mem=2g disk=4g",
+  "timeout_s": 600,
+  "driver_sha256": "2173a54b7a053d07055f2b8ea2c0246a7d008d79f7517a34133fd55fa5fe018c",
+  "source_sha256": "084920513d4689ab7683f2f1d027d653da08d7ccba98eb2394b07c2ab85d6352",
+  "new_target": "target/managed-virtio-gpu-event-wait-v1"
+}

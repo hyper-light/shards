@@ -1,0 +1,45 @@
+{
+  "source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "candidate_event_source_byte_equal": true,
+  "payloads_verified": 111,
+  "manifest_members": 1,
+  "archive_bytes": 79763,
+  "archive_sha256": "e4f2776826edf44b8b9bc1f244c682e487af9ffce2e4c3929cbeeb283d69bb71",
+  "outcomes": [
+    {
+      "stage": "baseline",
+      "exit_code": 0,
+      "before_kernel": 0,
+      "after_kernel": 1,
+      "before_export": 0,
+      "after_export": 1,
+      "refused_EAGAIN_and_reset_child_success": true,
+      "direct_child_pidfd_reap_and_controller_fd_return": true
+    },
+    {
+      "stage": "mutant",
+      "exit_code": 101,
+      "before_kernel": 0,
+      "after_kernel": 1,
+      "before_export": 0,
+      "after_export": 0,
+      "refused_EAGAIN_and_reset_child_success": true,
+      "direct_child_pidfd_reap_and_controller_fd_return": true
+    },
+    {
+      "stage": "restored",
+      "exit_code": 0,
+      "before_kernel": 0,
+      "after_kernel": 1,
+      "before_export": 0,
+      "after_export": 1,
+      "refused_EAGAIN_and_reset_child_success": true,
+      "direct_child_pidfd_reap_and_controller_fd_return": true
+    }
+  ],
+  "source_restored_byte_exact": true,
+  "six_frozen_artifact_identities_preserved": true,
+  "whole_population_kernel_return": "Unknown",
+  "runtime_replay": false,
+  "cost_benchmark": false
+}

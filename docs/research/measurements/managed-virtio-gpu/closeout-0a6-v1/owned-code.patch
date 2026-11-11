@@ -1,0 +1,408 @@
+diff --git a/crates/vmm/src/devices/virtio/gpu/mod.rs b/crates/vmm/src/devices/virtio/gpu/mod.rs
+index 40a40575add47ca71103878f68a19655b0bf6fd9..f463fcff63bc58667d0ce1517c4189d16c43782a 100644
+--- a/crates/vmm/src/devices/virtio/gpu/mod.rs
++++ b/crates/vmm/src/devices/virtio/gpu/mod.rs
+@@ -160,6 +160,19 @@ struct Waiting {
+     fence: Option<u64>,
+ }
+ 
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Next {
++    Request,
++    /// Retire queued callbacks before a later request can reuse a destroyed context ID.
++    Signals,
++}
++
++#[derive(Debug, PartialEq, Eq)]
++struct Completion {
++    used: Vec<(u16, u32)>,
++    next: Next,
++}
++
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ struct Resource {
+     size: u64,
+@@ -241,7 +254,7 @@ impl Served {
+     /// Serves a control queue request: its answer written into it, and the requests to use
+     /// now, each with the bytes written into it: none of this one while its answer waits
+     /// for its fence.
+-    fn serve(&mut self, chain: &Chain, memory: &GuestMemory) -> Result<Vec<(u16, u32)>, QueueError> {
++    fn serve(&mut self, chain: &Chain, memory: &GuestMemory) -> Result<Completion, QueueError> {
+         if self.held.contains(&chain.head) {
+             return Err(QueueError::InUse(chain.head));
+         }
+@@ -251,9 +264,18 @@ impl Served {
+         };
+         // Too short for a header: nothing to answer, nor any fence to say.
+         let Some((header, command)) = read else {
+-            return Ok(vec![(chain.head, 0)]);
++            return Ok(Completion {
++                used: vec![(chain.head, 0)],
++                next: Next::Request,
++            });
+         };
++        let destroying = matches!(&command, Ok(Command::CtxDestroy));
+         let answered = command.and_then(|c| self.command(&header, c, memory));
++        let next = if destroying && answered.is_ok() {
++            Next::Signals
++        } else {
++            Next::Request
++        };
+         // A fence asked for is created once its command is done, and signalled with what
+         // was submitted before it on its ring.
+         let (kind, fields, fence) = match (answered, header.fence()) {
+@@ -273,7 +295,7 @@ impl Served {
+         let Some((_, ring)) = header.fence() else {
+             let mut used = std::mem::take(&mut self.released);
+             used.push((chain.head, len));
+-            return Ok(used);
++            return Ok(Completion { used, next });
+         };
+         let timeline = match ring {
+             Some(ring) => Timeline::Ring {
+@@ -290,7 +312,7 @@ impl Served {
+         self.held.insert(chain.head);
+         let mut used = std::mem::take(&mut self.released);
+         used.extend(self.let_go(timeline, None));
+-        Ok(used)
++        Ok(Completion { used, next })
+     }
+ 
+     /// The answers a fence's signal lets go, in order.
+@@ -593,7 +615,11 @@ fn round(
+                 break;
+             }
+             taken += 1;
+-            used.extend(served.serve(&chain, memory)?);
++            let completion = served.serve(&chain, memory)?;
++            used.extend(completion.used);
++            if completion.next == Next::Signals {
++                break 'round false;
++            }
+         }
+         if !with(memory, |a| control.enable_notification(a))? {
+             break true;
+@@ -889,6 +915,8 @@ mod tests {
+         calls: Vec<String>,
+         signals: Vec<Signal>,
+         worker: Option<Thread>,
++        signal_on_destroy: Option<Signal>,
++        drained_signals: usize,
+     }
+ 
+     impl Log {
+@@ -928,6 +956,10 @@ mod tests {
+         }
+         fn destroy_context(&mut self, ctx: u32) {
+             self.note(format!("destroy {ctx}"));
++            let signal = self.log.lock().unwrap().signal_on_destroy.take();
++            if let Some(s) = signal {
++                Log::signal(&self.log, s.ctx, s.ring, s.fence);
++            }
+         }
+         fn attach(&mut self, ctx: u32, resource: u32) {
+             self.note(format!("attach {ctx} {resource}"));
+@@ -961,7 +993,9 @@ mod tests {
+             Ok(())
+         }
+         fn signals(&mut self, into: &mut Vec<Signal>) {
+-            into.append(&mut self.log.lock().unwrap().signals);
++            let mut log = self.log.lock().unwrap();
++            log.drained_signals += log.signals.len();
++            into.append(&mut log.signals);
+         }
+         fn wake(&mut self, worker: Thread) {
+             self.log.lock().unwrap().worker = Some(worker);
+@@ -1100,7 +1134,7 @@ mod tests {
+         fields: &[u8],
+     ) -> (Vec<(u16, u32)>, u32, Vec<u8>) {
+         let (chain, at) = request(mem, head, h, fields);
+-        let used = s.serve(&chain, mem).unwrap();
++        let used = s.serve(&chain, mem).unwrap().used;
+         let len = used.iter().find(|u| u.0 == head).map_or(HEADER, |u| u.1 as usize);
+         let (kind, rest) = answer(mem, at, len.max(HEADER));
+         (used, kind, rest)
+@@ -1427,6 +1461,17 @@ mod tests {
+             mem.access().unwrap().read(self.used + 2, &mut b).unwrap();
+             u16::from_le_bytes(b)
+         }
++        fn used_heads(&self, mem: &GuestMemory) -> Vec<u32> {
++            let count = self.used_idx(mem);
++            let access = mem.access().unwrap();
++            (0..count)
++                .map(|i| {
++                    access
++                        .read_obj(self.used + 4 + 8 * u64::from(i % self.size))
++                        .unwrap()
++                })
++                .collect()
++        }
+     }
+ 
+     struct Line;
+@@ -1435,6 +1480,91 @@ mod tests {
+         fn set_level(&self, _: bool) {}
+     }
+ 
++    #[test]
++    fn a_recreated_context_waits_for_its_own_fence() {
++        let (served, log, mem) = served();
++        let mem = Arc::new(mem);
++        let mut gpu = Gpu::new(served);
++        let mut control = Ring::new(RAM + 0x80000, 16);
++        let cursor = Ring::new(RAM + 0x90000, 16);
++        gpu.activate(Activation {
++            memory: mem.clone(),
++            queues: vec![control.queue(&mem), cursor.queue(&mem)],
++            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Line))),
++            features: gpu.features(),
++            restored: false,
++        })
++        .unwrap();
++        let wait = |ready: &dyn Fn() -> bool| {
++            let end = Instant::now() + Duration::from_secs(5);
++            while !ready() {
++                assert!(
++                    Instant::now() < end,
++                    "the worker did not reach the requested state"
++                );
++                thread::sleep(Duration::from_millis(1));
++            }
++        };
++        let mut create_fields = le(&[0, 4]);
++        create_fields.resize(8 + 64, 0);
++        let (create, _) = request(&mem, 0, plain(cmd::CTX_CREATE, 1), &create_fields);
++        control.publish(&mem, &create);
++        gpu.notify(0);
++        wait(&|| control.used_idx(&mem) == 1);
++        let fenced = Header {
++            kind: cmd::SUBMIT_3D,
++            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
++            fence_id: 1,
++            ctx_id: 1,
++            ring_idx: 1,
++        };
++        let (old, _) = request(&mem, 2, fenced, &le(&[4, 0, 0]));
++        control.publish(&mem, &old);
++        gpu.notify(0);
++        wait(&|| log.lock().unwrap().calls.iter().any(|c| c == "fence 1 1 1"));
++        gpu.pause();
++        {
++            let mut l = log.lock().unwrap();
++            l.calls.clear();
++            // A completed old fence can be queued as its renderer's destroy joins.
++            l.signal_on_destroy = Some(Signal {
++                ctx: 1,
++                ring: 1,
++                fence: 1,
++            });
++        }
++        let (destroy, _) = request(&mem, 4, plain(cmd::CTX_DESTROY, 1), &[]);
++        let (create, _) = request(&mem, 6, plain(cmd::CTX_CREATE, 1), &create_fields);
++        let (new, _) = request(&mem, 8, fenced, &le(&[4, 0, 0]));
++        for chain in [&destroy, &create, &new] {
++            control.publish(&mem, chain);
++        }
++        gpu.resume().unwrap();
++        gpu.notify(0);
++        wait(&|| {
++            let l = log.lock().unwrap();
++            l.drained_signals == 1 && l.calls.iter().any(|c| c == "fence 1 1 1")
++        });
++        gpu.pause();
++        assert_eq!(
++            control.used_idx(&mem),
++            4,
++            "the old signal completed the new context's fence"
++        );
++        assert!(gpu.served.as_ref().unwrap().held.contains(&8));
++        let before = control.used_heads(&mem);
++        assert_eq!(before, [0, 2, 4, 6]);
++        gpu.resume().unwrap();
++        Log::signal(&log, 1, 1, 1);
++        wait(&|| control.used_idx(&mem) == 5);
++        assert_eq!(control.used_heads(&mem), [0, 2, 4, 6, 8]);
++        println!(
++            "context_id=1 old_signals_drained=1 before_new_signal={before:?} after_new_signal={:?}",
++            control.used_heads(&mem)
++        );
++        gpu.reset();
++    }
++
+     /// On the device's worker, a fenced request is used once its fence is signalled from
+     /// another thread, which wakes the worker; one not fenced is used at once.
+     #[test]
+diff --git a/crates/vmm/src/devices/virtio/gpu/protocol.rs b/crates/vmm/src/devices/virtio/gpu/protocol.rs
+index fa6df41c62485c2760ec9d75ea87da0c62cd3377..34a96a6eefb324deaac69cceb273d7928d0fdb21 100644
+--- a/crates/vmm/src/devices/virtio/gpu/protocol.rs
++++ b/crates/vmm/src/devices/virtio/gpu/protocol.rs
+@@ -195,6 +195,9 @@ pub fn read(chain: &Chain, mem: &Access<'_>, max: usize) -> Option<(Header, Resu
+     let mut b = Vec::new();
+     for d in chain.readable() {
+         let len = usize::try_from(d.len).ok()?;
++        if len == 0 {
++            continue;
++        }
+         let take = len.min(max.saturating_sub(b.len()));
+         if take == 0 {
+             break;
+@@ -281,17 +284,36 @@ pub fn answer(chain: &Chain, mem: &Access<'_>, request: &Header, kind: u32, fiel
+     };
+     let head = header.bytes();
+     let mut written = 0u32;
+-    let mut parts = [&head[..], fields].into_iter().flat_map(<[u8]>::iter).copied();
++    let mut parts = [head.as_slice(), fields].into_iter();
++    let mut part: &[u8] = &[];
+     for d in chain.writable() {
+-        let len = usize::try_from(d.len).unwrap_or(0);
+-        let chunk: Vec<u8> = parts.by_ref().take(len).collect();
+-        if chunk.is_empty() {
+-            break;
+-        }
+-        if mem.write(d.addr, &chunk).is_err() {
+-            break;
++        let Ok(mut room) = usize::try_from(d.len) else {
++            return written;
++        };
++        let mut at = d.addr;
++        while room != 0 {
++            while part.is_empty() {
++                let Some(next) = parts.next() else { return written };
++                part = next;
++            }
++            let take = room.min(part.len());
++            let Some((chunk, rest)) = part.split_at_checked(take) else {
++                return written;
++            };
++            let Some(total) = u32::try_from(take).ok().and_then(|n| written.checked_add(n)) else {
++                return written;
++            };
++            if mem.write(at, chunk).is_err() {
++                return written;
++            }
++            written = total;
++            part = rest;
++            room -= take;
++            let Some(next) = at.checked_add(take as u64) else {
++                return written;
++            };
++            at = next;
+         }
+-        written = written.saturating_add(u32::try_from(chunk.len()).unwrap_or(u32::MAX));
+     }
+     written
+ }
+@@ -361,6 +383,113 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn requests_skip_empty_descriptors() {
++        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
++        let access = mem.access().unwrap();
++        let header = Header {
++            kind: cmd::GET_CAPSET_INFO,
++            ..Header::default()
++        };
++        let b = request(&header, &7u32.to_le_bytes());
++        let (first, rest) = b.split_at(10);
++        let (mut c, _) = chain(&access, &[&[], first, &[], rest, &[]], 64);
++        // An empty descriptor's address is never accessed.
++        for d in c.descriptors.iter_mut().filter(|d| d.len == 0) {
++            d.addr = u64::MAX;
++        }
++        assert_eq!(
++            read(&c, &access, b.len()),
++            Some((header, Ok(Command::GetCapsetInfo { index: 7 })))
++        );
++        assert_eq!(
++            read(&c, &access, HEADER).unwrap().1,
++            Err(Refused(resp::ERR_INVALID_PARAMETER))
++        );
++    }
++
++    #[test]
++    fn answers_span_empty_descriptors() {
++        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
++        let access = mem.access().unwrap();
++        let header = Header {
++            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
++            fence_id: 99,
++            ctx_id: 3,
++            ring_idx: 2,
++            ..Header::default()
++        };
++        let fields = [7u8; 8];
++        let mut c = Chain::default();
++        let mut at = BASE;
++        for len in [0, 8, 0, 17, 0, 7, 0] {
++            c.descriptors.push(Descriptor {
++                addr: if len == 0 { u64::MAX } else { at },
++                len,
++                writable: true,
++            });
++            at += 0x1000;
++        }
++        assert_eq!(answer(&c, &access, &header, resp::OK_MAP_INFO, &fields), 32);
++        let mut got = Vec::new();
++        for d in c.writable().filter(|d| d.len != 0) {
++            let mut b = vec![0; d.len as usize];
++            access.read(d.addr, &mut b).unwrap();
++            got.extend(b);
++        }
++        assert_eq!(
++            Header::parse(&got).unwrap(),
++            Header {
++                kind: resp::OK_MAP_INFO,
++                ..header
++            }
++        );
++        assert_eq!(got.get(HEADER..).unwrap(), fields);
++    }
++
++    #[test]
++    fn answers_stop_at_short_or_inaccessible_buffers() {
++        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
++        let access = mem.access().unwrap();
++        let header = Header::default();
++        let mut c = Chain {
++            head: 0,
++            descriptors: vec![Descriptor {
++                addr: BASE,
++                len: 10,
++                writable: true,
++            }],
++        };
++        let expected = Header {
++            kind: resp::OK_CAPSET,
++            ..header
++        }
++        .bytes();
++        access.write(BASE, &[0xa5; 64]).unwrap();
++        assert_eq!(answer(&c, &access, &header, resp::OK_CAPSET, &[7; 8]), 10);
++        let mut got = [0u8; 64];
++        access.read(BASE, &mut got).unwrap();
++        assert_eq!(got.get(..10), expected.get(..10));
++        assert_eq!(got.get(10..), Some([0xa5; 54].as_slice()));
++
++        c.descriptors.extend([
++            Descriptor {
++                addr: u64::MAX,
++                len: 8,
++                writable: true,
++            },
++            Descriptor {
++                addr: BASE + 0x1000,
++                len: 64,
++                writable: true,
++            },
++        ]);
++        access.write(BASE + 0x1000, &[0xa5; 64]).unwrap();
++        assert_eq!(answer(&c, &access, &header, resp::OK_CAPSET, &[7; 8]), 10);
++        access.read(BASE + 0x1000, &mut got).unwrap();
++        assert_eq!(got, [0xa5; 64]);
++    }
++
+     /// Counts and sizes are held to what the request holds: entries past its end, and a
+     /// submission longer than its bytes, are refused; one too short for a header is not
+     /// answered.

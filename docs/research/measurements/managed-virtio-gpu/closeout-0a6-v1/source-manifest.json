@@ -1,0 +1,134 @@
+{
+  "policy_revision": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "base_revision": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "source_revision": "5b13458e19b32f233792ea5fe6e1a754243c6c89",
+  "signed_code_commits": [
+    "118978b03c0f27f17a995bcecb1d7be3dedb3221",
+    "05015e3fa2f8e5436eb1af13f5f73310022f737a"
+  ],
+  "patch": {
+    "path": "closeout-0a6-v1/owned-code.patch",
+    "bytes": 15384,
+    "sha256": "e506d40cb39506518178992091333a8554e9c30238ae7c088b68ab557131e1dd",
+    "changed_paths": [
+      "crates/vmm/src/devices/virtio/gpu/mod.rs",
+      "crates/vmm/src/devices/virtio/gpu/protocol.rs"
+    ],
+    "includes_native_unit_tests": true,
+    "includes_docs_or_L2_paths": false
+  },
+  "owned_sources": [
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/mod.rs",
+      "changed": true,
+      "before": {
+        "bytes": 55987,
+        "sha256": "8858bc80655d9f52436690be2bea3d40d94820d8abe64438282dbf6539d6d1a3",
+        "git_blob": "40a40575add47ca71103878f68a19655b0bf6fd9"
+      },
+      "after": {
+        "bytes": 60718,
+        "sha256": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e",
+        "git_blob": "f463fcff63bc58667d0ce1517c4189d16c43782a"
+      },
+      "retained_source": "closeout-0a6-v1/source/mod.rs"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/protocol.rs",
+      "changed": true,
+      "before": {
+        "bytes": 15987,
+        "sha256": "9d47adcec3384e9f35c53a51a865137f1aa95a85a71d1112ca6a84885d49b1f4",
+        "git_blob": "fa6df41c62485c2760ec9d75ea87da0c62cd3377"
+      },
+      "after": {
+        "bytes": 20213,
+        "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "git_blob": "34a96a6eefb324deaac69cceb273d7928d0fdb21"
+      },
+      "retained_source": "closeout-0a6-v1/source/protocol.rs"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/window.rs",
+      "changed": false,
+      "before": {
+        "bytes": 6581,
+        "sha256": "ab3bae0e3cb635efe0956d1132556df61d0c5bc6ff08b9d6094765c2544f0eb5",
+        "git_blob": "d8ba6c63f25a72aa06bc31c3cf4bbd327be7e190"
+      },
+      "after": {
+        "bytes": 6581,
+        "sha256": "ab3bae0e3cb635efe0956d1132556df61d0c5bc6ff08b9d6094765c2544f0eb5",
+        "git_blob": "d8ba6c63f25a72aa06bc31c3cf4bbd327be7e190"
+      },
+      "retained_source": "closeout-0a6-v1/source/window.rs"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/render_log.c",
+      "changed": false,
+      "before": {
+        "bytes": 815,
+        "sha256": "2b5d4f463ebeea6daffbe48420bb482c17865fb91d6ccc67419f68f5a3b2e750",
+        "git_blob": "99b00241322149875774c24b9b130538e88ffeee"
+      },
+      "after": {
+        "bytes": 815,
+        "sha256": "2b5d4f463ebeea6daffbe48420bb482c17865fb91d6ccc67419f68f5a3b2e750",
+        "git_blob": "99b00241322149875774c24b9b130538e88ffeee"
+      },
+      "retained_source": "closeout-0a6-v1/source/render_log.c"
+    }
+  ],
+  "unchanged_caller_build_inputs": [
+    {
+      "path": "crates/vmm/src/vm/mod.rs",
+      "same_base_and_tip": true,
+      "bytes": 148798,
+      "sha256": "3216820b3205c5da9dcc9f6bf5c2534fefedceca09e7ada219d95dfc888065e4",
+      "git_blob": "a075a0f6f1b08523289a4cf4ca3906be64223b6f"
+    },
+    {
+      "path": "crates/vmm/src/vm/aarch64.rs",
+      "same_base_and_tip": true,
+      "bytes": 52797,
+      "sha256": "4ce4bb1f060026dacccec242165485f89670580c5015764e00fb185bc8773204",
+      "git_blob": "60452e3acc5ab8cfbea05aed1014c4918e21b65c"
+    },
+    {
+      "path": "crates/vmm/src/vm/x86_64.rs",
+      "same_base_and_tip": true,
+      "bytes": 39125,
+      "sha256": "1d7b53176cebf2ff9e88b294a4e9053c8f141310bdd56ca6b41c790549a5fb73",
+      "git_blob": "4ad799277ad56a57fc09f29cc36c193351064900"
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/gpu/virgl.rs",
+      "same_base_and_tip": true,
+      "bytes": 52797,
+      "sha256": "7c6d189157fabed34b0043c9e9a667d66c451ec09aaa2f9cc9a9ca3189e3f34f",
+      "git_blob": "dfadfd2daa6d4fa3f885227e5f8a760e2729c2a1"
+    },
+    {
+      "path": "crates/vmm/Cargo.toml",
+      "same_base_and_tip": true,
+      "bytes": 1531,
+      "sha256": "45ce0d7f4894ea41c2b70cfeda0e463f6732d931da1088eb5e5e07dff10c6085",
+      "git_blob": "25999e51aea0af4f50ee4fa6d270f26584a68bc8"
+    },
+    {
+      "path": "Cargo.lock",
+      "same_base_and_tip": true,
+      "bytes": 45993,
+      "sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+      "git_blob": "20a3df7a4bb0bb6e2ed5eadcdc952c75da61b0b9"
+    }
+  ],
+  "exact_product_lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+  "latest_consumed_immutable_L2": "de0a0e6eca64539910da46fd95ba8ff8c7b7fa81",
+  "active_L2_writer_files_consumed": false,
+  "code_is_newly_signed": false,
+  "current_shell_signer_present": false,
+  "new_native_execution_in_closeout": false
+}

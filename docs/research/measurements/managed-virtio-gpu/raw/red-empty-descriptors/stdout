@@ -1,0 +1,16 @@
+
+running 5 tests
+test devices::virtio::gpu::protocol::tests::a_request_cannot_claim_more_than_it_holds ... ok
+test devices::virtio::gpu::protocol::tests::a_request_reads_across_its_buffers ... ok
+test devices::virtio::gpu::protocol::tests::answers_echo_their_fence ... ok
+test devices::virtio::gpu::protocol::tests::answers_span_empty_descriptors ... FAILED
+test devices::virtio::gpu::protocol::tests::requests_skip_empty_descriptors ... FAILED
+
+failures:
+
+failures:
+    devices::virtio::gpu::protocol::tests::answers_span_empty_descriptors
+    devices::virtio::gpu::protocol::tests::requests_skip_empty_descriptors
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 397 filtered out; finished in 0.00s
+

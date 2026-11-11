@@ -1,0 +1,161 @@
+{
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "source_sha256": "084920513d4689ab7683f2f1d027d653da08d7ccba98eb2394b07c2ab85d6352",
+  "source_head": "5b13458e19b32f233792ea5fe6e1a754243c6c89",
+  "comparison_parent": "8aceafd2cd9b9c62319ec0e06423e5d33d7f59b5",
+  "target": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-event-wait-v1",
+  "admission": "thisMac 2CPU/2GiB/4GiB/600s/-j2, lockf, free >=30GiB",
+  "scope": "GPU-only native unit corpus + strict full VMM lib/tests; no VM/renderer",
+  "results": [
+    {
+      "name": "rustc",
+      "argv": [
+        "rustc",
+        "-Vv"
+      ],
+      "free_bytes_before": 48373846016,
+      "controller_fd_before": 10,
+      "pid": 41739,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48373846016
+    },
+    {
+      "name": "cargo",
+      "argv": [
+        "cargo",
+        "-Vv"
+      ],
+      "free_bytes_before": 48373846016,
+      "controller_fd_before": 10,
+      "pid": 41754,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48373833728
+    },
+    {
+      "name": "policy",
+      "argv": [
+        "scripts/check-development-policy"
+      ],
+      "free_bytes_before": 48373833728,
+      "controller_fd_before": 10,
+      "pid": 41777,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48373829632
+    },
+    {
+      "name": "format",
+      "argv": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/vmm/src/devices/virtio/gpu/mod.rs"
+      ],
+      "free_bytes_before": 48373829632,
+      "controller_fd_before": 10,
+      "pid": 41778,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48372785152
+    },
+    {
+      "name": "build",
+      "argv": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "free_bytes_before": 48372781056,
+      "controller_fd_before": 10,
+      "pid": 41779,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48069332992
+    },
+    {
+      "name": "list",
+      "argv": [
+        "scripts/hvf-run",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-event-wait-v1/debug/deps/shards_vmm-4c1e918450b93796",
+        "devices::virtio::gpu::",
+        "--list"
+      ],
+      "free_bytes_before": 48069328896,
+      "controller_fd_before": 10,
+      "pid": 43580,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48067366912
+    },
+    {
+      "name": "gpu",
+      "argv": [
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-event-wait-v1/frozen/shards-vmm-gpu-tests",
+        "devices::virtio::gpu::",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "free_bytes_before": 48054169600,
+      "controller_fd_before": 10,
+      "pid": 43675,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 48051924992
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "--tests",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "free_bytes_before": 48051920896,
+      "controller_fd_before": 10,
+      "pid": 43743,
+      "exit": 0,
+      "direct_child_reaped": true,
+      "controller_fd_after": 10,
+      "free_bytes_after": 47878705152
+    }
+  ],
+  "listed_gpu_tests": 14,
+  "frozen_binary": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-event-wait-v1/frozen/shards-vmm-gpu-tests",
+    "bytes": 18506928,
+    "sha256": "b625af811ce0063d80ee714be90f75c3a58d215787bb25667065fe3c4b4e5692"
+  },
+  "gpu_counts": [
+    14,
+    0,
+    0
+  ],
+  "used_head_witness": [
+    "test devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence ... context_id=1 old_signals_drained=1 before_new_signal=[0, 2, 4, 6] after_new_signal=[0, 2, 4, 6, 8]"
+  ],
+  "outcome": "complete"
+}

@@ -1,0 +1,17 @@
+{
+  "head": "118978b03c0f27f17a995bcecb1d7be3dedb3221",
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "job": "r16",
+  "command": [
+    "powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    "UTF16LE-base64 of windows-readonly.ps1"
+  ],
+  "command_source_sha256": "007f44cf53be415578c105ec8d625ec03e5ac19ed632ee0a62460c9f98dc8d06",
+  "protocol_sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+  "admission": "2CPU/2GiB/4GiB; 60s outer; 45s native API subprocess budget",
+  "exit_code": 0,
+  "kind": "outside-product native read-only GPU metadata; no renderer/VM/selector/performance claim"
+}

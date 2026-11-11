@@ -1,0 +1,80 @@
+{
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "arch": "arm64",
+  "source_sha256": "a2e96f202ad10b7b546059842efb320249f935b5c87c56987337b71f76dc5213",
+  "scope": "read-only device/API enumeration, no VM, performance or parity claim",
+  "os_build": {
+    "command": [
+      "sw_vers",
+      "-buildVersion"
+    ],
+    "exit_code": 0,
+    "stdout": "25E253\n",
+    "stderr": ""
+  },
+  "compiler_sdk_trace": {
+    "command": [
+      "cc",
+      "-###",
+      "-fobjc-arc",
+      "-c",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n \"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang\" \"-cc1\" \"-triple\" \"arm64-apple-macosx26.0.0\" \"-Wundef-prefix=TARGET_OS_\" \"-Wdeprecated-objc-isa-usage\" \"-Werror=deprecated-objc-isa-usage\" \"-Werror=implicit-function-declaration\" \"-emit-obj\" \"-disable-free\" \"-clear-ast-before-backend\" \"-disable-llvm-verifier\" \"-discard-value-names\" \"-main-file-name\" \"metal-readonly.m\" \"-mrelocation-model\" \"pic\" \"-pic-level\" \"2\" \"-mframe-pointer=non-leaf\" \"-fno-strict-return\" \"-ffp-contract=on\" \"-fno-rounding-math\" \"-funwind-tables=1\" \"-fobjc-msgsend-selector-stubs\" \"-fno-sized-deallocation\" \"-target-sdk-version=26.4\" \"-fvisibility-inlines-hidden-static-local-var\" \"-fno-modulemap-allow-subdirectory-search\" \"-fdefine-target-os-macros\" \"-fno-assume-unique-vtables\" \"-fno-modulemap-allow-subdirectory-search\" \"-enable-tlsdesc\" \"-target-cpu\" \"apple-m1\" \"-target-feature\" \"+v8.5a\" \"-target-feature\" \"+aes\" \"-target-feature\" \"+altnzcv\" \"-target-feature\" \"+ccdp\" \"-target-feature\" \"+ccpp\" \"-target-feature\" \"+complxnum\" \"-target-feature\" \"+crc\" \"-target-feature\" \"+dotprod\" \"-target-feature\" \"+flagm\" \"-target-feature\" \"+fp-armv8\" \"-target-feature\" \"+fp16fml\" \"-target-feature\" \"+fptoint\" \"-target-feature\" \"+fullfp16\" \"-target-feature\" \"+jsconv\" \"-target-feature\" \"+lse\" \"-target-feature\" \"+neon\" \"-target-feature\" \"+pauth\" \"-target-feature\" \"+perfmon\" \"-target-feature\" \"+predres\" \"-target-feature\" \"+ras\" \"-target-feature\" \"+rcpc\" \"-target-feature\" \"+rdm\" \"-target-feature\" \"+sb\" \"-target-feature\" \"+sha2\" \"-target-feature\" \"+sha3\" \"-target-feature\" \"+specrestrict\" \"-target-feature\" \"+ssbs\" \"-target-abi\" \"darwinpcs\" \"-debugger-tuning=lldb\" \"-fdebug-compilation-dir=/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln\" \"-target-linker-version\" \"1267\" \"-fcoverage-compilation-dir=/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln\" \"-resource-dir\" \"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21\" \"-isysroot\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk\" \"-I/usr/local/include\" \"-internal-isystem\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/local/include\" \"-internal-isystem\" \"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang/21/include\" \"-internal-externc-isystem\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include\" \"-internal-externc-isystem\" \"/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include\" \"-internal-iframework\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks\" \"-internal-iframework\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/SubFrameworks\" \"-internal-iframework\" \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/Library/Frameworks\" \"-Wno-elaborated-enum-base\" \"-ferror-limit\" \"19\" \"-stack-protector\" \"1\" \"-fstack-check\" \"-mdarwin-stkchk-strong-link\" \"-fblocks\" \"-fencode-extended-block-signature\" \"-fregister-global-dtors-with-atexit\" \"-fgnuc-version=4.2.1\" \"-fskip-odr-check-in-gmf\" \"-fobjc-runtime=macosx-26.0.0\" \"-fobjc-arc\" \"-fobjc-exceptions\" \"-fexceptions\" \"-fmax-type-align=16\" \"-fcommon\" \"-clang-vendor-feature=+disableNonDependentMemberExprInCurrentInstantiation\" \"-fno-odr-hash-protocols\" \"-clang-vendor-feature=+enableAggressiveVLAFolding\" \"-clang-vendor-feature=+revert09abecef7bbf\" \"-clang-vendor-feature=+thisNoAlignAttr\" \"-clang-vendor-feature=+thisNoNullAttr\" \"-clang-vendor-feature=+disableAtImportPrivateFrameworkInImplementationError\" \"-Wno-error=allocator-wrappers\" \"-fdwarf2-cfi-asm\" \"-o\" \"metal-readonly.o\" \"-x\" \"objective-c\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m\"\n"
+  },
+  "sdk_metal_header": {
+    "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework/Headers/MTLDevice.h",
+    "sha256": "d1ef1bb5bc85faeeec9bc85f49124a453a8cd33b1182b0a71a41ba0dc4ebbb89"
+  },
+  "sdk_version": {
+    "Version": "26.4",
+    "CanonicalName": "macosx26.4"
+  },
+  "probe_source": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m",
+    "sha256": "6c3df6cc9f14a43526e41341a715fc8e7a2a1c456c512e4ade19eb16562aff6d"
+  },
+  "compiler": {
+    "command": [
+      "cc",
+      "--version"
+    ],
+    "exit_code": 0,
+    "stdout": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+    "stderr": ""
+  },
+  "compile": {
+    "command": [
+      "cc",
+      "-fobjc-arc",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m",
+      "-framework",
+      "Metal",
+      "-framework",
+      "Foundation",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "metal_enumeration": {
+    "command": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly"
+    ],
+    "exit_code": 0,
+    "stdout": "[{\"removable\":false,\"unified_memory\":true,\"name\":\"Apple M5 Max\",\"low_power\":false,\"registry_id\":4294968612}]\n",
+    "stderr": ""
+  },
+  "probe_binary": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly",
+    "sha256": "116c4cd985b6dd973ba17e2342337ff35c934b8ae71d1aa252b9c189d5b1f03e"
+  },
+  "driver_identity": "Metal driver ships with the recorded macOS build; no Vulkan/MoltenVK binary was probed"
+}

@@ -1,0 +1,43 @@
+Finite destroy source-contract research; no renderer execution/native test/campaign.
+
+Official archive HTTP downloads succeeded and matched both exact tracked SHA256
+pins before tar source inspection. No extractall, symlinks or source execution.
+GitLab raw URLs opened through the web tool were unavailable; reading the same
+official archive bytes through urllib succeeded. No third-party mirror substituted.
+
+QEMU v10.1.0 and libkrun1f5dd028 raw primary sources fetched200 with exact retained
+bytes/SHA256. The attempted rutabaga source URL under google/crosvm/ec60ee1
+returned404; destroy-comparison-inputs.json retains that failure. No result from
+that missing file is inferred.
+
+OpenGroup pthread_join online page returned403 in the web transport. The exact
+selected upstream POSIX C11 wrapper is retained instead; Windows official wait
+documentation was accessible. No native join behavior inferred from HTTP success.
+
+One dependency extraction initially overselected94 generated Vulkan protocol
+headers. They were never executed/built and were moved, not deleted, to the
+private frozen target/managed-virtio-gpu-destroy-sources/unused-extraction/ tree.
+destroy-unused-extraction.json retains their lengths/hashes/current paths. They
+are not used to establish the destructor contract and not committed as source.
+
+A targeted rg used a guessed src/util/u_hash_table.c path and exited2 (missing
+path). Archive names showed src/gallium/auxiliary/util/u_hash_table.c; its actual
+source was then read and retained. No source fact relies on the failed lookup.
+
+Large combined read outputs exceeded the tool display budget. Policy, current
+handoff and relevant source spans were read separately in bounded chunks; no
+truncated suffix was treated as read. No build/test work ran during those reads.
+
+An authored note's initial git diff --no-index --check against /dev/null returned1
+with empty diagnostics for the added file. The later actual staged authored
+note/handoff/helper check returned0. Full staged retained-source check returned2
+on verbatim upstream whitespace (including COPYING EOF and u_hash_table.c).
+Original bytes are not rewritten to suppress that result.
+
+One documentation apply_patch failed exact-context verification (the expected
+raw-log sentence was only part of its actual line). It applied no files. The
+actual complete line was read, then the intended documentation-only patch applied.
+
+Native selected-backend callback ordering, native join errors/liveness, Vulkan
+driver teardown, GPU VM, restore, WindowsARM renderer build/hardware and all
+cost/performance gates remain UNRUN in this research slice and ROOT-owned.

@@ -161,6 +161,19 @@ struct Waiting {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    Request,
+    /// Retire queued callbacks before a later request can reuse a destroyed context ID.
+    Signals,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Completion {
+    used: Vec<(u16, u32)>,
+    next: Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Resource {
     size: u64,
     /// Where it is in the window, and how much of it, while mapped.
@@ -241,7 +254,7 @@ impl Served {
     /// Serves a control queue request: its answer written into it, and the requests to use
     /// now, each with the bytes written into it: none of this one while its answer waits
     /// for its fence.
-    fn serve(&mut self, chain: &Chain, memory: &GuestMemory) -> Result<Vec<(u16, u32)>, QueueError> {
+    fn serve(&mut self, chain: &Chain, memory: &GuestMemory) -> Result<Completion, QueueError> {
         if self.held.contains(&chain.head) {
             return Err(QueueError::InUse(chain.head));
         }
@@ -251,9 +264,18 @@ impl Served {
         };
         // Too short for a header: nothing to answer, nor any fence to say.
         let Some((header, command)) = read else {
-            return Ok(vec![(chain.head, 0)]);
+            return Ok(Completion {
+                used: vec![(chain.head, 0)],
+                next: Next::Request,
+            });
         };
+        let destroying = matches!(&command, Ok(Command::CtxDestroy));
         let answered = command.and_then(|c| self.command(&header, c, memory));
+        let next = if destroying && answered.is_ok() {
+            Next::Signals
+        } else {
+            Next::Request
+        };
         // A fence asked for is created once its command is done, and signalled with what
         // was submitted before it on its ring.
         let (kind, fields, fence) = match (answered, header.fence()) {
@@ -273,7 +295,7 @@ impl Served {
         let Some((_, ring)) = header.fence() else {
             let mut used = std::mem::take(&mut self.released);
             used.push((chain.head, len));
-            return Ok(used);
+            return Ok(Completion { used, next });
         };
         let timeline = match ring {
             Some(ring) => Timeline::Ring {
@@ -290,7 +312,7 @@ impl Served {
         self.held.insert(chain.head);
         let mut used = std::mem::take(&mut self.released);
         used.extend(self.let_go(timeline, None));
-        Ok(used)
+        Ok(Completion { used, next })
     }
 
     /// The answers a fence's signal lets go, in order.
@@ -593,7 +615,11 @@ fn round(
                 break;
             }
             taken += 1;
-            used.extend(served.serve(&chain, memory)?);
+            let completion = served.serve(&chain, memory)?;
+            used.extend(completion.used);
+            if completion.next == Next::Signals {
+                break 'round false;
+            }
         }
         if !with(memory, |a| control.enable_notification(a))? {
             break true;
@@ -889,9 +915,18 @@ mod tests {
         calls: Vec<String>,
         signals: Vec<Signal>,
         worker: Option<Thread>,
+        signal_on_destroy: Option<Signal>,
+        drained_signals: usize,
+        observer: Option<Thread>,
     }
 
     impl Log {
+        fn notify_observer(&self) {
+            if let Some(observer) = &self.observer {
+                observer.unpark();
+            }
+        }
+
         fn signal(log: &Mutex<Log>, ctx: u32, ring: u8, fence: u64) {
             let mut l = log.lock().unwrap();
             l.signals.push(Signal { ctx, ring, fence });
@@ -910,7 +945,9 @@ mod tests {
 
     impl Fake {
         fn note(&self, call: String) {
-            self.log.lock().unwrap().calls.push(call);
+            let mut log = self.log.lock().unwrap();
+            log.calls.push(call);
+            log.notify_observer();
         }
     }
 
@@ -928,6 +965,10 @@ mod tests {
         }
         fn destroy_context(&mut self, ctx: u32) {
             self.note(format!("destroy {ctx}"));
+            let signal = self.log.lock().unwrap().signal_on_destroy.take();
+            if let Some(s) = signal {
+                Log::signal(&self.log, s.ctx, s.ring, s.fence);
+            }
         }
         fn attach(&mut self, ctx: u32, resource: u32) {
             self.note(format!("attach {ctx} {resource}"));
@@ -961,7 +1002,12 @@ mod tests {
             Ok(())
         }
         fn signals(&mut self, into: &mut Vec<Signal>) {
-            into.append(&mut self.log.lock().unwrap().signals);
+            let mut log = self.log.lock().unwrap();
+            if !log.signals.is_empty() {
+                log.drained_signals += log.signals.len();
+                into.append(&mut log.signals);
+                log.notify_observer();
+            }
         }
         fn wake(&mut self, worker: Thread) {
             self.log.lock().unwrap().worker = Some(worker);
@@ -1100,7 +1146,7 @@ mod tests {
         fields: &[u8],
     ) -> (Vec<(u16, u32)>, u32, Vec<u8>) {
         let (chain, at) = request(mem, head, h, fields);
-        let used = s.serve(&chain, mem).unwrap();
+        let used = s.serve(&chain, mem).unwrap().used;
         let len = used.iter().find(|u| u.0 == head).map_or(HEADER, |u| u.1 as usize);
         let (kind, rest) = answer(mem, at, len.max(HEADER));
         (used, kind, rest)
@@ -1427,12 +1473,120 @@ mod tests {
             mem.access().unwrap().read(self.used + 2, &mut b).unwrap();
             u16::from_le_bytes(b)
         }
+        fn used_heads(&self, mem: &GuestMemory) -> Vec<u32> {
+            let count = self.used_idx(mem);
+            let access = mem.access().unwrap();
+            (0..count)
+                .map(|i| {
+                    access
+                        .read_obj(self.used + 4 + 8 * u64::from(i % self.size))
+                        .unwrap()
+                })
+                .collect()
+        }
     }
 
     struct Line;
 
     impl crate::devices::Interrupt for Line {
         fn set_level(&self, _: bool) {}
+    }
+
+    #[test]
+    fn a_recreated_context_waits_for_its_own_fence() {
+        struct Wake(Thread);
+
+        impl crate::devices::Interrupt for Wake {
+            fn set_level(&self, level: bool) {
+                if level {
+                    self.0.unpark();
+                }
+            }
+        }
+
+        let (served, log, mem) = served();
+        let observer = thread::current();
+        log.lock().unwrap().observer = Some(observer.clone());
+        let mem = Arc::new(mem);
+        let mut gpu = Gpu::new(served);
+        let mut control = Ring::new(RAM + 0x80000, 16);
+        let cursor = Ring::new(RAM + 0x90000, 16);
+        gpu.activate(Activation {
+            memory: mem.clone(),
+            queues: vec![control.queue(&mem), cursor.queue(&mem)],
+            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Wake(observer)))),
+            features: gpu.features(),
+            restored: false,
+        })
+        .unwrap();
+        let wait = |ready: &dyn Fn() -> bool| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while !ready() {
+                assert!(
+                    Instant::now() < end,
+                    "the worker did not reach the requested state"
+                );
+                thread::park_timeout(end.saturating_duration_since(Instant::now()));
+            }
+        };
+        let mut create_fields = le(&[0, 4]);
+        create_fields.resize(8 + 64, 0);
+        let (create, _) = request(&mem, 0, plain(cmd::CTX_CREATE, 1), &create_fields);
+        control.publish(&mem, &create);
+        gpu.notify(0);
+        wait(&|| control.used_idx(&mem) == 1);
+        let fenced = Header {
+            kind: cmd::SUBMIT_3D,
+            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
+            fence_id: 1,
+            ctx_id: 1,
+            ring_idx: 1,
+        };
+        let (old, _) = request(&mem, 2, fenced, &le(&[4, 0, 0]));
+        control.publish(&mem, &old);
+        gpu.notify(0);
+        wait(&|| log.lock().unwrap().calls.iter().any(|c| c == "fence 1 1 1"));
+        gpu.pause();
+        {
+            let mut l = log.lock().unwrap();
+            l.calls.clear();
+            // A completed old fence can be queued as its renderer's destroy joins.
+            l.signal_on_destroy = Some(Signal {
+                ctx: 1,
+                ring: 1,
+                fence: 1,
+            });
+        }
+        let (destroy, _) = request(&mem, 4, plain(cmd::CTX_DESTROY, 1), &[]);
+        let (create, _) = request(&mem, 6, plain(cmd::CTX_CREATE, 1), &create_fields);
+        let (new, _) = request(&mem, 8, fenced, &le(&[4, 0, 0]));
+        for chain in [&destroy, &create, &new] {
+            control.publish(&mem, chain);
+        }
+        gpu.resume().unwrap();
+        gpu.notify(0);
+        wait(&|| {
+            let l = log.lock().unwrap();
+            l.drained_signals == 1 && l.calls.iter().any(|c| c == "fence 1 1 1")
+        });
+        gpu.pause();
+        assert_eq!(
+            control.used_idx(&mem),
+            4,
+            "the old signal completed the new context's fence"
+        );
+        assert!(gpu.served.as_ref().unwrap().held.contains(&8));
+        let before = control.used_heads(&mem);
+        assert_eq!(before, [0, 2, 4, 6]);
+        gpu.resume().unwrap();
+        Log::signal(&log, 1, 1, 1);
+        wait(&|| control.used_idx(&mem) == 5);
+        assert_eq!(control.used_heads(&mem), [0, 2, 4, 6, 8]);
+        println!(
+            "context_id=1 old_signals_drained=1 before_new_signal={before:?} after_new_signal={:?}",
+            control.used_heads(&mem)
+        );
+        gpu.reset();
     }
 
     /// On the device's worker, a fenced request is used once its fence is signalled from

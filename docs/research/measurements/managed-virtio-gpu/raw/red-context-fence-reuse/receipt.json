@@ -1,0 +1,31 @@
+{
+  "head": "5c614b520474e48594c7e012ed58502f57ead5b4",
+  "command": [
+    "cargo",
+    "test",
+    "--locked",
+    "-j2",
+    "-p",
+    "shards-vmm",
+    "--lib",
+    "devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence",
+    "--",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "machine": "arm64",
+  "free_bytes_before": 180314521600,
+  "scope": "native GPU-only unit/light checks; no VM or benchmark",
+  "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+  "hashes": {
+    "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+    "crates/vmm/src/devices/virtio/gpu/mod.rs": "fe07709ddbcc18fca83b5b9438ce11c7db7a5c80802526d75d05e76f63fedc47"
+  },
+  "target_dir": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light",
+  "exit_code": 101,
+  "free_bytes_after": 180279111680
+}

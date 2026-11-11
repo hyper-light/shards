@@ -1,0 +1,47 @@
+[
+  {
+    "path": "cargo.txt",
+    "bytes": 36,
+    "sha256": "9950bbb2d5c3417b1a068f0e81f6d3cac991a363193bdf2a22d447f5acf8b503"
+  },
+  {
+    "path": "command.json",
+    "bytes": 54,
+    "sha256": "0be729778dfd24e9f14b9043ad0c203822b5c8eff4bd767ab0ebbdd3e8fa66f1"
+  },
+  {
+    "path": "completed.json",
+    "bytes": 421,
+    "sha256": "d3fb13767402fa47c9c575a651b9f2d8bc61405d55c94b06a966a129b6baa1e6"
+  },
+  {
+    "path": "executed-driver.py",
+    "bytes": 4199,
+    "sha256": "3c670ca35db7abc11dd1cba54bbb40cbe66c134899f93affff7f8551270c2a5b"
+  },
+  {
+    "path": "identity.json",
+    "bytes": 546,
+    "sha256": "e2832580cdc6add5ac111c082ec8bae9494f56a0b7b02bbfd33917bc18e91ee5"
+  },
+  {
+    "path": "lint.stderr",
+    "bytes": 97815,
+    "sha256": "2d841240e1ad42181fdc336fd1df0ced780f451ca36217d2d3f28599bdf15605"
+  },
+  {
+    "path": "lint.stdout",
+    "bytes": 203,
+    "sha256": "f6496e0f1ad40cbbc286e0d824522e2a39a33e49f7be493e33de62f7bbe34165"
+  },
+  {
+    "path": "result.json",
+    "bytes": 196,
+    "sha256": "79894afbdcc7eb2477d93487455f738ff955ec016bd140d72e014cc498e301bd"
+  },
+  {
+    "path": "rustc.txt",
+    "bytes": 192,
+    "sha256": "e2211d4c0760a2a3b03eab88e42f8848952b7aa2ed649277a8fdbf3ce1838fd4"
+  }
+]

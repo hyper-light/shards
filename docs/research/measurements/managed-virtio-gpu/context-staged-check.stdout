@@ -1,0 +1,46 @@
+docs/research/measurements/managed-virtio-gpu/raw/clippy-context-final/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/clippy-context-final/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/clippy-context-final/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/clippy-context-final/source.diff:141: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/clippy-context-final/source.diff:146: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/source.diff:141: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/source.diff:146: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-guard/stdout:20: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/source.diff:140: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/source.diff:145: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-batch-proof/stdout:24: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/green-context-fence-reuse/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-fence-reuse/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-fence-reuse/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-fence-reuse/source.diff:128: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/green-context-fence-reuse/stdout:19: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/red-context-fence-reuse/source.diff:12: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/red-context-fence-reuse/source.diff:39: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/red-context-fence-reuse/stdout:11: new blank line at EOF.

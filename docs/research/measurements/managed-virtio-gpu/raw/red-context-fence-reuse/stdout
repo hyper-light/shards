@@ -1,0 +1,11 @@
+
+running 1 test
+test devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence ... FAILED
+
+failures:
+
+failures:
+    devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 403 filtered out; finished in 0.01s
+

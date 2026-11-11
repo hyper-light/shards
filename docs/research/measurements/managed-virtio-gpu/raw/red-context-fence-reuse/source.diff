@@ -1,0 +1,118 @@
+diff --git a/crates/vmm/src/devices/virtio/gpu/mod.rs b/crates/vmm/src/devices/virtio/gpu/mod.rs
+index 40a40575a..382a9ad0f 100644
+--- a/crates/vmm/src/devices/virtio/gpu/mod.rs
++++ b/crates/vmm/src/devices/virtio/gpu/mod.rs
+@@ -889,6 +889,8 @@ mod tests {
+         calls: Vec<String>,
+         signals: Vec<Signal>,
+         worker: Option<Thread>,
++        signal_on_destroy: Option<Signal>,
++        drained_signals: usize,
+     }
+ 
+     impl Log {
+@@ -928,6 +930,10 @@ mod tests {
+         }
+         fn destroy_context(&mut self, ctx: u32) {
+             self.note(format!("destroy {ctx}"));
++            let signal = self.log.lock().unwrap().signal_on_destroy.take();
++            if let Some(s) = signal {
++                Log::signal(&self.log, s.ctx, s.ring, s.fence);
++            }
+         }
+         fn attach(&mut self, ctx: u32, resource: u32) {
+             self.note(format!("attach {ctx} {resource}"));
+@@ -961,7 +967,9 @@ mod tests {
+             Ok(())
+         }
+         fn signals(&mut self, into: &mut Vec<Signal>) {
+-            into.append(&mut self.log.lock().unwrap().signals);
++            let mut log = self.log.lock().unwrap();
++            log.drained_signals += log.signals.len();
++            into.append(&mut log.signals);
+         }
+         fn wake(&mut self, worker: Thread) {
+             self.log.lock().unwrap().worker = Some(worker);
+@@ -1435,6 +1443,82 @@ mod tests {
+         fn set_level(&self, _: bool) {}
+     }
+ 
++    #[test]
++    fn a_recreated_context_waits_for_its_own_fence() {
++        let (served, log, mem) = served();
++        let mem = Arc::new(mem);
++        let mut gpu = Gpu::new(served);
++        let mut control = Ring::new(RAM + 0x80000, 16);
++        let cursor = Ring::new(RAM + 0x90000, 16);
++        gpu.activate(Activation {
++            memory: mem.clone(),
++            queues: vec![control.queue(&mem), cursor.queue(&mem)],
++            interrupt: Arc::new(DeviceInterrupt::new(Arc::new(Line))),
++            features: gpu.features(),
++            restored: false,
++        })
++        .unwrap();
++        let wait = |ready: &dyn Fn() -> bool| {
++            let end = Instant::now() + Duration::from_secs(5);
++            while !ready() {
++                assert!(
++                    Instant::now() < end,
++                    "the worker did not reach the requested state"
++                );
++                thread::sleep(Duration::from_millis(1));
++            }
++        };
++        let mut create_fields = le(&[0, 4]);
++        create_fields.resize(8 + 64, 0);
++        let (create, _) = request(&mem, 0, plain(cmd::CTX_CREATE, 1), &create_fields);
++        control.publish(&mem, &create);
++        gpu.notify(0);
++        wait(&|| control.used_idx(&mem) == 1);
++        let fenced = Header {
++            kind: cmd::SUBMIT_3D,
++            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
++            fence_id: 1,
++            ctx_id: 1,
++            ring_idx: 1,
++        };
++        let (old, _) = request(&mem, 2, fenced, &le(&[4, 0, 0]));
++        control.publish(&mem, &old);
++        gpu.notify(0);
++        wait(&|| log.lock().unwrap().calls.iter().any(|c| c == "fence 1 1 1"));
++        {
++            let mut l = log.lock().unwrap();
++            l.calls.clear();
++            // A completed old fence can be queued as its renderer's destroy joins.
++            l.signal_on_destroy = Some(Signal {
++                ctx: 1,
++                ring: 1,
++                fence: 1,
++            });
++        }
++        let (destroy, _) = request(&mem, 4, plain(cmd::CTX_DESTROY, 1), &[]);
++        let (create, _) = request(&mem, 6, plain(cmd::CTX_CREATE, 1), &create_fields);
++        let (new, _) = request(&mem, 8, fenced, &le(&[4, 0, 0]));
++        for chain in [&destroy, &create, &new] {
++            control.publish(&mem, chain);
++        }
++        gpu.notify(0);
++        wait(&|| {
++            let l = log.lock().unwrap();
++            l.drained_signals == 1 && l.calls.iter().any(|c| c == "fence 1 1 1")
++        });
++        gpu.pause();
++        assert_eq!(
++            control.used_idx(&mem),
++            4,
++            "the old signal completed the new context's fence"
++        );
++        assert!(gpu.served.as_ref().unwrap().held.contains(&8));
++        gpu.resume().unwrap();
++        Log::signal(&log, 1, 1, 1);
++        wait(&|| control.used_idx(&mem) == 5);
++        gpu.reset();
++    }
++
+     /// On the device's worker, a fenced request is used once its fence is signalled from
+     /// another thread, which wakes the worker; one not fenced is used at once.
+     #[test]

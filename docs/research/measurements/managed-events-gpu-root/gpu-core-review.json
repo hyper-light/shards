@@ -1,0 +1,124 @@
+{
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "policy_revision": "749c3ca0602c43dac74976e8db713102f5b15874",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "manifest_files_verified": 286,
+  "manifest_sha256": "2483aeb20ac0e4b20e432a90e9b4a488b8b59ad1f3e91dd6cc5d66d5e2fe6565",
+  "selected_raw_verified": 42,
+  "actual_stdout_counts_verified": true,
+  "records": [
+    {
+      "label": "red-empty-descriptors",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 101,
+      "counts": {
+        "passed": 3,
+        "failed": 2,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": false
+      }
+    },
+    {
+      "label": "green-boundaries",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 0,
+      "counts": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "red-context-fence-reuse",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 101,
+      "counts": {
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "green-context-batch-proof",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 101,
+      "counts": {
+        "passed": 13,
+        "failed": 1,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "green-context-batch-guard",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 0,
+      "counts": {
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "clippy-context-final",
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "exit": 0,
+      "counts": null,
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "linux-gnu-context-fence",
+      "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+      "exit": 0,
+      "counts": {
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    },
+    {
+      "label": "linux-musl-context-fence",
+      "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+      "exit": 0,
+      "counts": {
+        "passed": 15,
+        "failed": 0,
+        "ignored": 0
+      },
+      "actual_final_source": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      }
+    }
+  ],
+  "runtime_replay": false,
+  "limits": [
+    "component/native core results only",
+    "physical backend, first-late-after-destroy callback, GPU VM, restore, combined matrix and all costs remain open"
+  ]
+}

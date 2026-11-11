@@ -1,0 +1,417 @@
+[
+  {
+    "name": "linux",
+    "tag": "1.3.0",
+    "url": "https://gitlab.freedesktop.org/virgl/virglrenderer/-/archive/1.3.0/virglrenderer-1.3.0.tar.gz",
+    "expected_sha256": "065bc56e89e6f631f96101cd62eba0748e48eb888b434edc86e89d05395e76f3",
+    "frozen_archive": "target/managed-virtio-gpu-destroy-sources/linux.tar.gz",
+    "files": [
+      {
+        "path": "COPYING",
+        "bytes": 1098,
+        "sha256": "3b32caf16e2402c2aff2b716858713f3e1feded85c25e71bf829816ee5009402"
+      },
+      {
+        "path": "server/render_client.c",
+        "bytes": 8798,
+        "sha256": "cb88035b2a39aae4eaa8b42a239b34f066bb298f9f6d7ab9dea95d964b4ec861"
+      },
+      {
+        "path": "server/render_context.c",
+        "bytes": 11768,
+        "sha256": "9e3936a4dc4e32b3c9f1c8bf500b7c2f4769ccbeb1fed01f3758f9567a7669fc"
+      },
+      {
+        "path": "server/render_protocol.h",
+        "bytes": 6348,
+        "sha256": "e85e522f09b47faa0c42eb0957af7f1904706b4e29d956967a19be80ed80f35a"
+      },
+      {
+        "path": "server/render_server.c",
+        "bytes": 5873,
+        "sha256": "623c9592de3158cb10a73373feb1f209ac3d38646fd70c8aad60bf0793d52d8f"
+      },
+      {
+        "path": "server/render_state.c",
+        "bytes": 6325,
+        "sha256": "b1406ee3b789f908d38a14e6f37749a855757baa4a40d589466e5aab6ab0665d"
+      },
+      {
+        "path": "server/render_worker.c",
+        "bytes": 10209,
+        "sha256": "f7dfd97e14236a1cda132f0cab4fb964fda50509ae737f255a55c2ce6d3d6771"
+      },
+      {
+        "path": "server/render_worker.h",
+        "bytes": 1451,
+        "sha256": "8452d9704c83e3b760805712e719ea73c87f769c25f19fa9b055f72bced61b92"
+      },
+      {
+        "path": "src/gallium/auxiliary/util/u_hash_table.c",
+        "bytes": 4798,
+        "sha256": "7390cbd3843c20bc62908de6c9e4fd26bf1a16e6d95c321d3f554e03ed05d977"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads.h",
+        "bytes": 2417,
+        "sha256": "9deee1e688e060945cdd9c795310bdf9fa8578815a18a10d22fa39135a626f85"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads_posix.h",
+        "bytes": 9714,
+        "sha256": "85b7ee6822ca84428e259d2f993f324133cfce2b944a252d3d599ed80ce56df3"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads_win32.h",
+        "bytes": 13144,
+        "sha256": "0f0b528d93bd86a011abc1123c7ebd75d59ac42c0e71400f29557198e7b858f5"
+      },
+      {
+        "path": "src/mesa/util/hash_table.c",
+        "bytes": 26084,
+        "sha256": "844996d333de0612185ea310dd0191a2ca83eb2f43e162d1281e83a0aeae90dc"
+      },
+      {
+        "path": "src/proxy/proxy_client.c",
+        "bytes": 2761,
+        "sha256": "77797e13e8a30e820042933bcbbb0c82da98383ea65288e130aa229f23e353bc"
+      },
+      {
+        "path": "src/proxy/proxy_context.c",
+        "bytes": 20929,
+        "sha256": "058890326855bc51ff65912ab3e812ad9b983b6bf5cd2803d9c18cd17dae9564"
+      },
+      {
+        "path": "src/proxy/proxy_context.h",
+        "bytes": 1423,
+        "sha256": "ab1e0932d24f31410adc72394786b911efc65277762f6feae0536f383e9b9b9e"
+      },
+      {
+        "path": "src/proxy/proxy_renderer.c",
+        "bytes": 1279,
+        "sha256": "bb72d50c5414bfb696c277fb0d96a6d12d2b465c72a3de1eb7b45dc7d3780bf4"
+      },
+      {
+        "path": "src/proxy/proxy_socket.c",
+        "bytes": 6957,
+        "sha256": "a300d2db73a78cd75ac2cf07e7b22f58125d88e29dfca6958ba2dff482313a9d"
+      },
+      {
+        "path": "src/proxy/proxy_socket.h",
+        "bytes": 1258,
+        "sha256": "d4c6d13ec7b7e0cc03ba6ca20cb2095d2a3bbe43be983dc10d945b1a4b559343"
+      },
+      {
+        "path": "src/venus/vkr_context.c",
+        "bytes": 21322,
+        "sha256": "60a02dc002334306a4f2474eb99d6ae215975da05ce88bfba205c08135b153f2"
+      },
+      {
+        "path": "src/venus/vkr_context.h",
+        "bytes": 7751,
+        "sha256": "e4f49f6704855b52635d4359ee0bfbb793ead6c518f2466693c1f4f3a0ac762a"
+      },
+      {
+        "path": "src/venus/vkr_device.c",
+        "bytes": 14993,
+        "sha256": "232a6f13c19904f64a064a02b7e17af2c8bc293a2151ebd46ebaa06bcdccc9f4"
+      },
+      {
+        "path": "src/venus/vkr_device.h",
+        "bytes": 2109,
+        "sha256": "7a049990a64a2ea7ae7da0362f22e56266e839883c916ed5f519bc3c0bc27516"
+      },
+      {
+        "path": "src/venus/vkr_instance.c",
+        "bytes": 10556,
+        "sha256": "ec3b15273af8c891213c58ca491d942847e328242a092ece0a986d12266cb0dc"
+      },
+      {
+        "path": "src/venus/vkr_physical_device.c",
+        "bytes": 33836,
+        "sha256": "7643c177265ceda2ec1d1ba172cb6cf81335333c81bff82488767a397c3d4214"
+      },
+      {
+        "path": "src/venus/vkr_queue.c",
+        "bytes": 22081,
+        "sha256": "63f15e3409ab43235e2a97eb6227b31cad06f935b0a170d613b321c8455d549d"
+      },
+      {
+        "path": "src/venus/vkr_queue.h",
+        "bytes": 2289,
+        "sha256": "7e8952a124c4c421cda3bf05942e1a6dbe1f520bcf465ee2d50f664c7053c5c3"
+      },
+      {
+        "path": "src/venus/vkr_renderer.c",
+        "bytes": 6280,
+        "sha256": "6c8d246e31e37d1b60d8ff846441a38cda2d74f3aa2808c3d1920415fbd5d872"
+      },
+      {
+        "path": "src/venus/vkr_renderer.h",
+        "bytes": 2190,
+        "sha256": "302aa9b83db016976c048798c7a6a1f75ea2d73d93c1891051d0a9e799ea08d2"
+      },
+      {
+        "path": "src/venus/vkr_ring.c",
+        "bytes": 11799,
+        "sha256": "ddb30f8579c9d813a8e7e271e342d7f3f9e1eb60ad39421c15efd15b3da5252d"
+      },
+      {
+        "path": "src/venus/vkr_ring.h",
+        "bytes": 3498,
+        "sha256": "a80ad3c64052f2cfb5e789c04be8f1582e98384acbe48a8216f4a8301eef3c1b"
+      },
+      {
+        "path": "src/venus_hw.h",
+        "bytes": 3230,
+        "sha256": "7bc1a8195294d681f4081719e7c4dfea396765e82b5583a2471fad9705aab64e"
+      },
+      {
+        "path": "src/virgl_context.c",
+        "bytes": 3397,
+        "sha256": "1efec3d14fb8ec5dab7d1c819d844758b95d21c2cf5287cc51d7313d962c8bff"
+      },
+      {
+        "path": "src/virgl_context.h",
+        "bytes": 5565,
+        "sha256": "be4962ff4bf1489650749b36788a753cfee6d647f0cde817e7fab7a87eec0866"
+      },
+      {
+        "path": "src/virglrenderer.c",
+        "bytes": 46159,
+        "sha256": "18facfff910692229c39b484d89a80fd57e03c20f14fe82c6fd79a297f12e654"
+      },
+      {
+        "path": "src/virglrenderer.h",
+        "bytes": 19876,
+        "sha256": "0b39479c6dbad50d0b94adbd681e124d3c1a77cb0560309ed493241644730cf8"
+      }
+    ],
+    "bytes": 1255305,
+    "sha256": "065bc56e89e6f631f96101cd62eba0748e48eb888b434edc86e89d05395e76f3",
+    "other_related_files": [
+      "server/render_worker.c",
+      "server/render_worker.h",
+      "src/mesa/compat/c11/threads.h",
+      "src/mesa/compat/c11/threads_posix.h",
+      "src/mesa/compat/c11/threads_win32.h",
+      "src/mesa/util/libsync.h",
+      "src/mesa/util/u_thread.h",
+      "src/virgl_context.c",
+      "src/virgl_context.h",
+      "vtest/threadpool.c",
+      "vtest/threadpool.h"
+    ]
+  },
+  {
+    "name": "krunkit",
+    "tag": "0.10.4e-krunkit",
+    "url": "https://gitlab.freedesktop.org/slp/virglrenderer/-/archive/0.10.4e-krunkit/virglrenderer-0.10.4e-krunkit.tar.gz",
+    "expected_sha256": "09d000623fbdb966cb604eb48c962a0815e8142383e6066d6494809335b76dbb",
+    "frozen_archive": "target/managed-virtio-gpu-destroy-sources/krunkit.tar.gz",
+    "files": [
+      {
+        "path": "COPYING",
+        "bytes": 1098,
+        "sha256": "3b32caf16e2402c2aff2b716858713f3e1feded85c25e71bf829816ee5009402"
+      },
+      {
+        "path": "server/render_client.c",
+        "bytes": 8917,
+        "sha256": "89e9c59d9b20330720fe718fdc44f3e7b17678404f8f3f4da673612aeb0921d8"
+      },
+      {
+        "path": "server/render_context.c",
+        "bytes": 11737,
+        "sha256": "b06331634c235dc4fd5957603ab32bdeb7d12b117783dbbed5549c146e6ceaaa"
+      },
+      {
+        "path": "server/render_protocol.h",
+        "bytes": 6348,
+        "sha256": "e85e522f09b47faa0c42eb0957af7f1904706b4e29d956967a19be80ed80f35a"
+      },
+      {
+        "path": "server/render_server.c",
+        "bytes": 5873,
+        "sha256": "623c9592de3158cb10a73373feb1f209ac3d38646fd70c8aad60bf0793d52d8f"
+      },
+      {
+        "path": "server/render_state.c",
+        "bytes": 6325,
+        "sha256": "b1406ee3b789f908d38a14e6f37749a855757baa4a40d589466e5aab6ab0665d"
+      },
+      {
+        "path": "server/render_worker.c",
+        "bytes": 10209,
+        "sha256": "f7dfd97e14236a1cda132f0cab4fb964fda50509ae737f255a55c2ce6d3d6771"
+      },
+      {
+        "path": "server/render_worker.h",
+        "bytes": 1451,
+        "sha256": "8452d9704c83e3b760805712e719ea73c87f769c25f19fa9b055f72bced61b92"
+      },
+      {
+        "path": "src/gallium/auxiliary/util/u_hash_table.c",
+        "bytes": 4798,
+        "sha256": "7390cbd3843c20bc62908de6c9e4fd26bf1a16e6d95c321d3f554e03ed05d977"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads.h",
+        "bytes": 2417,
+        "sha256": "9deee1e688e060945cdd9c795310bdf9fa8578815a18a10d22fa39135a626f85"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads_posix.h",
+        "bytes": 9611,
+        "sha256": "f8ad2b69fa472e332b50572c1b2dcc1c8a0fa783a1199aad245398d3df421b4b"
+      },
+      {
+        "path": "src/mesa/compat/c11/threads_win32.h",
+        "bytes": 13144,
+        "sha256": "0f0b528d93bd86a011abc1123c7ebd75d59ac42c0e71400f29557198e7b858f5"
+      },
+      {
+        "path": "src/mesa/util/hash_table.c",
+        "bytes": 24875,
+        "sha256": "87029b28a80de26141b95f6f47debcdcae5c95f9d5d9d2f39e6c276bb78c6eee"
+      },
+      {
+        "path": "src/proxy/proxy_client.c",
+        "bytes": 2761,
+        "sha256": "77797e13e8a30e820042933bcbbb0c82da98383ea65288e130aa229f23e353bc"
+      },
+      {
+        "path": "src/proxy/proxy_context.c",
+        "bytes": 20493,
+        "sha256": "d45b616f4a027fb8dc37dbd83b70f8b57a016fb2fb09f328b980830653db3ecf"
+      },
+      {
+        "path": "src/proxy/proxy_context.h",
+        "bytes": 1423,
+        "sha256": "ab1e0932d24f31410adc72394786b911efc65277762f6feae0536f383e9b9b9e"
+      },
+      {
+        "path": "src/proxy/proxy_renderer.c",
+        "bytes": 1265,
+        "sha256": "bfdc3f77ebb6d2c58821be20dab225db6bd5015f0950fd5e951d434e110ba91f"
+      },
+      {
+        "path": "src/proxy/proxy_socket.c",
+        "bytes": 6957,
+        "sha256": "a300d2db73a78cd75ac2cf07e7b22f58125d88e29dfca6958ba2dff482313a9d"
+      },
+      {
+        "path": "src/proxy/proxy_socket.h",
+        "bytes": 1258,
+        "sha256": "d4c6d13ec7b7e0cc03ba6ca20cb2095d2a3bbe43be983dc10d945b1a4b559343"
+      },
+      {
+        "path": "src/venus/vkr_context.c",
+        "bytes": 20261,
+        "sha256": "62fe1b027920feeab063edd0517220ebbd51180ef073e6ed563db6d85b84e154"
+      },
+      {
+        "path": "src/venus/vkr_context.h",
+        "bytes": 7227,
+        "sha256": "3ec94e3ecb4b999c5800d7b4d5115b02b3f23e03ea7131bc9e1576747e798e61"
+      },
+      {
+        "path": "src/venus/vkr_device.c",
+        "bytes": 12460,
+        "sha256": "e5a7455521cd3a9f3af38602576653cf844b955a27a8859674730c485ce98b2a"
+      },
+      {
+        "path": "src/venus/vkr_device.h",
+        "bytes": 1931,
+        "sha256": "db2fc402d6f8db2ffbe27bb5bc0980243884ca4d4c28db37d4258e9b439094f8"
+      },
+      {
+        "path": "src/venus/vkr_instance.c",
+        "bytes": 9798,
+        "sha256": "2e2a667cddfcdd633eca042347557b2877f0adaa2f0195c2bf93d0265484bee3"
+      },
+      {
+        "path": "src/venus/vkr_physical_device.c",
+        "bytes": 26837,
+        "sha256": "a9be0a670c7eb8608338cec80ef64e179a12a61eff65e6c7ea75bb18c0fc1c42"
+      },
+      {
+        "path": "src/venus/vkr_queue.c",
+        "bytes": 22027,
+        "sha256": "e95360b888a142ddd1d7f4194bc380cbc54ab054c3980ade7ada29b910f91623"
+      },
+      {
+        "path": "src/venus/vkr_queue.h",
+        "bytes": 2289,
+        "sha256": "7e8952a124c4c421cda3bf05942e1a6dbe1f520bcf465ee2d50f664c7053c5c3"
+      },
+      {
+        "path": "src/venus/vkr_renderer.c",
+        "bytes": 6363,
+        "sha256": "a7d8c354520e39d5bf8ba6820722e6e78d7dddb03d438a9adb16e47482d7036a"
+      },
+      {
+        "path": "src/venus/vkr_renderer.h",
+        "bytes": 2226,
+        "sha256": "b9ead6fef453d63f664be9d03eb7f5623603991b77af9344cab9f1ca7181c90a"
+      },
+      {
+        "path": "src/venus/vkr_ring.c",
+        "bytes": 10310,
+        "sha256": "9443494dc7a2a3c32c6c3eccc36b70b575e9f454e3e82ca0ebd326ab388cde00"
+      },
+      {
+        "path": "src/venus/vkr_ring.h",
+        "bytes": 3465,
+        "sha256": "8005a8cbf2bd164d2ade77281938ba5ccbf66b87cca7ba6fb7a11e03091627a5"
+      },
+      {
+        "path": "src/venus_context.c",
+        "bytes": 13136,
+        "sha256": "2930aae9ed80097237331875cd9e328e2276e1df75a2f8927680fa2f85b907ac"
+      },
+      {
+        "path": "src/venus_context.h",
+        "bytes": 1387,
+        "sha256": "91b71cd1b69530c8a7e2784ef80334e454df5aa27a1436b149ded418d6bcc581"
+      },
+      {
+        "path": "src/venus_hw.h",
+        "bytes": 3039,
+        "sha256": "a09f0df6f01e3b01ab2c5695f8746967e1e52a36fbfe6bcf301f87aa07f1e0c6"
+      },
+      {
+        "path": "src/virgl_context.c",
+        "bytes": 3082,
+        "sha256": "5a9abbcf8ea325d29a0b6798c3e65e63a1f93053b1382b05cd2b183a877f5a14"
+      },
+      {
+        "path": "src/virgl_context.h",
+        "bytes": 5109,
+        "sha256": "0cebc24ee87765942ef7827b4b36493f68081b4098f5dff1baf48b5e4afb8961"
+      },
+      {
+        "path": "src/virglrenderer.c",
+        "bytes": 40274,
+        "sha256": "e9b9d28092f26ac44e3c6ed456fdd655c9cab7e6a461d93b7998ec0bab387f63"
+      },
+      {
+        "path": "src/virglrenderer.h",
+        "bytes": 17047,
+        "sha256": "a79dcbb6716977ed616ee61c6fbca5d4b907f71b1f9fe16dde82d2f6f4f7eb98"
+      }
+    ],
+    "bytes": 955428,
+    "sha256": "09d000623fbdb966cb604eb48c962a0815e8142383e6066d6494809335b76dbb",
+    "other_related_files": [
+      "server/render_worker.c",
+      "server/render_worker.h",
+      "src/mesa/compat/c11/threads.h",
+      "src/mesa/compat/c11/threads_posix.h",
+      "src/mesa/compat/c11/threads_win32.h",
+      "src/mesa/util/u_thread.h",
+      "src/virgl_context.c",
+      "src/virgl_context.h"
+    ]
+  }
+]

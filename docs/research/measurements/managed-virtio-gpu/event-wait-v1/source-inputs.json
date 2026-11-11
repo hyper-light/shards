@@ -1,0 +1,17 @@
+{
+  "policy_revision": "749c3ca0602c43dac74976e8db713102f5b15874",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "root_candidate": "8aceafd2cd9b9c62319ec0e06423e5d33d7f59b5",
+  "actual_tested_leaf": "5b13458e19b32f233792ea5fe6e1a754243c6c89",
+  "owned_test_path": "crates/vmm/src/devices/virtio/gpu/mod.rs",
+  "baseline_bytes": 60718,
+  "baseline_sha256": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e",
+  "baseline_git_blob": "f463fcff63bc58667d0ce1517c4189d16c43782a",
+  "current_lock_sha256": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+  "immutable_old_manifest_sha256": "2483aeb20ac0e4b20e432a90e9b4a488b8b59ad1f3e91dd6cc5d66d5e2fe6565",
+  "own_signer_present": false,
+  "new_target": "target/managed-virtio-gpu-event-wait-v1",
+  "required_envelope": "thisMac2CPU2GiB4GiB600/-j2/floor30GiB/lockf",
+  "production_edits_allowed": false
+}

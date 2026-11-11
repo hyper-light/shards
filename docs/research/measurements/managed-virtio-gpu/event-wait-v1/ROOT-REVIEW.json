@@ -1,0 +1,13 @@
+{
+  "reviewer": "ROOT coordinator",
+  "policy_revision": "7d7e0855a",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "selected_files_verified": 43,
+  "patch_sha256": "cb36b10a656b0b27e212b21f7d41725afa8ea1d8440bc2cacf649d3b1c792fde",
+  "production_prefix_byte_equal": true,
+  "new_test_source_sha256": "084920513d4689ab7683f2f1d027d653da08d7ccba98eb2394b07c2ab85d6352",
+  "actual_native_stdout": "14passed/0failed/0ignored",
+  "new_state_or_queue": false,
+  "waiting": "existing Log and actual IRQ notify observer; predicate before park, old5s guard preserved",
+  "combined_gates": "unrun at composed revision"
+}

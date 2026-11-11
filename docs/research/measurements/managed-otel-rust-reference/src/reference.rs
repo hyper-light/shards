@@ -9,7 +9,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use opentelemetry_proto::tonic::resource::v1::Resource;
 
 use crate::{Failure, Scope, Snapshot};
-use native_codec::Limit;
+use native_codec::{CgroupEvent, Limit};
 
 type Value = number_data_point::Value;
 
@@ -65,6 +65,8 @@ enum Instrument {
     Io,
     MemoryLimit,
     TaskLimit,
+    MemoryEvents,
+    TaskEvents,
 }
 
 impl Instrument {
@@ -76,6 +78,8 @@ impl Instrument {
             Self::Io => ("shards.cgroup.disk.io", "By", true),
             Self::MemoryLimit => ("shards.cgroup.memory.limit", "By", false),
             Self::TaskLimit => ("shards.cgroup.task.limit", "{task}", false),
+            Self::MemoryEvents => ("shards.cgroup.memory.events", "{event}", true),
+            Self::TaskEvents => ("shards.cgroup.task.events", "{event}", true),
         }
     }
 }
@@ -83,10 +87,11 @@ impl Instrument {
 struct Observation {
     instrument: Instrument,
     direction: Option<&'static str>,
+    event: Option<CgroupEvent>,
     value: Result<Option<Value>, Failure>,
 }
 
-fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
+fn observations(sample: &Snapshot) -> io::Result<Vec<Observation>> {
     let cpu = match sample.cpu_usec {
         Ok(usec) => {
             // Parse the same exact decimal rational as the native wire. Casting
@@ -100,6 +105,7 @@ fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
     let signed = |instrument, direction, value: Result<u64, Failure>| Observation {
         instrument,
         direction,
+        event: None,
         value: value.and_then(|number| {
             i64::try_from(number)
                 .map(|n| Some(Value::AsInt(n)))
@@ -109,6 +115,7 @@ fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
     let limit = |instrument, value: Result<Limit, Failure>| Observation {
         instrument,
         direction: None,
+        event: None,
         value: value.and_then(|value| match value {
             Limit::Finite(n) => i64::try_from(n)
                 .map(|n| Some(Value::AsInt(n)))
@@ -116,10 +123,11 @@ fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
             Limit::Unbounded => Ok(None),
         }),
     };
-    Ok([
+    let mut observations = vec![
         Observation {
             instrument: Instrument::Cpu,
             direction: None,
+            event: None,
             value: cpu.map(Some),
         },
         signed(Instrument::Memory, None, sample.memory_bytes),
@@ -128,13 +136,31 @@ fn observations(sample: &Snapshot) -> io::Result<[Observation; 7]> {
         signed(Instrument::Io, Some("write"), sample.write_bytes),
         limit(Instrument::MemoryLimit, sample.memory_limit),
         limit(Instrument::TaskLimit, sample.task_limit),
-    ])
+    ];
+    observations.extend(
+        CgroupEvent::ALL
+            .into_iter()
+            .zip(sample.events)
+            .map(|(event, value)| {
+                let instrument = if event == CgroupEvent::TaskMax {
+                    Instrument::TaskEvents
+                } else {
+                    Instrument::MemoryEvents
+                };
+                Observation {
+                    event: Some(event),
+                    ..signed(instrument, None, value)
+                }
+            }),
+    );
+    Ok(observations)
 }
 
-fn directions(direction: Option<&str>) -> Vec<KeyValue> {
+fn point_attributes(direction: Option<&str>, event: Option<CgroupEvent>) -> Vec<KeyValue> {
     direction
         .map(|value| string("disk.io.direction", value))
         .into_iter()
+        .chain(event.map(|event| string("shards.cgroup.event", event.key())))
         .collect()
 }
 
@@ -157,16 +183,20 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
         Instrument::Io,
         Instrument::MemoryLimit,
         Instrument::TaskLimit,
+        Instrument::MemoryEvents,
+        Instrument::TaskEvents,
     ] {
         let points: Vec<_> = observations
             .iter()
             .filter(|observation| observation.instrument == instrument)
             .filter_map(|observation| {
-                observation
-                    .value
-                    .ok()
-                    .flatten()
-                    .map(|value| point(sample.time_unix_nano, value, directions(observation.direction)))
+                observation.value.ok().flatten().map(|value| {
+                    point(
+                        sample.time_unix_nano,
+                        value,
+                        point_attributes(observation.direction, observation.event),
+                    )
+                })
             })
             .collect();
         if !points.is_empty() {
@@ -224,7 +254,7 @@ fn metrics(sample: &Snapshot) -> io::Result<Vec<Metric>> {
         .filter_map(|observation| {
             let cause = observation.value.err()?;
             let mut attrs = vec![string("shards.cgroup.metric", observation.instrument.fields().0)];
-            attrs.extend(directions(observation.direction));
+            attrs.extend(point_attributes(observation.direction, observation.event));
             attrs.push(string(
                 "error.type",
                 match cause {
@@ -309,6 +339,7 @@ mod tests {
                     write_bytes: Ok(34),
                     memory_limit: value,
                     task_limit: Ok(Limit::Unbounded),
+                    events: [Ok(0); CgroupEvent::ALL.len()],
                 };
                 for sample in [
                     sample,
@@ -322,6 +353,49 @@ mod tests {
                     native_codec::write(&mut bytes, "run", "vm", u64::MAX, &[sample]).unwrap();
                     let native: ExportMetricsServiceRequest = serde_json::from_slice(&bytes).unwrap();
                     assert_eq!(native, request("run", "vm", u64::MAX, &[sample]).unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn complete_official_requests_match_every_event_boundary_and_failure() {
+        for value in [
+            Ok(0),
+            Ok(i64::MAX as u64),
+            Ok(i64::MAX as u64 + 1),
+            Ok(u64::MAX),
+            Err(Failure::Missing),
+            Err(Failure::Invalid),
+            Err(Failure::Overflow),
+            Err(Failure::Io(2)),
+        ] {
+            for scope in [Scope::Run, Scope::Workload, Scope::Member(u32::MAX)] {
+                for selected in CgroupEvent::ALL {
+                    let sample = Snapshot {
+                        scope,
+                        time_unix_nano: u64::MAX,
+                        cpu_usec: Ok(u64::MAX),
+                        memory_bytes: Ok(0),
+                        threads: Ok(4),
+                        memory_limit: Ok(Limit::Finite(0)),
+                        task_limit: Ok(Limit::Unbounded),
+                        read_bytes: Ok(12),
+                        write_bytes: Ok(34),
+                        events: CgroupEvent::ALL.map(|event| if event == selected { value } else { Ok(0) }),
+                    };
+                    for sample in [
+                        sample,
+                        Snapshot {
+                            events: [value; CgroupEvent::ALL.len()],
+                            ..sample
+                        },
+                    ] {
+                        let mut bytes = Vec::new();
+                        native_codec::write(&mut bytes, "run", "vm", u64::MAX, &[sample]).unwrap();
+                        let native: ExportMetricsServiceRequest = serde_json::from_slice(&bytes).unwrap();
+                        assert_eq!(native, request("run", "vm", u64::MAX, &[sample]).unwrap());
+                    }
                 }
             }
         }

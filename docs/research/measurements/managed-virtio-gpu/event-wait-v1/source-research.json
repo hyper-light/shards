@@ -1,0 +1,52 @@
+{
+  "rustc_commit": "48a229ceaefd4985c50990b14116b6d856af0985",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/functions.rs",
+      "path": "sources/functions.rs",
+      "bytes": 27401,
+      "sha256": "37d4de9ec99ab4dd221b64f76b724eb74d25f23957417e1d00ef118896af53de",
+      "status": 200
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/thread/thread.rs",
+      "path": "sources/thread.rs",
+      "bytes": 10410,
+      "sha256": "d011159a57f3501648af6f7010b8b19bdf6430a1725af87847a8753dcc718539",
+      "status": 200
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/LICENSE-MIT",
+      "path": "sources/LICENSE-MIT",
+      "bytes": 1068,
+      "sha256": "b71bd43a069ca0641a9ecfe585ca7b3c53b5cc1608f8b68321168698e28b5ea1",
+      "status": 200
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/LICENSE-APACHE",
+      "path": "sources/LICENSE-APACHE",
+      "bytes": 9723,
+      "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "status": 200
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/mod.rs",
+      "path": "sources/mutex-mod.rs",
+      "bytes": 1151,
+      "sha256": "1c715675a2bc34471b96de58f7aaaf2db411289cf838d17edc61cb2d6b006aa2",
+      "status": 200
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rust-lang/rust/48a229ceaefd4985c50990b14116b6d856af0985/library/std/src/sys/sync/mutex/pthread.rs",
+      "path": "sources/mutex-pthread.rs",
+      "bytes": 2485,
+      "sha256": "1aa80435780abe34a365179635e92fb5935894fb9b4f615eb45b336958c28035",
+      "status": 200
+    }
+  ],
+  "unavailable": [
+    "versioned1.98.1 rustdoc URLs via web tool",
+    "installed html/src/std/thread/mod.rs.html absent"
+  ],
+  "method": "official pinned upstream source, no execution"
+}
