@@ -1,0 +1,7 @@
+{
+  "chunk_id": "a386f4",
+  "wall_time_seconds": 0.09758825,
+  "exit_code": 0,
+  "original_token_count": 162,
+  "output": "{\n  \"status\": \"UNAPPLIED_FORMATTED_SOURCE_PROPOSAL_ONLY\",\n  \"base\": \"a7185733c4bfb1cc18d8018b96ac1790b29ecb24\",\n  \"actual_leaf_sha256\": \"228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e\",\n  \"proposed_formatted_sha256\": \"65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65\",\n  \"patch_sha256\": \"77687ca0019061d41556c0dfd65319e7f7a30e41101dc144dfe83f63a5c560bb\",\n  \"original_entire_native_source_recovered_exactly_removing_only_insertions\": true,\n  \"original_24_and_19_bodies_assertions_helpers_cleanup_lines_byte_exact\": true,\n  \"format_exit\": 0,\n  \"builds\": 0,\n  \"actors\": 0,\n  \"targets_or_caches_allocated\": false\n}\n"
+}

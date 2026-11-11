@@ -1,0 +1,7 @@
+{
+  "chunk_id": "5f73fc",
+  "wall_time_seconds": 0.00000675,
+  "exit_code": 2,
+  "original_token_count": 110,
+  "output": "Development policy checks passed; evidence/coordinator review is still required.\nACTUAL_LEAF_UNCHANGED_UNAPPLIED_PROPOSAL_HASHES_AND_PYTHON_AST_OK\ndocs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-caller.patch:9: trailing whitespace.\n+ \ndocs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-caller.unformatted.patch:9: trailing whitespace.\n+ \n"
+}

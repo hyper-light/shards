@@ -1,0 +1,58 @@
+{
+  "status": "SOURCE_PROPOSAL_UNAPPLIED_NO_BUILD_NO_ACTOR",
+  "base": "a7185733c4bfb1cc18d8018b96ac1790b29ecb24",
+  "actual_leaf_sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e",
+  "proposed_unformatted_sha256": "9d5bc064966b4731057b3c243640ee80bcf62b8e8a06183ed79f624189defd9a",
+  "unformatted_patch_sha256": "82e50bc6f5af70443f0fda0a6ec022385e060c5e873156bb6a5b411d1d9c8a40",
+  "entire_previous_source_recovered_by_removing_insertions": true,
+  "previous_24_and_19_bodies_assertions_helpers_cleanup_lines_exact": true,
+  "selected_request_count": 8,
+  "explicit_Close_Release_Commit_WRITE_DESTROY_after_reserve": 0,
+  "new_threads_wrappers_queues_caches_managers_production_changes": 0,
+  "expected_answer": "Ok(()) via read_any_into frame-header EOF; actual future result must be recorded",
+  "expected_public_accounting": "Ready remaining0 and original scope count while Server remains owned",
+  "last_actual_wire_reply": "Reserved/None from request8 with actual validated lease/cursors",
+  "post_disconnect_individual_lease_stage_and_live_cursors": "Unobserved; no fabricated Closed or refund",
+  "post_Server_drop_accounting": "Unobservable; owned file/root cleanup observed separately",
+  "source_pins": [
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/mod.rs",
+      "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b",
+      "bytes": 97233,
+      "equal_frozen_ba78": true
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/server.rs",
+      "sha256": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64",
+      "bytes": 245948,
+      "equal_frozen_ba78": true
+    },
+    {
+      "path": "crates/vmm/src/devices/virtio/fs/audit.rs",
+      "sha256": "48f5f487121df35d1632c7e923435fb2539e43287db0a795a16dd04cf009a172",
+      "bytes": 49056,
+      "equal_frozen_ba78": true
+    },
+    {
+      "path": "crates/abi/src/run/audit.rs",
+      "sha256": "7a4f80ff0a780bed72c425cf6b8e935806a82a7989395a9ae460bb2b2b4d66ea",
+      "bytes": 32026,
+      "equal_frozen_ba78": true
+    },
+    {
+      "path": "crates/ipc/src/unix.rs",
+      "sha256": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37",
+      "bytes": 100444,
+      "equal_frozen_ba78": true
+    },
+    {
+      "path": "crates/vmm/src/platform/mod.rs",
+      "sha256": "3d93b83dd4225f784fb0bc84df8bee7397bc4009b96368ba286a8ac37c4174ff",
+      "bytes": 34343,
+      "equal_frozen_ba78": true
+    }
+  ],
+  "new_builds": 0,
+  "new_native_cases": 0,
+  "new_target_or_cache": false
+}

@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "lockf",
+    "-t",
+    "0",
+    "/tmp/g121-mac.lock",
+    "rustfmt",
+    "--config-path",
+    "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml",
+    "--config",
+    "skip_children=true",
+    "docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native.formatted.rs"
+  ],
+  "exit_code": 0,
+  "local_free_before": 40730165248,
+  "builds": 0,
+  "actors": 0
+}
