@@ -22,6 +22,13 @@ to the prior full read, the managed plan's sole capture-coverage update and
 updated handoff through line696 were read. The inspected existing source bytes
 remain unchanged; no branch rebase, fetch, build or actor was performed.
 
+Initial-report batch receipt: main `0a6d91b3de0f10a8397868aa3794adab1e09afdc`,
+same implementer/primary-research role and sole document ownership; FULL current
+AGENTS/R01–R16/evidence/CLAUDE/managed plan/handoff reread. Rules hash above is
+unchanged; handoff725lines/80077B SHA-256
+`2df879f18e83d0dc370155c83a0c9fd4eb1bba5bd1adad3f43413c277f7718da`.
+No tests/builds/actors/VM/profile or held Windows activation in this batch.
+
 ## Exact inspected source boundary
 
 Use the following identities rather than a parent's active working files.
@@ -157,7 +164,8 @@ encoding rotates `[tag,a,b,c,d]` into `[a,b,c,d,tag]` at offsets6–10. Native t
 nonfailure packets require trailing tag0. `has_descriptor()` still selects only
 ActorBorn/HelperBorn. The new leaf therefore changes neither the one-FD bound
 nor CMSG storage derivation, but old r37 `detail/step` consumers cannot simply
-be assumed to implement the new union. Their exact migrated caller pin is owed.
+be assumed to implement the new union. A later private bridge freeze supplies
+part of that migration, identified below; initial report callers remain owed.
 
 The frozen README/source-pins report Mac ARM64 r43 **4 codec tests passed,
 0 failed, 0 ignored**, strict production/test Clippy0, same product lock and
@@ -167,6 +175,201 @@ archive identity is 6801B SHA-256
 `977cab71dcbb8a69488e7c1f86e586874bae6f043e1f0ef4af16125e12cfaab2`.
 No FD/syscall, actual selected-object mismatch, migrated caller, namespace,
 actor/helper release, native-error, fault, matrix or performance pass follows.
+
+## INITIAL management LaunchRefusal: approved 50-byte contract
+
+ROOT's next assignment approves one initial management report using the existing
+management module and transports. Parent owns its codec/callers. This section
+derives the proposed representation and required validation; it implements
+nothing. Signed `0a8629ef1dcfb430070d0fa0f2f96346792a702e` is the preceding
+**research document**, not an ABI implementation or a producer test identity.
+
+### Source identity and tag namespaces
+
+`P/LAUNCH-REPORT-CALLERS.md` is 4626B, SHA-256
+`1458802522ce3cfbb4b6a3ba652ddd7ad776016674f3de2cc5df8a4f4efa6271`.
+It describes an unapplied additional wire/caller proposal. ROOT's present GO
+approves that narrow scope; it does not turn the proposal into executed code.
+Its current parent run/IPC pins match these immutable Git objects exactly:
+
+| Source at parent checkpoint `c59b2f6f07a5a71126dd59e53c16afeaef4523b1` | Bytes / SHA-256 |
+| --- | --- |
+| `crates/abi/src/run.rs` | 59356 / `32bdacfb7ff8d89ab927d8648e10609a4a5a16c5adb612c8f9205705ef776837` |
+| `crates/ipc/src/lib.rs` | 129197 / `2c8e3030f041a0c0555397e64f547deb420fe34e42a57f04744e175ebe613e56` |
+| `crates/abi/src/run/management.rs` | 25158 / `cbd2ab1ff1554cda406ca0dcaaf97c9da1e937bc3bd95c8e3287de2ae1eb167d` |
+| `crates/abi/src/run/managed.rs` | 21528 / `1b26c39daf3593874c3935b608c6eb23b2aca1dfc5bf64a6a24c699e2ea74eb7` |
+
+At that pin management.rs contains no LaunchRefusal; the parent tag tables also
+lack the pending input/credential additions. Check the input owner's frozen
+material before reserving identifiers, rather than treating the parent table
+as the composed namespace:
+
+| Namespace | Frozen existing assignments | New approved assignment / exact limit |
+| --- | --- | --- |
+| `shards_abi::run::kind` | INPUT_SESSION48, INPUT_BYTES49, INPUT_RESULT50, INPUT_CONTROL51; CREDENTIAL_REFUSED52 | MANAGEMENT_REFUSED53 is unused at the inspected pins. |
+| `shards_ipc::kind` | CREDENTIAL_REFUSED87 | MANAGEMENT_REFUSED88 is unused at the inspected pins. **IPC53 already means DISK_ATTACH.** |
+
+Input's signed `3a0fb6f959534192e01efec5a738d3507ae30998` run.rs (54152B,
+SHA-256 `2259e0c373594e04a90800f19891f35c83eb57b4b44a777c84d9ac3b68844c76`)
+contains input kinds48–51. Input's frozen
+`docs/research/measurements/managed-credentials-input/unsigned-owned-review-0c-v1/04-callers.patch`
+(40965B, SHA-256 `e620087209cca9ef33d09f8a37bca6d4e1497e133ed967634adc53d1c24d37ad`)
+adds exactly ABI52/IPC87 in those tables. Its MANIFEST.json (7401B, SHA-256
+`d4e7a07435f258da6a58c139981304d93fb77ad161ffb0105693a784d81abfa3`)
+records the bases/results; the relevant patch hunks were read, not applied.
+
+Those frozen files were read from immutable input checkpoint
+`550cc0512737ae2869ae6e1eda6fa700961c155d`. Its complete run.rs has later module
+context, so its identity is separately 59982B/SHA-256
+`efeaabd0cd9b4f00583c5477ac4334d8d254031ee288d93cc897026455777e85`;
+its IPC/lib.rs is 129322B/SHA-256
+`6c008475ad5186ca388470f34f6d89c423da33fc158939ceda17f6eb6a2c333a`.
+The exact `pub mod kind` tables confirm the assignments above and absence of
+ABI53/IPC88. The checkpoint is an immutable source container, not a signed
+full-product acceptance result. No whole run.rs replacement is justified.
+
+Input's `canonical-carrier-validated-r35-v1/MANIFEST.json` at that checkpoint is
+2233B/SHA-256 `3b1ee9b3b7640136c82ab6eec312273e97cb8a5f21c981f346266e43632c888c`;
+`frozen-initial-consumer-v1/REQUIREMENTS.json` is 2001B/SHA-256
+`f3084d1ef84e9c46e28cc0be838375746a931177dc8133c9a04289576cfe49b0`.
+They preserve the precise credential-only carrier and canonical Failure delta;
+r35's overall exit1/host strict101 is retained, alongside its narrower reported
+passes. None is a LaunchRefusal producer/consumer proof. The new management
+report does not widen credential-selected StartupRefusal or reinterpret its tags.
+
+### Body derivation, padding and arithmetic
+
+`management::LaunchRefusal { epoch: Epoch, member: u32, failure: Failure }`
+has one report version byte. Existing `Epoch::LEN` is MICROVM_ID_BYTES32 plus
+u64 generation8, with no embedded version; F::Failure is five bytes, also with
+no version byte. Thus **1+40+4+5=50 bytes**. These are serialized fields,
+not `size_of::<LaunchRefusal>()` or a protocol constant borrowed from a benchmark.
+`MICROVM_ID_BYTES=32` is pinned at parent082 `crates/abi/src/lib.rs` (8010B,
+SHA-256 `8579e8a8d30da2bb053c2af5b7edd678d26a458dc69ba390064f2f2aabed0250`).
+The Epoch source above equals parent082's exact bytes.
+
+| Zero-based body offsets, half-open | Field / canonical encoding |
+| --- | --- |
+| `[0,1)` | report version1 |
+| `[1,33)` | existing run identity32 |
+| `[33,41)` | generation u64 BE, nonzero |
+| `[41,45)` | declared member u32 BE |
+| `[45,50)` | SAME canonical Failure5: operation/mismatch tag then four bytes |
+
+Native Failure keeps positive BE errno in report bytes46–49; mismatch uses
+tag9 at45 and four required UNUSED zero bytes46–49. Its zero padding is not
+native errno0. Unknown tags, noncanonical mismatch padding and native errno<=0
+refuse through F. Existing native launch-status5 and lifecycle-packet11 byte
+positions remain unchanged: the new report embeds Failure, not the old packet.
+
+ABI53 and IPC88 are identifiers outside this body. Existing guest frame header8
+plus body50 is **58 serialized bytes**; this does not derive socket capacity or
+IPC transport overhead. The numeric body length50 is unrelated to INPUT_RESULT's
+kind50. No descriptor, path, dev/ino, label, extra token or second owner field
+is added to the report. Its DATA does not mint authority or authorize FD transfer.
+
+Fixed field widths make length addition independent of untrusted quantities.
+The future decoder must require exact50 before indexing/read/copy/allocation,
+including when the generic stream header accepts a much larger MAX_PAYLOAD.
+Partial reads retain one frame's actual fill state; a short read is not EOF or
+a complete refusal. Truncated EOF, extra bytes, unknown version and invalid
+fields must not become legacy SYSTEM_ERR, success or a default member.
+The fixed codec must use checked slices/conversions; native Rust struct padding
+is never serialized. No larger buffer/default, public parameter or dynamic
+retry allowance follows from50.
+
+### Current-owner, phase and no-allocation contract
+
+Existing Epoch::decode checks exact40 and nonzero generation, but its run bytes
+are DATA; it cannot prove issuance/current authority. The proposed receiver must
+match the borrowed protected Spec.management Epoch and SAME existing
+`managed::active(&Spec.setup)` slice. That function borrows checked four-byte
+IDs, rejects duplicates/nonincreasing order, incomplete IDs and IDs outside the
+declared population. No new member cache/manifest or reindexing is needed.
+Member0 remains a valid declared ID when actually active; unknown/MAX/inactive
+members cannot be normalized to0. Decoding u64::MAX generation is not overflow;
+generation increment/issuance and currentness belong to the existing owner.
+
+The initial report is guest→host before EXIT and never after STARTED; ordinary
+exec must not issue it. Duplicate, stale, missing-context or out-of-phase data
+must produce the checked refusal/protocol outcome, without admitting a different
+member or completing successfully. Required exact splices in the proposal are
+initial init/run StartFailure::Launch, workload NotRun::Management, warm's once
+IPC88 forwarding, daemon Inbox/Completion::Management revalidation and vm_run's
+presentation-only arm retaining ended.status. A received report alone proves
+neither task termination nor all previously started members' cleanup.
+
+The no-allocation target is narrow: a fixed `[u8;50]` body, borrowed decode,
+stack-based existing Epoch/Failure codecs and borrowed active-ID validation.
+The actual LaunchRefusal codec, transport reads and all consumers are not yet
+frozen here, so whole-path no-allocation, actual reservation and release remain
+unproved. Do not introduce String formatting/copies or a result Vec to carry the
+new typed cause. Legacy Setup(String)/SetupStatic handling remains explicitly
+separate; credential-selected verification retains its existing precise carrier.
+
+The private launch bridge is now frozen at
+`P/canonical-launch-bridge-v1/source-pins.json` (1084B, SHA-256
+`eed4a37a673410629dc926bf34dd32290a90c5824fec9056c8fd88760565c59c`).
+All six named source length/hashes were checked against those files:
+
+| Frozen bridge source | SHA-256 |
+| --- | --- |
+| `crates/init/src/managed.rs` | `7dd42fd1f12336fbca6d392e4d5d32579a36a74d9aaf8a8ff0654d39a39bb88c` |
+| `crates/init/src/managed/control.rs` | `10e7af0ff26c49ee27e8ebf19caa0aaa34bb90ec300cb6f630c3c56d10643b0a` |
+| `crates/init/src/managed/receipts.rs` | `51827e04963390e41da5363e2acedcebc2ce25288065e9d071ab3b4f1f7bcd6e` |
+| `crates/init/src/managed/setup.rs` | `e24ddeb7fc34daf7e1c90d7defd98c98aeea2a6b90f72eaef74882ccb2b57eaf` |
+| `crates/init/src/managed/reaper.rs` | `887731f61864600952b906470f893a3d159877f3520b5ddec2115d7b6a26628d` |
+| `crates/init/src/domains.rs` | `89671bf5630c8ea946d6707a3f5e94d0fe8a5a9a04835fa521b86bd16c104ff4` |
+
+Its README (3248B, SHA-256
+`a734d5a6ad460ccfd3819b0aec66faccc0c0ceafe92859e3ab375956a2adc896`)
+keeps actual full callers unready. Focused source reads confirm
+LaunchFailure::Control versus Reported(SAME Failure), StartFailure::Launch with
+held member, and receipts accepting Failed only in AwaitingActor/Preparing;
+after release they return Protocol::Conflict. This inner phase check does not
+implement the new outer report order or current-context validation. Mapping
+Control failures through checked existing steps/native errno and retaining
+their actual local uncertainty still needs exact producer review. Guest SIGNAL
+resource/IO/length errors cannot be invented as native errno to fit this codec.
+
+### Remaining proof and resource obligations for the new report
+
+The source-derived50-byte representation is not a protected-control budget.
+Still missing are the actual composed codec/tag registration, every listed
+producer/consumer with protected initial Context and active plan, retained
+original launch status and once-only forwarding, plus malformed/stale/order
+receipts. Startup cancellation/deadline and Pending/SIGNAL remain unverified
+until their real frozen producers and receipts arrive; r37 supplies no timeout.
+
+Actual admission must cover simultaneous body/header/partial-read state,
+retained typed outcome, transport staging and old+replacement overlap along
+with socket/pipe/kernel charges, original owner cancellation, refusal and reap
+progress.50 bytes cannot establish task/FD/kernel backing or cleanup of other
+members. No generic queue depth, learned authority, polling fallback, manager,
+public Run/Spec/manifest parameter, second credentials taxonomy or product edit
+is selected here. ROOT owns adoption, combined seven-target/VM/fault/cost gates.
+
+Read-stage corrections retained: one initial status read used the parent WT
+read-only before the own-WT check; a directory-prefix filename filter returned
+an overbroad truncated listing and was replaced by exact Git paths; a guessed
+r35 README path was absent, after which its actual MANIFEST was read. No index
+action, active source copy, actor or product/test result followed those reads.
+All executable tests/builds remain UNRUN; only text identity/policy/whitespace
+checks belong to this batch. Every R01–R16 limit in the account below applies:
+R01/R04 preserve typed failures, checked fields and phase/current-owner duties;
+R02/R03 pin actual namespaces/field widths instead of defaults; R05–R07/R12/R13
+retain one existing owner/seam; R08/R14 make no allocation/cost/leak claim;
+R09/R10 identify NEW work and retain failed reads; R11 has no new platform pass;
+R15/R16 preserve scoped ownership, all frozen raw/binaries/holds/paused WinARM
+and ROOT caches, with no children, builds, cleanup or main merge.
+
+Mechanical results for this batch: `python3 scripts/check-development-policy`
+returned0; `git diff --check -- docs/research/managed-helper-protocol-bounds.md`
+returned0. A read-only scan of every literal u8 assignment in the two pinned
+`pub mod kind` tables confirmed the displayed namespaces and unused53/88;
+all24 external source references resolved within this document. Source hashes
+were checked as listed. These checks execute no codec, fixture, typecheck,
+build or actor; they do not validate the proposed decoder or caller contract.
 
 ## Descriptor and storage derivations
 
@@ -333,9 +536,10 @@ Exact remaining inputs sent to parent `01a1c767840171d5872a1673e3e425f4` and ROO
 
 1. An immutable source/patch+base/hash for the new pre-start SIGNAL framing
    owner and SAME Pending/Epoch wake source, all startup/relay borrowers, and
-   actual callers migrated to frozen **F**. The Failure encoding input itself
-   is resolved above; its caller integration is not. Current r37 results must
-   not be silently assigned to later bytes.
+   actual initial-report callers migrated to frozen **F**. The Failure encoding
+   and private launch-bridge inputs are resolved above; outer LaunchRefusal and
+   control integration remain unproved. Current r37 results must not be silently
+   assigned to later bytes.
 2. The real deadline source: original caller clock/absolute expiry or an
    explicit lifetime-unbounded contract; zero/overflow/expiry meanings;
    cancellation priority and how complete noncancel frames remain available.
@@ -379,7 +583,7 @@ test counts for this task.
 | R01 | No executable/production edits. Checked/error behavior above is a focused source observation, not whole-path panic or allocation-refusal proof. |
 | R02 | Pinned Linux, libc/musl and systemd primary contracts plus exact Shards owners/callers; no architecture selected without live data. |
 | R03 | Every reported packet/field/slot/FD count has a derivation; syscall ceilings, existing defaults, proposed sizes and measured FD results are distinct. Missing new source/population prevents a new numeric recommendation. |
-| R04 | Correlation, pending ACK/release/reap and typed causes preserved. Frozen F distinguishes native errno from semantic mismatch without changing byte bounds; new Pending/Epoch and migrated Failure caller source remain unavailable. |
+| R04 | Correlation, pending ACK/release/reap and typed causes preserved. Frozen F/private launch bridge distinguish native errno from semantic mismatch; INITIAL report's current-owner/phase checks and Pending/SIGNAL callers remain owed. |
 | R05 | Existing owner/framing/readiness reused as the proposal; no cache, spin, polling fallback, duplicate phase owner or manager introduced. |
 | R06/R07 | One focused derivation record; comments/code unchanged. Source-state rationale and provenance remain explicit. |
 | R08/R14 | No performance/allocation/fault/4–5×/leak-free claim. Actual cost and induced parent/kernel backing are unknown; ROOT owns measurement. |
