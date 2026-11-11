@@ -1,0 +1,12 @@
+{
+  "role": "coordinator",
+  "revision": "3830327b6c8d7ac22452a5e32ffa32799263132c",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "skill": "/Users/adalundhe/.agents/skills/diagnosing-bugs/SKILL.md",
+  "phase": "red reproduced exact original merge and minimum cp",
+  "owned_paths": [
+    "ROOT kernel config mode fixture/evidence only"
+  ],
+  "old_scopes_modified": false,
+  "time_ns": 1794387035121433000
+}

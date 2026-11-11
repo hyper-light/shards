@@ -1,0 +1,7 @@
+{
+  "first_read": "incorrect base64 decode of binary zlib packet",
+  "failure": "zlib.error incorrect header check",
+  "correct_read": "zlib.decompress(raw)",
+  "source_unchanged": true,
+  "packet_sha256": "22998dc2c421feea2b0d19a13d51288fcccd1d71a00681911b85147e5be6733c"
+}

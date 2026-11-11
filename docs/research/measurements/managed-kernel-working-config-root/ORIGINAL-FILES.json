@@ -1,0 +1,162 @@
+{
+  "root-kernel-config-mode-minimum-v1/.config": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-minimum-v1/cp.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-minimum-v1/cp.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-minimum-v1/merged.config": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-minimum-v1/minimum-red.json": {
+    "length": 390,
+    "sha256": "42a465d258f0959cc766af454aa4c0648a85ba7a82e05d3560ac7a9193722f98"
+  },
+  "root-kernel-config-mode-owner-write-v1/RESULTS.json": {
+    "length": 5205,
+    "sha256": "15a36b3676da5f022f39b1d8a36614dd0d7b3c546761a75b1fee8c972deeefb1"
+  },
+  "root-kernel-config-mode-owner-write-v1/green/.config": {
+    "length": 102003,
+    "sha256": "723d968865724d10173caf3dc0212ee344af09239e899dd98df8f6026fdb7979"
+  },
+  "root-kernel-config-mode-owner-write-v1/green_copy.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/green_copy.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/green_merge.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/green_merge.stdout": {
+    "length": 1984,
+    "sha256": "b7434d0d995c283827088cf64af735c1268963f94e3ceaf54068c12aeb425d04"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum/.config": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum/merged.config": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_green.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_green.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_red.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_red.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_restored_red.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-owner-write-v1/minimum_restored_red.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/red/.config": {
+    "length": 97971,
+    "sha256": "ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215"
+  },
+  "root-kernel-config-mode-owner-write-v1/red_copy.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/red_copy.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/red_merge.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-owner-write-v1/red_merge.stdout": {
+    "length": 1925,
+    "sha256": "c6d0c7dba1a615bb9dec994ac336ed18fe09e2923fdb3c69f01a6b20618f7cd2"
+  },
+  "root-kernel-config-mode-owner-write-v1/restored_red/.config": {
+    "length": 97971,
+    "sha256": "ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215"
+  },
+  "root-kernel-config-mode-owner-write-v1/restored_red_copy.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/restored_red_copy.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-owner-write-v1/restored_red_merge.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-owner-write-v1/restored_red_merge.stdout": {
+    "length": 1925,
+    "sha256": "c6d0c7dba1a615bb9dec994ac336ed18fe09e2923fdb3c69f01a6b20618f7cd2"
+  },
+  "root-kernel-config-mode-probe-v1/RED.json": {
+    "length": 667,
+    "sha256": "b01f8caf4c39d9e7b8719c3247522b69d32f615f9717d9590359744bf0604cd9"
+  },
+  "root-kernel-config-mode-probe-v1/copy.stderr": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-probe-v1/copy.stdout": {
+    "length": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "root-kernel-config-mode-probe-v1/frozen/firecracker-x86_64-6.18.config": {
+    "length": 97971,
+    "sha256": "ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215"
+  },
+  "root-kernel-config-mode-probe-v1/frozen/managed-network.config": {
+    "length": 512,
+    "sha256": "3af6500e4df9af1cbfd5a7614a9388d9f3de4b9a984819990f68b5e30113a154"
+  },
+  "root-kernel-config-mode-probe-v1/frozen/merge_config.sh": {
+    "length": 5414,
+    "sha256": "fecdeb0747c88f818f0d5d39333b948cdf83d9aca11c422253da17f5cc36e6f1"
+  },
+  "root-kernel-config-mode-probe-v1/frozen/shards-x86_64.config": {
+    "length": 1128,
+    "sha256": "27d8372ae074e793d8755dda7ff1115404a80f840e9916d5b9b3f7dfb2f77004"
+  },
+  "root-kernel-config-mode-probe-v1/frozen/shards.config": {
+    "length": 2689,
+    "sha256": "559337a99d39402a54d944e44c47e964689e7d169f1d8eb811a0b2b5f0db64d2"
+  },
+  "root-kernel-config-mode-probe-v1/merge.stderr": {
+    "length": 60,
+    "sha256": "93355ce793059c4ad296fe0e480f0e17fae2dbf9950aa9081d0b6943fabbc87d"
+  },
+  "root-kernel-config-mode-probe-v1/merge.stdout": {
+    "length": 1925,
+    "sha256": "c6d0c7dba1a615bb9dec994ac336ed18fe09e2923fdb3c69f01a6b20618f7cd2"
+  },
+  "root-kernel-config-mode-probe-v1/red/.config": {
+    "length": 97971,
+    "sha256": "ba22401a0c7292a4c024ebcd10a562d4a1f1bfd2faed671406d3b159c0cf5215"
+  }
+}

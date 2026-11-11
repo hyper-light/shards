@@ -1,0 +1,9 @@
+{
+  "archive": "/Users/adalundhe/g121-root-parallel-evidence-20261110/kernel-config-mode-probe-v1/actual-mode-raw-v1.tar.gz",
+  "length": 125894,
+  "sha256": "134991aefc33983cb588d45b46f88dff510ef358efaa6c164d6434ecc96d6828",
+  "verified_payloads": 40,
+  "safe_unique_regular_members": 41,
+  "runtime_replay": false,
+  "kernel_compile": false
+}

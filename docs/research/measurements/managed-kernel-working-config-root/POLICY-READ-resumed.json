@@ -1,0 +1,17 @@
+{
+  "role": "coordinator",
+  "revision": "3830327b6c8d7ac22452a5e32ffa32799263132c",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "handoff_sha256": "480387c325c2114d05e18d62dde185a3c371b82e7425b9a80c43c3d43cf60180",
+  "owned_paths": "ROOT kernel config reproduction, completed lifetime source/evidence review and main selection",
+  "time_ns": 1794387280007385000,
+  "read_full": [
+    "AGENTS.md",
+    "docs/development-rules.md",
+    "docs/development-evidence.md",
+    "CLAUDE.md",
+    "docs/design/managed-runtime-plan.md",
+    "g121-handoff.md"
+  ],
+  "holds_preserved": true
+}
