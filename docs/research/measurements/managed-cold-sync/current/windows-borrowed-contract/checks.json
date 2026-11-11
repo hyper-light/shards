@@ -1,0 +1,129 @@
+{
+  "policy_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer; source preparation only",
+  "branch": "p/managed-windows-borrowed-contract-v1",
+  "owned_source_paths": [
+    "crates/api/src/client.rs (six cfg(test,windows) lines only)",
+    "crates/api/src/client/windows_borrowed.rs",
+    "docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/**"
+  ],
+  "executed_rust_compilation": false,
+  "executed_native_actors": false,
+  "resource_runner_admission": "NONE requested; future ROOT execution gate not assigned",
+  "commands": [
+    {
+      "command": "RUSTUP_AUTO_INSTALL=0 /Users/adalundhe/.cargo/bin/rustfmt +1.98.1 --edition 2024 --check --config-path rustfmt.toml --config skip_children=true crates/api/src/client.rs crates/api/src/client/windows_borrowed.rs",
+      "result": {
+        "status": "fulfilled",
+        "value": {
+          "chunk_id": "5d1cbf",
+          "wall_time_seconds": 0.000005292,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      }
+    },
+    {
+      "command": "python3 scripts/check-development-policy",
+      "result": {
+        "status": "fulfilled",
+        "value": {
+          "chunk_id": "7a33de",
+          "wall_time_seconds": 0.000006334,
+          "exit_code": 0,
+          "original_token_count": 21,
+          "output": "Development policy checks passed; evidence/coordinator review is still required.\n"
+        }
+      }
+    },
+    {
+      "command": "python3 docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/verify-preparation.py --out docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/source-identities.json",
+      "result": {
+        "status": "fulfilled",
+        "value": {
+          "chunk_id": "b84230",
+          "wall_time_seconds": 0.000007125,
+          "exit_code": 0,
+          "original_token_count": 0,
+          "output": ""
+        }
+      }
+    },
+    {
+      "command": "in-memory Python compile of verify-preparation.py and json.loads of both identity records",
+      "exit": 0,
+      "scope": "Python/JSON syntax, no Rust compile or actor"
+    },
+    {
+      "command": "git diff --no-index -- /dev/null crates/api/src/client/windows_borrowed.rs",
+      "exit": 1,
+      "scope": "expected difference used to prepare exact source review patch, not a failed compile/test"
+    },
+    {
+      "command": "git diff --check",
+      "exit": 0,
+      "scope": "before staging; only the tracked client edit was included, not untracked files"
+    },
+    {
+      "command": "git diff --cached --check",
+      "exit": 2,
+      "stdout": "docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/source.diff:17: trailing whitespace.\n+ \n",
+      "scope": "verbatim review patch blank context line; original patch retained unchanged, full check is not passed"
+    },
+    {
+      "command": "git diff --cached --check -- . :(exclude)docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/source.diff",
+      "exit": 0,
+      "scope": "all staged paths except only the literal review patch; no Rust lint/test relaxed"
+    },
+    {
+      "command": "RUSTUP_AUTO_INSTALL=0 /Users/adalundhe/.cargo/bin/rustfmt +1.98.1 --version",
+      "exit": 0,
+      "stdout": "rustfmt 1.9.0-stable (48a229ceae 2026-09-01)\n"
+    }
+  ],
+  "retained_preparation_failures": [
+    {
+      "stage": "read-only policy commands interrupted during Kiln restart",
+      "result": "response unknown; no source edits/builds/actors in the interrupted batch; full ca3 readback repeated after recovery"
+    },
+    {
+      "stage": "focused sparse source lookup",
+      "diagnostics": [
+        "rg: crates/api/src/platform: No such file or directory (os error 2)",
+        "rg: crates/ipc: No such file or directory (os error 2)",
+        "rg: crates/afunix: No such file or directory (os error 2)",
+        "sed: crates/afunix/src/lib.rs: No such file or directory"
+      ],
+      "resolution": "Exact current-main missing leaves subsequently read using git show; no guessed source or Rust execution. Individual nested command exits were not all captured separately."
+    },
+    {
+      "stage": "two multi-file apply_patch verification failures",
+      "diagnostics": [
+        "Failed to find expected lines in PROPOSAL.md: actual watcher. The existing watcher waits that object and",
+        "Failed to find expected lines in PROPOSAL.md: removed as it drops, only / the fixture-owned TempDir."
+      ],
+      "resolution": "No files mutated by these failed patches; focused read confirmed previous source. Exact anchors then applied once. No compile/runtime occurred."
+    },
+    {
+      "stage": "initial preparation verifier",
+      "command": "python3 docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/verify-preparation.py --out docs/research/measurements/managed-cold-sync/current/windows-borrowed-contract/source-identities.json",
+      "exit": 1,
+      "diagnostic": "FileNotFoundError: [Errno 2] No such file or directory: '/Users/adalundhe/Projects/shards/.claude/worktrees/crates/api/src/client.rs'",
+      "exact_fix": "repo = Path(__file__).resolve().parents[7] -> parents[6]",
+      "resolution": "Failure occurred before output creation; corrected source-boundary verifier returned0. No Rust compile/list/native result count exists."
+    }
+  ],
+  "source_review_patch": {
+    "path": "source.diff",
+    "bytes": 23985,
+    "sha256": "ccf1cafd0fd768bc5cc763e5ea934c5de0f00d6ceb3b34d058610541189136f9"
+  },
+  "actual_libtest_counts": "UNRUN; only nine source-derived ignored selectors (eight cases plus support child)",
+  "native_windows_compile_strictlint_contract_cleanup": "UNRUN; ROOT review/finite execution gate owed",
+  "test_internal_watcher_drainer_joins_and_handle_return": "UNKNOWN; existing detached API worker behavior retained",
+  "original_frozen_proofs_preserved": "p/managed-cold-sync-owned-v1 at5c20f46394a7505361879aa538ae301b63857b1f; r612 overallFAILED and all old refs/raw/targets untouched",
+  "no_children_goals_mainmerge_vm_profiles_cache_deletion": true,
+  "sustained_lane_complete": false
+}

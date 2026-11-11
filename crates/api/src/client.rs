@@ -1007,6 +1007,8 @@ pub fn connect_borrowed(
             })?;
         HandshakeWait::Until(deadline)
     };
+    #[cfg(all(test, windows))]
+    windows_borrowed_contract::before_identity(began, wait);
     let process_failure = |failure| Refusal::Process {
         pid: identity.pid,
         expected_started: identity.started,
@@ -1042,6 +1044,10 @@ pub fn connect_borrowed(
 #[cfg(test)]
 #[path = "../../../docs/research/measurements/managed-borrowed-nowait/focused.rs"]
 mod borrowed_tests;
+
+#[cfg(all(test, windows))]
+#[path = "client/windows_borrowed.rs"]
+mod windows_borrowed_contract;
 
 #[cfg(windows)]
 mod borrowed_windows {

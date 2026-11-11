@@ -1,0 +1,42 @@
+{
+  "research_workflow": "/Users/adalundhe/.agents/skills/research/SKILL.md primary-source Markdown workflow; explicit no-child instruction overrides background-agent suggestion",
+  "status": "contract/source evidence only, no Windows execution",
+  "sources": [
+    {
+      "name": "connect",
+      "url": "https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/08ed091870a25a4ddeffe0727789ca0164beadd2/sdk-api-src/content/winsock2/nf-winsock2-connect.md",
+      "revision": "08ed091870a25a4ddeffe0727789ca0164beadd2",
+      "bytes": 21000,
+      "sha256": "04d15037084acf7920de989543959c29b2e1f103c7279549ab80d23939d8a96f",
+      "retrieved_utc": "2026-11-11T00:22:39.958344+00:00",
+      "scope": "WSAEWOULDBLOCK is a pending native connect, not completion; another connect is not a completion test."
+    },
+    {
+      "name": "WSAPoll",
+      "url": "https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/08ed091870a25a4ddeffe0727789ca0164beadd2/sdk-api-src/content/winsock2/nf-winsock2-wsapoll.md",
+      "revision": "08ed091870a25a4ddeffe0727789ca0164beadd2",
+      "bytes": 10705,
+      "sha256": "8adb4c8a865aaba7158e8dff7ad27830ea79781d36ff4bfd415601c79e29ae6d",
+      "retrieved_utc": "2026-11-11T00:22:40.209348+00:00",
+      "scope": "Zero timeout returns immediately; positive milliseconds wait; error/hangup and readiness are distinct observed flags."
+    },
+    {
+      "name": "WaitForSingleObject",
+      "url": "https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/08ed091870a25a4ddeffe0727789ca0164beadd2/sdk-api-src/content/synchapi/nf-synchapi-waitforsingleobject.md",
+      "revision": "08ed091870a25a4ddeffe0727789ca0164beadd2",
+      "bytes": 6746,
+      "sha256": "f13027ae72b59c1d4b2862b71b39951c9c4469a238c48ac7a3fed201096250e8",
+      "retrieved_utc": "2026-11-11T00:22:40.393490+00:00",
+      "scope": "Wait with zero observes current process state; the waited handle stays owned/open until the finite wait returns."
+    },
+    {
+      "name": "GetProcessTimes",
+      "url": "https://raw.githubusercontent.com/MicrosoftDocs/sdk-api/08ed091870a25a4ddeffe0727789ca0164beadd2/sdk-api-src/content/processthreadsapi/nf-processthreadsapi-getprocesstimes.md",
+      "revision": "08ed091870a25a4ddeffe0727789ca0164beadd2",
+      "bytes": 5563,
+      "sha256": "a376b582df7ca24466bfb7ccf1ad7fffa54e433bc8f10365bff168686de6fd44",
+      "retrieved_utc": "2026-11-11T00:22:40.635049+00:00",
+      "scope": "Creation FILETIME from the held process is identity data; PID alone or a zero-time wait does not supply its creation identity."
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  "base_revision": "ca3ab10c151aa5539e757f1cc76029746ccbb561",
+  "policy_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer; source preparation only",
+  "current_main_client_identical_to_33df": true,
+  "client_before": {
+    "bytes": 78689,
+    "sha256": "8d8b2dac91a3c419956bb41168705c5a15f21d51d7c043b6dd7f4f027443121b"
+  },
+  "client_after": {
+    "bytes": 78879,
+    "sha256": "e4fbde892c449f5ed569ebaff61c0b83a98c0acc1161f64e555e22a42d68678b"
+  },
+  "exact_test_hook_and_module_lines": 6,
+  "client_after_removing_only_these_blocks_equals_base": true,
+  "non_test_behavior": "source boundary checked, not compiled or executed",
+  "unchanged_existing_seams": {
+    "crates/api/src/stream.rs": {
+      "bytes": 29597,
+      "sha256": "e4baba25f16965a6df4f67772453b3d838ce1e85ee45041304cd3e0d94611bcb"
+    },
+    "crates/api/src/lib.rs": {
+      "bytes": 28337,
+      "sha256": "b104a092604c73276eca05c387ecc93aa4a81d092b8b6a6f3e56dc5cc245106c"
+    },
+    "crates/afunix/src/lib.rs": {
+      "bytes": 37311,
+      "sha256": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc"
+    }
+  },
+  "fixture": {
+    "path": "crates/api/src/client/windows_borrowed.rs",
+    "bytes": 22270,
+    "sha256": "18257dda9b24aff8e1e43aeb570f59d6060438716b43aac610b0c88e2a635ec4"
+  },
+  "source_derived_ignored_selectors": [
+    "client::windows_borrowed_contract::held_child",
+    "client::windows_borrowed_contract::positive_borrowed_drop_keeps_owner_alive",
+    "client::windows_borrowed_contract::zero_reports_actual_pending_phase_and_peer_bytes",
+    "client::windows_borrowed_contract::max_is_bounds_before_mismatched_identity_or_dial",
+    "client::windows_borrowed_contract::positive_deadline_is_established_before_identity",
+    "client::windows_borrowed_contract::withheld_reply_expires_before_peer_release",
+    "client::windows_borrowed_contract::dribbled_reply_keeps_the_original_deadline",
+    "client::windows_borrowed_contract::owning_zero_still_awaits_one_answer",
+    "client::windows_borrowed_contract::owning_max_still_has_no_clock"
+  ],
+  "actual_libtest_selection_ignore_pass_fail_counts": "UNRUN",
+  "root_execution_wrapper_reference": {
+    "revision": "ec494ad24905e2f39fe05f77a9513a8fd41df5e9",
+    "path": "docs/research/measurements/managed-cold-sync/current/windows/run.ps1",
+    "bytes": 9351,
+    "sha256": "92be2d3fa6b35def1dd29e58951559ba34b3a8e8120d050d863aa677aa1ee43a",
+    "reuse_limit": "native Process/raw-capture/original Stopwatch ownership; ROOT reviews held-child observer before execution"
+  },
+  "prior_proof_ref_preserved": "5c20f46394a7505361879aa538ae301b63857b1f",
+  "native_compile_lint_actor_execution": "UNRUN; ROOT gate not yet assigned"
+}
