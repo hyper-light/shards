@@ -322,6 +322,14 @@ pub(crate) fn attempt<T>(
     }
 }
 
+/// The most one virtio-vsock packet carries: Linux's transport splits any larger send
+/// into packets of exactly this size (v6.18 include/linux/virtio_vsock.h
+/// VIRTIO_VSOCK_MAX_PKT_BUF_SIZE; net/vmw_vsock/virtio_transport_common.c,
+/// virtio_transport_send_pkt_info). A relay turn of this size moves one whole packet.
+/// Measured over Unix sockets, throughput rises with the slot up to this size and is
+/// flat beyond it (docs/research/measurements/managed-engine-relay-throughput-v1).
+const VSOCK_PACKET: usize = 64 << 10;
+
 pub(crate) struct Slots {
     to_backend: Storage,
     to_client: Storage,
@@ -330,6 +338,21 @@ pub(crate) struct Slots {
 impl Slots {
     pub(crate) fn capacities(&self) -> [usize; 2] {
         [self.to_backend.len(), self.to_client.len()]
+    }
+
+    /// One whole vsock packet per direction, page-rounded, with no growth/cache.
+    pub(crate) fn vsock_packet() -> Result<Self, Fault> {
+        // SAFETY: existing Linux page-size fact, no configuration change.
+        let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        let page = usize::try_from(value).map_err(|_| Fault::Bounds)?;
+        let size = VSOCK_PACKET
+            .checked_next_multiple_of(page)
+            .filter(|size| *size != 0 && *size <= isize::MAX as usize)
+            .ok_or(Fault::Bounds)?;
+        Ok(Self {
+            to_backend: Storage::Mapped(Mapping::new(size)?),
+            to_client: Storage::Mapped(Mapping::new(size)?),
+        })
     }
 
     /// One minimum private OS mapping unit per direction, with no growth/cache.

@@ -117,9 +117,9 @@ fn serve(listener: &UnixListener, token: &[u8; run::TOKEN]) {
 /// either side ends. The host's end ends the client's both ways, so that a client that
 /// keeps its connection open holds no thread here once the engine has closed it.
 fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
-    // Reserve the two minimum private mapping units before dialing or releasing
-    // HELLO. The kernel supplies the page size; this flow never grows or caches.
-    let slots = match native_relay::Slots::minimum_mapped() {
+    // Reserve one vsock packet per direction before dialing or releasing HELLO;
+    // this flow never grows or caches.
+    let slots = match native_relay::Slots::vsock_packet() {
         Ok(slots) => slots,
         Err(error) => {
             let _ = writeln!(io::stderr(), "shards-init: engine reservation: {error:?}");
