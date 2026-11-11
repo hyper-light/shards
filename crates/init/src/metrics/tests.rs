@@ -1,3 +1,4 @@
+use super::otlp::CgroupEvent;
 use super::{Failure, Limit, Reader, Scope, Snapshot};
 use shards_testdir::TempDir;
 use std::fs::{self, File};
@@ -389,4 +390,188 @@ fn snapshots_keep_actual_limit_results_and_reuse_the_one_page() {
     assert_eq!(symlink.memory_limit, Ok(Limit::Finite(0)));
     assert_eq!(symlink.task_limit, Err(Failure::Io(libc::ELOOP)));
     assert_eq!(fs::read(group.directory.join("memory.max")).unwrap(), b"0");
+}
+
+#[test]
+fn event_keys_are_order_independent_and_unknown_fields_are_not_labels() {
+    let mut reader = Reader::new().unwrap();
+    for scope in [Scope::Run, Scope::Workload, Scope::Member(u32::MAX)] {
+        let sample = Group::new(&[
+            (
+                "memory.events",
+                "oom_group_kill 5\nhigh 1\nfuture not-a-number\noom_kill 4\nlow 0\noom 3\nmax 2",
+            ),
+            ("pids.events", "future ignored\nlow 999\nmax 6\n"),
+        ])
+        .sample(&mut reader, scope);
+        assert_eq!(sample.events, [Ok(0), Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6)]);
+    }
+}
+
+#[test]
+fn event_parse_failures_do_not_erase_independent_selected_fields() {
+    let mut reader = Reader::new().unwrap();
+    let sample = Group::new(&[
+        (
+            "memory.events",
+            "low 0\nhigh -1\nmax\noom 18446744073709551616\noom_kill 4\noom_kill 4\noom_group_kill 5\n",
+        ),
+        ("pids.events", "max 6 extra\n"),
+    ])
+    .sample(&mut reader, Scope::Run);
+    assert_eq!(
+        sample.events,
+        [
+            Ok(0),
+            Err(Failure::Invalid),
+            Err(Failure::Invalid),
+            Err(Failure::Overflow),
+            Err(Failure::Invalid),
+            Ok(5),
+            Err(Failure::Invalid)
+        ]
+    );
+    let sample = Group::new(&[("memory.events", "low 0\nfuture 7\n"), ("pids.events", "")])
+        .sample(&mut reader, Scope::Run);
+    assert_eq!(
+        sample.events,
+        [
+            Ok(0),
+            Err(Failure::Missing),
+            Err(Failure::Missing),
+            Err(Failure::Missing),
+            Err(Failure::Missing),
+            Err(Failure::Missing),
+            Err(Failure::Missing)
+        ]
+    );
+}
+
+#[test]
+fn event_reader_keeps_u64_range_before_codec_checks_signed_bounds() {
+    let mut reader = Reader::new().unwrap();
+    for value in [0, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        let memory = format!(
+            "low {value}\nhigh {value}\nmax {value}\noom {value}\noom_kill {value}\noom_group_kill {value}\n"
+        );
+        let tasks = format!("max {value}\n");
+        let sample = Group::new(&[("memory.events", &memory), ("pids.events", &tasks)])
+            .sample(&mut reader, Scope::Workload);
+        assert_eq!(sample.events, [Ok(value); CgroupEvent::ALL.len()]);
+    }
+    let long = "9".repeat(super::TOKEN_BYTES + 1);
+    for text in [
+        "max -1\n".to_owned(),
+        "max NaN\n".to_owned(),
+        "max 1\nmax 2\n".to_owned(),
+        "max 18446744073709551616\n".to_owned(),
+        format!("max {long}\n"),
+    ] {
+        let expected = if text.contains(&long) || text.contains("18446744073709551616") {
+            Failure::Overflow
+        } else {
+            Failure::Invalid
+        };
+        let sample = Group::new(&[("memory.events", "low 1\n"), ("pids.events", &text)])
+            .sample(&mut reader, Scope::Run);
+        assert_eq!(sample.events.first(), Some(&Ok(1)));
+        assert_eq!(sample.events.last(), Some(&Err(expected)));
+    }
+}
+
+#[test]
+fn event_tokens_cross_pages_and_long_unknown_lines_cannot_hide_later_known_keys() {
+    let mut reader = Reader::new().unwrap();
+    let page = page_size();
+    let long = "x".repeat(page.checked_mul(2).unwrap());
+    for memory in [
+        across_page(
+            page,
+            "",
+            "oom_group_kill",
+            " 5\nlow 0\nhigh 1\nmax 2\noom 3\noom_kill 4\n",
+        ),
+        across_page(
+            page,
+            "oom_group_kill ",
+            "18446744073709551615",
+            "\nlow 0\nhigh 1\nmax 2\noom 3\noom_kill 4\n",
+        ),
+        format!(
+            "low 0\nmax{long} 999\nhigh 1\nfuture {long} max 999\nmax 2\noom 3\noom_kill 4\noom_group_kill 5\n"
+        ),
+    ] {
+        let expected_group = if memory.contains("18446744073709551615") {
+            u64::MAX
+        } else {
+            5
+        };
+        let tasks = format!("max{long} 999\nfuture {long} max 999\nmax 6\n");
+        let sample = Group::new(&[("memory.events", &memory), ("pids.events", &tasks)])
+            .sample(&mut reader, Scope::Run);
+        assert_eq!(
+            sample.events,
+            [Ok(0), Ok(1), Ok(2), Ok(3), Ok(4), Ok(expected_group), Ok(6)]
+        );
+    }
+}
+
+#[test]
+fn event_file_failures_keep_exact_errno_and_the_other_file_independent() {
+    let mut reader = Reader::new().unwrap();
+    let group = Group::new(&[("pids.events", "max 0\n"), ("other", "low 99\n")]);
+    for cause in [libc::ENOENT, libc::ELOOP, libc::EISDIR] {
+        if cause == libc::ELOOP {
+            std::os::unix::fs::symlink("other", group.directory.join("memory.events")).unwrap();
+        } else if cause == libc::EISDIR {
+            fs::remove_file(group.directory.join("memory.events")).unwrap();
+            fs::create_dir(group.directory.join("memory.events")).unwrap();
+        }
+        let sample = reader.snapshot(&group.held, Scope::Run).unwrap();
+        for (event, value) in CgroupEvent::ALL.into_iter().zip(sample.events) {
+            assert_eq!(
+                value,
+                if event == CgroupEvent::TaskMax {
+                    Ok(0)
+                } else {
+                    Err(Failure::Io(cause))
+                }
+            );
+        }
+        assert_eq!(fs::read(group.directory.join("other")).unwrap(), b"low 99\n");
+    }
+}
+
+#[test]
+fn event_snapshots_reuse_one_page_and_keep_held_groups_independent_after_errors() {
+    let mut reader = Reader::new().unwrap();
+    let buffer = (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity());
+    let group = Group::new(&[
+        (
+            "memory.events",
+            "low 0\nhigh 1\nmax 2\noom 3\noom_kill 4\noom_group_kill 5\n",
+        ),
+        ("pids.events", "max 6\n"),
+    ]);
+    let other = Group::new(&[("memory.events", "low invalid\n"), ("pids.events", "max 7\n")]);
+    let first = reader.snapshot(&group.held, Scope::Workload).unwrap();
+    let failed = reader.snapshot(&other.held, Scope::Member(7)).unwrap();
+    assert_eq!(failed.events.first(), Some(&Err(Failure::Invalid)));
+    assert_eq!(failed.events.last(), Some(&Ok(7)));
+    let again = reader.snapshot(&group.held, Scope::Workload).unwrap();
+    assert_eq!(first.events, again.events);
+    assert_eq!(again.scope, Scope::Workload);
+    fs::write(other.directory.join("memory.events"), "low 9\n").unwrap();
+    assert_eq!(
+        reader
+            .snapshot(&other.held, Scope::Member(7))
+            .unwrap()
+            .events
+            .first(),
+        Some(&Ok(9))
+    );
+    assert_eq!(
+        (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+        buffer
+    );
 }

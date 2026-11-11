@@ -1,4 +1,4 @@
-use shards_managed_otel_encoder_check::{Failure, Limit, Scope, Snapshot, write};
+use shards_managed_otel_encoder_check::{CgroupEvent, Failure, Limit, Scope, Snapshot, write};
 
 fn main() -> std::io::Result<()> {
     let healthy = Snapshot {
@@ -9,6 +9,7 @@ fn main() -> std::io::Result<()> {
         threads: Ok(4),
         memory_limit: Ok(Limit::Finite(0)),
         task_limit: Ok(Limit::Unbounded),
+        events: [Ok(0), Ok(1), Ok(2), Ok(3), Ok(4), Ok(5), Ok(6)],
         read_bytes: Ok(12),
         write_bytes: Ok(34),
     };
@@ -20,6 +21,7 @@ fn main() -> std::io::Result<()> {
         memory_limit: Err(Failure::Io(2)),
         task_limit: Err(Failure::Invalid),
         read_bytes: Err(Failure::Overflow),
+        events: [Err(Failure::Io(2)); CgroupEvent::ALL.len()],
         ..healthy
     };
     let boundary = Snapshot {
@@ -31,6 +33,15 @@ fn main() -> std::io::Result<()> {
         task_limit: Ok(Limit::Finite(i64::MAX as u64)),
         read_bytes: Ok(0),
         write_bytes: Ok(i64::MAX as u64),
+        events: [
+            Ok(i64::MAX as u64),
+            Ok(i64::MAX as u64 + 1),
+            Ok(u64::MAX),
+            Err(Failure::Missing),
+            Err(Failure::Invalid),
+            Err(Failure::Overflow),
+            Err(Failure::Io(2)),
+        ],
         ..healthy
     };
     write(
