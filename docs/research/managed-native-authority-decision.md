@@ -75,6 +75,15 @@ existing owner's live loop after association. No execution may use a fictitious
 initial-current acknowledgement. Represent the initialization/association/ready/
 retirement transitions explicitly in the actual producer/consumer types.
 
+The existing per-domain server starts listening before its directory can become
+the actor-server mount and before Prepared roots/native helper exist. Preserve
+that producer ordering too: listening readiness is not native-effect Session
+readiness. Do not make Server::start wait for the later helper and deadlock the
+very preparation needed to create it. Attach the canonical native Session only
+after its real initialized helper/owner/input/audit inputs exist, through the
+existing server event path. Identity-binding context may name the expected scope;
+it still does not issue the grant or satisfy missing initialization.
+
 ## Projection of existing rights
 
 | Existing owner fact | Broker authority it can support | Required restriction |
@@ -84,8 +93,14 @@ retirement transitions explicitly in the actual producer/consumer types.
 | Common volume, writable | Broker writes within that selected object, after per-call admission/audit | Do not expose a writable backend FD to the actor. |
 | Granted scratch | Same explicitly admitted scratch operations | Temporary paths do not imply unlimited bytes, tasks or authority. |
 | ActorOnly object | Only the existing actor-side selected contract | Exclude it from helper/common grants; do not promote visibility. |
-| Owner permits processes | Checked native child within the permitted view and ancestor budgets | Owner `processes=none` denies broker execution too. |
+| Owner permits processes | Checked native child within the permitted view and ancestor budgets | Owner `processes=none` denies broker-requested native program execution too. |
 | Parent's actual issued capabilities | An explicitly requested intersection for an owned delegated execution | No new root grant, widened rights, or authority from a reported subagent ID. |
+
+The process permission gates requested untrusted native programs. It does not
+turn required trusted management/helper processes into actor execution grants,
+or remove already-authorized peer/file service operations merely because their
+implementation uses a confined worker. Those workers still require actual
+ownership and resource accounting; they acquire no general native-exec right.
 
 The process permission and concrete executable/workdir/object selection are
 separate checks. Native permission/type checks never replace owner authorization.
