@@ -3,8 +3,9 @@
 Source derivation checkpoint, 2026-11-11 UTC. This records the frozen parent
 lifecycle implementation and the existing control stream; it selects no new
 capacity, deadline, topology or production change. The newer SIGNAL/Pending and
-semantic-failure integrations need immutable source inputs before their bounds
-can be established. A missing input below is not a reproduced defect.
+semantic-failure caller integrations still need immutable source inputs. The
+later frozen Failure leaf is now distinguished below from the r37 schema.
+A missing input below is not a reproduced defect.
 
 POLICY_READ: implementer/primary researcher `01a1c5bda0bf766683384c0705c0a9bc`;
 canonical main `0c598386ca1f7c65c6e0634dba77983e4abffff2`, full AGENTS.md,
@@ -14,6 +15,12 @@ read. Rules SHA-256
 Only this new document is writable. No runner, build, actor, simulated fault,
 profile, benchmark, broad audit, child agent or production edit belongs to this
 task. ROOT owns subsequent execution, integration and main merges.
+
+Continuation receipt: main `b6af4ec8efa246c8a12fb44abd10425a5adc9af5`, same
+role/path/rules hash. AGENTS/rules/evidence reread in full; CLAUDE is byte-identical
+to the prior full read, the managed plan's sole capture-coverage update and
+updated handoff through line696 were read. The inspected existing source bytes
+remain unchanged; no branch rebase, fetch, build or actor was performed.
 
 ## Exact inspected source boundary
 
@@ -84,10 +91,10 @@ Only Failed may have a nonzero step. Steps 1–8 are Helper, Setup, Exec,
 MountClone, MountAttach, MountClose, ControlLost, ControlProtocol. The separate
 launch-status pipe record is step u8 + errno i32 BE, hence `1+4=5` bytes;
 `Failure::decode` rejects nonpositive errno and unknown steps. Tags 1–3 preserve
-the earlier launch record. **This is the r37 schema.** The updated handoff's
-ROOT9313 authorization for `Native` versus `SelectedObjectMismatch` is newer;
-its exact leaf/unused-padding encoding has not been supplied to this record.
-No assumption that its shape or validators remain identical is justified.
+the earlier launch record. **This is the r37 schema.** ROOT9313's newer
+`Native` versus `SelectedObjectMismatch` leaf is frozen separately as **F** below.
+Its encoding is now inspected; that does not migrate the r37 consumers or give
+them the new leaf's codec result.
 
 Acknowledgment matches **both actual PID and original kind**. Allowed original
 kinds are ActorBorn, HelperBorn, HelperReady, Release, ActorReaped, HelperReaped.
@@ -116,6 +123,50 @@ are Length/Rights/Truncated/Conflict/State; codec reasons are
 Length/Version/Tag/Fields. errno projections ECONNRESET/EPIPE/EPROTO do not replace
 those distinct causes. Failed bootstrap notification is best effort; a full or
 lost channel leaves uncertainty, not a fabricated success or received failure.
+
+### Later frozen Failure leaf: same sizes, different typed meaning
+
+Read-only discovery found `P/canonical-failure-v1/`, explicitly marked frozen
+and unsigned. Its source is **F**, not a copy of active production code:
+
+| Frozen F input | Bytes / SHA-256 |
+| --- | --- |
+| `lifecycle.rs` | 16249 / `abaa959c1ca0da0c71caee089f42a03807f523b19b6b663ed5a2a01ff9a6a020` |
+| `LEAF.patch` | 16980 / `3469ec55acffd2d9abace3f12fd14ba33619f4ae193b9ab870d6ad3ca0d39e50` |
+| `source-pins.json` | 1236 / `f2fa798c29fe88ab17129e186e62850ca844a91a44e2a48d6eb01e8566f2c9ad` |
+| `README.md` | 4981 / `75b7cde9745327effc59f9bbe98f0169c65f6c3b927d64e98b9bb23bf183048c` |
+
+All four named file hashes were checked, and the complete leaf/README read.
+The patch expects parent082's agreed ABI management/input registration context;
+it is not a whole run.rs replacement or a signed current integration identity.
+
+**F::Failure** is `Native(NativeFailure)` or `SelectedObjectMismatch`.
+NativeFailure's private Step/NonZeroI32 fields are constructed through checked
+positive errno. Tags 1–8 retain their native operations; tags 10/11/12 identify
+SelectedPathLookup/SelectedSourceStat/SelectedVisibleStat. Mismatch uses a
+separate protocol tag9 followed by exactly four canonical UNUSED zero bytes.
+Nonzero mismatch padding refuses; native zero/negative errno refuses. Tag9
+is not a native Step, errno zero, resource ceiling or default error classifier.
+Its tag space is distinct from the packet kind tags in the earlier table.
+
+Failure remains `1+4=5` wire bytes. `Packet::Failed { pid, failure }` carries the
+SAME typed Failure, while `Packet::Control { kind, pid, detail }` cannot encode
+Kind::Failed. The packet is `version1 + kind1 + PID4 + Failure5 =11` bytes;
+encoding rotates `[tag,a,b,c,d]` into `[a,b,c,d,tag]` at offsets6–10. Native tags
+1–3 retain their old literal bytes. Mismatch has bytes6–9 zero and byte10 tag9;
+nonfailure packets require trailing tag0. `has_descriptor()` still selects only
+ActorBorn/HelperBorn. The new leaf therefore changes neither the one-FD bound
+nor CMSG storage derivation, but old r37 `detail/step` consumers cannot simply
+be assumed to implement the new union. Their exact migrated caller pin is owed.
+
+The frozen README/source-pins report Mac ARM64 r43 **4 codec tests passed,
+0 failed, 0 ignored**, strict production/test Clippy0, same product lock and
+original2CPU/2GiB/4GiB/600s/j2/lock/floor. Those are peer receipts read here;
+this task neither reran the tests nor audited the raw archive. The named raw
+archive identity is 6801B SHA-256
+`977cab71dcbb8a69488e7c1f86e586874bae6f043e1f0ef4af16125e12cfaab2`.
+No FD/syscall, actual selected-object mismatch, migrated caller, namespace,
+actor/helper release, native-error, fault, matrix or performance pass follows.
 
 ## Descriptor and storage derivations
 
@@ -282,8 +333,9 @@ Exact remaining inputs sent to parent `01a1c767840171d5872a1673e3e425f4` and ROO
 
 1. An immutable source/patch+base/hash for the new pre-start SIGNAL framing
    owner and SAME Pending/Epoch wake source, all startup/relay borrowers, and
-   the newly authorized semantic Failure encoding. Current r37 sizes must not
-   be silently assigned to those later bytes.
+   actual callers migrated to frozen **F**. The Failure encoding input itself
+   is resolved above; its caller integration is not. Current r37 results must
+   not be silently assigned to later bytes.
 2. The real deadline source: original caller clock/absolute expiry or an
    explicit lifetime-unbounded contract; zero/overflow/expiry meanings;
    cancellation priority and how complete noncancel frames remain available.
@@ -327,7 +379,7 @@ test counts for this task.
 | R01 | No executable/production edits. Checked/error behavior above is a focused source observation, not whole-path panic or allocation-refusal proof. |
 | R02 | Pinned Linux, libc/musl and systemd primary contracts plus exact Shards owners/callers; no architecture selected without live data. |
 | R03 | Every reported packet/field/slot/FD count has a derivation; syscall ceilings, existing defaults, proposed sizes and measured FD results are distinct. Missing new source/population prevents a new numeric recommendation. |
-| R04 | Correlation, pending ACK/release/reap and typed causes preserved in the record; new Pending/Epoch/semantic-failure source remains unavailable. |
+| R04 | Correlation, pending ACK/release/reap and typed causes preserved. Frozen F distinguishes native errno from semantic mismatch without changing byte bounds; new Pending/Epoch and migrated Failure caller source remain unavailable. |
 | R05 | Existing owner/framing/readiness reused as the proposal; no cache, spin, polling fallback, duplicate phase owner or manager introduced. |
 | R06/R07 | One focused derivation record; comments/code unchanged. Source-state rationale and provenance remain explicit. |
 | R08/R14 | No performance/allocation/fault/4–5×/leak-free claim. Actual cost and induced parent/kernel backing are unknown; ROOT owns measurement. |
