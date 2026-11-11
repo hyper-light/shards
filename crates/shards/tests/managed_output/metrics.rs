@@ -2,6 +2,7 @@
 
 use super::*;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 fn attrs(value: &Value) -> BTreeMap<&str, &Value> {
     let mut found = BTreeMap::new();
@@ -80,6 +81,55 @@ fn workload_limits(resource: &Value, kernel: &str) {
             assert_eq!(observed, ("finite", Some(actual.parse::<u64>().unwrap())));
         }
     }
+}
+
+fn events(resource: &Value) -> BTreeMap<String, u64> {
+    let metrics = resource["scopeMetrics"][0]["metrics"].as_array().unwrap();
+    let mut found = BTreeMap::new();
+    for (family, keys) in [
+        (
+            "memory",
+            ["low", "high", "max", "oom", "oom_kill", "oom_group_kill"].as_slice(),
+        ),
+        ("task", ["max"].as_slice()),
+    ] {
+        let name = format!("shards.cgroup.{family}.events");
+        let metric = metrics.iter().find(|metric| metric["name"] == name).unwrap();
+        assert_eq!(metric["unit"], "{event}");
+        assert_eq!(metric["sum"]["aggregationTemporality"], 2);
+        assert_eq!(metric["sum"]["isMonotonic"], true);
+        let mut actual = BTreeSet::new();
+        for point in metric["sum"]["dataPoints"].as_array().unwrap() {
+            let attributes = attrs(&point["attributes"]);
+            assert_eq!(attributes.len(), 1);
+            let event = attributes["shards.cgroup.event"]["stringValue"].as_str().unwrap();
+            assert!(actual.insert(event));
+            let value = point["asInt"].as_str().unwrap().parse::<i64>().unwrap();
+            assert!(
+                found
+                    .insert(format!("{family}.{event}"), u64::try_from(value).unwrap())
+                    .is_none()
+            );
+        }
+        assert_eq!(actual, keys.iter().copied().collect());
+    }
+    found
+}
+
+fn kernel_events(kernel: &str) -> BTreeMap<String, u64> {
+    let mut found = BTreeMap::new();
+    for (file, family) in [("memory.events", "memory"), ("pids.events", "task")] {
+        let header = format!("== /sys/fs/cgroup/{file}\n");
+        let (_, body) = kernel.split_once(&header).unwrap();
+        for line in body.split("== ").next().unwrap().lines() {
+            let mut fields = line.split_whitespace();
+            let key = fields.next().unwrap();
+            let value = fields.next().unwrap().parse::<u64>().unwrap();
+            assert!(fields.next().is_none());
+            assert!(found.insert(format!("{family}.{key}"), value).is_none());
+        }
+    }
+    found
 }
 
 fn scopes<'a>(document: &'a Value, run: &str) -> BTreeMap<String, &'a Value> {
@@ -168,12 +218,144 @@ fn scopes<'a>(document: &'a Value, run: &str) -> BTreeMap<String, &'a Value> {
         );
         limit(resource, "shards.cgroup.memory.limit", "By");
         limit(resource, "shards.cgroup.task.limit", "{task}");
+        events(resource);
     }
     assert_eq!(
         found.keys().map(String::as_str).collect::<Vec<_>>(),
         ["member/1", "member/2", "run", "workload"]
     );
     found
+}
+
+#[test]
+fn task_refusals_export_the_actual_kernel_event_counter() {
+    let records = std::env::var_os("SHARDS_OTEL_EVENTS_RECORDS").map(PathBuf::from);
+    if let Some(path) = &records {
+        assert!(path.is_absolute());
+        std::fs::create_dir(path).unwrap();
+    }
+    let save = |name: &str, bytes: &[u8]| {
+        if let Some(path) = &records {
+            std::fs::write(path.join(name), bytes).unwrap();
+        }
+    };
+    let Some(fixture) = with_fixture(|fixture| {
+        let id = fixture.metadata.as_ref().unwrap().run.clone();
+        fixture.main_progress(WITHIN);
+        let collect = |phase: &str| {
+            let exported = fixture.command(&["read", "metrics", &id], WITHIN);
+            save(&format!("{phase}.json"), exported.stdout.as_bytes());
+            save(&format!("{phase}.stderr"), exported.stderr.as_bytes());
+            assert_eq!(exported.status, Some(0), "{exported}");
+            let document: Value = serde_json::from_str(&exported.stdout).unwrap();
+            scopes(&document, &id);
+            document
+        };
+        let kernel = |phase: &str| {
+            let read = fixture.command(
+                &[
+                    "exec",
+                    "owner-output",
+                    "/bin/testguest",
+                    "files",
+                    "/sys/fs/cgroup/memory.events",
+                    "/sys/fs/cgroup/pids.events",
+                ],
+                WITHIN,
+            );
+            save(&format!("{phase}-kernel.stdout"), read.stdout.as_bytes());
+            save(&format!("{phase}-kernel.stderr"), read.stderr.as_bytes());
+            assert_eq!(read.status, Some(0), "{read}");
+            kernel_events(&read.stdout)
+        };
+        let before_kernel = kernel("before");
+        let before = collect("before");
+        let workload = scopes(&before, &id)["workload"];
+        let before_events = events(workload);
+        let tasks = workload["scopeMetrics"][0]["metrics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|metric| metric["name"] == "shards.cgroup.task.count")
+            .unwrap()["sum"]["dataPoints"][0]["asInt"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap();
+        let update = fixture.command(&["update", "--pids-limit", &tasks.to_string(), &id], WITHIN);
+        save("finite-update.stdout", update.stdout.as_bytes());
+        save("finite-update.stderr", update.stderr.as_bytes());
+        assert_eq!(update.status, Some(0), "{update}");
+        let finite = collect("finite");
+        assert_eq!(
+            limit(
+                scopes(&finite, &id)["workload"],
+                "shards.cgroup.task.limit",
+                "{task}"
+            ),
+            ("finite", Some(tasks))
+        );
+        // The owner exec may enter a full group; its own child creation must not.
+        let refused = fixture.command(
+            &[
+                "exec",
+                "owner-output",
+                "/bin/testguest",
+                "spawn",
+                "streams",
+                "event-child-ran",
+                "event-child-stderr",
+            ],
+            WITHIN,
+        );
+        save("refused.stdout", refused.stdout.as_bytes());
+        save("refused.stderr", refused.stderr.as_bytes());
+        let after = collect("after-refusal");
+        let after_events = events(scopes(&after, &id)["workload"]);
+        let reset = fixture.command(&["update", "--pids-limit", "-1", &id], WITHIN);
+        save("reset.stdout", reset.stdout.as_bytes());
+        save("reset.stderr", reset.stderr.as_bytes());
+        assert_eq!(reset.status, Some(0), "{reset}");
+        let after_kernel = kernel("after");
+        let resumed = fixture.command(
+            &[
+                "exec",
+                "owner-output",
+                "/bin/testguest",
+                "spawn",
+                "streams",
+                "event-child-ran",
+                "event-child-stderr",
+            ],
+            WITHIN,
+        );
+        save("resumed.stdout", resumed.stdout.as_bytes());
+        save("resumed.stderr", resumed.stderr.as_bytes());
+        assert_eq!(refused.status, Some(1), "{refused}");
+        assert!(refused.stdout.starts_with("spawn error "), "{refused}");
+        assert!(!refused.stdout.contains("event-child-ran"), "{refused}");
+        assert_eq!(resumed.status, Some(0), "{resumed}");
+        assert!(resumed.stdout.contains("event-child-ran"), "{resumed}");
+        assert!(resumed.stderr.contains("event-child-stderr"), "{resumed}");
+        assert!(after_events["task.max"] > before_events["task.max"]);
+        for (key, value) in before_events {
+            assert!(before_kernel[&key] <= value);
+            assert!(value <= after_events[&key]);
+            assert!(after_events[&key] <= after_kernel[&key]);
+        }
+        for (member, label) in [(1, "agent"), (2, "harness")] {
+            for channel in [Channel::Stdout, Channel::Stderr] {
+                fixture.consume(member, label, channel);
+            }
+        }
+        fixture.main_progress(WITHIN);
+    }) else {
+        return;
+    };
+    if let Some(record) = &fixture.record {
+        save("managed-output.after-stop", &std::fs::read(record).unwrap());
+    }
+    save("completed", b"event case and owner/observer cleanup returned\n");
 }
 
 #[test]

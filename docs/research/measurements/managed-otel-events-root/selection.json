@@ -1,0 +1,45 @@
+{
+  "role": "coordinator",
+  "base": "0a6d91b3de0f10a8397868aa3794adab1e09afdc",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "read_full": [
+    "AGENTS.md",
+    "docs/development-rules.md",
+    "docs/development-evidence.md",
+    "CLAUDE.md",
+    "docs/design/managed-runtime-plan.md",
+    "/Users/adalundhe/g121-handoff.md"
+  ],
+  "source": "67a0cdadee0479c0998041b84f77df344730d24d",
+  "selected_paths": [
+    "crates/init/src/metrics.rs",
+    "crates/init/src/metrics/events.rs",
+    "crates/init/src/metrics/otlp.rs",
+    "crates/init/src/metrics/tests.rs",
+    "docs/research/measurements/managed-otel-encoder/check.py",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs",
+    "docs/research/measurements/managed-otel-rust-reference/check.py",
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs",
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs",
+    "docs/research/measurements/managed-otel/profile/src/main.rs"
+  ],
+  "additional_owned": [
+    "crates/shards/tests/managed_output/metrics.rs",
+    "docs/research/measurements/managed-otel-events-root"
+  ],
+  "time_unix_ns": 1794368866171375000,
+  "no_other_agent_sources_modified": true,
+  "frozen_inputs": {
+    "crates/init/src/metrics.rs": "422da223896561043bf99f7b13029c402bfb6d94bf656de7b6e7cdd07d303b9f",
+    "crates/init/src/metrics/events.rs": "5940520b11c658b05c476d7f4de140721205ad4eb0c13a81971744244cd9862b",
+    "crates/init/src/metrics/otlp.rs": "284c8cd934eb17173b5a5fa86447f53ea498157154102c5368a103e705e67705",
+    "crates/init/src/metrics/tests.rs": "e9c495df9d721dd46b653f2383bced6b8e20ee7e6f5fc8bb90288c856df5d383",
+    "docs/research/measurements/managed-otel-encoder/check.py": "83859d3a4cc4adc7b46dc570d4811e20c398f5a90cf7af9475a896d6c561720a",
+    "docs/research/measurements/managed-otel-encoder/fixture.rs": "bee836f794b8e09661210ff21383cecda5379a6e7529072864a876baa62cf103",
+    "docs/research/measurements/managed-otel-rust-reference/check.py": "bb0fbe82629b489cc8f2c428b6f8fa8cf4c3627de936e9cf5981f3367c08930f",
+    "docs/research/measurements/managed-otel-rust-reference/src/main.rs": "51ceff7cb852c94e0c3dfaa326e8bf67267cf5aba33533266c3e31661fbcc956",
+    "docs/research/measurements/managed-otel-rust-reference/src/reference.rs": "371c3b433ffad6c789888a34e34a48139ef220729264a2a5e00fdef95a9b94a8",
+    "docs/research/measurements/managed-otel/profile/src/main.rs": "2ed3fac23458818fabadb555a61b60701944bf11bc7a71c0630d958a762cdbef",
+    "crates/shards/tests/managed_output/metrics.rs": "1a9e2b9ff613238b8a802adc4b39c93e0491b9365a1d8220202ea796412323dc"
+  }
+}

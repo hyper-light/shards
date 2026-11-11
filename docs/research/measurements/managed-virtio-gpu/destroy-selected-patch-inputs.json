@@ -1,0 +1,63 @@
+{
+  "peer_repo": "/Users/adalundhe/.cache/hex-lead/worktrees/shards-physical-gpu",
+  "source_commit": "de0a0e6eca64539910da46fd95ba8ff8c7b7fa81",
+  "gpgsig_header_present": true,
+  "cryptographic_verification_performed": false,
+  "files": [
+    {
+      "source_path": "resources/gpu/physical-linux.patch",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/physical-linux.patch",
+      "bytes": 18055,
+      "sha256": "92163c9882304fa0a446d230fb80b4fb8399aad8c39eb7811e5d3937b9de0512",
+      "historical_commit": "6219e61c9e3f559579b2632f873005a47f521cc8",
+      "historical_path": "docs/hex-venus-physical-filter/patches/linux-1.3.0.patch",
+      "historical_bytes_equal": true
+    },
+    {
+      "source_path": "resources/gpu/physical-krunkit.patch",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/physical-krunkit.patch",
+      "bytes": 17892,
+      "sha256": "03c7cb34a2f39622cd5794f6a867bc5ba387aad82ce04f12a8dbb3374ed283ef",
+      "historical_commit": "6219e61c9e3f559579b2632f873005a47f521cc8",
+      "historical_path": "docs/hex-venus-physical-filter/patches/krunkit-0.10.4e.patch",
+      "historical_bytes_equal": true
+    },
+    {
+      "source_path": "resources/gpu/physical-transport-linux.patch",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/physical-transport-linux.patch",
+      "bytes": 16694,
+      "sha256": "63d805201465ec32559287784a489f4a3fd3004a18f51d602b3be43402078dff",
+      "historical_commit": "6219e61c9e3f559579b2632f873005a47f521cc8",
+      "historical_path": "docs/hex-venus-physical-filter/transport-patches/linux-1.3.0.patch",
+      "historical_bytes_equal": true
+    },
+    {
+      "source_path": "resources/gpu/physical-transport-krunkit.patch",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/physical-transport-krunkit.patch",
+      "bytes": 17654,
+      "sha256": "2025d8c3285806c4555d1f0f80935ce0b86dd073424c292613ab6f51821c40c1",
+      "historical_commit": "6219e61c9e3f559579b2632f873005a47f521cc8",
+      "historical_path": "docs/hex-venus-physical-filter/transport-patches/krunkit-0.10.4e.patch",
+      "historical_bytes_equal": true
+    },
+    {
+      "source_path": "scripts/gpu-libs",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/gpu-libs",
+      "bytes": 16004,
+      "sha256": "e2332aff497b8998106dbda6f1a47c391fa75055231983a7520af7701e393090"
+    },
+    {
+      "source_path": "crates/vmm/src/devices/virtio/gpu/virgl.rs",
+      "retained_path": "docs/research/measurements/managed-virtio-gpu/sources/selected-de0a/virgl.rs",
+      "bytes": 60715,
+      "sha256": "a84e1dc18833a49bc57238a58c0e021cf9f81fdca2ef8ccd02004e32cb94b0ce"
+    }
+  ],
+  "execution": "source reading only; no patch application, renderer execution or branch adoption",
+  "windows_patch": {
+    "source_path": "resources/gpu/venus-windows.patch",
+    "bytes": 42905,
+    "sha256": "9e500698a548cf396050c6a337ca0b3d66a054cf2602cc3f7bab925c21bb96bd",
+    "equal_to_owned_tracked_file": true
+  }
+}

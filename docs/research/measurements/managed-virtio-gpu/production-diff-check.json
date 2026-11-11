@@ -1,0 +1,13 @@
+{
+  "command": [
+    "git",
+    "diff",
+    "--cached",
+    "--check",
+    "--",
+    "crates/vmm/src/devices/virtio/gpu/protocol.rs"
+  ],
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

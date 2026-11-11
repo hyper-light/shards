@@ -4,6 +4,7 @@
 //! pids.current subtree TIDs and io.stat's per-device cumulative bytes. These
 //! observations confer no authority and do not reuse Docker STATS' zero defaults.
 
+mod events;
 pub mod otlp;
 
 #[cfg(test)]
@@ -240,6 +241,7 @@ impl Reader {
         let threads = self.scalar(group, c"pids.current");
         let memory_limit = self.memory_limit(group);
         let task_limit = self.task_limit(group);
+        let events = events::read(self, group);
         let (read_bytes, write_bytes) = match self.io(group) {
             Ok((r, w)) => (Ok(r), Ok(w)),
             Err(e) => (Err(e), Err(e)),
@@ -258,6 +260,7 @@ impl Reader {
             threads,
             memory_limit,
             task_limit,
+            events,
             read_bytes,
             write_bytes,
         })

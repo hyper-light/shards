@@ -1,0 +1,558 @@
+{
+  "code_patch_sha256": "e506d40cb39506518178992091333a8554e9c30238ae7c088b68ab557131e1dd",
+  "records": [
+    {
+      "label": "red-empty-descriptors",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::protocol::tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "105b9109c0c512af1a8d624b56e2c3868cda168c9ec377c90dadbe1fe7e8b584",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "8858bc80655d9f52436690be2bea3d40d94820d8abe64438282dbf6539d6d1a3"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": false
+      },
+      "result": {
+        "exit_code": 101,
+        "counts": {
+          "passed": 3,
+          "failed": 2,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 9.15s"
+      },
+      "actual_witness": [],
+      "retained_files": [
+        {
+          "path": "raw/red-empty-descriptors/protocol.rs.txt",
+          "bytes": 18155,
+          "sha256": "105b9109c0c512af1a8d624b56e2c3868cda168c9ec377c90dadbe1fe7e8b584"
+        },
+        {
+          "path": "raw/red-empty-descriptors/receipt.json",
+          "bytes": 1127,
+          "sha256": "1615363bf5f04077da3bb706417732b0dc12f0e8f4060174fc4bc76ee1db48c9"
+        },
+        {
+          "path": "raw/red-empty-descriptors/source.diff",
+          "bytes": 2730,
+          "sha256": "4c98fe1a9a79671d438083a422f5250270e4391f6d18d2dfcbb6f7dad260b446"
+        },
+        {
+          "path": "raw/red-empty-descriptors/stderr",
+          "bytes": 1481,
+          "sha256": "ca3a6b7c764f1180094e43c4728ffea020f9f7fd30d12b1b7521fd9cd95813eb"
+        },
+        {
+          "path": "raw/red-empty-descriptors/stdout",
+          "bytes": 718,
+          "sha256": "138ef0091d39353cb53fb1aeb1bdea91fb54f4689c8446116416cd33d0936e1b"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "green-boundaries",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "0342b85d9c808e3ced041a6c3ef0e9bf70438272",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "8858bc80655d9f52436690be2bea3d40d94820d8abe64438282dbf6539d6d1a3"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 0,
+        "counts": {
+          "passed": 13,
+          "failed": 0,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 3.02s"
+      },
+      "actual_witness": [],
+      "retained_files": [
+        {
+          "path": "raw/green-boundaries/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/green-boundaries/receipt.json",
+          "bytes": 1108,
+          "sha256": "60647ae516f6b006b9c59180cd5ee932384bc3f62c05bbd19b9cab1f034521a1"
+        },
+        {
+          "path": "raw/green-boundaries/source.diff",
+          "bytes": 6267,
+          "sha256": "850172b99bf1d90667dfd37926da829336ae8d65ef035402f1778a1e39287fa6"
+        },
+        {
+          "path": "raw/green-boundaries/stderr",
+          "bytes": 503,
+          "sha256": "4717ef47278f581fd0aca0774ec0c31095373eb24b99dfb16854661e95e79d11"
+        },
+        {
+          "path": "raw/green-boundaries/stdout",
+          "bytes": 1183,
+          "sha256": "a297dab43eb9831cfdfa42bc5fbc7e6ece6aceb1a851aea9b4eced9cd57e57f4"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "red-context-fence-reuse",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence",
+        "--",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "5c614b520474e48594c7e012ed58502f57ead5b4",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "fe07709ddbcc18fca83b5b9438ce11c7db7a5c80802526d75d05e76f63fedc47"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 101,
+        "counts": {
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 3.72s"
+      },
+      "actual_witness": [],
+      "retained_files": [
+        {
+          "path": "raw/red-context-fence-reuse/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/red-context-fence-reuse/receipt.json",
+          "bytes": 1175,
+          "sha256": "5aefc5c469314aa9c226687dd0eb8e3586f575bcf9f98fdf031c8562ade256a7"
+        },
+        {
+          "path": "raw/red-context-fence-reuse/source.diff",
+          "bytes": 4576,
+          "sha256": "ed71c74d1be4c53f22d15a0b408e8b5bd8c4b0df282566713daf8366d6620011"
+        },
+        {
+          "path": "raw/red-context-fence-reuse/stderr",
+          "bytes": 691,
+          "sha256": "332b736875fddff946f0a64be8ec3aa34dc499262aebaa84d931a42a4b2cc628"
+        },
+        {
+          "path": "raw/red-context-fence-reuse/stdout",
+          "bytes": 306,
+          "sha256": "d28bca862083e896b8350f570dc27a78722d8252b73d14c6ace10e04d3627d39"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "green-context-batch-proof",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "5c614b520474e48594c7e012ed58502f57ead5b4",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "8a13597c1e038cd3ebb2548ff3af20d434a1c5645451783d889a991b44911cff"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": false,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 101,
+        "counts": {
+          "passed": 13,
+          "failed": 1,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 2.10s"
+      },
+      "actual_witness": [],
+      "retained_files": [
+        {
+          "path": "raw/green-context-batch-proof/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/green-context-batch-proof/receipt.json",
+          "bytes": 1110,
+          "sha256": "780dab09617dc2658ad9f2a41cfba35b365fdef3ab078aeac3def53f71cb2b04"
+        },
+        {
+          "path": "raw/green-context-batch-proof/source.diff",
+          "bytes": 8961,
+          "sha256": "fb998bac07f328a66fafb36a92b8a03ad6f366ed7acbd4732ab66ecee172809a"
+        },
+        {
+          "path": "raw/green-context-batch-proof/stderr",
+          "bytes": 848,
+          "sha256": "8b96a10e8ce5bc935d0b33583dfabd97b86cfff20aaee2dcfd6ec37225d7cc40"
+        },
+        {
+          "path": "raw/green-context-batch-proof/stdout",
+          "bytes": 1375,
+          "sha256": "86aaafc037edd2cabd11f3dbce2ba2a0b5cc3a988612c0110442b4b5a2f0f342"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "green-context-batch-guard",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "5c614b520474e48594c7e012ed58502f57ead5b4",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 0,
+        "counts": {
+          "passed": 14,
+          "failed": 0,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 1.16s"
+      },
+      "actual_witness": [
+        "test devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence ... context_id=1 old_signals_drained=1 before_new_signal=[0, 2, 4, 6] after_new_signal=[0, 2, 4, 6, 8]"
+      ],
+      "retained_files": [
+        {
+          "path": "raw/green-context-batch-guard/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/green-context-batch-guard/receipt.json",
+          "bytes": 1108,
+          "sha256": "7358bf5d7490908ebd82bec87abb39617ac8b25caef6fbb869f3b96f210d5966"
+        },
+        {
+          "path": "raw/green-context-batch-guard/source.diff",
+          "bytes": 8993,
+          "sha256": "11ab68b05af057e4de49248ae28a9cfbb99c8a9ec874d0d6e73619b6f1565fa5"
+        },
+        {
+          "path": "raw/green-context-batch-guard/stderr",
+          "bytes": 503,
+          "sha256": "ee1a0d40b07f20124a628169b4d31fff0c3313a79371ee7bcddca84ca87f9856"
+        },
+        {
+          "path": "raw/green-context-batch-guard/stdout",
+          "bytes": 1367,
+          "sha256": "21747cb047c8a5ca2c9a2847c36532f1d74cf76b15ba5b94ac997307dcd35151"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "clippy-context-final",
+      "command": [
+        "cargo",
+        "clippy",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "--tests",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "receipt_head": "5c614b520474e48594c7e012ed58502f57ead5b4",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+      },
+      "platform": "macOS-26.4.1-arm64-arm-64bit",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 0,
+        "counts": null,
+        "finished": "Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.28s"
+      },
+      "actual_witness": [],
+      "retained_files": [
+        {
+          "path": "raw/clippy-context-final/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/clippy-context-final/receipt.json",
+          "bytes": 1078,
+          "sha256": "745ffba64481c9ffb7aa81eea361f3570884b276370ffcf0fdffc154aadc938e"
+        },
+        {
+          "path": "raw/clippy-context-final/source.diff",
+          "bytes": 8993,
+          "sha256": "11ab68b05af057e4de49248ae28a9cfbb99c8a9ec874d0d6e73619b6f1565fa5"
+        },
+        {
+          "path": "raw/clippy-context-final/stderr",
+          "bytes": 191,
+          "sha256": "8d599ecf6f3234b24993a999b7116f14579cf92e7bcaab44596fdeec34bc757e"
+        },
+        {
+          "path": "raw/clippy-context-final/stdout",
+          "bytes": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "linux-gnu-context-fence",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--lib",
+        "devices::virtio::gpu::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "118978b03c0f27f17a995bcecb1d7be3dedb3221",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+      },
+      "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 0,
+        "counts": {
+          "passed": 15,
+          "failed": 0,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 9.31s"
+      },
+      "actual_witness": [
+        "test devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence ... context_id=1 old_signals_drained=1 before_new_signal=[0, 2, 4, 6] after_new_signal=[0, 2, 4, 6, 8]"
+      ],
+      "retained_files": [
+        {
+          "path": "raw/linux-gnu-context-fence/mod.rs.txt",
+          "bytes": 60718,
+          "sha256": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+        },
+        {
+          "path": "raw/linux-gnu-context-fence/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/linux-gnu-context-fence/receipt.json",
+          "bytes": 1155,
+          "sha256": "2300e53b120e14a5479200edf8c91cd68fe807cb1940fa9eed33a3f8c237d134"
+        },
+        {
+          "path": "raw/linux-gnu-context-fence/source.diff",
+          "bytes": 8993,
+          "sha256": "11ab68b05af057e4de49248ae28a9cfbb99c8a9ec874d0d6e73619b6f1565fa5"
+        },
+        {
+          "path": "raw/linux-gnu-context-fence/stderr",
+          "bytes": 526,
+          "sha256": "3626dc57804624532dd459ec86d3a01e65d94013bfa0ce65ae3daa3155b108ef"
+        },
+        {
+          "path": "raw/linux-gnu-context-fence/stdout",
+          "bytes": 1467,
+          "sha256": "1cef9b8d732088e565fa8d2d0e98767491d46a9d5efec76369d9ccb23b3f4575"
+        }
+      ],
+      "new_execution": false
+    },
+    {
+      "label": "linux-musl-context-fence",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "-j2",
+        "-p",
+        "shards-vmm",
+        "--target",
+        "x86_64-unknown-linux-musl",
+        "--lib",
+        "devices::virtio::gpu::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "receipt_head": "118978b03c0f27f17a995bcecb1d7be3dedb3221",
+      "actual_source_hashes": {
+        "Cargo.lock": "1ecb41e738c4c4133a1968873e424efce5b2a65899dd8f40f37ac6aaffec8133",
+        "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+      },
+      "platform": "Linux-6.19.10-300.fc44.x86_64-x86_64-with-glibc2.43",
+      "admission": "kiln 2CPU/2GiB/4GiB, 600s outer; cargo -j2",
+      "source_receipt_matches_final": {
+        "crates/vmm/src/devices/virtio/gpu/mod.rs": true,
+        "crates/vmm/src/devices/virtio/gpu/protocol.rs": true
+      },
+      "result": {
+        "exit_code": 0,
+        "counts": {
+          "passed": 15,
+          "failed": 0,
+          "ignored": 0
+        },
+        "finished": "Finished `test` profile [unoptimized + debuginfo] target(s) in 11.67s"
+      },
+      "actual_witness": [
+        "test devices::virtio::gpu::tests::a_recreated_context_waits_for_its_own_fence ... context_id=1 old_signals_drained=1 before_new_signal=[0, 2, 4, 6] after_new_signal=[0, 2, 4, 6, 8]"
+      ],
+      "retained_files": [
+        {
+          "path": "raw/linux-musl-context-fence/mod.rs.txt",
+          "bytes": 60718,
+          "sha256": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e"
+        },
+        {
+          "path": "raw/linux-musl-context-fence/protocol.rs.txt",
+          "bytes": 20213,
+          "sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486"
+        },
+        {
+          "path": "raw/linux-musl-context-fence/receipt.json",
+          "bytes": 1204,
+          "sha256": "b9359a31528c41b93bc3968d69819e79771bbaad21d69bbd11113af4137447a5"
+        },
+        {
+          "path": "raw/linux-musl-context-fence/source.diff",
+          "bytes": 8993,
+          "sha256": "11ab68b05af057e4de49248ae28a9cfbb99c8a9ec874d0d6e73619b6f1565fa5"
+        },
+        {
+          "path": "raw/linux-musl-context-fence/stderr",
+          "bytes": 553,
+          "sha256": "4704f134d164d686a952a6fdad8f06b17509f427025aaf86533c2c1ffe7ade7b"
+        },
+        {
+          "path": "raw/linux-musl-context-fence/stdout",
+          "bytes": 1467,
+          "sha256": "1cef9b8d732088e565fa8d2d0e98767491d46a9d5efec76369d9ccb23b3f4575"
+        }
+      ],
+      "new_execution": false
+    }
+  ],
+  "no_new_native_runs": true,
+  "interpretation": "Native core/protocol component execution. Existing test Renderer queues a callback during destroy before its return. Does not prove physical renderer, callback first arriving after return, GPU VM or restore."
+}

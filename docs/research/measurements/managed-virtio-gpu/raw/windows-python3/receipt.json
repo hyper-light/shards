@@ -1,0 +1,6 @@
+{
+  "runner": "f766f09294f2e17e3b8a631ffd4e6a4b",
+  "command": "python3 docs/research/measurements/managed-virtio-gpu/light-check.py windows-native-readonly python3 docs/research/measurements/managed-virtio-gpu/host-readonly.py",
+  "exit_code": 49,
+  "provenance": "retained copy of original Kiln tool output; no Python probe or installation ran"
+}

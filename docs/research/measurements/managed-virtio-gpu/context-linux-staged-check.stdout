@@ -1,0 +1,22 @@
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/source.diff:141: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/source.diff:146: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-context-fence/stdout:21: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/source.diff:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/source.diff:70: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/source.diff:92: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/source.diff:141: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/source.diff:146: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-context-fence/stdout:21: new blank line at EOF.

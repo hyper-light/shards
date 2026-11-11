@@ -1,0 +1,73 @@
+{
+  "platform": "macOS-26.4.1-arm64-arm-64bit",
+  "arch": "arm64",
+  "source_sha256": "81b7802e73aa1459a023ef807a393cbb6ece7b7b796c425c093c8cc97f75dbe2",
+  "scope": "read-only device/API enumeration, no VM, performance or parity claim",
+  "os_build": {
+    "command": [
+      "sw_vers",
+      "-buildVersion"
+    ],
+    "exit_code": 0,
+    "stdout": "25E253\n",
+    "stderr": ""
+  },
+  "sdk_version": {
+    "command": [
+      "xcrun",
+      "--show-sdk-version"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "2026-11-10 13:49:05.935 xcodebuild[34347:48597229] Writing error result bundle to /var/folders/1s/ldpdh04d7d7219qts5t19d7h0000gn/T/ResultBundle_2026-10-11_13-49-0005.xcresult\nxcodebuild: error: SDK \"/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk\" cannot be located.\nxcrun: error: unable to lookup item 'SDKVersion' in SDK '/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk'\n"
+  },
+  "sdk_metal_header": {
+    "path": "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/Metal.framework/Headers/MTLDevice.h",
+    "sha256": "d1ef1bb5bc85faeeec9bc85f49124a453a8cd33b1182b0a71a41ba0dc4ebbb89"
+  },
+  "probe_source": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m",
+    "sha256": "6c3df6cc9f14a43526e41341a715fc8e7a2a1c456c512e4ade19eb16562aff6d"
+  },
+  "compiler": {
+    "command": [
+      "cc",
+      "--version"
+    ],
+    "exit_code": 0,
+    "stdout": "Apple clang version 21.0.0 (clang-2100.1.1.101)\nTarget: arm64-apple-darwin25.4.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin\n",
+    "stderr": ""
+  },
+  "compile": {
+    "command": [
+      "cc",
+      "-fobjc-arc",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/docs/research/measurements/managed-virtio-gpu/metal-readonly.m",
+      "-framework",
+      "Metal",
+      "-framework",
+      "Foundation",
+      "-o",
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "metal_enumeration": {
+    "command": [
+      "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly"
+    ],
+    "exit_code": 0,
+    "stdout": "[{\"removable\":false,\"unified_memory\":true,\"name\":\"Apple M5 Max\",\"low_power\":false,\"registry_id\":4294968612}]\n",
+    "stderr": ""
+  },
+  "probe_binary": {
+    "path": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/target/managed-virtio-gpu-light/metal-readonly",
+    "sha256": "116c4cd985b6dd973ba17e2342337ff35c934b8ae71d1aa252b9c189d5b1f03e"
+  },
+  "driver_identity": "Metal driver ships with the recorded macOS build; no Vulkan/MoltenVK binary was probed"
+}

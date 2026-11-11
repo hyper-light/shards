@@ -1,0 +1,7 @@
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/abi)
+    Checking libc v0.2.189
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/vmm)
+    Checking shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/netring)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/testdir)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/ipc)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.98s

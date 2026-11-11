@@ -1,0 +1,43 @@
+==========
+VULKANINFO
+==========
+
+Vulkan Instance Version: 1.4.321
+
+
+Instance Extensions: count = 14
+-------------------------------
+VK_EXT_debug_report                    : extension revision 10
+VK_EXT_debug_utils                     : extension revision 2
+VK_EXT_swapchain_colorspace            : extension revision 5
+VK_KHR_device_group_creation           : extension revision 1
+VK_KHR_external_fence_capabilities     : extension revision 1
+VK_KHR_external_memory_capabilities    : extension revision 1
+VK_KHR_external_semaphore_capabilities : extension revision 1
+VK_KHR_get_physical_device_properties2 : extension revision 2
+VK_KHR_get_surface_capabilities2       : extension revision 1
+VK_KHR_portability_enumeration         : extension revision 1
+VK_KHR_surface                         : extension revision 25
+VK_KHR_surface_maintenance1            : extension revision 1
+VK_KHR_win32_surface                   : extension revision 6
+VK_LUNARG_direct_driver_loading        : extension revision 1
+
+Instance Layers: count = 1
+--------------------------
+VK_LAYER_AMD_switchable_graphics AMD switchable graphics layer 1.4.329  version 1
+
+Devices:
+========
+GPU0:
+	apiVersion         = 1.4.329
+	driverVersion      = 2.0.373
+	vendorID           = 0x1002
+	deviceID           = 0x1586
+	deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+	deviceName         = AMD Radeon(TM) 8060S Graphics
+	driverID           = DRIVER_ID_AMD_PROPRIETARY
+	driverName         = AMD proprietary driver
+	driverInfo         = 25.20.32.06 (LLPC)
+	conformanceVersion = 1.4.0.0
+	deviceUUID         = 00000000-c400-0000-0000-000000000000
+	driverUUID         = 414d442d-5749-4e2d-4452-560000000000

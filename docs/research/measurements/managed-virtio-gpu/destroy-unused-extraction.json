@@ -1,0 +1,660 @@
+[
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_platform.h",
+    "bytes": 2828,
+    "sha256": "2fa47dd60cd94eb6fd8d7615953878f5664eb57fdff3b1b9b856c1d8f1496737",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_platform.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std.h",
+    "bytes": 16687,
+    "sha256": "3443226503a8bcd6b828dabacb8ebe40ece32d6d37274ffd2d855a504629c968",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std_decode.h",
+    "bytes": 4250,
+    "sha256": "2b912389d39d6627ee8af01e052e9557d213b27c0b79a0e25f5366cfe1942f1a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std_decode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std_encode.h",
+    "bytes": 5979,
+    "sha256": "93ad363de123988cd7b27acc7930f7f93497bc2e5d74f8420ee8ba18e8746e0a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_av1std_encode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std.h",
+    "bytes": 13861,
+    "sha256": "0b715c26af3eecc950ebedcf6831fd8b8a7d6c662780fd8b8a37d9082ac07fae",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std_decode.h",
+    "bytes": 2723,
+    "sha256": "9667ecc76eaba22e311e5d2d48b38af47ca307865ae35477897790343ba3ad14",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std_decode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std_encode.h",
+    "bytes": 6878,
+    "sha256": "c68a1fa4ebadd1b50992a61fb93310a6686d5ea932b91b850d3ad9bc8dec488e",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h264std_encode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std.h",
+    "bytes": 23439,
+    "sha256": "42a2daf1b396f1071f1855262bcadedd544b90da67e2c90d24885720177adf83",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std_decode.h",
+    "bytes": 2429,
+    "sha256": "38a7c0d6688280795efe00f9ce8506795afbbe558300c9f7eacd764daa42f7e2",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std_decode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std_encode.h",
+    "bytes": 7462,
+    "sha256": "aa8c75beac0962abf752a5ec741a42b1a108ee28fb6b3abcdc995e57e20c6c14",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_h265std_encode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_vp9std.h",
+    "bytes": 5384,
+    "sha256": "80df697fad03a9acddadb8ae4944bb25b5df4b1a427157ad7fbdeb77112a3c89",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_vp9std.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codec_vp9std_decode.h",
+    "bytes": 2371,
+    "sha256": "318a21532405f31a7b977c340effbf5bff30790734153c29ed6ad9a8230efbaf",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codec_vp9std_decode.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vk_video/vulkan_video_codecs_common.h",
+    "bytes": 660,
+    "sha256": "7afc98e84d3bea72e40a65161463abbd4be2ff1e1853eca3f8c331afb7329a8b",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vk_video/vulkan_video_codecs_common.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer.h",
+    "bytes": 1962,
+    "sha256": "e56fd85e85dd699a249c6f63352808d3366c49332b5c06f017dcefdf563d0275",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_acceleration_structure.h",
+    "bytes": 30871,
+    "sha256": "f7729ff81d641a7c75571a16a523ba5d0a06c98e3a80b0f759c71201e1701861",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_acceleration_structure.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_buffer.h",
+    "bytes": 43594,
+    "sha256": "727e7ca4a8db71bf93dc115781ea60c41d73136501880fc6c9d551f85f6530d3",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_buffer.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_buffer_view.h",
+    "bytes": 8002,
+    "sha256": "8297c940e9e8cc990bbd9e5f01edcfa9683465c521ec1f939bf940ceb2d8ea4a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_buffer_view.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_command_buffer.h",
+    "bytes": 450986,
+    "sha256": "5c26aaa31f91ab97633d27ed210c01327e070ffbef7e4ffcb35c6c12320f4c79",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_command_buffer.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_command_pool.h",
+    "bytes": 10745,
+    "sha256": "b26f5a506c65e384dc69b03f3053d6933a4af2cbc4fc1f1351b6e2f1ac00ac9a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_command_pool.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_cs.h",
+    "bytes": 4719,
+    "sha256": "c8e1e7976966fa6c93b8bd628829de5798e8507778b71a6c3ecfc8f7e65586a2",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_cs.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_defines.h",
+    "bytes": 132032,
+    "sha256": "416d2e26275ea21bb5beec74bca3fcc14646f20cff67f40bf7a433a11d3b1497",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_defines.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_pool.h",
+    "bytes": 14059,
+    "sha256": "3bdc3125d916c8bc99110d573aa1f8131790338f948f6be7ade4681790c17044",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_descriptor_pool.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_set.h",
+    "bytes": 18625,
+    "sha256": "42ce75d97622005bf7e15238e703c67f52695d0e020ee99348ef5beb48dd2485",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_descriptor_set.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_set_layout.h",
+    "bytes": 21845,
+    "sha256": "188679c5f6f0f565cf745d8bfb6a62f75098c2de96520ab0cebc94577912db84",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_descriptor_set_layout.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_update_template.h",
+    "bytes": 10160,
+    "sha256": "6c557b2a3e9e9c82b4e57dd4ef03d6119846256769aa3557ab971e3690bd0871",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_descriptor_update_template.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_device.h",
+    "bytes": 1240484,
+    "sha256": "d5719a9f5416691bd86772564dda1d3440bc003b2bbd92ed4d8e07fd1ec9ff82",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_device.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_device_memory.h",
+    "bytes": 46409,
+    "sha256": "699463e908635bf95147e3587ab202bf080714c9d7a3f545ede537ac55233206",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_device_memory.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_dispatches.h",
+    "bytes": 62175,
+    "sha256": "b6832cb8c83e3e3fbb5c52f35d7d8b059935ea39c70549237b53f64be00944ae",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_event.h",
+    "bytes": 11993,
+    "sha256": "39152d759e8a5e643d543f3d3461ac25dd748716c18580f12d57e2182ce21349",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_event.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_fence.h",
+    "bytes": 17908,
+    "sha256": "9d2d480858243234e5c0f57c9ddbcb1d945f67f337d5ea609c3873882afeec43",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_fence.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_framebuffer.h",
+    "bytes": 14258,
+    "sha256": "7b88202c1a4f3eb25c833da16003d7f66b9571a0322c6e760ac328b07f0256ac",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_framebuffer.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_handles.h",
+    "bytes": 29624,
+    "sha256": "79bf3833246cc3e81aa3081c348bfa5131f74267eac4d1f52681c67b06e29bc4",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_handles.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_host_copy.h",
+    "bytes": 24090,
+    "sha256": "83e9230da3b0ea93bcefe2f4bd0f4ff8b096a6f68894a85025038dda36257ba5",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_host_copy.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_image.h",
+    "bytes": 85340,
+    "sha256": "f313d628b05214ae084e4c5fdb36ffc14a28b476bf177a1b7700d7450d47e123",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_image.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_image_view.h",
+    "bytes": 15197,
+    "sha256": "b230342485f5a162105274f903fb46c990f1fb3ba7041932e1b766389bf7f315",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_image_view.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_info.h",
+    "bytes": 17969,
+    "sha256": "039de609dd6c255cc3989f57fcb219ab2bf8ae9d656eaa3877cc689bf25e2244",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_info.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_instance.h",
+    "bytes": 20340,
+    "sha256": "4d9f9e6bac8c103296b6cc37f1edd9e9ba1e3d8b59fd5b944fe5472a13ba0ea9",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_instance.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline.h",
+    "bytes": 145752,
+    "sha256": "f3daf4fb05102097968d9a9ad679a62a64bab721d5b83405a0174e1f210eaad2",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_pipeline.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline_cache.h",
+    "bytes": 13941,
+    "sha256": "240b6cf24068aefce157b7c0998dcd37cd3cbfb5af4521091024d763f47be83d",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_pipeline_cache.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline_layout.h",
+    "bytes": 5506,
+    "sha256": "0cfa0812b583c0a5cf88bbd108bb9c98838145751b6e433bb427c5b0d76477fc",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_pipeline_layout.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_private_data_slot.h",
+    "bytes": 11649,
+    "sha256": "5d3664b16a7eccd9283fd7d477cba7371eaabe8f52c77141e0a9b8657e240a80",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_private_data_slot.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_query_pool.h",
+    "bytes": 12436,
+    "sha256": "08ff755733fad497956986840e072c33db0f6082faa2abc9ea2ff19796fa513b",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_query_pool.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_queue.h",
+    "bytes": 46664,
+    "sha256": "9fa755274b12949e43c83e824bb2bfd39ff08624ee9aa2a95aeb0fb769baf6b6",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_queue.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_render_pass.h",
+    "bytes": 64205,
+    "sha256": "9a8af3c7f7522d5fd77ae6978d3023345b0454c70a5ca9fa60a3fe3f6f9b3124",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_render_pass.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_sampler.h",
+    "bytes": 16800,
+    "sha256": "ea2edafd04cece6c792f1eac21d5ab7c13a3efd8ffdb40b7011c099480f545a1",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_sampler.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_sampler_ycbcr_conversion.h",
+    "bytes": 8325,
+    "sha256": "7aa2aa0d3fb7f2b787d816a16e68f4a473ad8ec78d399bfd7846d5e0804a77e9",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_sampler_ycbcr_conversion.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_semaphore.h",
+    "bytes": 27552,
+    "sha256": "b3e7154de14d62fdd2f55330d1338ad71fcf22d5c37ee7e3d23c2a7472e7898c",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_semaphore.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_shader_module.h",
+    "bytes": 5408,
+    "sha256": "3cca97ae34343ede40ab3a1ed98196db3af82d477ceeba70ff9a698080f6fcc0",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_shader_module.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_structs.h",
+    "bytes": 87810,
+    "sha256": "3a06dbf8da849101f7b36fe7db085ea1b22a7d4d07d35635a1b8d3aab09b5468",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_structs.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_transport.h",
+    "bytes": 36974,
+    "sha256": "bcb802650bcc63b87456da16c88aa1ecfa93e11396971492b33b91f10583dfa9",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_transport.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_types.h",
+    "bytes": 99868,
+    "sha256": "28b3a6087e478053792182d4bf309129091d08099fce5b80de7985a0ebc963a7",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_types.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_util.h",
+    "bytes": 64953,
+    "sha256": "73900f192c688ea6d16567ba4fdd5f7ab4ac4bcfde058aaba2b70548dd0cf43d",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vn_protocol_renderer_util.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vulkan.h",
+    "bytes": 1616,
+    "sha256": "20c7e1ac42fe62b3ed526612c52ddfc21e2265f5c69ca9a5e9dd182cc4c8625b",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vulkan.h"
+  },
+  {
+    "backend": "linux",
+    "path": "src/venus/venus-protocol/vulkan_core.h",
+    "bytes": 1230712,
+    "sha256": "c0f0fe98afae95de1377e13649542912d71ca8817ef21dd0a44778f6fe7a1615",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/linux/src/venus/venus-protocol/vulkan_core.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vk_platform.h",
+    "bytes": 2828,
+    "sha256": "c2aa81456e5d24f5931f9b2052aaeb85d1a6362abac9ee5fb2029a57579e03a7",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vk_platform.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer.h",
+    "bytes": 1861,
+    "sha256": "474cd368d4eeaea9a887f4e1df4e447625d6ead6974def228d7b0ca4e748b80f",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_buffer.h",
+    "bytes": 38910,
+    "sha256": "25696d838bb637598ef78a3e686a6ff89fc34c124af64fdd3d9a711053381a51",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_buffer.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_buffer_view.h",
+    "bytes": 6946,
+    "sha256": "6c4ad0152460411265ec8430203a80f50f57e7b57557d99c7a25a8ba73736c6e",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_buffer_view.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_command_buffer.h",
+    "bytes": 297084,
+    "sha256": "450d31ac79ad343b5293704f59200545a187fa89dd03372c9ceb44b463aaf7e2",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_command_buffer.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_command_pool.h",
+    "bytes": 10257,
+    "sha256": "043bbfa9842362e3c6b9ffdfd56b2091f8e906287319dd14108e3daa3769d459",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_command_pool.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_cs.h",
+    "bytes": 3945,
+    "sha256": "63b5b01bcc63b58cd1d1dc6bb6c602412fbd55cdda96ae6995c364eb1085cf24",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_cs.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_defines.h",
+    "bytes": 97969,
+    "sha256": "e548b6d9d4ebe8f84f8e05245c6c97c2b57ed51929493b517cacffd828355354",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_defines.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_pool.h",
+    "bytes": 13693,
+    "sha256": "55c31fa6065d08b7cd17d145c9ac8a270f6ea3bdb838034296081086c529e8ab",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_descriptor_pool.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_set.h",
+    "bytes": 18259,
+    "sha256": "d18b62360c29ddd0cb706e95d47d28e617eaf47fbb95b10a8241b0d7e9623ce7",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_descriptor_set.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_set_layout.h",
+    "bytes": 21479,
+    "sha256": "f1d69bceb5be2b2d1268388fab10601d29203fc70fa9ceaebb6c7be85174d84f",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_descriptor_set_layout.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_descriptor_update_template.h",
+    "bytes": 9916,
+    "sha256": "64dc52be30cb0f1f047797a0b4a3e43df30b5c0f65f1e6bb82d7da4f3ed98ac0",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_descriptor_update_template.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_device.h",
+    "bytes": 755910,
+    "sha256": "2278bcaae3ea6625af72cae9496f36d32322da53e119daececb326479b39bdeb",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_device.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_device_memory.h",
+    "bytes": 41590,
+    "sha256": "9560c97120e9a72f3ba84f03b3f7bbdf38cc52cf597fb8195b6fd6d9ecb2fa08",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_device_memory.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_dispatches.h",
+    "bytes": 46218,
+    "sha256": "feb7336a6332fb32f1e836198def609bf8b6b518c097fff298374d7ca97a453d",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_dispatches.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_event.h",
+    "bytes": 11367,
+    "sha256": "475ecbef062fdc11d81354b0c933fa71835d8a6dcfcf8fb08af6ca7958d3e46b",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_event.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_fence.h",
+    "bytes": 17144,
+    "sha256": "5f3c5c35938ca0ed67fb39dcbc1c240eb004847308ded253d25cfa2539c84cdf",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_fence.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_framebuffer.h",
+    "bytes": 14014,
+    "sha256": "0e7f9c34b3e02fa97794ddc42a248199b95fe58df80673f3f56a58f8f34f08cb",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_framebuffer.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_handles.h",
+    "bytes": 27408,
+    "sha256": "37c61914e2183a075eb2662390b13a0c0a9652431bc46cb5469f4e46348f9ec1",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_handles.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_image.h",
+    "bytes": 69100,
+    "sha256": "8001b14db934c434a656e5669e50ac74502c3a71c754fff27daa3de70ef34ac0",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_image.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_image_view.h",
+    "bytes": 12506,
+    "sha256": "7c4116c8b67acaf589b8f569cb742e704c8e923d2edc490fd47b3c508cb2869a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_image_view.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_info.h",
+    "bytes": 11294,
+    "sha256": "0f1a72172835c7f9d79911b4f06c3bb43d88bed24c6d64b78f741e8afafcfa57",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_info.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_instance.h",
+    "bytes": 19730,
+    "sha256": "59d30b94f4b367c1cb57fd6c91fd3a5fe23bc38a21ecdb0170c238771b416538",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_instance.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline.h",
+    "bytes": 93476,
+    "sha256": "b15579ab6f35a6aa2c05b4dab30f81775fa353146972e9ff54b9c6b53e9f0f7a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_pipeline.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline_cache.h",
+    "bytes": 12871,
+    "sha256": "268ef6d159951b96b9d310726a8a25c339fd73328fdb1c06d55b9e042d6a17df",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_pipeline_cache.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_pipeline_layout.h",
+    "bytes": 9085,
+    "sha256": "177b92dc955ae5a8fc0c919cdf86542f7b593853d47ae35348756f091130224a",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_pipeline_layout.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_private_data_slot.h",
+    "bytes": 11161,
+    "sha256": "f98f96a125baaf9a2c47db442399d6c47a95ba5eb9a82ff9a2f9b5f2a49320d1",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_private_data_slot.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_query_pool.h",
+    "bytes": 11505,
+    "sha256": "0569103bc676d7340e548d73e9a5b6ba823546f66abd54542180868a77f55c2e",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_query_pool.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_queue.h",
+    "bytes": 46112,
+    "sha256": "d3e6dd2af2edc5248ec0653ee83aa3b86e0beb957c8d8f88936944127f10aee4",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_queue.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_render_pass.h",
+    "bytes": 54764,
+    "sha256": "82d53071e56e5c7767adb0a75e882aadff7b00faf3ab284eeab468a4338d70b3",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_render_pass.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_sampler.h",
+    "bytes": 16556,
+    "sha256": "31d5c082a320666e4ce7bcb3a2362b34344f52b78a50639d9403add2fc242393",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_sampler.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_sampler_ycbcr_conversion.h",
+    "bytes": 8081,
+    "sha256": "ffd6bd77fe0140c07dad216a5fab2aee5ff306f5c92631800e5040e93fc9a35c",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_sampler_ycbcr_conversion.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_semaphore.h",
+    "bytes": 26666,
+    "sha256": "992f64267c733e60c1c54d3680911fcef418f381173ae58fb56412f50f3fc5c0",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_semaphore.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_shader_module.h",
+    "bytes": 5164,
+    "sha256": "dec87379490e1330ee9180a025d128af22212ed5ef6cbb6a4b621215a00bfd73",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_shader_module.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_structs.h",
+    "bytes": 38739,
+    "sha256": "2d7a60197d13f890276817e8460ecff81b35777102a3c95719f6e668691ff711",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_structs.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_transport.h",
+    "bytes": 23040,
+    "sha256": "bf3df869fff0e8ec975382c3ebc508dcefdaed22088a4f9646fefcc34310c71f",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_transport.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_types.h",
+    "bytes": 56787,
+    "sha256": "8c1ccbb79de19069e6b91581b87a3d609eaa2165d0fbf45f04ddffe292dd5ca8",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_types.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vn_protocol_renderer_util.h",
+    "bytes": 38004,
+    "sha256": "3da3445fce72a3402dc9d816943eb0f8574204a76ba023a40518f8fab4a4e60e",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vn_protocol_renderer_util.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vulkan.h",
+    "bytes": 1555,
+    "sha256": "74d7a953a9e02b0f8c6edb8dd3304428ad9cfb14697e50bd5da46c7666717787",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vulkan.h"
+  },
+  {
+    "backend": "krunkit",
+    "path": "src/venus/venus-protocol/vulkan_core.h",
+    "bytes": 866966,
+    "sha256": "eb2b9f7c4f9431d4e32e0732e8ff74b4543fbcbd275d2134a966ce71ff905288",
+    "retained_at": "target/managed-virtio-gpu-destroy-sources/unused-extraction/krunkit/src/venus/venus-protocol/vulkan_core.h"
+  }
+]

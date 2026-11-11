@@ -108,20 +108,23 @@ def check(directory):
         (directory / (mode + ".receipt.json")).write_bytes(receipt_bytes)
         metrics = [metric for resource in normalized for scope in resource["scopes"] for metric in scope["metrics"]]
         points = [point for metric in metrics for point in metric["points"]]
-        assert (len(normalized), len(metrics), len(points)) == (3, 18, 41)
+        assert (len(normalized), len(metrics), len(points)) == (3, 21, 62)
         scope_names = [resource["resource"]["shards.cgroup.scope"] for resource in normalized]
         assert scope_names == [["stringValue", name] for name in ("run", "workload", "member")]
         for resource in normalized:
             assert resource["resource"]["shards.microvm.restore.generation"] == ["stringValue", str(2**64 - 1)]
         assert normalized[-1]["resource"]["shards.member.id"] == ["intValue", 2**32 - 1]
         errors = [metric["points"][0]["value"] for metric in metrics if metric["name"] == "shards.cgroup.collection.error.count"]
-        assert errors == [["asInt", number] for number in (0, 6, 2)], errors
+        assert errors == [["asInt", number] for number in (0, 13, 8)], errors
+        for item in metrics:
+            identities = [json.dumps(p["attributes"], sort_keys=True) for p in item["points"]]
+            assert len(identities) == len(set(identities)), item
         starts = raw.count(b'"startTimeUnixNano"')
-        assert starts == (0 if mode == "native-stream" else 41), starts
+        assert starts == (0 if mode == "native-stream" else 62), starts
         receipts.append(normalized)
         results[mode] = {"payload_bytes": len(raw), "payload_sha256": hashlib.sha256(raw).hexdigest(),
                          "receipt_sha256": hashlib.sha256(receipt_bytes).hexdigest(),
-                         "resources": 3, "metrics": 18, "points": 41, "explicit_unknown_start_fields": starts}
+                         "resources": 3, "metrics": 21, "points": 62, "explicit_unknown_start_fields": starts}
     assert all(item == receipts[0] for item in receipts)
     return {"semantic_receipts_equal": True, "scope": "fixed shared Snapshot fixture; encoding only", "modes": results}
 

@@ -1,0 +1,4 @@
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.85s
+     Running unittests src/lib.rs (target/managed-virtio-gpu-light/debug/deps/shards_vmm-4c1e918450b93796)
+[70813          0us WARN] virtio-gpu: the guest mapped a blob 0x2000 into its window, which the host maps in pages of 16384 bytes: its driver does not align blobs (VIRTIO_GPU_F_BLOB_ALIGNMENT, Linux 7.2)

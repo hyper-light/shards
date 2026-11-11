@@ -25,6 +25,49 @@ pub enum Limit {
     Unbounded,
 }
 
+/// Fixed keys from Linux's memory.events and pids.events renderers. Aggregation
+/// follows the configured base file; these counters confer no admission rights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CgroupEvent {
+    MemoryLow,
+    MemoryHigh,
+    MemoryMax,
+    MemoryOom,
+    MemoryOomKill,
+    MemoryOomGroupKill,
+    TaskMax,
+}
+
+impl CgroupEvent {
+    pub const ALL: [Self; 7] = [
+        Self::MemoryLow,
+        Self::MemoryHigh,
+        Self::MemoryMax,
+        Self::MemoryOom,
+        Self::MemoryOomKill,
+        Self::MemoryOomGroupKill,
+        Self::TaskMax,
+    ];
+
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::MemoryLow => "low",
+            Self::MemoryHigh => "high",
+            Self::MemoryMax | Self::TaskMax => "max",
+            Self::MemoryOom => "oom",
+            Self::MemoryOomKill => "oom_kill",
+            Self::MemoryOomGroupKill => "oom_group_kill",
+        }
+    }
+
+    fn instrument(self) -> Instrument {
+        match self {
+            Self::TaskMax => Instrument::TaskEvents,
+            _ => Instrument::MemoryEvents,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub scope: Scope,
@@ -35,6 +78,7 @@ pub struct Snapshot {
     pub threads: Result<u64, Failure>,
     pub memory_limit: Result<Limit, Failure>,
     pub task_limit: Result<Limit, Failure>,
+    pub events: [Result<u64, Failure>; CgroupEvent::ALL.len()],
     pub read_bytes: Result<u64, Failure>,
     pub write_bytes: Result<u64, Failure>,
 }
@@ -99,11 +143,13 @@ fn resource(
         Instrument::Io,
         Instrument::MemoryLimit,
         Instrument::TaskLimit,
+        Instrument::MemoryEvents,
+        Instrument::TaskEvents,
     ] {
-        metric(out, sample.time_unix_nano, instrument, &points)?;
+        metric(out, sample.time_unix_nano, instrument, points.clone())?;
     }
     limit_states(out, sample)?;
-    diagnostics(out, sample.time_unix_nano, &points)?;
+    diagnostics(out, sample.time_unix_nano, points)?;
     out.write_all(b"]}]}")
 }
 
@@ -115,18 +161,23 @@ enum Instrument {
     Io,
     MemoryLimit,
     TaskLimit,
+    MemoryEvents,
+    TaskEvents,
 }
 
+#[derive(Clone, Copy)]
 struct Observation {
     instrument: Instrument,
     direction: Option<&'static str>,
+    event: Option<CgroupEvent>,
     value: Result<Option<u64>, Failure>,
 }
 
-fn observations(sample: &Snapshot) -> [Observation; 7] {
-    let point = |instrument, direction, value: Result<Option<u64>, Failure>| Observation {
+fn observations(sample: &Snapshot) -> impl Iterator<Item = Observation> + Clone {
+    let point = |instrument, direction, event, value: Result<Option<u64>, Failure>| Observation {
         instrument,
         direction,
+        event,
         value: if instrument == Instrument::Cpu {
             value
         } else {
@@ -144,14 +195,21 @@ fn observations(sample: &Snapshot) -> [Observation; 7] {
         })
     };
     [
-        point(Instrument::Cpu, None, sample.cpu_usec.map(Some)),
-        point(Instrument::Memory, None, sample.memory_bytes.map(Some)),
-        point(Instrument::Tasks, None, sample.threads.map(Some)),
-        point(Instrument::Io, Some("read"), sample.read_bytes.map(Some)),
-        point(Instrument::Io, Some("write"), sample.write_bytes.map(Some)),
-        point(Instrument::MemoryLimit, None, limit(sample.memory_limit)),
-        point(Instrument::TaskLimit, None, limit(sample.task_limit)),
+        point(Instrument::Cpu, None, None, sample.cpu_usec.map(Some)),
+        point(Instrument::Memory, None, None, sample.memory_bytes.map(Some)),
+        point(Instrument::Tasks, None, None, sample.threads.map(Some)),
+        point(Instrument::Io, Some("read"), None, sample.read_bytes.map(Some)),
+        point(Instrument::Io, Some("write"), None, sample.write_bytes.map(Some)),
+        point(Instrument::MemoryLimit, None, None, limit(sample.memory_limit)),
+        point(Instrument::TaskLimit, None, None, limit(sample.task_limit)),
     ]
+    .into_iter()
+    .chain(
+        CgroupEvent::ALL
+            .into_iter()
+            .zip(sample.events)
+            .map(move |(event, value)| point(event.instrument(), None, Some(event), value.map(Some))),
+    )
 }
 
 impl Instrument {
@@ -163,6 +221,8 @@ impl Instrument {
             Self::Io => ("shards.cgroup.disk.io", "By", true),
             Self::MemoryLimit => ("shards.cgroup.memory.limit", "By", false),
             Self::TaskLimit => ("shards.cgroup.task.limit", "{task}", false),
+            Self::MemoryEvents => ("shards.cgroup.memory.events", "{event}", true),
+            Self::TaskEvents => ("shards.cgroup.task.events", "{event}", true),
         }
     }
 }
@@ -171,11 +231,11 @@ fn metric(
     out: &mut impl Write,
     timestamp: u64,
     instrument: Instrument,
-    points: &[Observation],
+    points: impl Iterator<Item = Observation> + Clone,
 ) -> io::Result<()> {
     let recorded = || {
         points
-            .iter()
+            .clone()
             .filter(|p| p.instrument == instrument && matches!(p.value, Ok(Some(_))))
     };
     if recorded().next().is_none() {
@@ -198,6 +258,12 @@ fn metric(
         write!(out, "{{\"timeUnixNano\":\"{timestamp}\",\"attributes\":[")?;
         if let Some(direction) = point.direction {
             attribute(out, "disk.io.direction", direction)?;
+        }
+        if let Some(event) = point.event {
+            if point.direction.is_some() {
+                out.write_all(b",")?;
+            }
+            attribute(out, "shards.cgroup.event", event.key())?;
         }
         out.write_all(b"]")?;
         match point.value {
@@ -253,8 +319,12 @@ fn limit_states(out: &mut impl Write, sample: &Snapshot) -> io::Result<()> {
     out.write_all(b"]}},")
 }
 
-fn diagnostics(out: &mut impl Write, timestamp: u64, points: &[Observation]) -> io::Result<()> {
-    let failures = points.iter().filter(|p| p.value.is_err()).count();
+fn diagnostics(
+    out: &mut impl Write,
+    timestamp: u64,
+    points: impl Iterator<Item = Observation> + Clone,
+) -> io::Result<()> {
+    let failures = points.clone().filter(|p| p.value.is_err()).count();
     write!(
         out,
         "{{\"name\":\"shards.cgroup.collection.error.count\",\"unit\":\"{{error}}\",\"gauge\":{{\"dataPoints\":[{{\"timeUnixNano\":\"{timestamp}\",\"asInt\":\"{failures}\"}}]}}}}"
@@ -265,7 +335,7 @@ fn diagnostics(out: &mut impl Write, timestamp: u64, points: &[Observation]) -> 
     out.write_all(
         b",{\"name\":\"shards.cgroup.collection.error\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[",
     )?;
-    for (at, point) in points.iter().filter(|p| p.value.is_err()).enumerate() {
+    for (at, point) in points.filter(|p| p.value.is_err()).enumerate() {
         if at != 0 {
             out.write_all(b",")?;
         }
@@ -281,6 +351,10 @@ fn diagnostics(out: &mut impl Write, timestamp: u64, points: &[Observation]) -> 
         if let Some(direction) = point.direction {
             out.write_all(b",")?;
             attribute(out, "disk.io.direction", direction)?;
+        }
+        if let Some(event) = point.event {
+            out.write_all(b",")?;
+            attribute(out, "shards.cgroup.event", event.key())?;
         }
         out.write_all(b",")?;
         let kind = match cause {
@@ -345,6 +419,7 @@ mod tests {
             threads: Ok(4),
             memory_limit: Ok(Limit::Unbounded),
             task_limit: Ok(Limit::Unbounded),
+            events: [Ok(0); CgroupEvent::ALL.len()],
             read_bytes: Ok(12),
             write_bytes: Ok(34),
         }
@@ -397,8 +472,8 @@ mod tests {
     #[test]
     fn counts_units_temporality_and_directions_match_the_contract() {
         let text = encode(&[sample()]);
-        assert_eq!(text.matches("\"aggregationTemporality\":2").count(), 4);
-        assert_eq!(text.matches("\"isMonotonic\":true").count(), 2);
+        assert_eq!(text.matches("\"aggregationTemporality\":2").count(), 6);
+        assert_eq!(text.matches("\"isMonotonic\":true").count(), 4);
         assert_eq!(text.matches("\"isMonotonic\":false").count(), 2);
         assert!(text.contains("\"shards.cgroup.cpu.time\",\"unit\":\"s\""));
         assert!(text.contains("\"shards.cgroup.memory.usage\",\"unit\":\"By\""));
@@ -438,7 +513,7 @@ mod tests {
             ..sample()
         };
         let text = encode(&[value]);
-        assert_eq!(text.matches("\"aggregationTemporality\":2").count(), 1);
+        assert_eq!(text.matches("\"aggregationTemporality\":2").count(), 3);
         assert!(text.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"4\"}"));
         for cause in ["missing", "io", "invalid", "overflow"] {
             assert!(text.contains(&format!(
@@ -481,6 +556,96 @@ mod tests {
         let healthy = encode(&[sample()]);
         assert!(!healthy.contains("\"name\":\"shards.cgroup.collection.error\""));
         assert!(healthy.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"0\"}"));
+    }
+
+    #[test]
+    fn event_sums_keep_fixed_keys_true_zero_and_distinct_failure_series() {
+        let healthy = encode(&[sample()]);
+        assert_eq!(
+            healthy.matches("\"shards.cgroup.event\"").count(),
+            CgroupEvent::ALL.len()
+        );
+        for family in ["memory", "task"] {
+            assert!(healthy.contains(&format!("\"name\":\"shards.cgroup.{family}.events\",\"unit\":\"{{event}}\",\"sum\":{{\"aggregationTemporality\":2,\"isMonotonic\":true")));
+        }
+        for event in CgroupEvent::ALL {
+            assert!(healthy.contains(&format!("\"attributes\":[{{\"key\":\"shards.cgroup.event\",\"value\":{{\"stringValue\":\"{}\"}}}}],\"asInt\":\"0\"", event.key())));
+        }
+        let failed = encode(&[Snapshot {
+            events: [Err(Failure::Io(2)); CgroupEvent::ALL.len()],
+            ..sample()
+        }]);
+        assert!(!failed.contains("\"name\":\"shards.cgroup.memory.events\""));
+        assert!(!failed.contains("\"name\":\"shards.cgroup.task.events\""));
+        assert!(failed.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"7\"}"));
+        for event in CgroupEvent::ALL {
+            let attrs = format!(
+                "{{\"key\":\"shards.cgroup.metric\",\"value\":{{\"stringValue\":\"{}\"}}}},{{\"key\":\"shards.cgroup.event\",\"value\":{{\"stringValue\":\"{}\"}}}},{{\"key\":\"error.type\",\"value\":{{\"stringValue\":\"io\"}}}}",
+                event.instrument().fields().0,
+                event.key()
+            );
+            assert_eq!(failed.matches(&attrs).count(), 1);
+        }
+        assert_eq!(
+            healthy.split("\"scopeMetrics\"").next(),
+            failed.split("\"scopeMetrics\"").next()
+        );
+    }
+
+    #[test]
+    fn event_signed_overflow_omits_only_that_series_and_never_fabricates_a_reset() {
+        for (value, numeric, cause) in [
+            (Ok(0), Some("0"), None),
+            (Ok(i64::MAX as u64), Some("9223372036854775807"), None),
+            (Ok(i64::MAX as u64 + 1), None, Some("overflow")),
+            (Ok(u64::MAX), None, Some("overflow")),
+            (Err(Failure::Missing), None, Some("missing")),
+            (Err(Failure::Invalid), None, Some("invalid")),
+            (Err(Failure::Overflow), None, Some("overflow")),
+        ] {
+            let text = encode(&[Snapshot {
+                events: [value; CgroupEvent::ALL.len()],
+                ..sample()
+            }]);
+            for family in ["memory", "task"] {
+                assert_eq!(
+                    text.contains(&format!("\"name\":\"shards.cgroup.{family}.events\"")),
+                    numeric.is_some()
+                );
+            }
+            if let Some(numeric) = numeric {
+                assert!(text.contains(&format!("\"asInt\":\"{numeric}\"")));
+            }
+            if let Some(cause) = cause {
+                assert_eq!(
+                    text.matches(&format!(
+                        "\"error.type\",\"value\":{{\"stringValue\":\"{cause}\"}}"
+                    ))
+                    .count(),
+                    CgroupEvent::ALL.len()
+                );
+            }
+            assert!(!text.contains("startTimeUnixNano"));
+            assert!(!text.contains("9223372036854775808"));
+            assert!(!text.contains("\"asInt\":\"18446744073709551615\""));
+        }
+        let text = encode(&[Snapshot {
+            events: [
+                Ok(0),
+                Err(Failure::Missing),
+                Ok(2),
+                Err(Failure::Invalid),
+                Ok(4),
+                Err(Failure::Overflow),
+                Ok(6),
+            ],
+            ..sample()
+        }]);
+        assert_eq!(
+            text.matches("\"shards.cgroup.event\"").count(),
+            CgroupEvent::ALL.len()
+        );
+        assert_eq!(text.matches("\"error.type\"").count(), 3);
     }
 
     #[test]

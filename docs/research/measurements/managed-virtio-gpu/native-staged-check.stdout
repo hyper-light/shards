@@ -1,0 +1,113 @@
+docs/research/measurements/managed-virtio-gpu/raw/linux-gnu-framing/stdout:19: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/linux-musl-framing/stdout:19: new blank line at EOF.
+docs/research/measurements/managed-virtio-gpu/raw/windows-python/tool-output:1: trailing whitespace.
++Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+docs/research/measurements/managed-virtio-gpu/raw/windows-python3/tool-output:1: trailing whitespace.
++Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/tool-output:1: trailing whitespace.
++{"tool":{"sha256":"BF80053D2A7390857B3B5DBF790AD7F98CBF7B831A1671247710876E66F7C794","path":"C:\\Windows\\system32\\vulkaninfo.exe"},"vulkan_loader":{"path":"C:\\Windows\\System32\\vulkan-1.dll","sha256":"37853EC7133BB12B56EA2E18BE7CCB6E6DA07A3B1DEEE2E5ECD1154E5DB30453","version":"1.4.321.1"},"adapters":[{"Name":"AMD Radeon(TM) 8060S Graphics","DriverVersion":"32.0.22032.6002","VideoProcessor":"AMD Radeon Graphics Processor (0x1586)"}],"vulkan_exit":0,"os":"Microsoft Windows NT 10.0.26200.0","vulkan_stdout":"==========\r\nVULKANINFO\r\n==========\r\n\r\nVulkan Instance Version: 1.4.321\r\n\r\n\r\nInstance Extensions: count = 14\r\n-------------------------------\r\nVK_EXT_debug_report                    : extension revision 10\r\nVK_EXT_debug_utils                     : extension revision 2\r\nVK_EXT_swapchain_colorspace            : extension revision 5\r\nVK_KHR_device_group_creation           : extension revision 1\r\nVK_KHR_external_fence_capabilities     : extension revision 1\r\nVK_KHR_external_memory_capabilities    : extension revision 1\r\nVK_KHR_external_semaphore_capabilities : extension revision 1\r\nVK_KHR_get_physical_device_properties2 : extension revision 2\r\nVK_KHR_get_surface_capabilities2       : extension revision 1\r\nVK_KHR_portability_enumeration         : extension revision 1\r\nVK_KHR_surface                         : extension revision 25\r\nVK_KHR_surface_maintenance1            : extension revision 1\r\nVK_KHR_win32_surface                   : extension revision 6\r\nVK_LUNARG_direct_driver_loading        : extension revision 1\r\n\r\nInstance Layers: count = 1\r\n--------------------------\r\nVK_LAYER_AMD_switchable_graphics AMD switchable graphics layer 1.4.329  version 1\r\n\r\nDevices:\r\n========\r\nGPU0:\r\n\tapiVersion         = 1.4.329\r\n\tdriverVersion      = 2.0.373\r\n\tvendorID           = 0x1002\r\n\tdeviceID           = 0x1586\r\n\tdeviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU\r\n\tdeviceName         = AMD Radeon(TM) 8060S Graphics\r\n\tdriverID           = DRIVER_ID_AMD_PROPRIETARY\r\n\tdriverName         = AMD proprietary driver\r\n\tdriverInfo         = 25.20.32.06 (LLPC)\r\n\tconformanceVersion = 1.4.0.0\r\n\tdeviceUUID         = 00000000-c400-0000-0000-000000000000\r\n\tdriverUUID         = 414d442d-5749-4e2d-4452-560000000000\r\n","process_arch":"AMD64","vulkan_stderr":"WARNING: [Loader Message] Code 0 : windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.\r\n","scope":"Read-only adapter/loader/Vulkan summary; no VM, device queues or performance claim"}
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stderr:1: trailing whitespace.
++WARNING: [Loader Message] Code 0 : windows_read_data_files_in_registry: Registry lookup failed to get layer manifest files.
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:1: trailing whitespace.
++==========
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:2: trailing whitespace.
++VULKANINFO
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:3: trailing whitespace.
++==========
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:4: trailing whitespace.
++
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:5: trailing whitespace.
++Vulkan Instance Version: 1.4.321
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:6: trailing whitespace.
++
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:7: trailing whitespace.
++
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:8: trailing whitespace.
++Instance Extensions: count = 14
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:9: trailing whitespace.
++-------------------------------
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:10: trailing whitespace.
++VK_EXT_debug_report                    : extension revision 10
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:11: trailing whitespace.
++VK_EXT_debug_utils                     : extension revision 2
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:12: trailing whitespace.
++VK_EXT_swapchain_colorspace            : extension revision 5
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:13: trailing whitespace.
++VK_KHR_device_group_creation           : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:14: trailing whitespace.
++VK_KHR_external_fence_capabilities     : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:15: trailing whitespace.
++VK_KHR_external_memory_capabilities    : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:16: trailing whitespace.
++VK_KHR_external_semaphore_capabilities : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:17: trailing whitespace.
++VK_KHR_get_physical_device_properties2 : extension revision 2
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:18: trailing whitespace.
++VK_KHR_get_surface_capabilities2       : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:19: trailing whitespace.
++VK_KHR_portability_enumeration         : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:20: trailing whitespace.
++VK_KHR_surface                         : extension revision 25
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:21: trailing whitespace.
++VK_KHR_surface_maintenance1            : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:22: trailing whitespace.
++VK_KHR_win32_surface                   : extension revision 6
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:23: trailing whitespace.
++VK_LUNARG_direct_driver_loading        : extension revision 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:24: trailing whitespace.
++
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:25: trailing whitespace.
++Instance Layers: count = 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:26: trailing whitespace.
++--------------------------
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:27: trailing whitespace.
++VK_LAYER_AMD_switchable_graphics AMD switchable graphics layer 1.4.329  version 1
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:28: trailing whitespace.
++
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:29: trailing whitespace.
++Devices:
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:30: trailing whitespace.
++========
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:31: trailing whitespace.
++GPU0:
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:32: trailing whitespace.
++	apiVersion         = 1.4.329
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:33: trailing whitespace.
++	driverVersion      = 2.0.373
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:34: trailing whitespace.
++	vendorID           = 0x1002
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:35: trailing whitespace.
++	deviceID           = 0x1586
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:36: trailing whitespace.
++	deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:37: trailing whitespace.
++	deviceName         = AMD Radeon(TM) 8060S Graphics
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:38: trailing whitespace.
++	driverID           = DRIVER_ID_AMD_PROPRIETARY
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:39: trailing whitespace.
++	driverName         = AMD proprietary driver
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:40: trailing whitespace.
++	driverInfo         = 25.20.32.06 (LLPC)
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:41: trailing whitespace.
++	conformanceVersion = 1.4.0.0
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:42: trailing whitespace.
++	deviceUUID         = 00000000-c400-0000-0000-000000000000
+docs/research/measurements/managed-virtio-gpu/raw/windows-readonly/vulkan.stdout:43: trailing whitespace.
++	driverUUID         = 414d442d-5749-4e2d-4452-560000000000
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:1: trailing whitespace.
++vulkaninfo.exe : WARNING: [Loader Message] Code 0 : windows_read_data_files_in_registry: Registry lookup failed to get 
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:2: trailing whitespace.
++layer manifest files.
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:3: trailing whitespace.
++At line:1 char:805
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:4: trailing whitespace.
+++ ... .Hash}; $result.vulkan_summary=(& $info.Source --summary 2>&1 | Out-S ...
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:5: trailing whitespace.
+++                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:6: trailing whitespace.
++    + CategoryInfo          : NotSpecified: (WARNING: [Loade...manifest files.:String) [], RemoteException
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:7: trailing whitespace.
++    + FullyQualifiedErrorId : NativeCommandError
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:8: trailing whitespace.
++ 
+docs/research/measurements/managed-virtio-gpu/raw/windows-wrapper-error/tool-output:8: new blank line at EOF.

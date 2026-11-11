@@ -1,0 +1,75 @@
+diff --git a/crates/vmm/src/devices/virtio/gpu/protocol.rs b/crates/vmm/src/devices/virtio/gpu/protocol.rs
+index fa6df41c6..c98a52f58 100644
+--- a/crates/vmm/src/devices/virtio/gpu/protocol.rs
++++ b/crates/vmm/src/devices/virtio/gpu/protocol.rs
+@@ -361,6 +361,70 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn requests_skip_empty_descriptors() {
++        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
++        let access = mem.access().unwrap();
++        let header = Header {
++            kind: cmd::GET_CAPSET_INFO,
++            ..Header::default()
++        };
++        let b = request(&header, &7u32.to_le_bytes());
++        let (first, rest) = b.split_at(10);
++        let (mut c, _) = chain(&access, &[&[], first, &[], rest, &[]], 64);
++        // An empty descriptor's address is never accessed.
++        for d in c.descriptors.iter_mut().filter(|d| d.len == 0) {
++            d.addr = u64::MAX;
++        }
++        assert_eq!(
++            read(&c, &access, b.len()),
++            Some((header, Ok(Command::GetCapsetInfo { index: 7 })))
++        );
++        assert_eq!(
++            read(&c, &access, HEADER).unwrap().1,
++            Err(Refused(resp::ERR_INVALID_PARAMETER))
++        );
++    }
++
++    #[test]
++    fn answers_span_empty_descriptors() {
++        let mem = GuestMemory::anonymous(&[(BASE, 1 << 16)]).unwrap();
++        let access = mem.access().unwrap();
++        let header = Header {
++            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
++            fence_id: 99,
++            ctx_id: 3,
++            ring_idx: 2,
++            ..Header::default()
++        };
++        let fields = [7u8; 8];
++        let mut c = Chain::default();
++        let mut at = BASE;
++        for len in [0, 8, 0, 17, 0, 7, 0] {
++            c.descriptors.push(Descriptor {
++                addr: if len == 0 { u64::MAX } else { at },
++                len,
++                writable: true,
++            });
++            at += 0x1000;
++        }
++        assert_eq!(answer(&c, &access, &header, resp::OK_MAP_INFO, &fields), 32);
++        let mut got = Vec::new();
++        for d in c.writable().filter(|d| d.len != 0) {
++            let mut b = vec![0; d.len as usize];
++            access.read(d.addr, &mut b).unwrap();
++            got.extend(b);
++        }
++        assert_eq!(
++            Header::parse(&got).unwrap(),
++            Header {
++                kind: resp::OK_MAP_INFO,
++                ..header
++            }
++        );
++        assert_eq!(got.get(HEADER..).unwrap(), fields);
++    }
++
+     /// Counts and sizes are held to what the request holds: entries past its end, and a
+     /// submission longer than its bytes, are refused; one too short for a header is not
+     /// answered.

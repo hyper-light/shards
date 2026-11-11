@@ -1,0 +1,7 @@
+{
+  "revision": "fc6aa89fec4eb6c7e3543b248d4dd7015d006b20",
+  "method": "git cat-file --batch of every MANIFEST.json payload at HEAD; exact length and SHA256 compared",
+  "payloads": 104,
+  "outcome": "all match",
+  "signature_limit": "Kiln root verification server-side; no independent local cryptographic verification claimed"
+}

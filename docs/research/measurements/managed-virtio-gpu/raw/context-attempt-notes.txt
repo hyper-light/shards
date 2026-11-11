@@ -1,0 +1,5 @@
+Context-unit attempts retained:
+1. red-context-fence-reuse: baseline worker completes new fence with old queued signal, used5 vs4.
+2. green-context-fence-reuse: minimal boundary fix, full14 native GPU units pass.
+3. apply_patch fixture strengthening initially failed context matching; no edit applied; exact current span read then patch applied.
+4. green-context-batch-proof: strengthened fixture batches while paused, but new used_heads helper nested GuestMemory::access via used_idx and received typed Reentered;13passed1failed. No product failure inferred; fixed helper to read count before acquiring its single access guard; assertions/deadline unchanged.

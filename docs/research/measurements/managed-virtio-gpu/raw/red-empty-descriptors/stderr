@@ -1,0 +1,20 @@
+   Compiling libc v0.2.189
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/abi)
+   Compiling shards-vmm v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/vmm)
+   Compiling shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/ipc)
+   Compiling shards-netring v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/netring)
+   Compiling shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-virtio-gpu-kiln/crates/testdir)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.15s
+     Running unittests src/lib.rs (target/managed-virtio-gpu-light/debug/deps/shards_vmm-4c1e918450b93796)
+
+thread 'devices::virtio::gpu::protocol::tests::answers_span_empty_descriptors' (48504533) panicked at crates/vmm/src/devices/virtio/gpu/protocol.rs:411:9:
+assertion `left == right` failed
+  left: 0
+ right: 32
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'devices::virtio::gpu::protocol::tests::requests_skip_empty_descriptors' (48504534) panicked at crates/vmm/src/devices/virtio/gpu/protocol.rs:379:9:
+assertion `left == right` failed
+  left: None
+ right: Some((Header { kind: 264, flags: 0, fence_id: 0, ctx_id: 0, ring_idx: 0 }, Ok(GetCapsetInfo { index: 7 })))
+error: test failed, to rerun pass `-p shards-vmm --lib`

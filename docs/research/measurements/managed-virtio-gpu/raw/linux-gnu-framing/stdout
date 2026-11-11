@@ -1,0 +1,19 @@
+
+running 14 tests
+test devices::virtio::gpu::protocol::tests::a_request_cannot_claim_more_than_it_holds ... ok
+test devices::virtio::gpu::protocol::tests::a_request_reads_across_its_buffers ... ok
+test devices::virtio::gpu::protocol::tests::answers_echo_their_fence ... ok
+test devices::virtio::gpu::protocol::tests::answers_span_empty_descriptors ... ok
+test devices::virtio::gpu::protocol::tests::answers_stop_at_short_or_inaccessible_buffers ... ok
+test devices::virtio::gpu::protocol::tests::requests_skip_empty_descriptors ... ok
+test devices::virtio::gpu::tests::a_blobs_entries_are_guest_ram ... ok
+test devices::virtio::gpu::tests::a_gpu_is_saved_only_with_nothing_of_its_host_drivers ... ok
+test devices::virtio::gpu::tests::blobs_map_where_the_window_is_free ... ok
+test devices::virtio::gpu::tests::capsets_are_offered_by_index ... ok
+test devices::virtio::gpu::tests::contexts_are_of_the_capsets_offered ... ok
+test devices::virtio::gpu::tests::fenced_answers_wait_their_turn ... ok
+test devices::virtio::gpu::tests::the_worker_uses_a_fenced_request_once_signalled ... ok
+test devices::virtio::gpu::window::tests::a_blob_is_mapped_into_the_window_by_its_descriptor ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 407 filtered out; finished in 0.01s
+

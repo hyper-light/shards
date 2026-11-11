@@ -1,0 +1,35 @@
+[
+  {
+    "operation": "mcp__kiln__code_search",
+    "program": "return Object.keys(kiln.machines).sort();",
+    "result": "tool error: kiln is not defined; no product action ran"
+  },
+  {
+    "operation": "Linux raw JSON transport",
+    "result": "JSON.parse failed: Bad control character in string literal at position2000; original remote evidence retained; gzip/base64 transport and SHA verification then succeeded"
+  },
+  {
+    "operation": "Windows Python3 read-only probe r9",
+    "exit_code": 49,
+    "result": "Microsoft Store alias; no Python probe ran and no interpreter installed"
+  },
+  {
+    "operation": "Windows python availability check",
+    "exit_code": 49,
+    "result": "Microsoft Store alias; no Python probe ran and no interpreter installed"
+  },
+  {
+    "operation": "Windows read-only PowerShell first wrapper r15",
+    "exit_code": 1,
+    "result": "ErrorActionPreference=Stop treated native Vulkan loader stderr warning as an exception; raw retained in raw/windows-wrapper-error; corrected wrapper preserves separate stdout/stderr without suppressing warning"
+  },
+  {
+    "operation": "PowerShell UTF16 command encoding in functions.exec",
+    "result": "ReferenceError: btoa is not defined before remote invocation; no probe ran. Used Python standard base64 encoder on exact local PS1 file next"
+  },
+  {
+    "operation": "read-only API/VMM configuration path lookup",
+    "exit_code": 2,
+    "result": "rg reported absent crates/shards/src/config.rs and crates/vmm/src/config.rs; no source changes or tests; existing api and vmm Cargo manifests both depend shards-abi"
+  }
+]

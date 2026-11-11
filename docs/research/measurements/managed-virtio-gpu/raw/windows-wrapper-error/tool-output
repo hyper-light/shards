@@ -1,0 +1,8 @@
+vulkaninfo.exe : WARNING: [Loader Message] Code 0 : windows_read_data_files_in_registry: Registry lookup failed to get 
+layer manifest files.
+At line:1 char:805
++ ... .Hash}; $result.vulkan_summary=(& $info.Source --summary 2>&1 | Out-S ...
++                                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (WARNING: [Loade...manifest files.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

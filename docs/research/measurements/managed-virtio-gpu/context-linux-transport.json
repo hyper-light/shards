@@ -1,0 +1,11 @@
+{
+  "runner": "8fadc1ec213332e16cb0d915a3fb913f",
+  "source_base": "118978b03c0f27f17a995bcecb1d7be3dedb3221",
+  "applied_patch": "05015e3fa GPU mod.rs only, after checking old GPU source hashes and git apply --check",
+  "core_sha256": "68f22fdbce595b0b14624a40a5140754a05b4fbb18d43c2e000ee62357afa15e",
+  "protocol_sha256": "56bee5a5515c8059b2efd46dc026723b81d28421fbcd06b0392a64844362f486",
+  "transport": "sync:false; per-file gzip/base64 transport, verify exact SHA256; local source snapshots only after matching remote receipt hashes",
+  "gnu_job": "r25",
+  "musl_job": "r26",
+  "scope": "ordinary native GPU units only; no VM, fault campaign, mutation, performance or renderer workload"
+}

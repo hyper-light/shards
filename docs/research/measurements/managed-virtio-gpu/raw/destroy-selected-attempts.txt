@@ -1,0 +1,21 @@
+Source-only follow-up to peer-supplied de0a0e6eca64539910da46fd95ba8ff8c7b7fa81.
+
+git show de0a0e6e in this Shards repository returned fatal: bad object (128).
+Reading the peer's agent-state cwd complete-shards-gpu (Hex repository) also
+returned bad object (128). Neither was treated as absent/invalid peer work.
+The separately identified worktrees/shards-physical-gpu repository contains the
+exact commit; read-only git show succeeded. No fetch/cherry-pick/worktree edit.
+
+A source-tree listing accidentally included the repository-wide measurements
+directory, returning8852filename lines with truncated tool output. The full
+listing is not retained/reviewed and no broad review is claimed. The finite
+follow-up used only exact four patch paths, scripts/gpu-libs and gpu/virgl.rs.
+
+All four de0a Git blobs match supplied SHA256s, original6219 Git blobs and the
+earlier supplied artifact files. The tracked Windows patch also matches. A
+signature header is present, but no local cryptographic signature verification
+is claimed; normal Kiln signed-source handling remains ROOT's responsibility.
+
+No renderer compilation/execution, patch application, native test, VM, callback
+fault/ENOMEM/mutation/profile/benchmark or host configuration change was run.
+Source reading and mechanical policy/hash/whitespace checks only. No jobs active.

@@ -1,0 +1,35 @@
+{
+  "source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "archive_bytes": 40049,
+  "archive_sha256": "185a4fc7bb7a2099f17ab98bb9687842b49828540b820bae2188bca95da12370",
+  "original_payloads_verified": 95,
+  "manifest_members": 1,
+  "completed_stages": [
+    "cargo.result.json",
+    "checkout.result.json",
+    "matching-static-guest.result.json",
+    "metrics-unit.result.json",
+    "native-clippy.result.json",
+    "normal-carried-build.result.json",
+    "ordinary-managed-output.result.json",
+    "policy.result.json",
+    "rustc.result.json"
+  ],
+  "unit_tests": "35passed/0failed/0ignored",
+  "ordinary_kvm": "26passed/0failed/10ignored/noSKIP",
+  "task_events_before": {
+    "run": 0,
+    "workload": 0,
+    "member/1": 0,
+    "member/2": 0
+  },
+  "task_events_after": {
+    "run": 1,
+    "workload": 1,
+    "member/1": 0,
+    "member/2": 0
+  },
+  "child_refused_EAGAIN_then_reset_success": true,
+  "whole_population_kernel_return": "Unknown",
+  "runtime_replay": false
+}
