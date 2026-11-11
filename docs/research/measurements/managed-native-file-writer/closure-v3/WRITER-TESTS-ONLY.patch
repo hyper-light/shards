@@ -1,0 +1,37 @@
+--- a/crates/server/src/native_effects/write/tests.rs
++++ b/crates/server/src/native_effects/write/tests.rs
+@@ -1,6 +1,5 @@
+ use super::*;
+ use std::fs::{File, OpenOptions};
+-use std::os::fd::AsFd as _;
+ use std::os::unix::fs::MetadataExt as _;
+ 
+ fn object(path: &std::path::Path) -> OwnedFd {
+@@ -25,8 +24,8 @@
+     std::fs::write(&path, b"head------------tail").unwrap();
+     let file = object(&path);
+     let duplicate = file.try_clone().unwrap();
+-    // SAFETY: this fixture observes/sets its owned file's shared position only.
+     assert_eq!(
++        // SAFETY: this fixture observes/sets its owned file's shared position only.
+         unsafe { libc::lseek(duplicate.as_raw_fd(), 2, libc::SEEK_SET) },
+         2
+     );
+@@ -35,6 +34,7 @@
+     let metadata = std::fs::metadata(&path).unwrap();
+     assert_eq!(prepared.identity(), (metadata.dev(), metadata.ino()));
+     assert_eq!(prepared.accepted(), 0);
++    assert_eq!(prepared.offset(), 4);
+     assert_eq!(prepared.requested(), bytes.len());
+     assert_eq!(std::fs::read(&path).unwrap(), b"head------------tail");
+     let outcome = terminal(prepared.commit());
+@@ -52,8 +52,8 @@
+         .unwrap()
+         .copy_from_slice(bytes);
+     assert_eq!(std::fs::read(&path).unwrap(), expected);
+-    // SAFETY: same held open file description, no mutation by this observation.
+     assert_eq!(
++        // SAFETY: same held open file description, no mutation by this observation.
+         unsafe { libc::lseek(duplicate.as_raw_fd(), 0, libc::SEEK_CUR) },
+         2
+     );

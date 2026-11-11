@@ -1,0 +1,7 @@
+{
+  "chunk_id": "fc77f7",
+  "wall_time_seconds": 0.00000725,
+  "exit_code": 0,
+  "original_token_count": 214,
+  "output": "development policy check failed: [Errno 2] No such file or directory: '/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-file-writer-v1/.github/workflows/ci.yml'\n M crates/server/src/native_effects/write/tests.rs\n?? docs/research/measurements/managed-native-file-writer/closure-v3/\n?? docs/research/measurements/managed-native-file-writer/input-v1/\n?? docs/research/measurements/managed-native-file-writer/input-v2/\n?? docs/research/measurements/managed-native-file-writer/prepare-v3.py\n?? docs/research/measurements/managed-native-file-writer/prepare.py\n?? docs/research/measurements/managed-native-file-writer/raw-v1-v2.tar.gz\n?? docs/research/measurements/managed-native-file-writer/read-corrections.json\n?? docs/research/measurements/managed-native-file-writer/run-v3.py\n?? docs/research/measurements/managed-native-file-writer/run.py\n"
+}

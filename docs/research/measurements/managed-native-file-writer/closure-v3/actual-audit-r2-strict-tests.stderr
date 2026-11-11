@@ -1,0 +1,197 @@
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CARGO_ENCODED_RUSTFLAGS': ''
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=universal
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-unknown-linux-musl'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6627ca84a4de5fcc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_aarch64_unknown_linux_musl': '/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/scripts/zig-cc'
+warning: aws-lc-sys@0.45.0: Setting CC_aarch64_unknown_linux_musl: /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/scripts/zig-cc
+warning: aws-lc-sys@0.45.0: Using flag: -ffile-prefix-map=/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/vendor/aws-lc-sys=
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6627ca84a4de5fcc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6627ca84a4de5fcc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: info: available CPUs for architecture 'aarch64':
+warning: aws-lc-sys@0.45.0:  a64fx
+warning: aws-lc-sys@0.45.0:  ampere1
+warning: aws-lc-sys@0.45.0:  ampere1a
+warning: aws-lc-sys@0.45.0:  ampere1b
+warning: aws-lc-sys@0.45.0:  apple_a10
+warning: aws-lc-sys@0.45.0:  apple_a11
+warning: aws-lc-sys@0.45.0:  apple_a12
+warning: aws-lc-sys@0.45.0:  apple_a13
+warning: aws-lc-sys@0.45.0:  apple_a14
+warning: aws-lc-sys@0.45.0:  apple_a15
+warning: aws-lc-sys@0.45.0:  apple_a16
+warning: aws-lc-sys@0.45.0:  apple_a17
+warning: aws-lc-sys@0.45.0:  apple_a18
+warning: aws-lc-sys@0.45.0:  apple_a7
+warning: aws-lc-sys@0.45.0:  apple_a8
+warning: aws-lc-sys@0.45.0:  apple_a9
+warning: aws-lc-sys@0.45.0:  apple_m1
+warning: aws-lc-sys@0.45.0:  apple_m2
+warning: aws-lc-sys@0.45.0:  apple_m3
+warning: aws-lc-sys@0.45.0:  apple_m4
+warning: aws-lc-sys@0.45.0:  apple_s10
+warning: aws-lc-sys@0.45.0:  apple_s4
+warning: aws-lc-sys@0.45.0:  apple_s5
+warning: aws-lc-sys@0.45.0:  apple_s6
+warning: aws-lc-sys@0.45.0:  apple_s7
+warning: aws-lc-sys@0.45.0:  apple_s8
+warning: aws-lc-sys@0.45.0:  apple_s9
+warning: aws-lc-sys@0.45.0:  carmel
+warning: aws-lc-sys@0.45.0:  cobalt_100
+warning: aws-lc-sys@0.45.0:  cortex_a320
+warning: aws-lc-sys@0.45.0:  cortex_a34
+warning: aws-lc-sys@0.45.0:  cortex_a35
+warning: aws-lc-sys@0.45.0:  cortex_a510
+warning: aws-lc-sys@0.45.0:  cortex_a520
+warning: aws-lc-sys@0.45.0:  cortex_a520ae
+warning: aws-lc-sys@0.45.0:  cortex_a53
+warning: aws-lc-sys@0.45.0:  cortex_a55
+warning: aws-lc-sys@0.45.0:  cortex_a57
+warning: aws-lc-sys@0.45.0:  cortex_a65
+warning: aws-lc-sys@0.45.0:  cortex_a65ae
+warning: aws-lc-sys@0.45.0:  cortex_a710
+warning: aws-lc-sys@0.45.0:  cortex_a715
+warning: aws-lc-sys@0.45.0:  cortex_a72
+warning: aws-lc-sys@0.45.0:  cortex_a720
+warning: aws-lc-sys@0.45.0:  cortex_a720ae
+warning: aws-lc-sys@0.45.0:  cortex_a725
+warning: aws-lc-sys@0.45.0:  cortex_a73
+warning: aws-lc-sys@0.45.0:  cortex_a75
+warning: aws-lc-sys@0.45.0:  cortex_a76
+warning: aws-lc-sys@0.45.0:  cortex_a76ae
+warning: aws-lc-sys@0.45.0:  cortex_a77
+warning: aws-lc-sys@0.45.0:  cortex_a78
+warning: aws-lc-sys@0.45.0:  cortex_a78ae
+warning: aws-lc-sys@0.45.0:  cortex_a78c
+warning: aws-lc-sys@0.45.0:  cortex_r82
+warning: aws-lc-sys@0.45.0:  cortex_r82ae
+warning: aws-lc-sys@0.45.0:  cortex_x1
+warning: aws-lc-sys@0.45.0:  cortex_x1c
+warning: aws-lc-sys@0.45.0:  cortex_x2
+warning: aws-lc-sys@0.45.0:  cortex_x3
+warning: aws-lc-sys@0.45.0:  cortex_x4
+warning: aws-lc-sys@0.45.0:  cortex_x925
+warning: aws-lc-sys@0.45.0:  cyclone
+warning: aws-lc-sys@0.45.0:  emag
+warning: aws-lc-sys@0.45.0:  exynos_m1
+warning: aws-lc-sys@0.45.0:  exynos_m2
+warning: aws-lc-sys@0.45.0:  exynos_m3
+warning: aws-lc-sys@0.45.0:  exynos_m4
+warning: aws-lc-sys@0.45.0:  exynos_m5
+warning: aws-lc-sys@0.45.0:  falkor
+warning: aws-lc-sys@0.45.0:  fujitsu_monaka
+warning: aws-lc-sys@0.45.0:  gb10
+warning: aws-lc-sys@0.45.0:  generic
+warning: aws-lc-sys@0.45.0:  grace
+warning: aws-lc-sys@0.45.0:  kryo
+warning: aws-lc-sys@0.45.0:  neoverse_512tvb
+warning: aws-lc-sys@0.45.0:  neoverse_e1
+warning: aws-lc-sys@0.45.0:  neoverse_n1
+warning: aws-lc-sys@0.45.0:  neoverse_n2
+warning: aws-lc-sys@0.45.0:  neoverse_n3
+warning: aws-lc-sys@0.45.0:  neoverse_v1
+warning: aws-lc-sys@0.45.0:  neoverse_v2
+warning: aws-lc-sys@0.45.0:  neoverse_v3
+warning: aws-lc-sys@0.45.0:  neoverse_v3ae
+warning: aws-lc-sys@0.45.0:  olympus
+warning: aws-lc-sys@0.45.0:  oryon_1
+warning: aws-lc-sys@0.45.0:  saphira
+warning: aws-lc-sys@0.45.0:  thunderx
+warning: aws-lc-sys@0.45.0:  thunderx2t99
+warning: aws-lc-sys@0.45.0:  thunderx3t110
+warning: aws-lc-sys@0.45.0:  thunderxt81
+warning: aws-lc-sys@0.45.0:  thunderxt83
+warning: aws-lc-sys@0.45.0:  thunderxt88
+warning: aws-lc-sys@0.45.0:  tsv110
+warning: aws-lc-sys@0.45.0:  xgene1
+warning: aws-lc-sys@0.45.0: 
+warning: aws-lc-sys@0.45.0: error: unknown CPU: 'armv8.4'
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' failed - Err(Error { kind: ToolExecError, message: "command did not execute successfully (status code exit status: 1): LC_ALL=\"C\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/scripts/zig-cc\" \"-O3\" \"-ffunction-sections\" \"-fdata-sections\" \"-fPIC\" \"-g\" \"-gdwarf-4\" \"-fno-omit-frame-pointer\" \"-mno-omit-leaf-frame-pointer\" \"--target=aarch64-unknown-linux-musl\" \"-Werror\" \"-Wall\" \"-Wextra\" \"-march=armv8.4-a+sha3\" \"-Wno-unused-parameter\" \"-o\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6627ca84a4de5fcc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o\" \"-c\" \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/vendor/aws-lc-sys/aws-lc/tests/compiler_features_tests/neon_sha3_check.c\"" }).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/aws-lc-sys-6627ca84a4de5fcc/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak2_f1600.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak4_f1600_alt2.S"
+warning: aws-lc-sys@0.45.0: Skipping due to missing compiler features: "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/vendor/aws-lc-sys/aws-lc/third_party/s2n-bignum/s2n-bignum-imported/arm/sha3/sha3_keccak_f1600_alt.S"
+warning: rquickjs-sys@0.14.0: /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/rquickjs-sys-dae34ceafea9581a/out/quickjs.c:7237:17: warning: variable 's' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  7237 |     JSMapState *s;
+warning: rquickjs-sys@0.14.0:       |                 ^
+warning: rquickjs-sys@0.14.0: /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/rquickjs-sys-dae34ceafea9581a/out/quickjs.c:9481:10: warning: variable 'atom1_is_integer' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  9481 |     bool atom1_is_integer, atom2_is_integer;
+warning: rquickjs-sys@0.14.0:       |          ^
+warning: rquickjs-sys@0.14.0: /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/rquickjs-sys-dae34ceafea9581a/out/quickjs.c:9481:28: warning: variable 'atom2_is_integer' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  9481 |     bool atom1_is_integer, atom2_is_integer;
+warning: rquickjs-sys@0.14.0:       |                            ^
+warning: rquickjs-sys@0.14.0: /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/target/aarch64-unknown-linux-musl/test-release/build/rquickjs-sys-dae34ceafea9581a/out/quickjs.c:44432:43: warning: variable 'last' set but not used [-Wunused-but-set-variable]
+warning: rquickjs-sys@0.14.0:  44432 |     JSValue arr, obj, ret, *arrp, *pval, *last;
+warning: rquickjs-sys@0.14.0:        |                                           ^
+warning: rquickjs-sys@0.14.0: 4 warnings generated.
+   Compiling shards-abi v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/crates/abi)
+    Checking shards-testdir v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/crates/testdir)
+    Checking shards-ipc v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/crates/ipc)
+    Checking shards-server v0.1.0 (/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-producer-v1/.audit-native-write-record-v2/snapshot/crates/server)
+error: unused import: `std::os::fd::AsFd`
+ --> crates/server/src/native_effects/write/tests.rs:3:5
+  |
+3 | use std::os::fd::AsFd as _;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+  = note: `-D unused-imports` implied by `-D warnings`
+  = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: method `offset` is never used
+   --> crates/server/src/native_effects/write.rs:133:12
+    |
+ 85 | impl<'a> Prepared<'a> {
+    | --------------------- method in this implementation
+...
+133 |     pub fn offset(&self) -> libc::off_t {
+    |            ^^^^^^
+    |
+    = note: `-D dead-code` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: using `write!()` with a format string that ends in a single newline
+   --> crates/server/src/broker/audit/native_write.rs:175:5
+    |
+175 | /     write!(
+176 | |         out,
+177 | |         "{{\"event\":\"native_write_intent\",\"operation\":{},\"root\":{},\"device\":{},\"inode\":{},\"offset\":{},\"requested\":...
+178 | |         facts.operation, facts.root, facts.object.0, facts.object.1, facts.offset, facts.requested,
+179 | |     )
+    | |_____^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#write_with_newline
+    = note: `-D clippy::write-with-newline` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::write_with_newline)]`
+help: use `writeln!` instead
+    |
+175 ~     writeln!(
+176 |         out,
+177 ~         "{{\"event\":\"native_write_intent\",\"operation\":{},\"root\":{},\"device\":{},\"inode\":{},\"offset\":{},\"requested\":{}}}",
+    |
+
+error: unsafe block missing a safety comment
+  --> crates/server/src/native_effects/write/tests.rs:30:9
+   |
+30 |         unsafe { libc::lseek(duplicate.as_raw_fd(), 2, libc::SEEK_SET) },
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+   = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::undocumented_unsafe_blocks)]`
+
+error: unsafe block missing a safety comment
+  --> crates/server/src/native_effects/write/tests.rs:57:9
+   |
+57 |         unsafe { libc::lseek(duplicate.as_raw_fd(), 0, libc::SEEK_CUR) },
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: consider adding a safety comment on the preceding line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+
+error: could not compile `shards-server` (bin "shards-server" test) due to 5 previous errors

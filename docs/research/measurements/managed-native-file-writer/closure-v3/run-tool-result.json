@@ -1,0 +1,31 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"451397fcc585f7f7cb9aaf00e42064bb\",\n    \"output\": \"{\\\"name\\\": \\\"rust-version\\\", \\\"argv\\\": [\\\"rustc\\\", \\\"+1.98.1\\\", \\\"-Vv\\\"], \\\"cwd\\\": \\\"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\\\", \\\"exit_code\\\": 0, \\\"exit_ready_before_wait\\\": true, \\\"waited_pid\\\": 3144511, \\\"direct_child_reaped_echild\\\": true, \\\"elapsed_seconds\\\": 0.007679234957322478, \\\"parent_fd_before\\\": 9, \\\"parent_fd_after\\\": 9}\\n{\\\"name\\\": \\\"cargo-version\\\", \\\"argv\\\": [\\\"cargo\\\", \\\"+1.98.1\\\", \\\"-Vv\\\"], \\\"cwd\\\": \\\"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\\\", \\\"exit_code\\\": 0, \\\"exit_ready_before_wait\\\": true, \\\"waited_pid\\\": 3144517, \\\"direct_child_reaped_echild\\\": true, \\\"elapsed_seconds\\\": 0.021502970019355416, \\\"parent_fd_before\\\": 9, \\\"parent_fd_after\\\": 9}\\n{\\\"name\\\": \\\"compile\\\", \\\"argv\\\": [\\\"cargo\\\", \\\"+1.98.1\\\", \\\"test\\\", \\\"-p\\\", \\\"shards-server\\\", \\\"--bin\\\", \\\"shards-server\\\", \\\"--locked\\\", \\\"--target\\\", \\\"x86_64-unknown-linux-gnu\\\", \\\"--profile\\\", \\\"test-release\\\", \\\"-j2\\\", \\\"--no-run\\\", \\\"--message-format=json\\\"], \\\"cwd\\\": \\\"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\\\", \\\"exit_code\\\": 101, \\\"exit_ready_before_wait\\\": true, \\\"waited_pid\\\": 3144549, \\\"direct_child_reaped_echild\\\": true, \\\"elapsed_seconds\\\": 6.085839487030171, \\\"parent_fd_before\\\": 9, \\\"parent_fd_after\\\": 9}\\n\",\n    \"running\": false,\n    \"why\": \"linux/x86_64 · 26 of 32 cores idle · 97 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 26%\",\n    \"synced\": {\n      \"to\": \"/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-native-file-writer-v1-d1bfe7f0c1\",\n      \"files_sent\": 8610,\n      \"removed\": 0,\n      \"bytes\": 622437199,\n      \"ms\": 17983\n    },\n    \"exit_code\": 1\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+      "output": "{\"name\": \"rust-version\", \"argv\": [\"rustc\", \"+1.98.1\", \"-Vv\"], \"cwd\": \"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\", \"exit_code\": 0, \"exit_ready_before_wait\": true, \"waited_pid\": 3144511, \"direct_child_reaped_echild\": true, \"elapsed_seconds\": 0.007679234957322478, \"parent_fd_before\": 9, \"parent_fd_after\": 9}\n{\"name\": \"cargo-version\", \"argv\": [\"cargo\", \"+1.98.1\", \"-Vv\"], \"cwd\": \"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\", \"exit_code\": 0, \"exit_ready_before_wait\": true, \"waited_pid\": 3144517, \"direct_child_reaped_echild\": true, \"elapsed_seconds\": 0.021502970019355416, \"parent_fd_before\": 9, \"parent_fd_after\": 9}\n{\"name\": \"compile\", \"argv\": [\"cargo\", \"+1.98.1\", \"test\", \"-p\", \"shards-server\", \"--bin\", \"shards-server\", \"--locked\", \"--target\", \"x86_64-unknown-linux-gnu\", \"--profile\", \"test-release\", \"-j2\", \"--no-run\", \"--message-format=json\"], \"cwd\": \"/home/adalundhe/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458/source\", \"exit_code\": 101, \"exit_ready_before_wait\": true, \"waited_pid\": 3144549, \"direct_child_reaped_echild\": true, \"elapsed_seconds\": 6.085839487030171, \"parent_fd_before\": 9, \"parent_fd_after\": 9}\n",
+      "running": false,
+      "why": "linux/x86_64 · 26 of 32 cores idle · 97 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 26%",
+      "synced": {
+        "to": "/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/managed-native-file-writer-v1-d1bfe7f0c1",
+        "files_sent": 8610,
+        "removed": 0,
+        "bytes": 622437199,
+        "ms": 17983
+      },
+      "exit_code": 1
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

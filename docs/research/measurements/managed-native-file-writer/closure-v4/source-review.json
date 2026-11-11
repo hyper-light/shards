@@ -1,0 +1,11 @@
+{
+  "production_unchanged": true,
+  "tests_after_sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52",
+  "actual_original_diagnostic_sha256": "66a0790b2b83ea401aac6b050836dbe3eb829e0437c51d7de0bf79626f6bed1b",
+  "test_delta": "Exact14693. Removes unused import; moves SAME safety comments next to SAME lseek calls; offset4 assertion binds existing prepared metadata to existing pwrite target. Original seven case names and predicates retained; production code unmodified.",
+  "metadata_gap": "Actual CONTROL3 Write client/metadata consumer remains absent; audit confirms Stage Process-only. No fake use, suppression or production strict/authority claim.",
+  "held_record_case_count_executed": 0,
+  "children_spawned": 0,
+  "local_rust_commands": 0,
+  "signing": "Pending own genuine gits attempt; no identity/key/socket substitution."
+}

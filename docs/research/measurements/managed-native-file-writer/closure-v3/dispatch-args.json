@@ -1,0 +1,9 @@
+{
+  "on": "451397fcc585f7f7cb9aaf00e42064bb",
+  "needs": "linux/amd64,cpus=2,mem=2g,disk=4g",
+  "sync": true,
+  "cwd": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-file-writer-v1",
+  "timeout_s": 600,
+  "reuse": false,
+  "command": "python3 docs/research/measurements/managed-native-file-writer/run-v3.py --input docs/research/measurements/managed-native-file-writer/closure-v3 --root \"$HOME/Projects/managed-native-file-writer-198bd-v3-01a1c9f8-1794390458\""
+}

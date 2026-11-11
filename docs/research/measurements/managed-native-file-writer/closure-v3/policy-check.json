@@ -1,0 +1,70 @@
+{
+  "original_sparse_check": {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit_code": 1,
+    "stderr": "development policy check failed: [Errno 2] No such file or directory: '/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-file-writer-v1/.github/workflows/ci.yml'\n"
+  },
+  "current_policy_projection": {
+    "revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+    "script_unchanged": true,
+    "files": [
+      {
+        "path": "scripts/check-development-policy",
+        "bytes": 3326,
+        "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac"
+      },
+      {
+        "path": "docs/development-rules.md",
+        "bytes": 11604,
+        "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+      },
+      {
+        "path": "docs/development-evidence.md",
+        "bytes": 3325,
+        "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+      },
+      {
+        "path": "AGENTS.md",
+        "bytes": 1793,
+        "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+      },
+      {
+        "path": "CLAUDE.md",
+        "bytes": 17012,
+        "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+      },
+      {
+        "path": "resources/supported-targets.txt",
+        "bytes": 172,
+        "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a"
+      },
+      {
+        "path": ".github/workflows/ci.yml",
+        "bytes": 23576,
+        "sha256": "0707e0d998f93686ddec2974c1f1dead655108190370b29437d8e685aeed02ce"
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "bytes": 6178,
+        "sha256": "27a09295956b66534bd0bdda08eeb8dd262c1645b8d42b7b777fd93ee9ab2415"
+      },
+      {
+        "path": "scripts/lint",
+        "bytes": 2250,
+        "sha256": "5db1b68bc06218d1df6ed032759f4b39aa78bc0bb9f549bfdf37d831c956d040"
+      },
+      {
+        "path": "Cargo.toml",
+        "bytes": 3885,
+        "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+      }
+    ],
+    "exit_code": 0,
+    "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "stderr": ""
+  },
+  "scope": "Mechanical policy checks from exact current origin/main via git show because actual sparse worktree lacks workflow files; source readiness/compliance is not inferred."
+}

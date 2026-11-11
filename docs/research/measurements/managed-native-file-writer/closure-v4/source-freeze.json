@@ -1,0 +1,24 @@
+{
+  "source": [
+    {
+      "path": "crates/server/src/native_effects/write.rs",
+      "bytes": 6696,
+      "sha256": "3bfda368e08fc3368239efb184a479e2fe870ecb8c6704eba308803493fc4c9d"
+    },
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7065,
+      "sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52"
+    }
+  ],
+  "base": "198bd7a111c4c9929a7fa027be6344efdde8400c",
+  "patch": {
+    "path": "WRITER-TESTS.patch",
+    "bytes": 1906,
+    "sha256": "862d9db5a3b9f28fcfc2b1aadfbaae4344dbc8840629701343f48054cd108d88"
+  },
+  "production_changed": false,
+  "code_frozen": true,
+  "exact_new_tests": 0,
+  "new_production_callers": 0
+}

@@ -1,0 +1,13 @@
+{
+  "archive_bytes": 397735,
+  "archive_sha256": "dafd70838021eae64aa92da0f3d3ecd90b3e5e03716dbd65fb17aedfea587d0d",
+  "payloads_verified": 72,
+  "archive_members": 73,
+  "all_original_manifests_verified": true,
+  "both_source_jsons_byte_equal_local_inputs": true,
+  "actual_native_writer_cases_passed_once": 7,
+  "held_native_write_record_cases_executed": 0,
+  "all_v4_direct_children_ready_reaped_fd_return": true,
+  "strict_original_exit": 101,
+  "original_format_unrun": true
+}

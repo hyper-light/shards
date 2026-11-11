@@ -1,0 +1,18 @@
+{
+  "state": "UNAPPLIED narrow frozen proposal for writer owner; no active/frozen dependency file modified, no compiler/test/effect run",
+  "source_revision": "198bd7a111c4c9929a7fa027be6344efdde8400c",
+  "path": "crates/server/src/native_effects/write/tests.rs",
+  "before_bytes": 7047,
+  "before_sha256": "130c597eb30169d65a3648cfbfd931cfb44c8f6717abe90824d524d3ffe024f0",
+  "after_bytes": 7065,
+  "after_sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52",
+  "patch_bytes": 1539,
+  "patch_sha256": "14693ba6742f240b8b417a9e4898558e4dd1e7522adbcd4913cace9f53c0d81b",
+  "changes": [
+    "Remove exact unused AsFd import",
+    "Put existing SAFETY explanation immediately beside each same unsafe lseek expression",
+    "Assert metadata offset4 matches requested position before SAME existing literal pwrite fixture; original target-byte/position assertions and operation count unchanged"
+  ],
+  "contract": "Offset getter must report the exact position represented in audit intent; the existing effect fixture observes write target bytes atthat sameoffset. No dummy use, suppression, new case or injected fault.",
+  "runtime": "No new build/test/actor, no in-flight source mutation. Owner must preserve its old frozen source/results before adopting."
+}

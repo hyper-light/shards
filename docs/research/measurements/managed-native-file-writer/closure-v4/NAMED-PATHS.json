@@ -1,0 +1,208 @@
+{
+  "base_revision": "198bd7a111c4c9929a7fa027be6344efdde8400c",
+  "named_paths": [
+    "crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/MANIFEST.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/POLICY_READ.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/WRITER-TESTS-ONLY.patch",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/actual-audit-r2-strict-tests.stderr",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/before/crates/server/src/native_effects/write.rs",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/before/crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/dispatch-args.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/local-policy-first-result.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/policy-check.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v3/run-tool-result.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/COMMIT-MESSAGE.txt",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/POLICY-EVIDENCE.md",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/README.md",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/RESULTS.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/WRITER-TESTS.patch",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/after/crates/server/src/native_effects/write.rs",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/after/crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/dispatch-args.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/raw-strict-only.tar.gz",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/raw-v3-v4.tar.gz",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/raw-verification.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/run-tool-result.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/source-freeze.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/source-review.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-dispatch-args.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-tool-result.json",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-verification.json",
+    "docs/research/measurements/managed-native-file-writer/prepare-v3.py",
+    "docs/research/measurements/managed-native-file-writer/prepare-v4.py",
+    "docs/research/measurements/managed-native-file-writer/run-v3.py",
+    "docs/research/measurements/managed-native-file-writer/strict-test-only-v1.py",
+    "docs/research/measurements/managed-native-file-writer/closure-v4/NAMED-PATHS.json"
+  ],
+  "payloads": [
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7065,
+      "sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/MANIFEST.json",
+      "bytes": 1277,
+      "sha256": "59487d6e8221b25ceb4b4bc6065cb1ac62405c78c154bb194280caf1374758f3"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/POLICY_READ.json",
+      "bytes": 1032,
+      "sha256": "0d66fdb762bbde214b05405816d9054126d95e8becb9a002dc61fd078e32084b"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/WRITER-TESTS-ONLY.patch",
+      "bytes": 1539,
+      "sha256": "14693ba6742f240b8b417a9e4898558e4dd1e7522adbcd4913cace9f53c0d81b"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/actual-audit-r2-strict-tests.stderr",
+      "bytes": 13757,
+      "sha256": "66a0790b2b83ea401aac6b050836dbe3eb829e0437c51d7de0bf79626f6bed1b"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/before/crates/server/src/native_effects/write.rs",
+      "bytes": 6696,
+      "sha256": "3bfda368e08fc3368239efb184a479e2fe870ecb8c6704eba308803493fc4c9d"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/before/crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7047,
+      "sha256": "130c597eb30169d65a3648cfbfd931cfb44c8f6717abe90824d524d3ffe024f0"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/dispatch-args.json",
+      "bytes": 485,
+      "sha256": "0a65a6706a7a7ce8ae012d04702dbeb3e38674ec9ead8cc22e02bd20199d53ea"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/local-policy-first-result.json",
+      "bytes": 993,
+      "sha256": "4768beb41a1a2e75df755b742a271defac5b7fc2251b9037e71ca8d0b7bac238"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/policy-check.json",
+      "bytes": 2460,
+      "sha256": "671305246a75742e9b24105e063412ea82718b4c42b0931e5a0e45282d32651c"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v3/run-tool-result.json",
+      "bytes": 4289,
+      "sha256": "6ef793f9cce15c6fb74bcc252d194f24357a5cebe9ec041450827ade1a0febec"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/COMMIT-MESSAGE.txt",
+      "bytes": 554,
+      "sha256": "85acc7dbc85f841a8102942090550bdad4476ffaa79d485e0de4d5d808f25319"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/POLICY-EVIDENCE.md",
+      "bytes": 7521,
+      "sha256": "4b3a1adcd42819f01906fbda78a27e8cbd959a08f354acb9ff0cb87810426bf3"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/README.md",
+      "bytes": 8381,
+      "sha256": "d7988f9b70ef01ead6c30ab9e4b8a6fd7c27054cb66d1724678fec30a0ebaad2"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/RESULTS.json",
+      "bytes": 9599,
+      "sha256": "788e30e1b28f384cbad088138884448389d244770b5800b98b94a6e27ec6cf49"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/WRITER-TESTS.patch",
+      "bytes": 1906,
+      "sha256": "862d9db5a3b9f28fcfc2b1aadfbaae4344dbc8840629701343f48054cd108d88"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/after/crates/server/src/native_effects/write.rs",
+      "bytes": 6696,
+      "sha256": "3bfda368e08fc3368239efb184a479e2fe870ecb8c6704eba308803493fc4c9d"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/after/crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7065,
+      "sha256": "a6d24583b92e58b049dbb5f2bab81447e491d07b202c8769198f65d4a2adfa52"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/dispatch-args.json",
+      "bytes": 10,
+      "sha256": "770c2d18aa4ec3159f46da461ef452972949942ff4f6a9771044485faa146398"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/raw-strict-only.tar.gz",
+      "bytes": 3556,
+      "sha256": "374a1694c766a930eb75c6c9d95da84b724c3a96424ace3559e77ba7dff9bd17"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/raw-v3-v4.tar.gz",
+      "bytes": 397735,
+      "sha256": "dafd70838021eae64aa92da0f3d3ecd90b3e5e03716dbd65fb17aedfea587d0d"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/raw-verification.json",
+      "bytes": 482,
+      "sha256": "fa89232db7b767d84444f9e93dd43e50c41d408d31126f4efd7de5cee3966f54"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/run-tool-result.json",
+      "bytes": 15603,
+      "sha256": "ab95f59792f972a422351344ba092fcc5cfd7b9e701aa9350e34f6a8187a2192"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/source-freeze.json",
+      "bytes": 694,
+      "sha256": "57fd401860a74007be1a19b3ace52e8767891766baca4027a312861e68b0a88e"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/source-review.json",
+      "bytes": 860,
+      "sha256": "52ae1c586b0103e892c42849a5b56ed63f66be9b52bcba8bc8824a72e9cbd64a"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-dispatch-args.json",
+      "bytes": 5730,
+      "sha256": "83166c8d22b73630826200778157ba3a53c16749684dc46eb12950ecad68fdf4"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-tool-result.json",
+      "bytes": 1937,
+      "sha256": "8fdd28bd08ad201cc9299714b98e4a39423cce6a203af74255c5fb541fea9be5"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/closure-v4/strict-only-verification.json",
+      "bytes": 1149,
+      "sha256": "1a16a0bc568ab64abb380fa9ad08a5bd824b38611a51e022a3911babb23b7eb3"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/prepare-v3.py",
+      "bytes": 4025,
+      "sha256": "1b55c2377163c725ede1acd80a5347838d0be6184424705b7e5e475068d5af79"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/prepare-v4.py",
+      "bytes": 3371,
+      "sha256": "c554728fa97fe66ad302338bd6c459c2b3fb489bfebea1efda4b1268aca67aae"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/run-v3.py",
+      "bytes": 9817,
+      "sha256": "ce30821861f3c633408e93b1a820669bff2d960eded305f92f6f0ade5b7db174"
+    },
+    {
+      "path": "docs/research/measurements/managed-native-file-writer/strict-test-only-v1.py",
+      "bytes": 5241,
+      "sha256": "5396da45c210e0eafe0b265abb64e3ee5b91698a2011ecffc3598a9002990ff3"
+    }
+  ],
+  "total_named_payload_bytes": 538572,
+  "protected_unselected": [
+    "original input-v1/input-v2 and prepare.py/run.py/raw-v1-v2.tar.gz/read-corrections.json",
+    "closure-v3/source.tar.gz +source.json/policy-check/readable raw",
+    "closure-v4/source.tar.gz +source.json/readable raw",
+    "ALL original and new remote source/target/cache/frozen executable/TMP scopes"
+  ],
+  "scope": "Only one owned test source changes; selected owned evidence/harnesses. No production, foreign file, dependency or policy edit."
+}

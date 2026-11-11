@@ -1,0 +1,7 @@
+test(server): close finite native file-writer mechanics batch
+
+Keep production writer byte-identical to198bd. Apply the audited test-only import/safety/offset correction and retain the original seven effect predicates.
+
+Retain original-path GNU test compilation, seven single passes, test-only Clippy and formatting, with all raw evidence and prior setup/production-lint failures. Production CONTROL3 Write consumption and coordinator gates remain open; five held audit record cases were not run.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

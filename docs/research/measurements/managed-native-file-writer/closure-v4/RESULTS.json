@@ -1,0 +1,264 @@
+{
+  "state": "FINITE writer source/light-test batch finished; frozen for ROOT review, no production/integration/layer readiness claim",
+  "policy_revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "implementer": "01a1c9f8742d77d89711aa024bb3978d",
+  "coordinator": "01a148884a4770fdaf0111f3f792a248",
+  "production_revision": "198bd7a111c4c9929a7fa027be6344efdde8400c",
+  "production_unchanged": true,
+  "source_tests_delta": "exact after a6d24583 from audited14693 proposal; no original predicate/case removal or weakening",
+  "compile": {
+    "name": "compile",
+    "argv": [
+      "cargo",
+      "+1.98.1",
+      "test",
+      "-p",
+      "shards-server",
+      "--bin",
+      "shards-server",
+      "--locked",
+      "--target",
+      "x86_64-unknown-linux-gnu",
+      "--profile",
+      "test-release",
+      "-j2",
+      "--no-run",
+      "--message-format=json"
+    ],
+    "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+    "exit_code": 0,
+    "exit_ready_before_wait": true,
+    "waited_pid": 3412051,
+    "direct_child_reaped_echild": true,
+    "elapsed_seconds": 90.10052281303797,
+    "parent_fd_before": 9,
+    "parent_fd_after": 9
+  },
+  "original_seven_cases": [
+    {
+      "name": "case-0",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::cancellation_before_commit_and_empty_write_preserve_actual_file",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649436,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.0012955100974068046,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-1",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::checked_range_refuses_overflow_without_opening_or_mutating_an_object",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649438,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.000806857948191464,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-2",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::directory_object_is_returned_and_never_used_for_write",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649440,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.0007621740223839879,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-3",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::literal_positional_write_preserves_prefix_suffix_and_shared_offset",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649442,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.0007193739293143153,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-4",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::prepared_object_survives_rename_and_does_not_write_replacement",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649449,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.000877068960107863,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-5",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::readonly_and_append_modes_refuse_before_any_bytes_change",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649451,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.0007813700940459967,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    {
+      "name": "case-6",
+      "argv": [
+        "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+        "native_effects::write::tests::same_canonical_audit_reserves_intent_and_terminal_before_ordinary_effect",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 0,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649453,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 0.033469427027739584,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    }
+  ],
+  "strict_combined_production_selection": {
+    "result": {
+      "name": "strict-tests",
+      "argv": [
+        "cargo",
+        "+1.98.1",
+        "clippy",
+        "-p",
+        "shards-server",
+        "--bin",
+        "shards-server",
+        "--locked",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--profile",
+        "test-release",
+        "-j2",
+        "--tests",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/source",
+      "exit_code": 101,
+      "exit_ready_before_wait": true,
+      "waited_pid": 3649527,
+      "direct_child_reaped_echild": true,
+      "elapsed_seconds": 6.545152391074225,
+      "parent_fd_before": 9,
+      "parent_fd_after": 9
+    },
+    "error_count": 89,
+    "stderr_bytes": 24551,
+    "stderr_sha256": "4a48a2531fdfe9221b8ec31927161611f3e05494e63340214a261cac3a800f16",
+    "gap": "ACTUAL production APIs remain unconsumed; CONTROL3 Write metadata/caller absent, no suppression/fake caller supplied"
+  },
+  "strict_test_only_and_format": {
+    "results": [
+      {
+        "name": "strict-test-only",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 3957006,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 53.36081333900802
+      },
+      {
+        "name": "format-owned",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 4100408,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.03353977494407445
+      }
+    ],
+    "error": null,
+    "source_unchanged": true,
+    "frozen_binary_unchanged": true,
+    "original_target_untouched": true,
+    "actual_new_runtime_cases": 0,
+    "original_cutoff_wall": 1794390892.6726599,
+    "finished_wall": 1794390596.0280762,
+    "finished_before_conservative_original_cutoff": true
+  },
+  "source_files": 4357,
+  "source_unchanged": true,
+  "selected_runtime_cases_passed_once": 7,
+  "case_runtime_retries": 0,
+  "compiled_unselected_case_count": 92,
+  "five_held_record_cases_linked": false,
+  "five_held_record_cases_executed": 0,
+  "v4_direct_children": 14,
+  "v3_setup_direct_children": 3,
+  "original_tmp_entries": [
+    "shards-tests"
+  ],
+  "frozen_binary": {
+    "artifact": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-c75ce805a0470812",
+    "frozen": "/home/adalundhe/Projects/managed-native-file-writer-198bd-v4-01a1c9f8-1794390298/frozen/writer-tests",
+    "bytes": 38204488,
+    "sha256": "b1a1baefefc35a0cb58f22f8fbe8f35f497c8a45c0805611b48acc80a7859015"
+  },
+  "active_owned_jobs": 0,
+  "queued_owned_runtime_cases": 0,
+  "local_rust_commands": 0,
+  "children_spawned": 0,
+  "coordinator_owed": [
+    "actual owner/current/CONTROL3 Write metadata and terminal consumer",
+    "owned payload/backing and initialized Session/input integration",
+    "helper/filter composition and actual authority/direct-effect proof",
+    "full seven-target and real-host validation",
+    "fault/mutation/heavy E2E/VM/chaos/restore/move/kernel/accounting/cost gates"
+  ],
+  "signing": "Own genuine named gits attempt follows; failed binding uses exact unsigned named patch, no identity/key/socket borrow or signing disable."
+}

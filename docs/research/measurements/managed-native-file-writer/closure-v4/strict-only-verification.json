@@ -1,0 +1,39 @@
+{
+  "archive_bytes": 3556,
+  "archive_sha256": "374a1694c766a930eb75c6c9d95da84b724c3a96424ace3559e77ba7dff9bd17",
+  "payloads_verified": 11,
+  "archive_members": 12,
+  "original_manifest_verified": true,
+  "summary": {
+    "results": [
+      {
+        "name": "strict-test-only",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 3957006,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 53.36081333900802
+      },
+      {
+        "name": "format-owned",
+        "exit_code": 0,
+        "exit_ready_before_wait": true,
+        "waited_pid": 4100408,
+        "direct_child_reaped_echild": true,
+        "parent_fd_before": 9,
+        "parent_fd_after": 9,
+        "elapsed_seconds": 0.03353977494407445
+      }
+    ],
+    "error": null,
+    "source_unchanged": true,
+    "frozen_binary_unchanged": true,
+    "original_target_untouched": true,
+    "actual_new_runtime_cases": 0,
+    "original_cutoff_wall": 1794390892.6726599,
+    "finished_wall": 1794390596.0280762,
+    "finished_before_conservative_original_cutoff": true
+  }
+}
