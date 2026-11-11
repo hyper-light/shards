@@ -1,0 +1,58 @@
+{
+  "birth_sha256": "d128d7ca109b78372c6dcba2bec8807e81e9377b79e49cd39cd650c867fe27ff",
+  "source_manifest_sha256": "3b29342bfa1da90d9648c9a4055108824ec6dd28dbd9a19bb9746e148f23b8ec",
+  "final": {
+    "exit": 0,
+    "elapsed": 27.74821280303877,
+    "source": "ROOT narrow cgroup birth inode producer on immutable runtime v3; no held audit graph/cases",
+    "held_graph_executed": false,
+    "backing": "Unverified"
+  },
+  "source_before": {
+    "manifest": "3b29342bfa1da90d9648c9a4055108824ec6dd28dbd9a19bb9746e148f23b8ec",
+    "files": 4770,
+    "changed": {
+      "crates/init/src/domains.rs": {
+        "bytes": 131030,
+        "sha256": "cf0f32fda3eefded32cb00ce8451b32059c3c83aa599d72b138aab58ff38a2c6",
+        "kind": "file"
+      },
+      "crates/init/src/domains/admission.rs": {
+        "bytes": 29377,
+        "sha256": "f2f6e15b66693bfa80ddc725d3835f197abc397b5cca753485fb0264c270080d",
+        "kind": "file"
+      },
+      "crates/init/src/domains/admission/birth.rs": {
+        "bytes": 8897,
+        "sha256": "d128d7ca109b78372c6dcba2bec8807e81e9377b79e49cd39cd650c867fe27ff",
+        "kind": "file"
+      },
+      "crates/init/src/domains/admission/execution.rs": {
+        "bytes": 16923,
+        "sha256": "f17793844daa89df7ac619a5fbc1ea5c80308913fe069d6cb629da710099eabc",
+        "kind": "file"
+      },
+      "crates/init/src/managed.rs": {
+        "bytes": 67310,
+        "sha256": "3649527348225786157cee420e615492a20ef36c8d8b36354ce465525e7f5b3e",
+        "kind": "file"
+      },
+      "crates/init/src/managed/native.rs": {
+        "bytes": 31982,
+        "sha256": "efe22eb4a661f84253ef8594007221edc99e0b8fbc27ed8b51b1495d483880d3",
+        "kind": "file"
+      },
+      "crates/init/src/managed/native/jobs.rs": {
+        "bytes": 26098,
+        "sha256": "da338b4ff7183b1878570d2e4f6789f9ef484aa7fef90691dafc137dce2708d0",
+        "kind": "file"
+      }
+    },
+    "birth_formatted_sha256": "d128d7ca109b78372c6dcba2bec8807e81e9377b79e49cd39cd650c867fe27ff"
+  },
+  "binary": {
+    "sha256": "14d7b793b3c0a17f6cee977f49a6fa60ed1f2ea567dff99c69afe1b33709ede0",
+    "bytes": 74710248,
+    "source_manifest": "3b29342bfa1da90d9648c9a4055108824ec6dd28dbd9a19bb9746e148f23b8ec"
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "source_manifest": "3b29342bfa1da90d9648c9a4055108824ec6dd28dbd9a19bb9746e148f23b8ec",
+  "base_manifest": "4b52aabd69035dcd3f76bb84e58394b3b75cf16a970a0cb54a5d8326df21ca26",
+  "patch_bytes": 19618,
+  "patch_sha256": "73a14fe70f654582c50b0edbc37129f5a33f8db26cc74d9bf486e231a9db0f07",
+  "files": {
+    "crates/init/src/domains/admission/execution.rs": {
+      "before": {
+        "bytes": 16749,
+        "sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 16923,
+        "sha256": "f17793844daa89df7ac619a5fbc1ea5c80308913fe069d6cb629da710099eabc",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/domains/admission.rs": {
+      "before": {
+        "bytes": 29053,
+        "sha256": "de247243e4fae1ce2218b6263e23af8a1b412ad633e2ecfd2e5c2adff4a635ec",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 29377,
+        "sha256": "f2f6e15b66693bfa80ddc725d3835f197abc397b5cca753485fb0264c270080d",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/domains.rs": {
+      "before": {
+        "bytes": 130786,
+        "sha256": "12c437f059f8280d6d92e645fecdba5c5d2d35f1ec0edd327d55712be632b9cf",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 131030,
+        "sha256": "cf0f32fda3eefded32cb00ce8451b32059c3c83aa599d72b138aab58ff38a2c6",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/managed/native/jobs.rs": {
+      "before": {
+        "bytes": 25975,
+        "sha256": "6e0eba9cb831047c86b56b5ec271c6f820833aeee5c909e8c0f6419b9d68a30a",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 26098,
+        "sha256": "da338b4ff7183b1878570d2e4f6789f9ef484aa7fef90691dafc137dce2708d0",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/managed/native.rs": {
+      "before": {
+        "bytes": 31611,
+        "sha256": "72f1a879901f3f00dd4e6779c89c117cbbcbaa23cf8f53c722fe56214a32d5bf",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 31982,
+        "sha256": "efe22eb4a661f84253ef8594007221edc99e0b8fbc27ed8b51b1495d483880d3",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/managed.rs": {
+      "before": {
+        "bytes": 67246,
+        "sha256": "25c0e6b1549aa712e55d42c38f5c4e460bd39c72dc9a9e6a87401ac42a8b12ac",
+        "kind": "file"
+      },
+      "after": {
+        "bytes": 67310,
+        "sha256": "3649527348225786157cee420e615492a20ef36c8d8b36354ce465525e7f5b3e",
+        "kind": "file"
+      }
+    },
+    "crates/init/src/domains/admission/birth.rs": {
+      "before": null,
+      "after": {
+        "bytes": 8897,
+        "sha256": "d128d7ca109b78372c6dcba2bec8807e81e9377b79e49cd39cd650c867fe27ff",
+        "kind": "file"
+      }
+    }
+  },
+  "limitation": "v1 consumer calls originalMember check before allPrepare; actual new v7 must guard birth-specific check only forProcess, no gate inheritance",
+  "main_ready": false
+}

@@ -1,0 +1,8 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "output": "{\"stage\": \"patch-check\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"patch-apply\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"birth-format\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"policy\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n",
+  "running": true,
+  "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+  "id": "r21",
+  "why": "linux/x86_64 · 25 of 32 cores idle · 96 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 26%"
+}

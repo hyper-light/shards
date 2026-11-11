@@ -1,0 +1,489 @@
+--- a/crates/init/src/domains.rs
++++ b/crates/init/src/domains.rs
+@@ -1942,8 +1942,14 @@
+                 cause: crate::managed::NativeFailure::Projection(cause),
+             }
+         })?;
++        let birth = admitted.prepare_native_birth(d, scope).map_err(|cause| {
++            StartFailure::NativeOwner {
++                member,
++                cause: crate::managed::NativeFailure::Birth(cause),
++            }
++        })?;
+         let native_endpoint = launch
+-            .prepare_native(&projection, scope, context, filter)
++            .prepare_native(&projection, scope, context, filter, birth)
+             .map_err(|cause| StartFailure::NativeOwner { member, cause })?;
+         prepared.native = Some(
+             native_helper::Prepared::prepare(
+--- a/crates/init/src/domains/admission.rs
++++ b/crates/init/src/domains/admission.rs
+@@ -10,6 +10,7 @@
+ use std::os::fd::{AsRawFd, FromRawFd};
+ 
+ pub(crate) mod execution;
++pub(crate) mod birth;
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ enum Limit {
+@@ -28,6 +29,9 @@
+     Allocation,
+     PageSize,
+     Readback,
++    BirthBinding,
++    BirthPermissions,
++    BirthOwnership,
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -569,6 +573,14 @@
+ }
+ 
+ impl Staged {
++    pub(crate) fn prepare_native_birth(
++        &self,
++        domain: &super::Domain,
++        scope: shards_abi::run::native_grants::Scope,
++    ) -> Result<birth::Member, Refusal> {
++        birth::Member::prepare(self, domain, scope)
++    }
++
+     pub(super) fn group(&self) -> &File {
+         &self.group.directory
+     }
+--- /dev/null
++++ b/crates/init/src/domains/admission/birth.rs
+@@ -0,0 +1,219 @@
++//! Actual inode access needed by the unchanged capability-free helper's atomic
++//! cgroup birth. This does not authorize an operation or establish its backing.
++
++use std::fs::File;
++use std::os::fd::AsRawFd as _;
++use std::os::unix::fs::MetadataExt as _;
++
++use shards_abi::run::native_grants::Scope;
++
++use super::{Cause, Group, Refusal, Staged};
++
++/// Produced only from the original normalized Domain and its unused Staged
++/// member. Neither a wire UID nor a directory descriptor constructs this object.
++pub(crate) struct Member {
++    directory: File,
++    procs: File,
++    scope: Scope,
++    principal: libc::uid_t,
++}
++
++impl std::fmt::Debug for Member {
++    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        out.debug_struct("NativeBirthMember").finish_non_exhaustive()
++    }
++}
++
++impl Member {
++    pub(super) fn prepare(
++        staged: &Staged,
++        domain: &crate::domains::Domain,
++        scope: Scope,
++    ) -> Result<Self, Refusal> {
++        if domain.id.checked_sub(crate::domains::FIRST_ID) != Some(scope.member)
++            || staged.group.removal.name.strip_suffix(&[0]) != Some(domain.cgroup.as_bytes())
++            || staged.group.removal.disposition != super::Disposition::Unused
++        {
++            return Err(Refusal::new(c"native member", Cause::BirthBinding));
++        }
++        super::execution::member_filesystem(staged.group())?;
++        // Acquire every retained descriptor before changing access. Both stay
++        // private to INIT; the helper receives only actual per-job directories.
++        let directory = staged
++            .group()
++            .try_clone()
++            .map_err(|error| Refusal::io(c"native member", error))?;
++        let procs = super::open_at(&directory, c"cgroup.procs", libc::O_RDONLY)?;
++        grant(&directory, &procs, domain.id)?;
++        Ok(Self {
++            directory,
++            procs,
++            scope,
++            principal: domain.id,
++        })
++    }
++
++    pub(crate) fn scope(&self) -> Scope {
++        self.scope
++    }
++
++    /// Compare the actual current Owned group's handle with the originally
++    /// prepared member, and observe that its narrow access is still installed.
++    pub(crate) fn check_member(&self, actual: &File) -> Result<(), Refusal> {
++        let original = self
++            .directory
++            .metadata()
++            .map_err(|error| Refusal::io(c"native member", error))?;
++        let current = actual
++            .metadata()
++            .map_err(|error| Refusal::io(c"native member", error))?;
++        if original.dev() != current.dev() || original.ino() != current.ino() {
++            return Err(Refusal::new(c"native member", Cause::BirthBinding));
++        }
++        let procs = self
++            .procs
++            .metadata()
++            .map_err(|error| Refusal::io(c"cgroup.procs", error))?;
++        if procs.uid() != self.principal || !narrow_writer(procs.mode()) {
++            return Err(Refusal::new(c"cgroup.procs", Cause::BirthPermissions));
++        }
++        Ok(())
++    }
++
++    pub(super) fn directory(&self) -> &File {
++        &self.directory
++    }
++
++    pub(super) fn prepare_job(&self, group: &Group) -> Result<(), Refusal> {
++        self.check_member(&group.removal.parent)?;
++        if group.removal.disposition != super::Disposition::Unused {
++            return Err(Refusal::new(c"native job", Cause::BirthBinding));
++        }
++        let procs = super::open_at(&group.directory, c"cgroup.procs", libc::O_RDONLY)?;
++        grant(&group.directory, &procs, self.principal)
++    }
++}
++
++// Linux MAY_WRITE is satisfied by owner-write for the original helper UID.
++// Group/other write would delegate beyond that principal. No mode is changed.
++fn narrow_writer(mode: libc::mode_t) -> bool {
++    mode & libc::S_IFMT == libc::S_IFREG
++        && mode & libc::S_IWUSR != 0
++        && mode & (libc::S_IWGRP | libc::S_IWOTH) == 0
++}
++
++fn grant(directory: &File, procs: &File, principal: libc::uid_t) -> Result<(), Refusal> {
++    let parent = directory
++        .metadata()
++        .map_err(|error| Refusal::io(c"native group", error))?;
++    let before = procs
++        .metadata()
++        .map_err(|error| Refusal::io(c"cgroup.procs", error))?;
++    if !parent.is_dir()
++        || before.dev() != parent.dev()
++        || before.uid() != parent.uid()
++        || !narrow_writer(before.mode())
++    {
++        return Err(Refusal::new(c"cgroup.procs", Cause::BirthPermissions));
++    }
++    // Linux v6.18 cgroup.c:5292-5357,6689-6763 checks CURRENT helper
++    // credentials at destination and common ancestor. Change ONLY this held
++    // procs inode's UID, retaining its actual group/mode and all directory and
++    // controller ownership. Actor path/FD exclusion remains independently owed.
++    // SAFETY: procs is the NOFOLLOW fixed child of the held cgroup-v2 directory;
++    // INIT owns both descriptors and uses only the original normalized UID.
++    if unsafe { libc::fchown(procs.as_raw_fd(), principal, before.gid()) } != 0 {
++        return Err(Refusal::io(c"cgroup.procs", std::io::Error::last_os_error()));
++    }
++    let after = procs
++        .metadata()
++        .map_err(|error| Refusal::io(c"cgroup.procs", error))?;
++    if after.dev() != before.dev()
++        || after.ino() != before.ino()
++        || after.uid() != principal
++        || after.gid() != before.gid()
++        || after.mode() != before.mode()
++    {
++        return Err(Refusal::new(c"cgroup.procs", Cause::BirthOwnership));
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::num::NonZeroU64;
++
++    #[test]
++    fn only_regular_owner_write_without_other_writers_is_accepted() {
++        assert!(narrow_writer(libc::S_IFREG | libc::S_IRUSR | libc::S_IWUSR));
++        for mode in [
++            libc::S_IFREG | libc::S_IRUSR,
++            libc::S_IFDIR | libc::S_IWUSR,
++            libc::S_IFLNK | libc::S_IWUSR,
++            libc::S_IFREG | libc::S_IWUSR | libc::S_IWGRP,
++            libc::S_IFREG | libc::S_IWUSR | libc::S_IWOTH,
++        ] {
++            assert!(!narrow_writer(mode));
++        }
++    }
++
++    #[test]
++    fn binding_and_filesystem_refusals_precede_any_inode_change() {
++        let before = std::fs::read_dir("/proc/self/fd").unwrap().count();
++        let root = shards_testdir::TempDir::new("birth-binding").unwrap();
++        {
++            let parent = File::open(&root).unwrap();
++            let group = Group::create(&parent, "agent-birth", false).unwrap();
++            let staged = Staged { group };
++            let path = root.join("agent-birth/cgroup.procs");
++            std::fs::write(&path, b"ordinary file, not a cgroup grant").unwrap();
++            let original = path.metadata().unwrap();
++            let mut domain = crate::domains::Domain {
++                label: "agent birth".into(),
++                cgroup: "agent-birth".into(),
++                dir: Vec::new(),
++                id: crate::domains::FIRST_ID,
++                pids: None,
++                no_processes: false,
++                memory: None,
++                argv: Vec::new(),
++                env: Vec::new(),
++                workdir: std::ffi::CString::default(),
++                name: (false, "birth".into()),
++                link: None,
++                channels: Vec::new(),
++                mcp: "[]".into(),
++                resolv: None,
++                volumes: Vec::new(),
++            };
++            let scope = Scope {
++                epoch: shards_abi::run::managed::Epoch {
++                    run: [0x51; 32],
++                    generation: NonZeroU64::MIN,
++                },
++                member: 0,
++            };
++            assert_eq!(
++                Member::prepare(&staged, &domain, Scope { member: 1, ..scope })
++                    .unwrap_err()
++                    .cause,
++                Cause::BirthBinding
++            );
++            domain.cgroup = "other".into();
++            assert_eq!(Member::prepare(&staged, &domain, scope).unwrap_err().cause, Cause::BirthBinding);
++            domain.cgroup = "agent-birth".into();
++            assert_eq!(Member::prepare(&staged, &domain, scope).unwrap_err().cause, Cause::WrongFilesystem);
++            let after = path.metadata().unwrap();
++            assert_eq!((original.uid(), original.gid(), original.mode(), original.ino()),
++                (after.uid(), after.gid(), after.mode(), after.ino()));
++            assert_eq!(std::fs::read(&path).unwrap(), b"ordinary file, not a cgroup grant");
++            std::fs::remove_file(path).unwrap();
++        }
++        drop(root);
++        let after = std::fs::read_dir("/proc/self/fd").unwrap().count();
++        assert_eq!(before, after);
++        use std::io::Write as _;
++        let _ = writeln!(std::io::stdout().lock(), "BIRTH_BINDING FD {before}->{after}; host_permissions_changed=0");
++    }
++}
+--- a/crates/init/src/domains/admission/execution.rs
++++ b/crates/init/src/domains/admission/execution.rs
+@@ -33,8 +33,8 @@
+ impl Prepared {
+     /// The trusted current owner supplies its actual held member and checked
+     /// Worker ID. A cgroup filesystem check is a native fact, not authorization.
+-    pub(crate) fn acquire(member: &File, job: NonZeroU64) -> Acquisition {
+-        if let Err(refusal) = member_filesystem(member) {
++    pub(crate) fn acquire(member: &super::birth::Member, job: NonZeroU64) -> Acquisition {
++        if let Err(refusal) = member.check_member(member.directory()) {
+             return Acquisition::Refused(refusal);
+         }
+         let mut name = [0; super::NUMBER_BYTES];
+@@ -42,8 +42,11 @@
+             Ok(name) => name,
+             Err(_) => return Acquisition::Refused(Refusal::new(c"execution name", Cause::InvalidNumber)),
+         };
+-        match Group::acquire(member, name, false) {
+-            super::Acquisition::Created(group) => Self::finish(group, job),
++        match Group::acquire(member.directory(), name, false) {
++            super::Acquisition::Created(group) => match member.prepare_job(&group) {
++                Ok(()) => Self::finish(group, job),
++                Err(refusal) => Self::failed(group, job, refusal),
++            },
+             super::Acquisition::Refused(refusal) => Acquisition::Refused(refusal),
+             super::Acquisition::Retained { refusal, removal } => Acquisition::Retained(Retained {
+                 job,
+@@ -62,13 +65,17 @@
+         })();
+         match controls {
+             Ok(controls) => Acquisition::Prepared(Self { job, group, controls }),
+-            Err(mut refusal) => match remove(Holding::Opened(group), job, Some(refusal)) {
++            Err(refusal) => Self::failed(group, job, refusal),
++        }
++    }
++
++    fn failed(group: Group, job: NonZeroU64, mut refusal: Refusal) -> Acquisition {
++        match remove(Holding::Opened(group), job, Some(refusal)) {
+                 Cleanup::Removed => {
+                     refusal.rollback = Rollback::Removed;
+                     Acquisition::Refused(refusal)
+                 }
+                 Cleanup::Retained(held) => Acquisition::Retained(held),
+-            },
+         }
+     }
+ 
+@@ -174,7 +181,7 @@
+     }
+ }
+ 
+-fn member_filesystem(member: &File) -> Result<(), Refusal> {
++pub(super) fn member_filesystem(member: &File) -> Result<(), Refusal> {
+     let mut metadata = std::mem::MaybeUninit::<libc::statfs>::uninit();
+     // SAFETY: fstatfs writes this native output for the actual held member.
+     if unsafe { libc::fstatfs(member.as_raw_fd(), metadata.as_mut_ptr()) } != 0 {
+@@ -212,10 +219,7 @@
+     fn regular_filesystem_is_refused_before_any_component_is_created() {
+         let root = shards_testdir::TempDir::new("execution-wrong-fs").unwrap();
+         let member = File::open(&root).unwrap();
+-        let refusal = match Prepared::acquire(&member, job()) {
+-            Acquisition::Refused(refusal) => refusal,
+-            other => panic!("regular filesystem acquired as cgroup: {other:?}"),
+-        };
++        let refusal = member_filesystem(&member).unwrap_err();
+         assert_eq!(refusal.cause, Cause::WrongFilesystem);
+         assert!(!root.join(job().to_string()).exists());
+     }
+--- a/crates/init/src/managed.rs
++++ b/crates/init/src/managed.rs
+@@ -335,11 +335,12 @@
+         scope: shards_abi::run::native_grants::Scope,
+         context: &shards_abi::run::management::Context,
+         policy: &crate::domains::Filter,
++        birth: crate::domains::admission::birth::Member,
+     ) -> Result<OwnedFd, NativeFailure> {
+         if self.native.is_some() {
+             return Err(NativeFailure::State);
+         }
+-        let (prepared, helper) = native::Preparation::acquire(projection, scope, context, policy)?;
++        let (prepared, helper) = native::Preparation::acquire(projection, scope, context, policy, birth)?;
+         self.native = Some(prepared.into_owner());
+         Ok(helper)
+     }
+--- a/crates/init/src/managed/native.rs
++++ b/crates/init/src/managed/native.rs
+@@ -48,6 +48,7 @@
+     Operation(protocol::Error),
+     Policy(wire::policy::Error),
+     Job(jobs::Failure),
++    Birth(crate::domains::admission::Refusal),
+ }
+ 
+ impl std::fmt::Display for Failure {
+@@ -82,6 +83,7 @@
+     objects: Vec<Object>,
+     member: u32,
+     context: Context,
++    birth: crate::domains::admission::birth::Member,
+ }
+ 
+ impl std::fmt::Debug for Preparation {
+@@ -100,8 +102,9 @@
+         scope: Scope,
+         context: &Context,
+         policy: &crate::domains::Filter,
++        birth: crate::domains::admission::birth::Member,
+     ) -> Result<(Self, OwnedFd), Failure> {
+-        if scope.epoch != context.epoch() {
++        if scope.epoch != context.epoch() || birth.scope() != scope {
+             return Err(Failure::Binding);
+         }
+         let length = projection.encoded_len();
+@@ -186,6 +189,7 @@
+             objects,
+             member: scope.member,
+             context: context.clone(),
++            birth,
+         };
+         Ok((prepared, helper))
+     }
+@@ -201,6 +205,7 @@
+             objects: self.objects,
+             member: self.member,
+             context: self.context,
++            birth: self.birth,
+             phase: Phase::Offered,
+             admission: Admission::Open,
+             jobs: Vec::new(),
+@@ -394,6 +399,7 @@
+     objects: Vec<Object>,
+     member: u32,
+     context: Context,
++    birth: crate::domains::admission::birth::Member,
+     phase: Phase,
+     admission: Admission,
+     // Authoritative issued operations and terminal receipts, including retired
+@@ -649,7 +655,8 @@
+                 self.jobs.try_reserve_exact(1).map_err(|_| Failure::Allocation)?;
+                 // This acquires actual state/objects. Reported PreparedFacts
+                 // remain observations, never an entitlement or backing promise.
+-                let job = match Job::acquire(operation, selected, facts, member) {
++                self.birth.check_member(member).map_err(Failure::Birth)?;
++                let job = match Job::acquire(operation, selected, facts, Some(&self.birth)) {
+                     jobs::Acquisition::Prepared(job) => job,
+                     jobs::Acquisition::Refused(cause) => return self.refuse(operation, cause),
+                     jobs::Acquisition::Retained { job, cause } => {
+--- a/crates/init/src/managed/native/jobs.rs
++++ b/crates/init/src/managed/native/jobs.rs
+@@ -19,6 +19,7 @@
+     Selection(operations::Failure),
+     RootIndex(u32),
+     Resources(admission::Refusal),
++    MissingBirthAccess,
+ }
+ 
+ impl Rejection {
+@@ -29,7 +30,7 @@
+             Self::Selection(cause) => cause.refusal(),
+             Self::RootIndex(_) => protocol::Refusal::RootDenied,
+             Self::Source(_) | Self::Codec(_) => protocol::Refusal::Identity,
+-            Self::Resources(_) => protocol::Refusal::ResourcesUnavailable,
++            Self::Resources(_) | Self::MissingBirthAccess => protocol::Refusal::ResourcesUnavailable,
+         }
+     }
+ }
+@@ -217,9 +218,12 @@
+         id: NonZeroU64,
+         selected: Selected,
+         facts: protocol::PreparedFacts,
+-        member: &File,
++        member: Option<&admission::birth::Member>,
+     ) -> Acquisition {
+         let lifetime = if matches!(selected.effect, protocol::Effect::Process { .. }) {
++            let Some(member) = member else {
++                return Acquisition::Refused(Rejection::MissingBirthAccess);
++            };
+             match execution::Prepared::acquire(member, id) {
+                 execution::Acquisition::Prepared(prepared) => Lifetime::Preparing(prepared),
+                 execution::Acquisition::Refused(cause) => {
+@@ -684,7 +688,7 @@
+                 retained_bytes: 0,
+                 descriptors: 0,
+             },
+-            root,
++            None,
+         ) {
+             Acquisition::Prepared(job) => job,
+             _ => panic!("file state acquisition failed"),
+@@ -750,7 +754,7 @@
+     }
+ 
+     #[test]
+-    fn native_owner_regular_filesystem_never_becomes_a_process_cgroup() {
++    fn native_owner_process_requires_original_birth_access() {
+         let root = File::open(".").unwrap();
+         let selection = selected(
+             protocol::Effect::Process {
+@@ -766,12 +770,10 @@
+                 retained_bytes: 0,
+                 descriptors: 0,
+             },
+-            &root,
++            None,
+         ) {
+-            Acquisition::Refused(Rejection::Resources(cause)) => {
+-                assert_eq!(cause.cause, admission::Cause::WrongFilesystem)
+-            }
+-            _ => panic!("regular directory acquired as job cgroup"),
++            Acquisition::Refused(Rejection::MissingBirthAccess) => {}
++            _ => panic!("process acquired without original birth access"),
+         }
+     }
+ 

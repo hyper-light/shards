@@ -1,0 +1,9 @@
+{
+  "policy_revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "coordinator",
+  "source_sha256": "4b70fbcced9b9470e8f374da34f00290d5b76a911b615314233d0103b5bf9a13",
+  "driver_sha256": "15d43be370f10234f7f2edaa2a72d1ec44f47b4a925b9a8309f18f5a0aca7a74",
+  "scope": "New root-native-cgroup-birth-v1 guest-only 2CPU/2GiB/4GiB/600s; no host root/chown; fixed original kernel+CLI+VM inputs; no held campaigns",
+  "expected": "opener13,destination13,both0,sibling13,restored13; real pidfd/wait/empty facts; actor isolation unverified"
+}

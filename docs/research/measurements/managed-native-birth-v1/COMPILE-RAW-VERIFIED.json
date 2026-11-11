@@ -1,0 +1,23 @@
+{
+  "bytes": 31706,
+  "sha256": "4d285467093f274bf8045c1c83badf64a9d8676f43cdb543a8aa03a6bce2eb96",
+  "payloads": 41,
+  "members": 42,
+  "stages": {
+    "birth-case-0.json": 0,
+    "birth-case-1.json": 0,
+    "birth-case-2.json": 0,
+    "birth-format.json": 0,
+    "full-init-check.json": 0,
+    "full-init-strict.json": 0,
+    "patch-apply.json": 0,
+    "patch-check.json": 0,
+    "policy.json": 0,
+    "test-compile.json": 0,
+    "test-list.json": 0
+  },
+  "all_sources_compared": 4770,
+  "regular": 4769,
+  "symlink_metadata_only": 1,
+  "backing": "Unverified"
+}

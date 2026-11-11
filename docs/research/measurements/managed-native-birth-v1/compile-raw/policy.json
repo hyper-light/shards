@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "python3",
+    "scripts/check-development-policy"
+  ],
+  "exit": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_wait": true,
+  "second_wait": "ECHILD",
+  "fd_before": 4,
+  "fd_after": 4,
+  "elapsed_scope": 1.1303078820928931,
+  "whole_population_kernel_return": "Unknown"
+}

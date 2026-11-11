@@ -1,0 +1,50 @@
+{
+  "base_manifest_sha256": "4b52aabd69035dcd3f76bb84e58394b3b75cf16a970a0cb54a5d8326df21ca26",
+  "patch_sha256": "d948e5c50086e1320d6708e4c503f6ce19fe33fe297d48011808e775e075e4fd",
+  "files": {
+    "crates/init/src/domains.rs": {
+      "bytes": 131030,
+      "sha256": "cf0f32fda3eefded32cb00ce8451b32059c3c83aa599d72b138aab58ff38a2c6",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission.rs": {
+      "bytes": 29377,
+      "sha256": "f2f6e15b66693bfa80ddc725d3835f197abc397b5cca753485fb0264c270080d",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission/birth.rs": {
+      "bytes": 8695,
+      "sha256": "9aa324fe2c39a991a24fdbdf8af23d4bb6db52872972e9358969af2c2f9080cb",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission/execution.rs": {
+      "bytes": 16923,
+      "sha256": "f17793844daa89df7ac619a5fbc1ea5c80308913fe069d6cb629da710099eabc",
+      "kind": "file"
+    },
+    "crates/init/src/managed.rs": {
+      "bytes": 67310,
+      "sha256": "3649527348225786157cee420e615492a20ef36c8d8b36354ce465525e7f5b3e",
+      "kind": "file"
+    },
+    "crates/init/src/managed/native.rs": {
+      "bytes": 31982,
+      "sha256": "efe22eb4a661f84253ef8594007221edc99e0b8fbc27ed8b51b1495d483880d3",
+      "kind": "file"
+    },
+    "crates/init/src/managed/native/jobs.rs": {
+      "bytes": 26098,
+      "sha256": "da338b4ff7183b1878570d2e4f6789f9ef484aa7fef90691dafc137dce2708d0",
+      "kind": "file"
+    }
+  },
+  "meaning": "ROOT narrow cgroup birth inode producer on immutable runtime v3; no held audit graph/cases",
+  "policy": {
+    "revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "role": "coordinator"
+  },
+  "expected_manifest_sha256": "1d05964180a7bcaffd27b7022fa59ee6a3f99813b69eaaa1a0b7aefacd8d0c88",
+  "compressed_bytes": 9470,
+  "compressed_sha256": "8243e60c934ee858f5afb5b27612a8e3faa9087a69d1aa2d30193f83f58637f4"
+}

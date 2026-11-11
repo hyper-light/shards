@@ -1,0 +1,22 @@
+   Compiling memchr v2.8.3
+   Compiling num-traits v0.2.19
+   Compiling aho-corasick v1.1.5
+   Compiling libc v0.2.189
+   Compiling regex-syntax v0.8.11
+   Compiling num-integer v0.1.47
+   Compiling triomphe v0.1.17
+   Compiling regex-automata v0.4.18
+   Compiling shards-abi v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/abi)
+   Compiling regex v1.13.1
+   Compiling num-bigint v0.4.8
+   Compiling shards-template v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/template)
+   Compiling shards-cmdline v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/cmdline)
+   Compiling shards-ipc v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/ipc)
+   Compiling shards-archive v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/archive)
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/testdir)
+   Compiling shards-dns v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/dns)
+   Compiling shards-erofs v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/erofs)
+   Compiling shards-devcgroup v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/devcgroup)
+   Compiling shards-user v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/user)
+   Compiling shards-init v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.45s

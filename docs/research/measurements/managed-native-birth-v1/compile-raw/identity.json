@@ -1,0 +1,25 @@
+{
+  "role": "coordinator",
+  "policy": {
+    "revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+    "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "role": "coordinator"
+  },
+  "uname": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "uid": 1000,
+  "affinity": [
+    0,
+    1
+  ],
+  "source": "ROOT narrow cgroup birth inode producer on immutable runtime v3; no held audit graph/cases",
+  "envelope": "normal 2 CPU / 2 GiB / 4 GiB / 600 s including cleanup, j2",
+  "physical_kernel_caps": "Unverified",
+  "base_readonly": "/home/adalundhe/Projects/managed-native-owner-runtime-01a1c99e-v3",
+  "forbidden": "No old unit replay, held audit graph/cases, actor/helper/VM/host cgroup writes; no backing claim"
+}

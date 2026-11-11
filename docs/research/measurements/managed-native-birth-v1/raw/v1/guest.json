@@ -1,0 +1,26 @@
+{
+  "argv": [
+    "/home/adalundhe/root-managed-events-de5e4fbe9c5c-v1/target/test-release/shards",
+    "run",
+    "--kernel",
+    "/home/adalundhe/root-managed-events-de5e4fbe9c5c-v1/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+    "--init",
+    "/home/adalundhe/root-native-cgroup-birth-v1/frozen-init",
+    "--cpus",
+    "1",
+    "--memory",
+    "256",
+    "--cmdline",
+    "console=ttyS0 panic=-1"
+  ],
+  "pid": 240662,
+  "exit_code": 0,
+  "timeout": false,
+  "elapsed_seconds": 0.3408411319833249,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "second_wait": "ECHILD",
+  "fds_before": 4,
+  "fds_after": 4,
+  "whole_population_kernel_return": "Unknown"
+}

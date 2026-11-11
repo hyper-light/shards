@@ -1,0 +1,49 @@
+{
+  "bytes": 115865,
+  "sha256": "1a71765828b52d9215ad0e85a5d9521b5bd30bb11219d98decf644fb110f876a",
+  "base_manifest_sha256": "4b52aabd69035dcd3f76bb84e58394b3b75cf16a970a0cb54a5d8326df21ca26",
+  "files": {
+    "crates/init/src/domains.rs": {
+      "bytes": 131030,
+      "sha256": "cf0f32fda3eefded32cb00ce8451b32059c3c83aa599d72b138aab58ff38a2c6",
+      "before_sha256": "12c437f059f8280d6d92e645fecdba5c5d2d35f1ec0edd327d55712be632b9cf",
+      "kind": "file"
+    },
+    "crates/init/src/managed.rs": {
+      "bytes": 67310,
+      "sha256": "3649527348225786157cee420e615492a20ef36c8d8b36354ce465525e7f5b3e",
+      "before_sha256": "25c0e6b1549aa712e55d42c38f5c4e460bd39c72dc9a9e6a87401ac42a8b12ac",
+      "kind": "file"
+    },
+    "crates/init/src/managed/native.rs": {
+      "bytes": 31982,
+      "sha256": "efe22eb4a661f84253ef8594007221edc99e0b8fbc27ed8b51b1495d483880d3",
+      "before_sha256": "72f1a879901f3f00dd4e6779c89c117cbbcbaa23cf8f53c722fe56214a32d5bf",
+      "kind": "file"
+    },
+    "crates/init/src/managed/native/jobs.rs": {
+      "bytes": 26098,
+      "sha256": "da338b4ff7183b1878570d2e4f6789f9ef484aa7fef90691dafc137dce2708d0",
+      "before_sha256": "6e0eba9cb831047c86b56b5ec271c6f820833aeee5c909e8c0f6419b9d68a30a",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission.rs": {
+      "bytes": 29377,
+      "sha256": "f2f6e15b66693bfa80ddc725d3835f197abc397b5cca753485fb0264c270080d",
+      "before_sha256": "de247243e4fae1ce2218b6263e23af8a1b412ad633e2ecfd2e5c2adff4a635ec",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission/execution.rs": {
+      "bytes": 16923,
+      "sha256": "f17793844daa89df7ac619a5fbc1ea5c80308913fe069d6cb629da710099eabc",
+      "before_sha256": "7878ad24229335ce3f2fa6ef9c06cd1e3f03d8837d62a56dcb1cefec833424e3",
+      "kind": "file"
+    },
+    "crates/init/src/domains/admission/birth.rs": {
+      "bytes": 8524,
+      "sha256": "147dc5f7c5d90bb6623d699cb8f5f31e17a0f12751ef5b6a66c5f45bf2ce6d8e",
+      "before_sha256": null,
+      "kind": "file"
+    }
+  }
+}

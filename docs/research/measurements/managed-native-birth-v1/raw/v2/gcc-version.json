@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "gcc",
+    "--version"
+  ],
+  "pid": 403811,
+  "exit_code": 0,
+  "timeout": false,
+  "elapsed_seconds": 0.0008861419046297669,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "second_wait": "ECHILD",
+  "fds_before": 4,
+  "fds_after": 4,
+  "whole_population_kernel_return": "Unknown"
+}

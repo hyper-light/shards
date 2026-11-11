@@ -1,0 +1,12 @@
+   Compiling shards-abi v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/abi)
+    Checking shards-template v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/template)
+    Checking shards-ipc v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/ipc)
+    Checking shards-cmdline v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/cmdline)
+    Checking shards-archive v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/archive)
+    Checking shards-testdir v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/testdir)
+    Checking shards-dns v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/dns)
+    Checking shards-devcgroup v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/devcgroup)
+    Checking shards-erofs v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/erofs)
+    Checking shards-user v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/user)
+    Checking shards-init v0.1.0 (/home/adalundhe/Projects/root-native-birth-compile-v1/source/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.72s

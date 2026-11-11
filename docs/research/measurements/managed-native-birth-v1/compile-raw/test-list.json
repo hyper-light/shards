@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "/home/adalundhe/Projects/root-native-birth-compile-v1/frozen-test",
+    "--list",
+    "--format",
+    "terse"
+  ],
+  "exit": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_wait": true,
+  "second_wait": "ECHILD",
+  "fd_before": 4,
+  "fd_after": 4,
+  "elapsed_scope": 22.791417623055167,
+  "whole_population_kernel_return": "Unknown"
+}

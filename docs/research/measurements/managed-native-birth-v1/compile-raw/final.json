@@ -1,0 +1,7 @@
+{
+  "exit": 0,
+  "elapsed": 27.74821280303877,
+  "source": "ROOT narrow cgroup birth inode producer on immutable runtime v3; no held audit graph/cases",
+  "held_graph_executed": false,
+  "backing": "Unverified"
+}

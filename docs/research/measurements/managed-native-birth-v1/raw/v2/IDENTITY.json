@@ -1,0 +1,37 @@
+{
+  "role": "coordinator",
+  "policy_revision": "06ae067c0beda71c98a8c6f9633df9feb71fc11b",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "uid": 1000,
+  "uname": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "envelope": "normal 2 CPU / 2 GiB / 4 GiB / 600 s",
+  "physical_kernel_caps": "Unverified",
+  "affinity": [
+    0,
+    1
+  ],
+  "source_sha256": "eb53aa00ce33f47b0a2fae428254886eef27e3664fd2587574f0c5e4ddb006eb",
+  "artifacts": {
+    "kernel": {
+      "path": "/home/adalundhe/root-managed-events-de5e4fbe9c5c-v1/target/artifacts/vmlinux-6.18.48-x86_64-17c3ba205400",
+      "bytes": 27758808,
+      "sha256": "48a3824b7467dee7d82f36401fed99626e91c5dc5fefc432bc354a69ec616aa7"
+    },
+    "cli": {
+      "path": "/home/adalundhe/root-managed-events-de5e4fbe9c5c-v1/target/test-release/shards",
+      "bytes": 270355512,
+      "sha256": "42243475c93b7be0c51213b980a1216c130fea45e6f517ef6b931a4a124b78d7"
+    },
+    "vm": {
+      "path": "/home/adalundhe/root-managed-events-de5e4fbe9c5c-v1/target/helpers/x86_64-unknown-linux-musl/test-release/shards-vm",
+      "bytes": 30921592,
+      "sha256": "bd8c5fa06cdaf8b3e27bebeaabbaed169dbe91bd3dd5f6218639fcfdfcf43425"
+    }
+  }
+}

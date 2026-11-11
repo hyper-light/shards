@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "cargo",
+    "check",
+    "--locked",
+    "-p",
+    "shards-init",
+    "--all-targets",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "-j2"
+  ],
+  "exit": 0,
+  "pidfd_exit_ready": true,
+  "direct_child_wait": true,
+  "second_wait": "ECHILD",
+  "fd_before": 4,
+  "fd_after": 4,
+  "elapsed_scope": 9.2494014010299,
+  "whole_population_kernel_return": "Unknown"
+}

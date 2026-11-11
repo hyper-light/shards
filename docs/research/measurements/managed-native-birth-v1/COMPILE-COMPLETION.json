@@ -1,0 +1,6 @@
+{
+  "runner": "451397fcc585f7f7cb9aaf00e42064bb",
+  "output": "{\"stage\": \"full-init-check\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"test-compile\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"test-list\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"birth-case-0\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"birth-case-1\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"birth-case-2\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n{\"stage\": \"full-init-strict\", \"exit\": 0, \"ready\": true, \"fd\": [4, 4]}\n",
+  "running": false,
+  "exit_code": 0
+}

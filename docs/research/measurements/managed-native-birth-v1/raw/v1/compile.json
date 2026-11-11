@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "gcc",
+    "-std=gnu11",
+    "-static",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "/home/adalundhe/root-native-cgroup-birth-v1/guest.c",
+    "-o",
+    "/home/adalundhe/root-native-cgroup-birth-v1/guest-init"
+  ],
+  "pid": 239704,
+  "exit_code": 0,
+  "timeout": false,
+  "elapsed_seconds": 0.3533200930105522,
+  "pidfd_exit_ready": true,
+  "direct_child_reaped": true,
+  "second_wait": "ECHILD",
+  "fds_before": 4,
+  "fds_after": 4,
+  "whole_population_kernel_return": "Unknown"
+}
