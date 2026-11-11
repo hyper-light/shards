@@ -18,8 +18,9 @@ The original complete archive, manifest and ROOT receipt are retained here.
 Official nine-artifact decoding/Collector acceptance and ROOT verification
 already landed in main749c3ca06 under managed-otel-cgroup-events/official-current.
 Production HTTP export, generation/continuity, hard resource rights and all costs
-remain open. ROOT's a8ad data-integrity mutation/restoration runs separately as
-r61; no outcome is inferred from admission.
+remain open. ROOT's a8ad data-integrity mutation/restoration completed as r61;
+[the exact raw record](events-integrity-v1/README.md) retains baseline0, mutant101
+with actual false-zero data, and restored0. It is not a combined-candidate gate.
 
 ROOT also verified every286 GPU evidence file and42 selected raw files, including
 actual stdout counts. Exact final GPU core bytes have native14/0/0 Mac ARM64,

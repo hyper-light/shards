@@ -1,0 +1,15 @@
+{
+  "driver": "/Users/adalundhe/g121-root-parallel-evidence-20261110/events-integrity-mutation.py",
+  "sha256": "e6bbd63c4e447de3160d7de9315d7a65079884e80fd9af50b476509b0175d3f3",
+  "syntax": "parsed0; no actor/build",
+  "source": "a8ad1ce8718bb08d8acaffce7c85e25ce49bce49",
+  "stages": [
+    "baseline",
+    "mutant",
+    "restored"
+  ],
+  "scope": "ROOT actual KVM data-integrity corruption/detection/restoration; all held campaigns untouched",
+  "resource_inputs": "same normal4CPU16GiB64GiB/j4/7200s; build2400, guest900, list60, case1200, direct-child reap15 from original ROOT driver",
+  "mutation": "only parsed task.max counter returns false zero; kernel enforcement unchanged",
+  "outputs": "fresh stage targets; frozen test and carried CLI per stage; original kernel pin read-only; old sources/targets/evidence unchanged"
+}
