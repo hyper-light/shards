@@ -1,0 +1,66 @@
+{
+  "revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "role": "implementer",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "owned_paths": [
+    "crates/server/src/native_effects/write.rs",
+    "crates/server/src/native_effects/write/tests.rs",
+    "docs/research/measurements/managed-native-file-writer/**"
+  ],
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-native-file-writer-v1",
+  "branch": "p/managed-native-file-writer-v1",
+  "ordinary_light_scope": {
+    "platform": "linux/amd64",
+    "cpus": 2,
+    "memory": "2GiB",
+    "disk": "4GiB",
+    "outer_seconds": 600,
+    "cargo_jobs": 2
+  },
+  "current_status": "frozen shared interfaces requested before implementing effect leaf; no build/runtime yet",
+  "peer_requests": [
+    {
+      "agent": "01a1c7677b8b7719af7ac5752c6f68c6",
+      "key": "native-file-writer-freeze-signatures-v1",
+      "receipt_seq": 11443
+    },
+    {
+      "agent": "01a1c8857c377561be9680a4be7973b5",
+      "key": "native-file-writer-audit-signatures-v1",
+      "receipt_seq": 11445
+    }
+  ],
+  "preserved_tool_failures": [
+    {
+      "stage": "narrow shared-file signature request",
+      "key": "native-file-writer-narrow-file-seam-v1",
+      "result": "not connected to the kiln server",
+      "mutation_or_runner_started": false
+    },
+    {
+      "stage": "read guessed audit.rs path",
+      "result": "absent at frozen8b1; exact broker/audit.rs read instead",
+      "mutation_or_runner_started": false
+    }
+  ],
+  "source_identity": [
+    {
+      "revision": "46ab5f60b03d61bb7a53ac404a38d8c477d65727",
+      "path": "crates/server/src/native_effects/file.rs",
+      "bytes": 6050,
+      "sha256": "4ab73715229f6699c940151c99b92a59afe97526539193fb83fcff8739ab84c2"
+    },
+    {
+      "revision": "8b1abae44d35ad7d82be296fc6cb15e3358fc5a3",
+      "path": "crates/server/src/broker.rs",
+      "bytes": 66596,
+      "sha256": "3350f54bb84e42d81fe4b5e3f96502be7868cdadd2b1f932e35a82a87bed7c73"
+    },
+    {
+      "revision": "8b1abae44d35ad7d82be296fc6cb15e3358fc5a3",
+      "path": "crates/server/src/broker/audit.rs",
+      "bytes": 27107,
+      "sha256": "bc222449c6c498e5a1cb8a81acc3c624f3d76d7a06da7d3b58b5e96e67cdbd12"
+    }
+  ]
+}

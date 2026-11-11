@@ -1,0 +1,18 @@
+{
+  "state": "exact implemented mechanism source freeze; untested before this checkpoint; actual native/owner/audit consumers still require composition",
+  "base_revision": "7d7e0855a5073ed5163b4fe7ed3355c9ed7c2506",
+  "role": "implementer",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "files": [
+    {
+      "path": "crates/server/src/native_effects/write.rs",
+      "bytes": 6696,
+      "sha256": "3bfda368e08fc3368239efb184a479e2fe870ecb8c6704eba308803493fc4c9d"
+    },
+    {
+      "path": "crates/server/src/native_effects/write/tests.rs",
+      "bytes": 7047,
+      "sha256": "130c597eb30169d65a3648cfbfd931cfb44c8f6717abe90824d524d3ffe024f0"
+    }
+  ]
+}
