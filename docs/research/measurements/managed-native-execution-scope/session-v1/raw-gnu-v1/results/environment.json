@@ -1,0 +1,51 @@
+{
+  "uname": [
+    "Linux",
+    "adacachy",
+    "7.2.9-2-cachyos",
+    "#1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000",
+    "x86_64"
+  ],
+  "affinity_before": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31
+  ],
+  "batch_seconds": 600,
+  "cargo_jobs": 2,
+  "source_manifest_sha256": "3572868d746682aa7dac1b0dcda68ee773549335eb863890662f4dcdb1b5dc66",
+  "scope": "seven pure/regularfile source projections; no HOST cgroup/actor/VM mutation",
+  "affinity_effective": [
+    0,
+    1
+  ]
+}

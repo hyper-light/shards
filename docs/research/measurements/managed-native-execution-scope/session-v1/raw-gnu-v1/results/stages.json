@@ -1,0 +1,83 @@
+[
+  {
+    "name": "rustc",
+    "argv": [
+      "rustc",
+      "--version",
+      "--verbose"
+    ],
+    "remaining_seconds_before": 599.9994685760466,
+    "exit": 0,
+    "seconds": 0.01580248901154846
+  },
+  {
+    "name": "cargo",
+    "argv": [
+      "cargo",
+      "--version",
+      "--verbose"
+    ],
+    "remaining_seconds_before": 599.9835165280383,
+    "exit": 0,
+    "seconds": 0.015766390948556364
+  },
+  {
+    "name": "build",
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-run",
+      "--jobs",
+      "2",
+      "--message-format=json"
+    ],
+    "remaining_seconds_before": 599.9673656770028,
+    "exit": 0,
+    "seconds": 0.8680068328976631
+  },
+  {
+    "name": "list",
+    "argv": [
+      "/home/adalundhe/native-execution-scope-cab1-v1/source/results/frozen-tests",
+      "domains::admission::execution::tests::",
+      "--list"
+    ],
+    "remaining_seconds_before": 599.092057315982,
+    "exit": 0,
+    "seconds": 0.001524629071354866
+  },
+  {
+    "name": "native",
+    "argv": [
+      "/home/adalundhe/native-execution-scope-cab1-v1/source/results/frozen-tests",
+      "domains::admission::execution::tests::",
+      "--test-threads=1",
+      "--nocapture"
+    ],
+    "remaining_seconds_before": 599.0903585209744,
+    "exit": 0,
+    "seconds": 0.0034472940023988485
+  },
+  {
+    "name": "clippy",
+    "argv": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--offline",
+      "--all-targets",
+      "--jobs",
+      "2",
+      "--",
+      "-D",
+      "clippy::all",
+      "-D",
+      "clippy::undocumented_unsafe_blocks"
+    ],
+    "remaining_seconds_before": 599.0867616770556,
+    "exit": 101,
+    "seconds": 0.6160225260537118
+  }
+]

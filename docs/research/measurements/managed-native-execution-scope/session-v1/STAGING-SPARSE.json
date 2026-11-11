@@ -1,0 +1,7 @@
+{
+  "command": "gits add -- <owned product leaf> <owned session-v1 directory>",
+  "exit": 1,
+  "cause": "session-v1 is outside existing sparse-checkout definition; files were preserved",
+  "correction": "use standard git add --sparse with same exact owned named paths; no sparse config/source/signing change",
+  "builds_or_cases_repeated": 0
+}

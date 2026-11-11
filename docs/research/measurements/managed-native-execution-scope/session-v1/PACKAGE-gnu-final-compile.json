@@ -1,0 +1,12 @@
+{
+  "bytes": 30042,
+  "sha256": "af21fb220b109baebd79e394c8b0b760b6e1980fe0023e0ed90dff20ab96124a",
+  "source_manifest_sha256": "d06ff6e1d5bc6642552c10d1ba42655b7a49410d99087c328a0c249ad09db7c6",
+  "leaf_sha256": "f1dc920bf54cc1d2bb86025f77f5658b9485f83bd26b87febf7a418df80405cb",
+  "first_functional_source": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "first_functional_passes": 7,
+  "final_batch": "compile/Clippy only, no runtime reexecution per coordinator",
+  "delta": "test integer0->0o0; publish-before-FD-handoff comments clarified per ROOT, executable production code unchanged",
+  "candidate_parent_sha256": "de247243e4fae1ce2218b6263e23af8a1b412ad633e2ecfd2e5c2adff4a635ec",
+  "source_projection": "exact parent production prefix and Controls; no actual Launch/owner stub or whole-graph completion claim"
+}

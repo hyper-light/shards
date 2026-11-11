@@ -1,0 +1,60 @@
+[
+  {
+    "name": "rustc",
+    "argv": [
+      "rustc",
+      "--version",
+      "--verbose"
+    ],
+    "remaining_seconds_before": 599.9994818120031,
+    "exit": 0,
+    "seconds": 0.015877970959991217
+  },
+  {
+    "name": "cargo",
+    "argv": [
+      "cargo",
+      "--version",
+      "--verbose"
+    ],
+    "remaining_seconds_before": 599.9833258719882,
+    "exit": 0,
+    "seconds": 0.015918988035991788
+  },
+  {
+    "name": "build",
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--no-run",
+      "--jobs",
+      "2",
+      "--message-format=json"
+    ],
+    "remaining_seconds_before": 599.9672274689656,
+    "exit": 0,
+    "seconds": 1.1676322829443961
+  },
+  {
+    "name": "clippy",
+    "argv": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--offline",
+      "--all-targets",
+      "--jobs",
+      "2",
+      "--",
+      "-D",
+      "clippy::all",
+      "-D",
+      "clippy::undocumented_unsafe_blocks"
+    ],
+    "remaining_seconds_before": 598.5256445509149,
+    "exit": 0,
+    "seconds": 0.5291559720644727
+  }
+]

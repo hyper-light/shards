@@ -1,0 +1,7 @@
+{
+  "bytes": 29779,
+  "sha256": "600b37c6b36a9aa72708f20d48bd487e2eb7f2d310c606de518f87d09f8ff11b",
+  "source_manifest_sha256": "e1bcd63b499f018ee0f1179aebf84be6eee18409f56b9bb0f651373d267a4fc0",
+  "current_leaf_sha256": "682630b23dc192dd623356a71598e929a82ec4559109670d9079274af7f57846",
+  "scope": "NEW exact-source ordinary pure/regularfile2CPU2GiB4GiB600/j2; firstsource/targets/raw retained"
+}

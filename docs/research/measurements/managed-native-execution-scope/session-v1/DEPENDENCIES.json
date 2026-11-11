@@ -1,0 +1,42 @@
+{
+  "parent_head": "082deba33eb825041348e493edaff4be036586d7",
+  "admission_before": {
+    "bytes": 27917,
+    "sha256": "a5188b304b7c35668c2c035329269ba1437f675dcaa956fb2a035b4b810151d6"
+  },
+  "controls": {
+    "bytes": 464,
+    "sha256": "1eb53ce882570d45d75e534886c1617c5a30025ae22f5870b9b18375d43e948d"
+  },
+  "candidate": {
+    "bytes": 29009,
+    "sha256": "b8272f1bba69719f463e3a6c17b030cbd1cb262af723dabb1f67d1f755d9f5cf"
+  },
+  "primaries_preserved": [
+    {
+      "path": "primary/SOURCES.json",
+      "bytes": 1155,
+      "sha256": "0c1d7e1a15077d8df8cc4b364d163482f96474896f8cfc26f358346dc8e22b1e"
+    },
+    {
+      "path": "primary/linux-v6.18-cgroup-v2.rst",
+      "bytes": 128488,
+      "sha256": "da9a788f2d2ece7b6535c96b56324f28893f8a211768333df7257f586075cd97"
+    },
+    {
+      "path": "primary/linux-v6.18-cgroup.c",
+      "bytes": 199222,
+      "sha256": "de44cafc76c19f8da3289ae23e4f12ed0ba43cbe7ceb6c5822e34ac570371616"
+    },
+    {
+      "path": "primary/runc-v1.2.6-fs2.go",
+      "bytes": 8565,
+      "sha256": "8fd18028d36eb1be50f39e5b8759be3ef89823cf124a95e66a54fdefe5943554"
+    },
+    {
+      "path": "primary/systemd-v259-CGROUP_DELEGATION.md",
+      "bytes": 24600,
+      "sha256": "7a542a153328ea1af0e7fa15a1ac1e908d9b9484f4d39a804ffc18df18f0a50f"
+    }
+  ]
+}

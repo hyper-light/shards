@@ -1,0 +1,35 @@
+{
+  "first_functional_source": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "first_functional": {
+    "passed": 7,
+    "failed": 0,
+    "ignored": 0,
+    "then_clippy_exit": 101
+  },
+  "final_source": "f1dc920bf54cc1d2bb86025f77f5658b9485f83bd26b87febf7a418df80405cb",
+  "final_compile": {
+    "build_exit": 0,
+    "clippy_exit": 0,
+    "format_exit": 0,
+    "runtime_cases": 0,
+    "rust_unused_warnings": 26,
+    "suppression_added": false
+  },
+  "policy_script_exit": 0,
+  "verified_original_primary_files": 5,
+  "verified_first_source_payloads": 23,
+  "verified_final_source_payloads": 19,
+  "verified_raw_payloads": {
+    "first": 19,
+    "final_compile": 14
+  },
+  "current_product_leaf_matches_final_frozen": true,
+  "parent_patch_applied": false,
+  "actual_owner_graph": "UNVERIFIED; no fake Launch/current producer inserted",
+  "full_staged_whitespace": {
+    "exit": 2,
+    "findings": 18,
+    "scope": "14 unchanged unified-diff context spaces +4 original raw/extracted-source EOF blank lines; exact bytes preserved"
+  },
+  "other_owned_new_paths_whitespace_exit": 0
+}

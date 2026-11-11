@@ -1,0 +1,9 @@
+domains::admission::execution::tests::regular_filesystem_is_refused_before_any_component_is_created: test
+domains::admission::execution::tests::source_projection_controls_precede_publication_and_drop_does_not_remove: test
+domains::admission::execution::tests::source_projection_existing_component_is_never_adopted_or_removed: test
+domains::admission::execution::tests::source_projection_explicit_cancel_and_terminal_removal_keep_failed_objects: test
+domains::admission::execution::tests::source_projection_failed_rollback_retains_same_parent_name_and_errno: test
+domains::admission::execution::tests::source_projection_missing_controls_removes_only_its_new_component: test
+domains::admission::execution::tests::source_projection_open_failure_retains_actual_unopened_removal: test
+
+7 tests, 0 benchmarks

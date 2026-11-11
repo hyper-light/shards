@@ -1,0 +1,4 @@
+   Compiling libc v0.2.189
+   Compiling shards-testdir v0.1.0 (/home/adalundhe/native-execution-scope-f1dc-compile-v2/source/harness/testdir)
+   Compiling native-execution-scope v0.1.0 (/home/adalundhe/native-execution-scope-f1dc-compile-v2/source/harness)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s

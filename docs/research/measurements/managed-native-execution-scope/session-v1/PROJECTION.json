@@ -1,0 +1,13 @@
+{
+  "production_leaf_sha256": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "product_leaf_bytes": 17287,
+  "parent_candidate_v2_sha256": "de247243e4fae1ce2218b6263e23af8a1b412ad633e2ecfd2e5c2adff4a635ec",
+  "parent_production_prefix_sha256": "a65fd44b18efdacd0074025796c93b816b32799926ffee7eb868917ada24ef10",
+  "controls_exact_sha256": "1eb53ce882570d45d75e534886c1617c5a30025ae22f5870b9b18375d43e948d",
+  "projection": "actual parent production prefix only; original parent tests need actual Launch graph and are not compiled or run here; no Launch stub/caller introduced",
+  "clippy": "deny all Clippy and repository panic/unsafe lints; retain Rust unused warnings from unregistered projection, do not report whole production strict ready",
+  "cases": 7,
+  "host_cgroup_mutations": 0,
+  "native_actor_children": 0,
+  "shared_patch": "PARENT-ACQUISITION-UNAPPLIED-v2.patch"
+}

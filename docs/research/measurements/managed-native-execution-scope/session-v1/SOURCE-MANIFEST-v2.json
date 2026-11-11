@@ -1,0 +1,97 @@
+[
+  {
+    "path": "harness/Cargo.lock",
+    "bytes": 486,
+    "sha256": "f34bcd9c109f5644322ee4746e687d23e7d2871625542858f084ff9be78f9b92"
+  },
+  {
+    "path": "harness/Cargo.toml",
+    "bytes": 511,
+    "sha256": "feb1ed0c73c8314eb742a5afca06321cc9faf0eaba060e1edbca1387ced5c868"
+  },
+  {
+    "path": "harness/clippy.toml",
+    "bytes": 526,
+    "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+  },
+  {
+    "path": "harness/src/domains/admission/execution.rs",
+    "bytes": 17289,
+    "sha256": "682630b23dc192dd623356a71598e929a82ec4559109670d9079274af7f57846"
+  },
+  {
+    "path": "harness/src/domains/admission.rs",
+    "bytes": 20116,
+    "sha256": "a65fd44b18efdacd0074025796c93b816b32799926ffee7eb868917ada24ef10"
+  },
+  {
+    "path": "harness/src/domains/mod.rs",
+    "bytes": 26,
+    "sha256": "857df99b8a94c2927acb01f3d39ac8310e4e09878344ed64a746147af93fd7a6"
+  },
+  {
+    "path": "harness/src/lib.rs",
+    "bytes": 137,
+    "sha256": "b0766b7c95aa5a6dfc817a2be92da0e6ed773016fd16aada46146999933f29d4"
+  },
+  {
+    "path": "harness/src/managed.rs",
+    "bytes": 464,
+    "sha256": "1eb53ce882570d45d75e534886c1617c5a30025ae22f5870b9b18375d43e948d"
+  },
+  {
+    "path": "harness/testdir/Cargo.toml",
+    "bytes": 165,
+    "sha256": "335ae9fc8b3ee4737234cdd21cfb3db752aac9d9cafdec87efcdd9b5dacb6027"
+  },
+  {
+    "path": "harness/testdir/src/lib.rs",
+    "bytes": 17917,
+    "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+  },
+  {
+    "path": "run-v2.py",
+    "bytes": 5241,
+    "sha256": "4d26df4cb726b6114f54b457a8d8c2568021c4783d7c5cb6ff37fd8760911a12"
+  },
+  {
+    "path": "PROJECTION.json",
+    "bytes": 902,
+    "sha256": "629c384c9c056ff87852c4f0c94dfcf05b9cea931dc44f3bf69e1cd46e6544db"
+  },
+  {
+    "path": "DEPENDENCIES.json",
+    "bytes": 1296,
+    "sha256": "6387f814a9d4fbf6e5ad99c6d15aeac0838bee7eac648923c27d4ae2cfdef989"
+  },
+  {
+    "path": "POLICY_READ.json",
+    "bytes": 709,
+    "sha256": "d37ae2c16eaf3c5e6c7c293fdeb58cef00fd6b62af0cac3cc11148a663933ce4"
+  },
+  {
+    "path": "candidate-v2/admission.rs",
+    "bytes": 29053,
+    "sha256": "de247243e4fae1ce2218b6263e23af8a1b412ad633e2ecfd2e5c2adff4a635ec"
+  },
+  {
+    "path": "before/controls.rs",
+    "bytes": 464,
+    "sha256": "1eb53ce882570d45d75e534886c1617c5a30025ae22f5870b9b18375d43e948d"
+  },
+  {
+    "path": "before/admission.rs",
+    "bytes": 27917,
+    "sha256": "a5188b304b7c35668c2c035329269ba1437f675dcaa956fb2a035b4b810151d6"
+  },
+  {
+    "path": "PARENT-ACQUISITION-UNAPPLIED-v2.patch",
+    "bytes": 4054,
+    "sha256": "9b668c542cb6c74d7d06a33af0f32aa6f0b5254d104aab2b71c107ed661edd28"
+  },
+  {
+    "path": "CLIPPY-TEST-LITERAL-CORRECTION.json",
+    "bytes": 437,
+    "sha256": "a8cbd7b95c5705ee76c44e7eb3c6648a52a45417291ccff5db29c14a1cf6710d"
+  }
+]

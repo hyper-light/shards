@@ -1,0 +1,9 @@
+{
+  "path": "/home/adalundhe/native-execution-scope-f1dc-compile-v2/source/results/frozen-tests",
+  "bytes": 8324392,
+  "sha256": "fdb66515c73b45561edb839d5c3c76255ad7ac1f39ee0a77cbae35e5072965fe",
+  "source_manifest_sha256": "d06ff6e1d5bc6642552c10d1ba42655b7a49410d99087c328a0c249ad09db7c6",
+  "runtime_cases_in_this_batch": 0,
+  "prior_functional_source": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "prior_functional_passes": 7
+}

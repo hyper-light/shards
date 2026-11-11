@@ -1,0 +1,29 @@
+--- functional-cab19d8d/execution.rs
++++ final/execution.rs
+@@ -76,13 +76,14 @@
+         self.job
+     }
+ 
+-    /// Borrow this SAME held directory for atomic CLONE_INTO_CGROUP. The caller
+-    /// retains all authority and charges; actors receive no migration/control FD.
++    /// Borrow this SAME directory during trusted preparation. Publish BEFORE
++    /// handing it to any birth participant; actors receive no control/migration FD.
+     pub(crate) fn directory(&self) -> &File {
+         &self.group.directory
+     }
+ 
+-    /// Use after any possible birth, including a lost/uncertain birth reply.
++    /// Publish BEFORE sending the Group FD or enabling any possible birth. Also
++    /// retain on an already uncertain local birth; never cancel it as pre-birth.
+     /// The real owner keeps these objects with its actual pidfd/ACK/current state.
+     /// Drop after publication cannot remove the directory or imply a refund.
+     pub(crate) fn publish(self) -> (Published, crate::managed::Controls) {
+@@ -360,7 +361,7 @@
+         let removal = Group::prepare_removal(&member, &name, false).unwrap();
+         let path = root.join(&name);
+         std::fs::write(path.join("marker"), b"private nonempty directory").unwrap();
+-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
++        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0)).unwrap();
+         let (refusal, removal) = match Group::open(removal) {
+             super::super::Acquisition::Retained { refusal, removal } => (refusal, removal),
+             other => panic!("open/rollback source projection: {other:?}"),

@@ -1,0 +1,121 @@
+--- a/crates/init/src/domains/admission.rs
++++ b/crates/init/src/domains/admission.rs
+@@ -9,6 +9,8 @@
+ use std::io::{self, Read as _};
+ use std::os::fd::{AsRawFd, FromRawFd};
+ 
++pub(crate) mod execution;
++
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ enum Limit {
+     Max,
+@@ -16,7 +18,7 @@
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub(super) enum Cause {
++pub(crate) enum Cause {
+     Io { errno: i32 },
+     ControllerUnavailable,
+     WrongFilesystem,
+@@ -29,14 +31,14 @@
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-enum Rollback {
++pub(crate) enum Rollback {
+     NotCreated,
+     Removed,
+     Failed(i32),
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+-pub(super) struct Refusal {
++pub(crate) struct Refusal {
+     pub cause: Cause,
+     file: &'static CStr,
+     expected: Option<Limit>,
+@@ -367,8 +369,53 @@
+     removal: Removal,
+ }
+ 
++#[derive(Debug)]
++enum Acquisition {
++    Created(Group),
++    Refused(Refusal),
++    Retained { refusal: Refusal, removal: Removal },
++}
++
+ impl Group {
+     fn create(parent: &File, name: &str, existing: bool) -> Result<Self, Refusal> {
++        match Self::acquire(parent, name, existing) {
++            Acquisition::Created(group) => Ok(group),
++            Acquisition::Refused(refusal) | Acquisition::Retained { refusal, .. } => Err(refusal),
++        }
++    }
++
++    /// The lifetime caller retains the SAME failed-cleanup guard, whereas the
++    /// compatibility wrapper above preserves its existing Refusal-only result.
++    fn acquire(parent: &File, name: &str, existing: bool) -> Acquisition {
++        match Self::prepare_removal(parent, name, existing) {
++            Ok(removal) => Self::open(removal),
++            Err(refusal) => Acquisition::Refused(refusal),
++        }
++    }
++
++    fn open(mut removal: Removal) -> Acquisition {
++        // SAFETY: resolve the validated component under the SAME held parent.
++        let fd = unsafe {
++            libc::openat(
++                removal.parent.as_raw_fd(),
++                removal.name.as_ptr().cast(),
++                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
++            )
++        };
++        if fd < 0 {
++            let mut refusal = Refusal::io(c"open cgroup", io::Error::last_os_error());
++            refusal.rollback = removal.remove();
++            return match refusal.rollback {
++                Rollback::Failed(_) => Acquisition::Retained { refusal, removal },
++                _ => Acquisition::Refused(refusal),
++            };
++        }
++        // SAFETY: successful openat transferred this newly owned descriptor.
++        let directory = unsafe { File::from_raw_fd(fd) };
++        Acquisition::Created(Self { directory, removal })
++    }
++
++    fn prepare_removal(parent: &File, name: &str, existing: bool) -> Result<Removal, Refusal> {
+         if name.is_empty() || matches!(name, "." | "..") || name.bytes().any(|b| b == 0 || b == b'/') {
+             return Err(Refusal::new(c"cgroup name", Cause::InvalidName));
+         }
+@@ -398,27 +445,11 @@
+             }
+             Disposition::Retained
+         };
+-        let mut removal = Removal {
++        Ok(Removal {
+             parent,
+             name,
+             disposition,
+-        };
+-        // SAFETY: openat resolves the same single component; symlinks are refused.
+-        let fd = unsafe {
+-            libc::openat(
+-                removal.parent.as_raw_fd(),
+-                removal.name.as_ptr().cast(),
+-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+-            )
+-        };
+-        if fd < 0 {
+-            let mut refusal = Refusal::io(c"open cgroup", io::Error::last_os_error());
+-            refusal.rollback = removal.remove();
+-            return Err(refusal);
+-        }
+-        // SAFETY: openat returned a fresh descriptor owned only here.
+-        let directory = unsafe { File::from_raw_fd(fd) };
+-        Ok(Self { directory, removal })
++        })
+     }
+ 
+     fn refused(mut self, mut refusal: Refusal) -> Refusal {

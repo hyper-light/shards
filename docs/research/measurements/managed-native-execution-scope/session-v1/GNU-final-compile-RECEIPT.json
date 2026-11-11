@@ -1,0 +1,74 @@
+{
+  "summary": {
+    "outcome": "passed",
+    "seconds": 2.004018738050945,
+    "stages": [
+      {
+        "name": "rustc",
+        "argv": [
+          "rustc",
+          "--version",
+          "--verbose"
+        ],
+        "remaining_seconds_before": 599.9994818120031,
+        "exit": 0,
+        "seconds": 0.015877970959991217
+      },
+      {
+        "name": "cargo",
+        "argv": [
+          "cargo",
+          "--version",
+          "--verbose"
+        ],
+        "remaining_seconds_before": 599.9833258719882,
+        "exit": 0,
+        "seconds": 0.015918988035991788
+      },
+      {
+        "name": "build",
+        "argv": [
+          "cargo",
+          "test",
+          "--locked",
+          "--offline",
+          "--no-run",
+          "--jobs",
+          "2",
+          "--message-format=json"
+        ],
+        "remaining_seconds_before": 599.9672274689656,
+        "exit": 0,
+        "seconds": 1.167632282944396
+      },
+      {
+        "name": "clippy",
+        "argv": [
+          "cargo",
+          "clippy",
+          "--locked",
+          "--offline",
+          "--all-targets",
+          "--jobs",
+          "2",
+          "--",
+          "-D",
+          "clippy::all",
+          "-D",
+          "clippy::undocumented_unsafe_blocks"
+        ],
+        "remaining_seconds_before": 598.5256445509149,
+        "exit": 0,
+        "seconds": 0.5291559720644727
+      }
+    ],
+    "production_integration": "shared acquisition and module registration UNAPPLIED; no actual owner caller",
+    "kernel_population": "Unknown",
+    "authority": "MechanicsOnly"
+  },
+  "root": "/home/adalundhe/native-execution-scope-f1dc-compile-v2",
+  "returncode": 0,
+  "raw_sha256": "e870dc197923fc8b032413aa46302f1509f0545dca52bfdd90e01df90527074b",
+  "raw_bytes": 8212,
+  "raw_payloads": 14
+}

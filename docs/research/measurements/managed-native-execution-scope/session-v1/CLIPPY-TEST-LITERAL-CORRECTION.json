@@ -1,0 +1,7 @@
+{
+  "before_sha256": "cab19d8d8e2a8cb4a92feb67ba20f3f9b5e435909995559b7b19255ef5b53fc9",
+  "after_sha256": "682630b23dc192dd623356a71598e929a82ec4559109670d9079274af7f57846",
+  "production_prefix_unchanged": true,
+  "change": "test-only Permissions::from_mode(0) -> from_mode(0o0), same native mode bits",
+  "original": "raw-gnu-v1 retains seven tests passed then Clippy non_octal_unix_permissions101;26 Rust unusedwarnings preserved"
+}

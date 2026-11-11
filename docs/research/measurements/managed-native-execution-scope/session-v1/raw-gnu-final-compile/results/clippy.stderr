@@ -1,0 +1,209 @@
+    Checking libc v0.2.189
+    Checking shards-testdir v0.1.0 (/home/adalundhe/native-execution-scope-f1dc-compile-v2/source/harness/testdir)
+    Checking native-execution-scope v0.1.0 (/home/adalundhe/native-execution-scope-f1dc-compile-v2/source/harness)
+warning: variants `Max` and `Value` are never constructed
+  --> src/domains/admission.rs:16:5
+   |
+15 | enum Limit {
+   |      ----- variants in this enum
+16 |     Max,
+   |     ^^^
+17 |     Value(u64),
+   |     ^^^^^
+   |
+   = note: `Limit` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variants `ControllerUnavailable`, `PageSize`, and `Readback` are never constructed
+  --> src/domains/admission.rs:23:5
+   |
+21 | pub(crate) enum Cause {
+   |                 ----- variants in this enum
+22 |     Io { errno: i32 },
+23 |     ControllerUnavailable,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+...
+29 |     PageSize,
+   |     ^^^^^^^^
+30 |     Readback,
+   |     ^^^^^^^^
+   |
+   = note: `Cause` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `message` is never used
+  --> src/domains/admission.rs:71:19
+   |
+49 | impl Refusal {
+   | ------------ method in this implementation
+...
+71 |     pub(super) fn message(self, label: &str) -> String {
+   |                   ^^^^^^^
+
+warning: struct `Reserved` is never constructed
+  --> src/domains/admission.rs:95:8
+   |
+95 | struct Reserved<'a>(&'a mut String);
+   |        ^^^^^^^^
+
+warning: function `run_group` is never used
+   --> src/domains/admission.rs:141:4
+    |
+141 | fn run_group() -> Result<File, Refusal> {
+    |    ^^^^^^^^^
+
+warning: function `has_word` is never used
+   --> src/domains/admission.rs:166:4
+    |
+166 | fn has_word(mut reader: impl io::Read, word: &[u8]) -> io::Result<bool> {
+    |    ^^^^^^^^
+
+warning: function `controller` is never used
+   --> src/domains/admission.rs:192:4
+    |
+192 | fn controller(parent: &File, file: &'static CStr, word: &[u8]) -> Result<bool, Refusal> {
+    |    ^^^^^^^^^^
+
+warning: function `enable` is never used
+   --> src/domains/admission.rs:196:4
+    |
+196 | fn enable(parent: &File) -> Result<(), Refusal> {
+    |    ^^^^^^
+
+warning: function `write_control` is never used
+   --> src/domains/admission.rs:218:4
+    |
+218 | fn write_control(parent: &File, name: &'static CStr, bytes: &[u8]) -> Result<(), Refusal> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `parse_limit` is never used
+   --> src/domains/admission.rs:235:4
+    |
+235 | fn parse_limit(bytes: &[u8]) -> Result<Limit, Cause> {
+    |    ^^^^^^^^^^^
+
+warning: function `read_limit` is never used
+   --> src/domains/admission.rs:248:4
+    |
+248 | fn read_limit(parent: &File, name: &'static CStr) -> Result<Limit, Refusal> {
+    |    ^^^^^^^^^^
+
+warning: function `verify` is never used
+   --> src/domains/admission.rs:288:4
+    |
+288 | fn verify(parent: &File, name: &'static CStr, expected: Limit) -> Result<(), Refusal> {
+    |    ^^^^^^
+
+warning: function `set` is never used
+   --> src/domains/admission.rs:300:4
+    |
+300 | fn set(parent: &File, name: &'static CStr, requested: u64, expected: Limit) -> Result<(), Refusal> {
+    |    ^^^
+
+warning: function `memory_value` is never used
+   --> src/domains/admission.rs:305:4
+    |
+305 | fn memory_value(bytes: u64, page: u64) -> Result<Limit, Refusal> {
+    |    ^^^^^^^^^^^^
+
+warning: associated items `create`, `refused`, and `retain` are never used
+   --> src/domains/admission.rs:380:8
+    |
+379 | impl Group {
+    | ---------- associated items in this implementation
+380 |     fn create(parent: &File, name: &str, existing: bool) -> Result<Self, Refusal> {
+    |        ^^^^^^
+...
+455 |     fn refused(mut self, mut refusal: Refusal) -> Refusal {
+    |        ^^^^^^^
+...
+460 |     fn retain(self) -> File {
+    |        ^^^^^^
+
+warning: struct `Parent` is never constructed
+   --> src/domains/admission.rs:472:19
+    |
+472 | pub(super) struct Parent {
+    |                   ^^^^^^
+
+warning: associated items `prepare` and `prepare_child` are never used
+   --> src/domains/admission.rs:479:19
+    |
+478 | impl Parent {
+    | ----------- associated items in this implementation
+479 |     pub(super) fn prepare(memory_high: u64) -> Result<Self, Refusal> {
+    |                   ^^^^^^^
+...
+509 |     pub(super) fn prepare_child(&self, name: &str) -> Result<Prepared, Refusal> {
+    |                   ^^^^^^^^^^^^^
+
+warning: struct `Prepared` is never constructed
+   --> src/domains/admission.rs:519:19
+    |
+519 | pub(super) struct Prepared {
+    |                   ^^^^^^^^
+
+warning: method `commit` is never used
+   --> src/domains/admission.rs:525:19
+    |
+524 | impl Prepared {
+    | ------------- method in this implementation
+525 |     pub(super) fn commit(self, pids: Option<u64>, memory: Option<u64>) -> Result<Committed, Refusal> {
+    |                   ^^^^^^
+
+warning: struct `Committed` is never constructed
+   --> src/domains/admission.rs:554:19
+    |
+554 | pub(super) struct Committed {
+    |                   ^^^^^^^^^
+
+warning: method `stage` is never used
+   --> src/domains/admission.rs:560:19
+    |
+559 | impl Committed {
+    | -------------- method in this implementation
+560 |     pub(super) fn stage(self) -> (Staged, crate::managed::Controls) {
+    |                   ^^^^^
+
+warning: struct `Staged` is never constructed
+   --> src/domains/admission.rs:567:19
+    |
+567 | pub(super) struct Staged {
+    |                   ^^^^^^
+
+warning: methods `group` and `into_file` are never used
+   --> src/domains/admission.rs:572:19
+    |
+571 | impl Staged {
+    | ----------- methods in this implementation
+572 |     pub(super) fn group(&self) -> &File {
+    |                   ^^^^^
+...
+577 |     pub(super) fn into_file(self) -> File {
+    |                   ^^^^^^^^^
+
+warning: function `workload_headroom` is never used
+   --> src/domains/admission.rs:584:15
+    |
+584 | pub(super) fn workload_headroom() -> Result<u64, Refusal> {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: function `pressure_headroom` is never used
+   --> src/domains/admission.rs:599:15
+    |
+599 | pub(super) fn pressure_headroom(available: u64, pluggable: u64, workload: u64) -> Result<u64, Refusal> {
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: fields `kill` and `events` are never read
+ --> src/managed.rs:4:5
+  |
+3 | pub(crate) struct Controls {
+  |                   -------- fields in this struct
+4 |     kill: std::fs::File,
+  |     ^^^^
+5 |     events: std::fs::File,
+  |     ^^^^^^
+  |
+  = note: `Controls` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: `native-execution-scope` (lib test) generated 26 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.49s
