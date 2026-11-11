@@ -328,6 +328,13 @@ pub(crate) fn attempt<T>(
 /// virtio_transport_send_pkt_info). A relay turn of this size moves one whole packet.
 /// Measured over Unix sockets, throughput rises with the slot up to this size and is
 /// flat beyond it (docs/research/measurements/managed-engine-relay-throughput-v1).
+#[cfg_attr(
+    test,
+    allow(
+        dead_code,
+        reason = "the engine relay's own: the test guest's tests use the other slot shapes"
+    )
+)]
 const VSOCK_PACKET: usize = 64 << 10;
 
 pub(crate) struct Slots {
@@ -341,6 +348,13 @@ impl Slots {
     }
 
     /// One whole vsock packet per direction, page-rounded, with no growth/cache.
+    #[cfg_attr(
+        test,
+        allow(
+            dead_code,
+            reason = "the engine relay's own: the test guest's tests use the other slot shapes"
+        )
+    )]
     pub(crate) fn vsock_packet() -> Result<Self, Fault> {
         // SAFETY: existing Linux page-size fact, no configuration change.
         let value = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
