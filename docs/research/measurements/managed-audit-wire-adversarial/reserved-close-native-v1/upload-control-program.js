@@ -1,0 +1,29 @@
+
+const runner = input.runner;
+const needs = "macos/aarch64,cpus=2,mem=2g,disk=4g,tool:cargo";
+const rootName = "managed-audit-wire-reserved-close-v1";
+const py = s => "python3 - <<'PY_AUDIT'\n" + s + "\nPY_AUDIT";
+const receipts = [];
+try {
+ const setup = await kiln.machines.run({on:runner,needs,sync:false,reuse:false,timeout_s:30,command:py(
+"from pathlib import Path\nimport json,os,platform,time\nstart=1794367979.162\nassert platform.system()=='Darwin' and platform.machine()=='arm64'\nroot=Path.home()/'"+rootName+"'\ns=os.statvfs(root.parent); free=s.f_bavail*s.f_frsize\nassert free >= (30+4)*1024**3, ('floor plus full ask',free)\nroot.mkdir()\n(root/'transfer').mkdir()\nbudget={'start_epoch':start,'deadline_epoch':start+600,'scope_seconds':600,'root':str(root),'free_bytes_before':free,'runner':'"+runner+"','cpus':2,'memory_bytes':2*1024**3,'disk_bytes':4*1024**3,'native_cases_run':0}\nwith (root/'budget.json').open('x') as f:json.dump(budget,f,indent=2)\nprint(json.dumps(budget),flush=True)")});
+ receipts.push({stage:"setup",...setup});
+ if(setup.exit_code!==0) return {status:"SetupFailed_NoBuildOrCase",receipts};
+ const budget=JSON.parse(setup.output.trim().split("\n").at(-1));
+ for(let i=0;i<input.chunks.length;i++) {
+  const chunk=input.chunks[i];
+  const command=py("from pathlib import Path\nimport json,time\nroot=Path.home()/'"+rootName+"'\nb=json.loads((root/'budget.json').read_text()); assert time.time()<b['deadline_epoch']\npart="+JSON.stringify(chunk)+"\nwith (root/'transfer'/'part-"+String(i).padStart(2,"0")+".b64').open('x') as f:f.write(part)\nprint(json.dumps({'part':"+i+",'ascii_bytes':len(part),'deadline_epoch':b['deadline_epoch']}))");
+  const transferred=await kiln.machines.run({on:runner,needs,sync:false,reuse:false,timeout_s:30,command});
+  receipts.push({stage:"part-"+i,...transferred});
+  if(transferred.exit_code!==0) return {status:"TransferFailed_NoBuildOrCase",budget,receipts};
+ }
+ const unpack=await kiln.machines.run({on:runner,needs,sync:false,reuse:false,timeout_s:45,command:py(
+"from pathlib import Path,PurePosixPath\nimport base64,hashlib,io,json,os,subprocess,tarfile,time\nroot=Path.home()/'"+rootName+"'\nb=json.loads((root/'budget.json').read_text()); assert time.time()<b['deadline_epoch']\nparts=sorted((root/'transfer').glob('part-*.b64')); assert len(parts)=="+input.chunks.length+"\nraw=base64.b64decode(''.join(p.read_text() for p in parts),validate=True)\nassert hashlib.sha256(raw).hexdigest()=='"+input.package_sha256+"'\nwith (root/'source-package.tar.gz').open('xb') as f:f.write(raw)\nwith tarfile.open(fileobj=io.BytesIO(raw)) as t:\n ms=t.getmembers(); names=[m.name for m in ms]; assert len(names)==len(set(names))\n assert all(m.isfile() and str(PurePosixPath(m.name))==m.name and not PurePosixPath(m.name).is_absolute() and '..' not in PurePosixPath(m.name).parts and chr(92) not in m.name for m in ms)\n manifest_bytes=t.extractfile('source-package-manifest.json').read()\n assert hashlib.sha256(manifest_bytes).hexdigest()=='"+input.manifest_sha256+"'\n manifest=json.loads(manifest_bytes)\n by={r['path']:r for r in manifest['files']}; assert set(by)==set(names)-{'source-package-manifest.json'}\n for m in ms:\n  data=t.extractfile(m).read()\n  if m.name in by:\n   r=by[m.name]; assert len(data)==r['bytes'] and hashlib.sha256(data).hexdigest()==r['sha256']\n  p=root/m.name;p.parent.mkdir(parents=True,exist_ok=True)\n  with p.open('xb') as f:f.write(data)\n  p.chmod(m.mode)\noriginal=root/'input'\nassert hashlib.sha256((original/'native-records-v1.tar.gz').read_bytes()).hexdigest()=='7b14ede379a4679e4bb3269c40928dda6139358b3fb6342fc4767a4c6404ad46'\nwith tarfile.open(original/'native-records-v1.tar.gz') as t:\n ms=t.getmembers();assert len(ms)==390 and len({m.name for m in ms})==390\n assert all(m.isfile() and str(PurePosixPath(m.name))==m.name and not PurePosixPath(m.name).is_absolute() and '..' not in PurePosixPath(m.name).parts and chr(92) not in m.name for m in ms)\n for m in ms:\n  data=t.extractfile(m).read();name=m.name\n  if name.startswith('corpus/'):\n   p=original/'data'/name.removeprefix('corpus/')\n  else:p=root/'original-corpus-records'/name\n  p.parent.mkdir(parents=True,exist_ok=True)\n  with p.open('xb') as f:f.write(data)\ncheck=root/'source/docs/research/measurements/managed-audit-wire-adversarial/verify-corpus.py'\nsubprocess.run(['python3',str(check),str(original),str(root/'corpus-verified.json')],check=True,timeout=min(30,b['deadline_epoch']-time.time()))\nassert time.time()<b['deadline_epoch']\nprint(json.dumps({'status':'PackageAndOriginalCorpusVerified_NoBuildOrCase','source_revision':manifest['source_revision'],'root':str(root),'deadline_epoch':b['deadline_epoch'],'package_sha256':'"+input.package_sha256+"'}),flush=True)")});
+ receipts.push({stage:"unpack-verify",...unpack});
+ if(unpack.exit_code!==0) return {status:"PackageVerificationFailed_NoBuildOrCase",budget,receipts};
+ const command=py("from pathlib import Path\nimport json,subprocess,time\nroot=Path.home()/'"+rootName+"'\nb=json.loads((root/'budget.json').read_text());left=b['deadline_epoch']-time.time();assert left>0\nr=subprocess.run(['lockf','-t','0','/tmp/g121-mac.lock','python3',str(root/'build-native.py'),str(root),str(b['deadline_epoch'])],timeout=left)\nraise SystemExit(r.returncode)");
+ const build=await kiln.machines.start({on:runner,needs,sync:false,reuse:false,timeout_s:Math.max(1,Math.min(600,budget.deadline_epoch-Date.now()/1000)),command});
+ return {status:"PrivateBuildStarted_NoCaseRun",budget,receipts,build,package_sha256:input.package_sha256};
+} catch(error) {
+ return {status:"AdmissionOrTransportFailure_NoCaseRun",error:String(error),detail:error.result??null,receipts};
+}

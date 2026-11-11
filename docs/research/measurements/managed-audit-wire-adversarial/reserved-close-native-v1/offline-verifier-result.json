@@ -1,0 +1,7 @@
+{
+  "chunk_id": "0c2aed",
+  "wall_time_seconds": 0.158990084,
+  "exit_code": 0,
+  "original_token_count": 183,
+  "output": "{\n  \"status\": \"Verified\",\n  \"source_revision\": \"82e7243104aaf15b70a373d49fcdf4293136e012\",\n  \"raw_payloads\": 100,\n  \"raw_total_members\": 101,\n  \"source_payloads\": 176,\n  \"external_package_identities_unchanged\": 3,\n  \"native_case_attempts\": 1,\n  \"runtime_retries\": 0,\n  \"actual_frame_pairs\": 19,\n  \"fuse_WRITE_frames\": 0,\n  \"aggregate_B\": 1333,\n  \"retained_lengths\": [\n    1215,\n    118\n  ],\n  \"witness_fds\": [\n    \"7\",\n    \"8\"\n  ],\n  \"archive_sha256\": \"9e98b62fd68b69d549ee907848bcd16bdab0bde93f3b6915d4ea893a0ff977c7\",\n  \"manifest_sha256\": \"d4e78a8c070709bc2a439cba3eb39144096938a08bbb617f3ba9f9b34ad37d66\",\n  \"limits\": \"No in-flight/fairness/physical-quota/durability/semantic-effect/parent-kernel/VM/management closure proof\"\n}\n"
+}

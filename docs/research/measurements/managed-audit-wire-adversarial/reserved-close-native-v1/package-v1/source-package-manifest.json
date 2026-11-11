@@ -1,0 +1,891 @@
+{
+  "schema": 1,
+  "source_revision": "82e7243104aaf15b70a373d49fcdf4293136e012",
+  "policy_revision": "b6af4ec8efa246c8a12fb44abd10425a5adc9af5",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "base_package_sha256": "c11862f9d9b8c40dbab9125380a4b61aab9dcc15ea6cf71e20207808348c9c31",
+  "same_eight_real_crate_dependency_closure": true,
+  "packaging_only": "Same root workspace member/default-member closure and unused patch removal as original native package; original Cargo.toml retained; no stubs or VM runner",
+  "files": [
+    {
+      "path": "build-native.py",
+      "bytes": 5109,
+      "sha256": "24a2dfea1683ff01e613fba31df39e573038156161af8ddf7076c3a50dc7f5f9"
+    },
+    {
+      "path": "input/corpus-manifest.json",
+      "bytes": 61187,
+      "sha256": "804f3b66b34565517f88caf43a1b48ad0102eaede0e15348b548df0a9eaa6698"
+    },
+    {
+      "path": "input/native-records-v1.tar.gz",
+      "bytes": 271161,
+      "sha256": "7b14ede379a4679e4bb3269c40928dda6139358b3fb6342fc4767a4c6404ad46"
+    },
+    {
+      "path": "source/.github/workflows/ci.yml",
+      "bytes": 23576,
+      "sha256": "0707e0d998f93686ddec2974c1f1dead655108190370b29437d8e685aeed02ce"
+    },
+    {
+      "path": "source/.github/workflows/release.yml",
+      "bytes": 6178,
+      "sha256": "27a09295956b66534bd0bdda08eeb8dd262c1645b8d42b7b777fd93ee9ab2415"
+    },
+    {
+      "path": "source/.source-original-Cargo.toml",
+      "bytes": 3885,
+      "sha256": "ba0a915694dc4a696bd4e308c1a52332c886df936c35bd6b44c7678278afb15f"
+    },
+    {
+      "path": "source/AGENTS.md",
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41"
+    },
+    {
+      "path": "source/CLAUDE.md",
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f"
+    },
+    {
+      "path": "source/Cargo.lock",
+      "bytes": 46038,
+      "sha256": "f4dd0fa9a0563349fe5b3fd6ce31119b6d227a446560716f252ee993570ee3da"
+    },
+    {
+      "path": "source/Cargo.toml",
+      "bytes": 2529,
+      "sha256": "d61fe6510b73aabf60074792dd588dce85660f1170696228798ade6431fac2c8"
+    },
+    {
+      "path": "source/clippy.toml",
+      "bytes": 526,
+      "sha256": "42ed845f7e131bb807862e4b1385f16bf6ec075796a5e3575f8fabc935d85928"
+    },
+    {
+      "path": "source/crates/abi/Cargo.toml",
+      "bytes": 243,
+      "sha256": "41b324548af8df170cb3507a4a0a0ce4e75fb9e6551985074924aa8bf27b8555"
+    },
+    {
+      "path": "source/crates/abi/build.rs",
+      "bytes": 2937,
+      "sha256": "5daeaceeb36e04c1962ed90ffb3d7216cc12aebbaf8e6158eaffa5d7edb6b168"
+    },
+    {
+      "path": "source/crates/abi/src/bounds.rs",
+      "bytes": 9001,
+      "sha256": "e8297213757dae9f93bd562fa6f25c215a63d8476c8ec9ca94db2ecffd90108f"
+    },
+    {
+      "path": "source/crates/abi/src/build.rs",
+      "bytes": 28606,
+      "sha256": "a90290611ae47693edbfe5bef0484253f95f2df4eb8b86ecc9aefc25862df7bf"
+    },
+    {
+      "path": "source/crates/abi/src/changes.rs",
+      "bytes": 20243,
+      "sha256": "e3036a8559371fe2c39e25e93bb13622847669ac48488b5987d3e0f453609baa"
+    },
+    {
+      "path": "source/crates/abi/src/emulate.rs",
+      "bytes": 5461,
+      "sha256": "9bc88f80176e0c96fb6571161f36fb49e37a8493df88d2cca931276c0f87677d"
+    },
+    {
+      "path": "source/crates/abi/src/lib.rs",
+      "bytes": 8010,
+      "sha256": "8579e8a8d30da2bb053c2af5b7edd678d26a458dc69ba390064f2f2aabed0250"
+    },
+    {
+      "path": "source/crates/abi/src/run.rs",
+      "bytes": 53615,
+      "sha256": "87528c65fe13c459991b9bccd2cdac9c735136d3f9ac6991a279e6fdb95ecbd0"
+    },
+    {
+      "path": "source/crates/abi/src/run/audit.rs",
+      "bytes": 32026,
+      "sha256": "7a4f80ff0a780bed72c425cf6b8e935806a82a7989395a9ae460bb2b2b4d66ea"
+    },
+    {
+      "path": "source/crates/abi/src/run/managed.rs",
+      "bytes": 18271,
+      "sha256": "53dc711b4d434252b5d4cc6b136ee1244656d3201e90850e24b42c1c8c29cd01"
+    },
+    {
+      "path": "source/crates/abi/src/run/quiesce.rs",
+      "bytes": 5846,
+      "sha256": "dc9f67272e281dd8078acd22f2508c6f85141d7a2333e67867e31287f926b092"
+    },
+    {
+      "path": "source/crates/abi/tests/allocations.rs",
+      "bytes": 3803,
+      "sha256": "91755703903a54630558cd79349c9d67629fd5218a524119f53628a76051a3cd"
+    },
+    {
+      "path": "source/crates/afunix/Cargo.toml",
+      "bytes": 455,
+      "sha256": "37ee905425f3624f3a2e066462f623c372b0629c531ab71a24d80fa4d373c6d8"
+    },
+    {
+      "path": "source/crates/afunix/src/lib.rs",
+      "bytes": 37311,
+      "sha256": "7b597d09b4e04d3b97d565b80442c78e428506ec6721b5b3a195ce2e665c52bc"
+    },
+    {
+      "path": "source/crates/ipc/Cargo.toml",
+      "bytes": 894,
+      "sha256": "5c7f43e3fbc005d38b34808bf91aa74fced5f25ec8bc05487bca3ddc7aa1b063"
+    },
+    {
+      "path": "source/crates/ipc/src/child_fds.rs",
+      "bytes": 12136,
+      "sha256": "14f49f2dfffbc56364dd99f825c1486646e61d528639a878f52bc6ff81bff62a"
+    },
+    {
+      "path": "source/crates/ipc/src/lib.rs",
+      "bytes": 137429,
+      "sha256": "310cc8403fb560696b5e6d579b2316242db23f51b1552cb411c115aaabb10dd7"
+    },
+    {
+      "path": "source/crates/ipc/src/pipe.rs",
+      "bytes": 100303,
+      "sha256": "d91abf2147dadaa009b2c66754e78d4b47b7caadaf3a7431e0a5bcd8ee4515a8"
+    },
+    {
+      "path": "source/crates/ipc/src/pipe/poll.rs",
+      "bytes": 21399,
+      "sha256": "7967c7d21c91e432bb597b0521c32552ef13e6d8e6d31ab8875cb682cef16548"
+    },
+    {
+      "path": "source/crates/ipc/src/slots.rs",
+      "bytes": 17842,
+      "sha256": "7ecfc6d8675967f42995457ea90cfb050537186e2058c182cdaa103e452bfd75"
+    },
+    {
+      "path": "source/crates/ipc/src/slots/fifo.rs",
+      "bytes": 51092,
+      "sha256": "f3f9b44f9f39bf84f4f86b59bae5e385d717017f8648766fababe1db381a10b0"
+    },
+    {
+      "path": "source/crates/ipc/src/slots/named.rs",
+      "bytes": 56907,
+      "sha256": "20b19682079b2610bd95dc1774c5c35f02cb5dcb56b2aacb3c93a18e97f9a9d5"
+    },
+    {
+      "path": "source/crates/ipc/src/spawner.rs",
+      "bytes": 34575,
+      "sha256": "33885cfbdfca93ef898e00046de34876bdcb937b63227a5886dfc8ec37072bb5"
+    },
+    {
+      "path": "source/crates/ipc/src/unix.rs",
+      "bytes": 100444,
+      "sha256": "4cc18d1c7197d697e5ce1503dc698807519ddb27be52b914bd08be9e153e8f37"
+    },
+    {
+      "path": "source/crates/ipc/src/windows.rs",
+      "bytes": 133475,
+      "sha256": "6e239c2407e8564dad6cf181a6e292cfd5394ebd8b73ca4eb5e6cfed9bc66a00"
+    },
+    {
+      "path": "source/crates/netring/Cargo.toml",
+      "bytes": 514,
+      "sha256": "3670bcab47883494a454de70bfa12bdd9c7eb38a67888019271701c425191dc3"
+    },
+    {
+      "path": "source/crates/netring/src/lib.rs",
+      "bytes": 39447,
+      "sha256": "bf77bf33d03d45b2ad419d92476f443b6f4e0aafb2f1a030fb2f448e0c2dd991"
+    },
+    {
+      "path": "source/crates/ntfs/Cargo.toml",
+      "bytes": 632,
+      "sha256": "525d5a8863d21e761be39eb7279e8d78afa4a52ff935fd9d4ac1da2875466ebb"
+    },
+    {
+      "path": "source/crates/ntfs/src/lib.rs",
+      "bytes": 88234,
+      "sha256": "ada183ee77ab4d559f3cdb48058d17f6671e7ce66f3d5bab8a9a4f805cc0a8a1"
+    },
+    {
+      "path": "source/crates/syscall-filter/Cargo.toml",
+      "bytes": 405,
+      "sha256": "3b29197f328e922db1759482c92f4560999828089d0fe653ae11c6b59bd478ea"
+    },
+    {
+      "path": "source/crates/syscall-filter/src/lib.rs",
+      "bytes": 49088,
+      "sha256": "90bea68ce3a8b39fb6fc1beac928abca159a0d12b306ff729ce906c7a5e31d89"
+    },
+    {
+      "path": "source/crates/testdir/Cargo.toml",
+      "bytes": 536,
+      "sha256": "297b972c0275f97819f41e115edc31ac7dbe5b5e4eca8b19d80f6e9cb565f3c1"
+    },
+    {
+      "path": "source/crates/testdir/src/bin/shards-testhelper.rs",
+      "bytes": 5719,
+      "sha256": "4c62780238e7c0446bca0c12a03dd20aff56ac2212bbb03049d23b9735d7f123"
+    },
+    {
+      "path": "source/crates/testdir/src/lib.rs",
+      "bytes": 17917,
+      "sha256": "236835d8a646084ee6b80e0bb00ba16e912de067c6911272f9346d626b7171bc"
+    },
+    {
+      "path": "source/crates/vmm/Cargo.toml",
+      "bytes": 1531,
+      "sha256": "45ce0d7f4894ea41c2b70cfeda0e463f6732d931da1088eb5e5e07dff10c6085"
+    },
+    {
+      "path": "source/crates/vmm/build.rs",
+      "bytes": 8498,
+      "sha256": "ab6e32a88186eab621065e8b78f5c1989e98ad667d31492a02d0b75c2be1c2a5"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/boot.rs",
+      "bytes": 29928,
+      "sha256": "c1921ffa5f6429f6fc0daed14ac2a84fd71d2454d88afe9245d27b26783f8edf"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/cpu.rs",
+      "bytes": 8661,
+      "sha256": "3b70707e88907b5a98c1ebaf8aee765316abaf4bb8bcc22088f11741c051959b"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/esr.rs",
+      "bytes": 6144,
+      "sha256": "4517ed80c89a2121fe40d56ad63b0f52cf035ae38f2f5961bebab98df3c2d4c8"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/mod.rs",
+      "bytes": 6780,
+      "sha256": "a2d0313495308b43b5a6bdec68e04f34a4b25d91b9e2de9c3c1099f4b6835a44"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/prefetch.rs",
+      "bytes": 6709,
+      "sha256": "a327add8792dfda45ed4b93bfdf7531660b7e281b1c8c83361fd34576e1796da"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/psci.rs",
+      "bytes": 6737,
+      "sha256": "743d769689d5328cda4387b9c70cdb64eeb7b29a56280c8fc6da9d9ee48b93c3"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/aarch64/state.rs",
+      "bytes": 8454,
+      "sha256": "c128ba66abd3ab538c732e6b35f6b77a7fe2ba7899a57c4fd61fe179d7a5162f"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/mod.rs",
+      "bytes": 1739,
+      "sha256": "28ac9cdad5b5b7ef385c82a1041bd512b0555f0c675902e60d67712034eb8904"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/acpi.rs",
+      "bytes": 31127,
+      "sha256": "fdd6586b31f322006ee1124b3e2114bf100e59fbcdd9a4f62090ea4d646ac00d"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/boot.rs",
+      "bytes": 18490,
+      "sha256": "12dbc033ea35c7dd25e8b3f90c6ff8573f05342dace00685f5390445157c4c07"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/cpuid.rs",
+      "bytes": 20530,
+      "sha256": "1592ccf9f8851f36c3a3d3933ee55695668b3747d70f6d2c27de0cf21b84430e"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/ioapic.rs",
+      "bytes": 19440,
+      "sha256": "db5744846d24c89ece8bcadb5e7aaa37c44deaab47281c098a1e99eaea51ae3b"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/mmio.rs",
+      "bytes": 15767,
+      "sha256": "5a9bbf36505850bf3b776d469e3d1de350d37c473537bd05675da764d5f699b8"
+    },
+    {
+      "path": "source/crates/vmm/src/arch/x86_64/mod.rs",
+      "bytes": 4819,
+      "sha256": "3c33a25a986aaa0de18b67faf21f06db818caa849dd8e8d36b492a295d542ee1"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/acpi_sleep.rs",
+      "bytes": 2239,
+      "sha256": "3e1025b256bda98e55795840d7b9b12d8d9ca5fc59640a187979534d4f23c03d"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/control.rs",
+      "bytes": 17404,
+      "sha256": "76f6dbab63bcbc415d3085753846d76d7d0bd57ad280b76e0b0d0dfe7f5bf403"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/i8042.rs",
+      "bytes": 1543,
+      "sha256": "ca0ded580a53dd937639fbaf352d3013a28a46d6532b5bfe6d22c78f092b0fee"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/mod.rs",
+      "bytes": 11472,
+      "sha256": "453f3cbd3e5206d8baf643755403ae6f5d1803060cb2dc06ba1a8703754ea417"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/assigned.rs",
+      "bytes": 43540,
+      "sha256": "f1a3e6c16f9e08e96677edd87ce087d5023bf9d4ce8de43f59ba28735e51ab90"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/edu.rs",
+      "bytes": 33443,
+      "sha256": "6005ce0f376692dfac0f594e6eeb73f3c7ec012cc691d57bd37b1729b98d9f36"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/hotplug.rs",
+      "bytes": 17549,
+      "sha256": "5f3a896f87979348602ff6bde0d4d6682e2711445e011d3bdeeff5a3f74cca11"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/mod.rs",
+      "bytes": 38624,
+      "sha256": "e998ebc21ff10cc1f917eeb6fb380633e909827e9467b9f2e6425fc2ebfefd3f"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/passed.rs",
+      "bytes": 12274,
+      "sha256": "cd2b56d52f9ae18202572a53cf9f95d4e9b185988571eb4c8acfff5af70a5267"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/pci/vfio.rs",
+      "bytes": 88193,
+      "sha256": "e2da8ac43a98cd40a57d3e75fd4286acda648dd885b132b4402998f10530371d"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/power.rs",
+      "bytes": 1043,
+      "sha256": "2debec97dc6f8493837cbf4fa21eb2e61956fd1387dccc2bd4e979636b69a580"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/rtc.rs",
+      "bytes": 3654,
+      "sha256": "afe793c6a2f3fd24eea3523b5a80f31ebe4d61cfa428a7fb981ea5a84cf76ac9"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/serial.rs",
+      "bytes": 20711,
+      "sha256": "da839f6e5289a4ba24503d90235164cb998e86a002b1e9320e8964d568eeaef3"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/balloon.rs",
+      "bytes": 16156,
+      "sha256": "6eced2d90fae5faa2c0428c4cf08d4bb3b7a5587e87c71f9f0c8d952be8dc51e"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/block.rs",
+      "bytes": 63044,
+      "sha256": "67e46136a75ca0a8722573f54165db2e72501ec47da7f22c029ad3a70f7833fc"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/audit.rs",
+      "bytes": 49056,
+      "sha256": "48f5f487121df35d1632c7e923435fb2539e43287db0a795a16dd04cf009a172"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/headroom.rs",
+      "bytes": 11198,
+      "sha256": "d47cc8baab5f13b8a0d446bcc3564071d4d790285695ca4bb585f098da65f490"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/host.rs",
+      "bytes": 13752,
+      "sha256": "7a2d4c62cf27058b15a621fffb40fa49292db7e37174885a1b9962a6c036de08"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/mod.rs",
+      "bytes": 97233,
+      "sha256": "59f43f1fafe78d0181f8862d42dc9a191aadc9e08ad2431f1aae9e76d34e0c6b"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/ntfs.rs",
+      "bytes": 2583,
+      "sha256": "1261d099e8c6a2b832f5f142b0d46e5510f4686fef19a6b3ee59d237872c5e5d"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/proto.rs",
+      "bytes": 5711,
+      "sha256": "b0105b60918f740e2e79a2a77d1ed83ac94e2e11f97f1bc76dd3e1994bf967f6"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/server.rs",
+      "bytes": 245948,
+      "sha256": "2616ee3820ecb961ddb14adc3d24bd486dd17ba7f279a550703cc1323db36d64"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/server_guest.rs",
+      "bytes": 13809,
+      "sha256": "119a04717feb2dfbbaba55b70fba68877567f51e28b91ad180a8ce3ae29db561"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/server_unix.rs",
+      "bytes": 36802,
+      "sha256": "b5a0e21266bda356e16641031207bcb8d5e0ccd9a2981a22fd0fd51e0b7b9d1a"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/server_windows.rs",
+      "bytes": 28227,
+      "sha256": "bb1d05c20b79eadab59d576cca4077f9b91f07a7d72592875fbc1dbd291077f9"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/window.rs",
+      "bytes": 66288,
+      "sha256": "933ef5097e122e1eae8dc9fc328964da82b5eb5ef3132f0d7cbf62b5271630dc"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/fs/window_whp.rs",
+      "bytes": 62705,
+      "sha256": "8ecab31e9179f85b32833d7d703ceec0e8a1f66e4cc1e45bce86196fc9218b7d"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/gpu/mod.rs",
+      "bytes": 55987,
+      "sha256": "8858bc80655d9f52436690be2bea3d40d94820d8abe64438282dbf6539d6d1a3"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/gpu/protocol.rs",
+      "bytes": 15987,
+      "sha256": "9d47adcec3384e9f35c53a51a865137f1aa95a85a71d1112ca6a84885d49b1f4"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/gpu/render_log.c",
+      "bytes": 815,
+      "sha256": "2b5d4f463ebeea6daffbe48420bb482c17865fb91d6ccc67419f68f5a3b2e750"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/gpu/virgl.rs",
+      "bytes": 52797,
+      "sha256": "7c6d189157fabed34b0043c9e9a667d66c451ec09aaa2f9cc9a9ca3189e3f34f"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/gpu/window.rs",
+      "bytes": 6581,
+      "sha256": "ab3bae0e3cb635efe0956d1132556df61d0c5bc6ff08b9d6094765c2544f0eb5"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/head.rs",
+      "bytes": 61964,
+      "sha256": "1b79b6d84f0be1d06a9fa7bf47c8ed241d5c4286244a297c69bc05ff9b2bb5b0"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/iommu.rs",
+      "bytes": 64217,
+      "sha256": "7d5d5ae1b4d22b0ba80dd60523698e7566d81e2553f14e2aea0a96c58b5151b7"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/limit.rs",
+      "bytes": 10486,
+      "sha256": "286a0354e1757cce6135f7bb7d19a32c092323fb1c74967191b27db74e04ba63"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/mem.rs",
+      "bytes": 32290,
+      "sha256": "f5790db8d2efca4b85e65ad33bc2cada44d550255559a13d0526b08d0066310a"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/mmio.rs",
+      "bytes": 21325,
+      "sha256": "ae036b30742eb86603770d7a177f11c4bef343535fa27fbf9a66d3d5a92c0733"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/mod.rs",
+      "bytes": 8102,
+      "sha256": "d0f601bbe68c2739bada99a6020e3a16f8cf6a74096bb9217c181e270a4b362a"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/net.rs",
+      "bytes": 49504,
+      "sha256": "89aaa83fb09829f8ad10830ab55966fd6d5aea8544e3ccfdf5bde07862cc3cb5"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/pci.rs",
+      "bytes": 28301,
+      "sha256": "3afd57b626138327a2a71c825641ee9cec639def6a570643733d027d079e5ede"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/pmem.rs",
+      "bytes": 90034,
+      "sha256": "d14688ddc1b19ad5965ed896312c96f69f1efc6abbb1a211be877c2945898439"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/queue.rs",
+      "bytes": 42699,
+      "sha256": "9f335d155788531053bd4ee0bb75d29580b30d8808d56b4cbd8e4fc50300aea0"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/vsock/conn.rs",
+      "bytes": 27892,
+      "sha256": "5d46f12fa8d69b9c840e84a2e0caa95f3c1cfbb73200d4eeda46141f734ba17a"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/vsock/mod.rs",
+      "bytes": 39657,
+      "sha256": "acaa2e85fddd46654b677004fcb3ab9fe33412abb3ee3c99c32a1082e27b76b9"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/vsock/muxer.rs",
+      "bytes": 56021,
+      "sha256": "4e4f3fe6f5583c5f7b03ccd5d8f1eb3acf30ea92d95f2c4fea6f765d8d0e09d2"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/vsock/packet.rs",
+      "bytes": 4551,
+      "sha256": "664ca34ee0275eec9d52e1e633885ba6e4b36352dcdb91ea071aa37c2583b171"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/vsock/poll.rs",
+      "bytes": 20261,
+      "sha256": "425a4795fb02c0c00742e7d78fb537b906c01a9a5d6768a6e394a9cf60b0a51a"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/virtio/worker.rs",
+      "bytes": 5678,
+      "sha256": "a5a3205f2644b6d3c8505140ab0d17bde5723bf28b534f20507935562f046bac"
+    },
+    {
+      "path": "source/crates/vmm/src/devices/vmgenid.rs",
+      "bytes": 2097,
+      "sha256": "52c4111ce5dd963e1ba87759bdb43da959d2f1f53c27951ab1226d29336541bc"
+    },
+    {
+      "path": "source/crates/vmm/src/fdt.rs",
+      "bytes": 10779,
+      "sha256": "0efc50f16e985744c7e033d3d325e76af55b03301b5570a3d97f9933aff8eccf"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/hvf/ffi.rs",
+      "bytes": 11562,
+      "sha256": "e4a16aab46d172959ec56bfa05d2e36c50931f24a78c0fdbd36fe3ddc3f3ffaa"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/hvf/mod.rs",
+      "bytes": 64750,
+      "sha256": "3ee5f25810cb79f261018fc0ec3da764f0a64a24d7a8fe6a37642b2c5d1b7175"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/hvf/power.rs",
+      "bytes": 7310,
+      "sha256": "a5099f6472c925f29019830b8fd505bdc4116c868db2557f66fed8b17b35c60f"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/hvf/simd.c",
+      "bytes": 867,
+      "sha256": "12c6bbd779f942eac448899ad6831255dee179a6d8965cb39b4d3f12bf864032"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/hvf/sys.rs",
+      "bytes": 22635,
+      "sha256": "06603e6d3099b95e2a9b9f8a5e51ba32154303f888d7e044ea372373df3bf0fd"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/aarch64.rs",
+      "bytes": 26411,
+      "sha256": "5ae972f38ef8b036c544799f48ab1382e4fb8ce689d03d5d39b22113b7f843dc"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/aarch64/gic.rs",
+      "bytes": 16564,
+      "sha256": "77974c8770f2b4d4488dd3f16cce675da199178fed19a590b6b4185123174b78"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/aarch64/prefetch.rs",
+      "bytes": 8677,
+      "sha256": "1de6fde61d2a0812a6526da2afdfc2f2c074217b0a113bbead8cfe6eca12b080"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/aarch64/state.rs",
+      "bytes": 8299,
+      "sha256": "9f6a987ff3e5e7630223534b1ffe3d9e5bb58a93e0c1e97dcd3306b0fadc0cbe"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/mod.rs",
+      "bytes": 33547,
+      "sha256": "ad4e21227d3c907d97a5091af5dcbf5aec8103c850e822ca2e338900b528324e"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/state.rs",
+      "bytes": 9471,
+      "sha256": "6f6e0808812143953ca42752c5425734e34eb241af5f1e0bb42ab40abd1df6e9"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/sys.rs",
+      "bytes": 29321,
+      "sha256": "536abd05bbb7c7ee18160450eb09f0c16bb59570da6f41078af320113c241633"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/sys/aarch64.rs",
+      "bytes": 17725,
+      "sha256": "e81ab54a6326ccbf10cc124673485d413201d1766195034cb862a1f2ed8b412e"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/sys/x86_64.rs",
+      "bytes": 22611,
+      "sha256": "20585d39a13157aeb7ec9b0c57d4fe1786f5404eddbc35d15cbedb69d7e1de2c"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/kvm/x86_64.rs",
+      "bytes": 37576,
+      "sha256": "7cf9deadf01c9826c3ab137cd0b15b5091f011927f189e4997c447024dccdebc"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/mod.rs",
+      "bytes": 8451,
+      "sha256": "3bd7bdeaff658cd71c1570cce331029ecd8b923a5157a444cf7ef02fb6645829"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp/ffi.rs",
+      "bytes": 9501,
+      "sha256": "ee15aaea85f99515c71af3327b5b6ce790bf452110e09e6a0d8a0f1dc500934b"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp/mod.rs",
+      "bytes": 82132,
+      "sha256": "49363b05cdb5e8e20de2110ee66c70417c67ab78b30f64432ddb740c2b0f00f6"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp/state.rs",
+      "bytes": 21962,
+      "sha256": "2893066afdb68f6bfb6c4df5a56834f6e139eef0a94f0ca08d64c9542f08d37f"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp/vpci.rs",
+      "bytes": 14379,
+      "sha256": "eeeeb00e0b759732c13f29c9b8f952f3cb7a643d42e6e48356a978b312aa7b62"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp_arm64/ffi.rs",
+      "bytes": 16975,
+      "sha256": "b70a51ba13bed83dee1fe819245c3dad5682dde8ac38fe7d175bafac7ddad745"
+    },
+    {
+      "path": "source/crates/vmm/src/hv/whp_arm64/mod.rs",
+      "bytes": 66241,
+      "sha256": "f452d4ff584b1143388fd4efa7a78462699551344bbec396e64f4ce07844ca0d"
+    },
+    {
+      "path": "source/crates/vmm/src/initramfs.rs",
+      "bytes": 7311,
+      "sha256": "d277932e823b998784bdc8ba61f4627bb7cd564883ae9947c7fa60f467508dfb"
+    },
+    {
+      "path": "source/crates/vmm/src/lib.rs",
+      "bytes": 660,
+      "sha256": "a46cbdac83de7c3688296d26cf2a218c4fd2b164ceac2798bd59e063deb7da3e"
+    },
+    {
+      "path": "source/crates/vmm/src/log.rs",
+      "bytes": 3386,
+      "sha256": "e81802c788bf8e4785d7c99a19d33b5a7dbe9b46a489789a97f86920a886a439"
+    },
+    {
+      "path": "source/crates/vmm/src/memory.rs",
+      "bytes": 117471,
+      "sha256": "96f9b1fda2f20be491b316207ffe5fb9f3267e6816a0f4b7210b7e56e7ecf60f"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/checked.rs",
+      "bytes": 19605,
+      "sha256": "6228e33854cd177d78b171ceee1e66db222fc88d53cf2bf60a9aab033697fd1d"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/copy.rs",
+      "bytes": 11257,
+      "sha256": "e6c3c30d506f9ec0cc6ac808b745c9e28558be17d623b2c99c50305d6cd397f5"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/granted.rs",
+      "bytes": 17524,
+      "sha256": "755ffdc144848a9506117aa8bf34a5392a55755c10ee3bf60d746f9207d56fd9"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/macos_thread.rs",
+      "bytes": 17442,
+      "sha256": "118e0849193706a93f091ed81ef1538fa7882d9cc41ce5c6ccd93a8989acc412"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/mod.rs",
+      "bytes": 34343,
+      "sha256": "3d93b83dd4225f784fb0bc84df8bee7397bc4009b96368ba286a8ac37c4174ff"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/pressure.rs",
+      "bytes": 25850,
+      "sha256": "b2965e979999b8e1a1221b4f1aed89e96a254be114ce98dbf3f0ddaa2bddd223"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/progress.rs",
+      "bytes": 5705,
+      "sha256": "6af02ed497f585c69db122287a98e6b5e80c96f2a3ada87beea0648d05c9aa6f"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/unix.rs",
+      "bytes": 139361,
+      "sha256": "e468a11610e4d65e734531f17797fe554ab1d84e03e41708cfd79e9746794e7d"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/windows.rs",
+      "bytes": 78192,
+      "sha256": "b02fb6290b087622e6e3801e0a18767f5d1f1766b71a74aa32945e039db7e714"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/windows_files.rs",
+      "bytes": 56811,
+      "sha256": "24e1bbe174215bacb379029840360db10a110d9824caded7ea8e3b8f5380fd76"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/windows_process.rs",
+      "bytes": 17157,
+      "sha256": "581aa06b3bac22a2a8278447b7061c26f5ba0128bee42efcfd91e7dc154e5c9b"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/windows_thread.rs",
+      "bytes": 18205,
+      "sha256": "eea7e1b685f0c9a8058462d9bcab22333c2854974bfa7000129156683dc9d930"
+    },
+    {
+      "path": "source/crates/vmm/src/platform/windows_watch.rs",
+      "bytes": 25333,
+      "sha256": "13a6079c91d4e3483ddb1acf90caf6a25043cf7fc7da065912fe46a255cfd5c2"
+    },
+    {
+      "path": "source/crates/vmm/src/snapshot/codec.rs",
+      "bytes": 6660,
+      "sha256": "be1c77d7a03abf1d3c5332d50c9d726601859c2129e07276fa81221f1d3079ab"
+    },
+    {
+      "path": "source/crates/vmm/src/snapshot/mod.rs",
+      "bytes": 112517,
+      "sha256": "988d00b393674c66a94e66346f209d8cc8413474a9b497bb74c4c912519f5824"
+    },
+    {
+      "path": "source/crates/vmm/src/sync.rs",
+      "bytes": 772,
+      "sha256": "6da2cb23f825fff6a724897ac14ad62963387fb1ff08790038ac932e0561816e"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/aarch64.rs",
+      "bytes": 52797,
+      "sha256": "4ce4bb1f060026dacccec242165485f89670580c5015764e00fb185bc8773204"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/barrier.rs",
+      "bytes": 10914,
+      "sha256": "4e13cc5e5d9bc1ab10c516e8354a774462af788856dd867ccedc5d3aa7aeef48"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/cmdline.rs",
+      "bytes": 7470,
+      "sha256": "6878c49291097f2775f8d1148f0ca93964be1107bc855f632f4622f157480814"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/group.rs",
+      "bytes": 8276,
+      "sha256": "ad7e6aed2a37788161305636fe48bcf92353571b0a437573c08f262c94c3b257"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/hold.rs",
+      "bytes": 33437,
+      "sha256": "3b86ffb68b9bdbc181572cedcbf05c1ab1e1509fe9257d0868ead5c43a98591e"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/live.rs",
+      "bytes": 14945,
+      "sha256": "38916a48792bd8b5c79619c9cf48bf93345a826e0a54da93158558fe309f789b"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/mapped.rs",
+      "bytes": 14318,
+      "sha256": "da099fd762307948dc51cf6e89394c9c74a7d81c6470935e4fe264c71b6d8c65"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/mod.rs",
+      "bytes": 148798,
+      "sha256": "3216820b3205c5da9dcc9f6bf5c2534fefedceca09e7ada219d95dfc888065e4"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/runtime.rs",
+      "bytes": 79461,
+      "sha256": "1b08b5efe788ea56446c150562152afb1c5311a0b604e3f36385ce762fb59498"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/unsupported.rs",
+      "bytes": 4782,
+      "sha256": "56a166c5d60e94c75d1346e293bf80208c80e037af98d2aec6a828275314add1"
+    },
+    {
+      "path": "source/crates/vmm/src/vm/x86_64.rs",
+      "bytes": 39125,
+      "sha256": "1d7b53176cebf2ff9e88b294a4e9053c8f141310bdd56ca6b41c790549a5fb73"
+    },
+    {
+      "path": "source/crates/vmm/tests/device_reset_log.rs",
+      "bytes": 2604,
+      "sha256": "050b7a38a7fe37ea0d0a1ab7d624cb64720cc7be05c886721d7718b5360b94ba"
+    },
+    {
+      "path": "source/crates/vmm/tests/fs_dir_budget.rs",
+      "bytes": 7935,
+      "sha256": "54a561de5670bbdb7efddc69b34b4f9249484a7f047a3277c455577a868f8809"
+    },
+    {
+      "path": "source/crates/vmm/tests/fs_dir_handles.rs",
+      "bytes": 4352,
+      "sha256": "a33751b77f5c041569d847f71315e5a64494608f20f69d91168486ef6d12e1e1"
+    },
+    {
+      "path": "source/docs/design/managed-runtime-plan.md",
+      "bytes": 52630,
+      "sha256": "e02bab3d44f32fa2a3ff729f58d1799bf528a448bc91e9dfb491aef3f030a0bf"
+    },
+    {
+      "path": "source/docs/development-evidence.md",
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+    },
+    {
+      "path": "source/docs/development-rules.md",
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3"
+    },
+    {
+      "path": "source/docs/research/measurements/managed-audit-wire-adversarial/native.rs",
+      "bytes": 38874,
+      "sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e"
+    },
+    {
+      "path": "source/docs/research/measurements/managed-audit-wire-adversarial/verify-corpus.py",
+      "bytes": 6555,
+      "sha256": "9c20412fd21089798b825a2606de944c91e28b59337c6cdd39df87a45025b5b8"
+    },
+    {
+      "path": "source/resources/supported-targets.txt",
+      "bytes": 172,
+      "sha256": "dd44b6d2c8f025f36862f2e0e0c53bd881971118126cd5bb1661301771a70e5a"
+    },
+    {
+      "path": "source/rustfmt.toml",
+      "bytes": 16,
+      "sha256": "dd70402f4c840303db9ec2afce7480a63198f972d1ae7b4cb07327511b4da4fa"
+    },
+    {
+      "path": "source/scripts/check-development-policy",
+      "bytes": 3326,
+      "sha256": "becf98a9124d2bacda63df88dbc5ee732e54b0d4d89d5e544fa4b0d18b3beeac"
+    },
+    {
+      "path": "source/scripts/lint",
+      "bytes": 2250,
+      "sha256": "5db1b68bc06218d1df6ed032759f4b39aa78bc0bb9f549bfdf37d831c956d040"
+    }
+  ]
+}

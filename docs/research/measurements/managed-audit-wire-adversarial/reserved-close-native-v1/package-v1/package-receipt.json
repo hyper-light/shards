@@ -1,0 +1,10 @@
+{
+  "source_revision": "82e7243104aaf15b70a373d49fcdf4293136e012",
+  "package_bytes": 1580258,
+  "package_sha256": "37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f",
+  "manifest_sha256": "82872430c5e0d1e2fd9a2c328b220d6a66dcd0473b7a170f9a564ccf50730fca",
+  "payload_count": 176,
+  "fixture_sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e",
+  "new_native_cases_run": 0,
+  "previous_source_and_artifact_unchanged": true
+}

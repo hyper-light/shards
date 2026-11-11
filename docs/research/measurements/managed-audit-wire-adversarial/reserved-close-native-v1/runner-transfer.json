@@ -1,0 +1,211 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"status\": \"PrivateBuildStarted_NoCaseRun\",\n    \"budget\": {\n      \"start_epoch\": 1794367979.162,\n      \"deadline_epoch\": 1794368579.162,\n      \"scope_seconds\": 600,\n      \"root\": \"/Users/adalundhe/managed-audit-wire-reserved-close-v1\",\n      \"free_bytes_before\": 2338177204224,\n      \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n      \"cpus\": 2,\n      \"memory_bytes\": 2147483648,\n      \"disk_bytes\": 4294967296,\n      \"native_cases_run\": 0\n    },\n    \"receipts\": [\n      {\n        \"stage\": \"setup\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"start_epoch\\\": 1794367979.162, \\\"deadline_epoch\\\": 1794368579.162, \\\"scope_seconds\\\": 600, \\\"root\\\": \\\"/Users/adalundhe/managed-audit-wire-reserved-close-v1\\\", \\\"free_bytes_before\\\": 2338177204224, \\\"runner\\\": \\\"d1323898b255a3ed435eb83fa0f7b0cf\\\", \\\"cpus\\\": 2, \\\"memory_bytes\\\": 2147483648, \\\"disk_bytes\\\": 4294967296, \\\"native_cases_run\\\": 0}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-0\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 0, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-1\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 1, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-2\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 2, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-3\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 3, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-4\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 4, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-5\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 5, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-6\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 6, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-7\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 7, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-8\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 8, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-9\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 9, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-10\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 10, \\\"ascii_bytes\\\": 180000, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"part-11\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"part\\\": 11, \\\"ascii_bytes\\\": 127012, \\\"deadline_epoch\\\": 1794368579.162}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      },\n      {\n        \"stage\": \"unpack-verify\",\n        \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n        \"output\": \"{\\\"archive_sha256\\\": \\\"7b14ede379a4679e4bb3269c40928dda6139358b3fb6342fc4767a4c6404ad46\\\", \\\"manifest_sha256\\\": \\\"804f3b66b34565517f88caf43a1b48ad0102eaede0e15348b548df0a9eaa6698\\\", \\\"source_revision\\\": \\\"6b86176f7354c4b9655b1a70c5671b1f04068f66\\\", \\\"archive_payloads\\\": 389, \\\"archive_total_members\\\": 390, \\\"corpus_payloads\\\": 364, \\\"all_unique_safe_regular_hashes_verified\\\": true, \\\"selected\\\": [{\\\"member\\\": 1, \\\"operation\\\": \\\"Send\\\", \\\"broker_request\\\": 1, \\\"scope_sha256\\\": \\\"8cb5741220a6f46f2e0565ac07d971a68f10593590ebd847e950dadbcd4eb1c3\\\", \\\"intent_max\\\": 213, \\\"terminal_max\\\": 844, \\\"intent_bytes\\\": 139, \\\"terminal_bytes\\\": 283, \\\"shape_count\\\": 40, \\\"intent_sha256\\\": \\\"6404c3310c36f13e2276edfd8833a1ccf98ddeab80fad0219e32a2b457f40d58\\\", \\\"terminal_sha256\\\": \\\"1c8d8e289c9d7496556538aea700b260ef6628667e9fb064846b5d93eb013cef\\\"}, {\\\"member\\\": 3, \\\"operation\\\": \\\"Send\\\", \\\"broker_request\\\": 1, \\\"scope_sha256\\\": \\\"dc9ef7ec3ee305c5a7ec56f6f17ad930f317c10a3d50b86ed19aedd331ae2a55\\\", \\\"intent_max\\\": 213, \\\"terminal_max\\\": 844, \\\"intent_bytes\\\": 139, \\\"terminal_bytes\\\": 283, \\\"shape_count\\\": 40, \\\"intent_sha256\\\": \\\"85d9f16b867b646185c2d347022d371374e08305c3c4d502ec309c0a5a5119e3\\\", \\\"terminal_sha256\\\": \\\"50e48f2219df6c94ea549eeb9341b44cb7cccbeeb27639381207dd3d30cd87d0\\\"}], \\\"aggregate_B\\\": 1333, \\\"audit_lease_call\\\": 0, \\\"fuse_unique_correlations\\\": \\\"1..24\\\", \\\"codec_reemitted\\\": false, \\\"scope_typed_decode\\\": \\\"existing ABI before effects in the single native case\\\", \\\"synthetic_effects_are_not_live_peer_facts\\\": true}\\n{\\\"status\\\": \\\"PackageAndOriginalCorpusVerified_NoBuildOrCase\\\", \\\"source_revision\\\": \\\"82e7243104aaf15b70a373d49fcdf4293136e012\\\", \\\"root\\\": \\\"/Users/adalundhe/managed-audit-wire-reserved-close-v1\\\", \\\"deadline_epoch\\\": 1794368579.162, \\\"package_sha256\\\": \\\"37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f\\\"}\\n\",\n        \"running\": false,\n        \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n        \"exit_code\": 0\n      }\n    ],\n    \"build\": {\n      \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n      \"output\": \"\",\n      \"running\": true,\n      \"told\": \"kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.\",\n      \"id\": \"r35\",\n      \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\"\n    },\n    \"package_sha256\": \"37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f\"\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    },\n    {\n      \"name\": \"machines.start\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "status": "PrivateBuildStarted_NoCaseRun",
+      "budget": {
+        "start_epoch": 1794367979.162,
+        "deadline_epoch": 1794368579.162,
+        "scope_seconds": 600,
+        "root": "/Users/adalundhe/managed-audit-wire-reserved-close-v1",
+        "free_bytes_before": 2338177204224,
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "cpus": 2,
+        "memory_bytes": 2147483648,
+        "disk_bytes": 4294967296,
+        "native_cases_run": 0
+      },
+      "receipts": [
+        {
+          "stage": "setup",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"start_epoch\": 1794367979.162, \"deadline_epoch\": 1794368579.162, \"scope_seconds\": 600, \"root\": \"/Users/adalundhe/managed-audit-wire-reserved-close-v1\", \"free_bytes_before\": 2338177204224, \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\", \"cpus\": 2, \"memory_bytes\": 2147483648, \"disk_bytes\": 4294967296, \"native_cases_run\": 0}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-0",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 0, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-1",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 1, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-2",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 2, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-3",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 3, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-4",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 4, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-5",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 5, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-6",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 6, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-7",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 7, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-8",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 8, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-9",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 9, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-10",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 10, \"ascii_bytes\": 180000, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "part-11",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"part\": 11, \"ascii_bytes\": 127012, \"deadline_epoch\": 1794368579.162}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        },
+        {
+          "stage": "unpack-verify",
+          "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+          "output": "{\"archive_sha256\": \"7b14ede379a4679e4bb3269c40928dda6139358b3fb6342fc4767a4c6404ad46\", \"manifest_sha256\": \"804f3b66b34565517f88caf43a1b48ad0102eaede0e15348b548df0a9eaa6698\", \"source_revision\": \"6b86176f7354c4b9655b1a70c5671b1f04068f66\", \"archive_payloads\": 389, \"archive_total_members\": 390, \"corpus_payloads\": 364, \"all_unique_safe_regular_hashes_verified\": true, \"selected\": [{\"member\": 1, \"operation\": \"Send\", \"broker_request\": 1, \"scope_sha256\": \"8cb5741220a6f46f2e0565ac07d971a68f10593590ebd847e950dadbcd4eb1c3\", \"intent_max\": 213, \"terminal_max\": 844, \"intent_bytes\": 139, \"terminal_bytes\": 283, \"shape_count\": 40, \"intent_sha256\": \"6404c3310c36f13e2276edfd8833a1ccf98ddeab80fad0219e32a2b457f40d58\", \"terminal_sha256\": \"1c8d8e289c9d7496556538aea700b260ef6628667e9fb064846b5d93eb013cef\"}, {\"member\": 3, \"operation\": \"Send\", \"broker_request\": 1, \"scope_sha256\": \"dc9ef7ec3ee305c5a7ec56f6f17ad930f317c10a3d50b86ed19aedd331ae2a55\", \"intent_max\": 213, \"terminal_max\": 844, \"intent_bytes\": 139, \"terminal_bytes\": 283, \"shape_count\": 40, \"intent_sha256\": \"85d9f16b867b646185c2d347022d371374e08305c3c4d502ec309c0a5a5119e3\", \"terminal_sha256\": \"50e48f2219df6c94ea549eeb9341b44cb7cccbeeb27639381207dd3d30cd87d0\"}], \"aggregate_B\": 1333, \"audit_lease_call\": 0, \"fuse_unique_correlations\": \"1..24\", \"codec_reemitted\": false, \"scope_typed_decode\": \"existing ABI before effects in the single native case\", \"synthetic_effects_are_not_live_peer_facts\": true}\n{\"status\": \"PackageAndOriginalCorpusVerified_NoBuildOrCase\", \"source_revision\": \"82e7243104aaf15b70a373d49fcdf4293136e012\", \"root\": \"/Users/adalundhe/managed-audit-wire-reserved-close-v1\", \"deadline_epoch\": 1794368579.162, \"package_sha256\": \"37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f\"}\n",
+          "running": false,
+          "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+          "exit_code": 0
+        }
+      ],
+      "build": {
+        "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+        "output": "",
+        "running": true,
+        "told": "kiln tells you when it ends (where, how long, its exit code and the end of its output): end your turn rather than wait on `output` for it.",
+        "id": "r35",
+        "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk"
+      },
+      "package_sha256": "37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f"
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.run",
+        "ok": true
+      },
+      {
+        "name": "machines.start",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

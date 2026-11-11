@@ -1,0 +1,19 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"error\": \"no run r35 (it ended and was collected, or never was)\\n    at __kiln_settle (eval_script:20:40)\\n    at <eval> (eval_script:1:1)\\n\",\n  \"code\": \"program\",\n  \"calls\": [\n    {\n      \"name\": \"machines.output\",\n      \"ok\": false\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "error": "no run r35 (it ended and was collected, or never was)\n    at __kiln_settle (eval_script:20:40)\n    at <eval> (eval_script:1:1)\n",
+    "code": "program",
+    "calls": [
+      {
+        "name": "machines.output",
+        "ok": false
+      }
+    ]
+  },
+  "isError": true
+}

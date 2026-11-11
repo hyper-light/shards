@@ -1,0 +1,7 @@
+{
+  "chunk_id": "db0317",
+  "wall_time_seconds": 2.614450875,
+  "exit_code": 0,
+  "original_token_count": 116,
+  "output": "{\n  \"source_revision\": \"82e7243104aaf15b70a373d49fcdf4293136e012\",\n  \"package_bytes\": 1580258,\n  \"package_sha256\": \"37448e07bd227d19346d990d188bfe46ed1f0a43c1b789666262c82d7003970f\",\n  \"manifest_sha256\": \"82872430c5e0d1e2fd9a2c328b220d6a66dcd0473b7a170f9a564ccf50730fca\",\n  \"payload_count\": 176,\n  \"fixture_sha256\": \"228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e\",\n  \"new_native_cases_run\": 0,\n  \"previous_source_and_artifact_unchanged\": true\n}\n"
+}

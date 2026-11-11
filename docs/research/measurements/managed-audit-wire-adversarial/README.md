@@ -1,5 +1,13 @@
 # Native private-audit wire fixture preparation
 
+Current independent19-frame **CloseWhileReserved** case passed once at source82e,
+leaf228bb9e6, executable85a6853d: [results/raw](reserved-close-native-v1/RESULTS.md).
+It used a new exclusive scope/target with the same production closure and corpus;
+Closed/None versusClosed/Closed, unchanged retained extent/neighbor, no FUSE WRITE
+and actual cleanup are recorded. The original24-frame sequence is preserved;
+its older runtime proof remains separately associated with33ea/0f8. No rerun or
+combined-source/VM/fairness/durability/authority gate is inherited.
+
 **One actual native full-FUSE case passed at frozen0f8; no retry.** See
 [native-v2/RESULTS.md](native-v2/RESULTS.md) for exact source, original corpus,
 full-caller/strict-Clippy gates, all24 frame/file/cleanup witnesses and the

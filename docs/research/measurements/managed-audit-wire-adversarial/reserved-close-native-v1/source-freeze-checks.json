@@ -1,0 +1,7 @@
+{
+  "chunk_id": "49f4f1",
+  "wall_time_seconds": 0.05917575,
+  "exit_code": 0,
+  "original_token_count": 277,
+  "output": "{\n  \"base_source\": \"33ea5a816ae1d4f9656762d2acedc98ec00ccc34\",\n  \"frozen_previous_leaf_sha256\": \"75427cca006a347f7b6a02ef88203e3b947db3d5f74157192001d1dc097e8a00\",\n  \"leaf_sha256\": \"228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e\",\n  \"applied_diff_sha256\": \"d1f7f0c649b6ce11b62274e7462c5955b422efbb4ff83497b31947f4e446f4c3\",\n  \"canonical_format\": 0,\n  \"original24_sequence_body_exact_without_new_selector\": true,\n  \"wire_snapshot_helpers_exact\": true,\n  \"cleanup_body_exact_except_scenario_forwarding\": true,\n  \"production_files_exact_ba78\": [\n    \"crates/abi/src/run/audit.rs\",\n    \"crates/vmm/src/devices/virtio/fs/audit.rs\",\n    \"crates/vmm/src/devices/virtio/fs/server.rs\"\n  ],\n  \"selected_filter\": \"managed_audit_wire_adversarial::reserved_close_retains_extent_and_refuses_reopening\",\n  \"original24_filter_retained\": true,\n  \"new_native_cases_run\": 0,\n  \"policy_revision\": \"b6af4ec8efa246c8a12fb44abd10425a5adc9af5\",\n  \"rules_sha256\": \"df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3\"\n}\nDevelopment policy checks passed; evidence/coordinator review is still required.\n"
+}

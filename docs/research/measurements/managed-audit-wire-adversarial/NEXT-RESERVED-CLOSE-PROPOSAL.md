@@ -1,5 +1,11 @@
 # Next finite native edge: Close while Reserved, before any append
 
+Historical preparation contract retained below. ROOT subsequently approved this
+independent case; source82e/leaf228bb9e6 passed its first and only19-frame native
+runtime attempt. [Current results](reserved-close-native-v1/RESULTS.md) preserve
+the new source/package/raw and preflight restart failure. The original24-frame
+case/source/raw stays separately frozen, with no inherited new runtime gate.
+
 Preparation only. The first full24-frame case is frozen and passed once; it is
 not rerun or weakened. This proposed distinct state edge has NOT been implemented,
 built or executed and needs ROOT's source/actor authorization. No producer defect

@@ -1,0 +1,25 @@
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{\n  \"result\": {\n    \"runner\": \"d1323898b255a3ed435eb83fa0f7b0cf\",\n    \"output\": \"\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk\",\n    \"exit_code\": null,\n    \"error\": \"d1323898b255a3ed435eb83fa0f7b0cf no longer has this run (its runner restarted)\"\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+    }
+  ],
+  "structuredContent": {
+    "result": {
+      "runner": "d1323898b255a3ed435eb83fa0f7b0cf",
+      "output": "",
+      "running": false,
+      "why": "macos/aarch64 · 31 of 32 cores idle · 59 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk",
+      "exit_code": null,
+      "error": "d1323898b255a3ed435eb83fa0f7b0cf no longer has this run (its runner restarted)"
+    },
+    "calls": [
+      {
+        "name": "machines.run",
+        "ok": true
+      }
+    ]
+  },
+  "isError": false
+}

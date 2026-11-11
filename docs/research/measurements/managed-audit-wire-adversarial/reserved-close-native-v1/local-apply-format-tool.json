@@ -1,0 +1,7 @@
+{
+  "chunk_id": "4b2975",
+  "wall_time_seconds": 0.131075916,
+  "exit_code": 0,
+  "original_token_count": 149,
+  "output": "Switched to a new branch 'p/managed-audit-wire-reserved-close-v1'\n{\"argv\": [\"lockf\", \"-t\", \"0\", \"/tmp/g121-mac.lock\", \"rustfmt\", \"--config-path\", \"/Users/adalundhe/Projects/shards/.claude/worktrees/managed-main-landing/rustfmt.toml\", \"--config\", \"skip_children=true\", \"docs/research/measurements/managed-audit-wire-adversarial/native.rs\"], \"exit_code\": 0, \"local_free_before\": 66235256832, \"before_sha256\": \"066d59449e3019a02e8822ada398b8beebad6dbf790600a657fad34fc16b6ab0\", \"after_sha256\": \"228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e\", \"new_builds\": 0, \"new_actors\": 0}\n"
+}

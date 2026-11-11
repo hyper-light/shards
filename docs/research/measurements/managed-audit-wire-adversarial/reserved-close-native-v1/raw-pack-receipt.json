@@ -1,0 +1,12 @@
+{
+  "status": "PackedAllRawVerified_NoRerun",
+  "archive": "/Users/adalundhe/managed-audit-wire-reserved-close-v1/raw-native-v1.tar.gz",
+  "bytes": 14517,
+  "sha256": "9e98b62fd68b69d549ee907848bcd16bdab0bde93f3b6915d4ea893a0ff977c7",
+  "manifest_sha256": "d4e78a8c070709bc2a439cba3eb39144096938a08bbb617f3ba9f9b34ad37d66",
+  "payloads": 100,
+  "total_members": 101,
+  "epoch": 1794368276.981384,
+  "original_deadline_epoch": 1794368579.162,
+  "all_unique_safe_regular_hashes_verified": true
+}
