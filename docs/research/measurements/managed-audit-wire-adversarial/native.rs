@@ -17,6 +17,7 @@ type Snapshot = [Vec<u8>; 2];
 enum Case {
     Committed,
     ReservedClose,
+    ReservedDisconnect,
 }
 
 // Journal's first lease is call0. The original codec input uses broker request1;
@@ -553,6 +554,16 @@ fn sequence(
                 &current,
             );
         }
+        Case::ReservedDisconnect => {
+            require(
+                wire.sent == 8,
+                "disconnect must follow exactly the first8 complete requests",
+            )?;
+            wire.trace.event(format!(
+                "disconnect_last_wire_reply={reserved:?}; later individual lease stage/cursors remain unobserved"
+            ))?;
+            return Ok(());
+        }
     }
     require(
         wire.control(node, fh, scope, reserve)? == reserved,
@@ -920,6 +931,43 @@ fn owned_case(corpus: &Corpus, root: &Path, trace: &mut Trace, deadline: Instant
                         captured.as_ref().map(|_| ())
                     ));
                 }
+                let result = match case {
+                    Case::ReservedDisconnect if result.is_ok() && cleanup.is_ok() => result.and((|| {
+                        // The answerer is already joined; readiness releases its own
+                        // state lock before trace/file I/O. It reports accounting,
+                        // never a synthesized individual Closed reply or live cursor.
+                        let ready = server.audit_readiness()
+                            .map_err(|e| io::Error::other(format!("post-disconnect readiness: {e:?}")))?;
+                        wire.trace.event(format!("disconnect_after_answer_readiness={ready:?}"))?;
+                        require(
+                            ready == wire::ExportStatus::Ready {
+                                remaining: 0,
+                                objects: u32::try_from(corpus.scopes.len()).map_err(io::Error::other)?,
+                            },
+                            "disconnect changed the still-owned aggregate accounting",
+                        )?;
+                        // The reference is our original create-exclusive raw held
+                        // snapshot, read with the existing bounded regular-file helper.
+                        // It is not a replacement object/ledger/cache or a new grant.
+                        let before = [
+                            corpus_bytes(&wire.trace.root.join("reserved.member-index-0.bin"))?,
+                            corpus_bytes(&wire.trace.root.join("reserved.member-index-1.bin"))?,
+                        ];
+                        let after = snapshot(&files, wire.trace, "disconnect-after-answer", corpus.budget)?;
+                        require(after == before, "disconnect changed held bytes or retained extent")?;
+                        let [first, second] = &after;
+                        require(
+                            sum(amount(first.len())?, amount(second.len())?)? == corpus.budget,
+                            "disconnect changed the aggregate retained length",
+                        )?;
+                        wire.trace.event("disconnect_individual_lease_stage_and_live_cursors=Unobserved; last wire Reserved receipt and held byte fields retained; no post-disconnect protocol reply or refund inferred")
+                    })()),
+                    Case::ReservedDisconnect => {
+                        let _ = wire.trace.event("disconnect_post_join_observations=UnreachedOrUnknown; prior sequence/answer/FD failure retained");
+                        result
+                    }
+                    Case::Committed | Case::ReservedClose => result,
+                };
                 result.and(cleanup)
             })
         })();
@@ -1023,5 +1071,15 @@ fn reserved_close_retains_extent_and_refuses_reopening() {
     assert!(
         outcome.is_ok(),
         "actual native reserved Close fixture: {outcome:?}"
+    );
+}
+
+#[test]
+#[ignore = "SOURCE PROPOSAL ONLY: requires ROOT source/build/actor authorization"]
+fn reserved_client_disconnect_retains_owned_extent() {
+    let outcome = run(Case::ReservedDisconnect);
+    assert!(
+        outcome.is_ok(),
+        "actual native Reserved disconnect fixture: {outcome:?}"
     );
 }

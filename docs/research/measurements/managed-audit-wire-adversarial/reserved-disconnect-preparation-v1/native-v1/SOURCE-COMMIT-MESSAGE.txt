@@ -1,0 +1,5 @@
+test: add owned Reserved audit client disconnect fixture
+
+Apply the reviewed third native case without changing the original 24/19-frame cases or pinned audit product bytes. End/drop the existing client after eight complete requests, then observe actual answer/FD cleanup and same-owner accounting/held bytes. No native actor has run at this source checkpoint.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

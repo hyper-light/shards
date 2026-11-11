@@ -1,0 +1,37 @@
+{
+  "policy": {
+    "argv": [
+      "python3",
+      "scripts/check-development-policy"
+    ],
+    "exit_code": 0,
+    "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+    "stderr": ""
+  },
+  "native_diff_whitespace": {
+    "argv": [
+      "git",
+      "diff",
+      "--check",
+      "--",
+      "docs/research/measurements/managed-audit-wire-adversarial/native.rs"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "leaf_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+  "old_source_preservation": {
+    "status": "UNAPPLIED_FORMATTED_SOURCE_PROPOSAL_ONLY",
+    "base": "a7185733c4bfb1cc18d8018b96ac1790b29ecb24",
+    "actual_leaf_sha256": "228bb9e67e1e699d969a71de817c5a9c6e461ee18e07d98aa070029b07b59e4e",
+    "proposed_formatted_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+    "patch_sha256": "77687ca0019061d41556c0dfd65319e7f7a30e41101dc144dfe83f63a5c560bb",
+    "original_entire_native_source_recovered_exactly_removing_only_insertions": true,
+    "original_24_and_19_bodies_assertions_helpers_cleanup_lines_byte_exact": true,
+    "format_exit": 0,
+    "builds": 0,
+    "actors": 0,
+    "targets_or_caches_allocated": false
+  }
+}

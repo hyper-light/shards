@@ -1,0 +1,15 @@
+{
+  "status": "ApprovedSourceApplied_NoBuildOrActor",
+  "policy_revision": "7a897def2ac3bb041da584d1d6854fa066ad7fc2",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "approved_proposal": "90cef7ef27dd14c3734cd23d6b9005eb62061bfd",
+  "approved_patch_sha256": "77687ca0019061d41556c0dfd65319e7f7a30e41101dc144dfe83f63a5c560bb",
+  "actual_source_sha256": "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65",
+  "exact_approved_formatted_source": true,
+  "old_24_19_body_preservation_proof": "preparation source-scope.json reconstructs all old source removing only insertions",
+  "production_files_exact_ba78": true,
+  "selected_filter": "managed_audit_wire_adversarial::reserved_client_disconnect_retains_owned_extent",
+  "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+  "native_cases": 0,
+  "builds": 0
+}
