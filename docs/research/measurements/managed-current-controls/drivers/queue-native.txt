@@ -1,0 +1,23 @@
+python3 - <<'PY'
+from pathlib import Path
+import os,subprocess,json,hashlib,shutil,uuid
+base=Path.home()/'managed-current-controls-28e-v1';source=base/'source';records=base/'records/native-terminal-v1';records.mkdir()
+identity=json.loads((base/'records/build/fixture.json').read_text());binary=Path(identity['frozen']);assert hashlib.sha256(binary.read_bytes()).hexdigest()==identity['sha256'];assert hashlib.sha256((base/'artifacts/managed_output').read_bytes()).hexdigest()==identity['sha256']
+for name,digest in json.loads((base/'records/build/source-scope.json').read_text())['owned'].items():assert hashlib.sha256((source/name).read_bytes()).hexdigest()==digest,name
+env=os.environ.copy()
+for key in list(env):
+ if key.startswith('SHARDS_'):env.pop(key,None)
+env.update({'XDG_CACHE_HOME':str(base/'runtime-cache'),'ZIG_GLOBAL_CACHE_DIR':str(base/'zig-global-cache'),'ZIG_LOCAL_CACHE_DIR':str(base/'zig-local-cache')})
+summary=[]
+for selection,channel,errno in [('duplicate_ack','stdout',5),('duplicate_ack','stderr',5),('duplicate_ack','stdout',2147483647),('duplicate_ack','stderr',2147483647),('resubscribe','stderr',5),('resubscribe','stdout',2147483647),('resubscribe','stderr',2147483647)]:
+ folder=records/f'{selection}-{channel}-{errno}';folder.mkdir();runenv=env|{'SHARDS_ADVERSARIAL_NATIVE_CHANNEL':channel,'SHARDS_ADVERSARIAL_NATIVE_ERRNO':str(errno),'SHARDS_ADVERSARIAL_NATIVE_RUN':str(uuid.uuid4()),'SHARDS_ADVERSARIAL_NATIVE_GENERATION':'1','SHARDS_ADVERSARIAL_NATIVE_PHASE_MS':'240000','SHARDS_ADVERSARIAL_NATIVE_CLEANUP_MS':'15000','SHARDS_ADVERSARIAL_NATIVE_OUTER_MS':'255000','SHARDS_ADVERSARIAL_NATIVE_SOURCE_REVISION':'2c57ac6d7c410b90fc61a6f186a506eedde840ee','SHARDS_ADVERSARIAL_NATIVE_RECORDS':str(folder/'records')}
+ (folder/'environment.json').write_text(json.dumps({k:v for k,v in runenv.items() if k.startswith('SHARDS_')},indent=2)+'\n')
+ args=['timeout','--signal=KILL','255s',str(binary),'--ignored','--exact',f'tenant_exit::current_controls::native_terminal::canonical_aborted_{selection}_preserves_errno_and_terminal_credit','--nocapture','--test-threads=1'];(folder/'command.json').write_text(json.dumps(args)+'\n')
+ with (folder/'stdout').open('wb') as out,(folder/'stderr').open('wb') as err:r=subprocess.run(args,cwd=source,env=runenv,stdout=out,stderr=err,timeout=270)
+ (folder/'exit').write_text(str(r.returncode)+'\n')
+ item={'selection':selection,'channel':channel,'supplied_errno':errno,'exit':r.returncode,'stdout':(folder/'stdout').read_text(errors='replace'),'stderr':(folder/'stderr').read_text(errors='replace'),'actual':{name:(folder/'records'/name).read_text() if (folder/'records'/name).exists() else None for name in ['canonical.json','control-refusal.json','observer-stop.json','io-receipts.json','owner-stop.json','teardown.json']}}
+ summary.append(item);(records/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps({'selection':selection,'channel':channel,'supplied_errno':errno,'exit':r.returncode,'stdout':item['stdout'],'stderr':item['stderr'],'canonical':item['actual']['canonical.json'],'observer_stop':item['actual']['observer-stop.json'],'io_receipts':item['actual']['io-receipts.json'],'teardown':item['actual']['teardown.json']}),flush=True)
+ if r.returncode:raise SystemExit(r.returncode)
+ assert '1 passed; 0 failed; 0 ignored;' in item['stdout']
+ teardown=json.loads(item['actual']['teardown.json']);assert teardown['protocol_complete'] and teardown['cleanup_completed'] and teardown['observer_fds']['before']==teardown['observer_fds']['after']
+PY

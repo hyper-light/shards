@@ -7,6 +7,15 @@ original payload files plus member-hashes.json (173 total members) are retained
 in the verified archive. Source-stage pending
 gates below preserve their original chronology; checkpoint is not lane release.
 
+The [frozen continuation](CONTINUATION.md) retains26 additional KVM cases and7
+native cases at source2c57, with1513 payloads plus manifest1514. ROOT independently
+verified every member hash/path, all33 actual zero exits and exactly1 passed test
+per scope. [Coordinator verification](coordinator-continuation-review.json) and
+[the offline verifier](verify-continuation.py) preserve that review. These are
+historical source-specific results; they do not establish a current-main gate.
+The old release caption is retained raw and is not proof of target EOF. Its later
+correction, subsequent FIN cases and current audit-wire work remain separate.
+
 Base `28e147c4dda846ca023020e03bc9b00eb2e58e94`, canonical main33df95b08,
 rules SHA-256 `df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3`.
 Assigned implementer/adversarial01a1c5d2ee5871a2a9a9cdc9f56793f0;

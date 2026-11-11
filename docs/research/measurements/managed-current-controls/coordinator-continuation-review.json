@@ -1,0 +1,26 @@
+{
+  "record": "ROOT_VERIFIED",
+  "revision": "1e2560b1ebc1f66ce4ebd8455d167b5c1a11dbeb",
+  "tested_source": "2c57ac6d7c410b90fc61a6f186a506eedde840ee",
+  "archive_sha256": "e5e1f5bc3c3a0c60bf1f332f38f5f889608cca3e9bb60dee6d350f8731221aef",
+  "archive_bytes": 190427,
+  "verified_payloads": 1513,
+  "verified_members": 1514,
+  "all_members_safe_unique_regular_hash_exact": true,
+  "additional_vm_cases": 26,
+  "additional_native_cases": 7,
+  "each_actual_exit_0_exactly_one_test_no_skip": true,
+  "current_main_pass": false,
+  "limits": [
+    "Frozen2c57/28e source only; requested earlier scopes not rerun or inherited",
+    "Historical shared release caption is not normal EOF proof",
+    "No whole-population/kernel/parent cost or management completeness proof"
+  ],
+  "policy_revision": "b6af4ec8efa246c8a12fb44abd10425a5adc9af5",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "coordinator",
+  "selected_changes": "Historical evidence and offline verification only; no production/test source changed",
+  "rule_account": "All R01\u2013R16 rows in CONTINUATION.md apply to the original campaign. This landing adds offline verification and retains chronology, uncertainty and all original bytes. No architecture/runtime constants/wait/cache/platform/authority/cleanup behavior changes or performance claim.",
+  "verifier": "verify-continuation.py",
+  "verifier_exit": 0
+}
