@@ -1,0 +1,13 @@
+{
+  "status": "AllActualRawVerified_NoRerun",
+  "archive": "/Users/adalundhe/managed-audit-wire-reserved-disconnect-v1/raw-native-v1.tar.gz",
+  "bytes": 8364,
+  "sha256": "a7591dfc55fdc05852317416ed72a7fbaffaeac8efaebc605d2b8fdea4ca8f38",
+  "manifest_sha256": "0f5145032511b8764d3cd9baf3c7f1af97a1e030c604ae53c0ab579e549a88c9",
+  "payloads": 29,
+  "total_members": 30,
+  "native_case_attempts": 0,
+  "runtime_retries": 0,
+  "packed_at_epoch": 1794374015.910115,
+  "original_deadline_epoch": 1794374034.098521
+}

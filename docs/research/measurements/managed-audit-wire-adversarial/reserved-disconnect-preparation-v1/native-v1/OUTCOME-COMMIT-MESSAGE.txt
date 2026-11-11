@@ -1,0 +1,5 @@
+evidence: freeze native audit disconnect build and lock coverage miss
+
+The first full Mac ARM64 caller compiled, strict Clippy passed and the exact filter listed one test. Preserve actual lock75 before controller execution, original deadline and zero native attempts without retry or runtime/cleanup pass. Verify every 176-source and 29-raw payload, keeping the earlier disk refusal, all originals and frozen executable intact.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

@@ -1,0 +1,31 @@
+{
+  "kind": "PreactorLockRefusal_NoNativeActor",
+  "command": "lockf -t 0 /tmp/g121-mac.lock python3 /Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/first-case.py",
+  "needs": "macos/aarch64,cpus=2,mem=2g,disk=4g,tool:cargo",
+  "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+  "original_deadline_epoch": 1794374034.098521,
+  "tool_response": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"result\": {\n    \"runner\": \"e30189ea29182644fe5a4b2e06c7dac2\",\n    \"output\": \"lockf: /tmp/g121-mac.lock: already locked\\n\",\n    \"running\": false,\n    \"why\": \"macos/aarch64 · 13 of 18 cores idle · 87 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine\",\n    \"exit_code\": 75\n  },\n  \"calls\": [\n    {\n      \"name\": \"machines.run\",\n      \"ok\": true\n    }\n  ]\n}"
+      }
+    ],
+    "structuredContent": {
+      "result": {
+        "runner": "e30189ea29182644fe5a4b2e06c7dac2",
+        "output": "lockf: /tmp/g121-mac.lock: already locked\n",
+        "running": false,
+        "why": "macos/aarch64 · 13 of 18 cores idle · 87 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · this machine",
+        "exit_code": 75
+      },
+      "calls": [
+        {
+          "name": "machines.run",
+          "ok": true
+        }
+      ]
+    },
+    "isError": false
+  }
+}

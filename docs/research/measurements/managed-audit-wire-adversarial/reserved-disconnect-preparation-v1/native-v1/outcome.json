@@ -1,0 +1,13 @@
+{
+  "status": "CoverageMiss_PreactorLockRefusal_NoNativeActor",
+  "at_epoch": 1794374015.775677,
+  "deadline_epoch": 1794374034.098521,
+  "runtime_attempts": 0,
+  "actor_start_absent": true,
+  "native_records_absent": true,
+  "case_stdout_absent": true,
+  "native_tmp_empty": true,
+  "actual_case_command_exit": 75,
+  "no_retry": true,
+  "native_cleanup": "Unrun; no test actor/answer thread/held journal created"
+}

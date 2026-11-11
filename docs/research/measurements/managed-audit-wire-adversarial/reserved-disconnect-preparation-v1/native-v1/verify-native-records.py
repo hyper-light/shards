@@ -47,7 +47,7 @@ revision = "342bcef5855084a58a7257654d88e9917cef016e"
 assert source_index["source_revision"] == revision
 assert digest(source_files["source/docs/research/measurements/managed-audit-wire-adversarial/native.rs"]) == "65c73f963edef4ffb81754cf2eea2bd4ecd6a44d7f14178994725b211d0a4c65"
 if "--source-only" in sys.argv:
-    print(json.dumps({"status": "SourcePackageVerified_CompilationAndCaseUnrun",
+    print(json.dumps({"status": "SourcePackageVerified_NoBuildOrActorByVerifier",
                       "source_revision": revision, "source_payloads": len(source_files),
                       "package_sha256": digest(source), "native_case_attempts": 0}, indent=2))
     raise SystemExit(0)
@@ -59,15 +59,12 @@ assert digest(raw) == receipt["sha256"] and len(raw) == receipt["bytes"]
 assert digest(outside) == receipt["manifest_sha256"]
 index, files = package(raw, "manifest.json", outside)
 assert len(files) == receipt["payloads"] and len(files) + 1 == receipt["total_members"]
-assert index["native_case_attempts"] == 1 and index["native_case_retries"] == 0
+assert index["native_case_retries"] == 0
 assert index["source_revision"] == revision
 identity = lambda row: (row["name"], row["version"], row.get("source"), row.get("checksum"))
 original_packages = {identity(row) for row in tomllib.loads(source_files["source/Cargo.lock"].decode())["package"]}
 actual_external = {identity(row) for row in tomllib.loads(files["build-records/actual-Cargo.lock"].decode())["package"] if "source" in row}
 assert actual_external <= original_packages
-case = json.loads(files["case-controller-v1/case.result.json"])
-assert case["exit_code"] == 0 and not case["timeout"]
-assert case["native_case_attempts"] == 1 and case["native_retries"] == 0
 for stage in ["toolchain", "policy", "build", "list", "clippy"]:
     result = json.loads(files[f"build-records/{stage}.result.json"])
     assert result["exit_code"] == 0 and not result["timeout"]
@@ -76,6 +73,42 @@ assert ready["selected_count"] == 1 and ready["native_cases_run"] == 0
 assert ready["filter"] == "managed_audit_wire_adversarial::reserved_client_disconnect_retains_owned_extent"
 dispatch = json.loads(files["case-controller-v1/dispatch-before-case.json"])
 assert dispatch["ready"] == ready and dispatch["case_native_count"] == 0
+if "--unrun" in sys.argv:
+    assert index["native_case_attempts"] == 0
+    assert not any(name.startswith("native-records-v1/") for name in files)
+    assert "case-controller-v1/actor-start.json" not in files
+    assert "case-controller-v1/case.stdout" not in files
+    assert "case-controller-v1/case.result.json" not in files
+    outcome = json.loads(files["case-controller-v1/outcome.json"])
+    assert outcome["status"] == "CoverageMiss_PreactorLockRefusal_NoNativeActor"
+    assert outcome["runtime_attempts"] == 0 and outcome["no_retry"]
+    assert outcome["actor_start_absent"] and outcome["native_records_absent"] and outcome["native_tmp_empty"]
+    refusal = json.loads(files["case-controller-v1/first-native-lock-refusal.json"])
+    actual = refusal["tool_response"]["structuredContent"]["result"]
+    assert actual["exit_code"] == 75 and actual["output"] == "lockf: /tmp/g121-mac.lock: already locked\n"
+    assert actual["runner"] == index["runner"] == "e30189ea29182644fe5a4b2e06c7dac2"
+    assert dispatch["at_epoch"] + 45 < outcome["deadline_epoch"]
+    assert outcome["at_epoch"] + 45 > outcome["deadline_epoch"]
+    artifact = json.loads(files["build-records/artifact.json"])
+    assert artifact["sha256"] == ready["sha256"] == "ce4c34d7f480c8b02073d15e0f4ba5b2a11ebfe5b2ceb8bfe2fdc996cc2a8871"
+    assert dispatch["package_sha256"] == digest(source)
+    assert dispatch["leaf_sha256"] == digest(source_files["source/docs/research/measurements/managed-audit-wire-adversarial/native.rs"])
+    assert dispatch["lib_include_sha256"] == digest(source_files["source/crates/vmm/src/lib.rs"])
+    assert [line for line in files["build-records/list.stdout"].decode().splitlines() if line.endswith(": test")] == [ready["filter"] + ": test"]
+    print(json.dumps({"status": "VerifiedActualBuildAndCoverageMiss_NoNativePass",
+                      "source_revision": revision, "source_payloads": len(source_files),
+                      "raw_payloads": len(files), "raw_total_members": len(files) + 1,
+                      "actual_native_build_exit": 0, "strict_clippy_exit": 0, "selected_count": 1,
+                      "external_package_identities_unchanged": len(actual_external),
+                      "executable_sha256": ready["sha256"], "preactor_lock_exit": 75,
+                      "runtime_attempts": 0, "runtime_retries": 0, "actual_frame_pairs": 0,
+                      "runtime_and_native_cleanup": "Unrun", "archive_sha256": digest(raw),
+                      "manifest_sha256": digest(outside)}, indent=2))
+    raise SystemExit(0)
+assert index["native_case_attempts"] == 1
+case = json.loads(files["case-controller-v1/case.result.json"])
+assert case["exit_code"] == 0 and not case["timeout"]
+assert case["native_case_attempts"] == 1 and case["native_retries"] == 0
 actor = json.loads(files["case-controller-v1/actor-start.json"])
 assert dispatch["at_epoch"] < actor["epoch"] < actor["deadline_epoch"]
 assert "1 passed; 0 failed; 0 ignored" in files["case-controller-v1/case.stdout"].decode()

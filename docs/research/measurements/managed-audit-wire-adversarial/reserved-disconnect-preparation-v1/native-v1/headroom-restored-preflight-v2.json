@@ -1,0 +1,12 @@
+{
+  "at_epoch": 1794373920.0510888,
+  "remaining_original_seconds": 114.04743218421936,
+  "actual_free_bytes": 42163691520,
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "source_leaf_verified": true,
+  "package_verified": true,
+  "private_root_absent": true,
+  "native_attempts": 0,
+  "deadline_epoch": 1794374034.098521,
+  "root_headroom_receipt": "compiler-incremental-reclaim-1794373893872862000"
+}

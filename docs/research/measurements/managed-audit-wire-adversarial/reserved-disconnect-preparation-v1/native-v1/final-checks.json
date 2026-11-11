@@ -1,0 +1,40 @@
+{
+  "kind": "PostDeadlineEvidenceOnly_NoBuildOrActor",
+  "at_epoch": 1794374191.074378,
+  "checks": {
+    "policy": {
+      "argv": [
+        "python3",
+        "scripts/check-development-policy"
+      ],
+      "exit_code": 0,
+      "stdout": "Development policy checks passed; evidence/coordinator review is still required.\n",
+      "stderr": ""
+    },
+    "offline_actual_outcome": {
+      "argv": [
+        "/opt/homebrew/bin/python3.12",
+        "/Users/adalundhe/Projects/shards/.claude/worktrees/managed-audit-wire-adversarial/docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1/verify-native-records.py",
+        "--unrun"
+      ],
+      "exit_code": 0,
+      "stdout": "{\n  \"status\": \"VerifiedActualBuildAndCoverageMiss_NoNativePass\",\n  \"source_revision\": \"342bcef5855084a58a7257654d88e9917cef016e\",\n  \"source_payloads\": 176,\n  \"raw_payloads\": 29,\n  \"raw_total_members\": 30,\n  \"actual_native_build_exit\": 0,\n  \"strict_clippy_exit\": 0,\n  \"selected_count\": 1,\n  \"external_package_identities_unchanged\": 3,\n  \"executable_sha256\": \"ce4c34d7f480c8b02073d15e0f4ba5b2a11ebfe5b2ceb8bfe2fdc996cc2a8871\",\n  \"preactor_lock_exit\": 75,\n  \"runtime_attempts\": 0,\n  \"runtime_retries\": 0,\n  \"actual_frame_pairs\": 0,\n  \"runtime_and_native_cleanup\": \"Unrun\",\n  \"archive_sha256\": \"a7591dfc55fdc05852317416ed72a7fbaffaeac8efaebc605d2b8fdea4ca8f38\",\n  \"manifest_sha256\": \"0f5145032511b8764d3cd9baf3c7f1af97a1e030c604ae53c0ab579e549a88c9\"\n}\n",
+      "stderr": ""
+    },
+    "diff_whitespace": {
+      "argv": [
+        "git",
+        "diff",
+        "--check",
+        "--",
+        "docs/research/measurements/managed-audit-wire-adversarial/reserved-disconnect-preparation-v1/native-v1"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "leaf_unchanged": true,
+  "source_revision": "342bcef5855084a58a7257654d88e9917cef016e",
+  "native_case_attempts": 0
+}
