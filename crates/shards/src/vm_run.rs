@@ -1918,6 +1918,7 @@ fn serve_workload(
                                 capture: None,
                                 processes: None,
                                 members: None,
+                                readiness: None,
                                 host_net: None,
                                 resumed: None,
                             })
@@ -1989,6 +1990,7 @@ fn serve_workload(
                         };
                         let processes = |records: &[u8]| crate::warm::processes(&link, records);
                         let members = |ended: &[u8]| crate::warm::member_ended(&link, ended);
+                        let readiness = |ready: &[u8]| crate::warm::workload_ready(&link, ready);
                         let host_net = |frame: &[u8]| crate::warm::host_net(&link, frame);
                         let ask = || {
                             // A template this VM saved is in place before the daemon hears the
@@ -2129,6 +2131,7 @@ fn serve_workload(
                                 kept: Some(&kept),
                                 processes: Some(&processes),
                                 members: Some(&members),
+                                readiness: Some(&readiness),
                                 host_net: Some(&host_net),
                                 resumed: conns,
                             })

@@ -123,6 +123,9 @@ pub struct Asked<'a> {
     /// Given each member's end, where the run asked to hear them (D231): its
     /// `MEMBER_ENDED` payload.
     pub members: Option<&'a Records<'a>>,
+    /// Given each move of its command's readiness under the nesting grant (D234): its
+    /// `READY` payload.
+    pub readiness: Option<&'a Records<'a>>,
     /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
     /// then its payload.
     pub host_net: Option<&'a Records<'a>>,
@@ -634,6 +637,7 @@ pub fn serve(
         kept,
         processes,
         members,
+        readiness,
         host_net,
         resumed,
     } = match request {
@@ -652,6 +656,7 @@ pub fn serve(
             kept: None,
             processes: None,
             members: None,
+            readiness: None,
             host_net: None,
             resumed: None,
         },
@@ -771,15 +776,13 @@ pub fn serve(
     // One reader for all the guest says on the run's connection, so that what it read
     // past one part is the next part's (review 8.20's reads, which take what has come).
     let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
-    let status = relay(
-        &mut reader,
-        timing,
-        log.as_mut(),
-        started,
+    let records = RunRecords {
         processes,
         members,
+        readiness,
         host_net,
-    );
+    };
+    let status = relay(&mut reader, timing, log.as_mut(), started, records);
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -875,14 +878,20 @@ fn relay(
     timing: &Timing,
     log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
-    processes: Option<&Records<'_>>,
-    members: Option<&Records<'_>>,
-    host_net: Option<&Records<'_>>,
+    records: RunRecords<'_>,
 ) -> Result<Ended, String> {
-    let (ended, lost, dropped) = with_sink(log, |sink| {
-        relay_frames(conn, timing, sink, started, processes, members, host_net)
-    })?;
+    let (ended, lost, dropped) = with_sink(log, |sink| relay_frames(conn, timing, sink, started, records))?;
     ended.map(|e| Ended { lost, dropped, ..e })
+}
+
+/// Where a run's records go as its guest sends them, each its frame's payload: [`Asked`]'s
+/// of the same names.
+#[derive(Clone, Copy)]
+struct RunRecords<'a> {
+    processes: Option<&'a Records<'a>>,
+    members: Option<&'a Records<'a>>,
+    readiness: Option<&'a Records<'a>>,
+    host_net: Option<&'a Records<'a>>,
 }
 
 /// [`relay`]'s frames, its output kept through `log`; what its log lost is said by
@@ -892,9 +901,7 @@ fn relay_frames(
     timing: &Timing,
     mut log: Option<&mut Sink<'_>>,
     started: Option<&(dyn Fn() + Sync)>,
-    processes: Option<&Records<'_>>,
-    members: Option<&Records<'_>>,
-    host_net: Option<&Records<'_>>,
+    records: RunRecords<'_>,
 ) -> Result<Ended, String> {
     // Grown to the longest frame yet, at most MAX_PAYLOAD, and never shrunk: a frame
     // longer than any before zeroes only its new bytes before they are read over (audit
@@ -962,19 +969,27 @@ fn relay_frames(
             kind::OOM => oom = Some(payload.to_vec()),
             kind::PIDS => pids = Some(payload.to_vec()),
             kind::PROCESS => {
-                if let Some(processes) = processes {
+                if let Some(processes) = records.processes {
                     processes(payload);
                 }
             }
             // A member's end (D231), well formed or the guest's protocol broken.
             kind::MEMBER_ENDED => {
                 run::members::Ended::decode(payload).ok_or("the guest sent a malformed member end")?;
-                if let Some(members) = members {
+                if let Some(members) = records.members {
                     members(payload);
                 }
             }
+            // Its command's readiness under the nesting grant (D234), as init moves it:
+            // well formed, or the guest's protocol broken.
+            kind::READY => {
+                run::nesting::Ready::decode(payload).ok_or("the guest sent a malformed readiness")?;
+                if let Some(readiness) = records.readiness {
+                    readiness(payload);
+                }
+            }
             kind::BIND | kind::LISTEN | kind::UNBIND => {
-                if let Some(host_net) = host_net {
+                if let Some(host_net) = records.host_net {
                     let mut frame = Vec::with_capacity(1 + payload.len());
                     frame.push(which);
                     frame.extend_from_slice(payload);

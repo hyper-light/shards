@@ -1873,6 +1873,12 @@ pub fn member_ended(link: &Link, ended: &[u8]) {
     let _ = to_daemon(&link.daemon, kind::MEMBER_ENDED, ended, &[]);
 }
 
+/// Gives the run's owner each move of its command's readiness under the nesting grant
+/// (D234), as it comes.
+pub fn workload_ready(link: &Link, ready: &[u8]) {
+    let _ = to_daemon(&link.daemon, kind::WORKLOAD_READY, ready, &[]);
+}
+
 /// Gives the daemon its guest's ask of the host on the host's network (D124): the frame's
 /// kind, then its payload. A port let go (`UNBIND`) goes after what the guest sent before
 /// it, put in the network process's ring first, which it takes before the daemon's word to
