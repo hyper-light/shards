@@ -194,6 +194,14 @@ pub struct LogRetention {
     pub files: u64,
 }
 
+impl LogRetention {
+    /// Whether it keeps anything, as a warm VM takes a run's request only where it does
+    /// (warm.rs `head`), a run that writes no log included.
+    pub fn keeps(&self) -> bool {
+        self.size > 0 && self.files > 0
+    }
+}
+
 /// An environment value's bytes, as the OS holds them.
 #[cfg(unix)]
 fn os_bytes(value: &std::ffi::OsStr) -> Vec<u8> {

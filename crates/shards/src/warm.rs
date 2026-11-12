@@ -406,7 +406,7 @@ fn head(payload: &[u8]) -> Result<Head<'_>, String> {
         size: head.log_size,
         files: head.log_files,
     };
-    if retention.size == 0 || retention.files == 0 {
+    if !retention.keeps() {
         return Err("a request whose log keeps nothing".into());
     }
     Ok(Head {
