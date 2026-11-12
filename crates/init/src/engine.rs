@@ -60,34 +60,49 @@ pub fn listen(err: RawFd) -> Result<(), i32> {
 /// keeps it from starting keeps the command from starting.
 pub struct Relay {
     sock: OwnedFd,
+    /// The io_uring instance its ring slots are pinned on (D230), where its host takes
+    /// rings: init's copy, which outlives the relay.
+    pinner: Option<OwnedFd>,
 }
 
-/// Starts the relay's process, which says `token` first on each connection it relays.
-pub fn start(token: [u8; run::TOKEN]) -> io::Result<Relay> {
+/// Starts the relay's process, which says `token` first on each connection it relays, and
+/// offers a ring where `rings` (its host takes them, D230) and the guest can pin one.
+pub fn start(token: [u8; run::TOKEN], rings: bool) -> io::Result<Relay> {
     let (ours, theirs) = crate::hostbind::seqpacket()?;
+    // Made before the fork, so that the relay inherits it and init keeps it (ring.rs).
+    let pinner = if rings { crate::ring::pinner() } else { None };
     // SAFETY: fork(2) from init, which has no other thread: the child runs only this
     // module's code, on descriptors of its own.
     match unsafe { libc::fork() } {
         -1 => Err(io::Error::last_os_error()),
         0 => {
-            crate::dnsrelay::keep_only(&[theirs.as_raw_fd()]);
+            let pinned = pinner.as_ref().map(|p| p.as_raw_fd());
+            crate::dnsrelay::keep_only(&[Some(theirs.as_raw_fd()), pinned].into_iter().flatten().collect::<Vec<_>>());
             let mut tag = [0u8; 1];
             if let Ok((1, Some(listener))) = crate::hostbind::recv_fd(theirs.as_raw_fd(), &mut tag, 0)
                 && tag == [LISTENER]
             {
                 drop(theirs);
+                if let Some(pinner) = pinner {
+                    crate::ring::start(pinner);
+                }
                 serve(&UnixListener::from(listener), &token);
             }
             // SAFETY: _exit(2) of the child, which owns nothing to flush.
             unsafe { libc::_exit(0) }
         }
-        _ => Ok(Relay { sock: ours }),
+        _ => Ok(Relay { sock: ours, pinner }),
     }
 }
 
 impl Relay {
     /// Gives the process the standby's listener; false where it has gone.
     pub fn give(self, listener: &OwnedFd) -> bool {
+        // Held until the VM ends, deliberately: a relay that dies must leave its slots
+        // pinned while the host may still write them (D230, ring.rs).
+        if let Some(pinner) = self.pinner {
+            let _ = std::os::fd::IntoRawFd::into_raw_fd(pinner);
+        }
         crate::hostbind::send_fd(self.sock.as_raw_fd(), &[LISTENER], listener.as_raw_fd(), 0)
     }
 }
@@ -129,12 +144,23 @@ fn relay(conn: UnixStream, token: &[u8; run::TOKEN]) {
     let Ok(host) = crate::run::dial(run::ENGINE_PORT, true) else {
         return;
     };
+    // A ring offered in its hello where its relay has a slot (D230): taken, the
+    // connection runs through it; refused, it goes on over vsock, its hello said.
+    let said = match crate::ring::hello(&conn, &host, token) {
+        Ok(crate::ring::Offered::Ringed) => return,
+        Ok(crate::ring::Offered::Refused) => true,
+        Ok(crate::ring::Offered::Plain) => false,
+        Err(e) => {
+            let _ = writeln!(io::stderr(), "shards-init: engine ring hello: {e}");
+            return;
+        }
+    };
     let mut hello = [0u8; run::HEADER + run::TOKEN];
     let header = run::header(run::kind::HELLO, run::TOKEN as u32);
     for (out, byte) in hello.iter_mut().zip(header.iter().chain(token)) {
         *out = *byte;
     }
-    if (&host).write_all(&hello).is_err() {
+    if !said && (&host).write_all(&hello).is_err() {
         return;
     }
     let mut report = native_relay::Report::new();

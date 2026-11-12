@@ -769,10 +769,11 @@ fn default_caps() -> u64 {
 }
 
 /// A spec's setup entries as init sorts them: the standby's own, and its microVM's
-/// engine's token (D181).
+/// engine's token (D181), and whether its host takes engine rings (D230).
 struct Sorted {
     standby: Vec<Vec<u8>>,
     engine: Option<[u8; run::TOKEN]>,
+    rings: bool,
 }
 
 /// [`Inherited`]'s, and the standby's own, of a spec's setup entries; sysctls are
@@ -781,8 +782,11 @@ struct Sorted {
 fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failure> {
     let mut standby = Vec::new();
     let mut engine = None;
+    let mut rings = false;
     for entry in entries {
-        if let Some(hex) = entry.strip_prefix(b"engine=") {
+        if entry == shards_abi::ring::SPEC {
+            rings = true;
+        } else if let Some(hex) = entry.strip_prefix(b"engine=") {
             engine = Some(token_of(hex).ok_or_else(|| setup_failed("a malformed engine entry"))?);
         } else if let Some(kv) = entry.strip_prefix(b"sysctl=") {
             let kv = String::from_utf8_lossy(kv);
@@ -844,7 +848,7 @@ fn sort_setup(entries: &[Vec<u8>], into: &mut Inherited) -> Result<Sorted, Failu
             .unwrap_or(standby.len());
         standby.insert(at, b"engine".to_vec());
     }
-    Ok(Sorted { standby, engine })
+    Ok(Sorted { standby, engine, rings })
 }
 
 /// A token written as hex, two digits a byte.
@@ -2776,6 +2780,7 @@ impl Standby {
         let Sorted {
             standby: setup,
             engine,
+            rings,
         } = sort_setup(&spec.setup, &mut inherited)?;
         // Its endpoint's, after its own, as libnetwork sets them on the interface it
         // configures after runc's (PM M171).
@@ -2801,7 +2806,7 @@ impl Standby {
         // Its microVM's engine (D181): the relay of what its command asks of it, there
         // before its command.
         let relay = engine
-            .map(crate::engine::start)
+            .map(|token| crate::engine::start(token, rings))
             .transpose()
             .map_err(|e| setup_failed(format!("its microVM's engine: {e}")))?;
         let mut w = standby.launch(spec, false, setup, &inherited)?;
