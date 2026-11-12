@@ -1,0 +1,52 @@
+drwxr-xr-x 1 adalundhe adalundhe 66 Nov 11 13:49 target
+1 626613950 2026-11-11 13:51:10.038856103 -0800
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/shards/src/daemon.rs | 117 +++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 116 insertions(+), 1 deletion(-)
+437b06367002e4de08af1a003bbd2676ff673697e2b8583a03a3c740669769eb  crates/shards/src/daemon.rs
+2026-11-11T21:51:49Z
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_unknown_linux_gnu
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Only dynamic crypto library found in system install; using dynamic linking.
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-unknown-linux-gnu'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/target/debug/build/aws-lc-sys-e7c2181b58b87658/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/target/debug/build/aws-lc-sys-e7c2181b58b87658/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/target/debug/build/aws-lc-sys-e7c2181b58b87658/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'linux_random_h.c' succeeded - Ok(["/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/target/debug/build/aws-lc-sys-e7c2181b58b87658/out/out-linux_random_h/7dfda64fdf5a526c-linux_random_h.o"]).
+warning: aws-lc-sys@0.45.0: /tmp/cc4cOG6K.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_32_avx2_asm.S:481: Warning: ignoring changed section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /tmp/cceCTcdJ.s: Assembler messages:
+warning: aws-lc-sys@0.45.0: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring incorrect section type for .note.GNU-stack
+warning: aws-lc-sys@0.45.0: /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/vendor/aws-lc-sys/aws-lc/crypto/fipsmodule/ml_dsa/mldsa/native/x86_64/src/mldsa_poly_decompose_88_avx2_asm.S:480: Warning: ignoring changed section type for .note.GNU-stack
+    Finished `test` profile [unoptimized] target(s) in 0.09s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 1 test
+
+thread 'daemon::tests::a_request_written_partway_is_not_kept' (3782465) panicked at crates/shards/src/daemon.rs:14028:9:
+[
+    "cut at 81 of 163: `request` kept, 81 bytes, not a request",
+    "cut at 115 of 163: `request` kept, 115 bytes, read as another: cap_drop [], read_only false",
+]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test daemon::tests::a_request_written_partway_is_not_kept ... FAILED
+
+failures:
+
+failures:
+    daemon::tests::a_request_written_partway_is_not_kept
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 705 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards --bin shards`
+exit: 101
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb, exit_code 0 (of the shell; cargo's own is the `exit: 101` above)
+--- kiln: why "linux/x86_64 · 27 of 32 cores idle · 99 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · memory pressure 0% · I/O pressure 24%"
+--- kiln: synced files_sent 5, removed 43, bytes 122920, ms 3237
+--- local check: shasum -a 256 crates/shards/src/daemon.rs = 437b06367002e4de08af1a003bbd2676ff673697e2b8583a03a3c740669769eb (the source tested)

@@ -1,0 +1,22 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "documents": {
+    "AGENTS.md": {"bytes": 1793, "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41", "read": "full"},
+    "docs/development-rules.md": {"bytes": 11604, "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3", "read": "full"},
+    "docs/development-evidence.md": {"bytes": 3325, "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63", "read": "full"},
+    "CLAUDE.md": {"bytes": 17012, "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f", "read": "full"}
+  },
+  "read_from": "origin/main via git show (bff3015182ad754274f1048ce393ac12cb6cd91f), from the managed-main-landing worktree",
+  "task": "Make the daemon's stored run REQUEST whole-or-absent instead of possibly torn: extract the existing std::fs::write(dir.join(REQUEST), kept.encode()) on the new-microVM create path into one function unchanged; reproduce a torn REQUEST (forked child, RLIMIT_FSIZE below the encoded size, SIGXFSZ ignored, EFBIG partway) red; write a temporary file in the same directory and rename it into place; green; mutation back to the direct write fails for the relevant reason; restore.",
+  "owned_paths": [
+    "crates/shards/src/daemon.rs (REQUEST persistence and its tests only)",
+    "docs/research/measurements/audit-fix-request-v1/**"
+  ],
+  "not_owned": "crates/shards/src/daemon/** (another implementer), other worktrees, main, policy files",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-request-v1",
+  "branch": "p/audit-fix-request-v1",
+  "constraints": "no spawn/message of agents; no push/merge/rebase; light tests only on kiln Linux runner 451397fcc585f7f7cb9aaf00e42064bb, cpus=2,mem=2g,disk=4g, timeout_s<=600, -j2, SHARDS_HELPERS=skip + placeholder SHARDS_INIT_BINARY; no build on this Mac; signed gits commit with named paths"
+}

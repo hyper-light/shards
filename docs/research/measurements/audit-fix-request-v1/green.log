@@ -1,0 +1,18 @@
+bff3015182ad754274f1048ce393ac12cb6cd91f
+817cb76d19b9b26704172e2ad12e35199523e6415c8a0fe7f1673dd43cd5d5af  crates/shards/src/daemon.rs
+2026-11-11T21:55:16Z
+   Compiling shards v0.7.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-request-v1-b6a45b8bfb/crates/shards)
+    Finished `test` profile [unoptimized] target(s) in 17.88s
+     Running unittests src/main.rs (target/debug/deps/shards-18bc4ad81ca6886a)
+
+running 1 test
+test daemon::tests::a_request_written_partway_is_not_kept ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 705 filtered out; finished in 0.00s
+
+exit: 0
+--- kiln: runner 451397fcc585f7f7cb9aaf00e42064bb, exit_code 0
+--- kiln: why "linux/x86_64 · 24 of 32 cores idle · 98 GB free · room for 2 CPUs, 2 GiB of memory, 4 GiB of disk · I/O pressure 24%"
+--- kiln: synced files_sent 268, removed 0, bytes 896367462, ms 92257
+--- the command filtered `^warning: aws-lc-sys` lines (aws-lc-sys build-script notes, as in red.log)
+--- local check: shasum -a 256 crates/shards/src/daemon.rs = 817cb76d19b9b26704172e2ad12e35199523e6415c8a0fe7f1673dd43cd5d5af (the source tested)
