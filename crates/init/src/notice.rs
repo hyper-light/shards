@@ -113,7 +113,10 @@ impl Mounts {
             }
         };
         let (dirs, name) = match path.iter().rposition(|&b| b == b'/') {
-            Some(cut) => (path.get(..cut).unwrap_or_default(), path.get(cut + 1..).unwrap_or_default()),
+            Some(cut) => (
+                path.get(..cut).unwrap_or_default(),
+                path.get(cut + 1..).unwrap_or_default(),
+            ),
             None => (&b""[..], path),
         };
         // Its directory, as far as it goes: never through a symlink, never above the share.

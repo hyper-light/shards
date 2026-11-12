@@ -51,7 +51,10 @@ pub fn decode(bytes: &[u8]) -> Decoded<'_> {
 /// `.` or `..`, and no NUL.
 pub fn plain(path: &[u8]) -> bool {
     path.is_empty()
-        || (!path.contains(&0) && path.split(|&b| b == b'/').all(|c| !matches!(c, b"" | b"." | b"..")))
+        || (!path.contains(&0)
+            && path
+                .split(|&b| b == b'/')
+                .all(|c| !matches!(c, b"" | b"." | b"..")))
 }
 
 #[cfg(test)]

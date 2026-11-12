@@ -1611,9 +1611,9 @@ mod hosted {
                 if let Some(pipe) = lock(&live.notices_due).take() {
                     match notice_exec(live, pipe) {
                         Ok(told) => lock(&live.notices).push(told),
-                        Err(e) => super::say(format_args!(
-                            "its guest is told none of its shares' changes: {e}"
-                        )),
+                        Err(e) => {
+                            super::say(format_args!("its guest is told none of its shares' changes: {e}"))
+                        }
                     }
                 }
             } else if m.kind == kind::EXEC_TAKEN {
@@ -2031,7 +2031,12 @@ mod hosted {
         // Its guest told what its host changes beneath it from now on (D235).
         let told = share.notices.take().and_then(|pipe| {
             notice_exec(live, pipe)
-                .map_err(|e| super::say(format_args!("{}: its guest is told none of its changes: {e}", ask.at)))
+                .map_err(|e| {
+                    super::say(format_args!(
+                        "{}: its guest is told none of its changes: {e}",
+                        ask.at
+                    ))
+                })
                 .ok()
         });
         lock(&live.plugged).insert(

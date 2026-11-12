@@ -661,7 +661,10 @@ pub fn kept_name(h: BorrowedHandle<'_>) -> Option<Vec<u16>> {
             .iter()
             .map(|c| u16::from_le_bytes(*c))
             .collect();
-        let cut = path.iter().rposition(|&c| c == u16::from(b'\\')).map_or(0, |i| i + 1);
+        let cut = path
+            .iter()
+            .rposition(|&c| c == u16::from(b'\\'))
+            .map_or(0, |i| i + 1);
         return Some(path.get(cut..)?.to_vec());
     }
 }

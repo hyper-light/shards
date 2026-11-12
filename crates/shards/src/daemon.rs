@@ -4833,7 +4833,10 @@ impl<D: Disk> Daemon<D> {
             4 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
         ));
         if let Some((_, w)) = &notices {
-            fds.push((w.as_fd(), 5 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?));
+            fds.push((
+                w.as_fd(),
+                5 + i32::try_from(dirs.len()).map_err(|_| "too many shares")?,
+            ));
         }
         // Of its microVM's processes: under its parent (D183).
         let child = shards_ipc::spawn_in_group(self.group_of(parent)?, &exe, &args, &fds, false, &[])
@@ -6385,7 +6388,9 @@ impl<D: Disk> Daemon<D> {
             for pipe in lock(&self.noticing).remove(id).unwrap_or_default() {
                 match self.notice_exec(inbox, pipe) {
                     Ok(told) => inbox.notices.push(told),
-                    Err(e) => log(format!("container {id}: its guest is told none of its shares' changes: {e}")),
+                    Err(e) => log(format!(
+                        "container {id}: its guest is told none of its shares' changes: {e}"
+                    )),
                 }
             }
         }

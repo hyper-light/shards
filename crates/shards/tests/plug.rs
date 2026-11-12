@@ -270,7 +270,13 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     ];
     let shards = |command: &[&str], args: &[&str]| {
         let r = run_shards_env(command, args, &env, TIMEOUT);
-        assert_eq!(r.status, Some(0), "shards {command:?} {args:?}: {}\n{}", r.stderr, r.stdout);
+        assert_eq!(
+            r.status,
+            Some(0),
+            "shards {command:?} {args:?}: {}\n{}",
+            r.stderr,
+            r.stdout
+        );
         r.stdout
     };
     let files = TempDir::new("notice-files");
@@ -280,7 +286,10 @@ fn a_host_edit_wakes_a_watch_in_the_guest() {
     }
     let rw = format!("{}:/rw", dirs[0].display());
     let ro = format!("{}:/ro:ro", dirs[1].display());
-    shards(&["run"], &["-d", "--name", "noticed", "-v", &rw, "-v", &ro, &image, "sleep"]);
+    shards(
+        &["run"],
+        &["-d", "--name", "noticed", "-v", &rw, "-v", &ro, &image, "sleep"],
+    );
     let plugged = format!("{}:/plugged", dirs[2].display());
     shards(&["plug"], &["volume", "noticed", &plugged]);
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
@@ -325,7 +334,12 @@ fn notices_latency() {
     ];
     let files = TempDir::new("notice-lat-files");
     let bind = format!("{}:/w", files.display());
-    let r = run_shards_env(&["run"], &["-d", "--name", "lat", "-v", &bind, &image, "sleep"], &env, TIMEOUT);
+    let r = run_shards_env(
+        &["run"],
+        &["-d", "--name", "lat", "-v", &bind, &image, "sleep"],
+        &env,
+        TIMEOUT,
+    );
     assert_eq!(r.status, Some(0), "{}", r.stderr);
     let vm_env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.to_str().unwrap())).collect();
     let mut watch = Vm::spawn_env(&["exec", "lat", "/bin/testguest", "inotify", "/w"], &vm_env);
@@ -355,7 +369,10 @@ fn notices_latency() {
     );
     println!(
         "samples ms: {}",
-        took.iter().map(|t| format!("{t:.3}")).collect::<Vec<_>>().join(" ")
+        took.iter()
+            .map(|t| format!("{t:.3}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
 }
 

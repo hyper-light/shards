@@ -988,7 +988,8 @@ impl Server {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         // Its descriptor's link, and `.` in it: a watch never follows its last name, and
         // the link itself is one (proc(5)).
-        let root = CString::new(format!("/proc/self/fd/{}/.", s.root.raw())).map_err(std::io::Error::other)?;
+        let root =
+            CString::new(format!("/proc/self/fd/{}/.", s.root.raw())).map_err(std::io::Error::other)?;
         let watched = crate::platform::watch_named(&root, WATCHED, number, &sink)?;
         s.watching = Some(Watching {
             number,
@@ -1089,8 +1090,7 @@ impl Server {
         let s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let (dev, ino) = key(&st);
         is_dir(&st)
-            && s
-                .by_key
+            && s.by_key
                 .get(&(NO_VOLUME, dev, ino))
                 .and_then(|id| s.nodes.get(id))
                 .is_some_and(|n| n.dir && n.lookups > 0)
@@ -4085,7 +4085,11 @@ mod tests {
         assert_eq!(valid("Foo"), Some(VALID_S));
         let folds = std::fs::symlink_metadata(p.join("foo")).is_ok();
         for other in ["foo", "FOO"] {
-            assert_eq!(valid(other), folds.then_some(0), "{other}, a host that folds case: {folds}");
+            assert_eq!(
+                valid(other),
+                folds.then_some(0),
+                "{other}, a host that folds case: {folds}"
+            );
         }
         assert_eq!(valid("Foo"), Some(VALID_S));
         let _ = std::fs::remove_dir_all(&p);

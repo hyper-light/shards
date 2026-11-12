@@ -97,19 +97,29 @@ fn take_notices(args: &mut Vec<OsString>) -> Result<Option<Vec<Vec<u8>>>, String
 /// that last as long as the process, as its servers do once it serves them: their notices
 /// are told until the process ends. A share whose changes cannot be watched is served all
 /// the same, its guest told none of them, which its log says.
-fn tell_notices(servers: Vec<Server>, shares: Vec<u32>, tags: Vec<Vec<u8>>, out: std::fs::File) -> &'static [Server] {
+fn tell_notices(
+    servers: Vec<Server>,
+    shares: Vec<u32>,
+    tags: Vec<Vec<u8>>,
+    out: std::fs::File,
+) -> &'static [Server] {
     use shards_vmm::devices::virtio::fs::notices::Pending;
     let servers: &'static [Server] = Vec::leak(servers);
     let shares: &'static [u32] = Vec::leak(shares);
     let pending: &'static Pending = Box::leak(Box::new(Pending::new(tags)));
     if let Err(e) = shards_vmm::devices::virtio::fs::notices::watch(servers, shares, pending) {
-        let _ = writeln!(std::io::stderr(), "shards: share: its guest is told none of its host's changes: {e}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "shards: share: its guest is told none of its host's changes: {e}"
+        );
         return servers;
     }
-    let sent = std::thread::Builder::new().name("notices out".into()).spawn(move || {
-        let mut out = out;
-        let _ = pending.send(&mut out);
-    });
+    let sent = std::thread::Builder::new()
+        .name("notices out".into())
+        .spawn(move || {
+            let mut out = out;
+            let _ = pending.send(&mut out);
+        });
     if let Err(e) = sent {
         let _ = writeln!(std::io::stderr(), "shards: share: its notices' thread: {e}");
     }
@@ -649,7 +659,10 @@ mod tests {
         assert!(take_moved(&mut given));
         assert_eq!(given, args(&["rw", "", "ro", "f"]));
         let mut given = args(&["--moved", "--notices", "shards-plug3", "rw", ""]);
-        assert_eq!(take_notices(&mut given).unwrap(), Some(vec![b"shards-plug3".to_vec()]));
+        assert_eq!(
+            take_notices(&mut given).unwrap(),
+            Some(vec![b"shards-plug3".to_vec()])
+        );
         assert!(take_moved(&mut given));
         assert_eq!(given, args(&["rw", ""]));
         let mut given = args(&["rw", "--notices"]);

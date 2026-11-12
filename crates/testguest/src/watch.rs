@@ -34,7 +34,11 @@ pub fn main(dir: &str) -> i32 {
     let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
     // SAFETY: inotify_add_watch(2) with a NUL-terminated path.
     if fd < 0 || unsafe { libc::inotify_add_watch(fd, path.as_ptr(), libc::IN_ALL_EVENTS) } < 0 {
-        let _ = writeln!(std::io::stderr(), "inotify: {dir}: {}", std::io::Error::last_os_error());
+        let _ = writeln!(
+            std::io::stderr(),
+            "inotify: {dir}: {}",
+            std::io::Error::last_os_error()
+        );
         return 1;
     }
     let mut out = std::io::stdout();
@@ -64,7 +68,11 @@ pub fn main(dir: &str) -> i32 {
             let (mask, len) = (word(4), word(12) as usize);
             let name = buf.get(at + 16..at + 16 + len).unwrap_or_default();
             let name = String::from_utf8_lossy(name.split(|&b| b == 0).next().unwrap_or_default());
-            let bits: Vec<&str> = BITS.iter().filter(|(b, _)| mask & b != 0).map(|(_, s)| *s).collect();
+            let bits: Vec<&str> = BITS
+                .iter()
+                .filter(|(b, _)| mask & b != 0)
+                .map(|(_, s)| *s)
+                .collect();
             let _ = writeln!(out, "inotify {} {name}", bits.join("|"));
             at += 16 + len;
         }

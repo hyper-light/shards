@@ -110,7 +110,11 @@ impl Pending {
 /// Watches the host's changes beneath each of `servers`' shares, the k-th told `pending`
 /// as share `shares[k]`, its place among its process's shares, on threads of their own that
 /// last as long as the process: each server's, and `pending`'s, for as long.
-pub fn watch(servers: &'static [Server], shares: &'static [u32], pending: &'static Pending) -> Result<(), String> {
+pub fn watch(
+    servers: &'static [Server],
+    shares: &'static [u32],
+    pending: &'static Pending,
+) -> Result<(), String> {
     if servers.len() != shares.len() {
         return Err("a share's place for each server".into());
     }
@@ -188,7 +192,10 @@ mod host {
             .servers
             .iter()
             .zip(w.shares)
-            .map(|(s, share)| s.root_path().ok_or_else(|| format!("share {share}: its directory's path")))
+            .map(|(s, share)| {
+                s.root_path()
+                    .ok_or_else(|| format!("share {share}: its directory's path"))
+            })
             .collect::<Result<_, _>>()?;
         let (sink, changes) = std::sync::mpsc::channel();
         let paths: Vec<&[u8]> = roots.iter().map(Vec::as_slice).collect();
@@ -228,7 +235,8 @@ mod host {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
-        FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_INFORMATION, ReadDirectoryChangesW,
+        FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_NOTIFY_INFORMATION,
+        ReadDirectoryChangesW,
     };
 
     /// What a read of a share's changes takes at most: 64 KiB, what ReadDirectoryChangesW
@@ -315,7 +323,12 @@ mod host {
             let Some(name) = bytes.get(from..from.saturating_add(len)) else {
                 return out;
             };
-            let units: Vec<u16> = name.as_chunks::<2>().0.iter().map(|c| u16::from_ne_bytes(*c)).collect();
+            let units: Vec<u16> = name
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| u16::from_ne_bytes(*c))
+                .collect();
             let parts: Vec<Vec<u8>> = units
                 .split(|&c| c == u16::from(b'\\'))
                 .filter(|p| !p.is_empty())

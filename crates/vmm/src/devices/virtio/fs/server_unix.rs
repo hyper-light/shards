@@ -220,7 +220,9 @@ pub(super) fn stored_as(dir: host::Raw, name: &CStr) -> bool {
         }
         let bytes: Vec<u8> = buf.iter().flat_map(|w| w.to_ne_bytes()).collect();
         let word = |at: usize| -> Option<u32> {
-            Some(u32::from_ne_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
+            Some(u32::from_ne_bytes(
+                bytes.get(at..at.checked_add(4)?)?.try_into().ok()?,
+            ))
         };
         let stored = (|| {
             let offset = i32::from_ne_bytes(word(4)?.to_ne_bytes());
