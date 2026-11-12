@@ -148,7 +148,7 @@ pub(super) fn served(args: &[OsString]) -> Result<(Vec<OsString>, Vec<std::os::f
         &exe,
         &share_args(&shares),
         &fds,
-        !crate::spec::has_vm_flag(args, "--host-managed"),
+        !super::has_vm_flag(args, "--host-managed"),
     )
     .map_err(|e| format!("starting the share process: {e}"))?;
     drop((theirs, dirs, ghosts));

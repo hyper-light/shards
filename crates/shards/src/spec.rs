@@ -267,73 +267,10 @@ pub fn next_word<T: AsRef<std::ffi::OsStr>>(args: &mut impl Iterator<Item = T>) 
     Some((word, value))
 }
 
-/// Inspect the same VM grammar without cloning argument storage. Values and a
-/// workload after `--` cannot become host containment or GPU-dispatch flags.
-pub fn has_vm_flag(args: &[std::ffi::OsString], flag: &str) -> bool {
-    let mut words = args.iter();
-    match words.next().and_then(|word| word.to_str()) {
-        Some("run") => {}
-        Some("restore") => {
-            // Restore's first positional word is the snapshot directory.
-            let _ = words.next();
-        }
-        _ => return false,
-    }
-    while let Some((word, _)) = next_word(&mut words) {
-        if word == "--" {
-            break;
-        }
-        if word == flag {
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-
-    /// D233: a prepared host containment marker cannot be forged by a flag
-    /// value, a snapshot path or the guest workload's arguments.
-    #[test]
-    fn vm_flags_use_the_same_value_aware_grammar_before_the_workload() {
-        let args = |words: &[&str]| {
-            words
-                .iter()
-                .map(|word| std::ffi::OsString::from(*word))
-                .collect::<Vec<_>>()
-        };
-        for flag in [
-            "--host-managed",
-            "--gpu",
-            "--gpu-probe",
-            "--gpu-device",
-            "--gpu-report",
-            "--gpu-report-scope",
-            "--host-lifeline",
-        ] {
-            assert!(has_vm_flag(&args(&["run", flag]), flag));
-            assert!(has_vm_flag(&args(&["restore", "snapshot", flag]), flag));
-            assert!(!has_vm_flag(&args(&["run", "--", flag]), flag));
-            assert!(!has_vm_flag(&args(&["restore", flag]), flag));
-            assert!(!has_vm_flag(&args(&["cpu", flag]), flag));
-            for valued in RUN_VALUED {
-                if *valued != flag {
-                    assert!(!has_vm_flag(&args(&["run", valued, flag]), flag));
-                }
-            }
-        }
-        assert!(has_vm_flag(
-            &args(&["run", "--cmdline", "--", "--host-managed"]),
-            "--host-managed"
-        ));
-        assert!(has_vm_flag(
-            &args(&["run", "--gpu-device", "pci:0:01:00.0", "--host-managed"]),
-            "--host-managed"
-        ));
-    }
 
     /// A spec within a frame without its resolvers, and past it with them, is refused once
     /// they are added (review 1.y).

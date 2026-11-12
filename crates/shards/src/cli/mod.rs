@@ -1005,12 +1005,36 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
         .collect()
 }
 
+/// Whether the VM options of `run` or `restore` (those before `--`) carry `flag`, read with
+/// `run`'s own value-aware grammar (`spec::next_word`) and without cloning argument storage. Values and a
+/// workload after `--` cannot become host containment or GPU-dispatch flags.
+pub(crate) fn has_vm_flag(args: &[std::ffi::OsString], flag: &str) -> bool {
+    let mut words = args.iter();
+    match words.next().and_then(|word| word.to_str()) {
+        Some("run") => {}
+        Some("restore") => {
+            // Restore's first positional word is the snapshot directory.
+            let _ = words.next();
+        }
+        _ => return false,
+    }
+    while let Some((word, _)) = crate::spec::next_word(&mut words) {
+        if word == "--" {
+            break;
+        }
+        if word == flag {
+            return true;
+        }
+    }
+    false
+}
+
 /// The VM process's binary for `args`, which `shards` carries and writes out (helpers.rs):
 /// the GPU's where its own options (those before `--`) ask for a GPU (D144).
 fn vm_binary(args: &[OsString]) -> Result<PathBuf, String> {
     if ["--gpu", "--gpu-probe", "--gpu-device"]
         .into_iter()
-        .any(|flag| crate::spec::has_vm_flag(args, flag))
+        .any(|flag| has_vm_flag(args, flag))
     {
         crate::helpers::vm_gpu()
     } else {
@@ -1118,7 +1142,7 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
                 kept.as_ref(),
             ],
             &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-            !crate::spec::has_vm_flag(args, "--host-managed"),
+            !has_vm_flag(args, "--host-managed"),
         )
         .map_err(|e| format!("{}: {e}", recorder.display()))?;
         Ok(std::os::fd::OwnedFd::from(to_recorder))
@@ -1321,7 +1345,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
-    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+    if has_vm_flag(args, "--gpu-probe") {
         return instead(args);
     }
     let carried = match CarriedVmIo::read(args) {
@@ -1363,7 +1387,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         &broker,
         &broker_args,
         &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
-        !crate::spec::has_vm_flag(args, "--host-managed"),
+        !has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         return failed(&format!("{}: {e}", broker.display()));
@@ -1406,7 +1430,7 @@ fn vm(args: &[OsString]) -> ExitCode {
 /// the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
-    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+    if has_vm_flag(args, "--gpu-probe") {
         return instead(args);
     }
     let carried = match CarriedVmIo::read(args) {
@@ -1482,7 +1506,7 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
         &writer,
         &["working-set".as_ref(), "--template".as_ref(), dir.as_os_str()],
         &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-        !crate::spec::has_vm_flag(args, "--host-managed"),
+        !has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         shards_vmm::debug!(
@@ -1545,7 +1569,7 @@ fn gpu_reported(
 ) -> Result<Option<(Vec<OsString>, std::os::windows::io::OwnedHandle)>, shards_abi::gpu::GpuProbeError> {
     use shards_abi::gpu::GpuProbeError as Error;
     use std::os::windows::io::FromRawHandle as _;
-    if !crate::spec::has_vm_flag(args, "--gpu-report") {
+    if !has_vm_flag(args, "--gpu-report") {
         return Ok(None);
     }
     let copy = |word: &std::ffi::OsStr| {
@@ -1622,7 +1646,7 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
-    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+    if has_vm_flag(args, "--gpu-probe") {
         return instead(args);
     }
     let (report_args, report_writer) = match gpu_reported(args) {
@@ -2168,5 +2192,51 @@ mod served_pipes_tests {
             refused += 1;
         }
         assert!(refused > 0, "a test process has a standard handle to offer");
+    }
+}
+
+#[cfg(test)]
+mod vm_flags {
+    use super::has_vm_flag;
+    use crate::spec::RUN_VALUED;
+
+    /// D233: a prepared host containment marker cannot be forged by a flag
+    /// value, a snapshot path or the guest workload's arguments.
+    #[test]
+    fn vm_flags_use_the_same_value_aware_grammar_before_the_workload() {
+        let args = |words: &[&str]| {
+            words
+                .iter()
+                .map(|word| std::ffi::OsString::from(*word))
+                .collect::<Vec<_>>()
+        };
+        for flag in [
+            "--host-managed",
+            "--gpu",
+            "--gpu-probe",
+            "--gpu-device",
+            "--gpu-report",
+            "--gpu-report-scope",
+            "--host-lifeline",
+        ] {
+            assert!(has_vm_flag(&args(&["run", flag]), flag));
+            assert!(has_vm_flag(&args(&["restore", "snapshot", flag]), flag));
+            assert!(!has_vm_flag(&args(&["run", "--", flag]), flag));
+            assert!(!has_vm_flag(&args(&["restore", flag]), flag));
+            assert!(!has_vm_flag(&args(&["cpu", flag]), flag));
+            for valued in RUN_VALUED {
+                if *valued != flag {
+                    assert!(!has_vm_flag(&args(&["run", valued, flag]), flag));
+                }
+            }
+        }
+        assert!(has_vm_flag(
+            &args(&["run", "--cmdline", "--", "--host-managed"]),
+            "--host-managed"
+        ));
+        assert!(has_vm_flag(
+            &args(&["run", "--gpu-device", "pci:0:01:00.0", "--host-managed"]),
+            "--host-managed"
+        ));
     }
 }
