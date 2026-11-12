@@ -1203,6 +1203,26 @@ pub fn start(cfg: &Config) -> Result<(Handle, Running), super::StartError> {
     launch(machine::build(cfg)?, cfg.snapshot.clone(), false, cfg.join).map_err(super::StartError::from)
 }
 
+/// The same boot, with one borrowed initial-report writer at GPU construction.
+/// The callback returns before launch starts any guest vCPU or publishes Handle.
+pub fn start_gpu_report(
+    cfg: &Config,
+    report: &mut super::GpuReportTo<'_>,
+) -> Result<(Handle, Running), super::StartError> {
+    if cfg.gpu_devices.is_empty() {
+        return Err(super::StartError::GpuProbe(shards_abi::gpu::GpuProbeError::Empty));
+    }
+    check_host()?;
+    check_vcpus(cfg.vcpus)?;
+    launch(
+        machine::build_reported(cfg, Some(report))?,
+        cfg.snapshot.clone(),
+        false,
+        cfg.join,
+    )
+    .map_err(super::StartError::from)
+}
+
 /// The most stage-2 pages `snap`'s guest can have, RAM and pmem regions (each its file
 /// rounded up to [`pmem::ALIGN`]): the bound on its working set. A pmem file's size is
 /// its granted descriptor's where it has one, as a VM in App Sandbox reaches it alone,

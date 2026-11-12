@@ -19,6 +19,19 @@ use crate::devices::virtio::gpu;
 #[cfg(hv)]
 use crate::devices::virtio::{head, mem, pmem, vsock};
 
+/// The managed caller's private writer, borrowed only while its renderer is made.
+/// It introduces no owner, thread, saved report or guest-visible descriptor.
+pub type GpuReportTo<'a> = dyn FnMut(shards_abi::gpu::GpuProbe) -> Result<(), String> + 'a;
+
+/// A machine's GPU as it is assembled (D144, D232): the window its guest saw (0 for a new
+/// machine, as long as its renderer says), and the writer its selection's report goes to as the
+/// renderer is made, a managed boot's alone.
+#[cfg(hv)]
+pub(crate) struct MachineGpu<'r, 'a> {
+    saw: u64,
+    report: Option<&'r mut GpuReportTo<'a>>,
+}
+
 /// A boot refusal kept typed until presentation; other startup errors retain their
 /// existing owned messages while those seams are migrated.
 ///
@@ -41,6 +54,7 @@ use crate::devices::virtio::{head, mem, pmem, vsock};
 pub enum StartError {
     CommandLine(crate::arch::x86_64::boot::BootError),
     Legacy(String),
+    GpuProbe(shards_abi::gpu::GpuProbeError),
 }
 
 impl std::fmt::Display for StartError {
@@ -48,6 +62,7 @@ impl std::fmt::Display for StartError {
         match self {
             Self::CommandLine(error) => std::fmt::Display::fmt(error, f),
             Self::Legacy(message) => f.write_str(message),
+            Self::GpuProbe(why) => why.fmt(f),
         }
     }
 }
@@ -57,6 +72,7 @@ impl std::error::Error for StartError {
         match self {
             Self::CommandLine(error) => std::error::Error::source(error),
             Self::Legacy(_) => None,
+            Self::GpuProbe(why) => std::error::Error::source(why),
         }
     }
 }
@@ -168,7 +184,7 @@ mod runtime;
 #[cfg(hv)]
 pub use runtime::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
-    restore_from, restores_here, start, working_set_limit,
+    restore_from, restores_here, start, start_gpu_report, working_set_limit,
 };
 
 #[cfg(all(hv, target_arch = "aarch64"))]
@@ -188,6 +204,14 @@ pub use unsupported::{
     Handle, Running, Saved, accept_working_set, check_host, keep_working_set, max_vcpus, restore,
     restore_from, restores_here, start, working_set_limit,
 };
+
+#[cfg(not(hv))]
+pub fn start_gpu_report(
+    cfg: &Config,
+    _report: &mut GpuReportTo<'_>,
+) -> Result<(Handle, Running), StartError> {
+    start(cfg)
+}
 
 /// The host sides of a VM's devices that live outside it.
 #[cfg(hv)]
@@ -938,14 +962,23 @@ pub fn probe_gpu(_selected: &[gpu_selection::PhysicalGpu]) -> Result<shards_abi:
 /// host's GPUs say they have of memory the host can map, which Venus tells the guest, the
 /// most a guest can have mapped at once (D144, D201).
 #[cfg(all(hv, feature = "gpu"))]
-fn gpu_renderer(selected: &[gpu_selection::PhysicalGpu]) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
-    let venus = gpu::virgl::Venus::new_selected(selected)?;
+fn gpu_renderer(
+    selected: &[gpu_selection::PhysicalGpu],
+    report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+    let mut venus = gpu::virgl::Venus::new_selected(selected)?;
+    if let Some(report) = report {
+        report(venus.selection_report(selected).map_err(|why| why.to_string())?)?;
+    }
     let len = venus.host_visible();
     Ok((Box::new(venus), len))
 }
 
 #[cfg(all(hv, not(feature = "gpu")))]
-fn gpu_renderer(_selected: &[gpu_selection::PhysicalGpu]) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
+fn gpu_renderer(
+    _selected: &[gpu_selection::PhysicalGpu],
+    _report: Option<&mut GpuReportTo<'_>>,
+) -> Result<(Box<dyn gpu::Renderer>, u64), String> {
     Err("this VM process renders no GPU: shards' GPU VM process does, on macOS, Linux and Windows (D144, D201, D202)".into())
 }
 
@@ -957,9 +990,10 @@ fn gpu_layout(
     saw: u64,
     top: u64,
     selected: &[gpu_selection::PhysicalGpu],
+    report: Option<&mut GpuReportTo<'_>>,
 ) -> Result<(Box<dyn gpu::Renderer>, crate::devices::virtio::ShmRegion), String> {
     const GIB: u64 = 1 << 30;
-    let (renderer, offers) = gpu_renderer(selected)?;
+    let (renderer, offers) = gpu_renderer(selected, report)?;
     let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
     let offers = offers
         .checked_next_multiple_of(page)

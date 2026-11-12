@@ -26,11 +26,12 @@
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod client;
 pub mod conformance;
 pub mod image;
+mod native;
 pub mod physical;
 mod said;
 pub mod sim;
@@ -46,8 +47,9 @@ mod proc_allocation;
 
 pub use client::{
     ConfiguredShards, ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared,
-    prepare_boot, recorded_console_bytes,
+    prepare_boot, prepare_native_boot, recorded_console_bytes, recorded_console_bytes_at,
 };
+pub use native::{ImageIdentity, NativeBoot, NativeImages, NativeStartup, verify_native_image};
 pub use physical::{GpuName, GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
 /// A guest to boot.
@@ -66,7 +68,7 @@ pub struct GuestSpec {
     /// process (D144, D201, D202, D208); a selection below implies it.
     pub gpu: bool,
     /// The host GPUs its Venus contexts render on, each named by its exact native identity
-    /// (`--gpu-device`, D231), never a model name or an ordinal; none, those the renderer
+    /// (`--gpu-device`, D232), never a model name or an ordinal; none, those the renderer
     /// finds, as `gpu` alone gives.
     pub gpu_devices: Vec<PhysicalGpu>,
     /// Its disks, `/dev/vda` on, in order.
@@ -94,7 +96,32 @@ pub struct PreparedBoot {
     ports: Vec<u32>,
     output_bytes: usize,
     runtime_paths: Option<RuntimePaths>,
+    gpu_devices: Vec<PhysicalGpu>,
+    gpu_report: Option<([u8; 16], std::time::Instant)>,
+    startup: native::Inputs,
 }
+
+/// Pure immutable request. The final native launcher separately owns and renders
+/// the actual transferred writer; no descriptor value is embedded in this plan.
+#[derive(Debug, Clone, Copy)]
+pub struct GpuReportRequest<'a> {
+    scope: [u8; 16],
+    selected: &'a [PhysicalGpu],
+    deadline: std::time::Instant,
+}
+
+impl GpuReportRequest<'_> {
+    pub fn scope(&self) -> [u8; 16] {
+        self.scope
+    }
+    pub fn selected(&self) -> &[PhysicalGpu] {
+        self.selected
+    }
+    pub fn deadline(&self) -> std::time::Instant {
+        self.deadline
+    }
+}
+
 impl PreparedBoot {
     pub fn binary(&self) -> &std::path::Path {
         &self.binary
@@ -116,8 +143,39 @@ impl PreparedBoot {
     }
     /// Copies only its client's explicit pair, before native effects.
     pub fn with_runtime_paths(mut self, paths: &RuntimePaths) -> Result<Self, Refusal> {
+        if self.startup.is_bound() && self.runtime_paths.as_ref().is_some_and(|known| known != paths) {
+            return Err(Refusal::Launch(LaunchError::NativeInputs));
+        }
         self.runtime_paths = Some(paths.try_clone()?);
         Ok(self)
+    }
+
+    /// Bind a private renderer report to the original native scope and finite
+    /// absolute create budget. No channel or foreign process is created here.
+    pub fn with_gpu_report(mut self, scope: [u8; 16], deadline: std::time::Instant) -> Result<Self, Refusal> {
+        if self.gpu_report.is_some() {
+            return Err(Refusal::GpuProbe(GpuProbeError::ReportTaken));
+        }
+        if scope == [0; 16] {
+            return Err(Refusal::GpuProbe(GpuProbeError::Scope));
+        }
+        physical::check_selection(&self.gpu_devices).map_err(Refusal::Gpu)?;
+        if self.gpu_devices.is_empty() {
+            return Err(Refusal::GpuProbe(GpuProbeError::Empty));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Refusal::GpuProbe(GpuProbeError::Pending));
+        }
+        self.gpu_report = Some((scope, deadline));
+        Ok(self)
+    }
+
+    pub fn gpu_report_request(&self) -> Option<GpuReportRequest<'_>> {
+        self.gpu_report.map(|(scope, deadline)| GpuReportRequest {
+            scope,
+            deadline,
+            selected: &self.gpu_devices,
+        })
     }
 }
 
@@ -138,6 +196,12 @@ pub enum LaunchError {
     Allocation,
     Observer,
     NativeRefused,
+    ImageMissing,
+    ImageSize,
+    ImageDigest,
+    ImageChanged,
+    ImageDeadline,
+    NativeInputs,
 }
 impl std::fmt::Display for LaunchError {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -151,18 +215,29 @@ impl std::fmt::Display for LaunchError {
             Self::Allocation => "managed boot preparation storage is unavailable",
             Self::Observer => "native observation has no positive terminal receipt",
             Self::NativeRefused => "the canonical native owner refused the managed operation",
+            Self::ImageMissing => "native startup has no declared image for the exact role",
+            Self::ImageSize => "native image declaration requires positive byte length",
+            Self::ImageDigest => "native image bytes differ from the declared full SHA-256",
+            Self::ImageChanged => "native image identity or length changed during verification",
+            Self::ImageDeadline => "native image verification reached the original deadline",
+            Self::NativeInputs => "native startup inputs disagree with their initialized configuration",
         })
     }
 }
 impl std::error::Error for LaunchError {}
 
-/// Stdio created by the API's existing bounded drain path. The native owner
-/// consumes only these output handles; stdin is its native null device. No extra
-/// inherited handles, output socket export or post-spawn placement is permitted.
+/// Stdio created by the API's existing bounded drain path and optional private
+/// GPU-report writer. The native owner allowlists these exact owned handles;
+/// stdin is its native null device. No ambient inheritance or post-spawn
+/// placement is permitted.
 #[derive(Debug)]
 pub struct LaunchIo {
     pub stdout: std::io::PipeWriter,
     pub stderr: std::io::PipeWriter,
+    /// Sole VMM-private report writer, optional for ordinary CPU compatibility.
+    /// Forward only to the confined VMM, after final transfer/allowlisting. The
+    /// VMM closes it before guest execution; no guest/helper may inherit a copy.
+    pub gpu_report: Option<std::io::PipeWriter>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -551,6 +626,9 @@ pub enum Refusal {
     /// Native scope observation or cleanup failed before a controller identity
     /// was published. This never fabricates a process identity.
     Scope(ProcessFailure),
+    /// An owning connection failed within its caller's absolute deadline.
+    /// The native owner is retained; the handshake phase/cause stays typed.
+    Connect { port: u32, failure: HandshakeError },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -571,6 +649,7 @@ pub struct Identity {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Refusal::Connect { port, failure } => write!(f, "vsock port {port}: {failure}"),
             Refusal::Scope(failure) => write!(f, "managed scope: {failure}"),
             Refusal::ManagedIo {
                 operation,
@@ -607,6 +686,7 @@ impl std::error::Error for Refusal {
             // Each Display already ends with its failure: the cause after it is the failure's.
             Self::Process { failure, .. } | Self::Scope(failure) => std::error::Error::source(failure),
             Self::Borrowed { failure, .. } => std::error::Error::source(failure),
+            Self::Connect { failure, .. } => std::error::Error::source(failure),
             _ => None,
         }
     }
@@ -701,6 +781,21 @@ pub trait Guest: Send + Sync {
     /// `Duration::MAX` is no clock, until the guest listens or ends. A guest that has ended
     /// is refused as soon as it has, whatever patience is left.
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal>;
+    /// The same owning connection, bounded by the caller's original absolute
+    /// deadline across native identity checks, retries and CONNECT/OK. An
+    /// expired deadline refuses before a dial; no relative budget is restarted.
+    /// Synchronous OS calls/scheduling are not hard real-time bounded. A stream
+    /// completed after `deadline` is closed and refused before publication.
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal>;
+    /// One dial to `port` under the same absolute deadline, never asked again: a guest that
+    /// does not listen there now (refused, absent, or closed unanswered) is refused at once,
+    /// and one that accepts but does not answer is refused by `deadline`. For a port the
+    /// guest has already been reached on; a first or boot dial uses
+    /// [`connect_before`](Guest::connect_before), which waits for the guest to listen. An
+    /// implementor without a single attempt of its own dials as `connect_before` does.
+    fn connect_once_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect_before(port, deadline)
+    }
     /// Ends it at once: its VM's process is killed (SIGKILL; on Windows, its process
     /// ended), and its [`wait_for`](Guest::wait_for) then returns [`End::Stopped`]. Never
     /// refused, as a VM left running is a leak. The VMM has no host-to-guest power-off
@@ -922,6 +1017,13 @@ mod tests {
             (
                 Refusal::Scope(ProcessFailure::Exited),
                 ProcessFailure::Exited.to_string(),
+            ),
+            (
+                Refusal::Connect {
+                    port: 7,
+                    failure: HandshakeError::Closed,
+                },
+                HandshakeError::Closed.to_string(),
             ),
         ];
         for (refusal, failure) in refusals {

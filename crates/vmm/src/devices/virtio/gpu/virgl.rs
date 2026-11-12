@@ -884,6 +884,26 @@ impl std::fmt::Debug for Venus {
 
 static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionReportError {
+    Probe(shards_abi::gpu::GpuProbeError),
+    ActiveContexts,
+    Acknowledgment(u32),
+}
+
+impl std::fmt::Display for SelectionReportError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Probe(why) => why.fmt(out),
+            Self::ActiveContexts => out.write_str("the initial GPU report must precede guest contexts"),
+            Self::Acknowledgment(code) => {
+                write!(out, "the renderer refused the exact GPU filter ACK ({code})")
+            }
+        }
+    }
+}
+impl std::error::Error for SelectionReportError {}
+
 impl Venus {
     /// Starts the renderer, Venus alone: once a process.
     pub fn new() -> Result<Venus, String> {
@@ -893,31 +913,41 @@ impl Venus {
     /// A native query through the same renderer/context selection path as a VM.
     /// No guest commands or VkDevice workloads are submitted by this probe.
     pub fn probe_gpu(selected: &[PhysicalGpu]) -> Result<shards_abi::gpu::GpuProbe, String> {
-        use shards_abi::gpu::GpuProbe;
         if selected.is_empty() {
             return Err("an exact GPU probe requires a nonempty native selection".into());
         }
         let mut venus = Self::new_selected(selected)?;
-        if venus.selected.len() != selected.len() {
-            return Err("renderer probe lost its exact selection".into());
+        venus.selection_report(selected).map_err(|why| why.to_string())
+    }
+
+    /// Read the SAME renderer's native selection before any guest context exists.
+    /// A managed VM's private pipe consumes this report before its vCPUs start.
+    pub fn selection_report(
+        &mut self,
+        selected: &[PhysicalGpu],
+    ) -> Result<shards_abi::gpu::GpuProbe, SelectionReportError> {
+        use shards_abi::gpu::{GpuProbe, GpuProbeError};
+        if selected.is_empty() || self.selected.len() != selected.len() {
+            return Err(SelectionReportError::Probe(GpuProbeError::Empty));
+        }
+        if !self.contexts.is_empty() {
+            return Err(SelectionReportError::ActiveContexts);
         }
         let mut devices = Vec::new();
         devices
             .try_reserve_exact(selected.len())
-            .map_err(|_| "GPU probe storage unavailable")?;
-        devices.extend(venus.selected.iter().map(|selected| selected.native));
-        // One private process/context: 1 is the first nonzero virtio context ID.
-        // create_context returns only after the renderer's positive selection ACK.
-        venus
-            .create_context(1, CAPSET_VENUS, b"shards-gpu-selection-probe")
-            .map_err(|error| format!("GPU probe selection ACK refused: {error:?}"))?;
+            .map_err(|_| SelectionReportError::Probe(GpuProbeError::Allocation))?;
+        devices.extend(self.selected.iter().map(|selected| selected.native));
         let probe = GpuProbe {
             devices,
-            host_visible_bytes: venus.host_visible,
+            host_visible_bytes: self.host_visible,
         };
-        probe.check(selected).map_err(|error| error.to_string())?;
-        venus.destroy_context(1);
-        drop(venus);
+        probe.check(selected).map_err(SelectionReportError::Probe)?;
+        // Before guest contexts exist, 1 is the first nonzero virtio context ID.
+        // create_context returns only after the renderer's positive selection ACK.
+        self.create_context(1, CAPSET_VENUS, b"shards-gpu-selection-probe")
+            .map_err(|error| SelectionReportError::Acknowledgment(error.0))?;
+        self.destroy_context(1);
         Ok(probe)
     }
 

@@ -1,4 +1,4 @@
-//! A host GPU named by its exact native identity (D231): its PCI address, its Metal registry
+//! A host GPU named by its exact native identity (D232): its PCI address, its Metal registry
 //! ID, or its current boot's DXGI LUID; never a model name, an ordinal or an environment
 //! filter. One checked grammar, `--gpu-device`'s, for shards-api's client and the VM process.
 
@@ -13,7 +13,7 @@ use core::fmt;
 use core::str::FromStr;
 
 /// The most GPUs a selection names: a u16's every index, the bound the render server's
-/// selection transport holds a context's identities to (D231).
+/// selection transport holds a context's identities to (D232).
 pub const MAX_PHYSICAL_GPUS: usize = 1 << u16::BITS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

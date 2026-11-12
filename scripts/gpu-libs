@@ -18,7 +18,7 @@
 #   starts.
 # - Every host: libshards_gpu_selection.a (shards_gpu_selection.lib on Windows), the identity
 #   bridge (resources/gpu/native-identity.c) that binds a VM's Venus contexts to the GPUs it
-#   was given (D231); and the renderer patched for that (resources/gpu/physical-*.patch).
+#   was given (D232); and the renderer patched for that (resources/gpu/physical-*.patch).
 # Needs python3 (3.10 or later on Windows), for meson and ninja, pinned by hash in a
 # virtual environment of the build's own, and a C compiler: Xcode's command-line tools on
 # macOS, the host's `cc` on Linux, and on Windows LLVM's clang-cl with Visual Studio's
@@ -95,7 +95,7 @@ tar -xzf "$work/epoxy.tar.gz" -C "$work/src"
 if [ "$host" = Windows-x86_64 ]; then
     patch -p1 -s -d "$work/src/$virgl_name" <"$repo/resources/gpu/venus-windows.patch"
 fi
-# Each Venus context bound to the GPUs its VM was given (D231): the renderer's physical-device
+# Each Venus context bound to the GPUs its VM was given (D232): the renderer's physical-device
 # filter, then the selection's transport to its render server, for the renderer this host
 # builds (resources/gpu), after Windows' own patch where it has one.
 case $host in
@@ -251,7 +251,7 @@ else
     cp "$work/virgl/src/libvirglrenderer.a" "$prefix/lib/libepoxy.a" "$out/"
     libs=(libvirglrenderer.a librender_server.a libepoxy.a)
 fi
-# The identity bridge (D231): reads a selected GPU's identities through the pinned Vulkan
+# The identity bridge (D232): reads a selected GPU's identities through the pinned Vulkan
 # structures, calling only the loader's functions the VM process hands it; a library linked
 # beside the renderer's, no program of its own.
 mkdir "$work/selection-src"

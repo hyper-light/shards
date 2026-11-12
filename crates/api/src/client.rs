@@ -38,7 +38,7 @@ impl Shards {
     }
 
     /// A client's explicit runtime directories (`SHARDS_CACHE`, `SHARDS_HOME`), also given its
-    /// managed launcher's VM processes (D232). This provider never inherits the environment.
+    /// managed launcher's VM processes (D233). This provider never inherits the environment.
     pub fn configured(cache: PathBuf, home: PathBuf) -> Result<ConfiguredShards, Refusal> {
         Ok(ConfiguredShards {
             paths: RuntimePaths::new(cache, home)?,
@@ -73,7 +73,7 @@ impl RuntimePaths {
 }
 
 /// The same client/drain/watch protocol, with exactly its client's explicit helper cache and
-/// runtime home (D232). This stores no inventory or holders.
+/// runtime home (D233). This stores no inventory or holders.
 #[derive(Debug)]
 pub struct ConfiguredShards {
     paths: RuntimePaths,
@@ -234,6 +234,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup: ReportCleanup::Complete,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -248,6 +249,7 @@ fn take_back(identity: &Identity, spec: &GuestSpec) -> Result<ShardsGuest, Refus
         end_mark: end_mark(),
         probe: false,
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
+        report: Mutex::new(None),
     });
     let (watched, watcher) = (process.clone(), shared.clone());
     std::thread::Builder::new()
@@ -387,6 +389,7 @@ fn launch(
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup: ReportCleanup::Complete,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -401,6 +404,7 @@ fn launch(
         end_mark: marker,
         probe: probe.is_some(),
         managed_owners: std::sync::atomic::AtomicUsize::new(0),
+        report: Mutex::new(None),
     });
     #[cfg(unix)]
     let pid = child.id();
@@ -430,7 +434,7 @@ fn launch(
 /// `shards run --kernel …` for `spec`, its vsock at `vsock`, its console's last `said` bytes
 /// kept to quote. `--kernel` comes first, as the command line knows a direct boot by it
 /// (`cli/mod.rs`).
-fn argument_copy(value: &std::ffi::OsStr) -> Result<OsString, Refusal> {
+pub(crate) fn argument_copy(value: &std::ffi::OsStr) -> Result<OsString, Refusal> {
     let mut copy = OsString::new();
     copy.try_reserve_exact(value.len())
         .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
@@ -539,11 +543,36 @@ pub fn recorded_console_bytes(kernel: &Path) -> usize {
     crate::said::kept(kernel)
 }
 
+/// The same existing console learning with the initialized native runtime home,
+/// rather than an inherited or a workload's environment. This does not verify a kernel.
+pub fn recorded_console_bytes_at(kernel: &Path, paths: &RuntimePaths) -> usize {
+    crate::said::kept_at(paths.home(), kernel)
+}
+
 pub fn prepare_boot(
     spec: &GuestSpec,
     binary: &Path,
     vsock: &Path,
     console_bytes: usize,
+) -> Result<crate::PreparedBoot, Refusal> {
+    prepare_boot_inner(spec, binary, vsock, console_bytes, None)
+}
+
+pub fn prepare_native_boot(
+    spec: &GuestSpec,
+    binary: &Path,
+    vsock: &Path,
+    native: crate::NativeBoot<'_>,
+) -> Result<crate::PreparedBoot, Refusal> {
+    prepare_boot_inner(spec, binary, vsock, native.console_kept, Some(native))
+}
+
+fn prepare_boot_inner(
+    spec: &GuestSpec,
+    binary: &Path,
+    vsock: &Path,
+    console_bytes: usize,
+    native: Option<crate::NativeBoot<'_>>,
 ) -> Result<crate::PreparedBoot, Refusal> {
     check(spec)?;
     if !binary.is_absolute() || binary.as_os_str().as_encoded_bytes().contains(&0) {
@@ -565,6 +594,9 @@ pub fn prepare_boot(
         .checked_mul(ESCAPED)
         .and_then(|n| n.checked_add(tail(0)))
         .ok_or(Refusal::Launch(crate::LaunchError::Count))?;
+    // Retain original typed rights and pin before producing any opaque argv.
+    let startup = crate::native::Inputs::new(spec, console_bytes, native.as_ref())?;
+    let runtime_paths = native.map(|native| native.paths.try_clone()).transpose()?;
     let mut arguments = arguments(spec, vsock, console_bytes)?;
     arguments
         .try_reserve_exact(1)
@@ -572,13 +604,21 @@ pub fn prepare_boot(
     // Only prepared native launches keep the existing helpers in their original
     // scope. This marker grants no physical identity/device authority.
     argument_push(&mut arguments, "--host-managed")?;
+    let mut gpu_devices = Vec::new();
+    gpu_devices
+        .try_reserve_exact(spec.gpu_devices.len())
+        .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))?;
+    gpu_devices.extend_from_slice(&spec.gpu_devices);
     Ok(crate::PreparedBoot {
         binary: PathBuf::from(argument_copy(binary.as_os_str())?),
         arguments,
         vsock: PathBuf::from(argument_copy(vsock.as_os_str())?),
         ports,
         output_bytes,
-        runtime_paths: None,
+        runtime_paths,
+        gpu_devices,
+        gpu_report: None,
+        startup,
     })
 }
 
@@ -722,6 +762,15 @@ struct Shared {
     probe: bool,
     /// API lifetime handles only, distinct from worker Arc refs and native holders.
     managed_owners: std::sync::atomic::AtomicUsize,
+    report: Mutex<Option<crate::physical::report::Receiver>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportCleanup {
+    Observing,
+    Requested,
+    Uncertain,
+    Complete,
 }
 
 #[derive(Debug)]
@@ -744,6 +793,7 @@ struct State {
     /// Pending None -> native completion or failed observer; never a release ledger.
     managed: Option<Result<crate::ManagedEnd, Refusal>>,
     managed_ports: Vec<u32>,
+    report_cleanup: ReportCleanup,
 }
 
 #[derive(Debug)]
@@ -1128,11 +1178,12 @@ enum Attempt {
     Again(String),
     Refused(String),
     Allocation,
+    Absolute(HandshakeError),
 }
 
 /// The existing owned-client String boundary, with fallible growth and no
 /// allocating fallback. Borrowed errors never pass through this boundary.
-fn message(args: std::fmt::Arguments<'_>) -> Result<String, ()> {
+pub(crate) fn message(args: std::fmt::Arguments<'_>) -> Result<String, ()> {
     struct Text(String);
     impl std::fmt::Write for Text {
         fn write_str(&mut self, text: &str) -> std::fmt::Result {
@@ -1229,26 +1280,28 @@ fn handshake(
             },
         )?;
     let wait = deadline.map_or(HandshakeWait::Unbounded, HandshakeWait::Until);
-    handshake_until(vsock, port, wait, cost).map_err(|error| {
-        if matches!(
-            error,
-            HandshakeError::Io {
-                kind: io::ErrorKind::OutOfMemory,
-                ..
-            }
-        ) {
-            return Attempt::Allocation;
+    handshake_until(vsock, port, wait, cost).map_err(owned_handshake_error)
+}
+
+fn owned_handshake_error(error: HandshakeError) -> Attempt {
+    if matches!(
+        error,
+        HandshakeError::Io {
+            kind: io::ErrorKind::OutOfMemory,
+            ..
         }
-        let why = match message(format_args!("{error}")) {
-            Ok(why) => why,
-            Err(()) => return Attempt::Allocation,
-        };
-        if error.retryable() {
-            Attempt::Again(why)
-        } else {
-            Attempt::Refused(why)
-        }
-    })
+    ) {
+        return Attempt::Allocation;
+    }
+    let why = match message(format_args!("{error}")) {
+        Ok(why) => why,
+        Err(()) => return Attempt::Allocation,
+    };
+    if error.retryable() {
+        Attempt::Again(why)
+    } else {
+        Attempt::Refused(why)
+    }
 }
 
 /// One shared CONNECT/OK exchange. Each partial I/O uses the original absolute
@@ -1499,7 +1552,16 @@ impl std::fmt::Debug for ManagedGuest {
     }
 }
 
-fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>, Refusal> {
+fn managed_shared(
+    keep: usize,
+    recovered: bool,
+    report: Option<crate::physical::report::Receiver>,
+) -> Result<triomphe::Arc<Shared>, Refusal> {
+    let report_cleanup = if report.is_some() {
+        ReportCleanup::Observing
+    } else {
+        ReportCleanup::Complete
+    };
     let mut bytes = VecDeque::new();
     bytes
         .try_reserve_exact(
@@ -1524,6 +1586,7 @@ fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>,
             status: None,
             managed: None,
             managed_ports: Vec::new(),
+            report_cleanup,
         }),
         changed: Condvar::new(),
         tail: Mutex::new(Tail {
@@ -1538,6 +1601,7 @@ fn managed_shared(keep: usize, recovered: bool) -> Result<triomphe::Arc<Shared>,
         end_mark: managed_marker()?,
         probe: false,
         managed_owners: std::sync::atomic::AtomicUsize::new(1),
+        report: Mutex::new(report),
     })
     .map_err(|_| Refusal::Launch(crate::LaunchError::Allocation))
 }
@@ -1583,6 +1647,74 @@ fn lossy_output(bytes: &[u8]) -> Result<String, Refusal> {
     Ok(text)
 }
 
+/// Failed completion leaves this SAME watcher owning Shared and all IO storage.
+/// After an error it subscribes to the actual native completion event; explicit
+/// stop/drop requests only retry an unavailable native wait, never periodic probes.
+fn finish_managed_report(shared: &Shared) {
+    loop {
+        let completed = match lock(&shared.report).as_mut() {
+            Some(report) => report.finish(),
+            None => Ok(()),
+        };
+        let mut state = lock(&shared.state);
+        match completed {
+            Ok(()) => {
+                state.report_cleanup = ReportCleanup::Complete;
+                return;
+            }
+            Err(why) => {
+                let requested = state.report_cleanup == ReportCleanup::Requested;
+                if state.managed.is_none() {
+                    state.managed = Some(Err(why));
+                }
+                state.exited = true;
+                state.report_cleanup = ReportCleanup::Uncertain;
+                shared.changed.notify_all();
+                // The OS completion event, not another API owner, must wake
+                // this watcher if cancellation/observation failed before it.
+                drop(state);
+                let terminal = match lock(&shared.report).as_mut() {
+                    Some(report) => report.wait_for_completion(),
+                    None => Ok(()),
+                };
+                state = lock(&shared.state);
+                match terminal {
+                    Ok(()) => {
+                        state.report_cleanup = ReportCleanup::Complete;
+                        return;
+                    }
+                    Err(why) => {
+                        // A failed native wait proves nothing. Keep the same
+                        // watcher/resources; preserve the first reported cause.
+                        if state.managed.is_none() {
+                            state.managed = Some(Err(why));
+                        }
+                        if state.report_cleanup != ReportCleanup::Requested {
+                            state.report_cleanup = ReportCleanup::Uncertain;
+                        }
+                        shared.changed.notify_all();
+                    }
+                }
+                if requested || state.report_cleanup == ReportCleanup::Requested {
+                    state.report_cleanup = ReportCleanup::Observing;
+                    drop(state);
+                    continue;
+                }
+                while state.report_cleanup == ReportCleanup::Uncertain {
+                    state = shared.changed.wait(state).unwrap_or_else(PoisonError::into_inner);
+                }
+                state.report_cleanup = ReportCleanup::Observing;
+            }
+        }
+    }
+}
+
+fn request_report_cleanup(state: &mut State) {
+    if state.report_cleanup != ReportCleanup::Complete {
+        state.report_cleanup = ReportCleanup::Requested;
+    }
+}
+
 fn watch_managed(
     shared: triomphe::Arc<Shared>,
     process: crate::ManagedReceipt,
@@ -1594,19 +1726,22 @@ fn watch_managed(
         Ok(_) => Err(Refusal::Launch(crate::LaunchError::Observer)),
         Err(why) => Err(why),
     };
+    finish_managed_report(&shared);
     let said = match writer {
         Some(writer) => lossy_output(finish_drain(&shared, writer).bytes.make_contiguous()),
         None => Ok(String::new()),
     };
     let mut state = lock(&shared.state);
     state.observed_exited = observed.is_ok();
-    state.managed = Some(match said {
-        Ok(said) => {
-            state.said = said;
-            observed
-        }
-        Err(why) => Err(why),
-    });
+    if state.managed.is_none() {
+        state.managed = Some(match said {
+            Ok(said) => {
+                state.said = said;
+                observed
+            }
+            Err(why) => Err(why),
+        });
+    }
     state.exited = true;
     shared.changed.notify_all();
 }
@@ -1630,7 +1765,15 @@ pub fn boot_managed(
     plan: crate::PreparedBoot,
     launcher: &mut dyn crate::ManagedLauncher,
 ) -> Result<ManagedGuest, Refusal> {
-    let shared = managed_shared(plan.output_bytes, false)?;
+    let (report, gpu_report) = match plan.gpu_report_request() {
+        Some(request) => {
+            let request = crate::physical::report::Request::copy_from(request)?;
+            let (receiver, writer) = crate::physical::report::Receiver::new(request)?;
+            (Some(receiver), Some(writer))
+        }
+        None => (None, None),
+    };
+    let shared = managed_shared(plan.output_bytes, false, report)?;
     let drain_name = owned_text("shards-api-managed-drain")?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let (output, writer) = io::pipe().map_err(|e| managed_io("output pipe", e))?;
@@ -1640,7 +1783,14 @@ pub fn boot_managed(
     let stderr = writer
         .try_clone()
         .map_err(|e| managed_io("output writer clone", e))?;
-    let process = launcher.launch(&plan, crate::LaunchIo { stdout, stderr })?;
+    let process = launcher.launch(
+        &plan,
+        crate::LaunchIo {
+            stdout,
+            stderr,
+            gpu_report,
+        },
+    )?;
     let identity = match process.identity() {
         Ok(identity) => identity,
         Err(why) => {
@@ -1676,7 +1826,7 @@ pub fn attach_managed(
     if identity.vsock != plan.vsock {
         return Err(Refusal::Launch(crate::LaunchError::Socket));
     }
-    let shared = managed_shared(0, true)?;
+    let shared = managed_shared(0, true, None)?;
     let wait_name = owned_text("shards-api-managed-wait")?;
     let process = launcher.attach(identity)?;
     if process.identity()? != identity {
@@ -1688,6 +1838,20 @@ pub fn attach_managed(
 }
 
 impl ManagedGuest {
+    /// Transfer the one private report within the original create deadline.
+    /// A timeout/EOF/error never proves VM or helper termination. Recovery must
+    /// use its already persisted canonical report; it cannot recreate this pipe.
+    pub fn take_gpu_report(&self, patience: Duration) -> Result<crate::physical::GpuReport, Refusal> {
+        let mut report = self.shared.report.try_lock().map_err(|error| match error {
+            std::sync::TryLockError::WouldBlock => Refusal::GpuProbe(crate::GpuProbeError::Pending),
+            std::sync::TryLockError::Poisoned(_) => Refusal::Launch(crate::LaunchError::Observer),
+        })?;
+        report
+            .as_mut()
+            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Unavailable))?
+            .take(patience)
+    }
+
     /// Shares the existing protocol/native receipt with checked handle counting.
     /// Worker references are not lifetime owners and cannot suppress last-drop stop.
     pub fn try_clone(&self) -> Result<Self, Refusal> {
@@ -1756,10 +1920,41 @@ impl Guest for ManagedGuest {
             },
         )
     }
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&lock(&self.shared.state).managed_ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.process.identity()?.vsock,
+            port,
+            ConnectBudget::Before(deadline),
+            || {
+                self.end(&mut lock(&self.shared.state))
+                    .map(|end| end.map(Refusal::Ended))
+            },
+        )
+    }
+    fn connect_once_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&lock(&self.shared.state).managed_ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.process.identity()?.vsock,
+            port,
+            ConnectBudget::Once(deadline),
+            || {
+                self.end(&mut lock(&self.shared.state))
+                    .map(|end| end.map(Refusal::Ended))
+            },
+        )
+    }
     fn stop(&self) -> Result<(), Refusal> {
         // Native stop may complete inline and wake a concurrent waiter. Publish
         // the request first; an uncertain native result cannot undo its effects.
-        lock(&self.shared.state).stopping = true;
+        {
+            let mut state = lock(&self.shared.state);
+            state.stopping = true;
+            request_report_cleanup(&mut state);
+            self.shared.changed.notify_all();
+        }
         self.process.stop()
     }
     fn wait_for(&self, timeout: Duration) -> Result<Option<End>, Refusal> {
@@ -1802,6 +1997,11 @@ impl Drop for ManagedGuest {
                 return;
             }
         }
+        {
+            let mut state = lock(&self.shared.state);
+            request_report_cleanup(&mut state);
+            self.shared.changed.notify_all();
+        }
         if !matches!(
             self.process.terminal(),
             Ok(Some(crate::ManagedEnd {
@@ -1820,23 +2020,71 @@ fn connect_owned(
     vsock: &Path,
     port: u32,
     patience: Duration,
+    gone: impl FnMut() -> Result<Option<Refusal>, Refusal>,
+) -> Result<Box<dyn Stream>, Refusal> {
+    connect_with_budget(shared, vsock, port, ConnectBudget::Standalone(patience), gone)
+}
+
+#[derive(Clone, Copy)]
+enum ConnectBudget {
+    /// Preserve the standalone API's documented zero/MAX behavior.
+    Standalone(Duration),
+    Before(Instant),
+    /// One dial under the deadline: a port the guest does not listen on now is refused at once.
+    Once(Instant),
+}
+
+fn connect_with_budget(
+    shared: &Shared,
+    vsock: &Path,
+    port: u32,
+    budget: ConnectBudget,
     mut gone: impl FnMut() -> Result<Option<Refusal>, Refusal>,
 ) -> Result<Box<dyn Stream>, Refusal> {
     // None: past `Instant`'s range (`Duration::MAX`), so no clock: until the guest
     // listens or ends.
     let began = Instant::now();
-    let deadline = began.checked_add(patience);
+    let deadline = match budget {
+        ConnectBudget::Standalone(patience) => began.checked_add(patience),
+        ConnectBudget::Before(at) | ConnectBudget::Once(at) => Some(at),
+    };
     let left = || deadline.map(|d| d.saturating_duration_since(Instant::now()));
     let last = loop {
         if let Some(refusal) = gone()? {
             return Err(refusal);
         }
         let mut cost = Duration::ZERO;
-        // One dial is always made, its answer awaited for what patience has left, or,
-        // with none left (a patience of zero) or no clock, for the guest's own answer.
-        let wait = left().filter(|l| !l.is_zero());
-        match handshake(vsock, port, wait, &mut cost) {
+        // Positive finite patience and explicit deadlines keep the original instant.
+        // Standalone zero/no-clock compatibility still awaits the guest's own answer.
+        let attempt = match budget {
+            ConnectBudget::Standalone(patience) => match deadline {
+                Some(at) if !patience.is_zero() => {
+                    handshake_until(vsock, port, HandshakeWait::Until(at), &mut cost)
+                        .map_err(owned_handshake_error)
+                }
+                _ => handshake(vsock, port, None, &mut cost),
+            },
+            ConnectBudget::Before(at) | ConnectBudget::Once(at) => {
+                handshake_until(vsock, port, HandshakeWait::Until(at), &mut cost).map_err(Attempt::Absolute)
+            }
+        };
+        match attempt {
             Ok(s) => {
+                if let ConnectBudget::Before(at) | ConnectBudget::Once(at) = budget {
+                    // Identity observation and allocation spend the same cap;
+                    // a completed socket is never published after expiry.
+                    if let Some(refusal) = gone()? {
+                        return Err(refusal);
+                    }
+                    let stream = s.boxed().map_err(|_| Refusal::Allocation {
+                        what: "connection storage",
+                    })?;
+                    let mut state = lock(&shared.state);
+                    remaining(HandshakeWait::Until(at), HandshakePhase::ClearTimeouts)
+                        .map_err(|failure| Refusal::Connect { port, failure })?;
+                    state.ready = true;
+                    return Ok(stream);
+                }
                 lock(&shared.state).ready = true;
                 return s.boxed().map_err(|_| Refusal::Allocation {
                     what: "connection storage",
@@ -1848,6 +2096,14 @@ fn connect_owned(
                 });
             }
             Err(Attempt::Refused(why)) => return Err(Refusal::Channel { port, why }),
+            Err(Attempt::Absolute(failure)) => {
+                if matches!(budget, ConnectBudget::Once(_))
+                    || !failure.retryable()
+                    || left().is_some_and(|l| l.is_zero())
+                {
+                    return Err(Refusal::Connect { port, failure });
+                }
+            }
             Err(Attempt::Again(why)) if left().is_some_and(|l| l.is_zero()) => break why,
             Err(Attempt::Again(_)) => {}
         }
@@ -1861,6 +2117,14 @@ fn connect_owned(
     if let Some(refusal) = gone()? {
         return Err(refusal);
     }
+    let ConnectBudget::Standalone(patience) = budget else {
+        return Err(Refusal::Connect {
+            port,
+            failure: HandshakeError::Expired {
+                phase: HandshakePhase::Dial,
+            },
+        });
+    };
     Err(Refusal::Channel {
         port,
         why: message(format_args!("no OK within {patience:?}: {last}")).map_err(|()| {
@@ -1880,6 +2144,26 @@ impl Guest for ShardsGuest {
         connect_owned(&self.shared, &self.vsock, port, patience, || {
             Ok(self.gone(&mut lock(&self.shared.state)))
         })
+    }
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&self.ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.vsock,
+            port,
+            ConnectBudget::Before(deadline),
+            || Ok(self.gone(&mut lock(&self.shared.state))),
+        )
+    }
+    fn connect_once_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&self.ports, port)?;
+        connect_with_budget(
+            &self.shared,
+            &self.vsock,
+            port,
+            ConnectBudget::Once(deadline),
+            || Ok(self.gone(&mut lock(&self.shared.state))),
+        )
     }
 
     fn stop(&self) -> Result<(), Refusal> {
@@ -2077,7 +2361,7 @@ mod tests {
         (guest, native)
     }
 
-    /// D215, D232: helper scope and handle ownership remain live after
+    /// D215, D233: helper scope and handle ownership remain live after
     /// controller exit, and dropping a retained protocol handle cannot stop it.
     #[test]
     fn managed_scope_and_checked_clones_retain_native_lifetime() {
@@ -2101,7 +2385,7 @@ mod tests {
         assert_eq!(native.stops.load(Ordering::SeqCst), 0);
     }
 
-    /// D215, D232: a native stop can publish inline, before stop() returns;
+    /// D215, D233: a native stop can publish inline, before stop() returns;
     /// a concurrent waiter must observe Stopped rather than unsolicited poweroff.
     #[test]
     fn managed_inline_stop_completion_is_already_stopped_to_waiters() {
@@ -2118,7 +2402,409 @@ mod tests {
         assert_eq!(waiter.join().unwrap().unwrap(), Some(End::Stopped));
     }
 
-    /// D215, D232: pure preparation launches nothing and preserves the exact
+    /// An explicit cleanup request is neither completion nor permission to
+    /// destroy Shared. A worker reference keeps the SAME allocation alive after
+    /// the API's reference is dropped; Complete cannot be reopened by drop.
+    #[test]
+    fn managed_report_cleanup_request_preserves_same_worker_owner_order() {
+        let shared = managed_shared(0, true, None).unwrap();
+        let worker = shared.clone();
+        {
+            let mut state = lock(&shared.state);
+            state.report_cleanup = ReportCleanup::Uncertain;
+            request_report_cleanup(&mut state);
+            assert_eq!(state.report_cleanup, ReportCleanup::Requested);
+            assert!(
+                state.managed.is_none(),
+                "a request creates no terminal observation"
+            );
+        }
+        drop(shared);
+        assert_eq!(triomphe::Arc::strong_count(&worker), 1);
+        {
+            let mut state = lock(&worker.state);
+            state.report_cleanup = ReportCleanup::Complete;
+            request_report_cleanup(&mut state);
+            assert_eq!(state.report_cleanup, ReportCleanup::Complete);
+        }
+    }
+
+    /// A later actual completion must wake the SAME watcher after cancellation
+    /// errors and last API drop, without any later API notification or polling.
+    #[cfg(windows)]
+    #[test]
+    fn managed_report_last_api_drop_before_later_native_completion_reclaims_owner() {
+        let patience = crate::conformance::PATIENCE.get();
+        let request = crate::physical::report::Request {
+            scope: [0x93; 16],
+            selected: vec![crate::PhysicalGpu::MetalRegistry(7)],
+            deadline: Instant::now().checked_add(patience).unwrap(),
+        };
+        let (receiver, mut writer) = crate::physical::report::Receiver::new(request).unwrap();
+        // Caller error, first observer error, then the old observer's retry
+        // after last-drop. New native-event waiting does not need that retry.
+        receiver.fail_cancel_calls_for_test(3);
+        let shared = managed_shared(0, true, Some(receiver)).unwrap();
+        let native = triomphe::Arc::try_new(ModelNative {
+            identity: Identity {
+                pid: 42,
+                started: 7,
+                vsock: "/model/native/v".into(),
+            },
+            state: Mutex::new(NativeState::default()),
+            changed: Condvar::new(),
+            coordinate_stop: false,
+            stops: std::sync::atomic::AtomicUsize::new(0),
+        })
+        .unwrap();
+        let watching = shared.clone();
+        let process = crate::managed_receipt(native.clone());
+        let (done, completed) = std::sync::mpsc::sync_channel(1);
+        let watcher = std::thread::Builder::new()
+            .name("report-order-control".into())
+            .spawn(move || {
+                watch_managed(watching, process, None);
+                let _ = done.send(());
+            })
+            .unwrap();
+        let guest = ManagedGuest {
+            process: crate::managed_receipt(native.clone()),
+            shared: shared.clone(),
+        };
+        // Collect every oracle before asserting: even an old stuck-watcher
+        // regression must close this fixture's writer and join its own worker.
+        let report = guest.take_gpu_report(patience);
+        // The observer must first enter its error path while an API owner still
+        // exists; otherwise Requested at its first failure can mask the old gap.
+        native.publish(crate::TerminalScope::Released);
+        let (cleanup_before, uncertainty_timed_out) = {
+            let state = lock(&shared.state);
+            let (state, timed) = shared
+                .changed
+                .wait_timeout_while(state, patience, |state| {
+                    state.report_cleanup != ReportCleanup::Uncertain
+                })
+                .unwrap_or_else(PoisonError::into_inner);
+            (state.report_cleanup, timed.timed_out())
+        };
+        drop(guest);
+        let owners = shared.managed_owners.load(Ordering::Acquire);
+        // No API owner exists and no Shared notification is sent here. The OS
+        // alone completes its pending read as this owned writer writes/closes.
+        let wrote = writer.write_all(b"later kernel completion");
+        drop(writer);
+        let completed_without_api_wake = completed.recv_timeout(patience);
+        if completed_without_api_wake.is_err() {
+            // Failure cleanup only: the frozen5ba path needs an explicit wake
+            // after its already-positive pipe completion. This cannot turn the
+            // previously captured failed oracle into a passing observation.
+            native.publish(crate::TerminalScope::Released);
+            let mut state = lock(&shared.state);
+            request_report_cleanup(&mut state);
+            shared.changed.notify_all();
+        }
+        let joined = watcher.join();
+        drop(native);
+        assert!(matches!(
+            report,
+            Err(Refusal::ManagedIo {
+                operation: "injected private report cancellation",
+                ..
+            })
+        ));
+        assert_eq!(owners, 0);
+        assert!(
+            !uncertainty_timed_out,
+            "observer must publish the exact cleanup error"
+        );
+        assert_eq!(cleanup_before, ReportCleanup::Uncertain);
+        assert!(
+            wrote.is_ok(),
+            "later owned writer must complete its actual pending read"
+        );
+        assert!(
+            completed_without_api_wake.is_ok(),
+            "native completion must wake the observer without another API notification"
+        );
+        assert!(joined.is_ok());
+        assert_eq!(lock(&shared.state).report_cleanup, ReportCleanup::Complete);
+        assert_eq!(triomphe::Arc::strong_count(&shared), 1);
+        assert!(
+            matches!(lock(&shared.state).managed.as_ref(), Some(Err(_))),
+            "cleanup completion cannot erase the original uncertainty"
+        );
+    }
+
+    /// The VMM's muxer for a guest that no longer listens on port 5: each CONNECT is read and
+    /// closed unanswered, until the test's own sentinel line. It returns the CONNECTs it saw.
+    #[cfg(unix)]
+    fn unserved_muxer(listener: std::os::unix::net::UnixListener) -> std::thread::JoinHandle<usize> {
+        std::thread::Builder::new()
+            .name("unserved-muxer".into())
+            .spawn(move || {
+                let mut dials = 0;
+                for conn in listener.incoming() {
+                    let mut line = String::new();
+                    io::BufRead::read_line(&mut io::BufReader::new(conn.unwrap()), &mut line).unwrap();
+                    match line.as_str() {
+                        "sentinel\n" => break,
+                        // A dial its deadline ended before the CONNECT was written is a dial too.
+                        "CONNECT 5\n" | "" => dials += 1,
+                        other => panic!("not a CONNECT: {other:?}"),
+                    }
+                }
+                dials
+            })
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn sentinel(path: &Path) {
+        let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+        io::Write::write_all(&mut stream, b"sentinel\n").unwrap();
+    }
+
+    /// D215, D233: dial once a port the guest no longer listens on; expect one dial,
+    /// refused at once as closed unanswered, and an absent socket refused in the dial. The
+    /// retrying form, against the same muxer, dials again until its deadline: the cost a
+    /// later dial to a gone relay must not pay.
+    #[cfg(unix)]
+    #[test]
+    fn single_attempt_to_an_unserved_port_is_refused_at_once_after_one_dial() {
+        let dir = shards_testdir::TempDir::new("api-once").unwrap();
+        let path = dir.join("v");
+        let shared = managed_shared(0, false, None).unwrap();
+
+        let muxer = unserved_muxer(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let at = Instant::now()
+            .checked_add(crate::conformance::PATIENCE.get())
+            .unwrap();
+        let once = connect_with_budget(&shared, &path, 5, ConnectBudget::Once(at), || Ok(None));
+        let returned = Instant::now();
+        sentinel(&path);
+        assert_eq!(muxer.join().unwrap(), 1, "one dial, never asked again");
+        assert!(
+            matches!(
+                once,
+                Err(Refusal::Connect {
+                    port: 5,
+                    failure: HandshakeError::Closed
+                })
+            ),
+            "{:?}",
+            once.as_ref().err()
+        );
+        assert!(returned < at, "refused at once, not at its deadline");
+
+        std::fs::remove_file(&path).unwrap();
+        let muxer = unserved_muxer(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        let unserved = Instant::now()
+            .checked_add(crate::conformance::UNSERVED_PATIENCE)
+            .unwrap();
+        let before = connect_with_budget(&shared, &path, 5, ConnectBudget::Before(unserved), || Ok(None));
+        sentinel(&path);
+        assert!(muxer.join().unwrap() > 1, "the retrying form asks again");
+        assert!(
+            matches!(before, Err(Refusal::Connect { port: 5, .. })),
+            "{:?}",
+            before.as_ref().err()
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        let absent = connect_with_budget(&shared, &path, 5, ConnectBudget::Once(at), || Ok(None));
+        assert!(
+            matches!(
+                absent,
+                Err(Refusal::Connect {
+                    port: 5,
+                    failure: HandshakeError::Io {
+                        phase: HandshakePhase::Dial,
+                        ..
+                    }
+                })
+            ),
+            "{:?}",
+            absent.as_ref().err()
+        );
+        assert!(!lock(&shared.state).ready);
+    }
+
+    /// D215, D233: dial once a muxer that accepts and never answers; expect the CONNECT
+    /// refused by its deadline, in the read, and no second dial.
+    #[cfg(unix)]
+    #[test]
+    fn single_attempt_to_a_silent_listener_is_refused_by_its_deadline() {
+        let dir = shards_testdir::TempDir::new("api-silent").unwrap();
+        let path = dir.join("v");
+        // Never accepted: the kernel completes the connection and holds the CONNECT unread.
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let shared = managed_shared(0, false, None).unwrap();
+        let at = Instant::now()
+            .checked_add(crate::conformance::UNSERVED_PATIENCE)
+            .unwrap();
+        let silent = connect_with_budget(&shared, &path, 5, ConnectBudget::Once(at), || Ok(None));
+        assert!(Instant::now() >= at, "refused by, not before, its deadline");
+        assert!(
+            matches!(
+                silent,
+                Err(Refusal::Connect {
+                    port: 5,
+                    failure: HandshakeError::Expired {
+                        phase: HandshakePhase::Read
+                    }
+                })
+            ),
+            "{:?}",
+            silent.as_ref().err()
+        );
+        assert!(listener.accept().is_ok(), "its one connection");
+        assert!(
+            matches!(listener.accept(), Err(ref why) if why.kind() == io::ErrorKind::WouldBlock),
+            "no second dial"
+        );
+        assert!(!lock(&shared.state).ready);
+    }
+
+    /// D215: native observation spends the caller's absolute cap; an endpoint
+    /// which already exists must not get a late CONNECT after that cap expires.
+    #[cfg(unix)]
+    #[test]
+    fn absolute_owned_connect_cannot_dial_after_native_observation_spends_its_deadline() {
+        let dir = shards_testdir::TempDir::new("api-absolute").unwrap();
+        let path = dir.join("v");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let shared = managed_shared(0, false, None).unwrap();
+        let at = Instant::now()
+            .checked_add(crate::conformance::PATIENCE.get())
+            .unwrap();
+        let mut observations = 0;
+        let connected = connect_with_budget(&shared, &path, 5, ConnectBudget::Before(at), || {
+            observations += 1;
+            let gate = Mutex::new(());
+            let clock = Condvar::new();
+            let mut held = lock(&gate);
+            while let Some(left) = at.checked_duration_since(Instant::now()) {
+                held = clock
+                    .wait_timeout(held, left)
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .0;
+            }
+            Ok(None)
+        });
+        let dial = listener.accept();
+        assert_eq!(observations, 1);
+        assert!(matches!(
+            connected,
+            Err(Refusal::Connect {
+                port: 5,
+                failure: HandshakeError::Expired {
+                    phase: HandshakePhase::Dial
+                },
+            })
+        ));
+        assert!(matches!(dial, Err(ref why) if why.kind() == io::ErrorKind::WouldBlock));
+        assert!(!lock(&shared.state).ready);
+    }
+
+    /// D215: a finite owned connect that expires between a retry's lifetime
+    /// observation and dial must not become an unbounded handshake. Original
+    /// production is intentionally unchanged by this source-only control.
+    #[cfg(unix)]
+    #[test]
+    fn finite_owned_retry_expiry_cannot_start_an_unbounded_handshake() {
+        let patience = crate::conformance::PATIENCE.get();
+        let dir = shards_testdir::TempDir::new("api-finite-retry").unwrap();
+        let path = dir.join("v");
+        // Check the fixture socket path before any worker. The first actual
+        // attempt then sees this owned path absent, establishing a real retry.
+        let checked = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        drop(checked);
+        std::fs::remove_file(&path).unwrap();
+        let shared = managed_shared(0, true, None).unwrap();
+        let asked = path.clone();
+        let (retry, retried) = std::sync::mpsc::sync_channel(1);
+        let (resume, resumed) = std::sync::mpsc::sync_channel(1);
+        let (finished, result) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("finite-owned-retry-control".into())
+            .spawn(move || {
+                let mut visits = 0usize;
+                let mut first_deadline = None;
+                let connected = connect_owned(&shared, &asked, 5, patience, || {
+                    visits += 1;
+                    if visits == 1 {
+                        first_deadline = Instant::now().checked_add(patience);
+                    }
+                    if visits == 2 {
+                        let deadline = first_deadline.ok_or(Refusal::Launch(crate::LaunchError::Observer))?;
+                        retry
+                            .send(deadline)
+                            .map_err(|_| Refusal::Launch(crate::LaunchError::Observer))?;
+                        resumed
+                            .recv()
+                            .map_err(|_| Refusal::Launch(crate::LaunchError::Observer))?;
+                    }
+                    Ok(None)
+                });
+                let _ = finished.send(connected.map(drop));
+            })
+            .unwrap();
+        let reached_retry = retried.recv_timeout(patience);
+        let mut listener = None;
+        let mut before_cleanup = None;
+        let mut late_dial = None;
+        let mut resumed_ok = false;
+        if let Ok(deadline) = reached_retry {
+            listener = std::os::unix::net::UnixListener::bind(&path).ok();
+            if let Some(listener) = &listener {
+                let nonblocking = listener.set_nonblocking(true);
+                if nonblocking.is_ok() {
+                    // Wait for the actual deadline fact, not a guessed delay.
+                    // The API budget began before the first gone callback, so
+                    // this later deadline cannot release it before expiry.
+                    let gate = Mutex::new(());
+                    let clock = Condvar::new();
+                    let mut held = lock(&gate);
+                    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                        held = clock
+                            .wait_timeout(held, left)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                    }
+                    resumed_ok = resume.send(()).is_ok();
+                    before_cleanup = Some(result.recv_timeout(patience));
+                    late_dial = Some(listener.accept());
+                }
+            }
+        }
+        // Even the original unbounded path is made terminal through this test's
+        // own accepted socket EOF, before joining or making an oracle assertion.
+        let observed_late_dial = late_dial.as_ref().is_some_and(Result::is_ok);
+        drop(late_dial);
+        drop((listener, resume));
+        let joined = worker.join();
+        assert!(
+            reached_retry.is_ok(),
+            "a real failed first dial must reach the retry seam"
+        );
+        assert!(
+            resumed_ok,
+            "the exact expiry witness must release the retry callback"
+        );
+        assert!(
+            !observed_late_dial,
+            "an expired finite retry performed a new native dial"
+        );
+        assert!(
+            matches!(before_cleanup, Some(Ok(Err(Refusal::Channel { port: 5, .. })))),
+            "finite expiry must return without the peer EOF used only for cleanup"
+        );
+        assert!(joined.is_ok());
+    }
+
+    /// D215, D233: pure preparation launches nothing and preserves the exact
     /// native command/ports; wrong endpoint/port fail before borrowed observation.
     #[test]
     fn prepared_boot_is_pure_and_connections_stay_in_its_exact_grant() {
@@ -2174,7 +2860,7 @@ mod tests {
         ));
     }
 
-    /// D232: native containment is explicit only for managed plans. The
+    /// D233: native containment is explicit only for managed plans. The
     /// standalone CPU/GPU argument bytes stay exact, even for flag-like values.
     #[test]
     fn prepared_marker_preserves_standalone_arguments_and_flag_values() {
@@ -2199,7 +2885,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
     }
 
-    /// D231: renderer initialization cannot carry an inner workload or start
+    /// D232: renderer initialization cannot carry an inner workload or start
     /// its file/console helpers while resolving the exact selected identities.
     #[test]
     fn gpu_probe_arguments_carry_only_the_exact_native_query() {
@@ -2227,7 +2913,7 @@ mod tests {
         );
     }
 
-    /// D231, D232: the configured probe uses its client's explicit pair, without a
+    /// D232, D233: the configured probe uses its client's explicit pair, without a
     /// PATH/binary/environment fallback or additional guest/provider authority.
     #[test]
     fn configured_node_roots_are_explicit_and_the_command_environment_is_closed() {
@@ -2266,7 +2952,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&*dir).unwrap().count(), 0);
     }
 
-    /// D215, D231: exercise real bounded pipe/watch/parse wiring with an owned
+    /// D215, D232: exercise real bounded pipe/watch/parse wiring with an owned
     /// protocol fixture process. This is not a renderer/native GPU witness.
     #[cfg(unix)]
     #[test]
@@ -2847,6 +3533,7 @@ mod tests {
                 Err(Attempt::Again(why)) => format!("again: {why}"),
                 Err(Attempt::Refused(why)) => format!("refused: {why}"),
                 Err(Attempt::Allocation) => "allocation unavailable".to_string(),
+                Err(Attempt::Absolute(why)) => format!("absolute: {why}"),
             }
         });
         let said = crate::while_runs::answer(&rx, worker, patience);
