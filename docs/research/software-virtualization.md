@@ -101,20 +101,50 @@ is how the host lets an unprivileged program catch another's system calls and fa
    natively, with traps as exceptions (NaCl's ARM sandbox: Sehr et al., USENIX Security
    2010). Guest JITs that write and run the same pages pay a check per change.
 
+## What the measurements show (2026-11-12)
+
+A KVM guest runs a guest's system calls, faults, processes and own code at native speed
+(PM M519, M521). Everything below is what each software route pays instead (p50).
+
+| route | a guest system call | a first-touch fault | a process (fork, exec, wait) | the guest's own code | where |
+|---|---|---|---|---|---|
+| native, and KVM | 67-81 ns | 0.54-0.61 us | 58-75 us | 1.0x | M519, M521 |
+| Linux: seccomp trap to a handler in the guest's process | 0.70 us | 1.7-1.8 us (mapped by the handler) | not measured | 1.0x | M516 |
+| Linux: the same, handed to another process | 2.6-3.9 us (0.82-0.88 spinning a core) | | | 1.0x | M516 |
+| macOS: `brk` to a signal handler; a Mach exception to another process | 3.4 us; 5.3-5.7 us | 4.3 us (signal, `mprotect`); 5.4-5.7 us | not measured | 1.0x | M517 |
+| gVisor systrap (a reimplemented kernel) | 4.1-4.3 us | 0.94-0.97 us | 500-512 us | 1.0x | M519 |
+| User-mode Linux, seccomp (Linux as a process) | 8.7 us | 8.4-8.7 us | 432-450 us | not measured | M519 |
+| QEMU TCG, full system (translated guest and kernel) | 0.44-0.48 us | 9.1-9.4 us | 1,512-1,626 us | 1.1-1.3x | M521 |
+
+- **Traps cost more than the hardware's nothing, and the Mac's most.** Any route that
+  traps each guest system call to the host pays at least 0.70 us on Linux and 3.4 us on
+  a Mac. Windows' costs wait on M518.
+- **Translation removes the trap.** QEMU's untuned translator serves a guest system call,
+  the guest kernel's own path translated, in 0.44 to 0.48 us. That is under every trap,
+  and 9 times under gVisor's. Its compute costs 1.1 to 1.3 times native. It loses on
+  the guest's memory management: faults, processes and context switches (pipe 19 to 23
+  us against native's 3). A translator of shards' own has those to beat.
+- **R08's bar.** Four to five times gVisor asks under 1.05 us a system call and 100 to
+  128 us a process. Only an in-process trap or translation meets the first.
+- **Host-mapped memory needs the guest's folios.** Under the pinned kernel's default
+  (THP on madvise), agent-like processes keep memory in runs of 2.2 to 2.7 pages, so a
+  host process a guest process would hit the kernel's default `vm.max_map_count`
+  (65,530) at 560 to 690 MiB resident. Every folio size always gives 24.5 pages a run,
+  about 6 GiB a process, for 6% more memory (M520).
+- **macOS lets a parent drive its child without root.** The child hands over its own
+  task port; mapping a page into it costs 0.5 us (M517). App Sandbox's answer is still
+  open.
+
 ## Questions, each with what settles it
 
-1. What each trap costs, per host and mechanism: PM M516 (Linux), M517 (macOS), Windows
-   next. Hardware virtualization pays none of these for a guest's system calls.
-2. How many host mappings a guest's memory needs: a page each where guest pages are not
-   contiguous, against `vm.max_map_count` (65530 by default: `DEFAULT_MAX_MAP_COUNT`,
-   `include/linux/mm.h`; Fedora 44 sets 1048576, PM M516). Measure a guest kernel's real layouts; large folios and 2 MiB units
-   cut it 512 times where pages are contiguous.
+1. Windows' costs: M518 (GitHub's windows-2025 and windows-11-arm runners, queued).
+2. Linux on arm64 and in cloud VMs: M516's GitHub rows (ubuntu-24.04, ubuntu-24.04-arm,
+   queued).
 3. Guest JITs (V8, the JVM) under checked or translated code: how often real agent
    workloads make code writable and executable again.
-4. macOS: a child's task port without root (PM M517), and under App Sandbox.
-5. Windows: exception and debug-event round trips, views into another process,
-   AppContainer.
-6. The isolation core: what each approach must trust, and its size.
-7. Attestation roots per host, without root: TPM access on Linux and Windows, macOS's.
-8. Baselines (R08), on the same hosts: gVisor systrap, User-mode Linux (x86_64), QEMU TCG,
-   nested KVM where offered, Nitro Sandboxes under Firecracker v1.18 (needs EC2 access).
+4. macOS: the child's task port under App Sandbox, where shards' VM process runs (D30).
+5. The isolation core: what each route must trust, and its size.
+6. Attestation roots per host, without root: TPM access on Linux and Windows, macOS's.
+7. A translator of shards' own: what faults, process creation and context switches cost
+   when the translation and its TLB are kept per address space.
+8. Nitro Sandboxes under Firecracker v1.18 as one more baseline (needs EC2 access).
