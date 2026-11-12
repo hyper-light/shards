@@ -266,11 +266,14 @@ the binary; a simulator of image guests is owed (§5).
   `netproc::start`, the Agentfile's `refuse`/`caps`, `shards_net::encode_policy`, the warm
   link's messages (`RunHead`, `READY`, `RUN`, `TAKEN`, `STOP_ORDER`, `EXEC_RUN`), the VM's
   managed capture; `daemon::publish` made `pub(crate)` for its binding.
-- **Not yet shared (R12 gap, owed):** the run host's Unix launch of its VM process
-  (api_run.rs `launch`) takes the same steps as the builder's (build/builder.rs:570-640) and
-  the daemon's (daemon.rs:8109): fds at fixed numbers, macOS grants answered in-process,
-  the network side handed. Folding the three into one launch is owed; v1 adds a third copy
-  rather than change the builder's and the daemon's under other lanes' work.
+- **Not yet shared (R12 gap, owed):** the run host's launch of its VM process (api_run.rs
+  `launch`, Unix's and Windows') takes the same steps as the builder's (build/builder.rs) and
+  the daemon's (daemon.rs `start`, each OS's): on Unix fds at fixed numbers, macOS grants
+  answered in-process, the network side handed; on Windows a confined child made suspended,
+  its handles given by name and its network process started on it. Folding the three into
+  one launch is owed; v1 adds a third copy rather than change the builder's and the
+  daemon's under other lanes' work. Everything after the launch (the warm link's daemon
+  side, the capture owner, stats, stop) is one implementation over `shards_ipc::Stream`.
 
 ### 3.6 Literals (R03)
 
@@ -281,27 +284,36 @@ port's token (`run::TOKEN`, 16 bytes) for an input connection; vsock credit and
 definition (inode(7)); `128 + signal` is `docker run`'s status rule (abi/src/run.rs:61-65).
 The run host waits on facts (the VM's `READY`, `TAKEN`, the VM process's exit, its channel's
 end), never on a clock of its own; a stuck boot is the orchestrator's to bound, as a direct
-boot's is (D215).
+boot's is (D215): `Images::boot` takes its patience, and a boot it outlasts is refused with
+what the run host said last.
 
 ## 4. Per host
 
-What v1 builds (code), against what is owed; nothing here has run on a VM yet (§8).
+What v1 builds (code), against what is owed. On 2026-11-12 the v1 rows of Linux x86_64,
+macOS and Windows x86_64 ran on real VMs, `crates/shards/tests/api_image.rs` 6 of 6 on each
+(measurements/runtime-image-boot-v1/README.md).
 
 | Host | 1 stdout/stderr, end | 1 stdin | 1 terminal | 2 staging | 3 ports, grants | 4 shares at boot | 4 added | 5 stats | 6 stop |
 |---|---|---|---|---|---|---|---|---|---|
 | Linux x86_64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (FUSE, no DAX window) | owed (to the command); members cannot | v1 | v1 |
 | Linux arm64 KVM (gnu, musl) | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
 | macOS arm64 HVF | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
-| Windows x86_64 WHP | owed: the run host refuses `Unsupported` | owed | owed | guest side v1 | owed | owed | as above | owed | the client's v1 |
-| Windows arm64 WHP (D209) | as x86_64 | owed | owed | guest side v1 | owed | owed | as above | owed | as x86_64 |
+| Windows x86_64 WHP | v1 | owed | owed | v1 | v1 | v1 (as above) | as above | v1 | v1 |
+| Windows arm64 WHP (D209) | v1's code, unbuilt (below) | owed | owed | as x86_64 | as x86_64 | as x86_64 | as above | as x86_64 | as x86_64 |
 | macOS x86_64 | refused `NoBackend`, as D215 | | | | | | | | |
 
-Windows is owed, not refused for a limit of its own: its run host needs the AppContainer
-launch with its network process started on the suspended VM and its link, grants and share
-streams handed by name (D141, D142, D197, as build/builder.rs:646-728 and daemon.rs:8270 do
-for theirs), which v1 does not yet write; `shards api-run` refuses there with
-`Cause::Unsupported` naming it, and the client, the wire, init and the VM process's changes
-compile and are the same there. The guest side is Linux on every host, so the init pieces
+On Windows the run host launches its VM as the daemon does (D141, D142, D195): in a job of
+its own (`GroupJob::ending_with_this_process`), whose last handle it holds, so that the VM,
+network and share processes end as it ends, however it ends, where Unix has `STOP_ORDER`'s
+SIGKILL; the VM process confined in an AppContainer made suspended, given its link, the pipes
+it asks for its files on, the null device and its network by name; its network process
+started on the suspended VM; each share's stream a byte pair, the VM's end sent after `RUN`
+(D197). Windows arm64 runs the same code and is unbuilt: jupiter, the x86_64 host, has no C
+compiler for it (aws-lc-sys's build needs clang-cl, which its Build Tools lack), and no host
+here runs WHP on arm64: GitHub's windows-11-arm images have no hypervisor platform (PM M172)
+and nested Windows 11 arm64 on an M-series Mac gets no partition (WHvCreatePartition
+0xC0351000, D209's lane); a dockurr/windows-arm guest (QEMU and KVM inside a nested Lima VM on
+an M5 Max) stayed at its installer's UEFI boot for over an hour. The guest side is Linux on every host, so the init pieces
 are one implementation. An orchestrator's identity and `attach` after its own crash (D215's
 `Guests::attach`) do not carry over in v1: the run ends with its owner (§3.1);
 re-ownership is P11's (owner transfer).
@@ -318,16 +330,16 @@ re-ownership is P11's (owner transfer).
    `staged` mode.
 5. crates/api: the `image` module, its wire codec, `ImageShards`, `ImageRefusal`.
 6. crates/shards: `shards api-run` (prepare, network, publish, egress narrowing, shares at
-   boot, the warm link's daemon side, the capture owner, stats, stop) on Linux and macOS;
+   boot, the warm link's daemon side, the capture owner, stats, stop) on Linux, macOS and
+   Windows;
    real-VM E2E tests (`crates/shards/tests/api_image.rs`), written for ROOT to run.
 
 Owed beyond v1, each its own slice: a member's stdin (its input connection, §3.3, refused
-`Unsupported` by the client today) and terminal (G24); the Windows run host (§4); shares
+`Unsupported` by the client today) and terminal (G24); Windows arm64's build and runs (§4); shares
 added while running (D214, to the run's own command); DAX windows for an orchestrated run's
 shares (D189: v1 passes no `--share-window`, so its shares go through FUSE); templates and
-pools for orchestrated runs (D25, D26: a cold boot each run until measured); a boot patience
-(the daemon's progress-based `READY` wait, daemon.rs `ready`, shared: v1 waits on facts, and a
-guest that never says `READY` holds `boot`); `attach` after the owner's crash; the run's own
+pools for orchestrated runs (D25, D26: a cold boot each run until measured); `attach` after
+the owner's crash; the run's own
 command's stdout and stderr as streams of their own (v1 gives them the run host's stderr,
 diagnostics); the launch shared with the builder's and the daemon's (§3.5); a simulator of
 image guests for orchestrators' tests.

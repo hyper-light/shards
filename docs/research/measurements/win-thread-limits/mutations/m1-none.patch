@@ -1,0 +1,12 @@
+--- a/crates/vmm/src/platform/windows_process.rs
++++ b/crates/vmm/src/platform/windows_process.rs
+@@ -141,7 +141,8 @@
+         .join()
+         .ok()
+         .flatten()?;
+-    Room::now()?.threads(&thread)
++    let _ = Room::now()?.threads(&thread);
++    None
+ }
+ 
+ /// What a thread std started holds of its process however far its code goes: its stack's

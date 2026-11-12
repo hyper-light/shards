@@ -395,9 +395,9 @@ pub fn read() -> Result<Read, String> {
     }
     // Their links, clear of the microVM's own network.
     let names: Vec<crate::netplan::Name> = out.iter().map(|d| d.name.clone()).collect();
-    let own = crate::net::current().map(|(addr, prefix, _)| {
+    let own = crate::net::current().map(|(addr, prefix, gateway)| {
         let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
-        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix)
+        (std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix, gateway)
     });
     let own6 = crate::net::current6().map(|(addr, prefix, _)| {
         let mask = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);
@@ -459,7 +459,7 @@ pub fn read() -> Result<Read, String> {
         // agents' resolver, at the switch's end of its gate's link (D61), which holds it to
         // what it may ask.
         if let Some(l) = &link
-            && (l.dns || !l.mcp.is_empty())
+            && (l.dns || !l.named.is_empty())
             && !l.addresses.is_empty()
         {
             d.resolv =
@@ -767,6 +767,11 @@ mod landlock {
     }
 }
 
+/// The attributes of the microVM's system as a domain sees it, its root's first (D59):
+/// read-only, `nosuid` and `nodev`. Read-only is what keeps a plug root (D235) granting
+/// nothing until something is plugged there, as Landlock grants every right beneath one.
+const SYSTEM: u64 = libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV;
+
 /// Everything a domain's first process uses, made before it is: after `clone3` it calls
 /// the kernel alone.
 struct Prepared {
@@ -1047,6 +1052,19 @@ fn image_root(skel: &OwnedFd, lower: std::os::fd::BorrowedFd<'_>, pluggable: boo
             return Err(io::Error::last_os_error());
         }
     }
+    // The root's owner and mode are its upper layer's, as overlayfs shows a directory both
+    // layers hold: so `upper` is given the image's own, as the domain's root is the image's.
+    // SAFETY: an all-zero stat is a valid out-parameter, which fstat(2) fills.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: fstat(2) of the image's root, a descriptor init holds, and fchownat(2) and
+    // fchmodat(2) of a NUL-terminated name in the tmpfs just made.
+    if unsafe {
+        libc::fstat(lower.as_raw_fd(), &raw mut st) != 0
+            || libc::fchownat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_uid, st.st_gid, 0) != 0
+            || libc::fchmodat(rw.as_raw_fd(), c"upper".as_ptr(), st.st_mode & 0o7777, 0) != 0
+    } {
+        return Err(io::Error::last_os_error());
+    }
     let of =
         |dir: &str| CString::new(format!("/proc/self/fd/{}/{dir}", rw.as_raw_fd())).map_err(io::Error::other);
     let (upper, work) = (of("upper")?, of("work")?);
@@ -1301,7 +1319,7 @@ fn gate_of(
         egress: link.egress.clone(),
         // Past the uplink's translation, at the domain's own ports (D122).
         ingress: link.ingress.iter().map(|&(_, at)| at).collect(),
-        dns: link.dns || !link.mcp.is_empty(),
+        dns: link.dns || !link.named.is_empty(),
         own6: link.addresses6.iter().map(|a| a.addr).collect(),
         opens6: pairs
             .iter()
@@ -1345,7 +1363,7 @@ fn gate_of(
 pub fn uplinked(d: &Domain) -> bool {
     d.link
         .as_ref()
-        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty())
+        .is_some_and(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.named.is_empty())
 }
 
 /// The switch `domains` link to: `pairs` of them allowed to open connections to each
@@ -1383,13 +1401,13 @@ fn switch(
     let dns: Vec<usize> = domains
         .iter()
         .enumerate()
-        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.mcp.is_empty()))
+        .filter(|(_, d)| d.link.as_ref().is_some_and(|l| l.dns || !l.named.is_empty()))
         .map(|(i, _)| i)
         .collect();
     let uplink = match egress.is_empty() && ingress.is_empty() && dns.is_empty() {
         true => None,
         false => {
-            let (addr, prefix, _) = crate::net::current()
+            let (addr, prefix, gateway) = crate::net::current()
                 .ok_or_else(|| io::Error::other("the microVM has no address for its agents' egress"))?;
             let mask = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
             let mut subnets: Vec<(std::net::Ipv4Addr, u8)> = Vec::new();
@@ -1465,6 +1483,7 @@ fn switch(
                 resolver: !dns.is_empty(),
                 subnets,
                 eth0: (addr, std::net::Ipv4Addr::from(u32::from(addr) & mask), prefix),
+                gateway,
                 ipv6,
             })
         }
@@ -1506,7 +1525,14 @@ fn switch(
         askers.push(crate::agentdns::Asker {
             link: crate::links::link_index(i)?,
             any: l.dns,
-            names: l.mcp.iter().map(|(h, _)| h.clone()).collect(),
+            // Its destinations' names, but the host itself's, which its hosts file holds
+            // and no resolver is asked (D236).
+            names: l
+                .named
+                .iter()
+                .map(|(h, _)| h.clone())
+                .filter(|h| h != shards_dns::HOST)
+                .collect(),
             addrs: l.addresses.iter().map(|a| a.addr).collect(),
             local: Vec::new(),
         });
@@ -2427,12 +2453,7 @@ fn child(
             fail(out, c"entering the image as built");
         }
         // The microVM's system, read-only, nosuid and nodev (struct mount_attr).
-        let attr: [u64; 4] = [
-            libc::MOUNT_ATTR_RDONLY | libc::MOUNT_ATTR_NOSUID | libc::MOUNT_ATTR_NODEV,
-            0,
-            0,
-            0,
-        ];
+        let attr: [u64; 4] = [SYSTEM, 0, 0, 0];
         if libc::syscall(
             libc::SYS_mount_setattr,
             libc::AT_FDCWD,
@@ -3046,6 +3067,14 @@ mod tests {
         ] {
             assert!(once_each(s(paths)).is_err(), "{paths:?}");
         }
+    }
+
+    /// A plug root (D235) grants nothing until something is plugged there: Landlock grants
+    /// every right beneath it, and it lies on its domain's root, which the domain's mount of
+    /// the microVM's system keeps read-only, so the domain can make nothing beneath it.
+    #[test]
+    fn a_plug_root_lies_on_a_read_only_root() {
+        assert_ne!(SYSTEM & libc::MOUNT_ATTR_RDONLY, 0);
     }
 
     #[test]

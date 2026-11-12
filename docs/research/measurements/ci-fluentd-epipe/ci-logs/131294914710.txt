@@ -1,0 +1,48 @@
+# gh api repos/hyper-light/shards/actions/jobs/131294914710/logs, colours stripped; lines kept: the unit tests' command, the ship tests, the failure
+590:2026-11-12T15:48:34.6338845Z cargo test --locked --workspace --profile test-release --no-fail-fast --target aarch64-unknown-linux-gnu || status=$?
+777:2026-11-12T16:02:59.7167731Z      Running unittests src/main.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards-94fe5f591af51385)
+4764:2026-11-12T16:07:19.6905640Z      Running unittests src/main.rs (target/aarch64-unknown-linux-gnu/test-release/deps/shards_init-04f064d577c18960)
+1223:2026-11-12T16:03:09.3145797Z test daemon::ship::fluentd::tests::a_lines_parts_still_to_come_go_after_a_part_cut_again ... ok
+1225:2026-11-12T16:03:15.1111904Z test daemon::ship::fluentd::tests::a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing ... ok
+1226:2026-11-12T16:03:15.1249627Z test daemon::ship::fluentd::tests::an_event_acked_on_no_connection_is_refused_as_too_long ... ok
+1227:2026-11-12T16:03:15.1254971Z test daemon::ship::gcplogs::tests::partial_successes_say_what_they_refused ... ok
+1228:2026-11-12T16:03:15.7703435Z test daemon::ship::gelf::tests::a_message_its_receiver_ends_connections_on_is_sent_again_cut ... ok
+1229:2026-11-12T16:03:16.0429479Z test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... FAILED
+1230:2026-11-12T16:03:16.0448277Z test daemon::ship::journald::tests::line_max_is_read_as_journald_reads_its_configuration ... ok
+1231:2026-11-12T16:03:16.0575360Z test daemon::ship::learned::tests::a_destinations_bound_is_learned_from_its_refusals_and_kept ... ok
+1232:2026-11-12T16:03:16.0576134Z test daemon::ship::renewal::tests::the_margin_is_learned_from_answers_and_expiries ... ok
+1233:2026-11-12T16:03:16.0627987Z test daemon::ship::splunk::tests::batches_go_full_or_as_the_log_is_caught_up_with ... ok
+1234:2026-11-12T16:03:16.0667611Z test daemon::ship::splunk::tests::indexed_is_delivered ... ok
+1235:2026-11-12T16:03:16.0706779Z test daemon::ship::splunk::tests::posts_follow_what_hec_refuses_as_too_large ... ok
+1236:2026-11-12T16:03:16.5763206Z test daemon::ship::gelf::tests::a_runs_last_message_refused_at_close_is_sent_again_cut ... ok
+1237:2026-11-12T16:03:16.7363997Z test daemon::ship::stream::tests::a_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+1238:2026-11-12T16:03:16.9377433Z test daemon::ship::stream::tests::a_stream_ends_once_its_receiver_has_ended_its_side ... ok
+1240:2026-11-12T16:03:17.1883184Z test daemon::ship::stream::tests::a_stream_trusts_a_ca_given_beside_the_platforms ... ok
+1241:2026-11-12T16:03:17.4565811Z test daemon::ship::stream::tests::a_tls_receivers_close_notify_ends_its_connection ... ok
+1242:2026-11-12T16:03:19.1856150Z test daemon::ship::stream::tests::what_a_dropped_connection_had_not_delivered_goes_on_the_next ... ok
+1243:2026-11-12T16:03:19.1857060Z test daemon::ship::tests::a_message_refused_as_too_long_is_cut_again ... ok
+1244:2026-11-12T16:03:19.1857884Z test daemon::ship::tests::a_part_never_cuts_a_character_in_two ... ok
+1245:2026-11-12T16:03:19.1868623Z test daemon::ship::tests::a_place_is_kept_as_far_as_its_messages_are_delivered ... ok
+1246:2026-11-12T16:03:19.1877868Z test daemon::ship::tests::a_shippers_place_is_kept ... ok
+1247:2026-11-12T16:03:19.1878410Z test daemon::ship::tests::long_lines_go_in_parts_as_long_as_their_receiver_takes ... ok
+1248:2026-11-12T16:03:19.2800520Z test daemon::ship::tests::parts_are_cut_where_the_ratio_of_written_bytes_says ... ok
+1249:2026-11-12T16:03:19.2801531Z test daemon::ship::tests::parts_are_the_longest_their_receiver_takes_as_written ... ok
+1250:2026-11-12T16:03:19.2804445Z test daemon::ship::tests::segments_wholly_sent_go ... ok
+1251:2026-11-12T16:03:19.2805051Z test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+1265:2026-11-12T16:03:20.2188172Z test daemon::ship::stream::tests::a_unix_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+1398:2026-11-12T16:03:25.8753327Z test daemon::ship::stream::tests::a_stream_closed_delivers_all_it_wrote ... ok
+1641:2026-11-12T16:03:46.9250416Z ---- daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place stdout ----
+1643:2026-11-12T16:03:46.9251186Z thread 'daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place' (40646) panicked at crates/shards/src/daemon/ship/gelf.rs:304:27:
+1649:2026-11-12T16:03:46.9252732Z     daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place
+1641+: 2026-11-12T16:03:46.9250416Z ---- daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place stdout ----
+1641+: 2026-11-12T16:03:46.9250778Z 
+1641+: 2026-11-12T16:03:46.9251186Z thread 'daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place' (40646) panicked at crates/shards/src/daemon/ship/gelf.rs:304:27:
+1641+: 2026-11-12T16:03:46.9251768Z Broken pipe (os error 32)
+1641+: 2026-11-12T16:03:46.9252089Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+1641+: 2026-11-12T16:03:46.9252369Z 
+1641+: 2026-11-12T16:03:46.9252373Z 
+1641+: 2026-11-12T16:03:46.9252446Z failures:
+1641+: 2026-11-12T16:03:46.9252732Z     daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place
+1641+: 2026-11-12T16:03:46.9253008Z 
+1641+: 2026-11-12T16:03:46.9253258Z test result: FAILED. 723 passed; 1 failed; 14 ignored; 0 measured; 0 filtered out; finished in 47.21s
+1641+: 2026-11-12T16:03:46.9253605Z 

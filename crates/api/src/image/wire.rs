@@ -15,8 +15,12 @@ use shards_abi::run;
 pub use shards_abi::run::nesting::Ready;
 
 /// The channel's version, the first byte of [`Request`]: changed only by appending. 2
-/// appends the nesting grant's consent and deadline (D234).
-pub const VERSION: u8 = 2;
+/// appends the nesting grant's consent and deadline (D234); 3, the destinations kept
+/// ([`Narrowing::destinations`], D236), and to each published port in [`Started`], the
+/// members it reaches; 4, a host directory plugged into a running member and let go of
+/// (`PLUG`, `UNPLUG`, answered `PLUGGED`; D235), so that a side that has no plugs refuses
+/// the run as it is asked, before any plug is.
+pub const VERSION: u8 = 4;
 
 /// What the orchestrator's side sends.
 pub mod to_host {
@@ -28,6 +32,11 @@ pub mod to_host {
     pub const STATS: u8 = 4;
     /// Ends the run at once, its VM killed.
     pub const STOP: u8 = 5;
+    /// A [`PlugAsk`](super::PlugAsk): a host directory plugged into a running member
+    /// (D235).
+    pub const PLUG: u8 = 6;
+    /// An [`UnplugAsk`](super::UnplugAsk).
+    pub const UNPLUG: u8 = 7;
 }
 
 /// What the run host sends.
@@ -49,6 +58,8 @@ pub mod to_client {
     /// [`Ready`](super::Ready): the run's own command moved its readiness under the nesting
     /// grant (D234), as its init said it ([`ready`](super::ready) reads it).
     pub const READY: u8 = 23;
+    /// [`PlugAnswer`](super::PlugAnswer): a plug's or an unplug's outcome, by its ask's id.
+    pub const PLUGGED: u8 = 24;
 }
 
 /// Why a payload could not be read or written.
@@ -168,6 +179,9 @@ pub struct Narrowing {
     pub egress: Keep,
     /// Remote MCP servers, `host:port`.
     pub mcp: Keep,
+    /// Destinations, `host:port` as a network's `--egress=HOST:PORT` names one (D236): a
+    /// host's name, an IPv4 address, or `host.docker.internal`, the host itself.
+    pub destinations: Keep,
     /// Names past the microVM, where the image grants them.
     pub dns: bool,
 }
@@ -177,6 +191,7 @@ impl Default for Narrowing {
         Narrowing {
             egress: Keep::All,
             mcp: Keep::All,
+            destinations: Keep::All,
             dns: true,
         }
     }
@@ -253,11 +268,25 @@ pub struct MemberInfo {
 }
 
 /// A published port, bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bound {
     pub guest_port: u16,
     pub proto: Proto,
     pub host: SocketAddr,
+    /// Whom it reaches (D122): each member the image gives this port coming in, several
+    /// alike where several claim it (the one listening takes each connection); none where
+    /// no member claims it, and it reaches the run's own command.
+    pub to: Vec<Receiving>,
+}
+
+/// A member a published port reaches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receiving {
+    /// Its declared index, as [`MemberInfo::index`] says it.
+    pub member: u32,
+    /// The member's own port there: the guest port, unless an `EXPOSE` maps it to another
+    /// (`<port>:<member_port>`, D122).
+    pub port: u16,
 }
 
 /// The run runs.
@@ -372,6 +401,77 @@ pub struct StatsAnswer {
     pub id: u32,
     /// Init's lines, or why none came.
     pub result: Result<Stats, String>,
+}
+
+/// A host directory plugged into running member `member` as the run goes (D235), as
+/// `shards plug volume --for` plugs one: at `at`, absolute and strictly beneath one of the
+/// run's plug roots, which its host names as the run starts (its OS's own, and the
+/// top-level directory of each of its [`ShareAt`]s), so that a project can be plugged at
+/// its host path; the host's files there its member's, read-only where asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlugAsk {
+    pub id: u32,
+    pub member: u32,
+    /// Absolute, UTF-8: the host's directory.
+    pub host: String,
+    /// Absolute: where its member sees it.
+    pub at: String,
+    pub read_only: bool,
+}
+
+/// What is plugged in at `at` let go of: unmounted in its member, refused while anything
+/// there uses it, then taken off the microVM.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnplugAsk {
+    pub id: u32,
+    pub at: String,
+}
+
+/// Why a plug or an unplug was refused, by what refused it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlugRefusal {
+    /// The ask itself: a path that is not absolute, a member the image does not declare.
+    Request = 0,
+    /// The member runs nothing: files alone, or ended.
+    Member = 1,
+    /// `at` lies beneath none of the run's plug roots, which its words name.
+    Outside = 2,
+    /// Something is plugged in at `at` already.
+    Taken = 3,
+    /// The host's directory could not be opened, or served.
+    Host = 4,
+    /// The microVM could not take it: no slot free, or its guest refused it.
+    Device = 5,
+    /// An unplug's: nothing is plugged in at `at`.
+    Unknown = 6,
+    /// An unplug's: something in the member uses it.
+    Busy = 7,
+}
+
+fn plug_refusal(tag: u8) -> Result<PlugRefusal, WireError> {
+    Ok(match tag {
+        0 => PlugRefusal::Request,
+        1 => PlugRefusal::Member,
+        2 => PlugRefusal::Outside,
+        3 => PlugRefusal::Taken,
+        4 => PlugRefusal::Host,
+        5 => PlugRefusal::Device,
+        6 => PlugRefusal::Unknown,
+        7 => PlugRefusal::Busy,
+        tag => {
+            return Err(WireError::Tag {
+                what: "a plug's refusal",
+                tag,
+            });
+        }
+    })
+}
+
+/// A plug's or an unplug's outcome, by its ask's id: done, or refused and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlugAnswer {
+    pub id: u32,
+    pub result: Result<(), (PlugRefusal, String)>,
 }
 
 /// How the run ended.
@@ -669,6 +769,7 @@ impl Request {
                 w.u64(budget);
             }
         }
+        w.keep(&self.egress.destinations)?;
         w.done()
     }
 
@@ -730,11 +831,8 @@ impl Request {
                 host_port,
             });
         }
-        let egress = Narrowing {
-            egress: r.keep()?,
-            mcp: r.keep()?,
-            dns: r.flag()?,
-        };
+        // Its destinations come last, appended in version 3.
+        let (egress, mcp, dns) = (r.keep()?, r.keep()?, r.flag()?);
         let n = r.count(4 + 4 + 1)?;
         let mut shares = Vec::with_capacity(n);
         for _ in 0..n {
@@ -745,6 +843,12 @@ impl Request {
         }
         let nesting = r.flag()?;
         let ready_by = if r.flag()? { Some(r.u64()?) } else { None };
+        let egress = Narrowing {
+            egress,
+            mcp,
+            destinations: r.keep()?,
+            dns,
+        };
         r.end()?;
         Ok(Request {
             image,
@@ -779,6 +883,84 @@ impl Credit {
         };
         r.end()?;
         Ok(c)
+    }
+}
+
+impl PlugAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.u32(self.member);
+        w.text(&self.host)?;
+        w.text(&self.at)?;
+        w.u8(u8::from(self.read_only));
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PlugAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = PlugAsk {
+            id: r.u32()?,
+            member: r.u32()?,
+            host: r.text()?,
+            at: r.text()?,
+            read_only: r.flag()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl UnplugAsk {
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        w.text(&self.at)?;
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<UnplugAsk, WireError> {
+        let mut r = Reader(payload);
+        let ask = UnplugAsk {
+            id: r.u32()?,
+            at: r.text()?,
+        };
+        r.end()?;
+        Ok(ask)
+    }
+}
+
+impl PlugAnswer {
+    /// Its id, then 0, or 1, its refusal's tag and why.
+    pub fn encode(&self) -> Result<Vec<u8>, WireError> {
+        let mut w = Writer(Vec::new());
+        w.u32(self.id);
+        match &self.result {
+            Ok(()) => w.u8(0),
+            Err((cause, why)) => {
+                w.u8(1);
+                w.u8(*cause as u8);
+                w.text(why)?;
+            }
+        }
+        w.done()
+    }
+
+    pub fn decode(payload: &[u8]) -> Result<PlugAnswer, WireError> {
+        let mut r = Reader(payload);
+        let id = r.u32()?;
+        let result = match r.u8()? {
+            0 => Ok(()),
+            1 => Err((plug_refusal(r.u8()?)?, r.text()?)),
+            tag => {
+                return Err(WireError::Tag {
+                    what: "a plug's answer",
+                    tag,
+                });
+            }
+        };
+        r.end()?;
+        Ok(PlugAnswer { id, result })
     }
 }
 
@@ -832,6 +1014,11 @@ impl Started {
             w.u8(b.proto as u8);
             w.ip(Some(b.host.ip()));
             w.u16(b.host.port());
+            w.count(b.to.len())?;
+            for r in &b.to {
+                w.u32(r.member);
+                w.u16(r.port);
+            }
         }
         w.done()
     }
@@ -848,7 +1035,7 @@ impl Started {
                 runs: r.flag()?,
             });
         }
-        let n = r.count(2 + 1 + 1 + 2)?;
+        let n = r.count(2 + 1 + 1 + 2 + 4)?;
         let mut published = Vec::with_capacity(n);
         for _ in 0..n {
             let guest_port = r.u16()?;
@@ -858,10 +1045,19 @@ impl Started {
                 tag: 0,
             })?;
             let port = r.u16()?;
+            let receivers = r.count(4 + 2)?;
+            let mut to = Vec::with_capacity(receivers);
+            for _ in 0..receivers {
+                to.push(Receiving {
+                    member: r.u32()?,
+                    port: r.u16()?,
+                });
+            }
             published.push(Bound {
                 guest_port,
                 proto,
                 host: SocketAddr::new(ip, port),
+                to,
             });
         }
         r.end()?;
@@ -1059,6 +1255,56 @@ pub fn ready(payload: &[u8]) -> Result<Ready, WireError> {
 mod tests {
     use super::*;
 
+    /// A plug's ask, an unplug's and their answer come back as they went, each refusal by
+    /// its tag; a truncated, trailing or unknown-tagged one is refused, never a default.
+    #[test]
+    fn plugs_round_trip_and_bad_ones_are_refused() {
+        let ask = PlugAsk {
+            id: 7,
+            member: 2,
+            host: "/Users/u/proj".into(),
+            at: "/Users/u/proj".into(),
+            read_only: true,
+        };
+        let bytes = ask.encode().unwrap();
+        assert_eq!(PlugAsk::decode(&bytes).unwrap(), ask);
+        assert_eq!(PlugAsk::decode(&bytes[..bytes.len() - 1]), Err(WireError::Short));
+        assert_eq!(
+            PlugAsk::decode(&[bytes.as_slice(), &[0]].concat()),
+            Err(WireError::Trailing)
+        );
+        let mut flag = bytes.clone();
+        *flag.last_mut().unwrap() = 2;
+        assert!(matches!(PlugAsk::decode(&flag), Err(WireError::Tag { .. })));
+        let un = UnplugAsk {
+            id: 8,
+            at: "/Users/u/proj".into(),
+        };
+        assert_eq!(UnplugAsk::decode(&un.encode().unwrap()).unwrap(), un);
+        for result in [
+            Ok(()),
+            Err((PlugRefusal::Request, "a path".to_string())),
+            Err((PlugRefusal::Member, String::new())),
+            Err((PlugRefusal::Outside, "the run's plug roots are /Users".into())),
+            Err((PlugRefusal::Taken, String::new())),
+            Err((PlugRefusal::Host, String::new())),
+            Err((PlugRefusal::Device, String::new())),
+            Err((PlugRefusal::Unknown, String::new())),
+            Err((PlugRefusal::Busy, String::new())),
+        ] {
+            let answer = PlugAnswer { id: 9, result };
+            assert_eq!(PlugAnswer::decode(&answer.encode().unwrap()).unwrap(), answer);
+        }
+        assert!(matches!(
+            PlugAnswer::decode(&[0, 0, 0, 9, 1, 8, 0, 0, 0, 0]),
+            Err(WireError::Tag { .. })
+        ));
+        assert!(matches!(
+            PlugAnswer::decode(&[0, 0, 0, 9, 2]),
+            Err(WireError::Tag { .. })
+        ));
+    }
+
     fn request() -> Request {
         Request {
             image: "registry.example/codex:1".into(),
@@ -1092,6 +1338,7 @@ mod tests {
             egress: Narrowing {
                 egress: Keep::Only(vec!["443/tcp".into()]),
                 mcp: Keep::All,
+                destinations: Keep::All,
                 dns: false,
             },
             shares: vec![ShareAt {
@@ -1140,10 +1387,27 @@ mod tests {
         .encode()
         .unwrap();
         assert_eq!(
-            asked.get(asked.len() - 10..).unwrap(),
-            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8],
-            "appended last: the grant's flag, then the deadline's"
+            asked.get(asked.len() - 11..).unwrap(),
+            [1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 0],
+            "appended: the grant's flag, the deadline's, then the destinations kept (all)"
         );
+        // Destinations kept by name, the host itself among them (D236), and none.
+        for destinations in [
+            Keep::Only(vec![
+                "api.openai.com:443".into(),
+                "host.docker.internal:7070".into(),
+            ]),
+            Keep::Only(Vec::new()),
+        ] {
+            let narrowed = Request {
+                egress: Narrowing {
+                    destinations,
+                    ..request().egress
+                },
+                ..request()
+            };
+            assert_eq!(Request::decode(&narrowed.encode().unwrap()).unwrap(), narrowed);
+        }
         for c in [
             Credit {
                 member: 0,
@@ -1162,6 +1426,8 @@ mod tests {
             let ask = StatsAsk { id: 9, scope };
             assert_eq!(StatsAsk::decode(&ask.encode()).unwrap(), ask);
         }
+        // A port no member claims (the run's own command's), one member's, and one two
+        // members claim, one of them at a port of its own (D122).
         let started = Started {
             members: vec![MemberInfo {
                 index: 1,
@@ -1169,13 +1435,41 @@ mod tests {
                 name: "main".into(),
                 runs: false,
             }],
-            published: vec![Bound {
-                guest_port: 8080,
-                proto: Proto::Tcp,
-                host: "[::1]:40000".parse().unwrap(),
-            }],
+            published: vec![
+                Bound {
+                    guest_port: 8080,
+                    proto: Proto::Tcp,
+                    host: "[::1]:40000".parse().unwrap(),
+                    to: Vec::new(),
+                },
+                Bound {
+                    guest_port: 53,
+                    proto: Proto::Udp,
+                    host: "127.0.0.1:5353".parse().unwrap(),
+                    to: vec![Receiving { member: 1, port: 53 }],
+                },
+                Bound {
+                    guest_port: 8081,
+                    proto: Proto::Tcp,
+                    host: "0.0.0.0:8081".parse().unwrap(),
+                    to: vec![
+                        Receiving { member: 0, port: 80 },
+                        Receiving {
+                            member: u32::MAX,
+                            port: u16::MAX,
+                        },
+                    ],
+                },
+            ],
         };
         assert_eq!(Started::decode(&started.encode().unwrap()).unwrap(), started);
+        let bytes = started.encode().unwrap();
+        for cut in 0..bytes.len() {
+            assert!(
+                Started::decode(bytes.get(..cut).unwrap()).is_err(),
+                "cut at {cut}"
+            );
+        }
         let refused = Refused {
             cause: Cause::Widening,
             why: "egress 22/tcp: the image grants none".into(),
@@ -1250,13 +1544,26 @@ mod tests {
         v1.truncate(v1.len() - 2);
         v1[0] = 1;
         assert_eq!(Request::decode(&v1), Err(WireError::Version(1)));
+        // The nesting flag, before the deadline's tag and the destinations': no flag.
         let mut flag = request().encode().unwrap();
-        let at = flag.len() - 2;
+        let at = flag.len() - 3;
         flag[at] = 2;
         assert_eq!(
             Request::decode(&flag),
             Err(WireError::Tag {
                 what: "a flag",
+                tag: 2
+            })
+        );
+        // The destinations' list, last: no list of version 3's.
+        let mut list = request().encode().unwrap();
+        if let Some(last) = list.last_mut() {
+            *last = 2;
+        }
+        assert_eq!(
+            Request::decode(&list),
+            Err(WireError::Tag {
+                what: "a grant list",
                 tag: 2
             })
         );
@@ -1289,6 +1596,16 @@ mod tests {
         w.u8(0);
         w.u32(u32::MAX);
         assert_eq!(Request::decode(&w.0), Err(WireError::Short));
+        // A port said to reach four billion members, in a few bytes.
+        let mut w = Writer(Vec::new());
+        w.u32(0);
+        w.u32(1);
+        w.u16(80);
+        w.u8(Proto::Tcp as u8);
+        w.ip(Some("127.0.0.1".parse().unwrap()));
+        w.u16(8080);
+        w.u32(u32::MAX);
+        assert_eq!(Started::decode(&w.0), Err(WireError::Short));
     }
 
     /// A staged credential never reaches Debug.

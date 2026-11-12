@@ -21276,3 +21276,282 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   comparison job on main's next run); clippy on the targets the record lists as running; one x86_64 glibc
   failure of `a_worker_not_reaped_ends_no_other` after both fixes, at load 30, whose output
   was lost to a filter (no seccomp kill logged; 66 runs since passed).
+
+### M526. Numbers whose exponents are large in shards' Rego, past their text: comparisons, sums, reading and integers (D98)
+
+- **Question.** CI's fuzz job ran `rego-builtins` out of memory on main ten times on
+  2026-11-12 (run 43250570050's `lt(33, 3e33333333332)` and nine runs before it), each
+  input an exponent of millions to billions. M524 writes a float's text from the digits Go
+  reads. What of the rest a builtin does with such a number: compare it, add it, read it,
+  make it an integer, range over it? And what does OPA do with the same operands?
+- **Method.** origin/main 87bf86b31; the fix at 944f16220, then merged with M524's lane
+  (5e53d5e3a). `docs/research/measurements/ci-rego-compare`: the ten artifacts from the
+  jobs' logs (`logs/ci-fuzz-failures.log`), replayed with CI's flags; OPA v1.14.1's own
+  builtins on the same operands and the bound's edges, one case a process given 120 s
+  (`opa/run.sh`, go1.26.1); num-bigint 0.4.8's decimal conversion by size
+  (`bigint-text`); shards' builtins at the bound (`at-bound`, release, n = 21, beside a
+  fuzz run); fuzzing as CI's job does (`fuzz-linux.sh`: nightly-2026-09-05, cargo-fuzz
+  0.13.1 built with 1.98.1, `-rss_limit_mb=2048 -max_len=65536`, the artifacts as seeds)
+  on adacachy2 (Linux 7.3.3-1-cachyos x86_64, 32 cores, held to 4 and 16 GiB); the
+  crate's tests and one mutant a fix (`mutate.py`) on this Mac (Apple M5 Max, macOS
+  26.4.1, shared with other sessions' builds). 2026-11-12.
+- **Results.**
+  - Before: every artifact ran CI's runner out of memory (2,049 to 2,166 MB of 2,048);
+    seven replayed here ran past libFuzzer's 120 s timeout. After: each answers in 0 ms on
+    Linux, comparisons exactly, integers past the bound with "number too big".
+  - OPA, on the same operands (`logs/opa-behaviour.jsonl`):
+
+    | call | OPA v1.14.1 | shards |
+    |---|---|---|
+    | `lt`, `max`, `sort`, `equal` past Go's big.Rat limits (five artifacts and cases) | panics, "illegal value" | the exact order |
+    | `lt` of 1e-21306, 1e-76573, 1e-97879 and 2^-70777, 2^-254370, 2^-325147 | 1, -1, 1 | 1, -1, 1 |
+    | `ceil` of the two `ceil` artifacts | 10.4 s and 7.8 s, two million digits | "number too big" |
+    | `abs` and `div` of four artifacts, `numbers.range_step`'s | still working at 120 s | M524's text; a range as long as asked |
+    | `abs(1e3000000)`, `ceil(1e3000000)` | 15.7 s, 41.7 s | M524's text; "number too big" |
+    | `abs(1e-30000)`, `abs(1e-300000)` | 3.4 s; still working at 120 s | M524's text |
+    | `rem(1e200000, 7)`, `bits.negate(1e200000)` | at once; 0.03 s | "number too big" |
+    | `bits.lsh(1, 2^62)` | panics, `makeslice: len out of range` | "number too big" |
+    | `time.date(1e200000)`, `units.parse_bytes("1e700000000")` | "timestamp too big", 0 | the same |
+
+  - Go's own text of a tiny number is quadratic in its exponent (golang/go#11068): near
+    2^-70777 5 to 20 s an operation, near 2^-254370 49 s to 3 min (`logs/go-text-timings.log`).
+  - num-bigint's decimal conversion (`logs/bigint-text.log`): 17 ms at 10^5 bits, 0.45 s
+    at 10^6, 3.4 s at 3.3 × 10^6, 23 s at 10^7, near n^1.8.
+  - At the bound, MantExp 10^5 (`logs/shards-cost-at-bound.log`, p50 of 21): `ceil(1e30102)`
+    78 ms, `round(-1e30102)` 53 ms, `format_int(1e30102, 10)` 1.9 ms.
+  - The comparison keeps every order the exact scaling gave (20,000 random pairs), and
+    sums and differences round as Go's exact ones (160,000).
+  - Fuzzing, ten times CI's 60 s for `rego-builtins` and CI's 60 s for the rest, nothing
+    found: at 944f16220 (`logs/fuzz-linux-944f162.log`) 2,205,952 runs, the others from
+    350,367 (`rego`) to 19,567,834 (`snapshot-state`); merged, at 5e53d5e3a
+    (`logs/fuzz-linux-5e53d5e.log`), 302,971 runs, the artifacts replaying in 0 to 1.7 s
+    (M524's texts, the longest 130 million digits), the others from 458,268 to 22,543,821.
+  - Mutants: each fix's guard removed fails its test, 10 of 10 at 944f16220 and 9 of 9 at
+    5e53d5e3a, the text's bound gone with the merge (`logs/mutants.log`).
+- **Open.**
+  - Debug builds only, origin/main's as this branch's: `tests/builtins.rs`'s corpus
+    overflows `stack::LEAF` in the test's own recursive `encode`, and `tests/compile.rs`'s
+    two 10 s budgets miss. Both pass in release, as CI runs them.
+  - `number_compare` is no total order where OPA's trimmed-float shortcut makes equal
+    what the exact order separates (OPA's own: 10.0 equals 1 and 10, while 1 < 10), nor
+    for a number `exact_parts` cannot read (an exponent past i64), ordered by its text.
+    Rust's stable `sort` panics on it, and a release build aborts: `sort` of 200,000 random
+    arrays of such numbers panicked 79,016 times on the quirk alone and 53,534 on the
+    unread alone (`sort-order`, `logs/sort-order.log`), on origin/main as here. Go's sort
+    does not panic. Owed, its own change (R01).
+  - A float's text is as long as its exponent asks (M524): up to 646 million digits at
+    Go's MaxExp, which the fuzz harness holds three times; such texts took the merged
+    fuzzer from 3,700 to 500 runs a second.
+  - `numbers.range` makes as many numbers as asked (D98); the fuzz target asks it for at
+    most one a byte of its input.
+- **Rules** (policy df2acf47, role implementer): `ci-rego-compare/evidence.json` accounts
+  for R01 to R16. The timings are an implementer's, owed the coordinator's review (R14).
+
+### M527. What a log stream's write meets once its receiver has ended the connection (D163)
+
+- **Question.** CI's unit tests failed `daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place`
+  now and then (runs 43183804136 and 43189239973 on x86_64 Linux, 43250570050 on aarch64
+  Linux): the close said `Broken pipe (os error 32)`, where D163 says a receiver's end
+  before the stream's is followed and the close says `ConnectionAborted`. What does a
+  stream's write meet once its receiver has ended the connection, how much does a
+  connection take before its writer waits, and what did the stream make of it?
+- **Method.** `docs/research/measurements/ci-fluentd-epipe/` (its README has every command,
+  revision and log): `endmet.py` (a writer blocked as its receiver reads 4,096 bytes and
+  closes with the rest unread; two writes after the receiver's close, with nothing and
+  with a byte unread; 3 rounds), `onesend.py` (what one blocking send(2) of 16 MiB says
+  as its receiver ends the connection; 3 rounds), `absorbed.py` (what a connection takes
+  before its writer waits, its receiver reading 4,096 bytes and then nothing; 5 rounds),
+  every socket with the platform's defaults as `Stream` makes them; and the unit tests,
+  `--profile test-release`, of main (87bf86b31, fe44bc8ca), of main with the new test
+  (`a_write_that_meets_its_receivers_end_is_followed_as_one_seen`), with the fix, and
+  with one text of the fix removed, each test alone in its process (`repeat.sh`), many at
+  once. On Adas-MacBook-Pro-2.local (Darwin 25.4.0, arm64, 18 cores, shared: load 15 to
+  211) and adacachy2 (CachyOS, Linux 7.3.3, x86_64, 32 cores; every run a user unit
+  bounded to 4 CPUs and 16 GiB), 2026-11-12.
+- **Found.** What a write meets, the same in every round but where a cell says "or":
+
+  | | blocked as its receiver ends | two writes after a clean end | two writes after an end with bytes unread | one send(2) of 16 MiB |
+  |---|---|---|---|---|
+  | Linux TCP | ECONNRESET | ok, EPIPE | ECONNRESET, EPIPE | 523,856 sent, then ECONNRESET |
+  | Linux TLS | ECONNRESET | ok, EPIPE | ok, EPIPE | |
+  | Linux unix | EPIPE | EPIPE, EPIPE | EPIPE, EPIPE | 109,632 to 146,176 sent, then EPIPE |
+  | macOS TCP | ECONNRESET or EPIPE | ok, EPIPE | EPIPE, EPIPE | EPIPE, none said sent |
+  | macOS TLS | EPIPE | ok, EPIPE | ok, EPIPE | |
+  | macOS unix | EPIPE | EPIPE, EPIPE | EPIPE, EPIPE | EPIPE, none said sent |
+
+  What a connection took before its writer waited: Linux 2,720,256 bytes over TCP (all 5
+  rounds) and 233,152 over a unix socket; macOS 548,188 to 1,465,848 over TCP and 12,288
+  over a unix socket.
+
+  The flaky test, alone in its process, many at once:
+
+  | build | host | runs at once | n | failed |
+  |---|---|---|---|---|
+  | main 87bf86b31 | macOS, load 86 to 211 | 8 | 200 | 3, each `gelf.rs:304:27: Broken pipe (os error 32)` |
+  | main fe44bc8ca | Linux, load 3 to 4 | 8 | 200 | 0 |
+  | main fe44bc8ca | Linux | 32 | 200 | 1, `Broken pipe (os error 32)` |
+  | main fe44bc8ca | Linux | 32 | 1,000 | 17, each `Broken pipe (os error 32)` |
+  | main, beside the fix | Linux, load up to 76 | 16 of each | 1,000 | 19, each `Broken pipe (os error 32)` |
+  | the fix, beside main | Linux, the same | 16 of each | 1,000 | 0 |
+  | main 87bf86b31, beside the fix | macOS, load 59 to 117 | 8 of each | 312 | 0 |
+  | the fix, beside main | macOS, the same | 8 of each | 309 | 0 |
+
+  The new test: before the fix, its send of 16 MiB said `Broken pipe` (macOS) and
+  `Connection reset by peer` (Linux); driven as a shipper drives it (`evidence-test.rs`),
+  40 tries over each transport and neither host took the message once, held it, or was
+  shown it refused. With the fix: 200 of 200 passed on Linux, 32 at once (load up to 78),
+  and 200 of 200 on macOS, 8 at once (load 110 to 129); a first version that asked whether
+  any of the message went by the bytes written failed on macOS 50 times of 50. With the
+  fix but for one text (`Err(self.write_failed(e))` as `Err(e)`, a write on an existing
+  connection): failed on both, at its close, `tcp: Connection reset by peer (os error
+  104)` on Linux and `tcp: Broken pipe (os error 32)` on macOS.
+- **Reading.**
+  - A write meets its receiver's end before the stream's look does wherever the end
+    comes between the two, or while the write is under way. The flaky test's close wrote
+    a line's last part on the connection whose receiver had just ended it on the part
+    before (a unix socket meets EPIPE at once; TCP once its first write drew the reset),
+    and said the write's error. The shipper tries again after any error, and the stream
+    had followed the end there, so nothing was lost, as M525 found when it made the test
+    try again as the shipper does; but on a new connection the stream followed none.
+  - A message still being written as its receiver ends the connection is one the receiver
+    refuses as it reads past its bound, wherever the message is longer than what the
+    connection holds (above): the stream gave it back to its caller unheld, so no end
+    ever pointed at it, nothing cut it, and its run's log stopped there. Now it is held,
+    and the end followed as one the stream finds.
+  - Whether any of such a message went cannot be read from the count of bytes written:
+    macOS's write(2) says the error alone. So it is held once its connection carried
+    messages (over TLS, its handshake done).
+  - What would show this wrong: a host whose write after its receiver's end succeeds and
+    is never followed by an end the stream finds; or one where a connection holds 16 MiB,
+    which leaves the new test to the stream's look, not its write.
+
+### M528. A parent's ID outlives it on Windows: the E2E harness took an orphaned ping for a direct boot's process
+
+- **Question.** `a_direct_boot_ended_at_its_deadline_leaves_none_of_its_processes` failed
+  on windows-2025 (CI run 43251385669, job 131297794363, 2556e892f): `left running:
+  [(6900, "PING.EXE")] of [(6900, "PING.EXE"), (3136, "shards.exe"), (6688,
+  "shards-vm.exe")]`. A direct boot starts no ping. Whose process was it, and why was it
+  counted as the run's?
+- **Method.** `measurements/pid-reuse` (`cargo run --release -- 20`, twice; its output in
+  `results/`). Each attempt:
+  - cmd.exe starts ping, as the daemon unit tests' `sleeper` does (`cmd /c ping -n 601
+    127.0.0.1 >nul`). Only cmd.exe is ended, which leaves ping an orphan.
+  - A marker thread's ID is freed just before cmd.exe's, and threads are started and
+    joined until the marker's ID comes back.
+  - Then a process is started, and Toolhelp32's snapshot read for what it lists under
+    that process: by parent ID alone (the harness's walk), and by the creation-time rule
+    (GetProcessTimes; psutil's `Process.children`, which drops a child older than its
+    parent).
+
+  Hosts, 2026-11-12: Windows 11 Pro 10.0.26200 (the dockurr/windows guest on adacachy, 8
+  vCPUs); jupiter (Windows 11 10.0.26200, WHP) for the direct boot's test, and for
+  PowerShell's start and end of 3,000 processes in turn after each of 5 ended cmd.exes.
+- **Found.**
+  - Process and thread IDs come from one table, and the ID freed longest ago is handed
+    out first. The marker came back after 2,146 to 2,218 threads, every attempt, in 0.50
+    to 1.33 s.
+  - In 7 of 20 and 10 of 20 attempts the next process took cmd.exe's ID. Each time,
+    Toolhelp32 listed the orphaned ping under it by parent ID (its `th32ParentProcessID`
+    still cmd.exe's), and the ping had started first (e.g. 134390168088308814 against the
+    taker's 134390168093764188, in 100 ns ticks). By the rule, nothing was under the taker
+    in any of the 40.
+  - On jupiter no ended cmd.exe's ID came back within 3,000 processes, in 5 of 5 trials:
+    each process's ID went back to the free list behind the others. A reuse waits until
+    the list turns over, and a CI runner's suite turns it over. The sleeper's pings live
+    600 s; `daemon::tests` ran 16:36 to 16:38 and the boot test 16:42 in that job.
+- **Fix.** On Windows, `common::processes` keeps a process's listed parent only where that
+  parent started no later than it did, else gives 0 (`live_parents`). `under` and
+  `vm_processes_under` walk that.
+  - `a_parent_that_started_after_its_child_is_not_its_parent` (boot.rs) holds the rule.
+    Its mutant, the rule removed, fails because the orphan gets the later process as its
+    parent: `[0, 4, 10, 30, …]` where `[0, 4, 10, 0, …]` was expected.
+  - On jupiter's WHP the direct boot's test passed 3 of 3 with the fix, and boot.rs whole
+    2 of 2 (32 passed each; `results/jupiter-tests.txt`).
+- **Reading.** The fault was the harness's, not the product's. The run's share process
+  and VM process had both ended by the deadline in that job. The same walk also chose what
+  `run_command` ends on Windows at a deadline (`Leftovers::Ended`), so it could have ended
+  another test's process. What would falsify the fix: a process listed under a run that
+  started before the run's client did.
+- **Unverified.** CI's windows-2025 run of the fix. The test's other windows-2025 failure
+  has a different cause and is owed a live repro: at c01aeb941 (job 131325553441) the
+  share process and the VM process themselves were still running E2E's bound after the
+  client's TerminateProcess.
+
+### M529. What limits how many threads a Windows process may have, and what each costs it (D181)
+
+- **Question.** Windows keeps no count of a process's threads, and `platform::thread_limit`
+  said none there, so the daemon took POSIX's least, 64 threads: 27 clients, 13 connections
+  a microVM's engine, which answered 503 to engine_ring's 32 streams at once on WHP
+  (ring-pins-v1 r16). What does limit a Windows process's threads, what does one cost it,
+  which of that can a process read, and does Windows refuse a thread where a count from
+  those says?
+- **Method.** `measurements/win-thread-limits` (`run.sh`) on jupiter (Windows 10.0.26200.9974,
+  AMD Ryzen AI Max+ 395, 32 CPUs, 123.6 GiB; in kiln's job, which sets no memory limit;
+  shared with other work, the system's commit 39 to 60 GB of its 141 GB), release builds,
+  2026-11-12:
+  - the host's limits (GetSystemInfo, GlobalMemoryStatusEx, GetPerformanceInfo) and the
+    job's (QueryInformationJobObject); the PE headers' SizeOfStackReserve and
+    SizeOfStackCommit, the harness's and a test-release `shards.exe`'s;
+  - the main thread and a thread std starts by default: GetCurrentThreadStackLimits, each
+    region of its stack (VirtualQuery), its stack guarantee (SetThreadStackGuarantee(0)), its
+    TEB's region (NtCurrentTeb, winnt.h) and winternl.h's TEB;
+  - bursts of 2,000 and 20,000 threads held parked with their JoinHandles: the process's
+    commit (PrivateUsage), pool quota and handles, and the system's (CommitTotal), a thread;
+  - a copy of the harness in a job holding its process's commit to 16, 64 and 256 MiB
+    (JOB_OBJECT_LIMIT_PROCESS_MEMORY), which starts threads, each parked before the next,
+    until Windows refuses one, and lets them all go before it says anything;
+  - `crates/vmm` platform/windows_process.rs's tests, natively, test-release, then under five
+    mutants of it (`measurements/win-thread-limits/mutations`).
+
+  Raw: `measurements/win-thread-limits/results/jupiter-2026-11-12.txt`.
+- **Found.**
+  - Address space: 140,737,488,224,256 B a process (128 TiB less 128 KiB, `ullTotalVirtual`);
+    a std thread reserves 2 MiB (std's default, `RUST_MIN_STACK` unset), the main thread its
+    image's 1 MiB: 67,108,863 threads.
+  - Commit: the host's limit, 141,087,805,440 B (`ullTotalPageFile`, as CommitLimit). In a job
+    holding its process to 64 MiB, `ullTotalPageFile` and `ullAvailPageFile` still said the
+    host's: a job's limits are read from the job.
+  - A std thread's stack as it begins: 24,576 B of guard pages (PAGE_GUARD: std's
+    SetThreadStackGuarantee(0x5000), 20,480, and a page) below its pages in use, 4,096 B, the
+    image's SizeOfStackCommit (`shards.exe`'s too, the linker's default); but 8,192 B in use
+    for the first thread std starts in a process (a test's job child: 40,960 B counted so,
+    then 36,864 B for the next), and for every thread under the test harness's output
+    capture. Its TEB: 8,192 B (its region; the TEBs' shared allocation grew so by it),
+    winternl.h's 6,024 B in two pages.
+  - Charged the process a std thread, parked: 47,655 to 48,009 B in the bursts, 47,847 to
+    48,094 B in the jobs; nonpaged pool quota 137 B; one handle while its JoinHandle lives.
+    About 7 KB of it past its stack's pages and its TEB: its share of the heap.
+  - Charged the system: 83.5 KB a thread, the median of eight bursts of 20,000, four of them
+    within 77 to 84 KB (the system's commit moved by −0.5 to +3.0 GB across a burst with
+    other work): about 35 KB more than the process's, the kernel's for its kernel stack,
+    which no call reports a thread.
+  - In the jobs: Windows started 333, 1,380 and 5,563 threads of 16, 64 and 256 MiB and
+    refused the next with ERROR_COMMITMENT_LIMIT (1455), 16,384, 20,480 and 24,576 B short of
+    the limit. Counted as `thread_limit` counts one (guard, initial commit and TEB: 36,864 B),
+    the limits hold 455, 1,820 and 7,281.
+  - The job child's first version started threads without waiting for each to begin. Once
+    it was refused at 1,659 threads (40,049 B a thread, threads not yet begun having
+    committed no guarantee) and then died of stack overflow (0xC00000FD), two of its threads
+    unable to grow their stacks; twice it was refused at 1,377 (48,254 B a thread) and ended
+    clean. Parked one by one, six children ran clean.
+  - The tests: green, `thread_limit` 3,827,251 on jupiter and the job child's 64 threads
+    charged 47,360 B each, counted 36,864 B. Mutants: `thread_limit` saying none again (the
+    old code) fails both live tests; the reservation counted as committed fails both; the
+    job's limit unread fails the job's ("not the job's limit: 141087805440"); every committed
+    page of the stack counted fails the live test's thread that touched 256 KiB (303,104 B
+    counted against 45,056 B); the TEB uncounted survives, an undercount, which only loosens
+    the limit and no test holds the count from above. platform::windows_thread's two
+    raised-priority tests failed alike on main's own vmm, which this change leaves as it is;
+    kiln's job holds its processes to a priority class (LimitFlags 0x20), a likely cause,
+    not checked.
+- **Consequence.** D181: on Windows `thread_limit` is the fewest of the address space over a
+  thread's reservation, the commit limit (`ullTotalPageFile`, or the job's where less) over
+  the commit Windows charges every thread (its stack's guard pages and initial commit, its
+  TEB), and a process's 2^24 handles: on jupiter 3,827,251 threads, 1,913,620 clients.
+  Since it counts less than Windows charges (the pages a thread's code touches, about 7 KB
+  of heap, and the kernel's 35 KB or so, which no call reports a thread), it is never under
+  what Windows starts, and over it by that (455/333, 1,820/1,380 and 7,281/5,563 in the
+  jobs).
+- **Unverified.** The pins test's 32 streams at once past the old bound on WHP (ROOT's); a
+  Windows on arm64 (no host); a job nested under one holding it to less, whose limit its
+  processes cannot read; the kernel's share on a quiet host.

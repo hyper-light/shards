@@ -1,0 +1,453 @@
+# linux-merged.sh final2: main d35c4cf79 with stream.rs 8da059c8, the compiled content of 74c6b92e7 (linux-build.sh final2 d35c4cf79; its first try met a full disk on the runner, 7 GB left by others, and its second built)
+== 2026-11-12T20:52:26Z Linux 7.3.3-1-cachyos x86_64 final2 at d35c4cf79
+d35c4cf7 Merge origin/main into p/exec-admission-v1
+stream.rs: 8da059c85a9398d5db3ca8c4b9d7ff71075e7a8dcadac82bd1d95325818321b6  -
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 1m 24s
+  Executable unittests src/main.rs (/home/adalundhe/ci-fluentd-epipe/target/test-release/deps/shards-3195cd79c7e86214)
+# daemon::ship:
+
+running 30 tests
+test daemon::ship::fluentd::tests::an_event_acked_on_no_connection_is_refused_as_too_long ... ok
+test daemon::ship::gcplogs::tests::partial_successes_say_what_they_refused ... ok
+test daemon::ship::fluentd::tests::a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing ... ok
+test daemon::ship::gelf::tests::a_message_its_receiver_ends_connections_on_is_sent_again_cut ... ok
+test daemon::ship::journald::tests::line_max_is_read_as_journald_reads_its_configuration ... ok
+test daemon::ship::learned::tests::a_destinations_bound_is_learned_from_its_refusals_and_kept ... ok
+test daemon::ship::renewal::tests::the_margin_is_learned_from_answers_and_expiries ... ok
+test daemon::ship::splunk::tests::batches_go_full_or_as_the_log_is_caught_up_with ... ok
+test daemon::ship::splunk::tests::indexed_is_delivered ... ok
+test daemon::ship::splunk::tests::posts_follow_what_hec_refuses_as_too_large ... ok
+test daemon::ship::fluentd::tests::a_lines_parts_still_to_come_go_after_a_part_cut_again ... ok
+test daemon::ship::gelf::tests::a_runs_last_message_refused_at_close_is_sent_again_cut ... ok
+test daemon::ship::stream::tests::a_stream_ends_once_its_receiver_has_ended_its_side ... ok
+test daemon::ship::stream::tests::a_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::stream::tests::a_stream_trusts_a_ca_given_beside_the_platforms ... ok
+test daemon::ship::stream::tests::a_tls_receivers_close_notify_ends_its_connection ... ok
+test daemon::ship::stream::tests::a_unix_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::stream::tests::what_a_dropped_connection_had_not_delivered_goes_on_the_next ... ok
+test daemon::ship::tests::a_message_refused_as_too_long_is_cut_again ... ok
+test daemon::ship::tests::a_part_never_cuts_a_character_in_two ... ok
+test daemon::ship::tests::a_place_is_kept_as_far_as_its_messages_are_delivered ... ok
+test daemon::ship::tests::a_shippers_place_is_kept ... ok
+test daemon::ship::tests::long_lines_go_in_parts_as_long_as_their_receiver_takes ... ok
+test daemon::ship::tests::parts_are_cut_where_the_ratio_of_written_bytes_says ... ok
+test daemon::ship::tests::parts_are_the_longest_their_receiver_takes_as_written ... ok
+test daemon::ship::tests::segments_wholly_sent_go ... ok
+test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+test daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen ... ok
+test daemon::ship::stream::tests::a_stream_closed_delivers_all_it_wrote ... ok
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... ok
+
+test result: ok. 29 passed; 0 failed; 1 ignored; 0 measured; 712 filtered out; finished in 10.76s
+
+# flaky test:
+daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place: n=200 parallel=32 ok=200 failed=0
+run 2 ok
+run 5 ok
+run 32 ok
+run 3 ok
+run 22 ok
+run 14 ok
+run 16 ok
+run 1 ok
+run 10 ok
+run 24 ok
+run 19 ok
+run 4 ok
+run 12 ok
+run 29 ok
+run 8 ok
+run 28 ok
+run 7 ok
+run 11 ok
+run 9 ok
+run 30 ok
+run 6 ok
+run 18 ok
+run 21 ok
+run 20 ok
+run 27 ok
+run 26 ok
+run 25 ok
+run 17 ok
+run 15 ok
+run 31 ok
+run 23 ok
+run 13 ok
+run 34 ok
+run 33 ok
+run 37 ok
+run 39 ok
+run 35 ok
+run 36 ok
+run 46 ok
+run 45 ok
+run 44 ok
+run 38 ok
+run 43 ok
+run 62 ok
+run 50 ok
+run 56 ok
+run 55 ok
+run 40 ok
+run 42 ok
+run 52 ok
+run 49 ok
+run 59 ok
+run 41 ok
+run 47 ok
+run 53 ok
+run 48 ok
+run 54 ok
+run 51 ok
+run 60 ok
+run 57 ok
+run 58 ok
+run 61 ok
+run 63 ok
+run 64 ok
+run 65 ok
+run 69 ok
+run 68 ok
+run 66 ok
+run 67 ok
+run 70 ok
+run 71 ok
+run 74 ok
+run 73 ok
+run 72 ok
+run 78 ok
+run 76 ok
+run 77 ok
+run 75 ok
+run 81 ok
+run 85 ok
+run 79 ok
+run 80 ok
+run 87 ok
+run 84 ok
+run 88 ok
+run 82 ok
+run 83 ok
+run 86 ok
+run 94 ok
+run 89 ok
+run 93 ok
+run 91 ok
+run 90 ok
+run 92 ok
+run 95 ok
+run 96 ok
+run 97 ok
+run 98 ok
+run 99 ok
+run 100 ok
+run 101 ok
+run 102 ok
+run 105 ok
+run 104 ok
+run 103 ok
+run 106 ok
+run 117 ok
+run 107 ok
+run 110 ok
+run 111 ok
+run 108 ok
+run 120 ok
+run 115 ok
+run 114 ok
+run 112 ok
+run 109 ok
+run 121 ok
+run 113 ok
+run 118 ok
+run 119 ok
+run 124 ok
+run 116 ok
+run 126 ok
+run 125 ok
+run 123 ok
+run 122 ok
+run 127 ok
+run 128 ok
+run 130 ok
+run 129 ok
+run 131 ok
+run 132 ok
+run 133 ok
+run 135 ok
+run 137 ok
+run 136 ok
+run 134 ok
+run 138 ok
+run 139 ok
+run 141 ok
+run 140 ok
+run 143 ok
+run 149 ok
+run 146 ok
+run 145 ok
+run 152 ok
+run 151 ok
+run 142 ok
+run 144 ok
+run 157 ok
+run 148 ok
+run 147 ok
+run 150 ok
+run 153 ok
+run 155 ok
+run 158 ok
+run 154 ok
+run 156 ok
+run 159 ok
+run 160 ok
+run 161 ok
+run 164 ok
+run 162 ok
+run 163 ok
+run 166 ok
+run 165 ok
+run 167 ok
+run 168 ok
+run 172 ok
+run 170 ok
+run 171 ok
+run 169 ok
+run 175 ok
+run 177 ok
+run 176 ok
+run 178 ok
+run 174 ok
+run 183 ok
+run 180 ok
+run 188 ok
+run 173 ok
+run 179 ok
+run 187 ok
+run 185 ok
+run 184 ok
+run 189 ok
+run 181 ok
+run 186 ok
+run 190 ok
+run 182 ok
+run 191 ok
+run 192 ok
+run 195 ok
+run 193 ok
+run 194 ok
+run 196 ok
+run 197 ok
+run 198 ok
+run 199 ok
+run 200 ok
+# new test:
+daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen: n=200 parallel=32 ok=200 failed=0
+2026-11-12T20:57:49Z
+ 12:57:49 up 17:49,  0 users,  load average: 2.50, 3.68, 5.18
+run 5 ok
+run 4 ok
+run 2 ok
+run 12 ok
+run 1 ok
+run 9 ok
+run 14 ok
+run 10 ok
+run 18 ok
+run 8 ok
+run 29 ok
+run 22 ok
+run 19 ok
+run 26 ok
+run 20 ok
+run 3 ok
+run 25 ok
+run 7 ok
+run 11 ok
+run 24 ok
+run 13 ok
+run 21 ok
+run 31 ok
+run 15 ok
+run 6 ok
+run 16 ok
+run 28 ok
+run 27 ok
+run 30 ok
+run 23 ok
+run 32 ok
+run 17 ok
+run 33 ok
+run 34 ok
+run 35 ok
+run 37 ok
+run 36 ok
+run 38 ok
+run 39 ok
+run 41 ok
+run 40 ok
+run 45 ok
+run 42 ok
+run 44 ok
+run 43 ok
+run 46 ok
+run 47 ok
+run 48 ok
+run 49 ok
+run 51 ok
+run 50 ok
+run 55 ok
+run 52 ok
+run 53 ok
+run 56 ok
+run 54 ok
+run 57 ok
+run 58 ok
+run 60 ok
+run 61 ok
+run 59 ok
+run 64 ok
+run 63 ok
+run 62 ok
+run 66 ok
+run 65 ok
+run 67 ok
+run 69 ok
+run 68 ok
+run 70 ok
+run 71 ok
+run 73 ok
+run 72 ok
+run 75 ok
+run 77 ok
+run 76 ok
+run 74 ok
+run 78 ok
+run 79 ok
+run 80 ok
+run 81 ok
+run 82 ok
+run 83 ok
+run 84 ok
+run 85 ok
+run 86 ok
+run 87 ok
+run 88 ok
+run 89 ok
+run 90 ok
+run 91 ok
+run 92 ok
+run 96 ok
+run 94 ok
+run 93 ok
+run 95 ok
+run 97 ok
+run 98 ok
+run 99 ok
+run 102 ok
+run 101 ok
+run 100 ok
+run 103 ok
+run 104 ok
+run 105 ok
+run 106 ok
+run 108 ok
+run 107 ok
+run 109 ok
+run 110 ok
+run 111 ok
+run 112 ok
+run 113 ok
+run 114 ok
+run 115 ok
+run 116 ok
+run 117 ok
+run 118 ok
+run 119 ok
+run 120 ok
+run 121 ok
+run 122 ok
+run 123 ok
+run 124 ok
+run 125 ok
+run 128 ok
+run 126 ok
+run 127 ok
+run 130 ok
+run 129 ok
+run 131 ok
+run 132 ok
+run 133 ok
+run 135 ok
+run 134 ok
+run 136 ok
+run 137 ok
+run 138 ok
+run 141 ok
+run 140 ok
+run 139 ok
+run 142 ok
+run 143 ok
+run 144 ok
+run 145 ok
+run 146 ok
+run 147 ok
+run 148 ok
+run 149 ok
+run 150 ok
+run 151 ok
+run 153 ok
+run 152 ok
+run 154 ok
+run 155 ok
+run 156 ok
+run 157 ok
+run 158 ok
+run 160 ok
+run 159 ok
+run 161 ok
+run 162 ok
+run 163 ok
+run 164 ok
+run 165 ok
+run 166 ok
+run 167 ok
+run 168 ok
+run 169 ok
+run 170 ok
+run 171 ok
+run 172 ok
+run 173 ok
+run 174 ok
+run 175 ok
+run 176 ok
+run 177 ok
+run 178 ok
+run 179 ok
+run 180 ok
+run 181 ok
+run 182 ok
+run 183 ok
+run 184 ok
+run 186 ok
+run 185 ok
+run 187 ok
+run 188 ok
+run 189 ok
+run 191 ok
+run 190 ok
+run 192 ok
+run 193 ok
+run 194 ok
+run 195 ok
+run 196 ok
+run 197 ok
+run 198 ok
+run 199 ok
+run 200 ok
+# clippy (exit 0):
+8da059c85a9398d5db3ca8c4b9d7ff71075e7a8dcadac82bd1d95325818321b6  crates/shards/src/daemon/ship/stream.rs
+d35c4cf7 Merge origin/main into p/exec-admission-v1
+    Checking shards v0.7.0 (/home/adalundhe/ci-fluentd-epipe/repo/crates/shards)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.58s

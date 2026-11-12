@@ -134,7 +134,7 @@ const DEFAULT_POOL: usize = 2;
 
 /// The PCI slots each run's microVM has for devices plugged into it (D214): four, or what
 /// SHARDS_PCI_SLOTS says, 0 for none.
-fn pci_slots() -> u8 {
+pub(crate) fn pci_slots() -> u8 {
     std::env::var("SHARDS_PCI_SLOTS")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -1525,7 +1525,7 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
 
 /// How much of a microVM's output its log keeps unless a setting says otherwise: its
 /// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
-const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
+pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
@@ -3399,7 +3399,7 @@ impl<D: Disk> Daemon<D> {
             .agentfile
             .as_ref()
             .map(|a| &a.grants)
-            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
+            .filter(|g| g.past());
         // Its user network's own destinations for its members' commands (D192, the
         // network's shards.egress): kept apart from an image's agents' grants, whose flows
         // its network process could not tell from the command's, so refused beside them,
@@ -3459,14 +3459,13 @@ impl<D: Disk> Daemon<D> {
                         return None;
                     }
                 };
-                let named: Vec<(String, u16)> = g
-                    .mcp
-                    .iter()
-                    .filter_map(|e| {
-                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
-                        Some((host.to_string(), port.parse().ok()?))
-                    })
-                    .collect();
+                // Its remote MCP servers' and its networks' destinations (D236), each by name.
+                let mut named = crate::agentfile::named(&g.mcp);
+                for d in crate::agentfile::named(&g.destinations) {
+                    if !named.contains(&d) {
+                        named.push(d);
+                    }
+                }
                 Some(shards_net::encode_policy(&ports, &named, g.dns))
             }
         };
@@ -3834,6 +3833,9 @@ impl<D: Disk> Daemon<D> {
                 // starts no domain without one.
                 if prepared.agentfile.is_some() {
                     prepared.spec.setup.extend(crate::setup::domain_seccomp(kernel)?);
+                    // Its domains' plug roots (D235), beneath which what is plugged into one
+                    // as it runs lies, at its host path.
+                    prepared.spec.setup.extend(crate::setup::plug_roots(&points));
                 }
                 // A joiner's are volumes of its microVM's join share, each named so that no
                 // other microVM can guess it (D119), as no run's own shares are its.
@@ -11703,9 +11705,11 @@ mod tests {
         let mut spare = Reserve::default();
         assert!(spare_held(&mut spare));
         let client = UnixStream::connect(&path).unwrap();
+        // Bounded before it is refused: macOS refuses setsockopt(2) on a socket whose
+        // connection has ended (EINVAL; CI run 43189239973, aarch64-apple-darwin).
+        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(refuse_api(&listener, &mut spare));
         assert!(spare.is_some(), "the spare not made again");
-        client.set_read_timeout(Some(PATIENCE)).unwrap();
         assert!(
             matches!(shards_ipc::recv(&client), Ok(None)),
             "the client was not refused"

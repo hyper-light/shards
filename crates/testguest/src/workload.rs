@@ -45,6 +45,7 @@ pub fn main() -> ! {
         "managed-reap" => crate::managed_reap::run(arg(1), arg(2), arg(3)),
         "managed-reap-child" => crate::managed_reap::child(arg(1), arg(2)),
         "cat" => cat(),
+        "plugged" => crate::plugged::main(args.get(1..).unwrap_or_default()),
         // DMA through each PCI function at ADDRESS..., one group's, by its VFIO (D154):
         // its group's, or its own device node's and iommufd.
         "vfio-dma" | "vfio-dma-cdev" => {

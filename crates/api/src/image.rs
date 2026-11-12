@@ -25,8 +25,8 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, Ready, RunEnd, Secret, Stats,
-    StatsScope,
+    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
+    RunEnd, Secret, Stats, StatsScope,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -155,6 +155,8 @@ pub enum ImageRefusal {
         what: &'static str,
         kind: std::io::ErrorKind,
     },
+    /// A plug or an unplug its run's host refused (D235), by what refused it.
+    Plug(PlugRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -168,6 +170,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Ended(end) => write!(f, "the run has ended: {end:?}"),
             Self::Host(why) => write!(f, "the run's host: {why}"),
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
+            Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
         }
     }
 }
@@ -177,16 +180,18 @@ impl std::error::Error for ImageRefusal {}
 /// What boots images.
 pub trait Images: Send + Sync {
     fn backend(&self) -> Result<crate::Backend, ImageRefusal>;
-    /// Boots `spec`'s image, returning once its members have started, or why not. It is the
-    /// caller's until it drops, which ends it.
-    fn boot(&self, spec: &ImageSpec) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
+    /// Boots `spec`'s image, returning once its members have started, or why not, waiting
+    /// at most `patience` for it (`Duration::MAX`: until the run starts or its host ends):
+    /// past it, the run's host is killed and its run refused with what it last said. It is
+    /// the caller's until it drops, which ends it.
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal>;
 }
 
 /// A booted image. Dropping it ends it.
 pub trait ImageGuest: Send + Sync {
     /// Every member the image declares, by its declared index.
     fn members(&self) -> &[MemberInfo];
-    /// Each port published, as bound.
+    /// Each port published, as bound, and the members it reaches ([`Bound::to`]).
     fn published(&self) -> &[Bound];
     /// A member's channel, as a pipe's read end, its bytes exactly as the member wrote
     /// them, ending at the channel's end; once each. What no one reads backs up into that
@@ -208,8 +213,27 @@ pub trait ImageGuest: Send + Sync {
     /// where it stays. Refused for a run whose spec does not ask for the grant, and once the
     /// run has ended with nothing newer ([`ImageRefusal::Ended`]).
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
+    /// Host directory `host` plugged into running member `member` as the run goes (D235),
+    /// at `at`: absolute, strictly beneath one of the run's plug roots, which its host names
+    /// as it starts (its OS's own, and the top-level directory of each of its shares), so
+    /// that a project is plugged at its host path. The host's files there are the member's,
+    /// read-only where asked; the plug grants nothing beyond its own path. Waits at most
+    /// `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
+    fn plug(
+        &self,
+        member: &MemberName,
+        host: &std::path::Path,
+        at: &str,
+        read_only: bool,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
+    /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
+    /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
+    fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
-    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak.
+    /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak. Returns
+    /// once the run's end is told, its VM gone; its host then reaps what it started and
+    /// exits on its own.
     fn stop(&self) -> Result<(), ImageRefusal>;
     /// Its end, once it has come, waiting at most `timeout` (`Duration::MAX`: until it
     /// comes).
@@ -231,10 +255,10 @@ impl Images for ImageShards {
         crate::backend().map_err(no_backend)
     }
 
-    fn boot(&self, spec: &ImageSpec) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
+    fn boot(&self, spec: &ImageSpec, patience: Duration) -> Result<Box<dyn ImageGuest>, ImageRefusal> {
         crate::backend().map_err(no_backend)?;
         let request = request(spec)?;
-        Ok(Box::new(session::Session::start(spec, &request)?))
+        Ok(Box::new(session::Session::start(spec, &request, patience)?))
     }
 }
 

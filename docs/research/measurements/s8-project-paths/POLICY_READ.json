@@ -1,0 +1,35 @@
+{
+  "POLICY_READ": true,
+  "revision": "451672250c7837e88d4fe71479a1a3d760d3268d",
+  "source": "origin/main, read in full with git show before any edit, build or run",
+  "files": {
+    "docs/development-rules.md": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+    "AGENTS.md": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+    "docs/development-evidence.md": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63"
+  },
+  "development_rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT, session g121-46 (kiln agent 01a148884a4770fdaf0111f3f792a248)",
+  "task": "Kiln plan 01a1cd8e862e7169a074db3d5fa33f3d step 8: project paths plugged into a running member at their host path; case-insensitive hosts handled; host edits wake the guest's inotify.",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/s8-project-paths",
+  "branch": "p/s8-project-paths-v1",
+  "base": "origin/main 451672250",
+  "owned_paths": [
+    "plug roots and plugs into members: crates/abi run/plug.rs, crates/init hotplug.rs and the plug-root lines of domains.rs (skeleton's roots, image_root's writable layer, exec_child's Landlock rule, SYSTEM), crates/shards daemon/devices.rs, setup.rs plug_roots, the DEVICE call in init run.rs, cmdline PLUG_VOLUME --for",
+    "the orchestrator's plugs: crates/api image wire/session, crates/shards api_run.rs",
+    "the share server's case handling and host edits' notices: crates/vmm devices/virtio/fs, crates/shards share.rs",
+    "docs/design/architecture.md D235, this directory, the tests of the above"
+  ],
+  "not_owned": [
+    "step 5: a member's stdio plumbing",
+    "step 7: harness_env, ENV, HOME, the working directory and mount order in crates/init/src/domains.rs",
+    "step 9: grants"
+  ],
+  "limits": [
+    "no builds on this Mac (load about 200); builds and tests on adacachy (Linux x86_64), the Mac Studio adas-mac-studio.local-2 (macOS arm64), jupiter or the Windows 11 guest on adacachy (Windows x86_64)",
+    "unit and light integration tests of the code touched; no suites or measurements (ROOT's)",
+    "commits via /Users/adalundhe/.kiln-run/bin/gits with named paths; merge origin/main in and push to main fast-forward, never force"
+  ],
+  "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist read in full; AGENTS.md read in full; the 2026-11-12 rule (subagents test their change, merge to main themselves, end) read in the coordinator's brief, which AGENTS.md's older 'subagents do not merge themselves' gives way to as the person's current instruction",
+  "read_at": "2026-11-12"
+}

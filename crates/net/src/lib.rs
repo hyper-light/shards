@@ -274,8 +274,9 @@ pub struct Config {
     /// name the network's members do not hold, and only as a grant names it (D59).
     pub resolvers: Vec<(Ipv4Addr, u16)>,
     /// Destinations granted by name, each a host and a TCP port (an Agentfile's remote MCP
-    /// servers, D59): reached at the address a host is, or at those the host's resolver
-    /// answered for it through this process.
+    /// servers, D59, and its networks' destinations, D236): reached at the address a host
+    /// is, or at those the host's resolver answered for it through this process; the host
+    /// itself (`dns::HOST`) at the gateway, which is its loopback there.
     pub named: Vec<(String, u16)>,
     /// What the named have resolved to, each address with its grant's port.
     pub learned: HashSet<(IpAddr, u16)>,
@@ -432,14 +433,52 @@ impl Config {
         }
     }
 
-    /// Where a flow to `to` goes on the host: `to` itself, but for the gateway under the
-    /// host's network (D124), which is the host's own loopback, of its version.
-    fn host_side(&self, to: IpAddr) -> IpAddr {
+    /// Where a flow to `to`'s `port` of `proto` goes on the host: `to` itself, but for the
+    /// gateway under the host's network (D124), which is the host's own loopback, of its
+    /// version; and for the gateway at a TCP port a grant names the host itself at (D236),
+    /// the host's IPv4 loopback there.
+    fn host_side(&self, to: IpAddr, proto: Proto, port: u16) -> IpAddr {
         match (&self.policy, to) {
             (Policy::Host, IpAddr::V4(v4)) if v4 == self.gateway_ip => IpAddr::V4(Ipv4Addr::LOCALHOST),
             (Policy::Host, IpAddr::V6(v6)) if Some(v6) == self.gateway_ip6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            (Policy::Ports(_), IpAddr::V4(v4))
+                if v4 == self.gateway_ip && proto == Proto::Tcp && self.host_granted(port) =>
+            {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            }
             _ => to,
         }
+    }
+
+    /// Whether a grant names the host itself at TCP `port` (`dns::HOST`, D236): the guest
+    /// reaches it at its gateway, and this process takes that to the host's loopback, at
+    /// that port alone. Under the ports a run's grants give alone: a build's policy, and
+    /// the host's network, have none.
+    fn host_granted(&self, port: u16) -> bool {
+        matches!(self.policy, Policy::Ports(_))
+            && self
+                .named
+                .iter()
+                .any(|(h, p)| *p == port && h.eq_ignore_ascii_case(dns::HOST))
+    }
+
+    /// Whether a question for `name` may go past the microVM: any name where names may be
+    /// resolved (`NETWORK --dns`), else a destination's that a grant names (D59, D236), but
+    /// the host itself's, which is no name of the DNS's (`dns::HOST`).
+    fn asks(&self, name: &str) -> bool {
+        self.dns_all
+            || (!name.eq_ignore_ascii_case(dns::HOST)
+                && self.named.iter().any(|(h, _)| h.eq_ignore_ascii_case(name)))
+    }
+
+    /// The names a grant lets a question ask past the microVM, lowered: its destinations',
+    /// but the host itself's ([`Config::asks`]).
+    fn asked_names(&self) -> Vec<String> {
+        self.named
+            .iter()
+            .map(|(h, _)| h.to_ascii_lowercase())
+            .filter(|h| h != dns::HOST)
+            .collect()
     }
 
     /// Where a connection to `to`'s `port` goes under a build's proxy (D110): to the
@@ -457,6 +496,11 @@ impl Config {
         // An IPv4 address carried in IPv6 (`::ffff:a.b.c.d`) is that address, and is
         // judged as it is: a host socket to it reaches it.
         let to = to.to_canonical();
+        // The host itself, as a grant names it: the gateway, at that TCP port alone, which
+        // `host_side` takes to the host's loopback (D236).
+        if proto == Proto::Tcp && to == IpAddr::V4(self.gateway_ip) && self.host_granted(port) {
+            return true;
+        }
         let named = proto == Proto::Tcp
             && (self.learned.contains(&(to, port))
                 || self.named.iter().any(|(h, p)| {
@@ -1849,12 +1893,9 @@ impl<'r> Stack<'r> {
                 && let Some(&up) = self.cfg.resolvers.first()
             {
                 // Only what a grant names: any name with `--dns`, else a remote MCP
-                // server's own (default deny).
+                // server's or a destination's own (default deny).
                 let asked = dns::query_name(u.payload);
-                let granted = self.cfg.dns_all
-                    || asked
-                        .as_deref()
-                        .is_some_and(|q| self.cfg.named.iter().any(|(h, _)| h.eq_ignore_ascii_case(q)));
+                let granted = asked.as_deref().map_or(self.cfg.dns_all, |q| self.cfg.asks(q));
                 if granted {
                     self.flow((u.src_port, ip.dst, 53), (IpAddr::V4(up.0), up.1), u.payload);
                 } else if let Some(no) = dns::refused(u.payload) {
@@ -1884,7 +1925,7 @@ impl<'r> Stack<'r> {
             }
             // On the host's network (D124), the gateway is the host's loopback.
             if self.cfg.policy == Policy::Host {
-                let to = (self.cfg.host_side(ip.dst), u.dst_port);
+                let to = (self.cfg.host_side(ip.dst, Proto::Udp, u.dst_port), u.dst_port);
                 self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
             }
             return;
@@ -1898,7 +1939,7 @@ impl<'r> Stack<'r> {
             });
             return;
         }
-        let to = (self.cfg.host_side(ip.dst), u.dst_port);
+        let to = (self.cfg.host_side(ip.dst, Proto::Udp, u.dst_port), u.dst_port);
         self.flow((u.src_port, ip.dst, u.dst_port), to, u.payload);
     }
 
@@ -2091,7 +2132,7 @@ impl<'r> Stack<'r> {
                     (Some(to), _) => Some(std::net::SocketAddr::from(to)),
                     (None, Some(_)) => None,
                     (None, None) => Some(std::net::SocketAddr::from((
-                        self.cfg.host_side(ip.dst),
+                        self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port),
                         seg.dst_port,
                     ))),
                 };
@@ -2102,12 +2143,7 @@ impl<'r> Stack<'r> {
             }
             let opened = match resolver {
                 Some(to) => Conn::open_to(key, to, &seg, self.isn(&key)).map(|mut c| {
-                    let names = self
-                        .cfg
-                        .named
-                        .iter()
-                        .map(|(h, _)| h.to_ascii_lowercase())
-                        .collect();
+                    let names = self.cfg.asked_names();
                     c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
                     c
                 }),
@@ -2115,7 +2151,7 @@ impl<'r> Stack<'r> {
                     Some(socket) => Conn::open_unix(key, &socket, &seg, self.isn(&key)),
                     None => Conn::open_to(
                         key,
-                        (self.cfg.host_side(ip.dst), seg.dst_port),
+                        (self.cfg.host_side(ip.dst, Proto::Tcp, seg.dst_port), seg.dst_port),
                         &seg,
                         self.isn(&key),
                     ),
@@ -2234,12 +2270,7 @@ impl<'r> Stack<'r> {
                 }
                 let mut c = Conn::dialed(d.key, sock, &d.syn, d.isn);
                 if d.dns {
-                    let names = self
-                        .cfg
-                        .named
-                        .iter()
-                        .map(|(h, _)| h.to_ascii_lowercase())
-                        .collect();
+                    let names = self.cfg.asked_names();
                     c.dns = Some(dns::Stream::new(self.cfg.dns_all, names));
                 }
                 let slot = self.tcp.reserve(d.key);
@@ -2954,22 +2985,84 @@ mod tests {
         ] {
             assert!(!host.allows(to, Proto::Tcp, 443), "{to}");
         }
-        assert_eq!(host.host_side(gateway), IpAddr::from([127, 0, 0, 1]));
         assert_eq!(
-            host.host_side("fd00:17::1".parse().unwrap()),
+            host.host_side(gateway, Proto::Tcp, 80),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        assert_eq!(
+            host.host_side("fd00:17::1".parse().unwrap(), Proto::Udp, 53),
             "::1".parse::<IpAddr>().unwrap()
         );
         assert_eq!(
-            host.host_side(IpAddr::from([127, 0, 0, 53])),
+            host.host_side(IpAddr::from([127, 0, 0, 53]), Proto::Tcp, 80),
             IpAddr::from([127, 0, 0, 53])
         );
         assert_eq!(
-            host.host_side(IpAddr::from([8, 8, 8, 8])),
+            host.host_side(IpAddr::from([8, 8, 8, 8]), Proto::Tcp, 80),
             IpAddr::from([8, 8, 8, 8])
         );
-        // A policy of grants never makes the gateway the host's loopback.
+        // A policy of grants never makes the gateway the host's loopback, but where a grant
+        // names the host itself (below).
         let ports = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
-        assert_eq!(ports.host_side(gateway), gateway);
+        assert_eq!(ports.host_side(gateway, Proto::Tcp, 80), gateway);
+    }
+
+    /// The host itself, as a destination names it (D236): the gateway, at that TCP port
+    /// alone, taken to the host's IPv4 loopback there; never another port of it, nor UDP,
+    /// nor the host's loopback or the gateway at another port by any other grant, nor the
+    /// host's network's or a build's policy's; and its name is never asked of a resolver,
+    /// where a destination's is.
+    #[test]
+    fn the_host_itself_is_its_one_granted_port() {
+        let bridge = bridge::Bridge::elect(&[]).unwrap();
+        let mut cfg = Config::on_bridge(Policy::Ports(Ports::default()), [2, 0, 0, 0, 0, 1], &bridge);
+        let gateway = IpAddr::V4(cfg.gateway_ip);
+        cfg.named = vec![
+            (dns::HOST.to_string(), 7070),
+            ("api.openai.com".to_string(), 443),
+            ("127.0.0.1".to_string(), 9000),
+        ];
+        assert!(cfg.allows(gateway, Proto::Tcp, 7070));
+        assert_eq!(
+            cfg.host_side(gateway, Proto::Tcp, 7070),
+            IpAddr::from([127, 0, 0, 1])
+        );
+        for (to, proto, port) in [
+            (gateway, Proto::Tcp, 7071),
+            (gateway, Proto::Udp, 7070),
+            (gateway, Proto::Tcp, 443),
+            // The host's loopback, even as a grant names it as an address: never past the
+            // microVM but by the host's own name.
+            (IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 7070),
+            (IpAddr::from([127, 0, 0, 1]), Proto::Tcp, 9000),
+        ] {
+            assert!(!cfg.allows(to, proto, port), "{to} {proto:?} {port}");
+        }
+        assert_eq!(cfg.host_side(gateway, Proto::Udp, 7070), gateway);
+        assert_eq!(cfg.host_side(gateway, Proto::Tcp, 7071), gateway);
+        // A port grant of the same port is no grant of the host.
+        let mut wide = Config::on_bridge(
+            Policy::Ports(Ports::parse("7070").unwrap()),
+            [2, 0, 0, 0, 0, 1],
+            &bridge,
+        );
+        assert!(!wide.allows(gateway, Proto::Tcp, 7070));
+        wide.named = vec![(dns::HOST.to_string(), 7070)];
+        assert!(wide.allows(gateway, Proto::Tcp, 7070));
+        // Nor of any other policy's.
+        for policy in [Policy::AllowAll, Policy::DenyAll] {
+            let mut other = Config::on_bridge(policy, [2, 0, 0, 0, 0, 1], &bridge);
+            other.named = vec![(dns::HOST.to_string(), 7070)];
+            assert!(!other.allows(gateway, Proto::Tcp, 7070));
+            assert_eq!(other.host_side(gateway, Proto::Tcp, 7070), gateway);
+        }
+        // Names: a destination's asked, the host's never, every other refused.
+        assert!(cfg.asks("API.openai.com"));
+        assert!(!cfg.asks("host.docker.internal"));
+        assert!(!cfg.asks("chatgpt.com"));
+        assert_eq!(cfg.asked_names(), ["api.openai.com", "127.0.0.1"]);
+        cfg.dns_all = true;
+        assert!(cfg.asks("chatgpt.com"));
     }
 
     /// What a build's steps reach: the Internet and the host's networks, not the host

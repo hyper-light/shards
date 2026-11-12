@@ -1,0 +1,38 @@
+# this worktree at 6d71ca54b, Mac: shards daemon::ship
+
+running 31 tests
+test daemon::ship::oslog::tests::lines_go_in_parts_os_log_keeps_whole ... ok
+test daemon::ship::renewal::tests::the_margin_is_learned_from_answers_and_expiries ... ok
+test daemon::ship::gcplogs::tests::partial_successes_say_what_they_refused ... ok
+test daemon::ship::splunk::tests::batches_go_full_or_as_the_log_is_caught_up_with ... ok
+test daemon::ship::splunk::tests::indexed_is_delivered ... ok
+test daemon::ship::tests::a_message_refused_as_too_long_is_cut_again ... ok
+test daemon::ship::tests::a_part_never_cuts_a_character_in_two ... ok
+test daemon::ship::splunk::tests::posts_follow_what_hec_refuses_as_too_large ... ok
+test daemon::ship::fluentd::tests::an_event_acked_on_no_connection_is_refused_as_too_long ... ok
+test daemon::ship::tests::a_place_is_kept_as_far_as_its_messages_are_delivered ... ok
+test daemon::ship::tests::a_shippers_place_is_kept ... ok
+test daemon::ship::tests::long_lines_go_in_parts_as_long_as_their_receiver_takes ... ok
+test daemon::ship::tests::parts_are_the_longest_their_receiver_takes_as_written ... ok
+test daemon::ship::tests::what_cutting_a_long_line_costs ... ignored, a measurement (PM M494)
+test daemon::ship::learned::tests::a_destinations_bound_is_learned_from_its_refusals_and_kept ... ok
+test daemon::ship::tests::segments_wholly_sent_go ... ok
+test daemon::ship::fluentd::tests::a_receiver_that_ends_a_connection_after_each_message_loses_and_cuts_nothing ... ok
+test daemon::ship::stream::tests::a_stream_ends_once_its_receiver_has_ended_its_side ... ok
+test daemon::ship::stream::tests::a_stream_trusts_a_ca_given_beside_the_platforms ... ok
+test daemon::ship::tests::parts_are_cut_where_the_ratio_of_written_bytes_says ... ok
+test daemon::ship::stream::tests::a_tls_receivers_close_notify_ends_its_connection ... ok
+test daemon::ship::stream::tests::what_a_dropped_connection_had_not_delivered_goes_on_the_next ... ok
+test daemon::ship::gelf::tests::a_message_its_receiver_ends_connections_on_is_sent_again_cut ... ok
+test daemon::ship::stream::tests::a_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::stream::tests::a_unix_receiver_that_ends_connections_on_a_message_points_at_it ... ok
+test daemon::ship::gelf::tests::a_runs_last_message_refused_at_close_is_sent_again_cut ... ok
+test daemon::ship::fluentd::tests::a_lines_parts_still_to_come_go_after_a_part_cut_again ... ok
+test daemon::ship::stream::tests::a_write_that_meets_its_receivers_end_is_followed_as_one_seen ... ok
+test daemon::ship::fluentd::tests::a_part_refused_goes_again_in_its_lines_place ... ok
+test daemon::ship::stream::tests::a_stream_closed_delivers_all_it_wrote ... ok
+test daemon::ship::oslog::tests::what_os_log_keeps_whole_is_learned_from_the_log ... ok
+
+test result: ok. 30 passed; 0 failed; 1 ignored; 0 measured; 706 filtered out; finished in 45.48s
+
+/tmp/ci-fluentd-build/bin/shards-final daemon::ship 2>&1  0.15s user 0.10s system 0% cpu 47.284 total

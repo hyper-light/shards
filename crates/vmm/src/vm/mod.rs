@@ -2314,10 +2314,11 @@ pub struct VsockHost {
     pub every: Vec<(u32, ServedPort)>,
 }
 
+/// What a [`ServedPort::Admitted`] port's owner did with a guest's connection: took it, or
+/// refused it (the guest's connect is reset).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Admission {
     Accepted,
-    Full,
     Closed,
 }
 
