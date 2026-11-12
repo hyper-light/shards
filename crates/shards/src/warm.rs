@@ -864,7 +864,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             // The host's answer to the guest's ask on the host's network (D124).
             kind::HOST_BOUND if matches!(from, From::Daemon(_)) => {
-                workload::bound_guest(to, &message.payload);
+                let _ = workload::bound_guest(to, &message.payload);
             }
             // A microVM's ports of the host's, let go as it ends (`release_host`).
             kind::HOST_RELEASE if matches!(from, From::Daemon(_)) => {
@@ -996,10 +996,12 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
                         // A joiner's, once it has an id in the guest.
                         Some(0) => {}
                         Some(id) => {
-                            workload::signal_exec(to, id, signal);
+                            let _ = workload::signal_exec(to, id, signal);
                         }
+                        // The daemon's SIGKILL: `kill`, or a stop past its grace.
+                        None if signal == 9 && matches!(from, From::Daemon(_)) => kill_command(to),
                         None => {
-                            workload::signal_guest(to, signal);
+                            let _ = workload::signal_guest(to, signal);
                         }
                     }
                 }
@@ -1064,7 +1066,7 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
             }
             kind::RESIZE if client => {
                 if let Some(size) = shards_abi::run::Size::decode(&message.payload) {
-                    workload::resize_guest(to, size);
+                    let _ = workload::resize_guest(to, size);
                 }
             }
             _ => {}
@@ -1079,13 +1081,25 @@ fn relay_signals(conn: &UnixStream, to: &'static ToGuest, from: From<'_>) {
     if let (From::Daemon(_), Some((signal, grace))) = (&from, order) {
         let _ = writeln!(io::stderr(), "shards: the daemon is gone: the run stops");
         if signal != 0 {
-            workload::signal_guest(to, signal);
+            let sent = workload::signal_guest(to, signal);
             match grace {
-                Some(grace) => std::thread::sleep(grace),
+                // Its grace is the command's, to end on the signal it was sent.
+                Some(grace) if sent.is_ok() => std::thread::sleep(grace),
+                Some(_) => {}
                 None => return,
             }
         }
-        workload::signal_guest(to, 9);
+        kill_command(to);
+    }
+}
+
+/// SIGKILL for the run's command, from its daemon or as its daemon has gone. Where its guest's
+/// signal connection is lost no signal reaches the command, and its microVM's end is the one
+/// way left to end it, as `kill` ends it (D16).
+fn kill_command(to: &ToGuest) {
+    if let Err(workload::Unsent::Lost(lost)) = workload::signal_guest(to, 9) {
+        shards_vmm::warn!("SIGKILL for its command, which no signal reaches ({lost}): its microVM stops");
+        crate::vm_run::stop();
     }
 }
 

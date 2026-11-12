@@ -1,0 +1,65 @@
+# f5bfab285118; 2026-11-12T22:34:43Z Darwin 25.4.0 arm64 26.4; rustc 1.98.1 (48a229cea 2026-09-01); clippy 0.1.98 (48a229ceae 2026-09-01)
+== format
+== aarch64-apple-darwin
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=aarch64_apple_darwin
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'aarch64-apple-darwin'
+warning: aws-lc-sys@0.45.0: Compilation of 'c11.c' succeeded - Ok(["/Users/adalundhe/to-guest-target/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-c11/7dfda64fdf5a526c-c11.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/to-guest-target/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'builtin_swap_check.c' succeeded - Ok(["/Users/adalundhe/to-guest-target/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-builtin_swap_check/7dfda64fdf5a526c-builtin_swap_check.o"]).
+warning: aws-lc-sys@0.45.0: Compilation of 'neon_sha3_check.c' succeeded - Ok(["/Users/adalundhe/to-guest-target/aarch64-apple-darwin/debug/build/aws-lc-sys-3c28618c1f1873bc/out/out-neon_sha3_check/7dfda64fdf5a526c-neon_sha3_check.o"]).
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 58.85s
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.06s
+== x86_64-pc-windows-msvc
+--
+error: unsafe block missing a safety comment
+   --> crates/vmm/src/platform/windows_process.rs:544:17
+    |
+544 |                 unsafe { GetProcessMemoryInfo(GetCurrentProcess(), (&raw mut c).cast(), c.cb) },
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: consider adding a safety comment on the preceding line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#undocumented_unsafe_blocks
+    = note: `-D clippy::undocumented-unsafe-blocks` implied by `-D warnings`
+--
+error: could not compile `shards-vmm` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_PREBUILT_NASM': '0'
+warning: aws-lc-sys@0.45.0: Value: 0 is false.
+warning: aws-lc-sys@0.45.0: Environment Variable found 'AWS_LC_SYS_NO_JITTER_ENTROPY': '1'
+warning: aws-lc-sys@0.45.0: Value: 1 is true.
+warning: aws-lc-sys@0.45.0: Emitting configuration: cargo:rustc-cfg=x86_64_pc_windows_msvc
+warning: aws-lc-sys@0.45.0: Building with: CC
+warning: aws-lc-sys@0.45.0: Symbol Prefix: Some("aws_lc_0_45_0")
+warning: aws-lc-sys@0.45.0: Target platform: 'x86_64-pc-windows-msvc'
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CFLAGS_x86_64_pc_windows_msvc': '--target=x86_64-pc-windows-msvc -Wno-unused-command-line-argument -fuse-ld=lld-link /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/crt/include /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/ucrt /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/um /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/shared /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/winrt '
+warning: aws-lc-sys@0.45.0: Setting CFLAGS_x86_64_pc_windows_msvc: --target=x86_64-pc-windows-msvc -Wno-unused-command-line-argument -fuse-ld=lld-link /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/crt/include /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/ucrt /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/um /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/shared /imsvc /Users/adalundhe/Library/Caches/cargo-xwin/xwin/sdk/include/winrt
+warning: aws-lc-sys@0.45.0: Environment Variable found 'TARGET_CC': 'clang-cl'
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CC_x86_64_pc_windows_msvc': 'clang-cl'
+warning: aws-lc-sys@0.45.0: Setting CC_x86_64_pc_windows_msvc: clang-cl
+warning: aws-lc-sys@0.45.0: Environment Variable found 'TARGET_CXX': 'clang-cl'
+warning: aws-lc-sys@0.45.0: Environment Variable found 'CXX_x86_64_pc_windows_msvc': 'clang-cl'
+warning: aws-lc-sys@0.45.0: Setting CXX_x86_64_pc_windows_msvc: clang-cl
+warning: aws-lc-sys@0.45.0: Compilation of 'stdalign_check.c' succeeded - Ok(["/Users/adalundhe/to-guest-target/x86_64-pc-windows-msvc/debug/build/aws-lc-sys-0e8662150e036f5a/out/out-stdalign_check/7dfda64fdf5a526c-stdalign_check.o"]).
+## scripts/lint (macOS, 2 Windows targets) exit 101
+test workload::tests::a_frame_the_guest_cannot_be_sent_fails_its_caller_and_every_later_one ... ok
+test spec::tests::a_spec_its_resolvers_push_past_a_frame_is_refused ... ok
+test workload::tests::a_signal_connection_is_watched_from_its_dial ... ok
+test workload::tests::a_guest_that_says_its_end_has_ended_its_run ... ok
+test workload::tests::frames_wait_for_the_dial_one_for_each_thing_pending ... ok
+test workload::tests::a_signal_connection_saying_anything_else_is_lost ... ok
+test workload::tests::an_exec_waiting_for_a_dial_that_fails_fails_with_it ... ok
+test workload::tests::an_exec_whose_frame_cannot_be_sent_ends_at_once_with_why ... ok
+test workload::tests::an_exec_frame_stays_within_what_a_frame_carries ... ok
+test workload::tests::an_exec_whose_frame_the_guest_never_read_fails_as_its_connection_closes ... ok
+test workload::tests::only_execs_fail_as_the_signal_connection_goes ... ok
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+## shards-vm (all) exit 0
+## workload:: x200: pass 200 fail 0
+# done 2026-11-12T22:36:19Z

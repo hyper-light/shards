@@ -3510,6 +3510,16 @@ fn blocks_online() -> Result<u64, String> {
 fn limits() -> Result<(), String> {
     crate::workload::limits()?;
     let _ = writeln!(io::stdout(), "SHARDS-TEST LIMIT MemTotal {}", mem_total()?);
+    // The tasks there are as init starts, the kernel's own threads and init: what the
+    // kernel's thread limit already holds (/proc/loadavg's fourth field, proc_loadavg(5)).
+    let loadavg = std::fs::read_to_string("/proc/loadavg").map_err(|e| format!("/proc/loadavg: {e}"))?;
+    let tasks = loadavg
+        .split_whitespace()
+        .nth(3)
+        .and_then(|field| field.split_once('/'))
+        .map(|(_, tasks)| tasks.to_string())
+        .ok_or_else(|| format!("/proc/loadavg: no tasks in {loadavg:?}"))?;
+    let _ = writeln!(io::stdout(), "SHARDS-TEST LIMIT tasks {tasks}");
     Ok(())
 }
 

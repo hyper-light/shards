@@ -140,3 +140,17 @@ child: exit Ok(ExitStatus(ExitStatus(0)))
 child: limit 268435456: commit 2240512 before the first thread; refused thread 5564 (Some(1455)) at commit 268410880, 24576 short of the limit; charged 47847 B a thread
 child: counted a thread 36864 B (guard 24576, initial commit 4096, TEB 8192; 32768 of its stack committed as it began): the limit holds 7281; Windows started 5563
 child: exit Ok(ExitStatus(ExitStatus(0)))
+
+## 6. Landing (main 75e937bb8, then 13681de5d), 2026-11-12
+## windows_process 6/6 green natively on jupiter at a84cd6abb, 75e937bb8 and 63bdbf315 (the job
+## child's 64 threads charged 47,680, 47,296 and 47,488 B each, counted 36,864; thread_limit
+## 3,827,251 each time). scripts/lint, rustc 1.98.1:
+## - adacachy (CachyOS 7.2.9, zig 0.16.0), 75e937bb8: format, x86_64 and aarch64 linux gnu and
+##   musl: LINT-EXIT 0.
+## - adas-mac-studio.local-2 (macOS 26.4, cargo-xwin 0.23.1, zig 0.16.0, nasm 3.02), 75e937bb8:
+##   format, aarch64-apple-darwin (both passes) clean; x86_64-pc-windows-msvc stopped:
+##   windows_process.rs:544, undocumented_unsafe_blocks (the job test's unsafe call inside
+##   assert_ne!, on a line below its SAFETY comment). Landed so, before the lint ended, it
+##   stopped every agent's lint at that target; fixed in 4f3c06255.
+## - adas-mac-studio.local-2, 63bdbf315: format, x86_64-pc-windows-msvc (both passes) and
+##   aarch64-pc-windows-msvc: LINT-EXIT 0.

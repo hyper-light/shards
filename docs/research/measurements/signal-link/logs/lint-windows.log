@@ -1,0 +1,6 @@
+# cargo xwin clippy --workspace --exclude shards-vmm --all-targets -- -D warnings; f5bfab285118; 2026-11-12T22:37:41Z Darwin 25.4.0 arm64; rustc 1.98.1 (48a229cea 2026-09-01); clippy 0.1.98 (48a229ceae 2026-09-01)
+## x86_64-pc-windows-msvc exit 0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 35s
+## aarch64-pc-windows-msvc exit 0
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 56s
+# done 2026-11-12T22:42:13Z

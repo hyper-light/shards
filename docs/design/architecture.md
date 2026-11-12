@@ -392,7 +392,49 @@ virtio-pmem with DAX ([image-storage](../research/image-storage.md) R1, R2). The
     those a fault raises (BUS, FPE, ILL, SEGV, SYS, TRAP), which a process cannot block
     safely, and those Linux has no number for.
   - They travel on a second vsock connection that the guest opens once the command runs,
-    so unread stdin cannot hold them up.
+    so unread stdin cannot hold them up. Terminal sizes, execs (`EXEC`) and the host's
+    answers on its network (D124) travel on it too.
+  - **That connection's state is explicit** (`workload::Link`): idle (no workload, or its
+    run over), awaiting the guest's dial, connected, or lost. Each frame meets it at once:
+    it goes, it waits for the dial, or it is refused with why (`Unsent`). Before
+    (d35c4cf79), a send that failed was taken as sent and every frame after it waited for
+    a dial that never came, so that an exec asked for then waited for the workload's end;
+    so did one whose frame the guest closed the connection on unread. Reproduced and held
+    by unit tests, mutation-checked (docs/research/measurements/signal-link).
+  - What is asked for before the dial waits for it, as for a restored guest's dial again
+    (D176), one frame for each thing pending and no time bound: a signal once, as Linux
+    holds a standard signal pending once (6.18 kernel/signal.c `legacy_queue`); the
+    terminal's latest size; an exec's start, then its signals and latest size; each ask's
+    latest answer. So no more wait than `NSIG` (64) signals and a size for the workload and
+    for each exec on its way, and an answer for each ask. A real-time signal sent twice
+    before the dial reaches the command once. A number that is no Linux signal (`1..=64`,
+    `_NSIG`) is refused, as init would drop it.
+  - The guest says its relay's end last on the connection (`SIGNALS_END`), its command and
+    its execs over, as the managed control says its own (`MANAGED_CONTROL_END`). The host
+    reads the connection, where nothing else comes: closed without that end, a failed read
+    or send, or anything else said, and the connection is lost. Without that end the host
+    could not tell a lost connection from a run over, as the guest closes it just before
+    its exit status, on another connection.
+  - Lost is for good in its VM process. The guest dials the port once, so that a workload
+    dialing it finds it taken (AGENTFILE_ARCH.md §9.7), and only a copy restored from a save
+    dials again, in a VM process of its own (D176). A redial in place, gated by a token as
+    a restore's is, would be a protocol of its own for a loss no run has shown: not built.
+    From the loss on, every frame is refused with the connection's own error, every exec
+    still waiting for its connection fails with it (`shards exec` says "the guest's signal
+    connection is lost: Broken pipe (os error 32)"), and the VM process's log, its
+    daemon's, says it once.
+  - The run goes on: its stdin, output and end travel on the run connection, which the loss
+    leaves whole. containerd ends a task whose shim connection closes (v2.4.2
+    core/runtime/v2/shim.go `cleanupAfterDeadShim`: the shim's `delete`, then `TaskExit`),
+    as that close is the shim's death, and the shim held the task's stdio and exit; here
+    init holds them, and still says the command's end. Where nothing else reaches the
+    command, its microVM ends: a SIGKILL its daemon sends (`kill`, a stop past its grace)
+    or that its VM sends as the daemon goes, refused for a lost connection, stops the
+    machine at once, where the daemon's fallback waited out a teardown slice and a VM
+    whose daemon had gone found no end at all; a stop signal refused as the daemon goes
+    waits out no grace (moby docker-v29.8.1 daemon/stop.go waits 2 s on a stop signal it
+    could not send). `run --kernel` ends as a signal it cannot forward would end it. A
+    joiner's SIGKILL refused so leaves its provider's microVM running (D119).
   - Through the daemon, a signal that arrives once the run's record is made, before the
     command runs, waits for it (D26). `run --kernel`, whose process is the VM, ends as that
     signal would end it. dockerd instead drops a signal sent before its container starts
@@ -15271,10 +15313,11 @@ It is shards' own MCP's, and its runtime shards' to choose (AGENTFILE_ARCH §11 
   `restart_syscall`, by which the kernel resumes a wait a stop broke into where no handler
   ran (a cgroup's freeze for init's pause and commit, a job-control stop, a debugger): a
   timed futex wait's on every architecture, and the helper's poll on x86_64 (PM M525,
-  M527). It calls only the restart the interrupted call left, else fails with EINTR, so it
-  allows no other call. A worker opens nothing: no file, socket, process or descriptor. Each tool it calls is a frame to the instance over
-  its socket, which the instance answers as it answers its caller's MCP call of that tool,
-  under the same grants, with the same refusals. Helper and workers are the instance's
+  M531). It calls only the restart the interrupted call left, else fails with EINTR, so it
+  allows no other call. A worker opens nothing: no file, socket, process or descriptor.
+  Each tool it calls is a frame to the instance over its socket, which the instance
+  answers as it answers its caller's MCP call of that tool, under the same grants, with
+  the same refusals. Helper and workers are the instance's
   uid, gid and cgroup, its agent's (D60): a program's memory and CPU are its caller's,
   under the domains' memory policy, and need no limits of their own. `shards top` shows
   them as `shards-sandbox` and `shards-program`.
@@ -15312,7 +15355,7 @@ cannot hold, a throw, an error's positions, a syntax error's, a promise nothing 
 `a_worker_is_ended_for_a_call_its_filter_refuses` (`openat`, and x32 on x86_64, SIGSYS),
 `a_worker_stopped_in_a_timed_wait_lives_on` and `the_helper_stopped_in_its_poll_lives_on`
 (each stopped and continued in its wait under its own filter; without `restart_syscall`
-the worker dies on x86_64 and arm64, the helper on x86_64: PM M527),
+the worker dies on x86_64 and arm64, the helper on x86_64: PM M531),
 `initialize_begins_a_session`, `a_cancellation_names_a_request_in_its_own_session`,
 `a_programs_call_is_its_callers`; on real microVMs,
 `code_mode_runs_a_program_with_the_callers_grants`: a's program finds itself, its peers,
@@ -21498,6 +21541,72 @@ The run's stdout stays empty, and the agent of files alone runs nothing. Each of
 mutations fails the test: hiding no other domain, keeping the bounding set, leaving the
 system writable.
 
+**A member's root shows the image's directories as the image made them** (2026-11-12,
+kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7). A domain's root is an overlay of the
+image under a skeleton tmpfs. The skeleton holds what init mounts over and the image may
+lack: `/etc` always, and every mount point of its sockets, its server and its volumes, each
+with its parents. overlayfs shows a directory both layers hold with the upper one's owner
+and mode (Documentation/filesystems/overlayfs.rst, "Directories"), and the skeleton made
+every directory root's, 0755. So a volume at `/home/node/.cache` showed the image's
+`/home/node` (1000:1000 0750) as 0:0 0755, and `/etc` and the root as the skeleton's too.
+Reproduced live with init's system calls in its order, in a user and mount namespace with
+subordinate IDs on Linux 7.2.9 x86_64 (`docs/research/measurements/s7-home-workdir`,
+`repro.py`, `repro-adacachy.log`).
+
+Now each directory the skeleton makes that the image has takes the image's owner and mode
+(fchownat, then fchmodat: a chown clears set-ID bits), and the skeleton's tmpfs root takes
+the image root's (its `mode`, `uid` and `gid` options). A directory the image lacks stays
+root's, 0755, as a mount point's. `a_skeletons_directories_are_the_images_own` runs the
+real `skeleton` and `image_root` in a user and mount namespace and compares the root,
+`/home`, `/home/node`, `/etc` and `/tmp` with the image's, and their owners too where it
+runs as root of IDs past its own (`unshare --map-auto --map-root-user`). It fails at the
+base revision, and with either guard removed: the owner and mode copied, the root's options
+(`mutate4.sh`, `mutate4-adacachy.log`). Where a domain has plug roots (D235), its root's
+own writable layer is the uppermost for `/`, and D235's `image_root` gives that layer the
+image root's owner and mode. **Owed (ROOT):** the same in a real microVM on KVM,
+Hypervisor.framework and WHP.
+
+**A member's environment: init's, the image's, its own, its run's** (2026-11-12, kiln plan
+01a1cd8e862e7169a074db3d5fa33f3d, step 7). A member got init's `PATH` (its directory, its
+`bin`, Docker's), `HOME=/tmp` and `SHARDS_DOMAIN`, then its config's `run.env` (997f4e47e),
+then what D231 stages: none of the image's own `Env`. The sources on that order:
+- OCI image-spec v1.1.0 config.md, `Env`: "These values act as defaults and are merged with
+  any specified when creating a container."
+- moby docker-v29.0.0 daemon/commit.go, `merge`: the run's `-e` kept, and each of the image's
+  appended whose name it does not give; then `CreateDaemonEnvironment` lays that over Docker's
+  own `PATH` and `HOSTNAME` (daemon/container/env.go, `ReplaceOrAppendEnvValues`).
+- Kubernetes, "Define Environment Variables for a Container": "The environment variables set
+  using the env or envFrom field override any environment variables specified in the container
+  image."
+- D231: what is staged goes "over its image's".
+
+So a member's environment is, the last given of each name winning: init's own; over it, the
+image's `Env`; over that, its config's `run.env`, its own, as a pod's container's `env` goes
+over its image's, where the image's is every member's and the run's command's alike; over all,
+what its run stages. Two names keep init's rules:
+- **`PATH`**: init's is the member's directory and its `bin`, then the image's `PATH` where it
+  gives one, else Docker's: the image's replaces Docker's default, as in a container, and a
+  member's own program is still found before the system's (part one). Its program is found on
+  the `PATH` it runs with, a staged one included, where it was found on `run.env`'s alone.
+- **`HOME`**: never the image's. One value for every member is private to none, which a
+  member's `HOME` must be (step 7's acceptance), and the system it would name is read-only to
+  a domain. A member's `HOME` is its scratch unless its own `run.env`, or its run, names one.
+
+`SHARDS_DOMAIN` in the image's `Env` is refused, as in `run.env` and in staging, at each end:
+the build of an image with agents or harnesses (`agentfile::image_env`, `ImageEnvRefused`), the
+daemon's and the run host's reading of the image (`run::prepare`, `agentfile::members_env`),
+and init (`shards_abi::run::members::image_envs`), all in the build's words. The image's
+`Env` reaches init as `image-env=` setup entries, beside the domains' filter. An image of
+neither agents nor harnesses keeps its `ENV` as BuildKit writes it. Tests: the order, the two
+rules and the refusals (`a_members_environment_is_inits_then_its_images_then_its_own`); the
+program found on the `PATH` it runs with
+(`a_members_program_is_found_on_the_path_it_runs_with`); the entries made and read
+(`the_images_variables_are_checked_as_staged_ones`); the daemon's
+(`the_images_environment_is_its_members_as_its_build_checks_it`); the build's
+(`an_image_with_members_never_names_their_domain_in_its_env`). **Owed (ROOT):** a member's
+`env` in a real microVM on KVM, Hypervisor.framework and WHP, of an image whose `ENV` sets
+`PATH`, `HOME` and another name.
+
 Part two, after `no_new_privs`, before its command:
 
 - **Landlock** (Documentation/userspace-api/landlock.rst; ABI 6 at least, which Linux 6.12
@@ -22135,9 +22244,35 @@ orchestrator's own PID 1 and no Agentfile. The record, its evidence and alternat
   refused `Unsupported` on every host.
 - *Staging.* `member-env=` and `member-file=` setup entries, by the member's declared
   index: variables over its image's (`SHARDS_DOMAIN` refused), regular files under its home
-  tmpfs at relative paths, owned by its uid, permission bits alone, applied before its
-  program runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the
-  member reads what it is given.
+  at relative paths, owned by its uid, permission bits alone, applied before its program
+  runs, within `run::MAX_PAYLOAD`. Native-sign-in delegation, not opacity (G18): the member
+  reads what it is given. Its home is where its `HOME` lies, as its variables end
+  (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d, step 7): its scratch at `/tmp`
+  (`HOME=/tmp`, init's), or a writable volume given it, the deepest that holds it, by its
+  mount point as declared or as it lies in the image (a harness's per-user volume at
+  `/home/claude`, `HOME` its `run.env`'s). The home's directories are made where missing,
+  0700 and the member's. A file an earlier run left there (a volume outlives its run) is
+  replaced, as nothing of the member runs yet to read it; one path staged twice is refused;
+  nothing is followed that a link could redirect; files staged for a member whose `HOME` is
+  in neither are refused, as it would never read them. Before, the files went to the
+  scratch whatever `HOME` said, and a harness whose `HOME` was a volume never read them
+  (reproduced, docs/research/measurements/s7-home-workdir).
+- *A member's working directory* (2026-11-12, kiln plan 01a1cd8e862e7169a074db3d5fa33f3d,
+  step 7): `MemberSpec::workdir`, the project path it works in, carried in the request's
+  version 4 and staged as `member-workdir=<index>\0<path>`, one for a member. It is absolute
+  and plain, no empty, `.` or `..` component, within `PATH_MAX`
+  (`shards_abi::run::members::workdir_ok`): a relative or escaping one is refused by
+  `shards_api::image` before the run host starts, by the run host, and by init, as are two
+  for one member. Init enters it where it entered the member's own (`run.workdir` in its
+  directory, which init now holds to the build's rule as well: relative, never leaving the
+  directory). It must be there as the member starts, as an exec's working directory must be
+  (D27): a missing one fails the member's start, `entering its working directory`, and none
+  is made. A process's working directory is the directory it entered, under whatever is
+  mounted there later, so a project plugged into a running member (D235) is not the working
+  directory of a member that started before it: the project must be at its path as the
+  member starts. **Owed:** a boot-time path for that (a share given a member at its host
+  path, or a member started once its project is plugged), D235's and the orchestrator's to
+  choose; the real-VM runs on KVM, Hypervisor.framework and WHP (ROOT).
 - *Ports and grants.* Published ports bound by `publish::bind`, only for a port the image
   gives a member for ingress (D122) or for the run's own command; egress, remote MCP hosts,
   destinations (D236) and DNS the image grants, kept or dropped by the orchestrator, never
