@@ -115,6 +115,7 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
 | gVisor systrap (a reimplemented kernel) | 4.1-4.3 us | 0.94-0.97 us | 500-512 us | 1.0x | M519 |
 | User-mode Linux, seccomp (Linux as a process) | 8.7 us | 8.4-8.7 us | 432-450 us | not measured | M519 |
 | QEMU TCG, full system (translated guest and kernel) | 0.44-0.48 us | 9.1-9.4 us | 1,512-1,626 us | 1.1-1.3x | M521 |
+| a translation engine's own mechanisms, modelled in C (floors, not a translator) | 9 ns of the engine's, plus the guest kernel's work | 0.10-0.37 us (16 in 1.6-5.9 us) | not modelled | loads 2-2.6x native when cached | M523 |
 
 - **Traps cost more than the hardware's nothing, and the Mac's most.** Any route that
   traps each guest system call to the host pays at least 0.70 us on Linux and 3.4 us on
@@ -124,6 +125,13 @@ A KVM guest runs a guest's system calls, faults, processes and own code at nativ
   and 9 times under gVisor's. Its compute costs 1.1 to 1.3 times native. It loses on
   the guest's memory management: faults, processes and context switches (pipe 19 to 23
   us against native's 3). A translator of shards' own has those to beat.
+- **Those losses are QEMU's design, not translation's floor (M523).** At their floor:
+  - an address-space switch with a TLB tagged by address space costs nothing measurable
+    (0.66 to 1.8 us flushed, as QEMU flushes);
+  - a guest fault served inside the engine, with no host trap, costs less than a native
+    one (16 in 1.6 us against 2.25 on an M3 Ultra, 5.5 to 5.9 against 9.1 to 11.1 on an
+    i9);
+  - a cached software-MMU load costs 1.1 to 1.5 ns.
 - **R08's bar.** Four to five times gVisor asks under 1.05 us a system call and 100 to
   128 us a process. Only an in-process trap or translation meets the first.
 - **Host-mapped memory needs the guest's folios.** Under the pinned kernel's default
