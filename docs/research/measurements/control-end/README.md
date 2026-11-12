@@ -209,8 +209,10 @@ reaches each VM's vsock socket over AF_UNIX (`shards-afunix`), as the E2E tests 
   3 round trips, a 1 MiB upload and download, and the guest's counts. A controller of another
   key is refused.
 
-Lint: `cargo clippy --all-targets -- -D warnings`, under the workspace's lints (no unwrap,
-expect, panic, indexing or printing), for every target the harness builds for.
+Lint: `scripts/lint.sh [TARGET...]` from a Mac, as the workspace's scripts/lint: `cargo clippy
+--all-targets -- -D warnings` under the workspace's lints (no unwrap, expect, panic, indexing or
+printing) for each of resources/supported-targets.txt, macOS natively, Linux through zig,
+Windows through cargo-xwin, then `cargo test`.
 
 ## Record
 
