@@ -559,6 +559,23 @@ mod tests {
         assert_eq!(g.flag(field::HOST_WAITS_DATA).load(Ordering::SeqCst), 1);
     }
 
+    /// The relay rings a side only where that side said it waits (Dekker's handshake), so a
+    /// device that attaches without saying it waits for the relay's first bytes is never
+    /// told of them, and a connection's first request never reaches the host.
+    #[test]
+    fn a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device() {
+        let mut g = Guest::connect();
+        assert_eq!(g.offer(whole(SLOT)), Reply::Attached);
+        let request = b"GET /_ping HTTP/1.1\r\nHost: api\r\n\r\n";
+        g.put(0, request);
+        // As the relay does: a doorbell only where the device said it waits.
+        if g.flag(field::HOST_WAITS_DATA).swap(0, Ordering::SeqCst) != 0 {
+            g.send(&[abi::DOORBELL]);
+        }
+        g.turn();
+        assert_eq!(g.read_owner(request.len()), request);
+    }
+
     #[test]
     fn a_refused_offer_leaves_the_connection_plain() {
         let mut g = Guest::connect();
