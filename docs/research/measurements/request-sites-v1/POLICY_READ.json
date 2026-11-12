@@ -1,0 +1,44 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT, agent 01a148884a4770fdaf0111f3f792a248",
+  "documents": {
+    "AGENTS.md": {
+      "bytes": 1793,
+      "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41",
+      "read": "full"
+    },
+    "docs/development-rules.md": {
+      "bytes": 11604,
+      "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+      "read": "full"
+    },
+    "docs/development-evidence.md": {
+      "bytes": 3325,
+      "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63",
+      "read": "full"
+    },
+    "CLAUDE.md": {
+      "bytes": 17012,
+      "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f",
+      "read": "full (an older copy in context plus its three differing hunks from origin/main)"
+    }
+  },
+  "read_from": "origin/main via git show (bff3015182ad754274f1048ce393ac12cb6cd91f); this worktree's copies of all four have the same SHA-256",
+  "base": "origin/p/integrate-engine-20261111 at 032b63b1c (fast-forwarded from 82083f2781bea1db6b4f23c7e154bd3481f4ec00 at ROOT's word: the earlier base did not compile shards-vmm)",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/request-sites-v1",
+  "branch": "p/request-sites-v1",
+  "task": "Make every rewrite of a microVM's `request` (D37) whole-or-absent through the one keep_request in daemon.rs (reachable from daemon/ modules, no duplicate helper): update.rs, networks.rs, engine/own_networks.rs, moves.rs. Red test first for at least one site (fork + RLIMIT_FSIZE + EFBIG, as a_request_written_partway_is_not_kept), green after, guard-removal mutation. Keep each site's log line and error handling. Search the daemon for other in-place writes of files a reader decodes; list them and fix those that are the same defect.",
+  "owned_paths": [
+    "crates/shards/src/daemon.rs (keep_request's visibility and tests)",
+    "crates/shards/src/daemon/update.rs",
+    "crates/shards/src/daemon/networks.rs",
+    "crates/shards/src/daemon/engine/own_networks.rs",
+    "crates/shards/src/daemon/moves.rs",
+    "any other site fixed under the same defect",
+    "docs/research/measurements/request-sites-v1/**"
+  ],
+  "constraints": "no subagents; no push, merge or force; signed commits through /Users/adalundhe/.kiln-run/bin/gits with named paths and the attribution line; no builds on this Mac; unit tests only (cargo test -p shards --bin shards -- daemon::) on kiln Linux runner kiln-a094a12d (8fadc1ec213332e16cb0d915a3fb913f; systemd-run --user --scope -q -p MemoryMax=24G, -j4, TMPDIR=$HOME/g121-tmp, only if pgrep -x amphora-bench finds nothing, zig 0.16.0 on PATH) or adacachy (451397fcc585f7f7cb9aaf00e42064bb) with room, at most cpus=4,mem=16g,disk=40g; real-VM runs are ROOT's; gates: fmt, clippy -D warnings for -p shards --bin shards (x86_64 gnu), scripts/check-development-policy"
+}

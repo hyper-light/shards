@@ -77,6 +77,8 @@ mod run;
 #[cfg(target_os = "linux")]
 mod setup;
 #[cfg(target_os = "linux")]
+mod staged;
+#[cfg(target_os = "linux")]
 mod swap;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod terms;

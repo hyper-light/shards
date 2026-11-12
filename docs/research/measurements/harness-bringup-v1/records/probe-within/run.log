@@ -1,0 +1,6 @@
+shards run vm -d --name probe harness-probe:1 sleep 600
+status Some(0) after 389.376742ms
+--- stdout
+610d6d755697f0553472873e20ad0037432602224c84d5ee208b84df4e03776f
+
+--- stderr

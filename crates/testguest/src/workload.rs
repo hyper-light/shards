@@ -194,6 +194,19 @@ pub fn main() -> ! {
             0
         }
         "exit" => arg(1).parse().unwrap_or(1),
+        // What an orchestrator staged into this member at create (D231): the variable
+        // `arg(1)`'s value on stdout and the file `arg(2)` on stderr, each exactly as given,
+        // or the errno that refused it; then status `arg(3)`.
+        "staged" => {
+            let value = std::env::var_os(arg(1)).unwrap_or_default();
+            let file = std::fs::read(arg(2))
+                .unwrap_or_else(|e| format!("errno {}", e.raw_os_error().unwrap_or(0)).into_bytes());
+            let _ = io::stdout()
+                .write_all(value.as_encoded_bytes())
+                .and_then(|()| io::stdout().flush());
+            let _ = io::stderr().write_all(&file);
+            arg(3).parse().unwrap_or(1)
+        }
         // A step that lasts `arg(1)` ms, for what shows it to be seen as it runs (`sleep`
         // prints `ready` and lasts until a signal ends it).
         "sleep-for" => {

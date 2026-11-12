@@ -109,6 +109,7 @@ pub type Program = dyn Fn(&SimHost) -> End + Send + Sync;
 pub struct SimGuests {
     program: Arc<Program>,
     booted: Mutex<Booted>,
+    gpu_probe: Option<crate::GpuProbe>,
 }
 
 /// The guests a simulator booted: each one's identity's start, and its state while anything holds
@@ -126,10 +127,17 @@ impl std::fmt::Debug for SimGuests {
 }
 
 impl SimGuests {
+    /// Explicit model input; it is never a native device/ACK witness.
+    pub fn with_gpu_probe(mut self, probe: crate::GpuProbe) -> Result<Self, Refusal> {
+        probe.selectors().map_err(Refusal::GpuProbe)?;
+        self.gpu_probe = Some(probe);
+        Ok(self)
+    }
     pub fn new(program: impl Fn(&SimHost) -> End + Send + Sync + 'static) -> SimGuests {
         SimGuests {
             program: Arc::new(program),
             booted: Mutex::new(Booted::default()),
+            gpu_probe: None,
         }
     }
 }
@@ -199,6 +207,21 @@ impl SimHost {
 }
 
 impl Guests for SimGuests {
+    fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<crate::GpuProbe, Refusal> {
+        check(spec)?;
+        if patience.is_zero()
+            || patience == Duration::MAX
+            || std::time::Instant::now().checked_add(patience).is_none()
+        {
+            return Err(Refusal::GpuProbe(crate::GpuProbeError::Pending));
+        }
+        let probe = self
+            .gpu_probe
+            .as_ref()
+            .ok_or(Refusal::GpuProbe(crate::GpuProbeError::Unavailable))?;
+        probe.check(&spec.gpu_devices).map_err(Refusal::GpuProbe)?;
+        probe.try_clone().map_err(Refusal::GpuProbe)
+    }
     fn backend(&self) -> Result<crate::Backend, Refusal> {
         backend()
     }
@@ -300,48 +323,19 @@ struct SimGuest {
 }
 
 impl Guest for SimGuest {
+    fn process_exited(&self) -> Result<bool, Refusal> {
+        Ok(lock(&self.shared).end.is_some())
+    }
     fn connect(&self, port: u32, patience: Duration) -> Result<Box<dyn Stream>, Refusal> {
-        allowed(&self.ports, port)?;
-        // None: past `Instant`'s range (`Duration::MAX`): until the guest listens or ends.
-        let deadline = Instant::now().checked_add(patience);
-        let mut state = lock(&self.shared);
-        loop {
-            if let Some(end) = &state.end {
-                return Err(Refusal::Ended(end.clone()));
-            }
-            if state.listening.contains(&port) {
-                if state.pending.len() >= self.shared.slots {
-                    return Err(Refusal::Channel {
-                        port,
-                        why: format!(
-                            "{} connections wait to be accepted: what this process's descriptors leave",
-                            self.shared.slots
-                        ),
-                    });
-                }
-                let (ours, theirs) = stream::pair().map_err(|e| Refusal::Channel {
-                    port,
-                    why: format!("a socket pair: {e}"),
-                })?;
-                state.pending.push_back((port, theirs));
-                self.shared.changed.notify_all();
-                return Ok(Box::new(ours));
-            }
-            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
-                Some(left) if left.is_zero() => {
-                    return Err(Refusal::Channel {
-                        port,
-                        why: format!("no OK within {patience:?}: the guest does not listen there"),
-                    });
-                }
-                Some(left) => self.wait(state, left),
-                None => self
-                    .shared
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner),
-            };
-        }
+        self.connect_with_budget(port, SimConnectBudget::Standalone(patience))
+    }
+
+    fn connect_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect_with_budget(port, SimConnectBudget::Before(deadline))
+    }
+
+    fn connect_once_before(&self, port: u32, deadline: Instant) -> Result<Box<dyn Stream>, Refusal> {
+        self.connect_with_budget(port, SimConnectBudget::Once(deadline))
     }
 
     fn stop(&self) -> Result<(), Refusal> {
@@ -378,7 +372,114 @@ impl Guest for SimGuest {
     }
 }
 
+#[derive(Clone, Copy)]
+enum SimConnectBudget {
+    Standalone(Duration),
+    Before(Instant),
+    Once(Instant),
+}
+
 impl SimGuest {
+    fn connect_with_budget(&self, port: u32, budget: SimConnectBudget) -> Result<Box<dyn Stream>, Refusal> {
+        allowed(&self.ports, port)?;
+        // None: past `Instant`'s range (`Duration::MAX`): until the guest listens or ends.
+        let deadline = match budget {
+            SimConnectBudget::Standalone(patience) => Instant::now().checked_add(patience),
+            SimConnectBudget::Before(at) | SimConnectBudget::Once(at) => Some(at),
+        };
+        let absolute = match budget {
+            SimConnectBudget::Standalone(_) => None,
+            SimConnectBudget::Before(at) | SimConnectBudget::Once(at) => Some(at),
+        };
+        let mut state = lock(&self.shared);
+        loop {
+            if absolute.is_some_and(|at| Instant::now() >= at) {
+                return Err(Refusal::Connect {
+                    port,
+                    failure: crate::HandshakeError::Expired {
+                        phase: crate::HandshakePhase::Dial,
+                    },
+                });
+            }
+            if let Some(end) = &state.end {
+                return Err(Refusal::Ended(end.clone()));
+            }
+            if state.listening.contains(&port) {
+                if state.pending.len() >= self.shared.slots {
+                    return Err(Refusal::Channel {
+                        port,
+                        why: crate::client::message(format_args!(
+                            "{} connections wait to be accepted: what this process's descriptors leave",
+                            self.shared.slots
+                        ))
+                        .map_err(|_| Refusal::Allocation {
+                            what: "connection diagnostic",
+                        })?,
+                    });
+                }
+                state.pending.try_reserve(1).map_err(|_| Refusal::Allocation {
+                    what: "simulated connection queue",
+                })?;
+                let (ours, theirs) = stream::pair().map_err(|e| {
+                    match crate::client::message(format_args!("a socket pair: {e}")) {
+                        Ok(why) => Refusal::Channel { port, why },
+                        Err(()) => Refusal::Allocation {
+                            what: "connection diagnostic",
+                        },
+                    }
+                })?;
+                let ours = ours.boxed().map_err(|_| Refusal::Allocation {
+                    what: "connection storage",
+                })?;
+                if absolute.is_some_and(|at| Instant::now() >= at) {
+                    return Err(Refusal::Connect {
+                        port,
+                        failure: crate::HandshakeError::Expired {
+                            phase: crate::HandshakePhase::ClearTimeouts,
+                        },
+                    });
+                }
+                state.pending.push_back((port, theirs));
+                self.shared.changed.notify_all();
+                return Ok(ours);
+            }
+            if matches!(budget, SimConnectBudget::Once(_)) {
+                // As the VMM's muxer does, a CONNECT to a port nobody listens on closes unanswered.
+                return Err(Refusal::Connect {
+                    port,
+                    failure: crate::HandshakeError::Closed,
+                });
+            }
+            state = match deadline.map(|d| d.saturating_duration_since(Instant::now())) {
+                Some(left) if left.is_zero() => {
+                    return Err(match budget {
+                        SimConnectBudget::Before(_) | SimConnectBudget::Once(_) => Refusal::Connect {
+                            port,
+                            failure: crate::HandshakeError::Expired {
+                                phase: crate::HandshakePhase::Dial,
+                            },
+                        },
+                        SimConnectBudget::Standalone(patience) => Refusal::Channel {
+                            port,
+                            why: crate::client::message(format_args!(
+                                "no OK within {patience:?}: the guest does not listen there"
+                            ))
+                            .map_err(|_| Refusal::Allocation {
+                                what: "connection diagnostic",
+                            })?,
+                        },
+                    });
+                }
+                Some(left) => self.wait(state, left),
+                None => self
+                    .shared
+                    .changed
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner),
+            };
+        }
+    }
+
     /// Waits at most `left` for a change.
     fn wait<'a>(&'a self, state: MutexGuard<'a, State>, left: Duration) -> MutexGuard<'a, State> {
         self.shared
@@ -393,6 +494,61 @@ impl Drop for SimGuest {
     /// Ends the guest, as dropping a real one does.
     fn drop(&mut self) {
         let _ = self.stop();
+    }
+}
+
+#[cfg(test)]
+mod absolute_tests {
+    use super::*;
+
+    /// D215: an already-listening endpoint is still bounded by original caller
+    /// authority. A fresh cap carries real bytes and a stopped owner stays ended.
+    #[test]
+    fn absolute_connect_refuses_expired_ready_port_then_carries_bytes_within_authority() {
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                listening: BTreeSet::from([5]),
+                ..State::default()
+            }),
+            changed: Condvar::new(),
+            slots: 1,
+        });
+        let guest = SimGuest {
+            ports: vec![5],
+            shared: shared.clone(),
+            identity: Identity {
+                pid: 1,
+                started: 1,
+                vsock: "/model/v".into(),
+            },
+        };
+        let refused = guest.connect_before(5, Instant::now());
+        assert!(matches!(
+            refused,
+            Err(Refusal::Connect {
+                port: 5,
+                failure: crate::HandshakeError::Expired {
+                    phase: crate::HandshakePhase::Dial
+                },
+            })
+        ));
+        assert!(lock(&shared).pending.is_empty());
+        let patience = crate::conformance::PATIENCE.get();
+        let mut ours = guest
+            .connect_before(5, Instant::now().checked_add(patience).unwrap())
+            .unwrap();
+        let (port, mut peer) = lock(&shared).pending.pop_front().unwrap();
+        assert_eq!(port, 5);
+        peer.set_read_timeout(Some(patience)).unwrap();
+        std::io::Write::write_all(&mut ours, b"paid").unwrap();
+        let mut payload = [0; 4];
+        std::io::Read::read_exact(&mut peer, &mut payload).unwrap();
+        assert_eq!(&payload, b"paid");
+        guest.stop().unwrap();
+        assert!(matches!(
+            guest.connect_before(5, Instant::now().checked_add(patience).unwrap()),
+            Err(Refusal::Ended(End::Stopped))
+        ));
     }
 }
 
@@ -449,6 +605,8 @@ mod tests {
             cmdline: String::new(),
             vcpus: 1,
             memory_mib: min_memory_mib(std::env::consts::ARCH),
+            gpu: false,
+            gpu_devices: Vec::new(),
             disks: vec![],
             shares: vec![],
             ports: vec![PORT],

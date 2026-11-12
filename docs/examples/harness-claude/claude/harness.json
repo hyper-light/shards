@@ -1,0 +1,4 @@
+{
+  "entrypoint": "claude -p",
+  "options": ["--output-format", "stream-json", "--verbose", "Reply with the single word: ready"]
+}

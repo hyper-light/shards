@@ -1420,6 +1420,57 @@ mod tests {
         );
     }
 
+    /// A context id the guest reuses after destroying it: a completion of the destroyed
+    /// incarnation still queued when the id comes back lets go of nothing of the new one,
+    /// whose fences the guest's one per-device counter numbers after it (Linux
+    /// virtgpu_fence.c, `++drv->current_fence_id`); the new incarnation's own fence does.
+    #[test]
+    fn a_reused_context_id_takes_no_completion_of_the_destroyed_one() {
+        let (mut s, log, mem) = served();
+        context(&mut s, &mem, 1, 4);
+        let fenced = |fence: u64| Header {
+            kind: cmd::SUBMIT_3D,
+            flags: FLAG_FENCE | FLAG_INFO_RING_IDX,
+            fence_id: fence,
+            ctx_id: 1,
+            ring_idx: 1,
+        };
+        let n = HEADER as u32;
+        assert_eq!(ask(&mut s, &mem, 10, fenced(10), &le(&[4, 0, 0])).0, []);
+        let (used, ..) = ask(&mut s, &mem, 11, plain(cmd::CTX_DESTROY, 1), &[]);
+        assert_eq!(used, [(10, n), (11, n)]);
+        assert_eq!(context(&mut s, &mem, 1, 4), resp::OK_NODATA);
+        assert_eq!(ask(&mut s, &mem, 12, fenced(11), &le(&[4, 0, 0])).0, []);
+        assert_eq!(
+            calls(&log),
+            [
+                "create 1 4 probe",
+                "submit 1 4",
+                "fence 1 1 10",
+                "destroy 1",
+                "create 1 4 probe",
+                "submit 1 4",
+                "fence 1 1 11"
+            ]
+        );
+        assert_eq!(
+            s.signalled(Signal {
+                ctx: 1,
+                ring: 1,
+                fence: 10
+            }),
+            []
+        );
+        assert_eq!(
+            s.signalled(Signal {
+                ctx: 1,
+                ring: 1,
+                fence: 11
+            }),
+            [(12, n)]
+        );
+    }
+
     /// A queue in guest memory, its driver's side.
     struct Ring {
         size: u16,

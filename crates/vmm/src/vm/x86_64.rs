@@ -383,7 +383,7 @@ fn assemble(
     console: Console,
     said: usize,
     hosts: super::Hosts<'_>,
-    gpu: Option<u64>,
+    gpu: Option<super::MachineGpu<'_, '_>>,
     pci: super::Pci<'_>,
 ) -> Result<Assembled, String> {
     if config.nested {
@@ -414,7 +414,9 @@ fn assemble(
     // Its writable layer after them (D190).
     let (layer, end) = super::layer_layout(hosts.layer, end)?;
     // A GPU's window after it, at a GiB boundary, as long as the renderer says (D201).
-    let gpu = gpu.map(|saw| super::gpu_layout(saw, end)).transpose()?;
+    let gpu = gpu
+        .map(|g| super::gpu_layout(g.saw, end, &config.gpu_devices, g.report))
+        .transpose()?;
     let end = match &gpu {
         Some((_, r)) => r
             .base
@@ -662,6 +664,13 @@ fn assigning(
 }
 
 pub fn build(cfg: &Config) -> Result<Machine, super::StartError> {
+    build_reported(cfg, None)
+}
+
+pub fn build_reported(
+    cfg: &Config,
+    report: Option<&mut super::GpuReportTo<'_>>,
+) -> Result<Machine, super::StartError> {
     let (ram, ranges) = ram_ranges(cfg.memory_mib)?;
     let mut config = super::machine_config(cfg)?;
     let layer = super::boot_layer(cfg)?;
@@ -717,7 +726,7 @@ pub fn build(cfg: &Config) -> Result<Machine, super::StartError> {
             cfg.console,
             cfg.said,
             hosts,
-            cfg.gpu.then_some(0),
+            (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(super::MachineGpu { saw: 0, report }),
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,
@@ -806,7 +815,7 @@ pub fn restore(
         console,
         said,
         hosts,
-        snap.config.gpu,
+        snap.config.gpu.map(|saw| super::MachineGpu { saw, report: None }),
         super::Pci {
             slots: snap.config.pci_slots,
             ..super::Pci::default()

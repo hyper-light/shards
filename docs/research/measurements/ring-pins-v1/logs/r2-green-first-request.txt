@@ -1,0 +1,20 @@
+# R09 green and guard mutation for the first-request fix (Ring::attach sets HOST_WAITS_DATA)
+# source: 032b63b1c + this commit's diff (crates/vmm/src/devices/virtio/vsock/{ring.rs,conn/ringed.rs})
+# runner: adacachy (451397fcc585f7f7cb9aaf00e42064bb), linux/x86_64, rustc 1.98.1; a worktree at 032b63b1c with the patch applied
+# commands: systemd-run --user --scope -q -p MemoryMax=16G cargo test -j4 -p shards-vmm --lib -- devices::virtio::vsock
+#           cargo fmt -p shards-vmm --check; cargo clippy -j4 -p shards-vmm --all-targets -- -D warnings
+# date: 2026-11-11
+== GREEN (fix + tests) ==
+test devices::virtio::vsock::conn::ringed::tests::a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device ... ok
+test devices::virtio::vsock::ring::tests::an_attached_ring_says_it_waits_for_the_relays_first_bytes ... ok
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 396 filtered out; finished in 0.48s
+fmt-ok
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.25s   (clippy -D warnings)
+== MUTATION (the flag's store removed from Ring::attach) ==
+test devices::virtio::vsock::conn::ringed::tests::a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device ... FAILED
+test devices::virtio::vsock::ring::tests::an_attached_ring_says_it_waits_for_the_relays_first_bytes ... FAILED
+thread '...a_relays_first_bytes_reach_the_host_though_it_rings_only_a_waiting_device' panicked at crates/vmm/src/devices/virtio/vsock/conn/ringed.rs:526:72:
+thread '...an_attached_ring_says_it_waits_for_the_relays_first_bytes' panicked at crates/vmm/src/devices/virtio/vsock/ring.rs:555:9:
+test result: FAILED. 57 passed; 2 failed; 0 ignored; 0 measured; 396 filtered out; finished in 0.44s
+# Real VMs (ROOT, r521, kiln-a094a12d, 032b63b1c without this fix): engine_ring 0/1 (784 s timeout),
+# the engine suite 9/27 failed (all timeouts), isolation's engine-port token test failed; vsock E2E passed.

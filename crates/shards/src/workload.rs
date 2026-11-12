@@ -120,6 +120,9 @@ pub struct Asked<'a> {
     pub kept: Option<&'a (dyn Fn(Option<u64>) + Sync)>,
     /// Given the records of the processes the run's members start and end (D123).
     pub processes: Option<&'a Records<'a>>,
+    /// Given each member's end, where the run asked to hear them (D231): its
+    /// `MEMBER_ENDED` payload.
+    pub members: Option<&'a Records<'a>>,
     /// Given its guest's asks of the host on the host's network (D124): each frame's kind,
     /// then its payload.
     pub host_net: Option<&'a Records<'a>>,
@@ -630,6 +633,7 @@ pub fn serve(
         saved,
         kept,
         processes,
+        members,
         host_net,
         resumed,
     } = match request {
@@ -647,6 +651,7 @@ pub fn serve(
             saved: None,
             kept: None,
             processes: None,
+            members: None,
             host_net: None,
             resumed: None,
         },
@@ -766,7 +771,15 @@ pub fn serve(
     // One reader for all the guest says on the run's connection, so that what it read
     // past one part is the next part's (review 8.20's reads, which take what has come).
     let mut reader = io::BufReader::with_capacity(run::BUFFERED, shards_ipc::Polled(&conn));
-    let status = relay(&mut reader, timing, log.as_mut(), started, processes, host_net);
+    let status = relay(
+        &mut reader,
+        timing,
+        log.as_mut(),
+        started,
+        processes,
+        members,
+        host_net,
+    );
     // A save waiting for the guest to go quiet waits no more: its command has ended.
     quiescing().end();
     QUIET.notify_all();
@@ -863,10 +876,11 @@ fn relay(
     log: Option<&mut Logger>,
     started: Option<&(dyn Fn() + Sync)>,
     processes: Option<&Records<'_>>,
+    members: Option<&Records<'_>>,
     host_net: Option<&Records<'_>>,
 ) -> Result<Ended, String> {
     let (ended, lost, dropped) = with_sink(log, |sink| {
-        relay_frames(conn, timing, sink, started, processes, host_net)
+        relay_frames(conn, timing, sink, started, processes, members, host_net)
     })?;
     ended.map(|e| Ended { lost, dropped, ..e })
 }
@@ -879,6 +893,7 @@ fn relay_frames(
     mut log: Option<&mut Sink<'_>>,
     started: Option<&(dyn Fn() + Sync)>,
     processes: Option<&Records<'_>>,
+    members: Option<&Records<'_>>,
     host_net: Option<&Records<'_>>,
 ) -> Result<Ended, String> {
     // Grown to the longest frame yet, at most MAX_PAYLOAD, and never shrunk: a frame
@@ -949,6 +964,13 @@ fn relay_frames(
             kind::PROCESS => {
                 if let Some(processes) = processes {
                     processes(payload);
+                }
+            }
+            // A member's end (D231), well formed or the guest's protocol broken.
+            kind::MEMBER_ENDED => {
+                run::members::Ended::decode(payload).ok_or("the guest sent a malformed member end")?;
+                if let Some(members) = members {
+                    members(payload);
                 }
             }
             kind::BIND | kind::LISTEN | kind::UNBIND => {

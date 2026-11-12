@@ -1,0 +1,17 @@
+TIME                            MEMBER         PID  EVENT  WHAT
+2026-11-12T03:14:55.587001152Z  command        924  exec   sleep 600
+2026-11-12T03:14:55.591977182Z  harness probe  926  fork   from 1
+2026-11-12T03:14:55.593587408Z  harness probe  926  exec   shards-server "harness probe" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T03:14:55.603995765Z  harness probe  931  fork   from 926
+2026-11-12T03:14:55.604415533Z  harness probe  931  exec   shards-server sandbox
+2026-11-12T03:14:55.604815084Z  harness probe  935  fork   from 1
+2026-11-12T03:14:55.605333428Z  harness probe  936  fork   from 935
+2026-11-12T03:14:55.605611861Z  harness probe  935  exec   shards-init managed-reaper
+2026-11-12T03:14:55.608298179Z  harness probe  936  exec   /bin/sh -c "sleep 75; echo after-quiet"
+2026-11-12T03:14:55.610463277Z  harness probe  937  fork   from 936
+2026-11-12T03:14:55.611428871Z  harness probe  937  exec   sleep 75
+2026-11-12T03:16:10.613125832Z  harness probe  937  exit   code 0
+2026-11-12T03:16:10.613666748Z  harness probe  936  exit   code 0
+2026-11-12T03:16:10.613853770Z  harness probe  935  exit   code 0
+2026-11-12T03:16:10.614036613Z  harness probe  931  exit   signal 9 (SIGKILL)
+2026-11-12T03:16:10.614071619Z  harness probe  926  exit   signal 9 (SIGKILL)

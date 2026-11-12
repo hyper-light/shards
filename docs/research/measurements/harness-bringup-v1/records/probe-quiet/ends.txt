@@ -1,0 +1,2 @@
+stdout transport Lost(None) after 102.864122711s
+stderr not read: its stdout did not end after 631ns

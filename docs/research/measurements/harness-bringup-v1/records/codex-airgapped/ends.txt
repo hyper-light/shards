@@ -1,0 +1,2 @@
+stdout Said after 70.425378533s
+stderr not read: its stdout did not end after 611ns

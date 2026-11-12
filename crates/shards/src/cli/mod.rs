@@ -106,7 +106,7 @@ const OWN: [&str; 26] = [
 /// (`context::kept_here`): a child of a command run `--context default` reads the same
 /// home, whose current context may be another machine's. No client of this machine's runs
 /// one (daemon/remote.rs `owners`).
-pub(crate) const INTERNAL: [&str; 8] = [
+pub(crate) const INTERNAL: [&str; 9] = [
     // The VM's broker (`shards run vm --kernel`, `shards restore vm`, macOS).
     "grants",
     // The recorder of a directly booted VM's console report (`shards run vm --kernel`,
@@ -126,6 +126,8 @@ pub(crate) const INTERNAL: [&str; 8] = [
     // What serves a client's binds for a run through its context that goes on without
     // its command (D228).
     crate::client_binds::SERVE_APART,
+    // An image's run for an orchestrator, which shards-api starts (D231).
+    "api-run",
 ];
 
 fn dispatch(args: Vec<OsString>) -> ExitCode {
@@ -1006,7 +1008,10 @@ fn utf8(args: &[OsString]) -> Result<Vec<String>, String> {
 /// The VM process's binary for `args`, which `shards` carries and writes out (helpers.rs):
 /// the GPU's where its own options (those before `--`) ask for a GPU (D144).
 fn vm_binary(args: &[OsString]) -> Result<PathBuf, String> {
-    if args.iter().take_while(|a| *a != "--").any(|a| a == "--gpu") {
+    if ["--gpu", "--gpu-probe", "--gpu-device"]
+        .into_iter()
+        .any(|flag| crate::spec::has_vm_flag(args, flag))
+    {
         crate::helpers::vm_gpu()
     } else {
         crate::helpers::vm()
@@ -1093,7 +1098,7 @@ fn console_said<T>(
 }
 
 /// [`console_said`] on Unix: the report's recorder, `shardsd console-said`, started on a
-/// pipe's read end, out of reach of the VM's terminal, and the pipe's other end given the VM
+/// pipe's read end, detached only for standalone launches, and the pipe's other end given the VM
 /// as `--said-to FD` once this process becomes it, as [`said_kept`] leaves it open through
 /// the exec. The recorder records what the VM tells as it exits, and is reaped by the kernel.
 #[cfg(unix)]
@@ -1113,7 +1118,7 @@ fn said_recorded(args: &[OsString]) -> (Vec<OsString>, Option<std::os::fd::Owned
                 kept.as_ref(),
             ],
             &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-            true,
+            !crate::spec::has_vm_flag(args, "--host-managed"),
         )
         .map_err(|e| format!("{}: {e}", recorder.display()))?;
         Ok(std::os::fd::OwnedFd::from(to_recorder))
@@ -1145,11 +1150,170 @@ fn said_kept(to: Option<std::os::fd::OwnedFd>) -> Result<(), String> {
     Ok(())
 }
 
+/// Only explicit managed report/lifeline pipes cross the final same-PID exec.
+/// Helper spawn can mark inherited FDs CLOEXEC in this process on Linux; restore
+/// only these named descriptors AFTER all helpers and immediately before exec.
+#[cfg(unix)]
+struct CarriedVmIo {
+    report: Option<std::fs::File>,
+    lifeline: Option<std::fs::File>,
+}
+
+#[cfg(unix)]
+impl CarriedVmIo {
+    fn read(args: &[OsString]) -> Result<Self, shards_abi::gpu::GpuProbeError> {
+        use shards_abi::gpu::GpuProbeError as Error;
+        use std::os::fd::FromRawFd as _;
+        let (mut report, mut lifeline) = (None, None);
+        let mut words = args.iter();
+        while let Some((word, value)) = crate::spec::next_word(&mut words) {
+            if word == "--" {
+                break;
+            }
+            let slot = if word == "--gpu-report" {
+                &mut report
+            } else if word == "--host-lifeline" {
+                &mut lifeline
+            } else {
+                continue;
+            };
+            let text = value.and_then(|value| value.to_str()).ok_or(Error::Syntax)?;
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(Error::Syntax);
+            }
+            let fd = text.parse::<i32>().map_err(|_| Error::Count)?;
+            if fd < 3 || slot.replace(fd).is_some() {
+                return Err(Error::Syntax);
+            }
+        }
+        if report.is_some() && report == lifeline {
+            return Err(Error::Syntax);
+        }
+        let adopt = |fd: i32, access: i32| -> Result<std::fs::File, Error> {
+            use std::os::unix::fs::FileTypeExt as _;
+            // SAFETY: read-only descriptor validation before adopting this CLI's
+            // explicitly inherited, uniquely named native pipe endpoint.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || flags & libc::O_ACCMODE != access {
+                return Err(Error::Unavailable);
+            }
+            // SAFETY: ownership transfers from the final native launcher. Both
+            // option values were checked for aliasing before either adoption.
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            if !file
+                .metadata()
+                .map_err(|_| Error::Unavailable)?
+                .file_type()
+                .is_fifo()
+            {
+                return Err(Error::Unavailable);
+            }
+            // SAFETY: only this explicit endpoint is owned here. Keep it out
+            // of every helper exec until the final carried-VMM handoff.
+            let inherited = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if inherited < 0 {
+                return Err(Error::Unavailable);
+            }
+            // SAFETY: same owned endpoint and flags; no change to other FDs.
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, inherited | libc::FD_CLOEXEC) } < 0 {
+                return Err(Error::Unavailable);
+            }
+            Ok(file)
+        };
+        let report = report.map(|fd| adopt(fd, libc::O_WRONLY)).transpose()?;
+        let lifeline = lifeline.map(|fd| adopt(fd, libc::O_RDONLY)).transpose()?;
+        Ok(Self { report, lifeline })
+    }
+
+    fn keep_for_exec(&self) -> Result<(), shards_abi::gpu::GpuProbeError> {
+        use std::os::fd::AsRawFd as _;
+        for file in [&self.report, &self.lifeline].into_iter().flatten() {
+            let fd = file.as_raw_fd();
+            // SAFETY: restore only a live endpoint owned here; helper spawn may
+            // have added CLOEXEC. Preserve every unrelated descriptor/flag.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            if flags < 0 {
+                return Err(shards_abi::gpu::GpuProbeError::Unavailable);
+            }
+            // SAFETY: same live owned endpoint; after this call only the final
+            // carried VMM exec runs. Helpers receive only their explicit IPC list.
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+                return Err(shards_abi::gpu::GpuProbeError::Unavailable);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn carried_io_failure(why: shards_abi::gpu::GpuProbeError) -> ExitCode {
+    let _ = writeln!(
+        std::io::stderr(),
+        "carrying explicit VMM report/lifeline pipes: {why}"
+    );
+    ExitCode::FAILURE
+}
+
+#[cfg(all(test, unix))]
+mod carried_io_tests {
+    use super::*;
+    use std::os::fd::{AsRawFd as _, IntoRawFd as _};
+
+    /// Only the actual owned report writer is restored after helper CLOEXEC
+    /// marking; an unrelated endpoint's flags remain exactly as they were.
+    #[test]
+    fn explicit_report_pipe_is_kept_only_for_final_carried_vmm_exec() {
+        let (reader, writer) = std::io::pipe().unwrap();
+        let (_other_reader, other_writer) = std::io::pipe().unwrap();
+        let native = writer.into_raw_fd();
+        // SAFETY: query the unrelated still-owned endpoint without changing it.
+        let other_flags = unsafe { libc::fcntl(other_writer.as_raw_fd(), libc::F_GETFD) };
+        let words = [
+            OsString::from("run"),
+            OsString::from("--gpu-report"),
+            OsString::from(native.to_string()),
+        ];
+        let carried = CarriedVmIo::read(&words).unwrap();
+        // SAFETY: the native writer is now uniquely owned by carried.
+        let flags = unsafe { libc::fcntl(native, libc::F_GETFD) };
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+        carried.keep_for_exec().unwrap();
+        // SAFETY: these live descriptors remain respectively carried/other-owned.
+        let flags = unsafe { libc::fcntl(native, libc::F_GETFD) };
+        assert_eq!(flags & libc::FD_CLOEXEC, 0);
+        // SAFETY: query only; the unrelated endpoint is still held by its owner.
+        let flags = unsafe { libc::fcntl(other_writer.as_raw_fd(), libc::F_GETFD) };
+        assert_eq!(flags, other_flags);
+        drop((carried, reader));
+    }
+
+    /// Values and the command tail do not become descriptor option authority.
+    #[test]
+    fn explicit_pipe_scan_respects_valued_flags_and_command_tail() {
+        for args in [
+            ["run", "--cmdline", "--gpu-report"].as_slice(),
+            ["run", "--", "--gpu-report", "9"].as_slice(),
+        ] {
+            let words: Vec<_> = args.iter().map(OsString::from).collect();
+            let carried = CarriedVmIo::read(&words).unwrap();
+            assert!(carried.report.is_none() && carried.lifeline.is_none());
+        }
+        for value in ["+9", "-1", "0", "2", "2147483648"] {
+            let words = [
+                OsString::from("run"),
+                OsString::from("--gpu-report"),
+                OsString::from(value),
+            ];
+            assert!(CarriedVmIo::read(&words).is_err());
+        }
+    }
+}
+
 /// `shards run vm --kernel` and `shards restore vm`: become shards-vm. On macOS, where shards-vm runs in App Sandbox and may
 /// open nothing it is not granted, it first starts the VM's broker, `shardsd grants`, on a
 /// socket the VM then asks on (`--grants`; docs/research/macos-confinement.md §3). The VM
 /// keeps this process: its terminal, its signals, its exit status. The broker leads a
-/// session of its own, out of reach of a Ctrl-C meant for the VM, exits once the VM has
+/// session of its own only for standalone launches, exits once the VM has
 /// all it needs, and is reaped by the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(target_os = "macos")]
 fn vm(args: &[OsString]) -> ExitCode {
@@ -1157,6 +1321,13 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+        return instead(args);
+    }
+    let carried = match CarriedVmIo::read(args) {
+        Ok(carried) => carried,
+        Err(why) => return carried_io_failure(why),
+    };
     // Its shares served before its VM process starts, sandboxed (shares.rs).
     let (args, shared) = match shares::served(args) {
         Ok(served) => served,
@@ -1192,7 +1363,7 @@ fn vm(args: &[OsString]) -> ExitCode {
         &broker,
         &broker_args,
         &[(theirs.as_fd(), 3), (stderr.as_fd(), 2)],
-        true,
+        !crate::spec::has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         return failed(&format!("{}: {e}", broker.display()));
@@ -1222,6 +1393,9 @@ fn vm(args: &[OsString]) -> ExitCode {
     if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
         return failed(&e);
     }
+    if let Err(why) = carried.keep_for_exec() {
+        return carried_io_failure(why);
+    }
     instead(&with)
 }
 
@@ -1232,6 +1406,13 @@ fn vm(args: &[OsString]) -> ExitCode {
 /// the kernel, since SIGCHLD stays ignored through the exec.
 #[cfg(not(any(target_os = "macos", windows)))]
 fn vm(args: &[OsString]) -> ExitCode {
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+        return instead(args);
+    }
+    let carried = match CarriedVmIo::read(args) {
+        Ok(carried) => carried,
+        Err(why) => return carried_io_failure(why),
+    };
     // Its shares served before it becomes the VM, which confines itself (shares.rs).
     let (args, shared) = match shares::served(args) {
         Ok(served) => served,
@@ -1246,6 +1427,9 @@ fn vm(args: &[OsString]) -> ExitCode {
     };
     if let Err(e) = shares::inherit(shared).and_then(|()| said_kept(said_to)) {
         return failed(&e);
+    }
+    if let Err(why) = carried.keep_for_exec() {
+        return carried_io_failure(why);
     }
     match with {
         Some(with) => instead(&with),
@@ -1298,7 +1482,7 @@ fn working_set_writer(args: &[OsString]) -> Result<Option<Vec<OsString>>, String
         &writer,
         &["working-set".as_ref(), "--template".as_ref(), dir.as_os_str()],
         &[(from_vm.as_fd(), 3), (stderr.as_fd(), 2)],
-        true,
+        !crate::spec::has_vm_flag(args, "--host-managed"),
     );
     if let Err(e) = spawned {
         shards_vmm::debug!(
@@ -1352,6 +1536,70 @@ const WORKING_SET: &str = "working-set";
 #[cfg(windows)]
 const SAID_TO: &str = "said-to";
 
+/// Adopt only the native launcher's explicit report writer, then hand that pipe
+/// to the confined VMM through the existing named-Given protocol. A transferred
+/// raw value is never reused as a value in the VMM's own argument namespace.
+#[cfg(windows)]
+fn gpu_reported(
+    args: &[OsString],
+) -> Result<Option<(Vec<OsString>, std::os::windows::io::OwnedHandle)>, shards_abi::gpu::GpuProbeError> {
+    use shards_abi::gpu::GpuProbeError as Error;
+    use std::os::windows::io::FromRawHandle as _;
+    if !crate::spec::has_vm_flag(args, "--gpu-report") {
+        return Ok(None);
+    }
+    let copy = |word: &std::ffi::OsStr| {
+        let mut text = OsString::new();
+        text.try_reserve_exact(word.len())
+            .map_err(|_| Error::Allocation)?;
+        text.push(word);
+        Ok::<_, Error>(text)
+    };
+    let mut with = Vec::new();
+    with.try_reserve_exact(args.len())
+        .map_err(|_| Error::Allocation)?;
+    let mut words = args.iter();
+    let command = words
+        .next()
+        .filter(|command| *command == "run")
+        .ok_or(Error::Syntax)?;
+    with.push(copy(command)?);
+    let mut native = None;
+    while let Some((word, value)) = crate::spec::next_word(&mut words) {
+        with.push(copy(word)?);
+        if word == "--" {
+            for word in words {
+                with.push(copy(word)?);
+            }
+            break;
+        }
+        if word == "--gpu-report" {
+            let text = value.and_then(|value| value.to_str()).ok_or(Error::Syntax)?;
+            if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err(Error::Syntax);
+            }
+            let raw = text.parse::<usize>().map_err(|_| Error::Count)?;
+            if raw == 0 || raw == usize::MAX || native.replace(raw).is_some() {
+                return Err(Error::Syntax);
+            }
+            with.push(copy(std::ffi::OsStr::new("gpu-report"))?);
+        } else if let Some(value) = value {
+            with.push(copy(value)?);
+        }
+    }
+    let raw = native.ok_or(Error::Syntax)?;
+    // The same inherited-pipe adoption as shares rejects stdio and clears its
+    // inherit flag BEFORE this CLI starts any helper. Only named Given below
+    // duplicates the owned writer into the confined VMM.
+    let _adopted = served_pipe("--gpu-report", raw).map_err(|_| Error::Unavailable)?;
+    let raw = std::ptr::with_exposed_provenance_mut::<std::ffi::c_void>(raw);
+    // SAFETY: ownership of that sole inherited writer transfers from the native
+    // launcher to this CLI after the checked adoption above, then through named
+    // Given to the VMM. No guest input or ambient lookup supplies this value.
+    let writer = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) };
+    Ok(Some((with, writer)))
+}
+
 /// No other Unix but macOS records a restore's working set, so none starts a writer.
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn working_set_writer(_: &[OsString]) -> Result<Option<Vec<OsString>>, String> {
@@ -1374,6 +1622,19 @@ fn vm(args: &[OsString]) -> ExitCode {
     if !matches!(args.first().and_then(|a| a.to_str()), Some("run" | "restore")) {
         return instead(args);
     }
+    if crate::spec::has_vm_flag(args, "--gpu-probe") {
+        return instead(args);
+    }
+    let (report_args, report_writer) = match gpu_reported(args) {
+        Ok(Some((args, writer))) => (Some(args), Some(writer)),
+        Ok(None) => (None, None),
+        Err(why) => {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr().lock(), "{why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let args = report_args.as_deref().unwrap_or(args);
     // Made before any process of the run's, and held until this process ends, its last
     // handle with it.
     let job = match shards_ipc::GroupJob::ending_with_this_process() {
@@ -1477,6 +1738,21 @@ fn vm(args: &[OsString]) -> ExitCode {
         name: "null",
         handle: null.as_handle(),
     }));
+    if let Some(writer) = &report_writer {
+        if given.try_reserve_exact(1).is_err() {
+            use std::io::Write as _;
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{}",
+                shards_abi::gpu::GpuProbeError::Allocation
+            );
+            return ExitCode::FAILURE;
+        }
+        given.push(shards_ipc::Given {
+            name: "gpu-report",
+            handle: writer.as_handle(),
+        });
+    }
     let spawned = shards_ipc::spawn_confined(&shards_ipc::Spawn {
         program: &bin,
         args: &with,
@@ -1496,7 +1772,8 @@ fn vm(args: &[OsString]) -> ExitCode {
     });
     // The VM's ends are its own now: its exit ends the requests, what it hands over of its
     // working set, and its shares, whose process then exits.
-    drop((asks_to, answers_from, to_keeper, shared, said_to));
+    drop(given);
+    drop((asks_to, answers_from, to_keeper, shared, said_to, report_writer));
     let child = match spawned {
         Ok(child) => child,
         Err(e) => return failed(&format!("{}: {e}", bin.display())),
@@ -1693,7 +1970,7 @@ mod served_pipes_tests {
 
     use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT, SetHandleInformation};
 
-    use super::served_pipes;
+    use super::{gpu_reported, served_pipes};
 
     fn args(of: &[&str]) -> Vec<OsString> {
         of.iter().map(OsString::from).collect()
@@ -1706,6 +1983,33 @@ mod served_pipes_tests {
         let read = unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) };
         assert_ne!(read, 0);
         flags & HANDLE_FLAG_INHERIT != 0
+    }
+
+    /// The actual inherited writer is private before helpers start, and the
+    /// VMM receives only its explicit Given name, never the parent's raw value.
+    #[test]
+    fn managed_report_adopts_the_same_pipe_without_helper_inheritance() {
+        use std::io::{Read as _, Write as _};
+        use std::os::windows::io::IntoRawHandle as _;
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        // SAFETY: changes only the flag of this test's owned writer before its
+        // sole ownership is handed to gpu_reported, as a native launcher does.
+        assert_ne!(
+            unsafe { SetHandleInformation(writer.as_raw_handle(), HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
+            0
+        );
+        let value = (writer.into_raw_handle() as usize).to_string();
+        let (kept, writer) = gpu_reported(&args(&["run", "--gpu-report", &value]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept, args(&["run", "--gpu-report", "gpu-report"]));
+        assert!(!inheritable(&writer));
+        let mut writer = std::fs::File::from(writer);
+        writer.write_all(b"r").unwrap();
+        drop(writer);
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        assert_eq!(output, b"r");
     }
 
     /// A pipe this process holds goes to the VM as `slates-fs-0`, named with
