@@ -1,0 +1,9 @@
+# sort-order (cargo +1.98.1 build --release, unwinding, at 5e53d5e3a's crates/rego; this Mac):
+# the `sort` builtin on 200,000 random arrays of 2 to 121 numbers drawn from each set; a
+# panic is Rust's stable sort finding the order is not total. Release builds of shards abort
+# on a panic (Cargo.toml's profile.release panic = "abort").
+(all: both sets) 91996 panics in 200000 sorts
+quirk: 1 10 10.0 100 100.00 1.0 2 20.0 0.10 0.1 3 30 300.0 0 -1 -10.0 9
+79016 panics in 200000 sorts
+unread: 1 10 100 2 1e99999999999999999999 5e99999999999999999999 1e-99999999999999999999 3 30 0 -1 9
+53534 panics in 200000 sorts

@@ -1,0 +1,29 @@
+PM M524, jupiter: Microsoft Windows [Version 10.0.26200.9974], x86_64, MINGW64 (Git Bash),
+rustc 1.98.1 (x86_64-pc-windows-msvc), 2026-11-12. A clone at d5707dbcac881e85d035ec954fa8179e965f5d9c,
+CARGO_TARGET_DIR outside it; removed after.
+
+### cargo +1.98.1 test -p shards-rego --profile test-release --no-fail-fast (exit 0)
+    Finished `test-release` profile [optimized + debuginfo] target(s) in 35.06s
+     Running unittests src\lib.rs
+test result: ok. 25 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.18s
+     Running tests\builtins.rs
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+     Running tests\check.rs
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests\compile.rs
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+     Running tests\deep.rs
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.31s
+     Running tests\depth.rs
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.65s
+     Running tests\else.rs
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.78s
+     Running tests\eval.rs
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.77s
+     Running tests\index.rs
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests\numbers.rs
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests\parse.rs
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+(the ignored one: number::crossover::crossover, the measurement)

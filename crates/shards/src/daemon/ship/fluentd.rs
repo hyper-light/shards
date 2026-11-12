@@ -799,10 +799,10 @@ mod tests {
     /// Do: without acks, over TCP, TLS and a unix socket, to a receiver that ends its
     /// connection on any event of more than 2,000 bytes, send a line's three parts as a
     /// shipper does, its second of 3,000 bytes, its third the run's last; then close the
-    /// driver as its shipper does, again while it says its receiver ended the connection
-    /// with events held. Expect, before the close ends, every event within 2,000 bytes, and
-    /// the line rebuilt whole from its parts by their places under its one ID: the second
-    /// cut into pieces in its place, the third later by as many, still the last.
+    /// driver as its shipper does; each again while it says its receiver ended the
+    /// connection with events held. Expect, before the close ends, every event within 2,000
+    /// bytes, and the line rebuilt whole from its parts by their places under its one ID:
+    /// the second cut into pieces in its place, the third later by as many, still the last.
     #[test]
     fn a_part_refused_goes_again_in_its_lines_place() {
         for via in [Via::Tcp, Via::Tls, Via::Unix] {
@@ -814,22 +814,19 @@ mod tests {
             let long = "b".repeat(3000);
             let parts = [("first", 1, false), (long.as_str(), 2, false), ("third", 3, true)];
             for (line, ordinal, last) in parts {
-                f.send(
-                    &Message {
-                        stream: crate::spec::LOG_STDOUT,
-                        at: 1_000_000_000,
-                        line: line.as_bytes(),
-                        part: Some(fluentd::Part {
-                            id: &id,
-                            ordinal,
-                            last,
-                        }),
-                    },
-                    &wait,
-                )
-                .unwrap();
+                let m = Message {
+                    stream: crate::spec::LOG_STDOUT,
+                    at: 1_000_000_000,
+                    line: line.as_bytes(),
+                    part: Some(fluentd::Part {
+                        id: &id,
+                        ordinal,
+                        last,
+                    }),
+                };
+                super::super::gelf::tests::again_while_ended(&mut || f.send(&m, &wait));
             }
-            super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+            super::super::gelf::tests::again_while_ended(&mut || f.close(&wait));
             // The receiver's thread has sent all it read: the connection ended only once it
             // had read all.
             let events = decoded(&events, 2000);
@@ -872,7 +869,7 @@ mod tests {
         assert!(f.later.iter().any(|(i, n)| i == id && *n > 0), "{:?}", f.later);
         f.send(&m("third", 3, true), &wait).unwrap();
         assert!(f.later.is_empty(), "a line's places kept past its last part");
-        super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+        super::super::gelf::tests::again_while_ended(&mut || f.close(&wait));
         let events = decoded(&events, 2000);
         assert_eq!(joined(&events, id), format!("first{long}third"));
     }
@@ -923,7 +920,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            super::super::gelf::tests::close_until_ended(&mut || f.close(&wait));
+            super::super::gelf::tests::again_while_ended(&mut || f.close(&wait));
             let events = decoded(&events, usize::MAX);
             let got: std::collections::BTreeSet<(String, Option<(u32, bool)>)> = events
                 .iter()

@@ -1473,6 +1473,7 @@ dependencies = [
  "num-bigint",
  "regex",
  "serde_json",
+ "sha2",
  "shards-template",
  "windows-sys 0.61.2",
 ]

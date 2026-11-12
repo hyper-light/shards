@@ -294,13 +294,24 @@ pub(super) mod tests {
         assert_eq!(again.learned.unwrap().most(), most);
     }
 
-    /// Closes a driver by `close` as its shipper does, again where its receiver ended the connection with
-    /// messages held (`ConnectionAborted`), until it ends.
-    pub(in crate::daemon::ship) fn close_until_ended(close: &mut dyn FnMut() -> io::Result<()>) {
+    /// Does `f`, a driver's send or close, as its shipper does (ship.rs `until_done`): again
+    /// while its receiver has ended the connection with messages held, which the driver
+    /// keeps to go again, until it is done. The end is the stream's word
+    /// (`ConnectionAborted`), or the kernel's as a write or shutdown meets it: EPIPE or
+    /// ECONNRESET (Linux net/ipv4/tcp_input.c `tcp_reset`, net/unix/af_unix.c), ENOTCONN
+    /// once a reset has closed the socket (net/ipv4/af_inet.c `inet_shutdown`).
+    pub(in crate::daemon::ship) fn again_while_ended(f: &mut dyn FnMut() -> io::Result<()>) {
         for _ in 0..64 {
-            match close() {
+            match f() {
                 Ok(()) => return,
-                Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {}
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::BrokenPipe
+                            | io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::NotConnected
+                    ) => {}
                 Err(e) => panic!("{e}"),
             }
         }
@@ -362,7 +373,7 @@ pub(super) mod tests {
         let long: &'static [u8] = Vec::leak((0..6000u32).map(|i| b'a' + (i % 26) as u8).collect());
         g.send(&m(b"first"), &wait).unwrap();
         g.send(&m(long), &wait).unwrap();
-        close_until_ended(&mut || g.close(&wait));
+        again_while_ended(&mut || g.close(&wait));
         let mut lines = String::new();
         for f in frames.try_iter() {
             assert!(f.len() <= 2000, "{}", f.len());

@@ -49,6 +49,12 @@ impl Answers {
     }
 }
 
+/// One line of the run's progress on this process's stderr, its diagnostics, which a
+/// refusal quotes the last of.
+fn say(what: std::fmt::Arguments<'_>) {
+    let _ = writeln!(io::stderr(), "shards api-run: {what}");
+}
+
 /// `shards api-run`: not for people to run. The run's end is said as its VM ends, before
 /// its owner closes the channel; a run that never started is refused instead.
 pub fn command() -> ExitCode {
@@ -394,6 +400,23 @@ fn published(
         });
     }
     Ok(out)
+}
+
+/// The run's request (`kind::RUN`) as a warm VM takes one (warm.rs `head`): its head, then
+/// `spec`. It writes no log, yet its head keeps a run's default retention, as a daemon
+/// run's with no log does (`--log-driver none`, daemon.rs `DEFAULT_LOGS`): a warm VM
+/// refuses a request whose log keeps nothing.
+fn run_request(spec: &shards_abi::run::Spec, published: bool) -> Vec<u8> {
+    let mut payload = Vec::new();
+    shards_ipc::RunHead {
+        flags: if published { shards_ipc::RUN_PUBLISHED } else { 0 },
+        log_size: crate::daemon::DEFAULT_LOGS.size,
+        log_files: crate::daemon::DEFAULT_LOGS.files,
+        ..Default::default()
+    }
+    .encode_into(&mut payload);
+    spec.encode_into(&mut payload);
+    payload
 }
 
 #[cfg(windows)]
@@ -1003,24 +1026,14 @@ mod hosted {
         capture: Option<&UnixStream>,
     ) -> Result<(), String> {
         match shards_ipc::recv(link) {
-            Ok(Some(m)) if m.kind == kind::READY => {}
+            Ok(Some(m)) if m.kind == kind::READY => super::say(format_args!("its guest is ready")),
             Ok(Some(m)) => return Err(format!("the VM said message kind {} before it was ready", m.kind)),
             Ok(None) => return Err("the VM ended before it was ready".into()),
             Err(e) => return Err(format!("the VM was not ready: {e}")),
         }
         let null = std::fs::File::open("/dev/null").map_err(|e| format!("/dev/null: {e}"))?;
         let err = io::stderr();
-        let mut payload = Vec::new();
-        shards_ipc::RunHead {
-            flags: if plan.listeners.is_empty() {
-                0
-            } else {
-                shards_ipc::RUN_PUBLISHED
-            },
-            ..Default::default()
-        }
-        .encode_into(&mut payload);
-        plan.prepared.spec.encode_into(&mut payload);
+        let payload = super::run_request(&plan.prepared.spec, !plan.listeners.is_empty());
         // The run's own command's stdin is the null device, its output this process's
         // diagnostics: the orchestrator's channel carries its members'.
         let mut fds: Vec<BorrowedFd<'_>> = vec![client.as_fd(), null.as_fd(), err.as_fd(), err.as_fd()];
@@ -1029,7 +1042,7 @@ mod hosted {
         shards_ipc::send(link, kind::RUN, &payload, &fds)
             .map_err(|e| format!("handing the VM its run: {e}"))?;
         match shards_ipc::recv(link) {
-            Ok(Some(m)) if m.kind == kind::TAKEN => {}
+            Ok(Some(m)) if m.kind == kind::TAKEN => super::say(format_args!("its VM took the run")),
             Ok(Some(m)) => return Err(format!("the VM said message kind {} for its run", m.kind)),
             Ok(None) => return Err("the VM ended before it took its run".into()),
             Err(e) => return Err(format!("the VM did not take its run: {e}")),
@@ -1042,7 +1055,15 @@ mod hosted {
 
     fn launch_and_serve(answers: &Answers, input: io::Stdin, home: &Path, plan: Plan) -> Result<(), No> {
         let boot = |e: String| No(Cause::Boot, e);
+        super::say(format_args!(
+            "prepared {}, {} vCPUs, {} MiB; starting its VM",
+            plan.prepared.image_id, plan.prepared.size.0, plan.prepared.size.1
+        ));
         let launched = launch(home, &plan)?;
+        super::say(format_args!(
+            "its VM process {} started; waiting for its guest",
+            launched.vm.id()
+        ));
         let served = (|| -> Result<(), No> {
             if let Some((_, control)) = &launched.net {
                 tell_net(control, &plan.listeners, plan.egress.as_deref()).map_err(boot)?;
@@ -1100,14 +1121,28 @@ mod hosted {
             Ok(())
         })();
         // Its processes gone, whatever ended it: the VM killed where it runs on, then each
-        // reaped; its anonymous volumes removed, as `--rm`'s are.
-        let _ = launched.vm.kill(shards_ipc::signal::SIGKILL);
-        let _ = launched.vm.wait();
-        if let Some((child, _)) = &launched.net {
-            crate::netproc::reap(child);
+        // reaped once nothing of this process's holds it up, within the grace a network
+        // process has (`netproc::reap`); its anonymous volumes removed, as `--rm`'s are.
+        // The share process goes as its connections to the VM close, its door the last of
+        // them where the VM never took it (a run refused before `TAKEN`): waited for with
+        // that door still held here, it never went (CI run 43230466376,
+        // `a_share_at_a_granted_volume_reaches_the_harness`, this process in `do_wait`).
+        let Launched {
+            vm,
+            link,
+            net,
+            shares,
+        } = launched;
+        let _ = vm.kill(shards_ipc::signal::SIGKILL);
+        let _ = vm.wait();
+        drop(link);
+        if let Some((child, control)) = net {
+            drop(control);
+            crate::netproc::reap(&child);
         }
-        if let Some((child, _)) = &launched.shares {
-            let _ = child.wait();
+        if let Some((child, door)) = shares {
+            drop(door);
+            crate::netproc::reap(&child);
         }
         if !plan.made.is_empty() {
             let store = crate::volumes::Store::new(home);
@@ -1140,7 +1175,10 @@ mod hosted {
             let following = std::thread::Builder::new()
                 .name("api-run link".into())
                 .spawn_scoped(scope, || {
-                    let end = match lock(&live.link).try_clone() {
+                    // Its clone taken and the lock let go of before it is read: a match's
+                    // guard would be held through `follow`, and an exec's send wait out the run.
+                    let link = lock(&live.link).try_clone();
+                    let end = match link {
                         Ok(link) => follow(live, &link),
                         Err(e) => RunEnd::Failed(format!("the VM's link: {e}")),
                     };
@@ -1503,6 +1541,21 @@ mod tests {
             ..wire::Narrowing::default()
         };
         assert!(matches!(egress(None, &asked), Err(No(Cause::Widening, _))));
+    }
+
+    /// The run's request is one a warm VM takes: its log keeps something by the VM's own
+    /// check (warm.rs `head`), though it writes none, and its head says whether it
+    /// publishes ports.
+    #[test]
+    fn its_request_is_one_a_warm_vm_takes() {
+        for published in [false, true] {
+            let payload = run_request(&shards_abi::run::Spec::default(), published);
+            let (head, spec) = shards_ipc::RunHead::decode(&payload).unwrap();
+            assert!(head.keeps_its_log(), "{head:?}");
+            assert_eq!(head.flags & shards_ipc::RUN_PUBLISHED != 0, published);
+            assert_eq!(head.flags & shards_ipc::RUN_LOG, 0);
+            assert!(shards_abi::run::Spec::decode(spec).is_some());
+        }
     }
 
     /// With no command of its own, a run publishes only ports the image gives a member
