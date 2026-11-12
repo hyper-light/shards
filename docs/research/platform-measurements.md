@@ -20528,3 +20528,140 @@ retains five actual complete-daemon native metadata/retirement cases and the
 exact seven-target gate at d2288c27, plus the separately failing real-VM
 reconnect and transport-reason diagnostic. Empty-stream cases do not prove
 nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
+
+### M516. What a rootless software hypervisor's traps cost a Linux guest, and what an unprivileged process may use (softvirt)
+
+- **Question.** Where the host gives shards no hardware virtualization
+  (`docs/research/software-virtualization.md`), a guest's code would run natively in a
+  confined child process, its system calls and faults coming back to shards. What does each
+  way of making that round trip cost, against a native system call? How far do host
+  mappings of guest pages scale? Which memory and isolation features may an unprivileged
+  process use?
+- **Method.** `docs/research/measurements/softvirt-traps/linux.c` at 27e1406a1 (its
+  `probe` test at 85f525fca), `cc -O2`, as an unprivileged user. Each variant n=20000
+  after 1000 warm-ups, one round trip a sample (`CLOCK_MONOTONIC` through the vDSO, which
+  reads in 10 to 16 ns at p50 here). The guest and the process serving it are pinned to
+  one CPU, or to two cores that are not hyperthread siblings. `maps` maps a prefaulted
+  memfd's 4 KiB pages one at a time at non-adjacent offsets, up to
+  min(vm.max_map_count + 1024, 263168), then the same memory in 2 MiB units. Raw output,
+  every run: `measurements/softvirt-traps/results/`.
+  - kiln-a094a12d: Intel Core i9-14900HX, 32 CPUs, bare metal, Fedora 44, Linux
+    6.19.10-300.fc44, other jobs running (load 7 of 32); three runs one after another,
+    2026-11-12.
+  - GitHub's ubuntu-24.04 (x86_64) and ubuntu-24.04-arm (arm64, no `/dev/kvm`) runners,
+    cloud VMs: `softvirt-traps.yml`, run 43135435859, queued since 01:34 UTC behind the
+    repository's 52 queued runs; not yet run. Their rows come here when it has.
+- **Results, kiln-a094a12d** (ns; run 3's distribution, then the p50 range of the three runs):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, 3 runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid`, no filter | 20000 | 76 | 81 | 94 | 3,654 | 63-91 |
+  | native | `getppid`, a filter allows it | 20000 | 82 | 90 | 127 | 2,644 | 79-131 |
+  | sigsys | SIGSYS to a handler in the guest's process | 20000 | 699 | 801 | 1,195 | 654,899 | 699-747 |
+  | futex | another process, same CPU | 20000 | 1,790 | 2,161 | 3,709 | 102,618 | 1,775-1,878 |
+  | futex | another process, other core | 20000 | 2,957 | 3,466 | 6,300 | 154,536 | 2,854-2,957 |
+  | futex | other core, both spinning | 20000 | 152 | 200 | 248 | 5,691 | 108-152 |
+  | handoff | SIGSYS, then futex to another process, same CPU | 20000 | 2,560 | 2,912 | 5,064 | 18,701 | 2,560-2,695 |
+  | handoff | the same, other core | 20000 | 3,866 | 4,761 | 8,133 | 980,204 | 3,489-3,866 |
+  | handoff | the same, other core spinning | 20000 | 879 | 984 | 1,152 | 10,128 | 821-879 |
+  | notify | `SECCOMP_RET_USER_NOTIF`, same CPU | 20000 | 1,863 | 2,226 | 3,984 | 22,883 | 1,832-1,972 |
+  | notify | the same, sync wake-up | 20000 | 1,776 | 2,129 | 3,504 | 22,546 | 1,776-1,912 |
+  | notify | other core | 20000 | 2,868 | 3,338 | 6,158 | 707,762 | 2,786-2,868 |
+  | notify | other core, sync wake-up | 20000 | 2,857 | 3,312 | 6,509 | 996,316 | 2,804-2,857 |
+  | sysemu | `PTRACE_SYSEMU`, registers read and written, same CPU | 20000 | 3,497 | 4,069 | 6,585 | 114,454 | 3,493-3,598 |
+  | sysemu | the same, other core | 20000 | 3,648 | 4,329 | 7,279 | 1,006,625 | 3,648-3,678 |
+  | fault | SIGSEGV, the handler `mprotect`s the page | 20000 | 1,205 | 1,347 | 2,087 | 9,874 | 1,105-1,253 |
+  | fault | SIGSEGV, the handler maps a guest page (memfd) | 20000 | 1,736 | 2,027 | 4,849 | 18,024 | 1,736-1,832 |
+  | maps | map one 4 KiB page, all 263,168 | 263168 | 989 | 1,507 | 4,276 | 1,099,226 | 989-1,020 |
+  | maps | the first 1,000 | 1000 | 755 | 1,170 | 4,428 | 7,061 | 695-755 |
+  | maps | the last 1,000 | 1000 | 983 | 1,453 | 5,257 | 14,047 | 983-1,323 |
+  | maps | first touch of a mapped page | 263168 | 620 | 808 | 1,118 | 907,899 | 613-620 |
+  | maps | unmap one page | 263168 | 843 | 1,259 | 4,197 | 1,390,798 | 843-850 |
+  | maps | map one 2 MiB unit | 514 | 764 | 1,256 | 3,627 | 4,390 | 704-793 |
+  | maps | first touch of a 2 MiB unit's 512 pages | 514 | 270,318 | 295,219 | 341,123 | 1,299,489 | 259,747-270,318 |
+  | maps | unmap one 2 MiB unit | 514 | 38,080 | 44,633 | 52,209 | 68,028 | 37,916-40,657 |
+
+- **Probes, kiln-a094a12d:** `RLIMIT_MEMLOCK` 8 MiB soft and hard. `memfd_secret`: 1 MiB
+  mapped and touched (13,754 ns a page at first touch), 64 MiB refused with `EAGAIN`, the
+  lock limit (`mm/secretmem.c`, `mlock_future_ok`). userfaultfd: user-mode-only faults
+  allowed, all faults refused (`vm.unprivileged_userfaultfd` 0). A core-scheduling cookie
+  for the process: allowed. Landlock ABI 7. `vm.max_map_count` 1,048,576 (the kernel's
+  own default is 65,530, `DEFAULT_MAX_MAP_COUNT` in `include/linux/mm.h`).
+- **Found.**
+  - Against run 3's native 76 ns, the trap a guest system call pays: 699 ns (9.2 times)
+    when its handler runs in the guest's own process; 2,560 ns (34 times) handed to
+    another process on the same CPU, 3,866 ns (51 times) on another core, and 879 ns
+    (11.6 times) when another core spins waiting for it. A hardware-virtualized guest pays
+    none of it: its system calls stay inside the guest.
+  - USER_NOTIF costs what a futex handoff does, 1.8 to 2.9 us; its synchronous wake-up
+    changed nothing beyond the runs' spread. ptrace's SYSEMU, the classic User-mode
+    Linux path, costs the most: 3.5 to 3.7 us.
+  - A guest page fault served by mapping a guest page costs 1.7 to 1.8 us, against 1.1
+    to 1.25 us for `mprotect` alone.
+  - Host mappings scale: the 263,168th page mapped in 0.98 to 1.32 us at p50, against
+    0.70 to 0.76 us for the first 1,000. What binds is the count. At the kernel's default
+    of 65,530, a guest whose pages are not contiguous gets about 65,500 mappings, 256 MiB
+    of 4 KiB pages. 2 MiB units map in the same 0.70 to 0.79 us and hold 512 times as much
+    memory a mapping.
+  - The tails are the host's, not the paths'. The max of every other-core variant reached
+    0.15 to 1 ms, on a host whose other jobs held load at 7; p99s stayed within 8.2 us.
+  - Unprivileged, `memfd_secret` can hold keys, not guest memory: the 8 MiB lock limit
+    stops it, and its pages cost 13.8 us each to first touch.
+
+### M517. What a rootless software hypervisor's traps cost on macOS, and whether a parent can drive its child (softvirt)
+
+- **Question.** A Mac that gives shards no Hypervisor.framework (a macOS VM without nested
+  virtualization) has no seccomp. A guest's code can reach a hypervisor only as `brk` (a
+  rewritten `svc`) or a fault, raised as a signal in its own process or as a Mach exception
+  to another. What do those cost? Can a parent hold its child's task port, to map guest
+  memory into it and read its threads, without root or entitlements? What does publishing
+  translated code cost?
+- **Method.** `docs/research/measurements/softvirt-traps/macos.c` at 9d08a3ddd, `cc -O2`,
+  n=20000 after 1000 warm-ups, `mach_absolute_time` (41.67 ns a tick). Kiln runner
+  adas-mac-studio.local-2: Apple M3 Ultra (24 performance, 8 efficiency cores), macOS
+  26.4, load 1.8 to 2.0, 2026-11-12. Kiln's commands there run at priority 20, nice 10,
+  the clamp an agent's session runs under.
+  - Three runs so.
+  - Three of the same binary signed with the hardened runtime (ad-hoc, no entitlements).
+  - One as a launchd job of ProcessType Interactive (`macos-sched/launchd-run.sh`): unclamped.
+
+  Raw: `measurements/softvirt-traps/results/macos-arm64-m3ultra.md`. The validation run
+  before the exception server's fix: `results/macos-arm64-m3ultra-validation.md`.
+- **Results** (ns; the third clamped run's distribution, then the p50 range over every run
+  of the test, clamped, hardened and unclamped):
+
+  | test | variant | n | p50 | p90 | p99 | max | p50, all runs |
+  |---|---|---|---|---|---|---|---|
+  | native | `getppid` (each of 64 in a row) | 20000 | 69 | 70 | 89 | 324 | 69-78 |
+  | sigtrap | `brk` to a signal handler in-process | 20000 | 3,417 | 3,542 | 4,459 | 12,375 | 3,417 |
+  | machexc | `brk` as a Mach exception to a thread of the process | 20000 | 4,667 | 5,250 | 9,875 | 16,791 | 4,667-4,917 |
+  | child-brk | `brk` as a Mach exception to the parent | 20000 | 5,291 | 6,416 | 10,917 | 21,125 | 5,291-5,542 |
+  | child-fault | a load of a `PROT_NONE` page, the same | 20000 | 5,417 | 6,750 | 11,125 | 17,834 | 5,417-5,666 |
+  | taskport | `mach_vm_map` a 16 KiB page into the child | 20000 | 500 | 542 | 667 | 6,708 | 500 |
+  | taskport | `mach_vm_deallocate` it | 20000 | 667 | 709 | 875 | 8,209 | 667-708 |
+  | taskport | `thread_get_state` of the child's thread | 20000 | 625 | 666 | 834 | 7,334 | 584-625 |
+  | fault | a signal, the handler `mprotect`s the page | 20000 | 4,333 | 4,542 | 6,250 | 20,625 | 4,292-4,333 |
+  | jit | `MAP_JIT` write protection off and on | 20000 | 83 | 125 | 125 | 292 | 83 |
+  | jit | write 2 instructions, invalidate, call them | 20000 | 166 | 208 | 209 | 4,708 | 166-167 |
+
+- **Found.**
+  - Every trap costs 3.4 to 5.7 us. A `brk` to a signal handler in the same process costs
+    50 times a native system call (69 ns); a Mach exception to another process, 77 to 80
+    times. The Mac's cheapest trap is 4.9 times Linux's (0.70 us, M516).
+  - The agent's clamp moved none of these: the unclamped run's p50s lie within the
+    clamped runs'.
+  - A parent can drive its child without root or entitlements. `task_for_pid` is
+    refused. The child can send its own task port (`mach_task_self()`) to a port its
+    parent gave it at spawn (`posix_spawnattr_setspecialport_np`,
+    `TASK_BOOTSTRAP_PORT`), with or without the hardened runtime.
+    - With it, the parent maps a memory entry's 16 KiB page into the child in 0.50 us
+      and unmaps it in 0.67 us.
+    - It reads the child's thread state in 0.6 us.
+    - Untested: the same under App Sandbox, where shards' VM process runs (D30).
+  - Publishing translated code is cheap. `MAP_JIT` memory's per-thread write protection
+    turns off and on in 83 ns. Writing two instructions, invalidating the instruction
+    cache and calling them costs 167 ns. Under the hardened runtime `MAP_JIT` needs
+    `com.apple.security.cs.allow-jit`: without it, `EINVAL` (the validation run).
+  - On a Mac, then, a guest system call served by a trap costs at least 3.4 us. One that
+    translated code turns into a call into shards traps nothing. What translation costs
+    the rest of a guest's code is the next measurement.

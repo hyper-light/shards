@@ -66,9 +66,13 @@ is how the host lets an unprivileged program catch another's system calls and fa
   so guest code must never execute one: it reaches the hypervisor through `brk` (each `svc`
   rewritten, which arm64's fixed four-byte instructions make checkable page by page) or a
   fault, raised as a signal in its own process or as a Mach exception to another
-  (`posix_spawnattr_setexceptionports_np`). Mapping guest memory into another process needs
-  its task port; whether a parent can hold one without root or entitlements is PM M517's
-  probe. Translated code needs `MAP_JIT` and per-thread write protection.
+  (`posix_spawnattr_setexceptionports_np`). Each costs 3.4 to 5.7 us on an M3 Ultra, 50
+  to 80 times a native system call (PM M517). Mapping guest memory into another process
+  needs its task port: `task_for_pid` is refused, but a child can send its parent its own,
+  with or without the hardened runtime, and the parent then maps a 16 KiB page into it in
+  0.5 us (M517; untested under App Sandbox). Translated code needs `MAP_JIT`
+  (`com.apple.security.cs.allow-jit` under the hardened runtime), whose per-thread write
+  protection flips in 83 ns.
 - **Windows** has no syscall filter for user processes either, and x86_64's variable-length
   instructions defeat checking a code page for `syscall`: guest code must be translated
   there; arm64 Windows could check pages as macOS can. To measure: vectored exception
