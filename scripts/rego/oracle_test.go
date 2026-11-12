@@ -249,6 +249,34 @@ func digest(s, t string) textDigest {
 	return textDigest{S: s, Len: len(t), Head: t[:min(64, len(t))], Tail: t[max(0, len(t)-64):], SHA256: hex.EncodeToString(sum[:])}
 }
 
+// How Go's SetString reads a number: whether it does, and the float it makes, exactly
+// (Text('p', 0): its mantissa in hexadecimal and its binary exponent), or ±Inf.
+type readCase struct {
+	S   string `json:"s"`
+	Ok  bool   `json:"ok"`
+	P   string `json:"p,omitempty"`
+	Inf bool   `json:"inf,omitempty"`
+}
+
+// A builtin called on operands read from JSON, as fuzz/fuzz_targets/rego-builtins.rs
+// calls it, and what OPA's topdown builtin answers: its error's text, or its value's text
+// (a number's, a string's unquoted, an array's elements' with a comma between) kept as a
+// digest.
+type callCase struct {
+	Name string `json:"name"`
+	Args string `json:"args"`
+}
+
+type callAnswer struct {
+	Name   string `json:"name"`
+	Args   string `json:"args"`
+	Error  string `json:"error,omitempty"`
+	Len    int    `json:"len,omitempty"`
+	Head   string `json:"head,omitempty"`
+	Tail   string `json:"tail,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
 type pairCase struct {
 	A       string `json:"a"`
 	B       string `json:"b"`
@@ -271,6 +299,8 @@ func TestShardsNumbers(t *testing.T) {
 		Quote   []string    `json:"quote"`
 		Texts   []string    `json:"texts"`
 		Abs     []string    `json:"abs"`
+		Reads   []string    `json:"reads"`
+		Calls   []callCase  `json:"calls"`
 	}
 	if err := json.Unmarshal(dt, &in); err != nil {
 		t.Fatal(err)
@@ -281,6 +311,8 @@ func TestShardsNumbers(t *testing.T) {
 		Quote   [][2]string  `json:"quote"`
 		Texts   []textDigest `json:"texts"`
 		Abs     []textDigest `json:"abs"`
+		Reads   []readCase   `json:"reads"`
+		Calls   []callAnswer `json:"calls"`
 	}
 	for _, s := range in.Numbers {
 		c := numberCase{S: s}
@@ -343,6 +375,59 @@ func TestShardsNumbers(t *testing.T) {
 			t.Fatalf("abs(%s): %T", s, got.Value)
 		}
 		out.Abs = append(out.Abs, digest(s, string(n)))
+	}
+	for _, s := range in.Reads {
+		c := readCase{S: s}
+		if f, ok := new(big.Float).SetString(s); ok {
+			c.Ok = true
+			c.Inf = f.IsInf()
+			if !c.Inf {
+				c.P = f.Text('p', 0)
+			}
+		}
+		out.Reads = append(out.Reads, c)
+	}
+	for _, c := range in.Calls {
+		v, err := ast.ValueFromReader(strings.NewReader(c.Args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, ok := v.(*ast.Array)
+		if !ok {
+			t.Fatalf("%s(%s): operands %v", c.Name, c.Args, v)
+		}
+		var terms []*ast.Term
+		args.Foreach(func(t *ast.Term) { terms = append(terms, t) })
+		var got *ast.Term
+		answer := callAnswer{Name: c.Name, Args: c.Args}
+		err = topdown.GetBuiltin(c.Name)(topdown.BuiltinContext{Context: context.Background()}, terms, func(t *ast.Term) error {
+			got = t
+			return nil
+		})
+		switch {
+		case err != nil:
+			answer.Error = err.Error()
+		case got == nil:
+			answer.Error = "undefined"
+		default:
+			var text string
+			switch x := got.Value.(type) {
+			case ast.Number:
+				text = string(x)
+			case ast.String:
+				text = string(x)
+			case *ast.Array:
+				// numbers.range's: its numbers' texts, a comma between.
+				var parts []string
+				x.Foreach(func(e *ast.Term) { parts = append(parts, e.Value.String()) })
+				text = strings.Join(parts, ",")
+			default:
+				t.Fatalf("%s(%s): %T", c.Name, c.Args, got.Value)
+			}
+			d := digest("", text)
+			answer.Len, answer.Head, answer.Tail, answer.SHA256 = d.Len, d.Head, d.Tail, d.SHA256
+		}
+		out.Calls = append(out.Calls, answer)
 	}
 	res, err := json.MarshalIndent(out, "", " ")
 	if err != nil {

@@ -87,6 +87,10 @@ fn tz_time(a: &Value) -> Result<TzTime, BuiltinError> {
         _ => return Err(BuiltinError::operand_type(1, a, TZ_EXPECTED)),
     };
     let f = n.to_float().map_err(|e| BuiltinError::Other(e.to_string()))?;
+    // Past 2^64 no int64 holds it: refused before its integer is made whole.
+    if f.go_exponent() > 64 {
+        return Err(BuiltinError::Other("timestamp too big".into()));
+    }
     let (i, exact) = f.int();
     let ns = i64::try_from(&i)
         .ok()

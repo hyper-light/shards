@@ -10,9 +10,10 @@ mod yaml;
 
 use std::collections::BTreeMap;
 
-use num_bigint::{BigInt, BigUint, Sign};
+use num_bigint::BigUint;
 
 use super::{Builtin, BuiltinError, Context, arg, string_operand};
+use crate::digits;
 use crate::goquote;
 use crate::number::{self, Float};
 use crate::value::{self, Number, Value};
@@ -667,7 +668,7 @@ fn go_lower(s: &str) -> String {
     s.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect()
 }
 
-fn units_parse_bytes(_: &mut Context, args: &[Value]) -> Out {
+fn units_parse_bytes(ctx: &mut Context, args: &[Value]) -> Out {
     let raw = string_operand(arg(args, 0)?, 1)?;
     let fail = |m: &str| other(format!("units.parse_bytes: {m}"));
     let s = go_lower(raw).replace('"', "");
@@ -703,14 +704,14 @@ fn units_parse_bytes(_: &mut Context, args: &[Value]) -> Out {
     if mant.bits() != 0 && !(i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&exp2) {
         return Err(conv());
     }
-    let total = Float::parse(num)
-        .and_then(|f| {
-            let m = Float::from_u64(m, 64)?;
-            Float::mul(&f, &m, 64)
-        })
-        .map(|p| p.int().0)
-        .unwrap_or_default();
-    ok(Value::Number(Number(total.to_string().into())))
+    let total = match Float::parse(num).and_then(|f| {
+        let m = Float::from_u64(m, 64)?;
+        Float::mul(&f, &m, 64)
+    }) {
+        Ok(p) => p.int_text(ctx.holdable).map_err(|e| other(e.to_string()))?,
+        Err(_) => "0".to_string(),
+    };
+    ok(Value::Number(Number(total.into())))
 }
 
 /// An exact rational: sign, numerator, denominator (never zero).
@@ -815,13 +816,17 @@ impl Rat {
         self.den == BigUint::from(1u32)
     }
 
-    fn int_text(&self) -> String {
-        let sign = if self.neg { Sign::Minus } else { Sign::Plus };
-        BigInt::from_biguint(sign, self.num.clone()).to_string()
+    /// The integer's text, where writing it fits `holdable`.
+    fn int_text(&self, holdable: u64) -> Result<String, number::Error> {
+        let mut out = String::new();
+        let neg = self.neg && self.num.bits() > 0;
+        digits::write(&mut out, neg, &self.num, 0, holdable)?;
+        Ok(out)
     }
 
-    /// FloatString(prec) of a non-integer.
-    fn float_string(&self, prec: u32) -> String {
+    /// FloatString(prec) of a non-integer, its integer part's text where it fits
+    /// `holdable`.
+    fn float_string(&self, prec: u32, holdable: u64) -> Result<String, number::Error> {
         let mut q = &self.num / &self.den;
         let r = &self.num % &self.den;
         let p = BigUint::from(10u32).pow(prec);
@@ -837,10 +842,7 @@ impl Rat {
             }
         }
         let mut out = String::new();
-        if self.neg {
-            out.push('-');
-        }
-        out.push_str(&q.to_string());
+        digits::write(&mut out, self.neg, &q, 0, holdable)?;
         if prec > 0 {
             out.push('.');
             let rs = r1.to_string();
@@ -849,11 +851,11 @@ impl Rat {
             }
             out.push_str(&rs);
         }
-        out
+        Ok(out)
     }
 }
 
-fn units_parse(_: &mut Context, args: &[Value]) -> Out {
+fn units_parse(ctx: &mut Context, args: &[Value]) -> Out {
     let raw = string_operand(arg(args, 0)?, 1)?;
     let fail = |m: &str| other(format!("units.parse: {m}"));
     let s = raw.replace('"', "");
@@ -894,10 +896,12 @@ fn units_parse(_: &mut Context, args: &[Value]) -> Out {
     };
     let n = Rat::parse(num).ok_or_else(|| fail("could not parse amount to a number"))?;
     let r = n.mul(&x);
-    if r.is_int() {
-        return ok(Value::Number(Number(r.int_text().into())));
-    }
-    ok(Value::Number(Number(r.float_string(10).into())))
+    let text = if r.is_int() {
+        r.int_text(ctx.holdable)
+    } else {
+        r.float_string(10, ctx.holdable)
+    };
+    ok(Value::Number(Number(text.map_err(|e| other(e.to_string()))?.into())))
 }
 
 #[cfg(test)]
