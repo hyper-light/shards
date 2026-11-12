@@ -260,7 +260,7 @@ fn serve(
                             Err(e) => return Ran::Failed(format!("a stream's thread: {e}")),
                         }
                     }
-                    let ran = ran_on(request, home, cid, current, resizes, &mut || {
+                    let ran = ran_on(request, home, cid, current, resizes, true, &mut || {
                         loop {
                             match slot_message(&client)? {
                                 Some(m) if m.kind == kind::HEARD => {
@@ -332,7 +332,7 @@ fn serve(
                 {
                     return failed(&e);
                 }
-                ran_on(request, home, cid, current, resizes, &mut || {
+                ran_on(request, home, cid, current, resizes, false, &mut || {
                     shards_ipc::recv(&conn)
                 })
             }
@@ -506,15 +506,25 @@ enum Ran {
 /// `--cidfile`, from when what the client sends on the run's connection in `current` is
 /// the command's, and its terminal follows this client's (a run's once the daemon has made
 /// its microVM, an exec's at once); a detached run's answer; its status; or the daemon's
-/// answer to the client's asking to be ended before its run was made.
+/// answer to the client's asking to be ended before its run was made. Through a slot
+/// (`through_slot`), its daemon says UNANSWERED where the run's side ended first, its
+/// microVM's: a slot that ends with no last word ended with its daemon, which a client
+/// once took for its microVM's stop (kiln's sweep of a daemon, PM M528).
 fn ran_on(
     request: &Attached,
     home: &Path,
     cid: &mut Option<crate::cli::request::CidFile>,
     current: &Mutex<Current>,
     resizes: bool,
+    through_slot: bool,
     recv: &mut dyn FnMut() -> io::Result<Option<shards_ipc::Message>>,
 ) -> Ran {
+    let stopped = || {
+        Ran::Failed(format!(
+            "the command's microVM stopped before the command ended; see {}",
+            log(home).display()
+        ))
+    };
     let attach = request.kind == kind::ATTACH;
     if request.kind != kind::START {
         made(current, resizes, attach);
@@ -572,13 +582,23 @@ fn ran_on(
                     None,
                 );
             }
+            // Its side ended with no last word, said by its daemon, which is still there.
+            Ok(Some(m)) if m.kind == kind::UNANSWERED => return stopped(),
             Ok(Some(_)) => {}
-            Ok(None) | Err(_) => {
+            Ok(None) if through_slot => {
                 return Ran::Failed(format!(
-                    "the command's microVM stopped before the command ended; see {}",
+                    "the daemon ended before the command did; see {}",
                     log(home).display()
                 ));
             }
+            Err(e) if through_slot => {
+                return Ran::Failed(format!(
+                    "reading the daemon's answer: {e}; see {}",
+                    log(home).display()
+                ));
+            }
+            // A socket's peer, once its request is handed over, is the run's microVM.
+            Ok(None) | Err(_) => return stopped(),
         }
     }
 }
@@ -1718,6 +1738,76 @@ mod tests {
                 (m.kind, m.payload),
                 (kind::INTERRUPT, linux.to_be_bytes().to_vec())
             );
+        }
+    }
+
+    /// Through a slot, a run's, an exec's or an attach's daemon says UNANSWERED where the
+    /// request's side ended first, its microVM's end; a slot that ends with no last word
+    /// ended with its daemon, as kiln's sweep ended one mid-run (PM M528), and is said so,
+    /// not taken for the microVM's stop. A socket's peer is the run's microVM.
+    #[test]
+    fn a_runs_client_tells_its_daemons_end_from_its_microvms() {
+        let home = Path::new("home");
+        let ran = |asked: u8, through_slot: bool, said: Vec<io::Result<u8>>| -> String {
+            let request = Attached {
+                kind: asked,
+                payload: Vec::new(),
+                interactive: false,
+                detach: false,
+                tty: false,
+                streams: (true, true),
+                proxies_signals: false,
+                card: None,
+                detach_said: None,
+            };
+            let current = Mutex::new(Current::new());
+            let mut said = said.into_iter();
+            let mut recv = || match said.next() {
+                Some(Ok(kind)) => Ok(Some(shards_ipc::Message {
+                    kind,
+                    payload: Vec::new(),
+                    fds: Vec::new(),
+                })),
+                Some(Err(e)) => Err(e),
+                None => Ok(None),
+            };
+            match ran_on(
+                &request,
+                home,
+                &mut None,
+                &current,
+                false,
+                through_slot,
+                &mut recv,
+            ) {
+                Ran::Failed(e) => e,
+                Ran::Ended(..) => "ended".into(),
+                Ran::Restart => "restart".into(),
+            }
+        };
+        let log = log(home);
+        let microvm = format!(
+            "the command's microVM stopped before the command ended; see {}",
+            log.display()
+        );
+        let daemon = format!("the daemon ended before the command did; see {}", log.display());
+        for asked in [kind::START, kind::EXEC, kind::ATTACH] {
+            assert_eq!(
+                ran(asked, true, vec![Ok(kind::CREATED), Ok(kind::UNANSWERED)]),
+                microvm
+            );
+            assert_eq!(ran(asked, true, vec![Ok(kind::CREATED)]), daemon, "kind {asked}");
+            assert_eq!(ran(asked, true, vec![]), daemon, "kind {asked}");
+            assert_eq!(
+                ran(asked, true, vec![Err(io::Error::other("cut"))]),
+                format!("reading the daemon's answer: cut; see {}", log.display())
+            );
+            assert_eq!(
+                ran(asked, false, vec![Ok(kind::CREATED)]),
+                microvm,
+                "kind {asked}"
+            );
+            assert_eq!(ran(asked, true, vec![Ok(kind::RESTART)]), "restart");
         }
     }
 

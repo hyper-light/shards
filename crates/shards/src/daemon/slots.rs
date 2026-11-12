@@ -558,15 +558,16 @@ impl<D: Disk> Daemon<D> {
             shards_ipc::send(&ours, request.kind, &request.payload, &fds)
         };
         drop(null);
-        self.pass_on(sent, &ours, session, living)
+        self.pass_on(sent, request.kind, &ours, session, living)
     }
 
     /// Passes a slot's session on through `ours`, the connection the daemon took as the
-    /// client's, once its request was `sent` there or could not be: the client's messages
-    /// on to the daemon, and the daemon's back, until either side ends.
+    /// client's, once its request (of kind `asked`) was `sent` there or could not be: the
+    /// client's messages on to the daemon, and the daemon's back, until either side ends.
     pub(super) fn pass_on(
         &self,
         sent: io::Result<()>,
+        asked: u8,
         ours: &UnixStream,
         session: Session,
         living: &Living<'_, D>,
@@ -628,8 +629,13 @@ impl<D: Disk> Daemon<D> {
                     shards_ipc::end(ours);
                 }
             }
-            // The daemon's messages, back to the client.
-            while let Ok(Some(m)) = shards_ipc::recv(ours) {
+            // The daemon's messages, back to the client, until the daemon's side ends (true)
+            // or the client takes no more (false).
+            let mut answered = false;
+            let ended_here = loop {
+                let Ok(Some(m)) = shards_ipc::recv(ours) else {
+                    break true;
+                };
                 relayed += 1;
                 streams = None;
                 // A microVM given a host's devices sends its process's pidfd with EXIT
@@ -640,13 +646,24 @@ impl<D: Disk> Daemon<D> {
                     ended(pidfd);
                 }
                 if living.answer(&answer, m.kind, &m.payload).is_err() {
-                    break;
+                    break false;
                 }
                 // Its answer's last word passed on: what the daemon's side holds after it,
                 // a VM ending, holds a closed daemon no longer than a request's time.
                 if matches!(m.kind, kind::EXIT | kind::END | kind::RESTART) {
+                    answered = true;
                     living.answered();
                 }
+            };
+            // A run's, an exec's or an attach's side that ended with no last word is said to
+            // have (UNANSWERED): its client tells that end, its microVM's, from the end of a
+            // slot whose daemon itself ended, which says nothing (PM M528).
+            if ended_here
+                && !answered
+                && sent.is_ok()
+                && matches!(asked, kind::START | kind::EXEC | kind::ATTACH)
+            {
+                let _ = living.answer(&answer, kind::UNANSWERED, &[]);
             }
             drop(streams.take());
             // The client's end of the session: its reads end.
