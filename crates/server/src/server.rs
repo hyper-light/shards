@@ -2552,14 +2552,23 @@ mod tests {
 
     #[test]
     fn an_unusable_helper_control_is_not_admitted() {
-        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::os::unix::ffi::OsStrExt as _;
         let dir = shards_testdir::TempDir::new("helper-mode").unwrap();
-        let control = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
-            .open(&*dir)
-            .unwrap();
-        let programs = Programs::new(Ok(OwnedFd::from(control)));
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).unwrap();
+        // open(2) itself: std's OpenOptions masks custom flags with O_ACCMODE, which musl
+        // defines as 03|O_PATH (include/fcntl.h), so on musl it opens no O_PATH descriptor.
+        // SAFETY: open(2) of a NUL-terminated path; its descriptor is owned below.
+        let fd = unsafe { libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+        assert!(fd >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: the descriptor open just made, owned here alone.
+        let control = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: F_GETFL of the descriptor owned above.
+        let flags = unsafe { libc::fcntl(control.as_raw_fd(), libc::F_GETFL) };
+        assert!(
+            flags >= 0 && flags & libc::O_PATH != 0,
+            "the fixture's control is not O_PATH: {flags:#o}"
+        );
+        let programs = Programs::new(Ok(control));
         eprintln!("unusable_native_control_rejected={}", programs.control.is_err());
         assert!(
             programs.control.is_err(),
