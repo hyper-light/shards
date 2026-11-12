@@ -22,6 +22,7 @@ pub fn main() {
             "idle" => idle(),
             "walk" => memory_walk(),
             "work" => work(),
+            "spin" => spin(),
             "kmsg" => kmsg(),
             "beat" => beat(),
             "vsock" => vsock(),
@@ -1609,6 +1610,38 @@ fn work() -> Result<(), String> {
         .map_err(|e| format!("shards_work_mib: {e}"))?;
     let hash = shards_testguest::pattern_hash(1, mib << 20);
     let _ = writeln!(io::stdout(), "SHARDS-TEST HASH {hash:016x}");
+    Ok(())
+}
+
+/// Every CPU busy, then every CPU idle, for a host that reads its vCPUs' guest time
+/// (guest_time.rs): a thread pinned to each online CPU spins for `shards_spin_ms`, then it
+/// says `SHARDS-SPIN SPUN CPUS` and sleeps for `shards_idle_ms`, its CPUs halted meanwhile.
+fn spin() -> Result<(), String> {
+    let spin = Duration::from_millis(env_u64("shards_spin_ms")?);
+    let idle = Duration::from_millis(env_u64("shards_idle_ms")?);
+    // SAFETY: sysconf(3) takes no pointers.
+    let cpus = usize::try_from(unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) }).unwrap_or(1);
+    let until = Instant::now() + spin;
+    thread::scope(|s| {
+        let spinning = (0..cpus)
+            .map(|cpu| {
+                thread::Builder::new()
+                    .spawn_scoped(s, move || -> Result<(), String> {
+                        pin(cpu)?;
+                        while Instant::now() < until {
+                            std::hint::spin_loop();
+                        }
+                        Ok(())
+                    })
+                    .map_err(|e| format!("a spinning thread for CPU {cpu}: {e}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        spinning
+            .into_iter()
+            .try_for_each(|t| t.join().map_err(|_| "a spinning thread failed".to_string())?)
+    })?;
+    let _ = writeln!(io::stdout(), "SHARDS-SPIN SPUN {cpus}");
+    thread::sleep(idle);
     Ok(())
 }
 

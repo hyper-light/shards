@@ -1,0 +1,55 @@
+9c2a671cb Merge origin/main (c4ae59ee0) into guest-cpu-time-v1: GUEST_TIME and GUEST_TIMED are 88 and 89
+MUTANT a vCPU's time may fall: killed by guest_time::tests::a_vcpus_time_never_falls_nor_does_the_machines
+    thread 'vm::guest_time::tests::a_vcpus_time_never_falls_nor_does_the_machines' (3788364) panicked at crates/vmm/src/vm/guest_time.rs:309:9:
+    assertion `left == right` failed
+      left: ([(0, 400)], 400)
+     right: ([(0, 500)], 500)
+MUTANT a leaving vCPU's time is dropped: killed by guest_time::tests::a_vcpu_that_leaves_keeps_its_time_in_the_machines
+    thread 'vm::guest_time::tests::a_vcpu_that_leaves_keeps_its_time_in_the_machines' (3829893) panicked at crates/vmm/src/vm/guest_time.rs:279:9:
+    assertion `left == right` failed
+      left: (0, 40)
+     right: (25, 65)
+MUTANT a stale guard removes a newer vCPU of its index: killed by guest_time::tests::an_index_that_comes_back_starts_again_and_the_total_keeps_the_first
+    thread 'vm::guest_time::tests::an_index_that_comes_back_starts_again_and_the_total_keeps_the_first' (3837761) panicked at crates/vmm/src/vm/guest_time.rs:364:9:
+    assertion `left == right` failed: the newer stays
+      left: ([], 1052)
+     right: ([(3, 50)], 1052)
+MUTANT a replaced vCPU's time is dropped: killed by guest_time::tests::an_index_that_comes_back_starts_again_and_the_total_keeps_the_first
+    thread 'vm::guest_time::tests::an_index_that_comes_back_starts_again_and_the_total_keeps_the_first' (3847752) panicked at crates/vmm/src/vm/guest_time.rs:358:9:
+    assertion `left == right` failed
+      left: ([(3, 50)], 1000, 1050)
+     right: ([(3, 50)], 1002, 1052)
+MUTANT an unread vCPU says nothing of why: killed by guest_time::tests::an_unread_vcpu_says_why_and_keeps_its_last
+    thread 'vm::guest_time::tests::an_unread_vcpu_says_why_and_keeps_its_last' (3863110) panicked at crates/vmm/src/vm/guest_time.rs:333:9:
+    assertion `left == right` failed
+      left: None
+     right: Some("its thread's stat: gone")
+MUTANT decoding takes vCPUs out of order: killed by guest_time::tests::text_other_than_encoded_times_is_refused
+    thread 'vm::guest_time::tests::text_other_than_encoded_times_is_refused' (3877560) panicked at crates/vmm/src/vm/guest_time.rs:463:13:
+    assertion `left == right` failed: "departed 1\nvcpu 1 5\nvcpu 0 5\n"
+      left: Some(GuestTimes { vcpus: [VcpuTime { index: 1, guest_ns: 5, unread: None }, VcpuTime { index: 0, guest_ns: 5, unread: None }], departed_ns: 1 })
+     right: None
+MUTANT encoding keeps a reason's line breaks: killed by guest_time::tests::encoded_times_decode_as_they_were
+    thread 'vm::guest_time::tests::encoded_times_decode_as_they_were' (3895745) panicked at crates/vmm/src/vm/guest_time.rs:434:9:
+    assertion `left == right` failed
+      left: "departed 99\nvcpu 0 123456789\nvcpu 5 18446744073709551615 unread WHvGetVirtualProcessorCounters failed:\nE_ACCESSDENIED\nvcpu 6 0 unread \n"
+     right: "departed 99\nvcpu 0 123456789\nvcpu 5 18446744073709551615 unread WHvGetVirtualProcessorCounters failed: E_ACCESSDENIED\nvcpu 6 0 unread \n"
+MUTANT the guest time is field 42: killed by platform::unix::usage_tests::a_stat_lines_guest_time_is_its_43rd_field
+    thread 'platform::unix::usage_tests::a_stat_lines_guest_time_is_its_43rd_field' (3910210) panicked at crates/vmm/src/platform/unix.rs:2903:9:
+    assertion `left == right` failed
+      left: Some(42)
+     right: Some(777)
+MUTANT the name ends at its first ): killed by platform::unix::usage_tests::a_stat_lines_guest_time_is_its_43rd_field
+    thread 'platform::unix::usage_tests::a_stat_lines_guest_time_is_its_43rd_field' (3919366) panicked at crates/vmm/src/platform/unix.rs:2905:9:
+    assertion `left == right` failed
+      left: Some(41)
+     right: Some(12)
+MUTANT WHP's guest time counts the hypervisor's: killed by hv::tests::a_whp_vcpus_guest_time_is_its_run_time_less_the_hypervisors
+    thread 'hv::tests::a_whp_vcpus_guest_time_is_its_run_time_less_the_hypervisors' (3928111) panicked at crates/vmm/src/hv/mod.rs:222:9:
+    assertion `left == right` failed
+      left: 1234500
+     right: 1200000
+killed 10, survived 0
+mutants exit 0
+0
+ssh exit 0
