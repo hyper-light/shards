@@ -1,0 +1,59 @@
+# DISCARDED run: rev fc71859, the same host and image; its target volume held a test binary built from a mutant (restart-none) by an earlier run stopped mid-mutant, and the source copy's older mtimes let cargo reuse it: the unit section's worker test ran without restart_syscall. harness/arm64-docker.sh now copies with fresh mtimes.
+info: syncing channel updates for 1.98.1-aarch64-unknown-linux-gnu
+info: latest update on 2026-09-03 for version 1.98.1 (48a229cea 2026-09-01)
+info: downloading 4 components
+useradd: warning: the home directory /home/shards already exists.
+useradd: Not copying any file from skel directory into it.
+Linux 788b1218f83d 6.12.76-linuxkit #1 SMP Tue Jul 21 14:38:37 UTC 2026 aarch64 GNU/Linux
+TARGET=aarch64-unknown-linux-gnu REV=fc71859
+== 1. unit tests
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.04s
+RESULT shards-init unit: passed
+test sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on ... FAILED
+thread 'sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on' (427) panicked at crates/server/src/sandbox.rs:1507:9:
+test result: FAILED. 48 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+STOPPED_IN_WAIT filter=worker wait=futex stopped=true ended by signal 31
+RESULT shards-server unit: FAILED
+== 2. probes
+test changes::probe::kept_layers_are_path_descriptors ... KEPT lower=0o10040000 upper=0o10040000 O_PATH=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE keep.rs changes::probe::kept_layers_are_path_descriptors: passed
+test changes::probe::a_layer_none_may_read_is_kept ... KEPT unreadable: Ok(()) (euid 1000)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE keep.rs changes::probe::a_layer_none_may_read_is_kept: passed
+test changes::probe::kept_layers_are_path_descriptors ... KEPT lower=0o10040000 upper=0o10040000 O_PATH=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE before:keep.rs changes::probe::kept_layers_are_path_descriptors: passed
+test changes::probe::a_layer_none_may_read_is_kept ... KEPT unreadable: Ok(()) (euid 1000)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE before:keep.rs changes::probe::a_layer_none_may_read_is_kept: passed
+test managed::probe::the_reaper_stopped_in_its_wait_lives_on ... REAPER slept=true stopped=true slept_again=true exit=125 signal=0 (aarch64)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 212 filtered out; finished in 0.00s
+PROBE reaper.rs managed::probe::the_reaper_stopped_in_its_wait_lives_on: passed
+test sandbox::probe::a_program_cannot_wait_on_atomics ... ATOMICS_WAIT Err("TypeError: cannot block in this thread
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.00s
+PROBE atomics.rs sandbox::probe::a_program_cannot_wait_on_atomics: passed
+== 3. mutants
+test opath::tests::no_source_asks_std_for_a_path_descriptor ... 
+thread 'opath::tests::no_source_asks_std_for_a_path_descriptor' (860) panicked at crates/init/src/opath.rs:133:9:
+O_PATH asked of std's OpenOptions, which musl's O_ACCMODE takes away; open it with crate::opath::open: ["/work/crates/init/src/changes.rs:48"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+MUTANT keep-through-std opath::tests::no_source_asks_std_for_a_path_descriptor: KILLED
+test opath::tests::what_it_opens_is_a_path_descriptor ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+MUTANT helper-as-std opath::tests::what_it_opens_is_a_path_descriptor: SURVIVED
+test sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on ... STOPPED_IN_WAIT filter=worker wait=futex stopped=true ended by signal 31
+thread 'sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on' (996) panicked at crates/server/src/sandbox.rs:1507:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-helper-only sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on: KILLED
+test sandbox::tests::the_helper_stopped_in_its_poll_lives_on ... STOPPED_IN_WAIT filter=helper wait=poll stopped=true exited 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-helper-only sandbox::tests::the_helper_stopped_in_its_poll_lives_on: SURVIVED
+test sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on ... STOPPED_IN_WAIT filter=worker wait=futex stopped=true ended by signal 31
+thread 'sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on' (1086) panicked at crates/server/src/sandbox.rs:1507:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-none sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on: KILLED
+test sandbox::tests::the_helper_stopped_in_its_poll_lives_on ... STOPPED_IN_WAIT filter=helper wait=poll stopped=true exited 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-none sandbox::tests::the_helper_stopped_in_its_poll_lives_on: SURVIVED
+== done
