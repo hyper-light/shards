@@ -1,0 +1,340 @@
+diff --git a/crates/init/src/metrics.rs b/crates/init/src/metrics.rs
+index 93e415690..1767ca2b3 100644
+--- a/crates/init/src/metrics.rs
++++ b/crates/init/src/metrics.rs
+@@ -16,7 +16,7 @@ use std::fs::File;
+ use std::io::{self, Read as _};
+ use std::os::fd::{AsRawFd as _, FromRawFd as _};
+ 
+-use otlp::{Failure, Scope, Snapshot};
++use otlp::{Failure, IoBytes, Scope, Snapshot};
+ 
+ const DECIMAL: usize = u64::MAX.ilog10() as usize + 1;
+ // The longest selected token is "wbytes=" followed by a u64. Unknown kernel
+@@ -238,6 +238,17 @@ impl Reader {
+         Ok((read, write))
+     }
+ 
++    /// Whether the cgroup's parent enables `controller` for it, which is what its
++    /// cgroup.controllers lists (Linux v6.18 cgroup-v2.rst 935-940).
++    fn enabled(&mut self, group: &File, controller: &[u8]) -> Result<bool, Failure> {
++        let mut listed = false;
++        self.tokens(group, c"cgroup.controllers", |token| {
++            listed |= matches!(token, Token::Word(word) if word == controller);
++            Ok(())
++        })?;
++        Ok(listed)
++    }
++
+     pub fn snapshot(&mut self, group: &File, scope: Scope) -> io::Result<Snapshot> {
+         let cpu_usec = self.cpu(group);
+         let memory_bytes = self.scalar(group, c"memory.current");
+@@ -246,7 +257,13 @@ impl Reader {
+         let task_limit = self.task_limit(group);
+         let events = events::read(self, group);
+         let (read_bytes, write_bytes) = match self.io(group) {
+-            Ok((r, w)) => (Ok(r), Ok(w)),
++            Ok((r, w)) => (Ok(IoBytes::Counted(r)), Ok(IoBytes::Counted(w))),
++            // io.stat exists where io is enabled for the cgroup (1150 of 1150 live cgroups,
++            // audit-fix-init-v1/runs/cgroup-io-probe.log). Only a listing that leaves io
++            // out explains its absence; an unreadable listing keeps the failure.
++            Err(Failure::Io(libc::ENOENT)) if self.enabled(group, b"io") == Ok(false) => {
++                (Ok(IoBytes::NotDelegated), Ok(IoBytes::NotDelegated))
++            }
+             Err(e) => (Err(e), Err(e)),
+         };
+         let time_unix_nano = std::time::SystemTime::now()
+diff --git a/crates/init/src/metrics/otlp.rs b/crates/init/src/metrics/otlp.rs
+index f8a701d3a..3c2311df1 100644
+--- a/crates/init/src/metrics/otlp.rs
++++ b/crates/init/src/metrics/otlp.rs
+@@ -25,6 +25,16 @@ pub enum Limit {
+     Unbounded,
+ }
+ 
++/// One direction of a cgroup's cumulative io.stat bytes, or why it has none to read.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum IoBytes {
++    Counted(u64),
++    /// The cgroup's parent does not enable the io controller for it, as its
++    /// cgroup.controllers says, so the kernel gives it no io.stat (Linux v6.18
++    /// cgroup-v2.rst 484-489, 935-940): not collected, and not a collection error.
++    NotDelegated,
++}
++
+ /// Fixed keys from Linux's memory.events and pids.events renderers. Aggregation
+ /// follows the configured base file; these counters confer no admission rights.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -79,8 +89,8 @@ pub struct Snapshot {
+     pub memory_limit: Result<Limit, Failure>,
+     pub task_limit: Result<Limit, Failure>,
+     pub events: [Result<u64, Failure>; CgroupEvent::ALL.len()],
+-    pub read_bytes: Result<u64, Failure>,
+-    pub write_bytes: Result<u64, Failure>,
++    pub read_bytes: Result<IoBytes, Failure>,
++    pub write_bytes: Result<IoBytes, Failure>,
+ }
+ 
+ /// One ExportMetricsServiceRequest, with cumulative kernel values. Unknown counter
+@@ -194,12 +204,18 @@ fn observations(sample: &Snapshot) -> impl Iterator<Item = Observation> + Clone
+             Limit::Unbounded => None,
+         })
+     };
++    let io = |value: Result<IoBytes, Failure>| {
++        value.map(|value| match value {
++            IoBytes::Counted(n) => Some(n),
++            IoBytes::NotDelegated => None,
++        })
++    };
+     [
+         point(Instrument::Cpu, None, None, sample.cpu_usec.map(Some)),
+         point(Instrument::Memory, None, None, sample.memory_bytes.map(Some)),
+         point(Instrument::Tasks, None, None, sample.threads.map(Some)),
+-        point(Instrument::Io, Some("read"), None, sample.read_bytes.map(Some)),
+-        point(Instrument::Io, Some("write"), None, sample.write_bytes.map(Some)),
++        point(Instrument::Io, Some("read"), None, io(sample.read_bytes)),
++        point(Instrument::Io, Some("write"), None, io(sample.write_bytes)),
+         point(Instrument::MemoryLimit, None, None, limit(sample.memory_limit)),
+         point(Instrument::TaskLimit, None, None, limit(sample.task_limit)),
+     ]
+@@ -420,8 +436,8 @@ mod tests {
+             memory_limit: Ok(Limit::Unbounded),
+             task_limit: Ok(Limit::Unbounded),
+             events: [Ok(0); CgroupEvent::ALL.len()],
+-            read_bytes: Ok(12),
+-            write_bytes: Ok(34),
++            read_bytes: Ok(IoBytes::Counted(12)),
++            write_bytes: Ok(IoBytes::Counted(34)),
+         }
+     }
+ 
+@@ -509,7 +525,7 @@ mod tests {
+             memory_bytes: Err(Failure::Io(2)),
+             threads: Err(Failure::Invalid),
+             read_bytes: Err(Failure::Overflow),
+-            write_bytes: Ok(34),
++            write_bytes: Ok(IoBytes::Counted(34)),
+             ..sample()
+         };
+         let text = encode(&[value]);
+@@ -533,6 +549,24 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn io_not_delegated_is_omitted_without_a_diagnostic() {
++        let text = encode(&[Snapshot {
++            read_bytes: Ok(IoBytes::NotDelegated),
++            write_bytes: Ok(IoBytes::NotDelegated),
++            ..sample()
++        }]);
++        assert!(!text.contains("\"name\":\"shards.cgroup.disk.io\""));
++        assert!(!text.contains("\"name\":\"shards.cgroup.collection.error\","));
++        assert!(text.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"0\"}"));
++        let failed = encode(&[Snapshot {
++            read_bytes: Err(Failure::Io(2)),
++            write_bytes: Err(Failure::Io(2)),
++            ..sample()
++        }]);
++        assert!(failed.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"2\"}"));
++    }
++
+     #[test]
+     fn int64_boundary_is_preserved_and_overflow_is_not_a_measurement() {
+         let mut value = sample();
+diff --git a/crates/init/src/metrics/tests.rs b/crates/init/src/metrics/tests.rs
+index 486146245..4b6f1b07e 100644
+--- a/crates/init/src/metrics/tests.rs
++++ b/crates/init/src/metrics/tests.rs
+@@ -1,5 +1,5 @@
+ use super::otlp::CgroupEvent;
+-use super::{Failure, Limit, Reader, Scope, Snapshot};
++use super::{Failure, IoBytes, Limit, Reader, Scope, Snapshot};
+ use shards_testdir::TempDir;
+ use std::fs::{self, File};
+ use std::os::unix::fs::PermissionsExt as _;
+@@ -80,28 +80,91 @@ fn kernel_fields_are_selected_by_key_and_scope_is_preserved() {
+         )
+         .sample(&mut reader, scope);
+         assert_other_metrics(sample);
+-        assert_eq!(sample.read_bytes, Ok(16));
+-        assert_eq!(sample.write_bytes, Ok(24));
++        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(16)));
++        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(24)));
+     }
+ }
+ 
+ #[test]
+-fn empty_io_is_zero_but_missing_io_remains_an_io_failure() {
++fn empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated() {
+     let mut reader = Reader::new().unwrap();
+     let empty = Group::complete("usage_usec 31\n", "47\n", "3\n", "").sample(&mut reader, Scope::Run);
+     assert_other_metrics(empty);
+-    assert_eq!(empty.read_bytes, Ok(0));
+-    assert_eq!(empty.write_bytes, Ok(0));
++    assert_eq!(empty.read_bytes, Ok(IoBytes::Counted(0)));
++    assert_eq!(empty.write_bytes, Ok(IoBytes::Counted(0)));
++
++    // Without io.stat, the cgroup's own listing decides, in every scope: one that leaves io
++    // out explains the absence; one that names io, or none to read, leaves it a failure.
++    let enoent = Err(Failure::Io(libc::ENOENT));
++    for (scope, controllers, expected) in [
++        (Scope::Member(7), Some("memory pids\n"), Ok(IoBytes::NotDelegated)),
++        (Scope::Run, Some("cpuset cpu memory pids\n"), Ok(IoBytes::NotDelegated)),
++        (Scope::Workload, Some("cpuset cpu io memory pids\n"), enoent),
++        (Scope::Member(7), Some("io memory pids\n"), enoent),
++        (Scope::Member(7), None, enoent),
++    ] {
++        let mut files = vec![
++            ("cpu.stat", "usage_usec 31\n"),
++            ("memory.current", "47\n"),
++            ("pids.current", "3\n"),
++        ];
++        files.extend(controllers.map(|listed| ("cgroup.controllers", listed)));
++        let missing = Group::new(&files).sample(&mut reader, scope);
++        assert_other_metrics(missing);
++        assert_eq!(
++            (missing.read_bytes, missing.write_bytes),
++            (expected, expected),
++            "{scope:?} {controllers:?}"
++        );
++    }
++
++    // Only a missing file is explained by the listing: any other failure stays one.
++    let group = Group::new(&[
++        ("cgroup.controllers", "memory pids\n"),
++        ("cpu.stat", "usage_usec 31\n"),
++        ("memory.current", "47\n"),
++        ("pids.current", "3\n"),
++        ("other", "8:0 rbytes=1 wbytes=2\n"),
++    ]);
++    std::os::unix::fs::symlink("other", group.directory.join("io.stat")).unwrap();
++    let symlink = group.sample(&mut reader, Scope::Member(7));
++    assert_eq!(symlink.read_bytes, Err(Failure::Io(libc::ELOOP)));
++    assert_eq!(symlink.write_bytes, Err(Failure::Io(libc::ELOOP)));
++}
++
++fn collection_error_count(text: &str) -> &str {
++    let (_, rest) = text
++        .split_once("\"name\":\"shards.cgroup.collection.error.count\"")
++        .unwrap();
++    let (_, rest) = rest.split_once("\"asInt\":\"").unwrap();
++    rest.split_once('"').unwrap().0
++}
+ 
+-    let missing = Group::new(&[
++#[test]
++fn a_member_without_the_io_controller_reports_no_collection_error() {
++    let mut reader = Reader::new().unwrap();
++    // A domain member as the kernel makes it: its parent enables only pids and memory for
++    // it (domains/admission.rs `enable`), so its cgroup.controllers lists those and it has
++    // no io.* file (Linux cgroup-v2.rst, "Enabling and Disabling").
++    let member = Group::new(&[
++        ("cgroup.controllers", "memory pids\n"),
+         ("cpu.stat", "usage_usec 31\n"),
+         ("memory.current", "47\n"),
+         ("pids.current", "3\n"),
++        ("memory.max", "max\n"),
++        ("pids.max", "max\n"),
++        (
++            "memory.events",
++            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
++        ),
++        ("pids.events", "max 0\n"),
+     ])
+     .sample(&mut reader, Scope::Member(7));
+-    assert_other_metrics(missing);
+-    assert_eq!(missing.read_bytes, Err(Failure::Io(libc::ENOENT)));
+-    assert_eq!(missing.write_bytes, Err(Failure::Io(libc::ENOENT)));
++    let mut bytes = Vec::new();
++    super::otlp::write(&mut bytes, "run", "vm", 0, &[member]).unwrap();
++    let text = String::from_utf8(bytes).unwrap();
++    assert_eq!(collection_error_count(&text), "0", "{text}");
++    assert!(!text.contains("\"name\":\"shards.cgroup.collection.error\","), "{text}");
+ }
+ 
+ #[test]
+@@ -113,8 +176,8 @@ fn missing_cpu_usage_does_not_erase_independent_metrics() {
+         assert_eq!(sample.cpu_usec, Err(Failure::Missing));
+         assert_eq!(sample.memory_bytes, Ok(47));
+         assert_eq!(sample.threads, Ok(3));
+-        assert_eq!(sample.read_bytes, Ok(11));
+-        assert_eq!(sample.write_bytes, Ok(17));
++        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
++        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
+     }
+ }
+ 
+@@ -160,7 +223,7 @@ fn device_lines_without_byte_fields_add_zero() {
+         assert_other_metrics(sample);
+         assert_eq!(
+             (sample.read_bytes, sample.write_bytes),
+-            (Ok(read), Ok(write)),
++            (Ok(IoBytes::Counted(read)), Ok(IoBytes::Counted(write))),
+             "{io:?}"
+         );
+     }
+@@ -213,15 +276,12 @@ fn full_u64_values_are_not_narrowed_and_larger_numbers_overflow() {
+         &format!("8:0 rbytes={max} wbytes={max}\n"),
+     )
+     .sample(&mut reader, Scope::Run);
+-    for value in [
+-        sample.cpu_usec,
+-        sample.memory_bytes,
+-        sample.threads,
+-        sample.read_bytes,
+-        sample.write_bytes,
+-    ] {
++    for value in [sample.cpu_usec, sample.memory_bytes, sample.threads] {
+         assert_eq!(value, Ok(u64::MAX));
+     }
++    for value in [sample.read_bytes, sample.write_bytes] {
++        assert_eq!(value, Ok(IoBytes::Counted(u64::MAX)));
++    }
+ 
+     let too_large = (u128::from(u64::MAX) + 1).to_string();
+     let sample = Group::complete(&format!("usage_usec {too_large}\n"), &too_large, &too_large, "")
+@@ -229,8 +289,8 @@ fn full_u64_values_are_not_narrowed_and_larger_numbers_overflow() {
+     assert_eq!(sample.cpu_usec, Err(Failure::Overflow));
+     assert_eq!(sample.memory_bytes, Err(Failure::Overflow));
+     assert_eq!(sample.threads, Err(Failure::Overflow));
+-    assert_eq!(sample.read_bytes, Ok(0));
+-    assert_eq!(sample.write_bytes, Ok(0));
++    assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(0)));
++    assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(0)));
+ }
+ 
+ #[test]
+@@ -271,8 +331,8 @@ fn selected_io_tokens_survive_an_actual_page_boundary() {
+     ] {
+         let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", &io).sample(&mut reader, Scope::Run);
+         assert_other_metrics(sample);
+-        assert_eq!(sample.read_bytes, Ok(11));
+-        assert_eq!(sample.write_bytes, Ok(17));
++        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
++        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
+     }
+ }
+ 
+@@ -284,8 +344,8 @@ fn unknown_fields_longer_than_a_page_do_not_hide_selected_fields() {
+     let io = format!("8:0 {long}=ignored rbytes=11 future={long} wbytes=17\n");
+     let sample = Group::complete(&cpu, "47\n", "3\n", &io).sample(&mut reader, Scope::Run);
+     assert_other_metrics(sample);
+-    assert_eq!(sample.read_bytes, Ok(11));
+-    assert_eq!(sample.write_bytes, Ok(17));
++    assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
++    assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
+ }
+ 
+ #[test]
+@@ -377,8 +437,8 @@ fn limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors() {
+         }
+         let snapshot = reader.snapshot(&group.held, Scope::Workload).unwrap();
+         assert_other_metrics(snapshot);
+-        assert_eq!(snapshot.read_bytes, Ok(11));
+-        assert_eq!(snapshot.write_bytes, Ok(17));
++        assert_eq!(snapshot.read_bytes, Ok(IoBytes::Counted(11)));
++        assert_eq!(snapshot.write_bytes, Ok(IoBytes::Counted(17)));
+         assert_eq!(
+             (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
+             buffer

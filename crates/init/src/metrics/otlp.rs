@@ -25,6 +25,16 @@ pub enum Limit {
     Unbounded,
 }
 
+/// One direction of a cgroup's cumulative io.stat bytes, or why it has none to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IoBytes {
+    Counted(u64),
+    /// The cgroup's parent does not enable the io controller for it, as its
+    /// cgroup.controllers says, so the kernel gives it no io.stat (Linux v6.18
+    /// cgroup-v2.rst 484-489, 935-940): not collected, and not a collection error.
+    NotDelegated,
+}
+
 /// Fixed keys from Linux's memory.events and pids.events renderers. Aggregation
 /// follows the configured base file; these counters confer no admission rights.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,8 +89,8 @@ pub struct Snapshot {
     pub memory_limit: Result<Limit, Failure>,
     pub task_limit: Result<Limit, Failure>,
     pub events: [Result<u64, Failure>; CgroupEvent::ALL.len()],
-    pub read_bytes: Result<u64, Failure>,
-    pub write_bytes: Result<u64, Failure>,
+    pub read_bytes: Result<IoBytes, Failure>,
+    pub write_bytes: Result<IoBytes, Failure>,
 }
 
 /// One ExportMetricsServiceRequest, with cumulative kernel values. Unknown counter
@@ -194,12 +204,18 @@ fn observations(sample: &Snapshot) -> impl Iterator<Item = Observation> + Clone 
             Limit::Unbounded => None,
         })
     };
+    let io = |value: Result<IoBytes, Failure>| {
+        value.map(|value| match value {
+            IoBytes::Counted(n) => Some(n),
+            IoBytes::NotDelegated => None,
+        })
+    };
     [
         point(Instrument::Cpu, None, None, sample.cpu_usec.map(Some)),
         point(Instrument::Memory, None, None, sample.memory_bytes.map(Some)),
         point(Instrument::Tasks, None, None, sample.threads.map(Some)),
-        point(Instrument::Io, Some("read"), None, sample.read_bytes.map(Some)),
-        point(Instrument::Io, Some("write"), None, sample.write_bytes.map(Some)),
+        point(Instrument::Io, Some("read"), None, io(sample.read_bytes)),
+        point(Instrument::Io, Some("write"), None, io(sample.write_bytes)),
         point(Instrument::MemoryLimit, None, None, limit(sample.memory_limit)),
         point(Instrument::TaskLimit, None, None, limit(sample.task_limit)),
     ]
@@ -420,8 +436,8 @@ mod tests {
             memory_limit: Ok(Limit::Unbounded),
             task_limit: Ok(Limit::Unbounded),
             events: [Ok(0); CgroupEvent::ALL.len()],
-            read_bytes: Ok(12),
-            write_bytes: Ok(34),
+            read_bytes: Ok(IoBytes::Counted(12)),
+            write_bytes: Ok(IoBytes::Counted(34)),
         }
     }
 
@@ -509,7 +525,7 @@ mod tests {
             memory_bytes: Err(Failure::Io(2)),
             threads: Err(Failure::Invalid),
             read_bytes: Err(Failure::Overflow),
-            write_bytes: Ok(34),
+            write_bytes: Ok(IoBytes::Counted(34)),
             ..sample()
         };
         let text = encode(&[value]);
@@ -531,6 +547,24 @@ mod tests {
         ] {
             assert!(!text.contains(&format!("\"name\":\"{name}\"")));
         }
+    }
+
+    #[test]
+    fn io_not_delegated_is_omitted_without_a_diagnostic() {
+        let text = encode(&[Snapshot {
+            read_bytes: Ok(IoBytes::NotDelegated),
+            write_bytes: Ok(IoBytes::NotDelegated),
+            ..sample()
+        }]);
+        assert!(!text.contains("\"name\":\"shards.cgroup.disk.io\""));
+        assert!(!text.contains("\"name\":\"shards.cgroup.collection.error\","));
+        assert!(text.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"0\"}"));
+        let failed = encode(&[Snapshot {
+            read_bytes: Err(Failure::Io(2)),
+            write_bytes: Err(Failure::Io(2)),
+            ..sample()
+        }]);
+        assert!(failed.contains("\"shards.cgroup.collection.error.count\",\"unit\":\"{error}\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"18446744073709551615\",\"asInt\":\"2\"}"));
     }
 
     #[test]

@@ -1,0 +1,46 @@
+diff --git a/crates/init/src/metrics/tests.rs b/crates/init/src/metrics/tests.rs
+index 486146245..8f756367a 100644
+--- a/crates/init/src/metrics/tests.rs
++++ b/crates/init/src/metrics/tests.rs
+@@ -104,6 +104,41 @@ fn empty_io_is_zero_but_missing_io_remains_an_io_failure() {
+     assert_eq!(missing.write_bytes, Err(Failure::Io(libc::ENOENT)));
+ }
+ 
++fn collection_error_count(text: &str) -> &str {
++    let (_, rest) = text
++        .split_once("\"name\":\"shards.cgroup.collection.error.count\"")
++        .unwrap();
++    let (_, rest) = rest.split_once("\"asInt\":\"").unwrap();
++    rest.split_once('"').unwrap().0
++}
++
++#[test]
++fn a_member_without_the_io_controller_reports_no_collection_error() {
++    let mut reader = Reader::new().unwrap();
++    // A domain member as the kernel makes it: its parent enables only pids and memory for
++    // it (domains/admission.rs `enable`), so its cgroup.controllers lists those and it has
++    // no io.* file (Linux cgroup-v2.rst, "Enabling and Disabling").
++    let member = Group::new(&[
++        ("cgroup.controllers", "memory pids\n"),
++        ("cpu.stat", "usage_usec 31\n"),
++        ("memory.current", "47\n"),
++        ("pids.current", "3\n"),
++        ("memory.max", "max\n"),
++        ("pids.max", "max\n"),
++        (
++            "memory.events",
++            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
++        ),
++        ("pids.events", "max 0\n"),
++    ])
++    .sample(&mut reader, Scope::Member(7));
++    let mut bytes = Vec::new();
++    super::otlp::write(&mut bytes, "run", "vm", 0, &[member]).unwrap();
++    let text = String::from_utf8(bytes).unwrap();
++    assert_eq!(collection_error_count(&text), "0", "{text}");
++    assert!(!text.contains("\"name\":\"shards.cgroup.collection.error\","), "{text}");
++}
++
+ #[test]
+ fn missing_cpu_usage_does_not_erase_independent_metrics() {
+     let mut reader = Reader::new().unwrap();

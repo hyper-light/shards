@@ -1,0 +1,50 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/capture.sh bash -c 'bash docs/research/measurements/audit-fix-init-v1/runs/lint.sh; l=$?; echo "lint_exit=$l"; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- -q 2>&1; t=$?; echo "test_exit=$t"; exit $((l|t))'
+# tree: c8439a5d + patches/f3-green.patch (restored after the mutation; diff sha256 576e8bf5...)
+# result: fmt FAILED on forward's signature (layout only); clippy gnu, clippy musl, musl check exit 0; full shards-init unit suite 153 passed, 0 failed, 1 ignored. Fixed by applying rustfmt's layout (next run).
+# this copy's body hashes to the runner's capture-sha256 (checked locally)
+c8439a5dbb68e08481da667e4fd3410db39406b1
+ crates/init/src/engine.rs | 186 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 179 insertions(+), 7 deletions(-)
+== cargo fmt --all --check
+Diff in /home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init/src/engine.rs:179:
+ }
+ 
+ /// After HELLO: the bytes each way until either side ends; only a fault is said on `log`.
+-fn forward(conn: &UnixStream, host: BorrowedFd<'_>, slots: native_relay::Slots, log: &mut impl io::Write) -> End {
++fn forward(
++    conn: &UnixStream,
++    host: BorrowedFd<'_>,
++    slots: native_relay::Slots,
++    log: &mut impl io::Write,
++) -> End {
+     let mut report = native_relay::Report::new();
+     let end = End::of(native_relay::pump(
+         [conn.as_fd(), host],
+== exit 1: cargo fmt --all --check
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.55s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.42s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+== cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.94s
+== exit 0: cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+lint_exit=1
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.51s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 154 tests
+
+running 1 test
+...........................i........................................................... 87/154
+...................................................................
+test result: ok. 153 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+test_exit=0
+capture-sha256 bf438c4dec31508773bed13c9fcd164f1b62a895ee8a1f46f42af863ca6a6b14 exit 1

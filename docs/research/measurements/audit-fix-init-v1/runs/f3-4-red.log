@@ -1,0 +1,48 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/capture.sh bash -c 'git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- engine::tests:: 2>&1; rc=$?; bin=target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496; echo "repeat 200x: $bin -q engine::tests::"; for i in $(seq 200); do $bin -q engine::tests:: 2>&1 | grep "^test result" | sed "s/finished in .*//"; done | sort | uniq -c; exit $rc'
+# tree: c8439a5d + patches/f3-red.patch (sha256 e1efcaba2ebf71117980aee10c98c6c41effe240f49e431e4e2897efc397fbc9)
+#   = patches/f3-seam-only.patch (behavior-preserving extraction of forward(conn, host, slots, log)) + the redesigned socket tests (engine end held open until the relay ends);
+#   the relay's handling of pump results is unmodified
+# result: RED as expected (cargo exit 101), and in 200 of 200 repeats: a client that leaves a line unread is logged as Native { leg: Client, operation: Read, kind: ConnectionReset, errno: Some(104) },
+#   one gone before the next line as Native { leg: Client, operation: Write, kind: BrokenPipe, errno: Some(32) }; the engine reset is said (passes)
+# this copy's body hashes to the runner's capture-sha256 (checked locally)
+c8439a5dbb68e08481da667e4fd3410db39406b1
+ crates/init/src/engine.rs | 103 ++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 100 insertions(+), 3 deletions(-)
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.23s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 3 tests
+test engine::tests::an_engine_reset_is_still_said ... ok
+test engine::tests::a_client_gone_before_the_next_line_is_not_a_fault ... FAILED
+test engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault ... FAILED
+
+failures:
+
+---- engine::tests::a_client_gone_before_the_next_line_is_not_a_fault stdout ----
+
+thread 'engine::tests::a_client_gone_before_the_next_line_is_not_a_fault' (13746) panicked at crates/init/src/engine.rs:230:9:
+assertion `left == right` failed
+  left: "shards-init: engine relay: Native { leg: Client, operation: Write, kind: BrokenPipe, errno: Some(32) }\n"
+ right: ""
+
+---- engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault stdout ----
+
+thread 'engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault' (13747) panicked at crates/init/src/engine.rs:214:9:
+assertion `left == right` failed
+  left: "shards-init: engine relay: Native { leg: Client, operation: Read, kind: ConnectionReset, errno: Some(104) }\n"
+ right: ""
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    engine::tests::a_client_gone_before_the_next_line_is_not_a_fault
+    engine::tests::a_client_that_leaves_a_line_unread_is_not_a_fault
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 150 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+repeat 200x: target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496 -q engine::tests::
+    200 test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 150 filtered out; 
+capture-sha256 a67237c0c6d70a59b010a6d19039a7648777c97ebffdd94c8c5aacecaa595d0d exit 101

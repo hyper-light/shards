@@ -1,0 +1,37 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: git rev-parse HEAD; git diff --stat -- crates; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- metrics::tests::a_member_without_the_io_controller_reports_no_collection_error metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated 2>&1 | grep -v '^warning\|^ *|\|^ *= \|^ *-->\|^$' ; echo "exit=${PIPESTATUS[0]}"
+#   (the grep drops rustc's expected dead-code warning: under the mutation, `enabled` loses its only caller; two fragment lines of it remain)
+# tree: d0d1585a + patches/f2-mutation.patch (sha256 637fa8a6a57f3ff6518d637d5d5e6c34637c306ffa424b1c366dc41c01973978) = green minus only the guard arm `Err(Failure::Io(libc::ENOENT)) if self.enabled(group, b"io") == Ok(false) => NotDelegated`
+# result: FAILS for the relevant reason (cargo exit 101): the member's error count is "2" again (disk.io read+write, errno 2); the pinned case Member(7) listing "memory pids" gives (Err(Io(2)), Err(Io(2))). Guard restored afterwards.
+d0d1585a244756ab13245bdc4caeef9e52d05ed9
+ crates/init/src/metrics.rs       |  18 +++++-
+ crates/init/src/metrics/otlp.rs  |  48 +++++++++++++---
+ crates/init/src/metrics/tests.rs | 116 +++++++++++++++++++++++++++++----------
+ 3 files changed, 145 insertions(+), 37 deletions(-)
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+ 39 | impl Reader {
+...
+243 |     fn enabled(&mut self, group: &File, controller: &[u8]) -> Result<bool, Failure> {
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.11s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+running 2 tests
+test metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated ... FAILED
+test metrics::tests::a_member_without_the_io_controller_reports_no_collection_error ... FAILED
+failures:
+---- metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated stdout ----
+thread 'metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated' (1645668) panicked at crates/init/src/metrics/tests.rs:114:9:
+assertion `left == right` failed: Member(7) Some("memory pids\n")
+  left: (Err(Io(2)), Err(Io(2)))
+ right: (Ok(NotDelegated), Ok(NotDelegated))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+---- metrics::tests::a_member_without_the_io_controller_reports_no_collection_error stdout ----
+thread 'metrics::tests::a_member_without_the_io_controller_reports_no_collection_error' (1645667) panicked at crates/init/src/metrics/tests.rs:166:5:
+assertion `left == right` failed: {"resourceMetrics":[{"resource":{"attributes":[{"key":"shards.run.id","value":{"stringValue":"run"}},{"key":"shards.microvm.id","value":{"stringValue":"vm"}},{"key":"shards.microvm.restore.generation","value":{"stringValue":"0"}},{"key":"shards.cgroup.scope","value":{"stringValue":"member"}},{"key":"shards.member.id","value":{"intValue":"7"}}]},"scopeMetrics":[{"scope":{"name":"shards.init"},"metrics":[{"name":"shards.cgroup.cpu.time","unit":"s","sum":{"aggregationTemporality":2,"isMonotonic":true,"dataPoints":[{"timeUnixNano":"1794433043143496400","attributes":[],"asDouble":0.000031}]}},{"name":"shards.cgroup.memory.usage","unit":"By","sum":{"aggregationTemporality":2,"isMonotonic":false,"dataPoints":[{"timeUnixNano":"1794433043143496400","attributes":[],"asInt":"47"}]}},{"name":"shards.cgroup.task.count","unit":"{task}","sum":{"aggregationTemporality":2,"isMonotonic":false,"dataPoints":[{"timeUnixNano":"1794433043143496400","attributes":[],"asInt":"3"}]}},{"name":"shards.cgroup.memory.events","unit":"{event}","sum":{"aggregationTemporality":2,"isMonotonic":true,"dataPoints":[{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"low"}}],"asInt":"0"},{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"high"}}],"asInt":"0"},{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"max"}}],"asInt":"0"},{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"oom"}}],"asInt":"0"},{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"oom_kill"}}],"asInt":"0"},{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"oom_group_kill"}}],"asInt":"0"}]}},{"name":"shards.cgroup.task.events","unit":"{event}","sum":{"aggregationTemporality":2,"isMonotonic":true,"dataPoints":[{"timeUnixNano":"1794433043143496400","attributes":[{"key":"shards.cgroup.event","value":{"stringValue":"max"}}],"asInt":"0"}]}},{"name":"shards.cgroup.limit.state","unit":"1","gauge":{"dataPoints":[{"timeUnixNano":"1794433043143496400","asInt":"0","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.memory.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"finite"}}]},{"timeUnixNano":"1794433043143496400","asInt":"1","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.memory.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"unbounded"}}]},{"timeUnixNano":"1794433043143496400","asInt":"0","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.memory.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"unavailable"}}]},{"timeUnixNano":"1794433043143496400","asInt":"0","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.task.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"finite"}}]},{"timeUnixNano":"1794433043143496400","asInt":"1","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.task.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"unbounded"}}]},{"timeUnixNano":"1794433043143496400","asInt":"0","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.task.limit"}},{"key":"shards.cgroup.limit.state","value":{"stringValue":"unavailable"}}]}]}},{"name":"shards.cgroup.collection.error.count","unit":"{error}","gauge":{"dataPoints":[{"timeUnixNano":"1794433043143496400","asInt":"2"}]}},{"name":"shards.cgroup.collection.error","unit":"{error}","gauge":{"dataPoints":[{"timeUnixNano":"1794433043143496400","asInt":"1","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.disk.io"}},{"key":"disk.io.direction","value":{"stringValue":"read"}},{"key":"error.type","value":{"stringValue":"io"}},{"key":"shards.error.errno","value":{"intValue":"2"}}]},{"timeUnixNano":"1794433043143496400","asInt":"1","attributes":[{"key":"shards.cgroup.metric","value":{"stringValue":"shards.cgroup.disk.io"}},{"key":"disk.io.direction","value":{"stringValue":"write"}},{"key":"error.type","value":{"stringValue":"io"}},{"key":"shards.error.errno","value":{"intValue":"2"}}]}]}}]}]}]}
+  left: "2"
+ right: "0"
+failures:
+    metrics::tests::a_member_without_the_io_controller_reports_no_collection_error
+    metrics::tests::empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 148 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+exit=101

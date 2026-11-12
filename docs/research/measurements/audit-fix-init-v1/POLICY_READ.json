@@ -1,0 +1,21 @@
+{
+  "type": "POLICY_READ",
+  "revision": "bff3015182ad754274f1048ce393ac12cb6cd91f",
+  "rules_sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3",
+  "role": "implementer",
+  "coordinator": "ROOT",
+  "documents": {
+    "AGENTS.md": {"bytes": 1793, "sha256": "f66d304c033ad4001d3d7347b67faa3bb3137d637860793e8e74f1eb6266db41", "read": "full", "source": "origin/main"},
+    "docs/development-rules.md": {"bytes": 11604, "sha256": "df2acf47cf92996e9435f9a4988f10e9e7aaa21ca952a00069c044c7ed4f13d3", "read": "full", "source": "origin/main"},
+    "docs/development-evidence.md": {"bytes": 3325, "sha256": "61613a244106d95b2759b38c8b6660ff29a616983e7afd6e9faabdc38368fb63", "read": "full", "source": "origin/main"},
+    "CLAUDE.md": {"bytes": 17012, "sha256": "fd1076b256516e0edab1b3655421d37cd934e93a8232f0125b96abcfb99ece5f", "read": "full", "source": "origin/main"}
+  },
+  "task": "audit-fix-init-v1: fix verified guest-init audit findings under R09 (red, green, guard mutation): 1 io.stat device line with no rbytes/wbytes; 2 member cgroups' io not delegated counted as collection errors; 3 engine relay logs a normal client departure; 4 optional syscall reductions only with before/after syscall evidence",
+  "branch": "p/audit-fix-init-v1",
+  "worktree": "/Users/adalundhe/Projects/shards/.claude/worktrees/audit-fix-init-v1",
+  "owned_paths": [
+    "crates/init/** (only files the findings need, and their tests)",
+    "docs/research/measurements/audit-fix-init-v1/**"
+  ],
+  "constraints": "light tests only (crates/init unit tests, cargo fmt --check, clippy -D warnings for shards-init); every cargo command on kiln runner 451397fcc585f7f7cb9aaf00e42064bb, needs cpus=2,mem=2g,disk=4g, timeout_s<=600, -j2, no background runs; no VM E2E, benchmarks or profiling; no other worktrees, no push/merge/rebase, no agents spawned or messaged; signed gits commits with named paths; engine relay buffer size and threading unchanged (ROOT owns that measurement)"
+}

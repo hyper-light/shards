@@ -1,0 +1,31 @@
+# kiln run on=451397fcc585f7f7cb9aaf00e42064bb (adacachy) needs=cpus=2,mem=2g,disk=4g timeout_s=600 env RUSTUP_AUTO_INSTALL=0
+# command: bash docs/research/measurements/audit-fix-init-v1/runs/lint.sh; echo "lint_exit=$?"; cargo test -p shards-init --target x86_64-unknown-linux-gnu -j2 -- -q metrics:: 2>&1; echo "test_exit=$?"
+# tree: bff3015 + finding 1 final (green + rustfmt layout of the new tests); committed as finding 1
+# result: fmt, clippy gnu, clippy musl, musl check all exit 0; 37 metrics tests pass
+bff3015182ad754274f1048ce393ac12cb6cd91f
+ crates/init/src/metrics.rs       | 15 +++++++-----
+ crates/init/src/metrics/tests.rs | 53 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 62 insertions(+), 6 deletions(-)
+== cargo fmt --all --check
+== exit 0: cargo fmt --all --check
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.50s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-gnu -j2 -- -D warnings
+== cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+    Checking shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.99s
+== exit 0: cargo clippy -p shards-init --all-targets --target x86_64-unknown-linux-musl -j2 -- -D warnings
+== cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+== exit 0: cargo check -p shards-init --target x86_64-unknown-linux-musl -j2
+lint_exit=0
+   Compiling shards-init v0.1.0 (/home/adalundhe/.kiln/reach/e30189ea29182644fe5a4b2e06c7dac2/audit-fix-init-v1-8c9c06b55d/crates/init)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.17s
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/debug/deps/shards_init-e1fd7e79dcc57496)
+
+running 37 tests
+.....................................
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 111 filtered out; finished in 0.00s
+
+test_exit=0

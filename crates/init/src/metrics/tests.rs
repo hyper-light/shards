@@ -1,5 +1,5 @@
 use super::otlp::CgroupEvent;
-use super::{Failure, Limit, Reader, Scope, Snapshot};
+use super::{Failure, IoBytes, Limit, Reader, Scope, Snapshot};
 use shards_testdir::TempDir;
 use std::fs::{self, File};
 use std::os::unix::fs::PermissionsExt as _;
@@ -80,28 +80,98 @@ fn kernel_fields_are_selected_by_key_and_scope_is_preserved() {
         )
         .sample(&mut reader, scope);
         assert_other_metrics(sample);
-        assert_eq!(sample.read_bytes, Ok(16));
-        assert_eq!(sample.write_bytes, Ok(24));
+        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(16)));
+        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(24)));
     }
 }
 
 #[test]
-fn empty_io_is_zero_but_missing_io_remains_an_io_failure() {
+fn empty_io_is_zero_and_missing_io_fails_unless_io_is_not_delegated() {
     let mut reader = Reader::new().unwrap();
     let empty = Group::complete("usage_usec 31\n", "47\n", "3\n", "").sample(&mut reader, Scope::Run);
     assert_other_metrics(empty);
-    assert_eq!(empty.read_bytes, Ok(0));
-    assert_eq!(empty.write_bytes, Ok(0));
+    assert_eq!(empty.read_bytes, Ok(IoBytes::Counted(0)));
+    assert_eq!(empty.write_bytes, Ok(IoBytes::Counted(0)));
 
-    let missing = Group::new(&[
+    // Without io.stat, the cgroup's own listing decides, in every scope: one that leaves io
+    // out explains the absence; one that names io, or none to read, leaves it a failure.
+    let enoent = Err(Failure::Io(libc::ENOENT));
+    for (scope, controllers, expected) in [
+        (Scope::Member(7), Some("memory pids\n"), Ok(IoBytes::NotDelegated)),
+        (
+            Scope::Run,
+            Some("cpuset cpu memory pids\n"),
+            Ok(IoBytes::NotDelegated),
+        ),
+        (Scope::Workload, Some("cpuset cpu io memory pids\n"), enoent),
+        (Scope::Member(7), Some("io memory pids\n"), enoent),
+        (Scope::Member(7), None, enoent),
+    ] {
+        let mut files = vec![
+            ("cpu.stat", "usage_usec 31\n"),
+            ("memory.current", "47\n"),
+            ("pids.current", "3\n"),
+        ];
+        files.extend(controllers.map(|listed| ("cgroup.controllers", listed)));
+        let missing = Group::new(&files).sample(&mut reader, scope);
+        assert_other_metrics(missing);
+        assert_eq!(
+            (missing.read_bytes, missing.write_bytes),
+            (expected, expected),
+            "{scope:?} {controllers:?}"
+        );
+    }
+
+    // Only a missing file is explained by the listing: any other failure stays one.
+    let group = Group::new(&[
+        ("cgroup.controllers", "memory pids\n"),
         ("cpu.stat", "usage_usec 31\n"),
         ("memory.current", "47\n"),
         ("pids.current", "3\n"),
+        ("other", "8:0 rbytes=1 wbytes=2\n"),
+    ]);
+    std::os::unix::fs::symlink("other", group.directory.join("io.stat")).unwrap();
+    let symlink = group.sample(&mut reader, Scope::Member(7));
+    assert_eq!(symlink.read_bytes, Err(Failure::Io(libc::ELOOP)));
+    assert_eq!(symlink.write_bytes, Err(Failure::Io(libc::ELOOP)));
+}
+
+fn collection_error_count(text: &str) -> &str {
+    let (_, rest) = text
+        .split_once("\"name\":\"shards.cgroup.collection.error.count\"")
+        .unwrap();
+    let (_, rest) = rest.split_once("\"asInt\":\"").unwrap();
+    rest.split_once('"').unwrap().0
+}
+
+#[test]
+fn a_member_without_the_io_controller_reports_no_collection_error() {
+    let mut reader = Reader::new().unwrap();
+    // A domain member as the kernel makes it: its parent enables only pids and memory for
+    // it (domains/admission.rs `enable`), so its cgroup.controllers lists those and it has
+    // no io.* file (Linux cgroup-v2.rst, "Enabling and Disabling").
+    let member = Group::new(&[
+        ("cgroup.controllers", "memory pids\n"),
+        ("cpu.stat", "usage_usec 31\n"),
+        ("memory.current", "47\n"),
+        ("pids.current", "3\n"),
+        ("memory.max", "max\n"),
+        ("pids.max", "max\n"),
+        (
+            "memory.events",
+            "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n",
+        ),
+        ("pids.events", "max 0\n"),
     ])
     .sample(&mut reader, Scope::Member(7));
-    assert_other_metrics(missing);
-    assert_eq!(missing.read_bytes, Err(Failure::Io(libc::ENOENT)));
-    assert_eq!(missing.write_bytes, Err(Failure::Io(libc::ENOENT)));
+    let mut bytes = Vec::new();
+    super::otlp::write(&mut bytes, "run", "vm", 0, &[member]).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert_eq!(collection_error_count(&text), "0", "{text}");
+    assert!(
+        !text.contains("\"name\":\"shards.cgroup.collection.error\","),
+        "{text}"
+    );
 }
 
 #[test]
@@ -113,8 +183,8 @@ fn missing_cpu_usage_does_not_erase_independent_metrics() {
         assert_eq!(sample.cpu_usec, Err(Failure::Missing));
         assert_eq!(sample.memory_bytes, Ok(47));
         assert_eq!(sample.threads, Ok(3));
-        assert_eq!(sample.read_bytes, Ok(11));
-        assert_eq!(sample.write_bytes, Ok(17));
+        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
+        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
     }
 }
 
@@ -129,6 +199,59 @@ fn duplicate_selected_io_fields_on_one_device_are_invalid() {
         assert_other_metrics(sample);
         assert_eq!(sample.read_bytes, Err(Failure::Invalid));
         assert_eq!(sample.write_bytes, Err(Failure::Invalid));
+    }
+}
+
+#[test]
+fn device_lines_without_byte_fields_add_zero() {
+    let mut reader = Reader::new().unwrap();
+    // A device whose blkg has done no read or write is printed by name alone (Linux v6.18
+    // block/blk-cgroup.c 1193-1227); the first is a live io.stat, byte for byte
+    // (docs/research/measurements/audit-fix-init-v1/runs/cgroup-io-probe.log).
+    let live = concat!(
+        "253:0 \n",
+        "259:0 rbytes=35000320 wbytes=0 rios=1309 wios=0 dbytes=0 dios=0\n",
+        "259:3 rbytes=18190336 wbytes=0 rios=1162 wios=0 dbytes=0 dios=0\n",
+        "259:2 rbytes=662855680 wbytes=0 rios=12719 wios=0 dbytes=0 dios=0\n",
+        "259:1 rbytes=11812864 wbytes=0 rios=721 wios=0 dbytes=0 dios=0\n",
+    );
+    for (io, read, write) in [
+        (live, 727_859_200, 0),
+        ("8:0 \n", 0, 0),
+        ("8:0 ", 0, 0),
+        // iocost's own field on a device with no read or write (blk-iocost.c v6.18 3063).
+        (
+            "8:0  cost.usage=0\n8:16 rbytes=5 wbytes=7 rios=1 wios=1 dbytes=0 dios=0\n",
+            5,
+            7,
+        ),
+    ] {
+        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
+        assert_other_metrics(sample);
+        assert_eq!(
+            (sample.read_bytes, sample.write_bytes),
+            (Ok(IoBytes::Counted(read)), Ok(IoBytes::Counted(write))),
+            "{io:?}"
+        );
+    }
+}
+
+#[test]
+fn a_device_line_with_one_byte_field_is_missing() {
+    let mut reader = Reader::new().unwrap();
+    // The kernel prints rbytes and wbytes together or neither (blk-cgroup.c v6.18 1206-1210).
+    for io in [
+        "8:0 rbytes=5 rios=1\n",
+        "8:0 wbytes=7 wios=1\n",
+        "8:16 rbytes=5 wbytes=7\n8:0 rbytes=1\n",
+    ] {
+        let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", io).sample(&mut reader, Scope::Run);
+        assert_other_metrics(sample);
+        assert_eq!(
+            (sample.read_bytes, sample.write_bytes),
+            (Err(Failure::Missing), Err(Failure::Missing)),
+            "{io:?}"
+        );
     }
 }
 
@@ -160,14 +283,11 @@ fn full_u64_values_are_not_narrowed_and_larger_numbers_overflow() {
         &format!("8:0 rbytes={max} wbytes={max}\n"),
     )
     .sample(&mut reader, Scope::Run);
-    for value in [
-        sample.cpu_usec,
-        sample.memory_bytes,
-        sample.threads,
-        sample.read_bytes,
-        sample.write_bytes,
-    ] {
+    for value in [sample.cpu_usec, sample.memory_bytes, sample.threads] {
         assert_eq!(value, Ok(u64::MAX));
+    }
+    for value in [sample.read_bytes, sample.write_bytes] {
+        assert_eq!(value, Ok(IoBytes::Counted(u64::MAX)));
     }
 
     let too_large = (u128::from(u64::MAX) + 1).to_string();
@@ -176,8 +296,8 @@ fn full_u64_values_are_not_narrowed_and_larger_numbers_overflow() {
     assert_eq!(sample.cpu_usec, Err(Failure::Overflow));
     assert_eq!(sample.memory_bytes, Err(Failure::Overflow));
     assert_eq!(sample.threads, Err(Failure::Overflow));
-    assert_eq!(sample.read_bytes, Ok(0));
-    assert_eq!(sample.write_bytes, Ok(0));
+    assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(0)));
+    assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(0)));
 }
 
 #[test]
@@ -218,8 +338,8 @@ fn selected_io_tokens_survive_an_actual_page_boundary() {
     ] {
         let sample = Group::complete("usage_usec 31\n", "47\n", "3\n", &io).sample(&mut reader, Scope::Run);
         assert_other_metrics(sample);
-        assert_eq!(sample.read_bytes, Ok(11));
-        assert_eq!(sample.write_bytes, Ok(17));
+        assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
+        assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
     }
 }
 
@@ -231,8 +351,8 @@ fn unknown_fields_longer_than_a_page_do_not_hide_selected_fields() {
     let io = format!("8:0 {long}=ignored rbytes=11 future={long} wbytes=17\n");
     let sample = Group::complete(&cpu, "47\n", "3\n", &io).sample(&mut reader, Scope::Run);
     assert_other_metrics(sample);
-    assert_eq!(sample.read_bytes, Ok(11));
-    assert_eq!(sample.write_bytes, Ok(17));
+    assert_eq!(sample.read_bytes, Ok(IoBytes::Counted(11)));
+    assert_eq!(sample.write_bytes, Ok(IoBytes::Counted(17)));
 }
 
 #[test]
@@ -324,8 +444,8 @@ fn limits_cross_pages_and_reuse_the_snapshot_buffer_after_errors() {
         }
         let snapshot = reader.snapshot(&group.held, Scope::Workload).unwrap();
         assert_other_metrics(snapshot);
-        assert_eq!(snapshot.read_bytes, Ok(11));
-        assert_eq!(snapshot.write_bytes, Ok(17));
+        assert_eq!(snapshot.read_bytes, Ok(IoBytes::Counted(11)));
+        assert_eq!(snapshot.write_bytes, Ok(IoBytes::Counted(17)));
         assert_eq!(
             (reader.bytes.as_ptr(), reader.bytes.len(), reader.bytes.capacity()),
             buffer

@@ -16,7 +16,7 @@ use std::fs::File;
 use std::io::{self, Read as _};
 use std::os::fd::{AsRawFd as _, FromRawFd as _};
 
-use otlp::{Failure, Scope, Snapshot};
+use otlp::{Failure, IoBytes, Scope, Snapshot};
 
 const DECIMAL: usize = u64::MAX.ilog10() as usize + 1;
 // The longest selected token is "wbytes=" followed by a u64. Unknown kernel
@@ -214,12 +214,15 @@ impl Reader {
                     }
                 }
                 (State::Fields { read: r, write: w }, Token::Line) => {
-                    read = read
-                        .checked_add(r.ok_or(Failure::Missing)?)
-                        .ok_or(Failure::Overflow)?;
-                    write = write
-                        .checked_add(w.ok_or(Failure::Missing)?)
-                        .ok_or(Failure::Overflow)?;
+                    // Linux prints a device's byte fields together, or neither where its
+                    // blkg has done no read or write (v6.18 block/blk-cgroup.c 1206-1210).
+                    let (r, w) = match (*r, *w) {
+                        (Some(r), Some(w)) => (r, w),
+                        (None, None) => (0, 0),
+                        _ => return Err(Failure::Missing),
+                    };
+                    read = read.checked_add(r).ok_or(Failure::Overflow)?;
+                    write = write.checked_add(w).ok_or(Failure::Overflow)?;
                     state = State::Device;
                 }
                 (_, Token::Long(prefix))
@@ -235,6 +238,17 @@ impl Reader {
         Ok((read, write))
     }
 
+    /// Whether the cgroup's parent enables `controller` for it, which is what its
+    /// cgroup.controllers lists (Linux v6.18 cgroup-v2.rst 935-940).
+    fn enabled(&mut self, group: &File, controller: &[u8]) -> Result<bool, Failure> {
+        let mut listed = false;
+        self.tokens(group, c"cgroup.controllers", |token| {
+            listed |= matches!(token, Token::Word(word) if word == controller);
+            Ok(())
+        })?;
+        Ok(listed)
+    }
+
     pub fn snapshot(&mut self, group: &File, scope: Scope) -> io::Result<Snapshot> {
         let cpu_usec = self.cpu(group);
         let memory_bytes = self.scalar(group, c"memory.current");
@@ -243,7 +257,13 @@ impl Reader {
         let task_limit = self.task_limit(group);
         let events = events::read(self, group);
         let (read_bytes, write_bytes) = match self.io(group) {
-            Ok((r, w)) => (Ok(r), Ok(w)),
+            Ok((r, w)) => (Ok(IoBytes::Counted(r)), Ok(IoBytes::Counted(w))),
+            // io.stat exists where io is enabled for the cgroup (1150 of 1150 live cgroups,
+            // audit-fix-init-v1/runs/cgroup-io-probe.log). Only a listing that leaves io
+            // out explains its absence; an unreadable listing keeps the failure.
+            Err(Failure::Io(libc::ENOENT)) if self.enabled(group, b"io") == Ok(false) => {
+                (Ok(IoBytes::NotDelegated), Ok(IoBytes::NotDelegated))
+            }
             Err(e) => (Err(e), Err(e)),
         };
         let time_unix_nano = std::time::SystemTime::now()
