@@ -1,0 +1,4 @@
+{
+  "entrypoint": "codex exec",
+  "options": ["--json", "--skip-git-repo-check", "--ephemeral", "Reply with the single word: ready"]
+}

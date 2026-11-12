@@ -1,0 +1,11 @@
+ef687bc77 Join engine.rs's two test modules after the merge
+?? crates/shards/tests/harness_bringup.rs
+?? docs/examples/
+?? docs/research/measurements/harness-bringup-v1/
+b9dd9736f0e5533bb36379bb6984d9792d4d0c83a3f74aa020ce81b55767aefb  crates/shards/tests/harness_bringup.rs
+c1b6a4716aef70faaaf3afd004661ba3be224a74a83d317cd4775ce9040c13bb  docs/examples/harness-claude/Agentfile
+72189f76dea73b83f2c66182ed15ee8ca55bee79d8a7a175f59c4205d2b7231b  docs/examples/harness-codex/Agentfile
+98ec1621e5154eceb4b95feeb176ea6f6ec993ca889a5dee772145009ada238c  docs/examples/harness-claude/claude/harness.json
+babd9a844c0db9a2517b247eb8c6c0f721207fc4e73922b285514c4f171363b6  docs/examples/harness-codex/codex/harness.json
+e889b867ad51b02f6075eb2e829de0f827cd7f84e6e51c55455d464098c875cb  docs/research/measurements/harness-bringup-v1/bringup.sh
+0425cf9e935f26b7c150694fc5b316ee770471b1f207d8a214f8cb5fde3cc110  docs/research/measurements/harness-bringup-v1/fetch.sh
