@@ -1,5 +1,6 @@
 """A signed-in harness's credential, handled without ever printing it (harness bring-up v2).
 
+    credentials.py validity SRC                  how long SRC's access token stays valid
     credentials.py copy SRC PRIVATE NAME FILE   SRC's private copy, PRIVATE/NAME/FILE
     credentials.py leakcheck PRIVATE PATH...     whether any secret of the originals or
                                                  copies is in the files under PATH
@@ -15,6 +16,7 @@ mode. Every output line is a status, a count or a path: no value, no hash.
 """
 
 import base64
+import calendar
 import hashlib
 import json
 import os
@@ -35,11 +37,6 @@ SECRET_NAME = re.compile(r"token|key|secret|account_id", re.IGNORECASE)
 # leak is reported by path for a person to look at, never by value.
 WINDOW = 24
 STRIDE = 8
-
-
-def sha256(path):
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
 
 def state_path(private):
@@ -72,28 +69,43 @@ def secrets(value, name=""):
         yield value
 
 
-def expiring(document):
-    """Whether a token in the document expires within ten minutes: a yes or no, no value;
-    None where it cannot tell (never an exception, whose message could quote a token)."""
+def validity(document):
+    """How long the document's access token stays valid, and for Codex how long ago its
+    tokens were last refreshed, in whole minutes and days: times, never a value. A harness
+    that finds its token about to expire refreshes it, and a refresh can retire the
+    refresh token every other holder of the original still has. "unknown" where it cannot
+    tell (never an exception, whose message could quote a token)."""
     try:
-        return _expiring(document)
+        return _validity(document)
     except Exception:
-        return None
+        return "its access token's expiry: unknown"
 
 
-def _expiring(document):
+def _validity(document):
     now = time.time()
-    oauth = document.get("claudeAiOauth") if isinstance(document, dict) else None
+    expires = None
+    oauth = document.get("claudeAiOauth")
     if isinstance(oauth, dict) and isinstance(oauth.get("expiresAt"), (int, float)):
-        return oauth["expiresAt"] / 1000 - now < 600
-    tokens = document.get("tokens") if isinstance(document, dict) else None
+        expires = oauth["expiresAt"] / 1000
+    tokens = document.get("tokens")
     access = tokens.get("access_token") if isinstance(tokens, dict) else None
-    if isinstance(access, str) and access.count(".") == 2:
+    if expires is None and isinstance(access, str) and access.count(".") == 2:
         payload = access.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         if isinstance(claims.get("exp"), (int, float)):
-            return claims["exp"] - now < 600
-    return None
+            expires = claims["exp"]
+    if expires is None:
+        said = "its access token's expiry: unknown"
+    elif expires >= now:
+        said = f"its access token is valid for {int((expires - now) // 60)} more minutes"
+    else:
+        said = f"its access token expired {int((now - expires) // 60)} minutes ago"
+    refreshed = document.get("last_refresh")
+    if isinstance(refreshed, str):
+        # RFC 3339 in UTC, as Codex writes it; the seconds are enough.
+        at = calendar.timegm(time.strptime(refreshed[:19], "%Y-%m-%dT%H:%M:%S"))
+        said += f"; its tokens were last refreshed {int((now - at) // 86400)} days ago"
+    return said
 
 
 def copy(src, private, name, file):
@@ -116,9 +128,7 @@ def copy(src, private, name, file):
         "mode": stat.S_IMODE(os.stat(src).st_mode),
     }
     save_state(private, state)
-    soon = expiring(document)
-    print(f"{name}: copied to a 0600 file in a 0700 directory; a token expires within ten minutes: "
-          + {True: "yes", False: "no", None: "unknown"}[soon])
+    print(f"{name}: copied to a 0600 file in a 0700 directory; {validity(document)}")
 
 
 def all_secrets(state):
@@ -248,7 +258,11 @@ def scrub(private):
 
 
 def main(argv):
-    if len(argv) >= 5 and argv[0] == "copy":
+    if len(argv) == 2 and argv[0] == "validity":
+        with open(argv[1], "rb") as f:
+            print(f"{argv[1]}: {validity(json.loads(f.read()))}")
+        return 0
+    if len(argv) == 5 and argv[0] == "copy":
         copy(*argv[1:5])
         return 0
     if len(argv) >= 3 and argv[0] == "leakcheck":

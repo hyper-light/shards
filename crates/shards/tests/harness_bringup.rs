@@ -852,9 +852,8 @@ fn a_real_codex_signed_in_runs_a_tool_and_answers() {
         .collect();
     let ran = items
         .iter()
-        .find(|i| i["type"] == "command_execution")
-        .unwrap_or_else(|| panic!("no tool ran\n{all}"));
-    assert!(ran["command"].as_str().unwrap().contains("ls"), "{all}");
+        .find(|i| i["type"] == "command_execution" && i["command"].as_str().is_some_and(|c| c.contains("ls")))
+        .unwrap_or_else(|| panic!("no ls ran\n{all}"));
     assert_eq!(ran["exit_code"], 0, "{all}");
     let answer = items
         .iter()

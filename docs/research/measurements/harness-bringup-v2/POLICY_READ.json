@@ -30,5 +30,16 @@
     "no subagents; no push, merge or rebase; commits via /Users/adalundhe/.kiln-run/bin/gits with named paths, final line Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   ],
   "rules_acknowledged": "R01-R16 read in full; docs/development-evidence.md checklist and AGENTS.md read in full",
-  "read_at": "2026-11-11"
+  "read_at": "2026-11-11",
+  "re_read": [
+    {
+      "when": "2026-11-12T06:30Z, after the session restart of about 04:44Z (context lost)",
+      "revision": "c4ae59ee0 (origin/main)",
+      "files": "AGENTS.md, docs/development-rules.md, docs/development-evidence.md and CLAUDE.md read in full again; each SHA-256 unchanged from the entries above"
+    }
+  ],
+  "superseded_limits": {
+    "no push, merge or rebase": "replaced by the person's rule of 2026-11-12, relayed verbatim by ROOT: \"all subagents are only required to verify unit tests relevant to their changes and any light integration tests relevant. Once complete, they should merge their work to main and end.\" Done as ROOT directs: git fetch origin, gits merge origin/main, git push origin HEAD:main as a fast-forward, never forced; the checks this leaves owed are recorded in README.md",
+    "no builds on this Mac": "kept: every build and run of this task is on adacachy, where the credentials are"
+  }
 }

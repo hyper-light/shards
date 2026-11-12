@@ -3,9 +3,10 @@
   "name": "claude",
   "run": {
     "command": [
-      "claude", "-p", "--output-format", "stream-json", "--verbose",
-      "--add-dir", "/work", "--allowedTools", "Bash(ls:*)",
-      "Use the Bash tool to run `ls -1 /work` once, then reply with exactly the file names it printed, one per line, and nothing else."
+      "claude", "-p",
+      "Use the Bash tool to run `ls -1 /work` once, then reply with exactly the file names it printed, one per line, and nothing else.",
+      "--output-format", "stream-json", "--verbose",
+      "--add-dir", "/work", "--allowedTools", "Bash(ls:*)"
     ],
     "env": ["CLAUDE_CONFIG_DIR=/run/claude-home"]
   }
