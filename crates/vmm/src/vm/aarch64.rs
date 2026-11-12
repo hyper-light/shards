@@ -487,7 +487,9 @@ fn assemble(
     let (layer, top) = super::layer_layout(hosts.layer, top)?;
     // A GPU's window, at the first GiB boundary past all of that, as long as the renderer
     // says (D144, D201, D202).
-    let gpu = gpu.map(|saw| super::gpu_layout(saw, top)).transpose()?;
+    let gpu = gpu
+        .map(|saw| super::gpu_layout(saw, top, &config.gpu_devices))
+        .transpose()?;
     let top = match &gpu {
         Some((_, r)) => r
             .base
@@ -859,7 +861,7 @@ pub fn build(cfg: &Config) -> Result<Machine, String> {
             cfg.console,
             cfg.said,
             hosts,
-            cfg.gpu.then_some(0),
+            (cfg.gpu || !cfg.gpu_devices.is_empty()).then_some(0),
             super::Pci {
                 test: &cfg.pci_test,
                 vfio: &cfg.vfio,

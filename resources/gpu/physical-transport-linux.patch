@@ -1,0 +1,483 @@
+diff --git a/server/render_context.c b/server/render_context.c
+--- a/server/render_context.c
++++ b/server/render_context.c
+@@ -39,12 +39,74 @@
+ }
+ 
+ static bool
++render_context_dispatch_set_uuids(struct render_context *ctx,
++                                  const union render_context_op_request *request,
++                                  UNUSED const int *fds,
++                                  int fd_count)
++{
++   const struct render_context_op_set_uuids_request *req = &request->set_uuids;
++   int32_t result = VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED;
++   char *payload = NULL;
++   const char **words = NULL;
++   size_t size;
++   if (fd_count || ctx->device_selection_state != VIRGL_DEVICE_SELECTION_READY ||
++       !virgl_device_selection_payload_size(req->count, &size) || req->byte_count != size)
++      goto out;
++   if (sizeof(*words) > SIZE_MAX / (size_t)req->count) {
++      result = VIRGL_RENDERER_UUIDS_OUT_OF_HOST_MEMORY;
++      goto out;
++   }
++   payload = calloc(1, size);
++   words = calloc(req->count, sizeof(*words));
++   if (!payload || !words) {
++      result = VIRGL_RENDERER_UUIDS_OUT_OF_HOST_MEMORY;
++      goto out;
++   }
++   for (size_t offset = 0; offset < size;) {
++      const size_t chunk = MIN2(size - offset,
++         sizeof(((struct render_context_op_submit_cmd_request *)0)->cmd));
++      if (!render_socket_receive_data(&ctx->socket, payload + offset, chunk))
++         goto out;
++      offset += chunk;
++   }
++   for (uint32_t i = 0; i < req->count; i++)
++      words[i] = payload + (size_t)i * VIRGL_DEVICE_UUID_STRIDE;
++   result = render_state_set_physical_device_uuids(ctx->ctx_id, words, req->count);
++   if (result == VIRGL_RENDERER_UUIDS_SUCCESS)
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_SELECTED;
++
++out:
++   free(words);
++   free(payload);
++   if (result != VIRGL_RENDERER_UUIDS_SUCCESS) {
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++      render_state_set_physical_device_uuids(ctx->ctx_id, NULL, 0);
++   }
++   const struct render_context_op_set_uuids_reply reply = {
++      .op = RENDER_CONTEXT_OP_SET_UUIDS,
++      .result = result,
++      .count = result == VIRGL_RENDERER_UUIDS_SUCCESS ? req->count : 0,
++   };
++   if (!render_socket_send_reply(&ctx->socket, &reply, sizeof(reply))) {
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++      render_state_set_physical_device_uuids(ctx->ctx_id, NULL, 0);
++      return false;
++   }
++   return result == VIRGL_RENDERER_UUIDS_SUCCESS;
++}
++
++static bool
+ render_context_dispatch_submit_cmd(struct render_context *ctx,
+                                    const union render_context_op_request *request,
+                                    UNUSED const int *fds,
+                                    UNUSED int fd_count)
+ {
++   if (ctx->device_selection_state == VIRGL_DEVICE_SELECTION_NEW ||
++       ctx->device_selection_state == VIRGL_DEVICE_SELECTION_INVALID)
++      return false;
+    const struct render_context_op_submit_cmd_request *req = &request->submit_cmd;
++   if (req->size)
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_STARTED;
+    void *cmd = (void *)req->cmd;
+    if (req->size > sizeof(req->cmd)) {
+       cmd = malloc(req->size);
+@@ -128,6 +190,8 @@
+                              const int *fds,
+                              int fd_count)
+ {
++   if (ctx->device_selection_state != VIRGL_DEVICE_SELECTION_NEW)
++      return false;
+    if (fd_count != 1 && fd_count != 2)
+       return false;
+ 
+@@ -157,6 +221,7 @@
+ 
+    ctx->fence_eventfd = fence_eventfd;
+ 
++   ctx->device_selection_state = VIRGL_DEVICE_SELECTION_READY;
+    return true;
+ }
+ 
+@@ -192,13 +257,14 @@
+       RENDER_CONTEXT_DISPATCH(DESTROY_RESOURCE, destroy_resource, 0),
+       RENDER_CONTEXT_DISPATCH(SUBMIT_CMD, submit_cmd, 0),
+       RENDER_CONTEXT_DISPATCH(SUBMIT_FENCE, submit_fence, 0),
++      RENDER_CONTEXT_DISPATCH(SET_UUIDS, set_uuids, 0),
+ #undef RENDER_CONTEXT_DISPATCH
+    };
+ 
+ static bool
+ render_context_dispatch(struct render_context *ctx)
+ {
+-   union render_context_op_request req;
++   union render_context_op_request req = { 0 };
+    size_t req_size;
+    int req_fds[8];
+    int req_fd_count;
+@@ -209,7 +275,8 @@
+ 
+    assert((unsigned int)req_fd_count <= ARRAY_SIZE(req_fds));
+ 
+-   if (req.header.op >= RENDER_CONTEXT_OP_COUNT) {
++   if (req_size < sizeof(req.header) ||
++       (unsigned int)req.header.op >= RENDER_CONTEXT_OP_COUNT) {
+       render_log("invalid context op %d", req.header.op);
+       goto fail;
+    }
+@@ -231,6 +298,8 @@
+    return true;
+ 
+ fail:
++   ctx->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++   render_state_set_physical_device_uuids(ctx->ctx_id, NULL, 0);
+    for (int i = 0; i < req_fd_count; i++)
+       close(req_fds[i]);
+    return false;
+diff --git a/server/render_context.h b/server/render_context.h
+--- a/server/render_context.h
++++ b/server/render_context.h
+@@ -12,6 +12,7 @@
+ 
+ struct render_context {
+    uint32_t ctx_id;
++   enum virgl_device_selection_state device_selection_state;
+    struct render_socket socket;
+    struct list_head head;
+ 
+diff --git a/server/render_protocol.h b/server/render_protocol.h
+--- a/server/render_protocol.h
++++ b/server/render_protocol.h
+@@ -9,6 +9,8 @@
+ #include <stdint.h>
+ 
+ #include "virgl_resource.h"
++#include "virglrenderer.h"
++#include "virgl_device_selection.h"
+ 
+ /* this covers the command line options and the socket type */
+ #define RENDER_SERVER_VERSION 0
+@@ -39,6 +41,7 @@
+    RENDER_CONTEXT_OP_DESTROY_RESOURCE,
+    RENDER_CONTEXT_OP_SUBMIT_CMD,
+    RENDER_CONTEXT_OP_SUBMIT_FENCE,
++   RENDER_CONTEXT_OP_SET_UUIDS,
+ 
+    RENDER_CONTEXT_OP_COUNT,
+ };
+@@ -206,6 +209,21 @@
+    /* TODO fix virgl_renderer_context_create_fence to use ring_index */
+    uint32_t ring_index;
+    uint32_t seqno;
++};
++
++/* Followed by exactly byte_count bytes in frames no larger than the
++ * existing submit_cmd.cmd array. One NUL-terminated hex32 per UUID.
++ */
++struct render_context_op_set_uuids_request {
++   struct render_context_op_header header;
++   uint32_t count;
++   uint32_t byte_count;
++};
++
++struct render_context_op_set_uuids_reply {
++   enum render_context_op op;
++   int32_t result; /* VkResult ABI */
++   uint32_t count; /* exact configured count on success, zero on error */
+ };
+ 
+ union render_context_op_request {
+@@ -217,6 +235,7 @@
+    struct render_context_op_destroy_resource_request destroy_resource;
+    struct render_context_op_submit_cmd_request submit_cmd;
+    struct render_context_op_submit_fence_request submit_fence;
++   struct render_context_op_set_uuids_request set_uuids;
+ };
+ 
+ #endif /* RENDER_PROTOCOL_H */
+diff --git a/server/render_state.c b/server/render_state.c
+--- a/server/render_state.c
++++ b/server/render_state.c
+@@ -194,6 +194,15 @@
+    }
+ 
+    render_state_remove_context(ctx);
++}
++
++int32_t
++render_state_set_physical_device_uuids(uint32_t ctx_id,
++                                      const char *const *hex32,
++                                      uint32_t count)
++{
++   SCOPE_LOCK_RENDERER();
++   return vkr_renderer_set_physical_device_uuids(ctx_id, hex32, count);
+ }
+ 
+ bool
+diff --git a/server/render_state.h b/server/render_state.h
+--- a/server/render_state.h
++++ b/server/render_state.h
+@@ -22,6 +22,11 @@
+ 
+ void
+ render_state_destroy_context(uint32_t ctx_id);
++
++int32_t
++render_state_set_physical_device_uuids(uint32_t ctx_id,
++                                      const char *const *hex32,
++                                      uint32_t count);
+ 
+ bool
+ render_state_submit_cmd(uint32_t ctx_id, void *cmd, uint32_t size);
+diff --git a/src/proxy/proxy_context.c b/src/proxy/proxy_context.c
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -7,6 +7,7 @@
+ 
+ #include <fcntl.h>
+ #include <poll.h>
++#include <sys/socket.h>
+ #include <sys/mman.h>
+ #include <unistd.h>
+ 
+@@ -263,6 +264,76 @@
+ 
+    assert(!(proxy_renderer.flags & VIRGL_RENDERER_ASYNC_FENCE_CB));
+    return ctx->sync_thread.fence_eventfd;
++}
++
++static int32_t
++proxy_context_set_physical_device_uuids(struct virgl_context *base,
++                                       const char *const *hex32,
++                                       uint32_t count)
++{
++   struct proxy_context *ctx = (struct proxy_context *)base;
++   int32_t result = VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED;
++   char *payload = NULL;
++   size_t size;
++   if (!hex32 || !virgl_device_selection_payload_size(count, &size))
++      goto out;
++   payload = calloc(1, size);
++   if (!payload) {
++      result = VIRGL_RENDERER_UUIDS_OUT_OF_HOST_MEMORY;
++      goto out;
++   }
++   for (uint32_t i = 0; i < count; i++) {
++      if (!virgl_device_selection_copy_hex(payload + (size_t)i * VIRGL_DEVICE_UUID_STRIDE,
++                                             hex32[i]))
++         goto out;
++   }
++   const struct render_context_op_set_uuids_request request = {
++      .header.op = RENDER_CONTEXT_OP_SET_UUIDS,
++      .count = count,
++      .byte_count = (uint32_t)size,
++   };
++   if (!proxy_socket_send_request(&ctx->socket, &request, sizeof(request)))
++      goto out;
++   /* Reuse the existing protocol's inline command payload bound. Each frame
++    * is received with an exact length; no new chunk/wait/retry default.
++    */
++   for (size_t offset = 0; offset < size;) {
++      const size_t chunk = MIN2(size - offset,
++         sizeof(((struct render_context_op_submit_cmd_request *)0)->cmd));
++      if (!proxy_socket_send_request(&ctx->socket, payload + offset, chunk))
++         goto out;
++      offset += chunk;
++   }
++   struct render_context_op_set_uuids_reply reply;
++   if (!proxy_socket_receive_reply(&ctx->socket, &reply, sizeof(reply)))
++      goto out;
++   if (reply.op != RENDER_CONTEXT_OP_SET_UUIDS)
++      goto out;
++   switch (reply.result) {
++   case VIRGL_RENDERER_UUIDS_SUCCESS:
++      if (reply.count != count)
++         goto out;
++      result = reply.result;
++      break;
++   case VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED:
++   case VIRGL_RENDERER_UUIDS_OUT_OF_HOST_MEMORY:
++      if (!reply.count)
++         result = reply.result;
++      break;
++   default:
++      break;
++   }
++
++out:
++   free(payload);
++   if (result != VIRGL_RENDERER_UUIDS_SUCCESS) {
++      base->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++      /* Keep fd ownership for ordinary context destruction; shutdown makes
++       * the worker's existing dispatch loop exit, without a close/reuse race.
++       */
++      shutdown(ctx->socket.fd, SHUT_RDWR);
++   }
++   return result;
+ }
+ 
+ static int
+@@ -554,6 +625,7 @@
+    ctx->base.transfer_3d = proxy_context_transfer_3d;
+    ctx->base.get_blob = proxy_context_get_blob;
+    ctx->base.submit_cmd = proxy_context_submit_cmd;
++   ctx->base.set_physical_device_uuids = proxy_context_set_physical_device_uuids;
+ 
+    ctx->base.get_fencing_fd = proxy_context_get_fencing_fd;
+    ctx->base.retire_fences = proxy_context_retire_fences;
+diff --git a/src/virgl_context.h b/src/virgl_context.h
+--- a/src/virgl_context.h
++++ b/src/virgl_context.h
+@@ -31,6 +31,7 @@
+ #include <unistd.h>
+ 
+ #include "virgl_resource.h"
++#include "virgl_device_selection.h"
+ 
+ #include "util/list.h"
+ 
+@@ -110,6 +111,11 @@
+                    uint32_t blob_flags,
+                    struct virgl_context_blob *blob);
+ 
++   enum virgl_device_selection_state device_selection_state;
++   int32_t (*set_physical_device_uuids)(struct virgl_context *ctx,
++                                         const char *const *hex32,
++                                         uint32_t count);
++
+    int (*submit_cmd)(struct virgl_context *ctx,
+                      const void *buffer,
+                      size_t size);
+diff --git a/src/virgl_device_selection.h b/src/virgl_device_selection.h
+new file mode 100644
+--- /dev/null
++++ b/src/virgl_device_selection.h
+@@ -0,0 +1,54 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef VIRGL_DEVICE_SELECTION_H
++#define VIRGL_DEVICE_SELECTION_H
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++/* Vulkan VK_UUID_SIZE is 16. The host API encodes each byte as two hex digits
++ * plus a NUL terminator; selection fits the caller's full u16 index space.
++ */
++#define VIRGL_DEVICE_UUID_SIZE 16u
++#define VIRGL_DEVICE_UUID_STRIDE (VIRGL_DEVICE_UUID_SIZE * 2u + 1u)
++#define VIRGL_DEVICE_UUID_MAX_COUNT (UINT32_C(1) + UINT16_MAX)
++
++enum virgl_device_selection_state {
++   VIRGL_DEVICE_SELECTION_NEW,
++   VIRGL_DEVICE_SELECTION_READY,
++   VIRGL_DEVICE_SELECTION_SELECTED,
++   VIRGL_DEVICE_SELECTION_STARTED,
++   VIRGL_DEVICE_SELECTION_INVALID,
++};
++
++static inline bool
++virgl_device_selection_payload_size(uint32_t count, size_t *size)
++{
++   if (!count || count > VIRGL_DEVICE_UUID_MAX_COUNT ||
++       count > UINT32_MAX / VIRGL_DEVICE_UUID_STRIDE ||
++       VIRGL_DEVICE_UUID_STRIDE > SIZE_MAX / (size_t)count)
++      return false;
++   *size = (size_t)count * VIRGL_DEVICE_UUID_STRIDE;
++   return true;
++}
++
++static inline bool
++virgl_device_selection_copy_hex(char *output, const char *input)
++{
++   if (!input)
++      return false;
++   for (size_t i = 0; i < VIRGL_DEVICE_UUID_STRIDE - 1; i++) {
++      const char digit = *input;
++      if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f') ||
++            (digit >= 'A' && digit <= 'F')))
++         return false;
++      output[i] = digit;
++      input++;
++   }
++   if (*input)
++      return false;
++   output[VIRGL_DEVICE_UUID_STRIDE - 1] = '\0';
++   return true;
++}
++
++#endif
+diff --git a/src/virglrenderer.c b/src/virglrenderer.c
+--- a/src/virglrenderer.c
++++ b/src/virglrenderer.c
+@@ -207,6 +207,28 @@
+                                   fence_id);
+ }
+ 
++int32_t virgl_renderer_context_set_physical_device_uuids(uint32_t ctx_id,
++                                                        const char *const *hex32,
++                                                        uint32_t count)
++{
++   struct virgl_context *ctx = virgl_context_lookup(ctx_id);
++   if (!ctx || ctx->capset_id != VIRTGPU_DRM_CAPSET_VENUS ||
++       !ctx->set_physical_device_uuids)
++      return VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED;
++
++   if (ctx->device_selection_state != VIRGL_DEVICE_SELECTION_READY) {
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++      /* Each context implementation poisons or closes its owned context. */
++      ctx->set_physical_device_uuids(ctx, NULL, 0);
++      return VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED;
++   }
++   ctx->device_selection_state = VIRGL_DEVICE_SELECTION_INVALID;
++   const int32_t result = ctx->set_physical_device_uuids(ctx, hex32, count);
++   if (result == VIRGL_RENDERER_UUIDS_SUCCESS)
++      ctx->device_selection_state = VIRGL_DEVICE_SELECTION_SELECTED;
++   return result;
++}
++
+ int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
+                                              uint32_t ctx_flags,
+                                              uint32_t nlen,
+@@ -261,6 +283,7 @@
+    ctx->ctx_id = ctx_id;
+    ctx->in_fence_fd = -1;
+    ctx->capset_id = capset_id;
++   ctx->device_selection_state = VIRGL_DEVICE_SELECTION_READY;
+    ctx->fence_retire = per_context_fence_retire;
+ 
+    ret = virgl_context_add(ctx);
+@@ -300,6 +323,13 @@
+ 
+    if (((uintptr_t)buffer & 3) != 0)
+       return EFAULT;
++
++   if (ctx->capset_id == VIRTGPU_DRM_CAPSET_VENUS) {
++      if (ctx->device_selection_state == VIRGL_DEVICE_SELECTION_INVALID)
++         return EINVAL;
++      if (ndw)
++         ctx->device_selection_state = VIRGL_DEVICE_SELECTION_STARTED;
++   }
+ 
+    return ctx->submit_cmd(ctx, buffer, (uint32_t)ndw * sizeof(uint32_t));
+ }
+diff --git a/src/virglrenderer.h b/src/virglrenderer.h
+--- a/src/virglrenderer.h
++++ b/src/virglrenderer.h
+@@ -391,6 +391,22 @@
+ 
+ #define VIRGL_RENDERER_CONTEXT_FLAG_CAPSET_ID_MASK 0xff
+ 
++/* VkResult ABI values, without requiring Vulkan headers in public callers. */
++enum virgl_renderer_uuid_result {
++   VIRGL_RENDERER_UUIDS_SUCCESS = 0,
++   VIRGL_RENDERER_UUIDS_OUT_OF_HOST_MEMORY = -1,
++   VIRGL_RENDERER_UUIDS_INITIALIZATION_FAILED = -3,
++};
++
++/* Host-only, once after context creation and before guest commands.
++ * Each NUL-terminated string encodes the actual 16-byte deviceUUID as
++ * exactly 32 hex digits. Empty/failed/repeated selection poisons or
++ * closes this context. No call preserves baseline device visibility.
++ * Result is VkResult as int32_t; no native-ID guessing or env fallback.
++ */
++VIRGL_EXPORT int32_t virgl_renderer_context_set_physical_device_uuids(
++   uint32_t ctx_id, const char *const *hex32, uint32_t count);
++
+ VIRGL_EXPORT int virgl_renderer_context_create_with_flags(uint32_t ctx_id,
+                                                           uint32_t ctx_flags,
+                                                           uint32_t nlen,

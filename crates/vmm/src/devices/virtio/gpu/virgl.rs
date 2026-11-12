@@ -37,6 +37,7 @@ use std::thread::Thread;
 
 use super::protocol::{Refused, resp};
 use super::{Blob, Capset, HostMemory, Pages, Renderer, Signal};
+use crate::vm::gpu_selection::{self as selection, PhysicalGpu};
 
 /// The capability set of Venus (virglrenderer_hw.h, VIRGL_RENDERER_CAPSET_VENUS).
 const CAPSET_VENUS: u32 = 4;
@@ -109,6 +110,17 @@ unsafe extern "C" {
         name: *const c_char,
     ) -> c_int;
     fn virgl_renderer_context_destroy(handle: u32);
+    fn virgl_renderer_context_set_physical_device_uuids(
+        ctx: u32,
+        uuids: *const *const c_char,
+        count: u32,
+    ) -> i32;
+    fn shards_gpu_get_properties(
+        properties: GetPhysicalDeviceProperties2,
+        extensions: EnumerateDeviceExtensionProperties,
+        device: *mut c_void,
+        output: *mut selection::Properties,
+    ) -> i32;
     fn virgl_renderer_ctx_attach_resource(ctx_id: c_int, res_handle: c_int);
     fn virgl_renderer_ctx_detach_resource(ctx_id: c_int, res_handle: c_int);
     fn virgl_renderer_resource_create_blob(args: *const CreateBlobArgs) -> c_int;
@@ -216,6 +228,17 @@ struct InstanceCreateInfo {
 }
 
 #[repr(C)]
+struct ApplicationInfo {
+    s_type: i32,
+    next: *const c_void,
+    application_name: *const c_char,
+    application_version: u32,
+    engine_name: *const c_char,
+    engine_version: u32,
+    api_version: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct MemoryType {
     property_flags: u32,
@@ -242,7 +265,6 @@ const MEMORY_PROPERTY_HOST_VISIBLE: u32 = 1 << 1;
 const MEMORY_PROPERTY_DEVICE_LOCAL: u32 = 1 << 0;
 
 /// `VkExtensionProperties` (vulkan_core.h).
-#[cfg(windows)]
 #[repr(C)]
 struct ExtensionProperties {
     name: [c_char; 256],
@@ -253,9 +275,9 @@ type CreateInstance = unsafe extern "C" fn(*const InstanceCreateInfo, *const c_v
 type DestroyInstance = unsafe extern "C" fn(*mut c_void, *const c_void);
 type EnumeratePhysicalDevices = unsafe extern "C" fn(*mut c_void, *mut u32, *mut *mut c_void) -> i32;
 type GetPhysicalDeviceMemoryProperties = unsafe extern "C" fn(*mut c_void, *mut MemoryProperties);
-#[cfg(windows)]
 type EnumerateDeviceExtensionProperties =
     unsafe extern "C" fn(*mut c_void, *const c_char, *mut u32, *mut ExtensionProperties) -> i32;
+type GetPhysicalDeviceProperties2 = unsafe extern "C" fn(*mut c_void, *mut c_void);
 
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
@@ -267,6 +289,13 @@ unsafe extern "C" {
     fn vkDestroyInstance(instance: *mut c_void, allocator: *const c_void);
     fn vkEnumeratePhysicalDevices(instance: *mut c_void, count: *mut u32, devices: *mut *mut c_void) -> i32;
     fn vkGetPhysicalDeviceMemoryProperties(device: *mut c_void, properties: *mut MemoryProperties);
+    fn vkGetPhysicalDeviceProperties2(device: *mut c_void, properties: *mut c_void);
+    fn vkEnumerateDeviceExtensionProperties(
+        device: *mut c_void,
+        layer: *const c_char,
+        count: *mut u32,
+        properties: *mut ExtensionProperties,
+    ) -> i32;
 }
 
 /// The Vulkan entry points [`host_visible`] calls: MoltenVK's, linked, on macOS; on Linux
@@ -278,8 +307,8 @@ struct Vulkan {
     destroy_instance: DestroyInstance,
     enumerate_physical_devices: EnumeratePhysicalDevices,
     get_physical_device_memory_properties: GetPhysicalDeviceMemoryProperties,
-    #[cfg(windows)]
     enumerate_device_extension_properties: EnumerateDeviceExtensionProperties,
+    get_physical_device_properties2: GetPhysicalDeviceProperties2,
     #[cfg(target_os = "linux")]
     loader: *mut c_void,
     #[cfg(windows)]
@@ -294,6 +323,8 @@ impl Vulkan {
             destroy_instance: vkDestroyInstance,
             enumerate_physical_devices: vkEnumeratePhysicalDevices,
             get_physical_device_memory_properties: vkGetPhysicalDeviceMemoryProperties,
+            enumerate_device_extension_properties: vkEnumerateDeviceExtensionProperties,
+            get_physical_device_properties2: vkGetPhysicalDeviceProperties2,
         })
     }
 
@@ -338,9 +369,11 @@ impl Vulkan {
                 entry(c"vkDestroyInstance")?,
                 entry(c"vkEnumeratePhysicalDevices")?,
                 entry(c"vkGetPhysicalDeviceMemoryProperties")?,
+                entry(c"vkEnumerateDeviceExtensionProperties")?,
+                entry(c"vkGetPhysicalDeviceProperties2")?,
             ))
         })();
-        let (create, destroy, enumerate, properties) = match found {
+        let (create, destroy, enumerate, properties, extensions, properties2) = match found {
             Ok(found) => found,
             Err(e) => {
                 // SAFETY: the handle opened above, used no more.
@@ -361,6 +394,14 @@ impl Vulkan {
                     *mut c_void,
                     GetPhysicalDeviceMemoryProperties,
                 >(properties),
+                enumerate_device_extension_properties: std::mem::transmute::<
+                    *mut c_void,
+                    EnumerateDeviceExtensionProperties,
+                >(extensions),
+                get_physical_device_properties2: std::mem::transmute::<
+                    *mut c_void,
+                    GetPhysicalDeviceProperties2,
+                >(properties2),
                 loader,
             })
         }
@@ -401,9 +442,10 @@ impl Vulkan {
                 entry(c"vkEnumeratePhysicalDevices")?,
                 entry(c"vkGetPhysicalDeviceMemoryProperties")?,
                 entry(c"vkEnumerateDeviceExtensionProperties")?,
+                entry(c"vkGetPhysicalDeviceProperties2")?,
             ))
         })();
-        let (create, destroy, enumerate, properties, extensions) = match found {
+        let (create, destroy, enumerate, properties, extensions, properties2) = match found {
             Ok(found) => found,
             Err(e) => {
                 // SAFETY: the handle opened above, used no more.
@@ -427,6 +469,9 @@ impl Vulkan {
                     Proc,
                     EnumerateDeviceExtensionProperties,
                 >(extensions),
+                get_physical_device_properties2: std::mem::transmute::<Proc, GetPhysicalDeviceProperties2>(
+                    properties2,
+                ),
                 loader,
             })
         }
@@ -490,6 +535,26 @@ impl Drop for Vulkan {
     }
 }
 
+/// The bytes of the host GPUs' heaps that host-visible memory comes from, as Vulkan says
+/// them, which Venus tells the guest, every GPU's counted: the most memory a guest can
+/// have mapped into its window at once. On Windows those of the memory the renderer shows
+/// its guest as host-visible: a device's that imports host memory, its types not
+/// device-local (D202).
+type UuidText = [c_char; 33]; // Vulkan UUID16 -> hex32 plus the C terminator.
+
+fn uuid_text(uuid: &[u8; 16]) -> Result<UuidText, String> {
+    let mut text = [0; 33];
+    let digits = b"0123456789abcdef";
+    for (slot, nibble) in text
+        .iter_mut()
+        .zip(uuid.iter().flat_map(|byte| [byte >> 4, byte & 0xf]))
+    {
+        let digit = digits.get(usize::from(nibble)).ok_or("invalid UUID hex nibble")?;
+        *slot = c_char::try_from(*digit).map_err(|_| "UUID ASCII is not representable")?;
+    }
+    Ok(text)
+}
+
 /// The host's Vulkan driver, held loaded while the renderer lives (D201): its loader and one
 /// instance of it, which keeps open every driver (ICD) the loader opened for it. The render
 /// server serves each context as a thread of this process, and each context opens the loader
@@ -512,56 +577,123 @@ impl Drop for HeldDriver {
     }
 }
 
-/// The bytes of the host GPUs' heaps that host-visible memory comes from, as Vulkan says
-/// them, which Venus tells the guest, every GPU's counted: the most memory a guest can
-/// have mapped into its window at once. On Windows those of the memory the renderer shows
-/// its guest as host-visible: a device's that imports host memory, its types not
-/// device-local (D202). With them the instance that read them, kept to hold the driver.
-fn host_visible() -> Result<(u64, HeldDriver), String> {
+fn host_visible(selected: &[PhysicalGpu]) -> Result<(u64, Vec<UuidText>, HeldDriver), String> {
+    selection::check_selection(selected).map_err(|e| e.to_string())?;
     let vk = Vulkan::open()?;
+    // Vulkan 1.1 defines ID properties and Properties2. Venus itself requires
+    // Vulkan's device/driver capabilities; no older identity fallback is allowed.
+    let application = ApplicationInfo {
+        s_type: 0,
+        next: std::ptr::null(),
+        application_name: std::ptr::null(),
+        application_version: 0,
+        engine_name: std::ptr::null(),
+        engine_version: 0,
+        api_version: (1 << 22) | (1 << 12),
+    };
     let info = InstanceCreateInfo {
         s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
         next: std::ptr::null(),
         flags: 0,
-        application: std::ptr::null(),
+        application: (&raw const application).cast(),
         layers: 0,
         layer_names: std::ptr::null(),
         extensions: 0,
         extension_names: std::ptr::null(),
     };
     let mut instance = std::ptr::null_mut();
-    // SAFETY: an instance of no layers and no extensions, held as the driver below.
-    let r = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
-    if r != 0 || instance.is_null() {
-        return Err(format!("Vulkan made no instance ({r})"));
+    // SAFETY: complete ABI structures and a live output, held as the driver below.
+    let result = unsafe { (vk.create_instance)(&raw const info, std::ptr::null(), &raw mut instance) };
+    if result != 0 || instance.is_null() {
+        return Err(format!("Vulkan made no instance ({result})"));
     }
     // Destroyed as it drops, on every path: kept, it holds the driver for the renderer.
     let held = HeldDriver { vk, instance };
     let vk = &held.vk;
-    // Every device Vulkan has: asked for their count first, then for as many (the Vulkan
-    // specification's two calls, "Physical Devices", vkEnumeratePhysicalDevices).
-    let mut count = 0u32;
-    // SAFETY: the count alone asked.
-    let r = unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
-    let mut devices = Vec::new();
-    if devices.try_reserve_exact(count as usize).is_err() {
-        return Err(format!(
-            "Vulkan has {count} GPUs, more than this process has room for"
-        ));
-    }
-    devices.resize(count as usize, std::ptr::null_mut());
-    let r = if r == 0 {
-        // SAFETY: room for `count` devices; VK_INCOMPLETE where there are more, which is
-        // fine.
-        unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, devices.as_mut_ptr()) }
-    } else {
-        r
-    };
-    let bytes = if (r == 0 || r == 5) && count > 0 {
+    let checked = (|| {
+        let mut count = 0u32;
+        // SAFETY: count-only enumeration of this instance.
+        let result =
+            unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, std::ptr::null_mut()) };
+        if result != 0 || count == 0 {
+            return Err(format!("Vulkan has no complete device list ({result})"));
+        }
+        let count_usize = usize::try_from(count).map_err(|_| "Vulkan device count overflows")?;
+        if count_usize > selection::MAX_PHYSICAL_GPUS {
+            return Err("Vulkan exceeds the physical device-index space".into());
+        }
+        let mut devices = Vec::new();
+        devices
+            .try_reserve_exact(count_usize)
+            .map_err(|_| "Vulkan device storage is unavailable")?;
+        devices.resize(count_usize, std::ptr::null_mut());
+        // SAFETY: exactly the driver's advertised capacity; an incomplete/changing catalog refuses.
+        let result =
+            unsafe { (vk.enumerate_physical_devices)(instance, &raw mut count, devices.as_mut_ptr()) };
+        let written = usize::try_from(count).map_err(|_| "Vulkan device count overflows")?;
+        if result != 0 || written > devices.len() {
+            return Err(format!("Vulkan device enumeration changed ({result})"));
+        }
+        devices.truncate(written);
+        if devices.iter().any(|device| device.is_null()) {
+            return Err("Vulkan returned a null physical device".into());
+        }
+        let mut properties = Vec::new();
+        if !selected.is_empty() {
+            properties
+                .try_reserve_exact(devices.len())
+                .map_err(|_| "Vulkan identity storage is unavailable")?;
+            for device in &devices {
+                let mut props = selection::Properties::default();
+                // SAFETY: the helper uses the pinned C header's complete Properties2 ABI,
+                // loader entry points and a live instance's physical device; output is repr(C).
+                let result = unsafe {
+                    shards_gpu_get_properties(
+                        vk.get_physical_device_properties2,
+                        vk.enumerate_device_extension_properties,
+                        *device,
+                        &raw mut props,
+                    )
+                };
+                if result != 0 {
+                    return Err(format!("Vulkan native GPU identity query failed ({result})"));
+                }
+                properties.push(props);
+            }
+        }
+        let indices = if selected.is_empty() {
+            let mut indices = Vec::new();
+            indices
+                .try_reserve_exact(devices.len())
+                .map_err(|_| "Vulkan memory selection storage is unavailable")?;
+            indices.extend(0..devices.len());
+            indices
+        } else {
+            selection::resolve(selected, &properties, cfg!(target_os = "macos")).map_err(|e| e.to_string())?
+        };
+        let mut uuids = Vec::new();
+        uuids
+            .try_reserve_exact(selected.len())
+            .map_err(|_| "Vulkan UUID selection storage is unavailable")?;
         let mut total = 0u64;
-        for &device in devices.iter().take(count as usize).filter(|d| !d.is_null()) {
+        for index in indices {
+            let device = *devices.get(index).ok_or("Vulkan selection index is invalid")?;
+            if !selected.is_empty() {
+                uuids.push(uuid_text(
+                    &properties
+                        .get(index)
+                        .ok_or("Vulkan selection identity is missing")?
+                        .uuid,
+                )?);
+            }
             #[cfg(windows)]
-            if !vk.imports_host_memory(device) {
+            if if selected.is_empty() {
+                !vk.imports_host_memory(device)
+            } else {
+                properties
+                    .get(index)
+                    .is_none_or(|props| props.host_memory_valid == 0)
+            } {
                 continue;
             }
             let mut props = MemoryProperties {
@@ -570,30 +702,39 @@ fn host_visible() -> Result<(u64, HeldDriver), String> {
                 heap_count: 0,
                 heaps: [MemoryHeap::default(); 16],
             };
-            // SAFETY: the instance's device, read into a whole properties structure.
+            // SAFETY: a live physical device and complete memory-properties structure.
             unsafe { (vk.get_physical_device_memory_properties)(device, &raw mut props) };
-            let heaps = props.heaps.get(..props.heap_count as usize).unwrap_or_default();
-            let visible = props
+            let types = props
                 .types
-                .get(..props.type_count as usize)
-                .unwrap_or_default()
+                .get(..usize::try_from(props.type_count).map_err(|_| "Vulkan memory-type count overflows")?)
+                .ok_or("Vulkan memory-type count is invalid")?;
+            let heaps = props
+                .heaps
+                .get(..usize::try_from(props.heap_count).map_err(|_| "Vulkan heap count overflows")?)
+                .ok_or("Vulkan heap count is invalid")?;
+            let mut counted = [false; 16]; // VK_MAX_MEMORY_HEAPS.
+            for kind in types
                 .iter()
-                .filter(|t| t.property_flags & MEMORY_PROPERTY_HOST_VISIBLE != 0)
-                .filter(|t| cfg!(not(windows)) || t.property_flags & MEMORY_PROPERTY_DEVICE_LOCAL == 0);
-            let mut counted = Vec::new();
-            for t in visible {
-                if !counted.contains(&t.heap_index) {
-                    counted.push(t.heap_index);
-                    total = total.saturating_add(heaps.get(t.heap_index as usize).map_or(0, |h| h.size));
+                .filter(|kind| kind.property_flags & MEMORY_PROPERTY_HOST_VISIBLE != 0)
+                .filter(|kind| cfg!(not(windows)) || kind.property_flags & MEMORY_PROPERTY_DEVICE_LOCAL == 0)
+            {
+                let index = usize::try_from(kind.heap_index).map_err(|_| "Vulkan heap index overflows")?;
+                let seen = counted.get_mut(index).ok_or("Vulkan heap index is invalid")?;
+                if !*seen {
+                    let heap = heaps
+                        .get(index)
+                        .ok_or("Vulkan memory type references a missing heap")?;
+                    total = total
+                        .checked_add(heap.size)
+                        .ok_or("selected host-visible GPU memory overflows")?;
+                    *seen = true;
                 }
             }
         }
-        Ok(total)
-    } else {
-        Err(format!("Vulkan has no GPU ({r})"))
-    };
-    // No device of it is kept past this call; the instance is, as the driver's holder.
-    bytes.map(|total| (total, held))
+        Ok((total, uuids))
+    })();
+    // No physical handle is retained beyond this call; the instance is, as the driver's holder.
+    checked.map(|(total, uuids)| (total, uuids, held))
 }
 
 /// What the renderer's threads tell the device: the fences signalled, and the worker to
@@ -688,6 +829,7 @@ pub struct Venus {
     contexts: Vec<u32>,
     page: u64,
     host_visible: u64,
+    selected: Vec<UuidText>,
     /// The render server's thread, which ends as the renderer lets its connection go.
     #[cfg(target_os = "linux")]
     server: Option<std::thread::JoinHandle<()>>,
@@ -714,13 +856,17 @@ static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 impl Venus {
     /// Starts the renderer, Venus alone: once a process.
     pub fn new() -> Result<Venus, String> {
+        Self::new_selected(&[])
+    }
+
+    pub fn new_selected(selected: &[PhysicalGpu]) -> Result<Venus, String> {
         if STARTED.swap(true, std::sync::atomic::Ordering::AcqRel) {
             return Err("the GPU renderer runs once a process".into());
         }
         let page = crate::platform::page_size().map_err(|e| format!("the host's page size: {e}"))? as u64;
-        let (host_visible, driver) = host_visible()
+        let (host_visible, selected, driver) = host_visible(selected)
             .and_then(|b| match b {
-                (0, _) => Err("the host's GPU has no memory the host can map, which Venus needs".into()),
+                (0, _, _) => Err("the selected GPU has no memory the host can map, which Venus needs".into()),
                 b => Ok(b),
             })
             .inspect_err(|_| STARTED.store(false, std::sync::atomic::Ordering::Release))?;
@@ -789,6 +935,7 @@ impl Venus {
             contexts: Vec::new(),
             page,
             host_visible,
+            selected,
             #[cfg(target_os = "linux")]
             server,
             _driver: driver,
@@ -1064,10 +1211,38 @@ impl Renderer for Venus {
     }
 
     fn create_context(&mut self, ctx: u32, capset: u32, name: &[u8]) -> Result<(), Refused> {
+        if self.contexts.contains(&ctx) {
+            return Err(Refused(resp::ERR_INVALID_PARAMETER));
+        }
+        self.contexts
+            .try_reserve(1)
+            .map_err(|_| Refused(resp::ERR_OUT_OF_MEMORY))?;
+        let mut pointers = Vec::new();
+        pointers
+            .try_reserve_exact(self.selected.len())
+            .map_err(|_| Refused(resp::ERR_OUT_OF_MEMORY))?;
+        pointers.extend(self.selected.iter().map(|uuid| uuid.as_ptr()));
+        let count = u32::try_from(pointers.len()).map_err(|_| Refused(resp::ERR_INVALID_PARAMETER))?;
         let nlen = u32::try_from(name.len()).map_err(|_| Refused(resp::ERR_INVALID_PARAMETER))?;
         // SAFETY: the name's bytes, `nlen` of them, which the renderer copies.
         let r = unsafe { virgl_renderer_context_create_with_flags(ctx, capset, nlen, name.as_ptr().cast()) };
         refused(r)?;
+        if !pointers.is_empty() {
+            // SAFETY: a newly created context, serialized on this device's worker;
+            // immutable NUL-terminated UUID arrays live through the synchronous,
+            // typed ACK. The C owner copies them before accepting guest commands.
+            let result =
+                unsafe { virgl_renderer_context_set_physical_device_uuids(ctx, pointers.as_ptr(), count) };
+            if result != 0 {
+                // SAFETY: no command/resource has escaped for this owned context.
+                unsafe { virgl_renderer_context_destroy(ctx) };
+                return Err(Refused(if result == -1 {
+                    resp::ERR_OUT_OF_MEMORY
+                } else {
+                    resp::ERR_INVALID_PARAMETER
+                }));
+            }
+        }
         self.contexts.push(ctx);
         Ok(())
     }
@@ -1243,8 +1418,8 @@ mod tests {
     /// host can map.
     #[cfg(not(target_os = "macos"))]
     fn has_gpu() -> Result<(), String> {
-        match host_visible()? {
-            (0, _) => Err("this host's Vulkan devices have no memory the host can map".into()),
+        match host_visible(&[])?.0 {
+            0 => Err("this host's Vulkan devices have no memory the host can map".into()),
             _ => Ok(()),
         }
     }
@@ -1411,7 +1586,7 @@ mod tests {
     #[test]
     fn a_contexts_instance_loads_no_static_tls_driver_anew_while_the_renderer_holds_it() {
         let _host = VULKAN.lock().unwrap_or_else(PoisonError::into_inner);
-        let kept = match host_visible() {
+        let kept = match host_visible(&[]) {
             Ok(kept) => kept,
             Err(why) => {
                 println!("SKIP: {why}");
@@ -1420,11 +1595,20 @@ mod tests {
         };
         let before = static_tls();
         let vk = Vulkan::open().unwrap();
+        let application = ApplicationInfo {
+            s_type: 0,
+            next: std::ptr::null(),
+            application_name: std::ptr::null(),
+            application_version: 0,
+            engine_name: std::ptr::null(),
+            engine_version: 0,
+            api_version: (1 << 22) | (1 << 12),
+        };
         let info = InstanceCreateInfo {
             s_type: STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
             next: std::ptr::null(),
             flags: 0,
-            application: std::ptr::null(),
+            application: (&raw const application).cast(),
             layers: 0,
             layer_names: std::ptr::null(),
             extensions: 0,

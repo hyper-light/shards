@@ -18,7 +18,7 @@ use shards_vmm::vm::{
 use crate::spec::Options;
 use crate::terminal::RawTerminal;
 
-const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
+const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --init PATH] [--cmdline STR] [--cpus N] [--memory MIB] [--memory-max MIB] [--disk PATH[:ro]]... [--share DIR[:ro]]... [--pmem PATH]... [--layer PATH] [--vsock PATH] [--nested] [--gpu] [--gpu-device ID]...] [--reporting] [--pci-test | --pci-tests SS.F,...] [--pci-slots N [--pci-slots-iommu]] [--vfio NAME|NODE]... [--vfio-iommu NAME|NODE]... [--no-console [--console-said N]] [--snapshot-dir DIR [--snapshot-then stop|resume]]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE [OPTIONS] [WORKLOAD OPTIONS] -- COMMAND [ARG...]
        shards run vm --kernel PATH --init SHARDS-INIT --rootfs IMAGE --snapshot-dir DIR [OPTIONS]
   --share: the host directory DIR, as virtio-fs tag shards0, shards1, ... in order;
@@ -49,6 +49,9 @@ const RUN_USAGE: &str = "usage: shards run vm --kernel PATH [--initrd PATH | --i
          /dev/dri/renderD128, where its kernel has DRM's virtio-gpu driver. With
          --snapshot-dir, a snapshot is refused once the guest has made a context or a
          resource of the GPU's: those are its host driver's, which no snapshot holds.
+  --gpu-device: a host GPU its Venus contexts render on, by its exact identity:
+                pci:DOMAIN:BUS:DEVICE.FUNCTION, metal:REGISTRY-ID or luid:LUID (this
+                boot's), in hex; again for each GPU, none twice. Implies --gpu.
   --pci-test: a PCI bus with a test function at 00:01.0, the identification and liveness
               registers of QEMU's edu device in its BAR 0, for testing the bus. Not with
               --snapshot-dir.
@@ -472,6 +475,21 @@ fn parse_run(args: impl Iterator<Item = OsString>) -> Result<Run, String> {
             }
             "--nested" => cfg.nested = true,
             "--gpu" => cfg.gpu = true,
+            "--gpu-device" => {
+                let device = text(value("--gpu-device")?)?
+                    .parse::<vm::gpu_selection::PhysicalGpu>()
+                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                if cfg.gpu_devices.len() >= vm::gpu_selection::MAX_PHYSICAL_GPUS {
+                    return Err("--gpu-device count exceeds the physical device-index space".into());
+                }
+                cfg.gpu_devices
+                    .try_reserve(1)
+                    .map_err(|_| "--gpu-device storage unavailable")?;
+                cfg.gpu_devices.push(device);
+                vm::gpu_selection::check_selection(&cfg.gpu_devices)
+                    .map_err(|error| format!("--gpu-device: {error}"))?;
+                cfg.gpu = true;
+            }
             "--pci-test" => cfg.pci_test = vec![(vm::TEST_DEVICE, 0)],
             "--pci-tests" => cfg.pci_test = pci_tests(&text(value("--pci-tests")?)?)?,
             // Slots of its PCI bus kept for devices plugged into it as it runs (D214).

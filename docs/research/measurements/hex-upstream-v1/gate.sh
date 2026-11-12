@@ -50,6 +50,7 @@ for step in "$@"; do
 	clippy-musl) run clippy-musl env $(zig_env $musl) cargo clippy -j4 --target $musl -p shards-abi -p shards-init --all-targets -- -D warnings ;;
 	test-api) run test-api cargo test --no-fail-fast -j4 --target $gnu -p shards-api ;;
 	test-abi) run test-abi cargo test --no-fail-fast -j4 --target $gnu -p shards-abi ;;
+	test-vmm) run test-vmm cargo test --no-fail-fast -j4 --target $gnu -p shards-vmm --lib ;;
 	test-gpu-device) run test-gpu-device cargo test --no-fail-fast -j4 --target $gnu -p shards-vmm --lib devices::virtio::gpu:: ;;
 	test-shards-unit) run test-shards-unit cargo test --no-fail-fast -j4 --target $gnu -p shards --bin shards ;;
 	*) echo "unknown step $step" >&2 ;;
