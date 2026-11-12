@@ -18,6 +18,8 @@
 mod common;
 
 use std::ffi::OsStr;
+// The give-back test's host word, written to its pipe: Unix's alone.
+#[cfg(unix)]
 use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
@@ -89,24 +91,32 @@ fn answering(home: &Path) {
     }
 }
 
+/// `METHOD PATH BODY` to `prov`'s engine from inside it: what the test guest's `api` says.
+fn api(home: &Path, method: &str, path: &str, body: &str) -> String {
+    let out = shards_in(
+        home,
+        &["exec", "prov", "/bin/testguest", "api", method, path, body],
+    );
+    assert_eq!(out.status, Some(0), "{out}");
+    out.stdout
+}
+
+/// A joiner of `prov`, `name`, made and started through `prov`'s engine, its command `cmd`
+/// (the image's entrypoint is /bin/testguest, common::test_image: its command is the mode).
+fn joiner(home: &Path, image: &str, name: &str, cmd: &str) {
+    let body = format!(r#"{{"Image":"{image}","Cmd":[{cmd}]}}"#);
+    let made = api(home, "POST", &format!("/containers/create?name={name}"), &body);
+    assert!(made.starts_with("api HTTP/1.1 201"), "{made}");
+    let started = api(home, "POST", &format!("/containers/{name}/start"), "");
+    assert!(started.starts_with("api HTTP/1.1 204"), "{started}");
+}
+
 /// `prov`'s engine answering, and a joiner of it, `emitter`, that wrote `bytes` of the
 /// pattern to its log and ended.
 fn emitter(home: &Path, image: &str, bytes: u64) {
     answering(home);
-    let api = |method: &str, path: &str, body: &str| {
-        let out = shards_in(
-            home,
-            &["exec", "prov", "/bin/testguest", "api", method, path, body],
-        );
-        assert_eq!(out.status, Some(0), "{out}");
-        out.stdout
-    };
-    let body = format!(r#"{{"Image":"{image}","Cmd":["/bin/testguest","bulk-emit","{bytes}"]}}"#);
-    let made = api("POST", "/containers/create?name=emitter", &body);
-    assert!(made.starts_with("api HTTP/1.1 201"), "{made}");
-    let started = api("POST", "/containers/emitter/start", "");
-    assert!(started.starts_with("api HTTP/1.1 204"), "{started}");
-    let waited = api("POST", "/containers/emitter/wait", "");
+    joiner(home, image, "emitter", &format!(r#""bulk-emit","{bytes}""#));
+    let waited = api(home, "POST", "/containers/emitter/wait", "");
     assert!(waited.contains("\"StatusCode\":0"), "{waited}");
 }
 
@@ -250,16 +260,51 @@ fn rings(home: &Path) -> Rings {
     r
 }
 
-/// The guest's shared memory, in kB, as `name`'s kernel says it (`Shmem` of /proc/meminfo):
-/// the engine relay's slots are memory files, counted there while they live.
-fn shmem(home: &Path, name: &str) -> u64 {
-    let out = shards_in(home, &["exec", name, "/bin/testguest", "meminfo", "Shmem"]);
+/// The pages pinned in `name`'s guest now, as its kernel counts pin_user_pages(): /proc/vmstat's
+/// nr_foll_pin_acquired less nr_foll_pin_released (mm/gup.c, mm/vmstat.c, Linux 5.8 on). The
+/// relay's slots are pinned so (io_uring's fixed buffers, FOLL_PIN | FOLL_LONGTERM), a slot of
+/// `MIN_RING` 3 pages, and unpinned so; nothing else in a test guest holds a pin past an I/O.
+/// Exact, as the guest's shared memory is not: that moved by 28 to 32 kB once at times of its
+/// own, in runs with the engine and without (ring-pins-v1/logs/r10, r12).
+fn pinned(home: &Path, name: &str) -> u64 {
+    let out = shards_in(
+        home,
+        &[
+            "exec",
+            name,
+            "/bin/testguest",
+            "vmstat",
+            "nr_foll_pin_acquired",
+            "nr_foll_pin_released",
+        ],
+    );
     assert_eq!(out.status, Some(0), "{out}");
-    out.stdout
-        .split_whitespace()
-        .nth(1)
-        .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("no Shmem in {:?}", out.stdout))
+    let value = |key: &str| -> u64 {
+        out.stdout
+            .lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' ')?.trim().parse().ok())
+            .unwrap_or_else(|| panic!("no {key} in {:?}", out.stdout))
+    };
+    value("nr_foll_pin_acquired").saturating_sub(value("nr_foll_pin_released"))
+}
+
+/// Waits until `name`'s guest pins `want` pages again: the relay unpins a slot once it has heard
+/// its device let go and passed on what the slot held, which a reading after a stream's end may
+/// come before. A slot never freed keeps its pages pinned: the test fails at its own deadline,
+/// `TIMEOUT`, saying `what`.
+fn settled(home: &Path, name: &str, want: u64, what: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        let now = pinned(home, name);
+        if now == want {
+            return;
+        }
+        assert!(
+            start.elapsed() < TIMEOUT,
+            "{what}: {now} pages pinned after {TIMEOUT:?}, not {want}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Waits until `ready` holds of the device's word.
@@ -279,24 +324,33 @@ fn vcpus() -> Vec<usize> {
     v
 }
 
-/// The least a slot pins, in the kB /proc/meminfo counts: its control page and two rings of
-/// `MIN_RING` (D230 section 16). Any slot made and kept moves a guest's `Shmem` by at least
-/// this; less is no slot.
-fn least_slot_kb() -> u64 {
-    shards_abi::ring::slot_len(shards_abi::ring::MIN_RING) / 1024
-}
-
-/// An engine connection held open and idle in `prov` (the engine's events, which say
-/// nothing until something happens), its ring attached; it ends as `prov` is removed.
-fn held_open(home: &Path) -> std::thread::JoinHandle<Run> {
+/// An engine connection held open and idle in `prov`, its ring attached: the wait for a
+/// joiner of its, `idle`, that sleeps. A microVM's own engine serves calls on the joiners it
+/// made alone, and neither `GET /events` nor calls on `prov` itself (engine/scope.rs, which
+/// answers them 501 and 404 and closes); a wait writes its head at once and nothing after it
+/// until its joiner ends. The connection ends as `prov.idle` is removed. The give-back and
+/// shrinking-room tests', Unix's alone.
+#[cfg(unix)]
+fn held_open(home: &Path, image: &str) -> std::thread::JoinHandle<Run> {
     answering(home);
+    joiner(home, image, "idle", r#""sleep""#);
+    // Every ring so far let go, so that the next one attached is the held connection's.
+    await_rings(home, "the setup's rings let go", |r| r.let_go == r.attached);
     let before = rings(home).attached;
     let held = std::thread::spawn({
         let home = home.to_path_buf();
         move || {
             shards_in(
                 &home,
-                &["exec", "prov", "/bin/testguest", "api", "GET", "/events", ""],
+                &[
+                    "exec",
+                    "prov",
+                    "/bin/testguest",
+                    "api",
+                    "POST",
+                    "/containers/idle/wait",
+                    "",
+                ],
             )
         }
     });
@@ -306,20 +360,47 @@ fn held_open(home: &Path) -> std::thread::JoinHandle<Run> {
     held
 }
 
+/// As many engine streams at once as `prov`'s microVM has vCPUs (`cpus`), then twice that,
+/// each set one test guest's `api-bulk streams` in `prov`: each stream a connection of its own
+/// on a thread of its own, the even ones `logs` of `emitter` (`bytes` of it, byte-checked),
+/// the odd ones 50 pings. One exec a set, not one a stream: 64 execs at once into a microVM
+/// of 32 vCPUs left two that never ended, the engine not asked (ring-pins-v1/logs/r11). What
+/// each set said.
+fn streams(home: &Path, cpus: usize, bytes: &str) -> Vec<Run> {
+    [cpus, 2 * cpus]
+        .iter()
+        .map(|at_once| {
+            let n = at_once.to_string();
+            shards_in(
+                home,
+                &[
+                    "exec",
+                    "prov",
+                    "/bin/testguest",
+                    "api-bulk",
+                    "streams",
+                    "emitter",
+                    bytes,
+                    &n,
+                ],
+            )
+        })
+        .collect()
+}
+
 /// An idle microVM pins nothing, and each engine stream's pins go as it ends (D230 section
 /// 16): on microVMs of one vCPU, two and the host's every CPU, one whose engine was asked
-/// nothing holds less than a slot of shared memory more than the same run without the
-/// engine's socket (no relay at all), where its slots would be memory files; then as many
-/// engine streams at once as it has vCPUs, and twice that, each byte-checked; once they end,
-/// every ring the device attached it has let go, bytes for bytes, and the guest's shared
-/// memory is within a slot of where it was before them.
+/// nothing pins the pages the same run without the engine's socket (no relay at all) pins;
+/// then as many engine streams at once as it has vCPUs, and twice that, each byte-checked;
+/// once they end, every ring the device attached it has let go, bytes for bytes, and the
+/// guest's pinned pages come back to what they were idle, exactly.
 #[test]
 fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
     if cannot_run_vms() {
         return;
     }
     let (image, _) = served();
-    let least = least_slot_kb();
+    let bytes = (4u64 << 20).to_string();
     for cpus in vcpus() {
         let home = TempDir::new(&format!("eng-pins-{cpus}"));
         let debug: [(&str, &OsStr); 1] = [("SHARDS_LOG", "debug".as_ref())];
@@ -332,48 +413,39 @@ fn an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends() {
         );
         assert_eq!(bare.status, Some(0), "{bare}");
         prov(&home, &image, &["--cpus", &n]);
-        let (without, idle) = (shmem(&home, "bare"), shmem(&home, "prov"));
-        assert!(
-            idle < without + least,
-            "{cpus} vCPUs: an idle engine's microVM holds {idle} kB of shared memory, {without} kB without its socket"
+        let (without, idle) = (pinned(&home, "bare"), pinned(&home, "prov"));
+        eprintln!("{cpus} vCPUs: {idle} pages pinned idle with the engine's socket, {without} without");
+        assert_eq!(
+            idle, without,
+            "{cpus} vCPUs: an idle engine's microVM pins pages its run without the socket does not"
         );
         assert_eq!(rings(&home).attached, 0, "{cpus} vCPUs: a ring before any stream");
         emitter(&home, &image, 4 << 20);
         await_rings(&home, "the setup's rings let go", |r| {
             r.attached > 0 && r.let_go == r.attached
         });
-        let before = shmem(&home, "prov");
-        let logs = (4u64 << 20).to_string();
-        for streams in [cpus, 2 * cpus] {
-            std::thread::scope(|s| {
-                let runs: Vec<_> = (0..streams)
-                    .map(|i| {
-                        let (home, logs) = (&home, &logs);
-                        s.spawn(move || {
-                            let out = if i % 2 == 0 {
-                                bulk(home, &["logs", "emitter", logs])
-                            } else {
-                                bulk(home, &["ping", "50"])
-                            };
-                            assert!(
-                                out.starts_with(&format!("bulk logs {logs} ")) || out.starts_with("ping 50 "),
-                                "{out}"
-                            );
-                        })
-                    })
-                    .collect();
-                for r in runs {
-                    r.join().unwrap();
-                }
-            });
-            await_rings(&home, "every stream's ring let go", |r| r.let_go == r.attached);
-            let r = rings(&home);
-            assert_eq!(r.unpinned, r.pinned, "{cpus} vCPUs, {streams} streams: {r:?}");
+        settled(
+            &home,
+            "prov",
+            idle,
+            &format!("{cpus} vCPUs: the setup's slots freed"),
+        );
+        for (said, at_once) in streams(&home, cpus, &bytes).iter().zip([cpus, 2 * cpus]) {
+            assert_eq!(said.status, Some(0), "{said}");
+            assert_eq!(said.stdout.trim(), format!("streams {at_once} {bytes}"), "{said}");
         }
-        let after = shmem(&home, "prov");
-        assert!(
-            after < before + least,
-            "{cpus} vCPUs: {after} kB of shared memory after the streams, {before} kB before"
+        await_rings(&home, "every stream's ring let go", |r| r.let_go == r.attached);
+        let r = rings(&home);
+        assert_eq!(r.unpinned, r.pinned, "{cpus} vCPUs: {r:?}");
+        settled(
+            &home,
+            "prov",
+            idle,
+            &format!("{cpus} vCPUs: every stream's slot freed"),
+        );
+        eprintln!(
+            "{cpus} vCPUs: {} rings attached and let go, {} bytes pinned and unpinned; {idle} pages pinned again",
+            r.attached, r.pinned
         );
         let removed = shards_in(&home, &["rm", "-f", "prov", "bare"]);
         assert_eq!(removed.status, Some(0), "{removed}");
@@ -403,7 +475,7 @@ fn a_give_back_lets_an_idle_slot_go() {
     let pulled = shards_with(&home, &["pull", "-q", &image], &more);
     assert_eq!(pulled.status, Some(0), "{pulled}");
     prov(&home, &image, &[]);
-    let held = held_open(&home);
+    let held = held_open(&home, &image);
     let before = rings(&home);
     // The host's word: short of memory (each line one, as containers.rs says it).
     std::fs::OpenOptions::new()
@@ -415,7 +487,7 @@ fn a_give_back_lets_an_idle_slot_go() {
     await_rings(&home, "the idle slot given back", |r| {
         r.asked > before.asked && r.let_go == r.attached
     });
-    let removed = shards_in(&home, &["rm", "-f", "prov"]);
+    let removed = shards_in(&home, &["rm", "-f", "prov.idle", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
     let _ = held.join();
 }
@@ -467,7 +539,7 @@ fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
     assert_eq!(pulled.status, Some(0), "{pulled}");
     // The slice made by the run, with no budget yet: room for a slot.
     prov(&home, &image, &["--cgroup-parent", &slice]);
-    let held = held_open(&home);
+    let held = held_open(&home, &image);
     let before = rings(&home);
     // The budget brought down to what the slice holds: no room past it.
     let cgroup = format!("/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/{slice}");
@@ -481,7 +553,7 @@ fn a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain() {
     let ping = bulk(&home, &["ping", "20"]);
     assert!(ping.starts_with("ping 20 "), "{ping}");
     assert_eq!(rings(&home).attached, attached, "a ring attached past the room");
-    let removed = shards_in(&home, &["rm", "-f", "prov"]);
+    let removed = shards_in(&home, &["rm", "-f", "prov.idle", "prov"]);
     assert_eq!(removed.status, Some(0), "{removed}");
     let _ = held.join();
 }

@@ -122,8 +122,11 @@ fn watch(vcpus: u32, step: u64) {
     let said = String::from_utf8_lossy(&handle.console_said().lines).into_owned();
     assert_eq!(ended, ExitReason::PowerOff, "{vcpus} vCPUs: {said}");
     assert!(said.contains("SHARDS-TEST PASS"), "{vcpus} vCPUs: {said}");
+    // A line of its own, whatever ends it ("\n", or "\r\n" where a console adds the return):
+    // on WHP the line was there and a match on "\n" failed (jupiter, 2026-11-12).
+    let spun_line = format!("SHARDS-SPIN SPUN {vcpus}");
     assert!(
-        said.contains(&format!("SHARDS-SPIN SPUN {vcpus}\n")),
+        said.lines().any(|l| l == spun_line),
         "{vcpus} vCPUs, each online in its guest: {said}"
     );
     // Every vCPU there, by its index, as its guest idled after its spin, each having run it.

@@ -623,13 +623,19 @@ themselves run on the runner's kernel
 (`a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry`: `VmPin` up by the
 slot's pages, and back as its entry is emptied).
 
-**Owed to ROOT (real VMs, measurements; none run here).**
-- E2E (`crates/shards/tests/engine_ring.rs`): `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`
-  (1, 2 and the host's vCPUs; V and 2V streams at once), `a_give_back_lets_an_idle_slot_go`
-  (`SHARDS_PRESSURE`), `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain`
-  (a user slice's `MemoryHigh`), and the existing bulk and measurement tests, on KVM x86_64
-  and arm64, HVF, WHP x86_64 and arm64; the engine suite (D181), isolation's token test,
-  budget and reclaim suites (a run with no engine socket unaffected).
+**The E2E on real VMs (2026-11-12).** `crates/shards/tests/engine_ring.rs`:
+`an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends` (1, 2 and the host's
+vCPUs; V and 2V streams at once, each set one exec's; the guest's pinned pages, its kernel's
+FOLL_PIN count, those of the same run without the engine's socket while idle, and back to
+them once its streams end, exactly), `a_give_back_lets_an_idle_slot_go` (`SHARDS_PRESSURE`, a
+joiner's wait held open), `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain`
+(a user slice's `MemoryHigh`) and the bulk test, on Linux KVM x86_64, green
+([evidence](measurements/ring-pins-v1/README.md): each first failure the test's or the test
+guest's, none the ring's).
+
+**Owed to ROOT (real VMs, measurements).**
+- The E2E on HVF, WHP x86_64 and arm64, and Linux arm64 (L1); the engine suite (D181),
+  isolation's token test, budget and reclaim suites (a run with no engine socket unaffected).
 - E2E mutations: `told()` removed from `ROOM` (the shrinking-room test must fail: pins past
   the room); the leaf join removed (`read metrics` scope run must lose the slots' bytes:
   pins outside `memory.current`).

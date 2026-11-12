@@ -1,0 +1,28 @@
+# Diagnostic (adacachy, Linux KVM): why `api-bulk stdin` (create with OpenStdin, attach before start, start, its
+# stdin, its end) never ended. Tests of their own (not kept), each step of testguest's stdin() said on stderr.
+# 1. 1000 bytes, rings on, the device's lines meanwhile:
+DIAG 1000: [2230064    1984840us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+DIAG 1000: [2230064    1988517us DEBUG] vsock: port 1029: an engine ring attached, 12288 bytes pinned
+DIAG 1000: [2230064   14632318us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (Asked)
+DIAG 1000: [2230064   14639170us DEBUG] vsock: port 1029: an engine ring let go, 12288 bytes unpinned (Asked)
+DIAG stdin 1000: HUNG after 40 s
+#    (both idle rings let go at a give-back, the connections plain after: still hung)
+# 2. Its steps: the start never answered.
+DIAG hung exec: status Some(137) out "" err "STEP created 2cf55d79...\nSTEP attached HTTP/1.1 101 UPGRADED\n"
+# 3. Rings off (vm_run.rs pushing no engine-ring setup entry): the same.
+DIAG stdin 1000: HUNG after 40 s
+DIAG hung exec: status Some(137) out "" err "STEP created 26ddcd63...\nSTEP attached HTTP/1.1 101 UPGRADED\n"
+# 4. Its stdin written and ended on a thread of its own before the start's answer: the same.
+DIAG hung exec: status Some(137) out "" err "STEP created cdd2e3af...\nSTEP attached HTTP/1.1 101 UPGRADED\nSTEP wrote 1000\nSTEP shut\n"
+# 5. The daemon's path, a log line at each step: the start was answered, 204, written whole.
+DIAGLOG shards daemon 625575: DIAGSA 3bab291b...: start_attached
+DIAGLOG shards daemon 625575: DIAGSA 3bab291b...: put_run done
+DIAGLOG shards daemon 625575: DIAGSA 3bab291b...: got Ok(Some(62))     (kind::HEARD)
+DIAGLOG shards daemon 625575: DIAGSA 3bab291b...: got Ok(Some(28))     (kind::CREATED)
+DIAGLOG shards daemon 625575: DIAGSA 3bab291b...: spawned output: true
+DIAGLOG shards daemon 625575: DIAGES 3bab291b...: result ok true
+DIAGLOG shards daemon 625575: DIAGEC answered /containers/3bab291b.../start: None
+# Cause: testguest's engine_bulk.rs body() read an answer with no Content-Length and no chunking until its
+# connection's end; a 204 has no content (RFC 9110 §6.4.1) and no Content-Length (§8.6), and `calls` is a kept
+# connection, whose end never came. The test guest's client was wrong; the daemon and the ring were not (3 shows
+# the same hang without any ring). Fix: body() takes the status, and 1xx, 204 and 304 have no content.

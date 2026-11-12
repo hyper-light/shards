@@ -8,7 +8,11 @@ D230 in [architecture.md](../../../design/architecture.md).
   cc1b52e61), 946eaa687 (version 2), e0b04ab84 (origin/main c4ae59ee0 merged in), 02350b8d3
   (the pin test, the stand-in's answer to a crossing swap, this record), dcddaf476
   (origin/main d59e0705b merged in, r4), 18a1dc2b6 (two test fixes r4 found, r5), and the
-  commit adding r5, which changes no source. Role: implementer for ROOT
+  commit adding r5, which changes no source; then branch `p/ring-e2e-v1` from ROOT's
+  `p/whp-parity-fixes` (3d49939ca): 026dbc846 (the E2E's fixes), 4a3861e4a (origin/main
+  8f3cd5b74 merged in, r13, r14), 33cc69d1e and ea3482851 (the two errors Windows' lint found,
+  r15), a1fc36a84 (vsock/ring.rs's tests on macOS, r15), and the commit adding this round's
+  records, which changes no source. Role: implementer for ROOT
   (01a148884a4770fdaf0111f3f792a248); policy receipt [POLICY_READ.json](POLICY_READ.json)
   (development-rules.md sha256 df2acf47…, re-read on c4ae59ee0 after a restart, unchanged).
   Runner: adacachy, linux/x86_64, CachyOS 7.2.9, rustc 1.98.1. Merged to main at the
@@ -29,6 +33,38 @@ D230 in [architecture.md](../../../design/architecture.md).
 | [r4-gate-dcddaf476.txt](logs/r4-gate-dcddaf476.txt) | dcddaf476 (the pin test, the stand-in's answer to a crossing swap, origin/main d59e0705b): the same gate, the pin test, the relay's tests ten times under load, the mutations again. Found a test-harness race (one run in ten) and an unsafe block's comment, fixed in 18a1dc2b6. |
 | [r5-gate-final.txt](logs/r5-gate-final.txt) | 18a1dc2b6, whose source is the pushed revision's: the same gate, the relay's tests twenty times. |
 
+## The E2E on real VMs (2026-11-12, branch `p/ring-e2e-v1`)
+
+ROOT ran `crates/shards/tests/engine_ring.rs` on real VMs for the first time (Linux KVM and
+WHP): all four tests failed. Each failure's cause, shown live on adacachy (Linux KVM, x86_64),
+and which was wrong:
+
+| Test | Cause, with its evidence | Wrong |
+|---|---|---|
+| `a_microvms_engine_carries_bulk_whole_both_ways` | bulk-sum's create named the image's entrypoint again (`Cmd ["/bin/testguest","bulk-sum"]`, mode "/bin/testguest", exit 2); then the test guest's HTTP client read the start's 204 as content delimited by its connection's end, on a kept connection (r9: the same hang with rings and with none; the daemon's 204 written whole) | the test guest |
+| `a_give_back_lets_an_idle_slot_go`, `a_shrinking_room_…` | the connection they held open, `GET /events`, is one a microVM's own engine does not serve (engine/scope.rs answers 501 and closes: its ring let go `HostEnded` 1.8 ms after it attached, r6); they hold a wait on a sleeping joiner | the test |
+| `an_idle_microvm_pins_nothing_…` | it read the guest's shared memory once, right after its streams, which stood 12 to 36 kB over where it came back to within 3 s (r8), and which steps by 28 to 32 kB at times of its own, in runs with no engine too (r10, r12): it counts the guest's pinned pages now (FOLL_PIN acquired less released, exact) | the test |
+
+Fixed in 026dbc846 (with the bulk test's stdin arm ending at once, with its container's exit,
+where the container ends early, as ROOT asked after WHP). No D230 product code was wrong.
+
+Found, not fixed (ROOT's goal, "Shards exec hang root-caused and fixed"): of 64 concurrent
+`shards exec` into a 32-vCPU microVM with no engine, 2 never ended, their CLIs blocked on their
+exec's pipe (r11). The pins test drives each set of V and 2V streams from one exec since.
+
+| Log | What it shows |
+|---|---|
+| [r6-e2e-first-run-root.txt](logs/r6-e2e-first-run-root.txt) | ROOT's first run (3d49939ca): the four failures, the held connection's ring let go 1.8 ms after it attached. |
+| [r7-e2e-rerun-adacachy.txt](logs/r7-e2e-rerun-adacachy.txt) | The first fixes: give-back and shrinking room pass; the stdin arm hangs; the pins test's +80 kB, 0 kB in the run without the engine. |
+| [r8-e2e-shmem-per-stream.txt](logs/r8-e2e-shmem-per-stream.txt) | A 1-vCPU microVM's shared memory after each stream: 12 to 36 kB over, back within 3 s, nothing kept. |
+| [r9-e2e-stdin-diagnosis.txt](logs/r9-e2e-stdin-diagnosis.txt) | The stdin hang with rings, without rings, with stdin beside the start, and the daemon's own steps: the 204 written; the client's body() the cause. |
+| [r10-e2e-three-green.txt](logs/r10-e2e-three-green.txt) | Three tests green; the pins test's 2-vCPU idle reading below its run without the engine's. |
+| [r11-exec-hang-64-at-once.txt](logs/r11-exec-hang-64-at-once.txt) | The exec hang at 64 at once (wchan, elapsed, the commands). |
+| [r12-e2e-shmem-step.txt](logs/r12-e2e-shmem-step.txt) | Shared memory's 32 kB step at 32 vCPUs after its streams, the device having let go of every ring: why the test counts pinned pages. |
+| [r13-e2e-kvm-and-gates.txt](logs/r13-e2e-kvm-and-gates.txt) | The pushed source (4a3861e4a): the four E2E tests on Linux KVM x86_64 (kiln-a094a12d, Linux 6.19), green: 0 pages pinned idle with and without the engine's socket, 443 rings at 32 vCPUs attached and let go, 0 pages pinned after; fmt and unit tests on Linux x86_64 (abi 49, vsock 66, init 197 with the relay's 20). |
+| [r14-e2e-failfast-and-witness.txt](logs/r14-e2e-failfast-and-witness.txt) | A sum container that ends at once fails the bulk test in 28 s with its exit, no hang; the pinned-page witness reads 0, then 3 (a held connection's slot), then 0. |
+| [r15-lint-and-macos.txt](logs/r15-lint-and-macos.txt) | scripts/lint of all seven supported targets, LINT-EXIT 0 (after the two errors Windows' found, one of them main's); unit tests on macOS arm64, where three vsock/ring.rs tests hung on 8 KiB Unix socket buffers until their pairs held what they write (a1fc36a84), then 66 of 66; the vsock device's 39 on Windows natively (jupiter); the Windows `shards` unit tests not built there for want of NASM, owed. |
+
 Guard mutations (r3): M1, the relay freeing its slot without hearing the device's `DETACH`,
 fails `the_relay_frees_a_slot_only_after_the_devices_detach` ("the relay let go of its slot
 before the device's DETACH"), or, as the timing falls, kills the test process (a core
@@ -47,14 +83,18 @@ the leaf join on a real cgroup, the shared page across init's fork and the daemo
 are covered only by the real-VM E2E owed below; `a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry`
 runs the pin and unpin calls themselves on the runner's kernel.
 
-## Owed to ROOT (none run here)
+## Owed to ROOT
 
-- E2E, `crates/shards/tests/engine_ring.rs`, on KVM x86_64 and arm64, HVF, WHP x86_64 and
-  arm64: `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`,
+- E2E, `crates/shards/tests/engine_ring.rs`, on HVF, WHP x86_64 and arm64, and Linux arm64
+  (L1): `an_idle_microvm_pins_nothing_and_each_streams_pins_go_as_it_ends`,
   `a_give_back_lets_an_idle_slot_go`,
   `a_shrinking_room_lets_an_idle_slot_go_and_a_stream_past_it_goes_plain` (Linux, a user
   systemd manager), `a_microvms_engine_carries_bulk_whole_both_ways`; the engine suite
-  (D181), isolation's engine-port token test, the budget and reclaim suites.
+  (D181), isolation's engine-port token test, the budget and reclaim suites. Linux KVM x86_64
+  ran here (r13).
+- On Windows, natively, with NASM: `cargo test --locked -p shards --bin shards --
+  served_pipes_tests` (ea3482851 changed one of them; compiled and clippy-clean on both Windows
+  targets, r15, not run).
 - Their reds: the idle-pins test on 032b63b1c (version 1, which pins slots as its relay
   starts), and mutations: `told` removed from `ROOM` (the shrinking-room test must fail), the
   leaf join removed (`read metrics` of the run must lose the slots' bytes).
@@ -77,9 +117,9 @@ runs the pin and unpin calls themselves on the runner's kernel.
 | R06 | The relay's pump is one loop with explicit outcomes; the swap and the settle are their own functions. Reviewed; the pump stays long (one turn of two directions). |
 | R07 | Comments carry the safety obligations, the sources and the derivations. |
 | R08 | No performance claim; the measurements are owed. |
-| R09 | The first-request hang reproduced before its fix (r1); version 1's idle pins are its source's behavior, their live red owed with the E2E (above). |
-| R10 | r1-r5, the guard mutations, this record. |
-| R11 | Verified on x86_64 Linux glibc (tests, clippy) and x86_64 and aarch64 musl (clippy, the guest's crates). The device's code on macOS arm64 and Windows, and every real VM, unverified. |
+| R09 | The first-request hang reproduced before its fix (r1); each E2E failure reproduced live and its cause shown before its fix (r6 to r12), the stdin hang by an A/B with rings off and the daemon's own steps (r9); version 1's idle pins are its source's behavior, their live red owed with the E2E (above). |
+| R10 | r1-r15, the guard mutations, this record. |
+| R11 | Verified: the E2E on Linux KVM x86_64 (r13); unit tests on Linux x86_64 (abi, the vsock device, init and its relay), macOS arm64 (abi, the vsock device, init's non-Linux part; the relay is the Linux guest's alone) and Windows x86_64 natively (the vsock device, 39); scripts/lint of all seven supported targets (r15). Unverified: the E2E on HVF, WHP and Linux arm64; the `shards` unit tests natively on Windows (NASM); owed above. |
 | R12 | One device for every hypervisor (`GuestMemory`'s pins); the relay is the Linux guest's. No platform copy. |
 | R13 | Version 1's slot pool removed; the E2E reuses the engine tests' run and emitter helpers. |
 | R14 | No profiling or benchmark (ROOT's). |
