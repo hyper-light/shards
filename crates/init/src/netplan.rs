@@ -1057,6 +1057,22 @@ mod tests {
         let inner = p.links[1].as_ref().unwrap();
         assert!(inner.named.is_empty() && inner.egress.is_empty());
         assert!(p.uplink);
+        // A remote MCP server's URL naming the host itself grants it alike (kiln's MCP), on a
+        // network of the member's own.
+        let kiln = crate::json::parse(
+            br#"{"networks":[],"connections":[],
+                "mcp":[{"name":"kiln","source":"http://host.docker.internal:7070/api/mcp","for":{"kind":"harness","names":["codex"]}}]}"#,
+        )
+        .unwrap();
+        let p = plan(&kiln, &[(true, "codex".into())], own, None).unwrap();
+        let codex = p.links[0].as_ref().unwrap();
+        assert_eq!(codex.named, vec![(shards_dns::HOST.to_string(), 7070)]);
+        assert_eq!(codex.egress, vec![(6, 7070, 7070)]);
+        let hosts = String::from_utf8(codex.hosts.clone()).unwrap();
+        assert!(
+            hosts.ends_with("\tcodex\n172.17.0.1\thost.docker.internal\n"),
+            "{hosts}"
+        );
         // Without the microVM's own network, the host has no address to be named at.
         let unnamed = plan(&spec, &names, None, None).unwrap();
         let hosts = String::from_utf8(unnamed.links[2].as_ref().unwrap().hosts.clone()).unwrap();

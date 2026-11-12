@@ -22225,7 +22225,8 @@ named a host (D59 part seven); a run's command had D192's.
 - *Names.* A member asks the agents' resolver for its destinations' names alone, as a remote
   MCP server's (`--dns` neither needed nor implied). The host itself is in its hosts file at
   eth0's gateway and never asked of a resolver: the network process forwards no question for
-  it.
+  it. A remote MCP server's URL may name the host itself too (`MCP kiln FROM
+  http://host.docker.internal:7070/api/mcp FOR codex`, kiln's MCP), which its grant then is.
 - *Held.* The network process's policy names each destination beside the MCP servers'
   (`encode_policy`): a flow to its port reaches only an address its resolver answered for the
   name through it, or the address it is; the host itself is the gateway at that TCP port
