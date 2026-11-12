@@ -333,7 +333,8 @@ impl std::fmt::Display for BorrowFailure {
 impl std::error::Error for BorrowFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Channel(error) => Some(error),
+            // Its Display is the handshake error's own: the cause after it is that error's.
+            Self::Channel(error) => std::error::Error::source(error),
             _ => None,
         }
     }
@@ -418,8 +419,9 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            // Each Display already ends with its failure: the cause after it is the failure's.
             Self::Process { failure, .. } => std::error::Error::source(failure),
-            Self::Borrowed { failure, .. } => Some(failure),
+            Self::Borrowed { failure, .. } => std::error::Error::source(failure),
             _ => None,
         }
     }
@@ -680,6 +682,56 @@ mod tests {
         assert_eq!(UNRECORDED.get(), ms(80));
         UNRECORDED.saw(ms(1));
         assert_eq!(UNRECORDED.get(), ms(80));
+    }
+
+    /// A refusal printed with its chain of causes (each `source()` after its Display, as error
+    /// reporters print them) says each cause once: a refusal or failure whose Display already
+    /// says its failure gives that failure's own source, not the failure again (D215).
+    #[test]
+    fn a_refusals_chain_says_each_cause_once() {
+        let handshake = HandshakeError::Io {
+            phase: HandshakePhase::Read,
+            kind: io::ErrorKind::WouldBlock,
+            code: Some(11),
+        };
+        let said = handshake.to_string();
+        let refusals = [
+            (
+                Refusal::Borrowed {
+                    port: 7,
+                    failure: BorrowFailure::Channel(handshake),
+                },
+                said,
+            ),
+            (
+                Refusal::Borrowed {
+                    port: 7,
+                    failure: BorrowFailure::Expired,
+                },
+                BorrowFailure::Expired.to_string(),
+            ),
+            (
+                Refusal::Process {
+                    pid: 1,
+                    expected_started: 2,
+                    failure: ProcessFailure::Exited,
+                },
+                ProcessFailure::Exited.to_string(),
+            ),
+        ];
+        for (refusal, failure) in refusals {
+            let mut printed = refusal.to_string();
+            let mut cause = std::error::Error::source(&refusal);
+            while let Some(c) = cause {
+                printed = format!("{printed}: {c}");
+                cause = c.source();
+            }
+            assert_eq!(
+                printed.matches(failure.as_str()).count(),
+                1,
+                "{refusal:?}: {printed}"
+            );
+        }
     }
 
     /// The backend each host boots with, the VMM's on each (WHP's arm64 one too, D209), and
