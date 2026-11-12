@@ -1,0 +1,54 @@
+status Some(0) after 11.424468448s
+--- stdout
+
+--- stderr
+#0 building with "shards" instance using shards driver
+
+#1 [internal] load build definition from Agentfile
+#1 read 1.332kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+#2 DONE 1.4s
+
+#3 [internal] load .agentignore
+#3 DONE 0.0s
+
+#4 [1/2] FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
+#4 resolve docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 read 3 files, 399.5MB done
+#5 DONE 0.1s
+
+#6 [internal] load ./codex
+#6 DONE 0.2s
+
+#7 [2/2] HARNESS codex FROM ./codex
+#7 DONE 0.2s
+
+#8 [2/2] LINK HARNESS codex FROM ./codex
+#8 DONE 0.2s
+
+#9 [internal] read harness config from ./codex
+#9 DONE 0.0s
+
+#10 [3/2] HARNESS codex FROM ./codex
+#10 DONE 0.0s
+
+#11 [3/2] LINK HARNESS codex FROM ./codex
+#11 DONE 0.0s
+
+#12 [agentfile] the normalized Agentfile
+#12 DONE 0.0s
+
+#13 [internal] checking the domains' isolation
+#13 DONE 0.0s
+shards-export {"from":"snapshot"}
+
+#14 exporting to image
+#14 exporting layers done
+#14 writing image sha256:86b677e9c09729812c882a5e82bd26890e5f0091b3ccacb13bed65b99dccc3d2 done
+#14 naming to docker.io/library/harness-codex:1 done
+#14 DONE 0.1s

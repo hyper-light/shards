@@ -1,0 +1,81 @@
+TIME                            MEMBER           PID  EVENT  WHAT
+2026-11-12T03:06:12.236356359Z  command          913  exec   sleep 600
+2026-11-12T03:06:12.240412640Z  harness claude   918  fork   from 1
+2026-11-12T03:06:12.242235265Z  harness claude   918  exec   shards-server "harness claude" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T03:06:12.250187066Z  harness claude   923  fork   from 918
+2026-11-12T03:06:12.250552633Z  harness claude   923  exec   shards-server sandbox
+2026-11-12T03:06:12.251083721Z  harness claude   927  fork   from 1
+2026-11-12T03:06:12.251241868Z  harness claude   929  fork   from 927
+2026-11-12T03:06:12.251411687Z  harness claude   927  exec   shards-init managed-reaper
+2026-11-12T03:06:12.262685961Z  harness claude   929  exec   /harness/claude/bin/claude -p --settings /run/claude-auth/settings.json --output-format stream-json --verbose "Reply with the single word: ready"
+2026-11-12T03:06:12.550272732Z  harness claude  1724  fork   from 929
+2026-11-12T03:06:12.550844617Z  harness claude  1724  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:12.552365604Z  harness claude  1724  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:12.554401229Z  harness claude  1724  exit   code 0
+2026-11-12T03:06:12.702746352Z  harness claude  1731  fork   from 929
+2026-11-12T03:06:12.703495690Z  harness claude  1731  exec   rg --no-config --files --hidden /harness/claude
+2026-11-12T03:06:12.715395710Z  harness claude  1746  fork   from 929
+2026-11-12T03:06:12.716007459Z  harness claude  1731  exit   code 0
+2026-11-12T03:06:12.716565859Z  harness claude  1746  exec   sh -c "uname -s\nuname -r\nuname -m\nfor c in npm yarn pnpm; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo\nfor c in bun deno node; do command -v \"$c\" >/dev/null 2>&1 && printf \"%s,\" \"$c\"; done; echo"
+2026-11-12T03:06:12.719957491Z  harness claude  1747  fork   from 1746
+2026-11-12T03:06:12.721112542Z  harness claude  1747  exec   uname -s
+2026-11-12T03:06:12.723274955Z  harness claude  1747  exit   code 0
+2026-11-12T03:06:12.723368901Z  harness claude  1748  fork   from 1746
+2026-11-12T03:06:12.724115925Z  harness claude  1748  exec   uname -r
+2026-11-12T03:06:12.725586758Z  harness claude  1748  exit   code 0
+2026-11-12T03:06:12.725742862Z  harness claude  1749  fork   from 1746
+2026-11-12T03:06:12.726378015Z  harness claude  1749  exec   uname -m
+2026-11-12T03:06:12.727824764Z  harness claude  1749  exit   code 0
+2026-11-12T03:06:12.728146518Z  harness claude  1746  exit   code 0
+2026-11-12T03:06:13.931004428Z  harness claude  1758  fork   from 929
+2026-11-12T03:06:13.931996442Z  harness claude  1758  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:13.934306904Z  harness claude  1758  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:13.936285371Z  harness claude  1758  exit   code 0
+2026-11-12T03:06:15.064520389Z  harness claude  1759  fork   from 929
+2026-11-12T03:06:15.065997324Z  harness claude  1759  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:15.069657812Z  harness claude  1759  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:15.072203555Z  harness claude  1759  exit   code 0
+2026-11-12T03:06:17.199494008Z  harness claude  1760  fork   from 929
+2026-11-12T03:06:17.200186590Z  harness claude  1760  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:17.201653035Z  harness claude  1760  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:17.203634468Z  harness claude  1760  exit   code 0
+2026-11-12T03:06:21.985178282Z  harness claude  1761  fork   from 929
+2026-11-12T03:06:21.986560730Z  harness claude  1761  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:21.990528845Z  harness claude  1761  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:21.994731191Z  harness claude  1761  exit   code 0
+2026-11-12T03:06:31.169549380Z  harness claude  1762  fork   from 929
+2026-11-12T03:06:31.170145230Z  harness claude  1762  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:31.171825958Z  harness claude  1762  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:31.173655766Z  harness claude  1762  exit   code 0
+2026-11-12T03:06:49.252997583Z  harness claude  1764  fork   from 929
+2026-11-12T03:06:49.254219268Z  harness claude  1764  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:06:49.256492850Z  harness claude  1764  exec   cat /run/claude-auth/api-key
+2026-11-12T03:06:49.258508638Z  harness claude  1764  exit   code 0
+2026-11-12T03:07:22.341162034Z  harness claude  1778  fork   from 929
+2026-11-12T03:07:22.341832083Z  harness claude  1778  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:07:22.346733973Z  harness claude  1778  exec   cat /run/claude-auth/api-key
+2026-11-12T03:07:22.352632957Z  harness claude  1778  exit   code 0
+2026-11-12T03:07:57.440323689Z  harness claude  1792  fork   from 929
+2026-11-12T03:07:57.443366657Z  harness claude  1792  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:07:57.449792470Z  harness claude  1792  exec   cat /run/claude-auth/api-key
+2026-11-12T03:07:57.453488395Z  harness claude  1792  exit   code 0
+2026-11-12T03:08:35.285751913Z  harness claude  1809  fork   from 929
+2026-11-12T03:08:35.286930147Z  harness claude  1809  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:08:35.290286623Z  harness claude  1809  exec   cat /run/claude-auth/api-key
+2026-11-12T03:08:35.292491185Z  harness claude  1809  exit   code 0
+2026-11-12T03:09:10.567200816Z  harness claude  1818  fork   from 929
+2026-11-12T03:09:10.567951888Z  harness claude  1818  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:09:10.569914265Z  harness claude  1818  exec   cat /run/claude-auth/api-key
+2026-11-12T03:09:10.571424372Z  harness claude  1818  exit   code 0
+2026-11-12T03:09:44.877297187Z  harness claude  1835  fork   from 929
+2026-11-12T03:09:44.878230090Z  harness claude  1835  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:09:44.880127405Z  harness claude  1835  exec   cat /run/claude-auth/api-key
+2026-11-12T03:09:44.882064304Z  harness claude  1835  exit   code 0
+2026-11-12T03:10:19.057114510Z  harness claude  1845  fork   from 929
+2026-11-12T03:10:19.059028786Z  harness claude  1845  exec   /bin/sh -c "cat /run/claude-auth/api-key"
+2026-11-12T03:10:19.062911462Z  harness claude  1845  exec   cat /run/claude-auth/api-key
+2026-11-12T03:10:19.066277977Z  harness claude  1845  exit   code 0
+2026-11-12T03:10:19.471441780Z  harness claude   929  exit   code 1
+2026-11-12T03:10:19.480411814Z  harness claude   927  exit   code 1
+2026-11-12T03:10:19.480689386Z  harness claude   918  exit   signal 9 (SIGKILL)
+2026-11-12T03:10:19.480729171Z  harness claude   923  exit   signal 9 (SIGKILL)

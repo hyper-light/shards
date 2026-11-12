@@ -1,0 +1,89 @@
+TIME                            MEMBER          PID  EVENT  WHAT
+2026-11-12T02:59:36.631192188Z  command         911  exec   sleep 600
+2026-11-12T02:59:36.633256597Z  harness codex   914  fork   from 1
+2026-11-12T02:59:36.634464155Z  harness codex   914  exec   shards-server "harness codex" /proc/self/fd/6 200000 3 4 "" [] 7
+2026-11-12T02:59:36.640312514Z  harness codex   919  fork   from 914
+2026-11-12T02:59:36.640617227Z  harness codex   919  exec   shards-server sandbox
+2026-11-12T02:59:36.641041664Z  harness codex   923  fork   from 1
+2026-11-12T02:59:36.641138085Z  harness codex   925  fork   from 923
+2026-11-12T02:59:36.641232292Z  harness codex   923  exec   shards-init managed-reaper
+2026-11-12T02:59:36.666058259Z  harness codex   925  exec   /harness/codex/bin/codex exec --json --skip-git-repo-check --ephemeral "Reply with the single word: ready"
+2026-11-12T02:59:36.845568981Z  harness codex  1751  fork   from 925
+2026-11-12T02:59:36.845683266Z  harness codex  1751  exit   code 127
+2026-11-12T02:59:36.846931711Z  harness codex  1752  fork   from 925
+2026-11-12T02:59:36.848197941Z  harness codex  1752  exec   getconf LONG_BIT
+2026-11-12T02:59:36.849374030Z  harness codex  1752  exit   code 0
+2026-11-12T02:59:36.907816000Z  harness codex  1766  fork   from 925
+2026-11-12T02:59:36.907906520Z  harness codex  1766  exit   code 127
+2026-11-12T02:59:36.908051693Z  harness codex  1767  fork   from 925
+2026-11-12T02:59:36.908487562Z  harness codex  1769  fork   from 925
+2026-11-12T02:59:36.908563224Z  harness codex  1769  exit   code 127
+2026-11-12T02:59:36.908637223Z  harness codex  1770  fork   from 925
+2026-11-12T02:59:36.908655477Z  harness codex  1767  exec   getconf LONG_BIT
+2026-11-12T02:59:36.909251828Z  harness codex  1770  exec   getconf LONG_BIT
+2026-11-12T02:59:36.909854841Z  harness codex  1767  exit   code 0
+2026-11-12T02:59:36.910165234Z  harness codex  1770  exit   code 0
+2026-11-12T02:59:36.919576307Z  harness codex  1774  fork   from 925
+2026-11-12T02:59:36.919973984Z  harness codex  1774  exec   /bin/sh -lc "__codex_snapshot_expand_env() (\n  set +u\n  __codex_snapshot_getenv() {\n    # Preserve the value separately from lookup status and its formatting newline.\n    __codex_env_expanded=$(\n      if command -v printenv >/dev/null 2>&1; then\n        printenv \"$1\"\n      elif [ \"$1\" = PATH ]; then\n        [ \"${PATH+x}\" = x ] && printf '%s\\n' \"$PATH\"\n      else\n        command -p printenv \"$1\"\n      fi && printf '.'\n    ) || return 1\n    __codex_env_expanded=${__codex_env_expanded%?}\n    __codex_env_expanded=${__codex_env_expanded%?}\n  }\n  __codex_env_file=$1\n  case \"$__codex_env_file\" in\n    '~/'*) __codex_env_file=\"${HOME-}/${__codex_env_file#*/}\" ;;\n    '${PATH%%:*}') __codex_env_file=\"${PATH%%:*}\" ;;\n    '${PATH%%:*}/'*) __codex_env_file=\"${PATH%%:*}/${__codex_env_file#*/}\" ;;\n    '${'*)\n      __codex_env_body=${__codex_env_file#\\$\\{}\n      case \"$__codex_env_body\" in\n        *\\}*)\n          __codex_env_name=${__codex_env_body%%\\}*}\n          __codex_env_suffix=${__codex_env_body#*\\}}\n          case \"$__codex_env_name\" in\n            *:-*)\n              __codex_env_default=${__codex_env_name#*:-}\n              __codex_env_name=${__codex_env_name%%:-*}\n              __codex_env_has_default=1\n              ;;\n            *) __codex_env_has_default= ;;\n          esac\n          case \"$__codex_env_name\" in\n            ''|[0-9]*|*[!A-Za-z0-9_]*) ;;\n            *)\n              case \"$__codex_env_suffix\" in\n                ''|/*)\n                  if __codex_snapshot_getenv \"$__codex_env_name\" 2>/dev/null &&\n                    { [ -n \"$__codex_env_expanded\" ] || [ -z \"$__codex_env_has_default\" ]; }; then\n                    __codex_env_file=\"$__codex_env_expanded$__codex_env_suffix\"\n                  elif [ -n \"$__codex_env_has_default\" ]; then\n                    __codex_env_default=$(__codex_snapshot_expand_env \"$__codex_env_default\")\n                    __codex_env_file=\"$__codex_env_default$__codex_env_suffix\"\n                  fi\n                  ;;\n              esac\n              ;;\n          esac\n          ;;\n      esac\n      ;;\n    '$'*)\n      __codex_env_name=${__codex_env_file%%/*}\n      __codex_env_name=${__codex_env_name#\\$}\n      case \"$__codex_env_name\" in\n        ''|[0-9]*|*[!A-Za-z0-9_]*) ;;\n        *)\n          if __codex_snapshot_getenv \"$__codex_env_name\" 2>/dev/null; then\n            if [ \"$__codex_env_file\" = \"\\$$__codex_env_name\" ]; then\n              __codex_env_file=$__codex_env_expanded\n            else\n              __codex_env_file=\"$__codex_env_expanded/${__codex_env_file#*/}\"\n            fi\n          fi\n          ;;\n      esac\n      ;;\n  esac\n  printf '%s' \"$__codex_env_file\"\n)\nif [ -n \"${ENV-}\" ]; then\n  __codex_env_file=$(__codex_snapshot_expand_env \"$ENV\")\n  if [ -r \"$__codex_env_file\" ] && [ ! -d \"$__codex_env_file\" ]; then\n    \n    case \"$__codex_env_file\" in\n      /*) . \"$__codex_env_file\" ;;\n      *) . \"./$__codex_env_file\" ;;\n    esac\n  fi\n  command unset __codex_env_file\nfi\ncommand unset -f __codex_snapshot_expand_env\necho '# Snapshot file'\nif [ -n \"${BASH_VERSINFO-}\" ]; then\n  echo '# Bash-backed sh'\n  shopt -p || true\nfi\necho '# Unset all aliases to avoid conflicts with functions'\nunalias -a 2>/dev/null || true\necho '# Functions'\nif command -v typeset >/dev/null 2>&1; then\n  typeset -f\nelif command -v declare >/dev/null 2>&1; then\n  declare -f\nfi\necho ''\n\n__codex_snapshot_command() {\n  if command -v \"$1\" >/dev/null 2>&1; then\n    \"$@\"\n  else\n    command -p \"$@\"\n  fi\n}\nif set -o >/dev/null 2>&1; then\n  sh_opts=$(set -o | __codex_snapshot_command awk '$2==\"on\"{print $1}')\n  sh_opt_count=$(printf '%s\\n' \"$sh_opts\" | __codex_snapshot_command sed '/^$/d' | __codex_snapshot_command wc -l | __codex_snapshot_command tr -d ' ')\n  echo \"# setopts $sh_opt_count\"\n  if [ -n \"$sh_opts\" ]; then\n    printf 'set -o %s\\n' $sh_opts\n  fi\nelse\n  echo '# setopts 0'\nfi\necho ''\nprintf '\\0'\nif alias >/dev/null 2>&1; then\n  alias_count=$(alias | __codex_snapshot_command wc -l | __codex_snapshot_command tr -d ' ')\n  echo \"# aliases $alias_count\"\n  alias\n  echo ''\nelse\n  echo '# aliases 0'\nfi\n\nprintf '\\0'\nif " (and 1096 bytes more)
+2026-11-12T02:59:36.921798472Z  harness codex  1776  fork   from 1774
+2026-11-12T02:59:36.921932374Z  harness codex  1779  fork   from 1776
+2026-11-12T02:59:36.921974533Z  harness codex  1780  fork   from 1776
+2026-11-12T02:59:36.922053341Z  harness codex  1779  exit   code 0
+2026-11-12T02:59:36.922142268Z  harness codex  1782  fork   from 1780
+2026-11-12T02:59:36.922444536Z  harness codex  1782  exec   awk "$2==\"on\"{print $1}"
+2026-11-12T02:59:36.923605227Z  harness codex  1782  exit   code 0
+2026-11-12T02:59:36.923690558Z  harness codex  1780  exit   code 0
+2026-11-12T02:59:36.923743016Z  harness codex  1776  exit   code 0
+2026-11-12T02:59:36.923811545Z  harness codex  1784  fork   from 1774
+2026-11-12T02:59:36.923938033Z  harness codex  1785  fork   from 1784
+2026-11-12T02:59:36.924017863Z  harness codex  1786  fork   from 1784
+2026-11-12T02:59:36.924091982Z  harness codex  1787  fork   from 1784
+2026-11-12T02:59:36.924144030Z  harness codex  1788  fork   from 1784
+2026-11-12T02:59:36.924148488Z  harness codex  1785  exit   code 0
+2026-11-12T02:59:36.924276739Z  harness codex  1789  fork   from 1786
+2026-11-12T02:59:36.925033280Z  harness codex  1789  exec   sed /^$/d
+2026-11-12T02:59:36.925190376Z  harness codex  1790  fork   from 1787
+2026-11-12T02:59:36.925685105Z  harness codex  1791  fork   from 1788
+2026-11-12T02:59:36.926101588Z  harness codex  1790  exec   wc -l
+2026-11-12T02:59:36.926369902Z  harness codex  1791  exec   tr -d " "
+2026-11-12T02:59:36.927544459Z  harness codex  1789  exit   code 0
+2026-11-12T02:59:36.927618708Z  harness codex  1786  exit   code 0
+2026-11-12T02:59:36.928657811Z  harness codex  1790  exit   code 0
+2026-11-12T02:59:36.928835665Z  harness codex  1791  exit   code 0
+2026-11-12T02:59:36.928793806Z  harness codex  1787  exit   code 0
+2026-11-12T02:59:36.928921456Z  harness codex  1788  exit   code 0
+2026-11-12T02:59:36.928986258Z  harness codex  1784  exit   code 0
+2026-11-12T02:59:36.929116272Z  harness codex  1792  fork   from 1774
+2026-11-12T02:59:36.929257878Z  harness codex  1793  fork   from 1792
+2026-11-12T02:59:36.929324493Z  harness codex  1794  fork   from 1792
+2026-11-12T02:59:36.929347467Z  harness codex  1793  exit   code 0
+2026-11-12T02:59:36.929375269Z  harness codex  1795  fork   from 1792
+2026-11-12T02:59:36.929476820Z  harness codex  1796  fork   from 1794
+2026-11-12T02:59:36.929648552Z  harness codex  1797  fork   from 1795
+2026-11-12T02:59:36.929806930Z  harness codex  1796  exec   wc -l
+2026-11-12T02:59:36.930074873Z  harness codex  1797  exec   tr -d " "
+2026-11-12T02:59:36.931698354Z  harness codex  1796  exit   code 0
+2026-11-12T02:59:36.931753307Z  harness codex  1794  exit   code 0
+2026-11-12T02:59:36.932295546Z  harness codex  1797  exit   code 0
+2026-11-12T02:59:36.932380896Z  harness codex  1795  exit   code 0
+2026-11-12T02:59:36.932453763Z  harness codex  1792  exit   code 0
+2026-11-12T02:59:36.932577586Z  harness codex  1798  fork   from 1774
+2026-11-12T02:59:36.932635234Z  harness codex  1799  fork   from 1774
+2026-11-12T02:59:36.932672564Z  harness codex  1800  fork   from 1774
+2026-11-12T02:59:36.932791678Z  harness codex  1801  fork   from 1799
+2026-11-12T02:59:36.932791438Z  harness codex  1798  exit   code 0
+2026-11-12T02:59:36.933139201Z  harness codex  1801  exec   awk "\n/^(export|declare -x|typeset -x) [A-Za-z_][A-Za-z0-9_]*$/ {\n  name=$0\n  sub(/^(export|declare -x|typeset -x) /, \"\", name)\n  if (name ~ /^(PWD|OLDPWD)$/) {\n    next\n  }\n  if (!seen[name]++) {\n    print name\n  }\n}"
+2026-11-12T02:59:36.934806334Z  harness codex  1801  exit   code 0
+2026-11-12T02:59:36.934875073Z  harness codex  1799  exit   code 0
+2026-11-12T02:59:36.934917853Z  harness codex  1800  exit   code 0
+2026-11-12T02:59:36.935035865Z  harness codex  1802  fork   from 1774
+2026-11-12T02:59:36.935418784Z  harness codex  1802  exec   env -0
+2026-11-12T02:59:36.936700412Z  harness codex  1802  exit   code 0
+2026-11-12T02:59:36.936771807Z  harness codex  1774  exit   code 0
+2026-11-12T02:59:36.937304447Z  harness codex  1804  fork   from 925
+2026-11-12T02:59:36.937589343Z  harness codex  1804  exec   /bin/sh -c "set -e; . \"/tmp/.codex/shell_snapshots/01a1cdb2-4d51-7002-ab73-5e473e4c776b.tmp-1794452376919186575\""
+2026-11-12T02:59:36.939402680Z  harness codex  1804  exit   code 0
+2026-11-12T02:59:51.041735384Z  harness codex   925  exit   code 1
+2026-11-12T02:59:51.063149270Z  harness codex   923  exit   code 1
+2026-11-12T02:59:51.063335299Z  harness codex   919  exit   signal 9 (SIGKILL)
+2026-11-12T02:59:51.068050389Z  harness codex   914  exit   signal 9 (SIGKILL)

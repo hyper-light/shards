@@ -1,0 +1,1 @@
+{"entrypoint":"sh -c","options":["id; ls -lan /run/probe; if cat /run/probe/secret >/dev/null; then echo read; else echo unread; fi"]}
