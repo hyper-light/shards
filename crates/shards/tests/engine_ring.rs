@@ -101,7 +101,8 @@ fn emitter(home: &Path, image: &str, bytes: u64) {
         assert_eq!(out.status, Some(0), "{out}");
         out.stdout
     };
-    let body = format!(r#"{{"Image":"{image}","Cmd":["/bin/testguest","bulk-emit","{bytes}"]}}"#);
+    // The image's entrypoint is /bin/testguest (common::test_image): its command is the mode.
+    let body = format!(r#"{{"Image":"{image}","Cmd":["bulk-emit","{bytes}"]}}"#);
     let made = api("POST", "/containers/create?name=emitter", &body);
     assert!(made.starts_with("api HTTP/1.1 201"), "{made}");
     let started = api("POST", "/containers/emitter/start", "");
