@@ -1360,16 +1360,13 @@ impl<D: crate::containers::Disk> Daemon<D> {
                 let proto = if p.proto == "udp" { 17 } else { 6 };
                 // Each member the port is for; of several, the one listening takes each
                 // connection (D122).
-                let each: Vec<String> = receivers
-                    .iter()
-                    .filter(|r| r.at.0 == proto && r.at.1 <= p.private && p.private <= r.at.2)
-                    .map(|r| {
+                let each: Vec<String> = crate::agentfile::receiving(&receivers, proto, p.private)
+                    .map(|(r, own)| {
                         let kind = match r.kind {
                             TargetKind::Agent => "agent",
                             TargetKind::Harness => "harness",
                         };
                         let name = String::from_utf8_lossy(&r.name);
-                        let own = r.to.1.saturating_add(p.private.saturating_sub(r.at.1));
                         if own == p.private {
                             format!("{kind} {name}")
                         } else {

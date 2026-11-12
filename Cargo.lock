@@ -1221,6 +1221,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "shards-cmdline",
+ "shards-dns",
  "shards-image",
 ]
 

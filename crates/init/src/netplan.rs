@@ -92,10 +92,13 @@ pub struct Link {
     /// Whether it may ask the microVM's resolver for names past the microVM: one of its
     /// networks, not internal, says so (`NETWORK --dns`).
     pub dns: bool,
-    /// The remote MCP servers it is granted (§4.4, §9.6), each a host and a TCP port: it
-    /// reaches each at that port, at the addresses the host resolves to, and may ask the
-    /// resolver for each host's name alone (`agentdns`).
-    pub mcp: Vec<(String, u16)>,
+    /// The destinations it is granted by name, each a host and a TCP port: its remote MCP
+    /// servers' (§4.4, §9.6) and its networks' (`--egress=HOST:PORT`, D236). It reaches each
+    /// at that port, at the addresses the host resolves to (or the address it is), and may
+    /// ask the resolver for each host's name alone (`agentdns`); the host itself
+    /// ([`shards_dns::HOST`]) it reaches at the microVM's gateway, its name in its hosts
+    /// file, never asked.
+    pub named: Vec<(String, u16)>,
     pub connects: bool,
     pub accepts: bool,
     /// The Unix sockets it is granted (`CONNECT --port=unix:<name>`), each a network, a
@@ -144,6 +147,55 @@ fn port_range(s: &str) -> Option<Egress> {
         None => (port(range)?, port(range)?),
     };
     (lo <= hi).then_some((proto, lo, hi))
+}
+
+/// Whether a network's port as written is a destination (`HOST:PORT`, D236), as the build's
+/// `agentfile::destination_of` tells one from a port, a range or a Unix socket.
+fn is_destination(s: &str) -> bool {
+    port_range(s).is_none() && !s.starts_with("unix:") && s.contains(':')
+}
+
+/// The destinations `d`, a harness or not, may reach past the microVM on `joined` (D236):
+/// of each joined network that is not internal, each `--egress=HOST:PORT` whose TCP port an
+/// `EXPOSE ... FOR` it opens outward for `d` too (naming `d`, or no member), as the build's
+/// `agentfile::destinations_on` reads them. One the build would refuse refuses the plan.
+fn destinations_of(spec: &Value, joined: &[String], d: (bool, &str)) -> Result<Vec<(String, u16)>, String> {
+    let mut out: Vec<(String, u16)> = Vec::new();
+    for n in spec.get("networks").map(Value::array).unwrap_or_default() {
+        let Some(name) = n.get("name").and_then(Value::str) else {
+            continue;
+        };
+        if matches!(n.get("internal"), Some(Value::Bool(true))) || !joined.iter().any(|j| j == name) {
+            continue;
+        }
+        let mut opened: Vec<Egress> = Vec::new();
+        for e in spec.get("exposures").map(Value::array).unwrap_or_default() {
+            let (agents, harnesses) = (strings(e.get("agents")), strings(e.get("harnesses")));
+            let named = if d.0 { &harnesses } else { &agents };
+            let for_d = (agents.is_empty() && harnesses.is_empty()) || named.iter().any(|m| m == d.1);
+            if for_d
+                && e.get("direction").and_then(Value::str) != Some("ingress")
+                && strings(e.get("networks")).iter().any(|x| x == name)
+            {
+                opened.extend(strings(e.get("ports")).iter().filter_map(|p| port_range(p)));
+            }
+        }
+        // Its egress's alone: one let in is no port `ingress_of` takes, which refuses it.
+        for p in n.get("ports").map(Value::array).unwrap_or_default() {
+            let Some(port) = p.get("port").and_then(Value::str).filter(|s| is_destination(s)) else {
+                continue;
+            };
+            if p.get("direction").and_then(Value::str) != Some("egress") {
+                continue;
+            }
+            let (host, at) = shards_dns::destination(port)?;
+            let open = opened.iter().any(|&(q, lo, hi)| q == 6 && lo <= at && at <= hi);
+            if open && !out.iter().any(|(h, q)| *h == host && *q == at) {
+                out.push((host, at));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The plan: each domain's link, by its index in `names`, and the pairs `(from, to)` that
@@ -195,11 +247,12 @@ pub(crate) fn overlaps(a: (Ipv4Addr, u8), b: (Ipv4Addr, u8)) -> bool {
 
 /// Plans the links of `names`, the domains that run, from `spec`, the normalized
 /// Agentfile; `own` and `own6` are the microVM's own network's subnets, which no subnet
-/// may overlap.
+/// may overlap, `own`'s with its gateway, at which a domain reaches the host itself where a
+/// destination grants it (D236).
 pub fn plan(
     spec: &Value,
     names: &[Name],
-    own: Option<(Ipv4Addr, u8)>,
+    own: Option<(Ipv4Addr, u8, Ipv4Addr)>,
     own6: Option<(Ipv6Addr, u8)>,
 ) -> Result<Plan, String> {
     let index = |kind: Option<&str>, name: &str| -> Option<usize> {
@@ -354,7 +407,10 @@ pub fn plan(
         taken6.extend(subnets.iter().filter_map(|s| cidr6(s)));
     }
     let mut next6 = 0u128;
-    let mut taken: Vec<(Ipv4Addr, u8)> = own.into_iter().collect();
+    let mut taken: Vec<(Ipv4Addr, u8)> = own
+        .map(|(subnet, prefix, _)| (subnet, prefix))
+        .into_iter()
+        .collect();
     for (_, subnets, _) in &declared {
         taken.extend(subnets.iter().filter_map(|s| cidr(s)));
     }
@@ -462,7 +518,9 @@ pub fn plan(
         }
     }
     // Names: each domain's own, and every member's of each network it joins, the first
-    // network's address for a name on several.
+    // network's address for a name on several; and the host itself's, at the microVM's
+    // gateway, for one granted it (D236).
+    let gateway = own.map(|(_, _, g)| g);
     for d in 0..links.len() {
         let Some(own) = links.get(d).and_then(Option::as_ref) else {
             continue;
@@ -520,7 +578,18 @@ pub fn plan(
                     && matches!(n.get("dns"), Some(Value::Bool(true)))
                     && !matches!(n.get("internal"), Some(Value::Bool(true)))
             });
-        let granted = mcp.get(d).cloned().unwrap_or_default();
+        // Its destinations by name: its remote MCP servers', then its networks' (D236).
+        let mut granted = mcp.get(d).cloned().unwrap_or_default();
+        if let Some((harness, name)) = names.get(d) {
+            for dst in destinations_of(spec, &joined, (*harness, name))? {
+                if !granted.contains(&dst) {
+                    granted.push(dst);
+                }
+            }
+        }
+        if let Some(g) = gateway.filter(|_| granted.iter().any(|(h, _)| h == shards_dns::HOST)) {
+            hosts.push_str(&format!("{g}\t{}\n", shards_dns::HOST));
+        }
         let mut egress = egress;
         for (_, port) in &granted {
             if !egress.contains(&(6, *port, *port)) {
@@ -536,7 +605,7 @@ pub fn plan(
             link.egress = egress;
             link.ingress = ingress;
             link.dns = dns;
-            link.mcp = granted;
+            link.named = granted;
             link.connects = connects;
             link.accepts = accepts;
             for (_, net, name, receives) in sockets.iter().filter(|s| s.0 == d) {
@@ -550,7 +619,7 @@ pub fn plan(
     let uplink = links
         .iter()
         .flatten()
-        .any(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.mcp.is_empty());
+        .any(|l| !l.egress.is_empty() || !l.ingress.is_empty() || l.dns || !l.named.is_empty());
     Ok(Plan { links, pairs, uplink })
 }
 
@@ -584,6 +653,8 @@ fn boundary_of(
         if matches!(n.get("internal"), Some(Value::Bool(true))) || !joined.iter().any(|j| j == name) {
             continue;
         }
+        // Its ports: a destination (`--egress=HOST:PORT`) is no range of them, but a grant of
+        // that host alone (`destinations_of`).
         let ours = ranges(
             n.get("ports")
                 .map(Value::array)
@@ -591,6 +662,7 @@ fn boundary_of(
                 .iter()
                 .filter(|p| p.get("direction").and_then(Value::str) != Some(away))
                 .filter_map(|p| p.get("port").and_then(Value::str).map(str::to_string))
+                .filter(|p| !(outward && is_destination(p)))
                 .collect(),
         )?;
         let mut vms = Vec::new();
@@ -771,7 +843,7 @@ mod tests {
         let p = plan(
             &spec,
             &names(&["a", "b", "c", "d", "e"]),
-            Some((Ipv4Addr::new(10, 244, 0, 0), 24)),
+            Some((Ipv4Addr::new(10, 244, 0, 0), 24, Ipv4Addr::new(10, 244, 0, 1))),
             None,
         )
         .unwrap();
@@ -909,7 +981,7 @@ mod tests {
         let p = plan(&spec, &n, None, None).unwrap();
         let a = p.links[0].as_ref().unwrap();
         assert_eq!(
-            a.mcp,
+            a.named,
             vec![
                 ("mcp.example".to_string(), 443),
                 ("tools.example".to_string(), 8080),
@@ -919,9 +991,115 @@ mod tests {
         assert_eq!(a.egress, vec![(6, 443, 443), (6, 8080, 8080)]);
         assert_eq!(a.addresses[0].network, "mcp:a");
         let b = p.links[1].as_ref().unwrap();
-        assert_eq!(b.mcp, vec![("tools.example".to_string(), 8080)]);
+        assert_eq!(b.named, vec![("tools.example".to_string(), 8080)]);
         assert!(p.links[2].is_none(), "a harness is given no agent's server");
         assert!(p.pairs.is_empty() && p.uplink);
+    }
+
+    /// A network's destinations (D236) reach the members an EXPOSE opens their port out for,
+    /// by name and nothing else: each's names, its port up its link, and no port grant;
+    /// the host itself named in its hosts file at the microVM's gateway; another member of
+    /// the network, a port no EXPOSE opens and an internal network's destination, none; and
+    /// one the build would refuse refuses the plan.
+    #[test]
+    fn destinations_reach_the_members_their_port_is_opened_for() {
+        let spec = crate::json::parse(
+            br#"{"networks":[{"name":"provider","internal":false,"subnets":[],"gateways":[],
+                             "ports":[{"port":"api.openai.com:443","direction":"egress"},
+                                      {"port":"chatgpt.com:443","direction":"egress"},
+                                      {"port":"host.docker.internal:7070","direction":"egress"},
+                                      {"port":"blocked.example:8443","direction":"egress"}]},
+                            {"name":"shut","internal":true,"subnets":[],"gateways":[],
+                             "ports":[{"port":"api.anthropic.com:443","direction":"egress"}]}],
+                "exposures":[{"ports":["443","7070"],"direction":"egress","networks":["provider"],"harnesses":["codex"]},
+                             {"ports":["443"],"direction":"both","networks":["shut"]}],
+                "connections":[{"kind":"harness","from":["codex"],"bothWays":true,"to":["codex"],"on":["provider"],"ports":[]},
+                               {"kind":"agent","from":["helper"],"bothWays":true,"to":["helper"],"on":["provider"],"ports":[]},
+                               {"kind":"agent","from":["inner"],"bothWays":true,"to":["inner"],"on":["shut"],"ports":[]}]}"#,
+        )
+        .unwrap();
+        let names: Vec<Name> = vec![
+            (false, "helper".into()),
+            (false, "inner".into()),
+            (true, "codex".into()),
+        ];
+        let own = Some((Ipv4Addr::new(172, 17, 0, 0), 16, Ipv4Addr::new(172, 17, 0, 1)));
+        let p = plan(&spec, &names, own, None).unwrap();
+        let codex = p.links[2].as_ref().unwrap();
+        assert_eq!(
+            codex.named,
+            vec![
+                ("api.openai.com".to_string(), 443),
+                ("chatgpt.com".to_string(), 443),
+                (shards_dns::HOST.to_string(), 7070)
+            ]
+        );
+        assert_eq!(
+            codex.egress,
+            vec![(6, 443, 443), (6, 7070, 7070)],
+            "its destinations' ports up its link, and no port of its network's"
+        );
+        assert!(!codex.dns, "no name but its destinations'");
+        let hosts = String::from_utf8(codex.hosts.clone()).unwrap();
+        assert!(
+            hosts.ends_with("\tcodex\n172.17.0.1\thost.docker.internal\n"),
+            "{hosts}"
+        );
+        // helper: a member of the network, whose EXPOSE is codex's alone.
+        let helper = p.links[0].as_ref().unwrap();
+        assert!(helper.named.is_empty() && helper.egress.is_empty());
+        assert!(
+            !String::from_utf8(helper.hosts.clone())
+                .unwrap()
+                .contains("host.docker.internal")
+        );
+        // inner: an internal network's destination reaches nothing.
+        let inner = p.links[1].as_ref().unwrap();
+        assert!(inner.named.is_empty() && inner.egress.is_empty());
+        assert!(p.uplink);
+        // A remote MCP server's URL naming the host itself grants it alike (kiln's MCP), on a
+        // network of the member's own.
+        let kiln = crate::json::parse(
+            br#"{"networks":[],"connections":[],
+                "mcp":[{"name":"kiln","source":"http://host.docker.internal:7070/api/mcp","for":{"kind":"harness","names":["codex"]}}]}"#,
+        )
+        .unwrap();
+        let p = plan(&kiln, &[(true, "codex".into())], own, None).unwrap();
+        let codex = p.links[0].as_ref().unwrap();
+        assert_eq!(codex.named, vec![(shards_dns::HOST.to_string(), 7070)]);
+        assert_eq!(codex.egress, vec![(6, 7070, 7070)]);
+        let hosts = String::from_utf8(codex.hosts.clone()).unwrap();
+        assert!(
+            hosts.ends_with("\tcodex\n172.17.0.1\thost.docker.internal\n"),
+            "{hosts}"
+        );
+        // Without the microVM's own network, the host has no address to be named at.
+        let unnamed = plan(&spec, &names, None, None).unwrap();
+        let hosts = String::from_utf8(unnamed.links[2].as_ref().unwrap().hosts.clone()).unwrap();
+        assert!(!hosts.contains("host.docker.internal"), "{hosts}");
+        // What the build refuses, crafted, refuses the plan: a destination let in, which is
+        // no port coming in, and one that is none.
+        for (port, direction, why) in [
+            ("api.openai.com:443", "both", "is no port or range of ports"),
+            ("api.openai.com:443", "ingress", "is no port or range of ports"),
+            (
+                "bad host:443",
+                "egress",
+                "neither a host's name nor an IPv4 address",
+            ),
+        ] {
+            let crafted = crate::json::parse(
+                format!(
+                    r#"{{"networks":[{{"name":"n","subnets":[],"gateways":[],"ports":[{{"port":"{port}","direction":"{direction}"}}]}}],
+                        "exposures":[{{"ports":["443"],"direction":"egress","networks":["n"]}}],
+                        "connections":[{{"kind":null,"from":["a"],"bothWays":true,"to":["a"],"on":["n"],"ports":[]}}]}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            let e = plan(&crafted, &[(false, "a".into())], None, None).unwrap_err();
+            assert!(e.contains(why), "{port}: {e}");
+        }
     }
 
     #[test]
