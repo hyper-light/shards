@@ -985,7 +985,9 @@ impl Server {
         sink: std::sync::mpsc::Sender<crate::platform::Named>,
     ) -> std::io::Result<()> {
         let mut s = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let root = CString::new(format!("/proc/self/fd/{}", s.root.raw())).map_err(std::io::Error::other)?;
+        // Its descriptor's link, and `.` in it: a watch never follows its last name, and
+        // the link itself is one (proc(5)).
+        let root = CString::new(format!("/proc/self/fd/{}/.", s.root.raw())).map_err(std::io::Error::other)?;
         let watched = crate::platform::watch_named(&root, WATCHED, number, &sink)?;
         s.watching = Some(Watching {
             number,
