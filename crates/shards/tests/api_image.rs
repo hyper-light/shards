@@ -137,7 +137,7 @@ fn staged_credentials_reach_the_harness_and_its_output_and_end_come_back() {
         stdin: false,
         terminal: false,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     let members: Vec<(MemberKind, &str, bool)> = guest
         .members()
         .iter()
@@ -197,7 +197,7 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
         stdin: false,
         terminal: false,
     };
-    let refused = |s: ImageSpec| match ImageShards::new().boot(&s) {
+    let refused = |s: ImageSpec| match ImageShards::new().boot(&s, TIMEOUT) {
         Err(e) => e,
         Ok(_) => panic!("booted"),
     };
@@ -210,6 +210,13 @@ fn what_the_image_does_not_grant_is_refused_before_boot() {
     let mut s = spec(&home, "api-refused:1");
     s.egress = Narrowing {
         egress: Keep::Only(vec!["22/tcp".into()]),
+        ..Narrowing::default()
+    };
+    assert!(matches!(refused(s), ImageRefusal::Widening(_)));
+    // A destination the image grants none of (D236).
+    let mut s = spec(&home, "api-refused:1");
+    s.egress = Narrowing {
+        destinations: Keep::Only(vec!["host.docker.internal:7070".into()]),
         ..Narrowing::default()
     };
     assert!(matches!(refused(s), ImageRefusal::Widening(_)));
@@ -261,7 +268,7 @@ fn a_share_at_a_granted_volume_reaches_the_harness() {
         at: "/work".into(),
         read_only: true,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
     let said = String::from_utf8(read_all(&*guest, Channel::Stdout)).unwrap();
     assert_eq!(said, "== /work/hello.txt\nfrom the host\n");
     assert_eq!(
@@ -293,9 +300,18 @@ fn a_published_ingress_port_reaches_its_member() {
         host: Some("127.0.0.1".parse().unwrap()),
         host_port: 0,
     }];
-    let guest = ImageShards::new().boot(&s).unwrap();
-    let bound = guest.published().first().copied().expect("a bound port");
+    let guest = ImageShards::new().boot(&s, TIMEOUT).unwrap();
+    let bound = guest.published().first().cloned().expect("a bound port");
     assert_eq!((bound.guest_port, bound.proto), (7100, Proto::Tcp));
+    // It names whom it reaches: the harness, at its own port.
+    let [to] = bound.to.as_slice() else {
+        panic!("{bound:?}");
+    };
+    let member = guest.members().iter().find(|m| m.index == to.member).unwrap();
+    assert_eq!(
+        (member.kind, member.name.as_str(), to.port),
+        (MemberKind::Harness, "codex", 7100)
+    );
     // The listener comes up once its member runs: asked until it answers, within the bound.
     let deadline = std::time::Instant::now() + TIMEOUT;
     let answer = loop {
@@ -328,7 +344,9 @@ fn stats_read_the_run_and_a_member() {
     }
     let home = TempDir::new("api-stats-home");
     build(&home, "api-stats:1", &["sleep-for", "60000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stats:1")).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stats:1"), TIMEOUT)
+        .unwrap();
     let run = guest.stats(StatsScope::Run, TIMEOUT).unwrap();
     assert!(run.memory_bytes.is_some_and(|m| m > 0), "{run:?}");
     assert!(run.cpu_ns.is_some(), "{run:?}");
@@ -347,7 +365,9 @@ fn stop_ends_the_run_at_once() {
     }
     let home = TempDir::new("api-stop-home");
     build(&home, "api-stop:1", &["sleep-for", "600000"], "");
-    let guest = ImageShards::new().boot(&spec(&home, "api-stop:1")).unwrap();
+    let guest = ImageShards::new()
+        .boot(&spec(&home, "api-stop:1"), TIMEOUT)
+        .unwrap();
     assert_eq!(guest.wait_member(&codex(), Duration::ZERO).unwrap(), None);
     guest.stop().unwrap();
     assert_eq!(guest.wait_for(Duration::ZERO).unwrap(), Some(RunEnd::Stopped));

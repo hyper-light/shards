@@ -117,15 +117,63 @@ fn compare_exact(a: &(bool, BigUint, i64, i64), b: &(bool, BigUint, i64, i64)) -
     if sa != sb || sa == 0 {
         return sa.cmp(&sb);
     }
-    // Same sign: scale both to a common denominator 2^min2 × 5^min5.
-    let min2 = a.2.min(b.2);
-    let min5 = a.3.min(b.3);
-    let scale = |x: &(bool, BigUint, i64, i64)| -> BigUint {
-        let five = BigUint::from(5u32).pow(u32::try_from(x.3 - min5).unwrap_or(u32::MAX));
-        (&x.1 * five) << u64::try_from(x.2 - min2).unwrap_or(0)
+    // |a| / |b| = (ma / mb) × 2^d2 × 5^d5, the power of five put where it multiplies.
+    let d2 = i128::from(a.2) - i128::from(b.2);
+    let d5 = i128::from(a.3) - i128::from(b.3);
+    // Two i64s differ by less than 2^64.
+    let n = u64::try_from(d5.unsigned_abs()).unwrap_or(u64::MAX);
+    let mag = if d5 < 0 {
+        scaled_cmp(&b.1, n, -d2, &a.1).reverse()
+    } else {
+        scaled_cmp(&a.1, n, d2, &b.1)
     };
-    let mag = scale(a).cmp(&scale(b));
     if sa < 0 { mag.reverse() } else { mag }
+}
+
+/// `p × 5^n × 2^s` against `q`, both mantissas nonzero, in work the mantissas bound.
+///
+/// While `n <= bits(q) / 2`, the product is made exactly: then it has at most
+/// `bits(p) + 1.17 bits(q)` bits. Past that, `5^n > 4^n >= 2^(bits(q) + 1) > q`, so 5^n
+/// divides no multiple of q by a power of two and the two sides are never equal; bounds
+/// on 5^n decide which side is larger, made more precise until they do. Each doubling of
+/// their precision halves how near the sides may be and still be told apart, and the
+/// sides differ, so the loop ends; a pair of mantissas made to put the sides within
+/// 2^-k of each other costs precision of about k bits.
+fn scaled_cmp(p: &BigUint, n: u64, s: i128, q: &BigUint) -> Ordering {
+    if let Some(small) = u32::try_from(n).ok().filter(|n| u64::from(*n) <= q.bits() / 2) {
+        return shifted_cmp(&(p * BigUint::from(5u32).pow(small)), s, q);
+    }
+    // First, bounds within 2^-(bits(p) + bits(q)) of 5^n: each squaring doubles a bound's
+    // error, so they start bitlen(n) + 2 bits more precise than that.
+    let mut prec = p.bits() + q.bits() + u64::from(u64::BITS - n.leading_zeros()) + 2;
+    loop {
+        let ((lo, at_lo), (hi, at_hi)) = number::pow5_wide(n, prec);
+        if shifted_cmp(&(p * &lo), s + at_lo, q) != Ordering::Less {
+            return Ordering::Greater;
+        }
+        if shifted_cmp(&(p * &hi), s + at_hi, q) != Ordering::Greater {
+            return Ordering::Less;
+        }
+        prec = prec.saturating_mul(2);
+    }
+}
+
+/// `x × 2^s` against `y`, y nonzero: by their lengths, else exactly, the shift then
+/// shorter than either.
+fn shifted_cmp(x: &BigUint, s: i128, y: &BigUint) -> Ordering {
+    if x.bits() == 0 {
+        return Ordering::Less;
+    }
+    let (lx, ly) = (i128::from(x.bits()) + s, i128::from(y.bits()));
+    if lx != ly {
+        return lx.cmp(&ly);
+    }
+    let shift = u64::try_from(s.unsigned_abs()).unwrap_or(u64::MAX);
+    if s >= 0 {
+        (x << shift).cmp(y)
+    } else {
+        x.cmp(&(y << shift))
+    }
 }
 
 impl PartialEq for Number {
@@ -794,4 +842,137 @@ fn is_json_number(s: &str) -> bool {
         }
     }
     i == b.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering::{self, Equal, Greater, Less};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use num_bigint::BigUint;
+
+    use super::{compare_exact, exact, number_compare};
+
+    /// `f`'s answer, or a failure once `secs` pass: the comparisons here take
+    /// microseconds, and scaling by their exponents, hours.
+    fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(secs))
+            .expect("the comparison is still working")
+    }
+
+    fn compares(a: &'static str, b: &'static str) -> Ordering {
+        within(60, move || number_compare(a, b))
+    }
+
+    /// The comparison as it was: both scaled to 2^min2 × 5^min5, for exponents close
+    /// enough to afford it.
+    fn scaled_both(a: &str, b: &str) -> Ordering {
+        let (a, b) = (exact(a).unwrap(), exact(b).unwrap());
+        let sign = |x: &(bool, BigUint, i64, i64)| match (x.1.bits() == 0, x.0) {
+            (true, _) => 0,
+            (false, true) => -1,
+            (false, false) => 1,
+        };
+        let (sa, sb) = (sign(&a), sign(&b));
+        if sa != sb || sa == 0 {
+            return sa.cmp(&sb);
+        }
+        let (min2, min5) = (a.2.min(b.2), a.3.min(b.3));
+        let scale = |x: &(bool, BigUint, i64, i64)| {
+            (&x.1 * BigUint::from(5u32).pow(u32::try_from(x.3 - min5).unwrap()))
+                << u64::try_from(x.2 - min2).unwrap()
+        };
+        let mag = scale(&a).cmp(&scale(&b));
+        if sa < 0 { mag.reverse() } else { mag }
+    }
+
+    /// CI's fuzzing (run 43250570050's oom-36ae0bf3, and oom-b6644dc2 before it):
+    /// `lt` of numbers an exponent of billions apart.
+    #[test]
+    fn the_fuzzers_comparisons_answer_without_scaling_by_their_exponents() {
+        assert_eq!(compares("33", "3e33333333332"), Less);
+        assert_eq!(compares("3e33333333332", "33"), Greater);
+        assert_eq!(compares("1202022222200000E0297138122009577", "1"), Greater);
+    }
+
+    #[test]
+    fn numbers_compare_exactly_at_every_distance() {
+        let cases = [
+            // Equal magnitudes, written apart.
+            ("1.5e999999999", "15e999999998", Equal),
+            ("1e-999999999", "0.1e-999999998", Equal),
+            ("4e9223372036854775807", "40e9223372036854775806", Equal),
+            // Adjacent magnitudes: apart in the last of their digits.
+            ("9.999999999999999999e999999999", "1e1000000000", Less),
+            ("1e1000000000", "1.000000000000000000001e1000000000", Less),
+            ("99999999999999999999e-1000000000", "1e-999999980", Less),
+            // The exponents' extremes.
+            ("1e9223372036854775807", "1e9223372036854775806", Greater),
+            ("1e-9223372036854775808", "1e9223372036854775807", Less),
+            ("2e-9223372036854775808", "1e-9223372036854775808", Greater),
+            // Mixed signs, and negatives, the larger in magnitude the smaller.
+            ("-1e999999999", "1e-999999999", Less),
+            ("-1e999999999", "-1e999999998", Less),
+            ("-1e-999999999", "-1e-999999998", Greater),
+            ("-3e33333333332", "33", Less),
+            // Zero, whatever its exponent.
+            ("0e99999999999", "0", Equal),
+            ("-0e99999999999", "0e-99999999999", Equal),
+            ("0e99999999999", "1e-99999999999", Less),
+            ("0e99999999999", "-1e-99999999999", Greater),
+            // Powers of ten against powers of two (to_number's hex floats) close by, at
+            // convergents of log2(10): 10^-E and 2^-P within 2^-64 of each other at the last.
+            ("1e-100000000000", "0x1p-332192809488", Less),
+            ("1e-100000000000", "0x1p-332192809489", Greater),
+            ("1e-21306", "0x1p-70777", Greater),
+            ("1e-76573", "0x1p-254370", Less),
+            ("1e-97879", "0x1p-325147", Greater),
+            ("1e-579001193", "0x1p-1923400330", Less),
+            ("1e-1329339201633350533", "0x1p-4415969241540963378", Greater),
+            ("1e1329339201633350533", "0x1p4415969241540963378", Less),
+            ("-1e-1329339201633350533", "-0x1p-4415969241540963378", Less),
+        ];
+        for (a, b, want) in cases {
+            assert_eq!(compares(a, b), want, "{a} against {b}");
+            assert_eq!(compares(b, a), want.reverse(), "{b} against {a}");
+        }
+    }
+
+    /// Every order the scaled comparison gave where it could, kept: random mantissas
+    /// written in decimal and hexadecimal, with exponents a few thousand apart, so
+    /// that both the exact products and the bounds on powers of five decide. (Before
+    /// it, number_compare's OPA shortcuts, unchanged, can call two numbers equal.)
+    #[test]
+    fn orders_are_those_the_exact_scaling_gave() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move |n: u64| {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+        };
+        let mut text = || {
+            let sign = if next(3) == 0 { "-" } else { "" };
+            let digits: String = (0..1 + next(30))
+                .map(|_| char::from(b'0' + next(10) as u8))
+                .collect();
+            let exp = next(4000) as i64 - 2000;
+            match next(4) {
+                0 => format!("{sign}{digits}e{exp}"),
+                1 => format!("{sign}0.{digits}e{exp}"),
+                2 => format!("{sign}0x{digits}p{}", exp * 3),
+                _ => format!("{sign}{digits}"),
+            }
+        };
+        for _ in 0..20000 {
+            let (a, b) = (text(), text());
+            let got = compare_exact(&exact(&a).unwrap(), &exact(&b).unwrap());
+            assert_eq!(got, scaled_both(&a, &b), "{a} against {b}");
+        }
+    }
 }

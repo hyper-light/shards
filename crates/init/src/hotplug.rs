@@ -36,6 +36,41 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
 use crate::devices::Uevents;
 
+/// The setup entry naming one of the host's path roots, `plug-root=/Users` (D235): a
+/// top-level directory beneath which what is plugged into the run's domains as they run
+/// lies, at its host path. Each domain is given each as it starts (domains.rs): made where
+/// its image lacks it, and Landlock's every right granted beneath it, which grants nothing
+/// until something is plugged there, as the domain's root is read-only.
+const ROOT_KEY: &[u8] = b"plug-root=";
+
+/// The top-level directories init mounts over in a domain's view, which no plug root may
+/// be: what is plugged beneath one would lie under init's own mounts, or widen the rights
+/// of those it makes writable there (its Unix sockets' directories, under `/run`).
+const INITS: [&[u8]; 6] = [b"proc", b"sys", b"dev", b"tmp", b"etc", b"run"];
+
+/// The run's plug roots, from its setup entries, each by its name (`Users`). One that is
+/// not a single top-level directory, or is one of init's own ([`INITS`]), is refused.
+pub fn plug_roots(setup: &[Vec<u8>]) -> Result<Vec<std::ffi::CString>, String> {
+    let mut roots: Vec<std::ffi::CString> = Vec::new();
+    for entry in setup.iter().filter_map(|e| e.strip_prefix(ROOT_KEY)) {
+        let name = entry
+            .strip_prefix(b"/")
+            .filter(|n| !n.is_empty() && !n.contains(&b'/') && !matches!(*n, b"." | b".."))
+            .filter(|n| !INITS.contains(n))
+            .and_then(|n| std::ffi::CString::new(n).ok())
+            .ok_or_else(|| {
+                format!(
+                    "plug root {:?}: not a top-level directory a domain may be given paths beneath",
+                    String::from_utf8_lossy(entry)
+                )
+            })?;
+        if !roots.contains(&name) {
+            roots.push(name);
+        }
+    }
+    Ok(roots)
+}
+
 /// The file systems a plugged disk is tried as, in order.
 const FILE_SYSTEMS: [&std::ffi::CStr; 5] = [c"ext4", c"xfs", c"btrfs", c"vfat", c"erofs"];
 
@@ -555,6 +590,55 @@ mod tests {
         );
         assert_eq!(effective_ids("Uid:\t1000\t1000\t1000\t1000\n"), None, "no Gid:");
         assert_eq!(effective_ids("Uid:\t1000\nGid:\t1000\n"), None, "no effective ID");
+    }
+
+    /// A plug root is one top-level directory, named once however often the host names it;
+    /// one of init's own, a deeper path, or none at all is refused, so nothing is granted
+    /// beneath it.
+    #[test]
+    fn plug_roots_are_top_level_directories_not_inits() {
+        let setup = |entries: &[&str]| -> Vec<Vec<u8>> {
+            entries
+                .iter()
+                .map(|e| e.as_bytes().to_vec())
+                .chain([b"volume=shards0\0/data\0domains\0".to_vec()])
+                .collect()
+        };
+        let named = |roots: Vec<std::ffi::CString>| -> Vec<String> {
+            roots
+                .into_iter()
+                .map(|r| r.to_string_lossy().into_owned())
+                .collect()
+        };
+        assert_eq!(
+            named(
+                plug_roots(&setup(&[
+                    "plug-root=/Users",
+                    "plug-root=/Volumes",
+                    "plug-root=/Users"
+                ]))
+                .unwrap()
+            ),
+            ["Users", "Volumes"]
+        );
+        assert!(plug_roots(&setup(&[])).unwrap().is_empty());
+        for wrong in [
+            "plug-root=Users",
+            "plug-root=/",
+            "plug-root=/Users/ada",
+            "plug-root=/Users/",
+            "plug-root=/..",
+            "plug-root=/.",
+            "plug-root=/tmp",
+            "plug-root=/run",
+            "plug-root=/proc",
+            "plug-root=/sys",
+            "plug-root=/dev",
+            "plug-root=/etc",
+            "plug-root=/a\0b",
+        ] {
+            assert!(plug_roots(&setup(&[wrong])).is_err(), "{wrong:?}");
+        }
     }
 
     /// `/dev/iommu` is given back as it was before a function by its device node had it:

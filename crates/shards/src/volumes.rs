@@ -1139,11 +1139,11 @@ fn register_into(
     let image_owned = image_volumes.len().saturating_sub(run.volumes.len());
     for (k, dest) in image_volumes.iter().enumerate() {
         let dest = clean(dest);
-        // A Docker `VOLUME` over a domain's root, `/proc`, `/sys` or `/dev` stays the
-        // run's own root's: the domain's are its init's.
+        // A Docker `VOLUME` over a domain's root, `/proc`, `/sys` or `/dev`, or at or under
+        // its scratch, `/tmp`, stays the run's own root's: the domain's are its init's.
         let ours = k < image_owned
             && agent_volumes.is_some()
-            && !shards_agentfile::agentfile::covers_domain_mounts(dest.as_bytes());
+            && shards_agentfile::agentfile::domain_mount(dest.as_bytes()).is_none();
         let agent = agent_volumes
             .unwrap_or_default()
             .iter()
@@ -1465,9 +1465,11 @@ mod tests {
                              agent: Option<&[AgentVolume]>| {
             let run = run_with(args);
             // The image's own, then the run's `-v DEST`, as the daemon lists them.
-            let mut image: Vec<String> = ["/data", "/shared", "/scratch", "/cache", "/dev/shm"]
-                .map(String::from)
-                .to_vec();
+            let mut image: Vec<String> = [
+                "/data", "/shared", "/scratch", "/cache", "/dev/shm", "/tmp", "/tmp/x",
+            ]
+            .map(String::from)
+            .to_vec();
             image.extend(run.volumes.iter().cloned());
             register(&store, &run, &image, agent, from, "")
                 .map(|p| p.into_iter().map(|(p, _)| p).collect::<Vec<_>>())
@@ -1504,6 +1506,13 @@ mod tests {
             (false, false),
             "a domain's /dev is its init's"
         );
+        for dest in ["/tmp", "/tmp/x"] {
+            assert_eq!(
+                said(&at(&points, dest)),
+                (false, false),
+                "{dest}: a domain's /tmp is its own scratch"
+            );
+        }
         assert_eq!(
             said(&at(&points, "/anon")),
             (false, false),
@@ -1536,7 +1545,7 @@ mod tests {
                 "{dest}: {f:?}"
             );
         }
-        for dest in ["/dev/shm", "/anon"] {
+        for dest in ["/dev/shm", "/tmp", "/tmp/x", "/anon"] {
             assert!(!entry(dest).contains("domains"), "{}", entry(dest));
         }
 
@@ -1589,6 +1598,7 @@ mod tests {
             assert!(e.starts_with("a tmpfs cannot stand in for /"), "{args:?}: {e}");
         }
         assert!(registered(&["--tmpfs", "/dev/shm"], &none).is_ok());
+        assert!(registered(&["--tmpfs", "/tmp"], &none).is_ok());
         assert!(registered(&["--tmpfs", "/elsewhere"], &none).is_ok());
         let file = home.join("hostfile");
         let points = registered(&["-v", &format!("{}:/cache", file.display())], &none).unwrap();

@@ -1525,7 +1525,7 @@ fn count(name: &str, default: u64) -> Result<u64, String> {
 
 /// How much of a microVM's output its log keeps unless a setting says otherwise: its
 /// newest 1 GiB (the user's call, 2026-10-18; `shards configure disk`, D186).
-const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
+pub(crate) const DEFAULT_LOGS: LogRetention = crate::disk::log_retention(crate::disk::LOG_HISTORY);
 
 /// A daemon's settings.
 #[derive(Debug, Clone, Copy)]
@@ -3399,7 +3399,7 @@ impl<D: Disk> Daemon<D> {
             .agentfile
             .as_ref()
             .map(|a| &a.grants)
-            .filter(|g| !g.egress.is_empty() || !g.mcp.is_empty() || g.dns);
+            .filter(|g| g.past());
         // Its user network's own destinations for its members' commands (D192, the
         // network's shards.egress): kept apart from an image's agents' grants, whose flows
         // its network process could not tell from the command's, so refused beside them,
@@ -3459,14 +3459,13 @@ impl<D: Disk> Daemon<D> {
                         return None;
                     }
                 };
-                let named: Vec<(String, u16)> = g
-                    .mcp
-                    .iter()
-                    .filter_map(|e| {
-                        let (host, port) = std::str::from_utf8(e).ok()?.rsplit_once(':')?;
-                        Some((host.to_string(), port.parse().ok()?))
-                    })
-                    .collect();
+                // Its remote MCP servers' and its networks' destinations (D236), each by name.
+                let mut named = crate::agentfile::named(&g.mcp);
+                for d in crate::agentfile::named(&g.destinations) {
+                    if !named.contains(&d) {
+                        named.push(d);
+                    }
+                }
                 Some(shards_net::encode_policy(&ports, &named, g.dns))
             }
         };

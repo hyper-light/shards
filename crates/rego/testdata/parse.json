@@ -298,5 +298,37 @@
  {
   "name": "import-alias-keyword",
   "src": "package docker\n\nimport data.x as if\n"
+ },
+ {
+  "name": "number-past-the-bound-finite",
+  "src": "package docker\n\nx := 1e600000000\n"
+ },
+ {
+  "name": "number-past-the-bound-infinite",
+  "src": "package docker\n\nx := 1e700000000\n"
+ },
+ {
+  "name": "number-past-the-bound-tiny",
+  "src": "package docker\n\nx := 1e-600000000\n"
+ },
+ {
+  "name": "number-underflows-to-zero",
+  "src": "package docker\n\nx := [1e-700000000, -1e-1000000000]\n"
+ },
+ {
+  "name": "number-past-maxexp",
+  "src": "package docker\n\nx := 1e3000000000\n"
+ },
+ {
+  "name": "number-at-the-bound",
+  "src": "package docker\n\nx := [1e30102, -1e30102, 1e-30103, -1e-30103]\n"
+ },
+ {
+  "name": "number-just-past-the-bound",
+  "src": "package docker\n\nx := 1e30103\n"
+ },
+ {
+  "name": "number-just-past-the-bound-tiny",
+  "src": "package docker\n\nx := 1e-30104\n"
  }
 ]

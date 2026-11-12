@@ -1,0 +1,12 @@
+== x86_64 glibc: shards-server unit tests
+     Running unittests src/main.rs (target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-3e0c3f7cef04a361)
+test sandbox::tests::a_worker_not_reaped_ends_no_other ... FAILED
+thread 'sandbox::tests::a_worker_not_reaped_ends_no_other' (218422) panicked at crates/server/src/sandbox.rs:1157:9:
+test result: FAILED. 46 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+== x86_64 glibc: helper stopped and continued (src-fixed/target/x86_64-unknown-linux-gnu/test-release/deps/shards_server-3e0c3f7cef04a361)
+RESULT stopped-and-continued n=10 pass=10 fail=0 (x86_64)
+== x86_64 musl: shards-server unit tests, in rust:alpine under Docker's default seccomp
+     Running unittests src/main.rs (target/x86_64-unknown-linux-musl/test-release/deps/shards_server-ae118b29741c071d)
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+== x86_64 musl: helper stopped and continued (src-fixed/target/x86_64-unknown-linux-musl/test-release/deps/shards_server-ae118b29741c071d)
+RESULT stopped-and-continued n=10 pass=10 fail=0 (x86_64)

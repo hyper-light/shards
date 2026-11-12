@@ -212,6 +212,22 @@ NETWORK [OPTIONS...] <name> [FOR <agent_name_a> <agent_name_b> ...]
 - `--dns` lets its members ask the microVM's resolver for names past the microVM; no other
   grant implies it, and an internal network takes none. A remote `MCP` server's grant lets
   its agents ask for that server's host name alone.
+- **Destinations** (decided 2026-11-12, architecture.md D236). `--egress=<host>:<port>` names
+  a host its members may reach past the microVM, at that TCP port alone: a host's name, an
+  IPv4 address, or `host.docker.internal`, the host itself (its loopback, at that port).
+  Who: the members the microVM's boundary opens the port for (`EXPOSE … AS egress FOR` the
+  network, its `--agents` and `--harnesses` naming them), as for a port; they resolve the
+  destinations' names alone, without `--dns`. A destination is never let in (`--expose`,
+  `--ingress`), and IPv6 addresses, UDP and `localhost` are refused. On a port one member
+  reaches by name, every member granted it is granted the same names and none the port
+  itself: the build, and the run, refuse what the microVM's network process could not hold
+  apart.
+
+  ```dockerfile
+  NETWORK --egress=api.openai.com:443 --egress=host.docker.internal:7070 provider FOR codex
+  EXPOSE --harnesses=codex 443 7070 AS egress FOR provider
+  CONNECT codex WITH codex ON provider
+  ```
 - With `FOR`, only the agents named may attach.
 - **Declaring a network attaches no agent**, named or not. It creates the network, exposes
   the ports, and sets which agents may attach.

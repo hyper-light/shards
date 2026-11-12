@@ -1,0 +1,69 @@
+# cargo test -p shards-rego --no-fail-fast (debug), branch at 944f16220's sources before the int_value simplification and the regenerated oracles, this Mac, beside OPA's generator
+     Running unittests src/lib.rs (target/debug/deps/shards_rego-cc535dda6b4606a6)
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 940.65s
+     Running tests/builtins.rs (target/debug/deps/builtins-3a99af7d2d644f65)
+thread '<unknown>' (80995586) has overflowed its stack
+  process didn't exit successfully: `/Users/adalundhe/Projects/shards/.claude/worktrees/ci-rego/scripts/hvf-run /Users/adalundhe/Projects/shards/.claude/worktrees/ci-rego/target/debug/deps/builtins-3a99af7d2d644f65` (signal: 6, SIGABRT: process abort signal)
+     Running tests/check.rs (target/debug/deps/check-924161fa70367346)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.32s
+     Running tests/compile.rs (target/debug/deps/compile-ba490e348ec2c207)
+test a_long_chain_of_rules_compiles_in_time ... FAILED
+test a_wide_policy_without_cycles_compiles_in_time ... FAILED
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.51s
+     Running tests/deep.rs (target/debug/deps/deep-b4d42e72e42f76ac)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 40.81s
+     Running tests/depth.rs (target/debug/deps/depth-68825254b4ee1ad6)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/else.rs (target/debug/deps/else-0a031300b9c946c1)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 97.15s
+     Running tests/eval.rs (target/debug/deps/eval-050b0dcb64d56015)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 43.04s
+     Running tests/index.rs (target/debug/deps/index-033c73775a36c929)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.50s
+     Running tests/numbers.rs (target/debug/deps/numbers-f93430ed40621cab)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+     Running tests/parse.rs (target/debug/deps/parse-a66b837af8ce016a)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.32s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+exit=101
+
+# origin/main 87bf86b31 (git archive), debug: cargo test -p shards-rego --test builtins --test compile
+     Running tests/builtins.rs (/tmp/ci-rego-base/target/debug/deps/builtins-3a99af7d2d644f65)
+thread '<unknown>' (81362355) has overflowed its stack
+  process didn't exit successfully: `/private/tmp/ci-rego-base/scripts/hvf-run /tmp/ci-rego-base/target/debug/deps/builtins-3a99af7d2d644f65` (signal: 6, SIGABRT: process abort signal)
+exit=101
+
+# the two compile timing tests alone, debug, origin/main then the branch
+test closures_nested_deep_compile_in_time ... ok
+test a_long_chain_of_rules_compiles_in_time ... FAILED
+test a_wide_policy_without_cycles_compiles_in_time ... FAILED
+test modules_compile_as_opa_compiles_them ... ok
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 18.72s
+test closures_nested_deep_compile_in_time ... ok
+test a_wide_policy_without_cycles_compiles_in_time ... FAILED
+test a_long_chain_of_rules_compiles_in_time ... FAILED
+test modules_compile_as_opa_compiles_them ... ok
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.72s
+
+# the branch, release: cargo test --release -p shards-rego --test compile
+test closures_nested_deep_compile_in_time ... ok
+test a_long_chain_of_rules_compiles_in_time ... ok
+test modules_compile_as_opa_compiles_them ... ok
+test a_wide_policy_without_cycles_compiles_in_time ... ok
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.10s
+
+# CI's command: cargo test --release -p shards-rego --test builtins --test deep --test depth
+test numbers_with_huge_exponents_answer_in_bounded_work ... ok
+test builtins_answer_as_opas_answer ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+test rules_nested_as_deep_as_the_stack_holds_answer_as_opa_and_no_deeper ... ok
+test a_value_a_million_levels_deep_converts_and_drops_on_a_small_stack ... ok
+test every_statements_nested_deep_answer_in_time ... ok
+test every_statements_nested_with_comprehensions_answer ... ok
+test values_patched_deeper_than_json_nests_compare_and_write_as_opa has been running for over 60 seconds
+test values_patched_deeper_than_json_nests_compare_and_write_as_opa ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 69.41s
+test policies_nest_as_deep_as_opa_takes_them_and_no_deeper has been running for over 60 seconds
+test policies_nest_as_deep_as_opa_takes_them_and_no_deeper ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.79s
+exit=0
