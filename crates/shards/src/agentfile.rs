@@ -726,6 +726,7 @@ mod tests {
                 mcp: Vec::new(),
                 dns: true,
                 egress_declared: Vec::new(),
+                nesting: false,
             }
         );
         let e = agentfile(&root_with("good-again", file(&good)), "sha256:00").unwrap_err();

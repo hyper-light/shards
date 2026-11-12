@@ -3132,7 +3132,8 @@ impl Planner<'_> {
             Kind::Agentfile(
                 directive @ (crate::agentfile::Directive::Network(_)
                 | crate::agentfile::Directive::Connect(_)
-                | crate::agentfile::Directive::Attach(_)),
+                | crate::agentfile::Directive::Attach(_)
+                | crate::agentfile::Directive::Nesting),
             ) => self.ds(d)?.agentfile.push(directive),
             Kind::Agentfile(crate::agentfile::Directive::Agent(a)) => {
                 let dest = domain_dir(&a, false).map_err(Fail::new)?;
@@ -5121,11 +5122,13 @@ impl Planner<'_> {
             // Its grants, for Docker and Kubernetes to see: the daemon holds a run to its
             // own reading of the normalized Agentfile, never to these (D109).
             let grants = crate::agentfile::grants(&t.agentfile);
-            if grants.dns {
-                image
-                    .config
-                    .labels
-                    .insert(crate::agentfile::DNS_LABEL.to_vec(), b"1".to_vec());
+            for (label, set) in [
+                (crate::agentfile::DNS_LABEL, grants.dns),
+                (crate::agentfile::NESTING_LABEL, grants.nesting),
+            ] {
+                if set {
+                    image.config.labels.insert(label.to_vec(), b"1".to_vec());
+                }
             }
             for (label, list) in [
                 (crate::agentfile::MCP_LABEL, &grants.mcp),

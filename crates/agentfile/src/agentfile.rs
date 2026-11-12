@@ -247,6 +247,79 @@ pub enum Directive {
     Attach(Attach),
     Expose(Exposure),
     Volume(Volume),
+    /// `NESTING` (D234): the image asks that its run's own command make boxes in its own
+    /// microVM, as that microVM's only principal. A run takes the grant only where it asks
+    /// for it too, and never beside an agent or harness ([`nesting`]).
+    Nesting,
+}
+
+/// Why an Agentfile's `NESTING` is refused (D234): by the build as it reads the file, and
+/// by the daemon of the normalized Agentfile an image holds ([`nesting`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NestingRefused {
+    /// Written with words: it takes none. An option is refused as any unknown flag is.
+    Arguments,
+    /// Declared again in one image.
+    Twice,
+    /// Declared beside an agent or harness the image declares (D115's reason).
+    Beside { kind: TargetKind, name: Vec<u8> },
+}
+
+impl std::fmt::Display for NestingRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // BuildKit's words for an instruction that takes none (`HEALTHCHECK NONE`).
+            NestingRefused::Arguments => f.write_str("NESTING takes no arguments"),
+            NestingRefused::Twice => f.write_str("NESTING: declared already"),
+            NestingRefused::Beside { kind, name } => f.write_str(&nesting_beside(*kind, name)),
+        }
+    }
+}
+
+/// Refusing `NESTING` beside the image's agent or harness `name`: the grant makes the
+/// command its microVM's only principal. The build's words, which the daemon and
+/// shards-init share (`shards_abi::run::beside::nesting`, D234).
+pub fn nesting_beside(kind: TargetKind, name: &[u8]) -> String {
+    let kind = match kind {
+        TargetKind::Agent => "agent",
+        TargetKind::Harness => "harness",
+    };
+    format!(
+        "cannot give the command the nesting grant: the grant makes the command its microVM's only principal, and the image's Agentfile declares {kind} {}",
+        String::from_utf8_lossy(name)
+    )
+}
+
+/// Whether an Agentfile's image declares the nesting grant (D234), checked as the build
+/// checks it: once, and beside no agent or harness. Of those, it names the first agent,
+/// else the first harness, as shards-init's own check of the image does. The daemon runs
+/// it again on the normalized Agentfile it reads, so a crafted image is refused as a build
+/// refuses it.
+pub fn nesting(directives: &[Directive]) -> Result<bool, NestingRefused> {
+    match directives
+        .iter()
+        .filter(|d| matches!(d, Directive::Nesting))
+        .count()
+    {
+        0 => return Ok(false),
+        1 => {}
+        _ => return Err(NestingRefused::Twice),
+    }
+    let first = |kind: TargetKind| {
+        directives.iter().find_map(|d| match (d, kind) {
+            (Directive::Agent(a), TargetKind::Agent) | (Directive::Harness(a), TargetKind::Harness) => {
+                Some(NestingRefused::Beside {
+                    kind,
+                    name: a.name.clone(),
+                })
+            }
+            _ => None,
+        })
+    };
+    match first(TargetKind::Agent).or_else(|| first(TargetKind::Harness)) {
+        Some(refused) => Err(refused),
+        None => Ok(true),
+    }
 }
 
 /// What an `AGENT`, `HARNESS` or `MCP` `FROM` names (§12.2), told apart as written: a Git
@@ -815,6 +888,15 @@ pub(crate) fn volume(req: &mut Req<'_>) -> Result<Option<Volume>, Vec<u8>> {
     }))
 }
 
+/// `NESTING`, which takes nothing (D234).
+fn nesting_line(req: &mut Req<'_>) -> Result<Directive, Vec<u8>> {
+    req.flags.parse()?;
+    if !req.args.is_empty() {
+        return Err(NestingRefused::Arguments.to_string().into_bytes());
+    }
+    Ok(Directive::Nesting)
+}
+
 /// An Agentfile directive's line, by its lowercase name: `None` where `name` names none.
 pub(crate) fn directive(name: &[u8], req: &mut Req<'_>) -> Option<Result<Directive, Vec<u8>>> {
     Some(match name {
@@ -825,6 +907,7 @@ pub(crate) fn directive(name: &[u8], req: &mut Req<'_>) -> Option<Result<Directi
         b"network" => network(req).map(Directive::Network),
         b"connect" => connect(req).map(Directive::Connect),
         b"attach" => attach(req).map(Directive::Attach),
+        b"nesting" => nesting_line(req),
         _ => return None,
     })
 }
@@ -855,6 +938,30 @@ struct Seen {
     networks: std::collections::BTreeMap<Vec<u8>, (Vec<Vec<u8>>, usize)>,
     /// Where its `VOLUME`s mount, rooted as a Dockerfile's mean them (D109), and on which line.
     mounts: std::collections::BTreeMap<Vec<u8>, usize>,
+    /// Whether it declares `NESTING` (D234).
+    nesting: bool,
+}
+
+impl Seen {
+    /// Refusing `NESTING` beside its domains: the first agent declared, else the first
+    /// harness, as [`nesting`] names one.
+    fn beside(&self) -> Option<NestingRefused> {
+        [
+            (Declared::Agent, TargetKind::Agent),
+            (Declared::Harness, TargetKind::Harness),
+        ]
+        .into_iter()
+        .find_map(|(declared, kind)| {
+            self.domains
+                .iter()
+                .filter(|(_, (d, _))| *d == declared)
+                .min_by_key(|(_, (_, line))| *line)
+                .map(|(name, _)| NestingRefused::Beside {
+                    kind,
+                    name: name.clone(),
+                })
+        })
+    }
 }
 
 fn at(line: usize, message: String) -> crate::instructions::Error {
@@ -872,7 +979,8 @@ fn shown(name: &[u8]) -> String {
 /// harnesses share one namespace, each name declared once; MCP servers and networks are
 /// declared once each; every name a grant uses is declared in the stage's lineage, of the
 /// kind `--target-kind` says; `ATTACH` names agents, then harnesses; `CONNECT`'s names are
-/// of one kind, on networks declared, and allowed by each network's `FOR`.
+/// of one kind, on networks declared, and allowed by each network's `FOR`; `NESTING` is
+/// declared once in a lineage, and beside no agent or harness (D234).
 pub fn check(ins: &crate::instructions::Instructions) -> Result<(), crate::instructions::Error> {
     use crate::instructions::Kind;
     let mut file: std::collections::BTreeMap<Vec<u8>, (Declared, usize)> = std::collections::BTreeMap::new();
@@ -1055,6 +1163,18 @@ pub fn check(ins: &crate::instructions::Instructions) -> Result<(), crate::instr
                         }
                     }
                 }
+                Directive::Nesting => {
+                    if seen.nesting {
+                        return Err(at(line, NestingRefused::Twice.to_string()));
+                    }
+                    seen.nesting = true;
+                }
+            }
+            // `NESTING` and a domain in one lineage, in either order: refused at the second.
+            if seen.nesting
+                && let Some(refused) = seen.beside()
+            {
+                return Err(at(line, refused.to_string()));
             }
         }
         lineages.push(seen);
@@ -1128,11 +1248,11 @@ fn declared_network<'s>(
 pub const SPEC_PATH: &[u8] = b"/.agentfile.json";
 
 /// The label namespace shards' build owns (§8, D59): every label the build writes of an
-/// Agentfile begins with it (the digest, the egress, DNS and MCP grants). A `--label` on a
-/// `build` or a `run` may not set one: they are the build's record of the Agentfile, which
-/// the daemon and the guest trust, not the user's to forge (both build- and run-time, as
-/// the user mutates a run through the CLI). Docker reserves no label, so this is shards'
-/// own (recorded as a deviation).
+/// Agentfile begins with it (the digest, the egress, DNS, MCP and nesting grants). A
+/// `--label` on a `build` or a `run` may not set one: they are the build's record of the
+/// Agentfile, which the daemon and the guest trust, not the user's to forge (both build- and
+/// run-time, as the user mutates a run through the CLI). Docker reserves no label, so this
+/// is shards' own (recorded as a deviation).
 pub const LABEL_PREFIX: &[u8] = b"vnd.osi.agentfile.";
 
 /// Whether `key` is in the namespace shards' build owns ([`LABEL_PREFIX`]).
@@ -1248,6 +1368,10 @@ pub fn dns(directives: &[Directive]) -> bool {
             && directives.iter().any(|c| matches!(c, Directive::Connect(c) if c.on.contains(&n.name))))
     })
 }
+
+/// The label of an Agentfile that declares `NESTING` (D234), `1` as [`DNS_LABEL`]'s, for
+/// Docker and Kubernetes to see. A run is granted from the normalized Agentfile alone (D109).
+pub const NESTING_LABEL: &[u8] = b"vnd.osi.agentfile.nesting";
 
 /// Whether an Agentfile's agents have IPv6 (D99): a network that says `--ipv6`, which a
 /// `CONNECT` joins, gives its members IPv6 addresses. Where they are granted anything past
@@ -2000,6 +2124,11 @@ pub fn reach(directives: &[Directive]) -> Result<(), Vec<u8>> {
 pub fn spec(directives: &[Directive]) -> Vec<u8> {
     use crate::json::{write_string, write_strings};
     let mut out = String::from("{\"schemaVersion\":1");
+    // `NESTING` (D234), only where declared: every other image's normalized Agentfile, and
+    // so its digest, reads as before.
+    if directives.iter().any(|d| matches!(d, Directive::Nesting)) {
+        out.push_str(",\"nesting\":true");
+    }
     let mut lists: [(&str, Vec<String>); 9] = [
         ("agents", Vec::new()),
         ("harnesses", Vec::new()),
@@ -2206,6 +2335,8 @@ pub fn spec(directives: &[Directive]) -> Vec<u8> {
                 scope(&mut o, &v.scope);
                 8
             }
+            // Written once, before the lists.
+            Directive::Nesting => continue,
         };
         o.push('}');
         if let Some((_, list)) = lists.get_mut(at) {
@@ -2247,6 +2378,9 @@ pub struct Grants {
     pub dns: bool,
     /// [`egress_declared`]: the ports a run may not publish.
     pub egress_declared: Vec<Vec<u8>>,
+    /// [`nesting`]: the nesting grant, declared once and beside no agent or harness, which
+    /// a run takes only where it asks for it too (D234).
+    pub nesting: bool,
 }
 
 /// An Agentfile's [`Grants`].
@@ -2256,6 +2390,7 @@ pub fn grants(directives: &[Directive]) -> Grants {
         mcp: remote_mcp(directives),
         dns: dns(directives),
         egress_declared: egress_declared(directives),
+        nesting: nesting(directives) == Ok(true),
     }
 }
 
@@ -2331,6 +2466,11 @@ pub fn from_spec(text: &[u8]) -> Result<Vec<Directive>, String> {
         }
     }
     let mut out = Vec::new();
+    match doc.get("nesting") {
+        None => {}
+        Some(Value::Bool(true)) => out.push(Directive::Nesting),
+        Some(_) => return Err("\"nesting\" is written only as true".into()),
+    }
     for (list, at) in [
         ("agents", 0),
         ("harnesses", 1),

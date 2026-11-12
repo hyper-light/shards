@@ -81,8 +81,8 @@ pub enum Dialect {
 }
 
 /// The directives an Agentfile adds, lowercase.
-pub const AGENTFILE_DIRECTIVES: [&[u8]; 7] = [
-    b"agent", b"attach", b"connect", b"harness", b"mcp", b"network", b"skill",
+pub const AGENTFILE_DIRECTIVES: [&[u8]; 8] = [
+    b"agent", b"attach", b"connect", b"harness", b"mcp", b"nesting", b"network", b"skill",
 ];
 
 /// A warning BuildKit gives: an empty line inside a continued instruction.
@@ -566,7 +566,7 @@ impl Parser {
             b"onbuild" => self.sub_command(rest),
             // An Agentfile's: `SKILL` as `ADD`, the rest as `EXPOSE`, words.
             b"skill" if self.dialect == Dialect::Agentfile => maybe_json_to_list(rest),
-            b"agent" | b"attach" | b"connect" | b"harness" | b"mcp" | b"network"
+            b"agent" | b"attach" | b"connect" | b"harness" | b"mcp" | b"nesting" | b"network"
                 if self.dialect == Dialect::Agentfile =>
             {
                 Ok((strings_ws(rest), false))

@@ -1298,6 +1298,7 @@ mod tests {
             mcp: vec![b"mcp.example:443".to_vec()],
             dns: true,
             egress_declared: Vec::new(),
+            nesting: false,
         };
         let all = egress(Some(&grants), &wire::Narrowing::default()).ok().unwrap();
         assert!(all.is_some());
