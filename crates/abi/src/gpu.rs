@@ -2,6 +2,9 @@
 //! ID, or its current boot's DXGI LUID; never a model name, an ordinal or an environment
 //! filter. One checked grammar, `--gpu-device`'s, for shards-api's client and the VM process.
 
+mod probe;
+pub use probe::{GpuProbe, GpuProbeError, ResolvedGpu, probe_bytes, uuid_from_hex};
+
 use alloc::vec::Vec;
 use core::fmt;
 use core::str::FromStr;
@@ -148,6 +151,12 @@ impl fmt::Display for PhysicalGpuError {
 impl core::error::Error for PhysicalGpuError {}
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects
+)]
 mod tests {
     use super::*;
     use alloc::{string::ToString, vec};

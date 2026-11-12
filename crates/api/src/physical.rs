@@ -3,7 +3,10 @@
 
 use std::fmt;
 
-pub use shards_abi::gpu::{MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, check_selection};
+pub use shards_abi::gpu::{
+    GpuProbe, GpuProbeError, MAX_PHYSICAL_GPUS, PhysicalGpu, PhysicalGpuError, ResolvedGpu, check_selection,
+    probe_bytes,
+};
 
 /// Canonical ASCII grammar has a fixed maximum encoded length for each
 /// native integer width; reserve both buffers before formatting/copying.

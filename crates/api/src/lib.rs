@@ -43,8 +43,11 @@ mod while_runs;
 #[path = "../../../docs/research/measurements/managed-proc-main/allocation.rs"]
 mod proc_allocation;
 
-pub use client::{Shards, connect_borrowed};
-pub use physical::{PhysicalGpu, PhysicalGpuError};
+pub use client::{
+    ManagedGuest, Shards, attach_managed, boot_managed, connect_borrowed, connect_prepared, prepare_boot,
+    recorded_console_bytes,
+};
+pub use physical::{GpuProbe, GpuProbeError, PhysicalGpu, PhysicalGpuError, ResolvedGpu};
 
 /// A guest to boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +80,123 @@ pub struct GuestSpec {
     /// macOS a signed shards as installed, run where it is: its VM process holds the
     /// hypervisor entitlement under shards' signature.
     pub binary: Option<PathBuf>,
+}
+
+/// A pure checked boot plan. Its caller owns the private socket directory,
+/// native process/envelope, output drain and terminal receipt. Preparing never
+/// spawns, watches, creates files or assumes a native resource grant.
+#[derive(Debug)]
+pub struct PreparedBoot {
+    binary: PathBuf,
+    arguments: Vec<std::ffi::OsString>,
+    vsock: PathBuf,
+    ports: Vec<u32>,
+    output_bytes: usize,
+}
+impl PreparedBoot {
+    pub fn binary(&self) -> &std::path::Path {
+        &self.binary
+    }
+    pub fn arguments(&self) -> &[std::ffi::OsString] {
+        &self.arguments
+    }
+    pub fn vsock(&self) -> &std::path::Path {
+        &self.vsock
+    }
+    pub fn ports(&self) -> &[u32] {
+        &self.ports
+    }
+    pub fn output_bytes(&self) -> usize {
+        self.output_bytes
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchError {
+    Binary,
+    Socket,
+    Port,
+    Count,
+    Allocation,
+    Observer,
+    NativeRefused,
+}
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.write_str(match self {
+            Self::Binary => "managed boot requires an explicit absolute native binary path",
+            Self::Socket => {
+                "managed boot socket is not an absolute bounded native path or disagrees with identity"
+            }
+            Self::Port => "managed boot connection port is outside the exact prepared set",
+            Self::Count => "managed boot argument/output count exceeds its native representation",
+            Self::Allocation => "managed boot preparation storage is unavailable",
+            Self::Observer => "native observation has no positive terminal receipt",
+            Self::NativeRefused => "the canonical native owner refused the managed operation",
+        })
+    }
+}
+impl std::error::Error for LaunchError {}
+
+/// Stdio created by the API's existing bounded drain path. The native owner
+/// consumes only these output handles; stdin is its native null device. No extra
+/// inherited handles, output socket export or post-spawn placement is permitted.
+pub struct LaunchIo {
+    pub stdout: std::io::PipeWriter,
+    pub stderr: std::io::PipeWriter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagedStatus {
+    Code(i32),
+    Signal(i32),
+    Unknown,
+}
+
+/// A positive native fact, independent of the presentation of an End. Released
+/// requires the complete owned VM envelope, including selected GPU/helper lifetime;
+/// process exit alone is only Process. An observation failure returns Err.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalScope {
+    Process,
+    Released,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagedEnd {
+    pub status: ManagedStatus,
+    pub scope: TerminalScope,
+}
+
+/// An existing native receipt, not another PID opener/reaper or holder ledger.
+/// Its immutable identity is established under the canonical Creating turn before
+/// launch returns. wait_for subscribes to that receipt's sole terminal authority;
+/// stop can run concurrently without waiting behind its observation lock.
+pub trait ManagedProcess: Send + Sync {
+    /// A scope can exist before controller publication. Missing observation is
+    /// Observer, never pid/start zero; stop/wait/terminal still own cleanup.
+    fn identity(&self) -> Result<&Identity, Refusal>;
+    /// Wait for the complete native scope. Some must carry Released; a controller
+    /// exit with live helpers remains None until the deadline (terminal exposes
+    /// that partial Process fact). Duration::MAX subscribes until an event/error.
+    fn wait_for(&self, patience: Duration) -> Result<Option<ManagedEnd>, Refusal>;
+    fn stop(&self) -> Result<(), Refusal>;
+    fn terminal(&self) -> Result<Option<ManagedEnd>, Refusal>;
+}
+
+/// Borrowed synchronous launch/attach callbacks, usually over the caller's stack
+/// transaction. The returned Arc must come from existing native receipt ownership
+/// or fallible native storage, never a second process-box record/manager. The API
+/// owns draining/presentation, the native receipt alone owns observation/reaping.
+pub trait ManagedLauncher {
+    fn launch(
+        &mut self,
+        plan: &PreparedBoot,
+        io: LaunchIo,
+    ) -> Result<std::sync::Arc<dyn ManagedProcess>, Refusal>;
+    /// Reopen only this recorded identity/envelope, without creating a process or
+    /// replacing old stdio. Recovery has no historical output to manufacture.
+    fn attach(&mut self, identity: &Identity) -> Result<std::sync::Arc<dyn ManagedProcess>, Refusal>;
 }
 
 /// What a guest's kernel runs first.
@@ -383,6 +503,16 @@ pub enum Refusal {
     Allocation { what: &'static str },
     /// The exact native GPU request is malformed or exceeds its protocol bound.
     Gpu(PhysicalGpuError),
+    /// The carried renderer has no completed exact native selection receipt.
+    GpuProbe(GpuProbeError),
+    /// Preparation failed before any native owner launches a process.
+    Launch(LaunchError),
+    /// Managed output/observer setup failed without allocating diagnostic text.
+    ManagedIo {
+        operation: &'static str,
+        kind: io::ErrorKind,
+        code: Option<i32>,
+    },
 }
 
 /// What names a booted guest beyond its client's process, so a client that restarts (crashed, say)
@@ -403,6 +533,13 @@ pub struct Identity {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Refusal::ManagedIo {
+                operation,
+                kind,
+                code,
+            } => write!(f, "managed {operation}: {kind:?} (OS {code:?})"),
+            Refusal::Launch(why) => write!(f, "managed boot: {why}"),
+            Refusal::GpuProbe(why) => write!(f, "GPU probe: {why}"),
             Refusal::Gpu(why) => write!(f, "physical GPU: {why}"),
             Refusal::NoBackend { os, arch } => {
                 write!(f, "shards boots no guest on {os} {arch}: it has no backend there")
@@ -484,6 +621,10 @@ pub type Handle<'a> = std::os::windows::io::BorrowedSocket<'a>;
 
 /// What boots guests.
 pub trait Guests: Send + Sync {
+    /// Query exact native identities and selected host-visible memory through the
+    /// carried renderer's positive context filter ACK. No VM/workload is booted.
+    /// Patience is the caller's original finite deadline, never a retry budget.
+    fn probe_gpu(&self, spec: &GuestSpec, patience: Duration) -> Result<GpuProbe, Refusal>;
     /// What this host boots with, or the refusal naming the backend it lacks.
     fn backend(&self) -> Result<Backend, Refusal>;
     /// Boots a guest; refused before boot past this host's bounds. It is the caller's
@@ -505,6 +646,16 @@ pub trait Guests: Send + Sync {
 
 /// A booted guest. Dropping it ends it.
 pub trait Guest: Send + Sync {
+    /// Positive native process-exit observation, separate from wait_for's End.
+    /// False includes a failed observation. This alone does not certify external
+    /// renderer/helper resource reclamation.
+    fn process_exited(&self) -> Result<bool, Refusal>;
+    /// Only a managed native owner can strengthen process exit into Released.
+    /// Legacy standalone observation remains Process even after successful wait.
+    fn terminal_scope(&self) -> Result<Option<TerminalScope>, Refusal> {
+        Ok(self.process_exited()?.then_some(TerminalScope::Process))
+    }
+
     /// A stream to its vsock `port` (`CONNECT <port>`), within `patience`: until the guest
     /// listens there it is refused, and asked again, so the first that connects says the
     /// guest is ready. One dial is always made, so a patience of zero is that one alone;
