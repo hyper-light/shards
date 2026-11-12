@@ -831,19 +831,43 @@ fn volume_name(w: &[u8]) -> bool {
             .all(|&b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
 }
 
-/// Why an Agentfile's volume may not be where [`covers_domain_mounts`] says.
-pub const COVERS: &str = "VOLUME may not cover a domain's root, /proc, /sys or /dev";
+/// What a domain's init mounts for it that a volume's mount point lies in (D109): an
+/// Agentfile's volumes may not lie there, and Docker's `VOLUME`s there stay the run's own
+/// root's. shards-init refuses the same (domains.rs `domain_mount`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainMount {
+    /// Its root, or `/proc`, `/sys` or `/dev`, the file systems mounted there.
+    System,
+    /// `/tmp`, its own scratch (D139). The scratch hides a mount point beneath it, and a
+    /// volume at it hides the scratch, where its in-VM server reads the files it hands
+    /// across and what is staged for it is written (D231).
+    Scratch,
+}
 
-/// Whether a mount point, rooted at `/`, covers a domain's root or the file systems its
-/// init mounts there, `/proc`, `/sys` and `/dev` (D109): an Agentfile's volumes may not,
-/// and Docker's `VOLUME`s there stay the run's own root's.
-pub fn covers_domain_mounts(path: &[u8]) -> bool {
+impl std::fmt::Display for DomainMount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DomainMount::System => "VOLUME may not cover a domain's root, /proc, /sys or /dev",
+            DomainMount::Scratch => "VOLUME may not be at or under /tmp, a domain's own scratch",
+        })
+    }
+}
+
+/// The [`DomainMount`] a mount point lies in, if any, rooted at `/` as Docker roots a
+/// relative `VOLUME`.
+pub fn domain_mount(path: &[u8]) -> Option<DomainMount> {
     let at = crate::go::clean(&[b"/".as_slice(), path].concat());
-    let covers = |dir: &[u8]| {
+    let within = |dir: &[u8]| {
         at.strip_prefix(dir)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with(b"/"))
     };
-    at == b"/" || [&b"/proc"[..], b"/sys", b"/dev"].iter().any(|d| covers(d))
+    if at == b"/" || [&b"/proc"[..], b"/sys", b"/dev"].iter().any(|d| within(d)) {
+        Some(DomainMount::System)
+    } else if within(b"/tmp") {
+        Some(DomainMount::Scratch)
+    } else {
+        None
+    }
 }
 
 /// `VOLUME [--chown=…] [--chmod=…] [--target-kind=…] <path>… [FOR <name>…]`, or a named
@@ -870,10 +894,10 @@ pub(crate) fn volume(req: &mut Req<'_>) -> Result<Option<Volume>, Vec<u8>> {
         [n, dest] if volume_name(n) => (Some(n.clone()), vec![dest.clone()]),
         _ => (None, paths.to_vec()),
     };
-    // Each mount point is given to agents and harnesses (§4.5, D109): their root and their
-    // system's mounts are their own.
-    if let Some(p) = paths.iter().find(|p| covers_domain_mounts(p)) {
-        return Err([COVERS.as_bytes(), b": ", p].concat());
+    // Each mount point is given to agents and harnesses (§4.5, D109): their root, their
+    // system's mounts and their scratch are their own.
+    if let Some((p, m)) = paths.iter().find_map(|p| domain_mount(p).map(|m| (p, m))) {
+        return Err([m.to_string().as_bytes(), b": ", p].concat());
     }
     let f = &req.flags;
     Ok(Some(Volume {

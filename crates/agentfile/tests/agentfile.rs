@@ -331,6 +331,24 @@ fn volumes_take_a_name_options_and_whom_they_are_for() {
             "{line}"
         );
     }
+    // A domain's /tmp is its own scratch: a volume at it would hide the scratch, and one
+    // beneath it would find no mount point there.
+    for line in [
+        "VOLUME --target-kind=harness /tmp FOR h",
+        "VOLUME data /tmp/x FOR main",
+        "VOLUME --chown=main /var/../tmp/a/b",
+        "VOLUME data tmp/cache",
+    ] {
+        assert!(
+            refused(line).contains("VOLUME may not be at or under /tmp, a domain's own scratch"),
+            "{line}"
+        );
+    }
+    // A Dockerfile's VOLUME there is Docker's, the run's own root's alone.
+    assert_eq!(
+        kinds("VOLUME /tmp /tmp/x").unwrap(),
+        vec![Kind::Volume(vec![b("/tmp"), b("/tmp/x")])]
+    );
     // Paths that only begin with those names are paths like any other.
     assert!(matches!(
         one("VOLUME data /process FOR main"),
@@ -338,6 +356,10 @@ fn volumes_take_a_name_options_and_whom_they_are_for() {
     ));
     assert!(matches!(
         one("VOLUME data /devices FOR main"),
+        Directive::Volume(_)
+    ));
+    assert!(matches!(
+        one("VOLUME data /tmpfiles FOR main"),
         Directive::Volume(_)
     ));
 }

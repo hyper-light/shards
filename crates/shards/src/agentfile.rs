@@ -328,8 +328,8 @@ pub fn agentfile(rootfs: &std::path::Path, digest: &str) -> Result<Agentfile, St
     // point, whose domains are given what is mounted there.
     let mut mounts = BTreeSet::new();
     for p in volumes.iter().flat_map(|v| &v.paths) {
-        if af::covers_domain_mounts(p.as_bytes()) {
-            return Err(fail(format!("{}: {p}", af::COVERS)));
+        if let Some(m) = af::domain_mount(p.as_bytes()) {
+            return Err(fail(format!("{m}: {p}")));
         }
         if !mounts.insert(clean(&format!("/{p}"))) {
             return Err(fail(format!("two of its volumes mount {p}")));
@@ -849,6 +849,16 @@ mod tests {
                 "dev",
                 vec![agent("a"), volume(None, "/dev/shm", &["a"])],
                 "VOLUME may not cover a domain's root, /proc, /sys or /dev: /dev/shm",
+            ),
+            (
+                "tmp",
+                vec![agent("a"), volume(None, "/tmp", &["a"])],
+                "VOLUME may not be at or under /tmp, a domain's own scratch: /tmp",
+            ),
+            (
+                "under-tmp",
+                vec![agent("a"), volume(Some("cache"), "/tmp/cache", &[])],
+                "VOLUME may not be at or under /tmp, a domain's own scratch: /tmp/cache",
             ),
             (
                 "twice",
