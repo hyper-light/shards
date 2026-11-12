@@ -1,0 +1,18 @@
+host adas-mac-studio.local-2 (Darwin arm64), test-mac.sh at aeac12d67 (main with items 4, 1 and 2)
+== aeac12d6 Merge origin/main (b3fb5edad) into p/s7-part2-v1's item 2 before it lands 2026-11-12T22:45:43Z Darwin arm64
+== test shards-abi exit 0
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test shards-api exit 101
+test client::tests::gpu_probe_protocol_requires_exact_completed_receipt ... FAILED
+thread 'client::tests::gpu_probe_protocol_requires_exact_completed_receipt' (31065726) panicked at crates/api/src/client.rs:2997:35:
+test result: FAILED. 84 passed; 1 failed; 3 ignored; 0 measured; 0 filtered out; finished in 1.87s
+== test shards:api_run:: agentfile:: exit 0
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 725 filtered out; finished in 0.03s
+== done 2026-11-12T22:46:21Z tests 1
+
+The one failure is client.rs's GPU probe test, which neither item touches; it failed in 3 of 5
+runs alone at the same revision, and the whole shards-api suite then passed (85 passed, 3
+ignored; and 16 passed, 2 ignored), as it passed at 6243ca378 (lint-mac-item1.log). Reported to
+ROOT as a flake of its own.

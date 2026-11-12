@@ -390,6 +390,21 @@ mod storm {
     /// Where the host tells a storm it has stopped streaming.
     const DONE_PORT: u32 = 1235;
 
+    /// The memory of a storm of `cpus` vCPUs, in MiB: 256 for 64 vCPUs or fewer, and as much
+    /// a vCPU past that. What binds is the kernel's thread limit, an eighth of the memory free
+    /// at boot in 16 KiB stacks (kernel/fork.c `set_max_threads`), which must hold its own
+    /// threads, six a vCPU, and the storm's, two a vCPU (its pairs' turns and its clock's
+    /// readers). Need and limit both grow linearly (PM M532: the limit by 7.9 a MiB, less 1.7 a
+    /// vCPU), so the 4 MiB a vCPU that gives a 64-vCPU storm 2.9 times its threads to spare
+    /// keeps at least that past it: 3.5 times at 240. 240 vCPUs in 256 MiB could not start the
+    /// kernel's own threads (`-EAGAIN`), and the guest panicked at boot.
+    fn storm_mib(cpus: u32) -> u32 {
+        /// A storm of this many vCPUs ran whole in this many MiB, 5 times of 5 (PM M532).
+        const CPUS: u32 = 64;
+        const MIB: u32 = 256;
+        cpus.saturating_mul(MIB).div_ceil(CPUS).max(MIB)
+    }
+
     /// A storm (the test guest's `storm` mode) on `cpus` vCPUs, with both disks and a vsock
     /// device at `sock`, whose snapshot goes to `s.snapshot()`, then `then`.
     fn storm_args(s: &Scratch, cpus: u32, sock: &Path, then: &str) -> Vec<std::ffi::OsString> {
@@ -403,7 +418,7 @@ mod storm {
             "--cpus".into(),
             cpus.to_string().into(),
             "--memory".into(),
-            "256".into(),
+            storm_mib(cpus).to_string().into(),
             "--disk".into(),
             s.disk().into(),
             "--disk".into(),

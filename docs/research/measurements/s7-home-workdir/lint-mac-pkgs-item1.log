@@ -1,0 +1,11 @@
+host adas-mac-studio.local-2 (Darwin arm64), lint-mac-pkgs.sh at 6243ca378 (item 1 on main 41e5a0943)
+== 6243ca37 Merge origin/main (41e5a0943) into p/s7-part2-v1: item 4 landed, item 1 on it 2026-11-12T22:33:57Z
+== x86_64-pc-windows-msvc: -p shards-abi -p shards-agentfile -p shards-api -p shards -p shards-init
+clippy x86_64-pc-windows-msvc exit=0
+== aarch64-pc-windows-msvc: -p shards-abi -p shards-agentfile -p shards-api -p shards -p shards-init
+clippy aarch64-pc-windows-msvc exit=0
+== x86_64-unknown-linux-musl: -p shards-abi -p shards-agentfile -p shards-api -p shards -p shards-init
+clippy x86_64-unknown-linux-musl exit=0
+== aarch64-unknown-linux-musl: -p shards-abi -p shards-agentfile -p shards-api -p shards -p shards-init
+clippy aarch64-unknown-linux-musl exit=0
+== done 2026-11-12T22:36:10Z

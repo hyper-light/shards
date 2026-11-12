@@ -1,0 +1,65 @@
+# rev fc71859 host adacachy 7.2.9-2-cachyos load 139.29 88.85 69.33 start 2026-11-12T22:08:27Z
+/opt/zig-x86_64-linux-0.16.0.tar.xz: OK
+CapEff:	00000000a80425fb
+NoNewPrivs:	0
+Seccomp:	2
+Uid:	1000	1000	1000	1000
+CapEff:	0000000000000000
+Linux 316cb96d8db4 7.2.9-2-cachyos #1 SMP PREEMPT_DYNAMIC Thu, 08 Oct 2026 15:06:16 +0000 x86_64 Linux
+TARGET=x86_64-unknown-linux-musl REV=fc71859
+== 1. unit tests
+test result: ok. 211 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 2.18s
+RESULT shards-init unit: passed
+test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.74s
+RESULT shards-server unit: passed
+== 2. probes
+test changes::probe::kept_layers_are_path_descriptors ... KEPT lower=0o10200000 upper=0o10200000 O_PATH=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE keep.rs changes::probe::kept_layers_are_path_descriptors: passed
+test changes::probe::a_layer_none_may_read_is_kept ... KEPT unreadable: Ok(()) (euid 1000)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE keep.rs changes::probe::a_layer_none_may_read_is_kept: passed
+test changes::probe::kept_layers_are_path_descriptors ... KEPT lower=0o300000 upper=0o300000 O_PATH=false
+thread 'changes::probe::kept_layers_are_path_descriptors' (627) panicked at crates/init/src/changes.rs:330:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE before:keep.rs changes::probe::kept_layers_are_path_descriptors: FAILED
+test changes::probe::a_layer_none_may_read_is_kept ... KEPT unreadable: Err(Os { code: 13, kind: PermissionDenied, message: "Permission denied" }) (euid 1000)
+thread 'changes::probe::a_layer_none_may_read_is_kept' (647) panicked at crates/init/src/changes.rs:345:14:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 213 filtered out; finished in 0.00s
+PROBE before:keep.rs changes::probe::a_layer_none_may_read_is_kept: FAILED
+test managed::probe::the_reaper_stopped_in_its_wait_lives_on ... REAPER slept=true stopped=true slept_again=true exit=125 signal=0 (x86_64)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 212 filtered out; finished in 0.00s
+PROBE reaper.rs managed::probe::the_reaper_stopped_in_its_wait_lives_on: passed
+test sandbox::probe::a_program_cannot_wait_on_atomics ... ATOMICS_WAIT Err("TypeError: cannot block in this thread\n    at wait (native)\n    at <anonymous> (program:1:73)\n    at <eval> (program:2:1)")
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.00s
+PROBE atomics.rs sandbox::probe::a_program_cannot_wait_on_atomics: passed
+test confine::probe::the_network_process_stopped_in_its_wait_lives_on ... NETWORK slept=true stopped=true exit=0 signal=0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.10s
+PROBE net.rs confine::probe::the_network_process_stopped_in_its_wait_lives_on: passed
+== 3. mutants
+test opath::tests::no_source_asks_std_for_a_path_descriptor ... 
+thread 'opath::tests::no_source_asks_std_for_a_path_descriptor' (959) panicked at crates/init/src/opath.rs:133:9:
+O_PATH asked of std's OpenOptions, which musl's O_ACCMODE takes away; open it with crate::opath::open: ["/work/crates/init/src/changes.rs:48"]
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.08s
+MUTANT keep-through-std opath::tests::no_source_asks_std_for_a_path_descriptor: KILLED
+test opath::tests::what_it_opens_is_a_path_descriptor ... 
+thread 'opath::tests::what_it_opens_is_a_path_descriptor' (1027) panicked at crates/init/src/opath.rs:82:13:
+/tmp/shards-tests/1026/opath-0: not O_PATH: 0o300000
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+MUTANT helper-as-std opath::tests::what_it_opens_is_a_path_descriptor: KILLED
+test sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on ... STOPPED_IN_WAIT filter=worker wait=futex stopped=true ended by signal 31
+thread 'sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on' (1095) panicked at crates/server/src/sandbox.rs:1507:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-helper-only sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on: KILLED
+test sandbox::tests::the_helper_stopped_in_its_poll_lives_on ... STOPPED_IN_WAIT filter=helper wait=poll stopped=true exited 0
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-helper-only sandbox::tests::the_helper_stopped_in_its_poll_lives_on: SURVIVED
+test sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on ... STOPPED_IN_WAIT filter=worker wait=futex stopped=true ended by signal 31
+thread 'sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on' (1185) panicked at crates/server/src/sandbox.rs:1507:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-none sandbox::tests::a_worker_stopped_in_a_timed_wait_lives_on: KILLED
+test sandbox::tests::the_helper_stopped_in_its_poll_lives_on ... STOPPED_IN_WAIT filter=helper wait=poll stopped=true ended by signal 31
+thread 'sandbox::tests::the_helper_stopped_in_its_poll_lives_on' (1206) panicked at crates/server/src/sandbox.rs:1529:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.00s
+MUTANT restart-none sandbox::tests::the_helper_stopped_in_its_poll_lives_on: KILLED
+== done

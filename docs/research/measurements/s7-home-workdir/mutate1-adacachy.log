@@ -1,0 +1,27 @@
+host adacachy Linux 7.2.9-2-cachyos x86_64, 2026-11-12T22:05:44Z, base 1e6bbeadab7366340e560e7bfdd473e463bc3011
+== no-image-env
+thread 'domains::tests::a_members_environment_is_inits_then_its_images_then_its_own' (3819071) panicked at crates/init/src/domains.rs:3049:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== image-home
+thread 'domains::tests::a_members_environment_is_inits_then_its_images_then_its_own' (3824886) panicked at crates/init/src/domains.rs:3049:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== path-not-its-own
+thread 'domains::tests::a_members_program_is_found_on_the_path_it_runs_with' (3830043) panicked at crates/init/src/domains.rs:3127:70:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 211 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards-init --bin shards-init`
+== no-build-check
+thread 'an_image_with_members_never_names_their_domain_in_its_env' (3833017) panicked at crates/agentfile/tests/agentfile.rs:1044:48:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.01s
+error: test failed, to rerun pass `-p shards-agentfile --test agentfile`
+== no-daemon-entries
+thread 'agentfile::tests::the_images_environment_is_its_members_as_its_build_checks_it' (3857130) panicked at crates/shards/src/agentfile.rs:514:9:
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 744 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p shards --bin shards`
+== green
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 210 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 744 filtered out; finished in 0.00s
+
+[exited with code 0]

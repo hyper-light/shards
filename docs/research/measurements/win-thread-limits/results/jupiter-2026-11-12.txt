@@ -1,0 +1,156 @@
+# PM M529, win-thread-limits on jupiter: Windows 10.0.26200.9974 (Windows 11), AMD Ryzen AI Max+
+# 395 (32 CPUs), 123.6 GiB; run through kiln (the process in kiln's job: LimitFlags 0x2020,
+# KILL_ON_JOB_CLOSE | PRIORITY_CLASS, no memory limit); rustc 1.98.1, release. Shared with other
+# work (CommitTotal 39-60 GB of 141 GB during these runs). 2026-11-12.
+
+## 1. 19:59Z, the harness's first version (its job child started threads without waiting for them)
+system: page 4096 allocation granularity 65536 application addresses 0x10000..0x7ffffffeffff processors 32
+MEMORYSTATUSEX: TotalPhys 132766306304 AvailPhys 81627721728 TotalPageFile 141087805440 AvailPageFile 80982855680 TotalVirtual 140737488224256 AvailVirtual 140733138452480
+PERFORMANCE_INFORMATION (bytes): CommitTotal 60104450048 CommitLimit 141087805440 CommitPeak 81965608960 PhysicalTotal 132766306304 KernelNonpaged 6507786240 KernelPaged 7325544448; HandleCount 152477 ProcessCount 320 ThreadCount 4916
+in a job: true
+job: LimitFlags 0x2020 process memory - job memory - active processes 0
+image (this harness): SizeOfStackReserve 1048576 SizeOfStackCommit 4096
+image C:/Users/corph/g121-rib-win-target/test-release/shards.exe: SizeOfStackReserve 1048576 SizeOfStackCommit 4096
+main thread:
+  stack 0x59eb800000..0x59eb900000: reserved 1048576 bytes; guarantee 20480
+    +0x0 1007616 bytes state 0x2000 protect 0x0 type 0x20000
+    +0xf6000 24576 bytes state 0x1000 protect 0x104 type 0x20000
+    +0xfc000 16384 bytes state 0x1000 protect 0x4 type 0x20000
+  stack committed 40960 bytes, of which guard 24576
+  TEB 0x59eb65d000: allocation 0x59eb600000, region 0x59eb65d000 32768 bytes state 0x1000 protect 0x4
+  TEB's allocation: 2097152 bytes, committed 36864
+a thread std spawns by default:
+  stack 0x59ebc00000..0x59ebe00000: reserved 2097152 bytes; guarantee 20480
+    +0x0 2064384 bytes state 0x2000 protect 0x0 type 0x20000
+    +0x1f8000 24576 bytes state 0x1000 protect 0x104 type 0x20000
+    +0x1fe000 8192 bytes state 0x1000 protect 0x4 type 0x20000
+  stack committed 32768 bytes, of which guard 24576
+  TEB 0x59eb665000: allocation 0x59eb600000, region 0x59eb665000 8192 bytes state 0x1000 protect 0x4
+  TEB's allocation: 2097152 bytes, committed 45056
+burst 0: 2000 threads parked: per thread process commit 48007 B, nonpaged quota 136 B, paged quota -1 B, handles 1.000, system commit -63238 B; after join process commit +593920 B system commit -231452672 B; system threads 4916 -> 6895
+burst 1: 2000 threads parked: per thread process commit 47757 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 81687 B; after join process commit +499712 B system commit +120815616 B; system threads 4887 -> 6883
+burst 2: 2000 threads parked: per thread process commit 47655 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 97909 B; after join process commit -286720 B system commit -165179392 B; system threads 4885 -> 6874
+burst 3: 2000 threads parked: per thread process commit 47809 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 106549 B; after join process commit +28672 B system commit +681443328 B; system threads 4874 -> 6860
+burst 4: 2000 threads parked: per thread process commit 47905 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 43954 B; after join process commit +499712 B system commit -740519936 B; system threads 4837 -> 6832
+child: MEMORYSTATUSEX: TotalPhys 132766306304 AvailPhys 81796063232 TotalPageFile 141087805440 AvailPageFile 81348116480 TotalVirtual 140737488224256 AvailVirtual 140733139124224
+child: in a job: true
+child: job: LimitFlags 0x2100 process memory 67108864 job memory - active processes 0
+child: commit at start 647168
+child: refused after 1659 threads: OS Error 1455; commit 67088384, 40049 B a thread
+child: exit 0xC00000FD (STATUS_STACK_OVERFLOW): its main thread and one started thread
+  overflowed their stacks, the commit to grow them gone; threads not yet started had not
+  committed their stack guarantee, so 40 KB a thread is too few. Replaced by 3.
+
+## 2. 20:07Z, bursts of 20,000 threads, held parked with their JoinHandles, eight rounds
+burst 0: 20000 threads parked: per thread process commit 47913 B, nonpaged quota 137 B, paged quota 4 B, handles 1.000, system commit 83033 B; after join process commit +2400256 B system commit +147210240 B; system threads 4578 -> 24616
+burst 1: 20000 threads parked: per thread process commit 47765 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 84168 B; after join process commit +147456 B system commit +724807680 B; system threads 4602 -> 24616
+burst 2: 20000 threads parked: per thread process commit 47780 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 39040 B; after join process commit +413696 B system commit -193490944 B; system threads 4615 -> 24591
+burst 3: 20000 threads parked: per thread process commit 47760 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 45890 B; after join process commit -118784 B system commit -534482944 B; system threads 4563 -> 24557
+burst 0: 20000 threads parked: per thread process commit 47895 B, nonpaged quota 137 B, paged quota 4 B, handles 1.000, system commit 77140 B; after join process commit +2404352 B system commit +220663808 B; system threads 4569 -> 24571
+burst 1: 20000 threads parked: per thread process commit 47754 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 83980 B; after join process commit +12288 B system commit +711979008 B; system threads 4585 -> 24595
+burst 2: 20000 threads parked: per thread process commit 47832 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 220684 B; after join process commit +655360 B system commit +2978361344 B; system threads 4713 -> 24731
+burst 3: 20000 threads parked: per thread process commit 47909 B, nonpaged quota 137 B, paged quota -0 B, handles 1.000, system commit 113360 B; after join process commit +57344 B system commit +422060032 B; system threads 4738 -> 24735
+# system commit a thread: median 83.5 KB of the eight; four within 77-84 KB; the system's
+# commit moved by -0.53 to +2.98 GB across a burst with other work.
+
+## 3. 20:14Z and 20:18Z, the first version's job child again, 64 MiB: twice alike
+child: commit at start 655360
+child: refused after 1377 threads: OS Error 1455 (raw Some(1455)); commit 67104768, 48257 B a thread
+child: exit 0
+child: commit at start 638976
+child: refused after 1377 threads: The paging file is too small for this operation to complete. (os error 1455) (raw Some(1455)); commit 67084288, 48254 B a thread
+child: exit 0
+
+## 4. 20:19Z, the harness as committed (each thread parked before the next; all let go before it speaks)
+a thread std spawns by default:
+  stack reserved 2097152 bytes; guarantee 20480
+    +0x0 2064384 bytes state 0x2000 protect 0x0
+    +0x1f8000 24576 bytes state 0x1000 protect 0x104
+    +0x1fe000 8192 bytes state 0x1000 protect 0x4
+  stack committed 32768 bytes, of which guard 24576
+  TEB 0x1003fb000: its region 8192 bytes; its allocation's committed bytes 45056
+  winternl.h's TEB: 6024 bytes, 2 pages
+burst 0: 2000 threads parked: per thread process commit 47950 B, nonpaged quota 137 B, paged quota 0 B, handles 1.000, system commit 87722 B; after join process commit +380928 B system commit +85200896 B; system threads 4732 -> 6733
+burst 1: 2000 threads parked: per thread process commit 47911 B, nonpaged quota 137 B, paged quota 0 B, handles 1.000, system commit 67969 B; after join process commit +188416 B system commit +33873920 B; system threads 4733 -> 6733
+burst 2: 2000 threads parked: per thread process commit 47823 B, nonpaged quota 137 B, paged quota 0 B, handles 1.000, system commit 29477 B; after join process commit +90112 B system commit -46981120 B; system threads 4739 -> 6733
+child: MEMORYSTATUSEX: TotalPhys 132766306304 AvailPhys 98197192704 TotalPageFile 141087805440 AvailPageFile 100037529600 TotalVirtual 140737488224256 AvailVirtual 140733139116032
+child: job: LimitFlags 0x2100 process memory 67108864 job memory - active processes 0
+child: limit 67108864: commit 1052672 before the first thread; refused thread 1381 (Some(1455)) at commit 67100672, 8192 short of the limit; charged 47861 B a thread
+child: counted a thread 40960 B (stack 32768 committed as it began, TEB 8192): the limit holds 1638; Windows started 1380
+== 16 MiB job
+child: limit 16777216: commit 749568 before the first thread; refused thread 334 (Some(1455)) at commit 16756736, 20480 short of the limit; charged 48070 B a thread
+child: counted a thread 40960 B (stack 32768 committed as it began, TEB 8192): the limit holds 409; Windows started 333
+== 256 MiB job
+child: limit 268435456: commit 2256896 before the first thread; refused thread 5564 (Some(1455)) at commit 268435456, 0 short of the limit; charged 47848 B a thread
+child: counted a thread 40960 B (stack 32768 committed as it began, TEB 8192): the limit holds 6553; Windows started 5563
+# Counted so (every committed page of its stack as it began), the count was not the same for
+# every thread: in a fresh process the first std thread had 8 KiB of its stack in use and the
+# next 4 KiB (the unit test's job child: 40960 then 36864 B, so 149 then 166 threads of one
+# limit); under the test harness's output capture each had 8 KiB. thread_limit counts the
+# stack's guard pages and the image's SizeOfStackCommit instead, the same for every thread:
+# 24576 + 4096 + TEB 8192 = 36864 B (5, below).
+
+## 5. 21:13Z, the final source (thread_limit counting guard + SizeOfStackCommit + TEB): its unit
+## tests, five mutants of windows_process.rs, the harness's jobs, windows_thread on main's vmm.
+## cargo +1.98.1 test -p shards-vmm --profile test-release --lib platform::windows_process -- --test-threads=1 --nocapture
+## (mutate.sh). Abridged: libtest's status lines rejoined to their tests, and of each failure its
+## test, line and assertion; the words in parentheses are this record's reading.
+== green: platform::windows_process
+test platform::windows_process::tests::a_fault_from_disk_maps_the_page_it_touches_alone ... ok
+thread limit child: 64 threads charged 3031040 B, 47360 B each, counted 36864 B each (Thread { reserved: 2097152, committed: 36864 } first); the job's 5591040 B hold Some(151)
+test platform::windows_process::tests::a_jobs_commit_limit_holds_the_threads_it_says ... ok
+test platform::windows_process::tests::a_process_usage_is_read ... ok
+thread limit: Some(3827251) threads, of Room { space: 140737488224256, commit: 141087805440 } and Thread { reserved: 2097152, committed: 36864 }
+test platform::windows_process::tests::a_thread_limit_is_what_the_host_holds_of_a_thread ... ok
+test platform::windows_process::tests::mapped_pages_are_the_working_sets ... ok
+test platform::windows_process::tests::the_threads_held_are_the_fewest_each_limit_holds ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 425 filtered out; finished in 0.29s
+== mutation m1-none (thread_limit says none: the code before this change)
+a_jobs_commit_limit_holds_the_threads_it_says: assertion `left == right` failed  left: None  right: Some(153)
+a_thread_limit_is_what_the_host_holds_of_a_thread: panicked at windows_process.rs:492 (the limit is none)
+test result: FAILED. 4 passed; 2 failed
+== mutation m2-reserved (the stack's reservation counted as committed)
+a_jobs_commit_limit_holds_the_threads_it_says: panicked at windows_process.rs:601 (charged fewer than counted)
+a_thread_limit_is_what_the_host_holds_of_a_thread: panicked at windows_process.rs:487 (committed not under reserved)
+test result: FAILED. 4 passed; 2 failed
+== mutation m3-no-job (the job's limit not read)
+a_jobs_commit_limit_holds_the_threads_it_says: assertion `left == right` failed: Room { space: 140737488224256, commit: 141087805440 }: not the job's limit  left: 141087805440  right: 5586944
+test result: FAILED. 5 passed; 1 failed
+== mutation m4-no-teb (the TEB not counted): survives
+thread limit child: 64 threads charged 3026944 B, 47296 B each, counted 28672 B each (Thread { reserved: 2097152, committed: 28672 } first); the job's 4620288 B hold Some(161)
+thread limit: Some(4920752) threads, of Room { space: 140737488224256, commit: 141087805440 } and Thread { reserved: 2097152, committed: 28672 }
+test result: ok. 6 passed; 0 failed
+== mutation m5-touched (every committed page of the stack counted)
+a_thread_limit_is_what_the_host_holds_of_a_thread: assertion `left == right` failed  left: (Some(Thread { reserved: 2097152, committed: 303104 }), 262144)  right: (Some(Thread { reserved: 2097152, committed: 45056 }), 262144)
+test result: FAILED. 5 passed; 1 failed
+== main's own vmm (origin/main 5333c2747): platform::windows_thread, --test-threads=1
+test platform::windows_thread::tests::a_thread_run_long_goes_back_to_normal_and_is_raised_again_as_it_waits ... FAILED
+test platform::windows_thread::tests::a_thread_set_otherwise_is_left_as_it_is ... ok
+test platform::windows_thread::tests::a_thread_that_waits_between_its_runs_stays_raised ... FAILED
+test platform::windows_thread::tests::credit_carries_a_thread_that_waits_across_its_clocks_steps ... ok
+test result: FAILED. 2 passed; 2 failed
+== this work's vmm: platform::windows_thread, --test-threads=1: the same two FAILED, two ok
+== harness: jobs of 16, 64 and 256 MiB
+child: limit 16777216: commit 745472 before the first thread; refused thread 334 (Some(1455)) at commit 16760832, 16384 short of the limit; charged 48094 B a thread
+child: counted a thread 36864 B (guard 24576, initial commit 4096, TEB 8192; 32768 of its stack committed as it began): the limit holds 455; Windows started 333
+child: exit Ok(ExitStatus(ExitStatus(0)))
+child: limit 67108864: commit 1044480 before the first thread; refused thread 1381 (Some(1455)) at commit 67088384, 20480 short of the limit; charged 47858 B a thread
+child: counted a thread 36864 B (guard 24576, initial commit 4096, TEB 8192; 32768 of its stack committed as it began): the limit holds 1820; Windows started 1380
+child: exit Ok(ExitStatus(ExitStatus(0)))
+child: limit 268435456: commit 2240512 before the first thread; refused thread 5564 (Some(1455)) at commit 268410880, 24576 short of the limit; charged 47847 B a thread
+child: counted a thread 36864 B (guard 24576, initial commit 4096, TEB 8192; 32768 of its stack committed as it began): the limit holds 7281; Windows started 5563
+child: exit Ok(ExitStatus(ExitStatus(0)))
+
+## 6. Landing (main 75e937bb8, then 13681de5d), 2026-11-12
+## windows_process 6/6 green natively on jupiter at a84cd6abb, 75e937bb8 and 63bdbf315 (the job
+## child's 64 threads charged 47,680, 47,296 and 47,488 B each, counted 36,864; thread_limit
+## 3,827,251 each time). scripts/lint, rustc 1.98.1:
+## - adacachy (CachyOS 7.2.9, zig 0.16.0), 75e937bb8: format, x86_64 and aarch64 linux gnu and
+##   musl: LINT-EXIT 0.
+## - adas-mac-studio.local-2 (macOS 26.4, cargo-xwin 0.23.1, zig 0.16.0, nasm 3.02), 75e937bb8:
+##   format, aarch64-apple-darwin (both passes) clean; x86_64-pc-windows-msvc stopped:
+##   windows_process.rs:544, undocumented_unsafe_blocks (the job test's unsafe call inside
+##   assert_ne!, on a line below its SAFETY comment). Landed so, before the lint ended, it
+##   stopped every agent's lint at that target; fixed in 4f3c06255.
+## - adas-mac-studio.local-2, 63bdbf315: format, x86_64-pc-windows-msvc (both passes) and
+##   aarch64-pc-windows-msvc: LINT-EXIT 0.

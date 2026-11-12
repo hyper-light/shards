@@ -1,0 +1,29 @@
+# r5 (macOS). harness/unit.sh on adas-mac-studio.local-2 (macOS, Darwin 25.4.0, arm64, 32
+# CPUs), at 5564278e3 (31f6dd5d9's code with this record added: a shallow clone of the branch,
+# its parent not fetched), rustc 1.98.1 (48a229cea 2026-09-01), SHARDS_HELPERS=skip with empty
+# init and server binaries, 2026-11-12 ~22:35Z-23:05Z. Guards A and B as r5-unit-linux.txt
+# says. (A first try's partial clone failed on its runner's network, "curl 56 Recv failure:
+# Operation timed out", and its runner restarted: no test ran.)
+
+HEAD 5564278e35fb47ec461057fc5f7899a638dcb7df PM M530 and D185: the WHP early stop was kiln's sweep; the recor
+host: Darwin arm64 25.4.0; rustc 1.98.1 (48a229cea 2026-09-01)
+ipc-kinds: exit 0 in 17 s: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 60 filtered out; finished in 0.00s
+green: exit 0 in 95 s: test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 738 filtered out; finished in 0.05s
+mutant A lines: 1
+red-relay: exit 101 in 17 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 741 filtered out; finished in 0.01s
+test daemon::tests::a_side_that_ends_without_its_last_word_says_so ... FAILED
+thread 'daemon::tests::a_side_that_ends_without_its_last_word_says_so' (30655628) panicked at crates/shards/src/daemon.rs:11332:17:
+assertion `left == right` failed: a request of kind 5 its side left unanswered
+  left: Some([12])
+ right: Some([12, 91])
+mutant B:  crates/shards/src/cli/client.rs | 2 +-
+mutant B:  1 file changed, 1 insertion(+), 1 deletion(-)
+red-client: exit 101 in 14 s: test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 741 filtered out; finished in 0.01s
+test cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms ... FAILED
+thread 'cli::client::tests::a_runs_client_tells_its_daemons_end_from_its_microvms' (30666750) panicked at crates/shards/src/cli/client.rs:1799:13:
+assertion `left == right` failed: kind 5
+  left: "the command's microVM stopped before the command ended; see home/daemon.log"
+ right: "the daemon ended before the command did; see home/daemon.log"
+tree restored clean
+full: exit 0 in 180 s: test result: ok. 730 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 27.16s
+done

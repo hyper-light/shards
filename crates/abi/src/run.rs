@@ -20,6 +20,10 @@ pub const PORT: u32 = 1024;
 /// They travel apart from the run connection, so that stdin a workload leaves unread
 /// cannot hold them up.
 pub const SIGNAL_PORT: u32 = 1025;
+/// The highest number a Linux signal has: `_NSIG`, 64 for every guest architecture (Linux
+/// 6.18 include/uapi/asm-generic/signal.h l. 7, which arm64's includes; x86's
+/// arch/x86/include/asm/signal.h l. 11). A signal frame names one of `1..=NSIG`, or none.
+pub const NSIG: u32 = 64;
 /// The host port the guest dials once for each command run beside the workload (`docker
 /// exec`), after the host asks for one with [`kind::EXEC`]. The host takes every
 /// connection to it, and keeps those whose [`kind::HELLO`] names a token it sent.
@@ -187,6 +191,11 @@ pub mod kind {
     /// its readiness moved, as [`nesting::Ready`](super::nesting::Ready) encodes it: ready,
     /// on time or late, or its ready-by passed.
     pub const READY: u8 = 49;
+    /// Guest to host, last on the signal connection, empty: the relay that reads it has
+    /// ended, the workload and every exec of it over. The host refuses what it would send
+    /// there from now on as an ended run's; a signal connection that ends without it is
+    /// lost (D16).
+    pub const SIGNALS_END: u8 = 50;
 }
 
 /// The file at the root of a writable layer kept in its own file (D190), beside its
@@ -692,6 +701,10 @@ pub mod builtin {
     /// shards-init hotplug.rs): `disk ADDR DST [ro]`, `share ADDR TAG DST [ro]`, `unmount
     /// ADDR DST`, `grow ADDR DST SECTORS`, ADDR the function's PCI address.
     pub const DEVICE: u8 = 17;
+    /// [`DEVICE`]'s exit status where what it would let go of is in use, EBUSY's number
+    /// (include/uapi/asm-generic/errno-base.h), so that its host says why by its kind
+    /// (D235); 1 for any other failure.
+    pub const DEVICE_BUSY: u8 = 16;
     /// On-demand OTLP JSON cgroup metrics: the supervisor's canonical run and
     /// physical provider IDs; no actor-supplied labels or collection authority.
     pub const METRICS: u8 = 18;

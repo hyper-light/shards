@@ -1,0 +1,27 @@
+# r6. scripts/lint on every supported target (resources/supported-targets.txt), from
+# adas-mac-studio.local-2 (macOS, arm64): Linux's through zig 0.16.0 (scripts/install-zig),
+# Windows' through cargo-xwin with Homebrew's LLVM and NASM; rustc 1.98.1 (48a229cea
+# 2026-09-01); at 5564278e3 (31f6dd5d9's code and this record), 2026-11-12 ~22:40Z-23:25Z.
+# harness/lint.sh, then harness/lint2.sh for the targets scripts/lint, which stops at a failing
+# target, had yet to reach.
+#
+# x86_64-pc-windows-msvc stopped the workspace's lint at another change's test, in a crate
+# this change does not touch: crates/vmm/src/platform/windows_process.rs:544:17, "unsafe block
+# missing a safety comment" (clippy::undocumented_unsafe_blocks; its SAFETY comment on the
+# line above `assert_ne!(`, not above the block), from cacbd8883 (D181's thread limit, PM M529),
+# fixed on main by its owner (63bdbf315). This change's crates, shards and shards-ipc, were then
+# linted on both Windows targets alone, as scripts/lint lints a Windows target.
+
+== format                              ok (cargo fmt --all --check)
+== aarch64-apple-darwin                ok: workspace, then shards-vmm --features gpu (3m00s, 6.21s)
+== x86_64-unknown-linux-gnu            ok: workspace, then shards-vmm --features gpu (2m13s, 5.68s)
+== aarch64-unknown-linux-gnu           ok: workspace, then shards-vmm --features gpu (2m10s, 5.30s)
+== x86_64-pc-windows-msvc              workspace: error, crates/vmm/src/platform/windows_process.rs:544:17 (cacbd8883, above)
+                                       shards and shards-ipc, --all-targets: CLIPPY-x86_64-pc-windows-msvc-EXIT 0 in 85 s
+== aarch64-pc-windows-msvc             workspace: error, the same line (11 s, its build warm)
+                                       shards and shards-ipc, --all-targets: CLIPPY-aarch64-pc-windows-msvc-EXIT 0 in 94 s
+== x86_64-unknown-linux-musl           ok: workspace  } LINT-MUSL-EXIT 0 in 214 s
+== aarch64-unknown-linux-musl          ok: workspace  }
+
+# Linux's clippy of shards and shards-ipc alone, x86_64-unknown-linux-gnu, on adacachy: at
+# 037fe95d4, CLIPPY-EXIT 0 in 53 s; at 31f6dd5d9, CLIPPY-EXIT 0 in 82 s.

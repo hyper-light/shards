@@ -136,20 +136,6 @@ fn devices_are_plugged_into_a_run_and_its_disk_grows() {
     shards(&["rm"], &["-f", "plugged"]);
 }
 
-/// Where a host directory is plugged into an agent at its host path (D235): its own path
-/// where its top-level directory may be a plug root; a Windows drive's beneath `/mnt` as
-/// WSL has it (`C:\x` at `/mnt/c/x`); and beneath `/srv`, a Linux host's root, where its
-/// top is `/tmp`, which no root is and in which a Linux host's test directories lie.
-fn at_host_path(host: &std::path::Path) -> String {
-    let text = host.to_string_lossy().replace('\\', "/");
-    let text = text.strip_prefix("//?/").unwrap_or(&text).to_string();
-    match text.split_once(":/") {
-        Some((drive, rest)) if drive.len() == 1 => format!("/mnt/{}/{rest}", drive.to_ascii_lowercase()),
-        _ if text.starts_with("/tmp/") => format!("/srv/plugm{text}"),
-        _ => text,
-    }
-}
-
 /// A project plugged into a running agent at its host path (D235): an Agentfile's agent,
 /// given its host's plug roots as its run starts (and the top-level directory of the
 /// directory bound at the start), can make nothing beneath any of them, as its root is
@@ -184,24 +170,10 @@ fn a_project_is_plugged_into_a_running_agent_at_its_host_path() {
     let proj = std::fs::canonicalize(files.join("proj")).unwrap();
     let bound = std::fs::canonicalize(files.join("bound")).unwrap();
     std::fs::write(proj.join("from-host"), "host\n").unwrap();
-    let dest = at_host_path(&proj);
+    let dest = common::at_host_path(&proj);
     // The roots this host's run is given, as `shards` names them (setup.rs): its OS's own
     // and the bound directory's top.
-    let mut roots: Vec<String> = if cfg!(target_os = "macos") {
-        vec!["/Users".into(), "/Volumes".into()]
-    } else if cfg!(windows) {
-        vec!["/mnt".into()]
-    } else {
-        vec!["/home".into(), "/media".into(), "/mnt".into(), "/srv".into()]
-    };
-    let top = at_host_path(&bound)
-        .split('/')
-        .nth(1)
-        .map(|t| format!("/{t}"))
-        .unwrap();
-    if cfg!(unix) && top != "/srv" && !roots.contains(&top) {
-        roots.push(top);
-    }
+    let roots = common::plug_roots(&bound);
 
     // The agent: the test guest, which says what it saw in the project's `seen`.
     let agent = TempDir::new("plugm-agent");

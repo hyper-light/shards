@@ -56,6 +56,8 @@ mod metrics;
 mod net;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod netplan;
+#[cfg(target_os = "linux")]
+mod opath;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod orders;
 #[cfg(target_os = "linux")]

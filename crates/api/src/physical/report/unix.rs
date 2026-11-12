@@ -16,7 +16,7 @@ pub(super) struct Reader {
 }
 
 impl Reader {
-    pub fn new(byte_count: usize, _scope: [u8; 16]) -> Result<(Self, io::PipeWriter), Refusal> {
+    pub fn new(byte_count: usize) -> Result<(Self, io::PipeWriter), Refusal> {
         let bytes = buffer(byte_count)?;
         let (reader, writer) = io::pipe().map_err(|e| io_error("GPU report pipe", e))?;
         let fd = reader.as_raw_fd();

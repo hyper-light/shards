@@ -21476,3 +21476,349 @@ nonzero ACK delivery, metadata durability, full cleanup or comparative cost.
   has a different cause and is owed a live repro: at c01aeb941 (job 131325553441) the
   share process and the VM process themselves were still running E2E's bound after the
   client's TerminateProcess.
+
+### M529. What limits how many threads a Windows process may have, and what each costs it (D181)
+
+- **Question.** Windows keeps no count of a process's threads, and `platform::thread_limit`
+  said none there, so the daemon took POSIX's least, 64 threads: 27 clients, 13 connections
+  a microVM's engine, which answered 503 to engine_ring's 32 streams at once on WHP
+  (ring-pins-v1 r16). What does limit a Windows process's threads, what does one cost it,
+  which of that can a process read, and does Windows refuse a thread where a count from
+  those says?
+- **Method.** `measurements/win-thread-limits` (`run.sh`) on jupiter (Windows 10.0.26200.9974,
+  AMD Ryzen AI Max+ 395, 32 CPUs, 123.6 GiB; in kiln's job, which sets no memory limit;
+  shared with other work, the system's commit 39 to 60 GB of its 141 GB), release builds,
+  2026-11-12:
+  - the host's limits (GetSystemInfo, GlobalMemoryStatusEx, GetPerformanceInfo) and the
+    job's (QueryInformationJobObject); the PE headers' SizeOfStackReserve and
+    SizeOfStackCommit, the harness's and a test-release `shards.exe`'s;
+  - the main thread and a thread std starts by default: GetCurrentThreadStackLimits, each
+    region of its stack (VirtualQuery), its stack guarantee (SetThreadStackGuarantee(0)), its
+    TEB's region (NtCurrentTeb, winnt.h) and winternl.h's TEB;
+  - bursts of 2,000 and 20,000 threads held parked with their JoinHandles: the process's
+    commit (PrivateUsage), pool quota and handles, and the system's (CommitTotal), a thread;
+  - a copy of the harness in a job holding its process's commit to 16, 64 and 256 MiB
+    (JOB_OBJECT_LIMIT_PROCESS_MEMORY), which starts threads, each parked before the next,
+    until Windows refuses one, and lets them all go before it says anything;
+  - `crates/vmm` platform/windows_process.rs's tests, natively, test-release, then under five
+    mutants of it (`measurements/win-thread-limits/mutations`).
+
+  Raw: `measurements/win-thread-limits/results/jupiter-2026-11-12.txt`.
+- **Found.**
+  - Address space: 140,737,488,224,256 B a process (128 TiB less 128 KiB, `ullTotalVirtual`);
+    a std thread reserves 2 MiB (std's default, `RUST_MIN_STACK` unset), the main thread its
+    image's 1 MiB: 67,108,863 threads.
+  - Commit: the host's limit, 141,087,805,440 B (`ullTotalPageFile`, as CommitLimit). In a job
+    holding its process to 64 MiB, `ullTotalPageFile` and `ullAvailPageFile` still said the
+    host's: a job's limits are read from the job.
+  - A std thread's stack as it begins: 24,576 B of guard pages (PAGE_GUARD: std's
+    SetThreadStackGuarantee(0x5000), 20,480, and a page) below its pages in use, 4,096 B, the
+    image's SizeOfStackCommit (`shards.exe`'s too, the linker's default); but 8,192 B in use
+    for the first thread std starts in a process (a test's job child: 40,960 B counted so,
+    then 36,864 B for the next), and for every thread under the test harness's output
+    capture. Its TEB: 8,192 B (its region; the TEBs' shared allocation grew so by it),
+    winternl.h's 6,024 B in two pages.
+  - Charged the process a std thread, parked: 47,655 to 48,009 B in the bursts, 47,847 to
+    48,094 B in the jobs; nonpaged pool quota 137 B; one handle while its JoinHandle lives.
+    About 7 KB of it past its stack's pages and its TEB: its share of the heap.
+  - Charged the system: 83.5 KB a thread, the median of eight bursts of 20,000, four of them
+    within 77 to 84 KB (the system's commit moved by −0.5 to +3.0 GB across a burst with
+    other work): about 35 KB more than the process's, the kernel's for its kernel stack,
+    which no call reports a thread.
+  - In the jobs: Windows started 333, 1,380 and 5,563 threads of 16, 64 and 256 MiB and
+    refused the next with ERROR_COMMITMENT_LIMIT (1455), 16,384, 20,480 and 24,576 B short of
+    the limit. Counted as `thread_limit` counts one (guard, initial commit and TEB: 36,864 B),
+    the limits hold 455, 1,820 and 7,281.
+  - The job child's first version started threads without waiting for each to begin. Once
+    it was refused at 1,659 threads (40,049 B a thread, threads not yet begun having
+    committed no guarantee) and then died of stack overflow (0xC00000FD), two of its threads
+    unable to grow their stacks; twice it was refused at 1,377 (48,254 B a thread) and ended
+    clean. Parked one by one, six children ran clean.
+  - The tests: green, `thread_limit` 3,827,251 on jupiter and the job child's 64 threads
+    charged 47,360 B each, counted 36,864 B. Mutants: `thread_limit` saying none again (the
+    old code) fails both live tests; the reservation counted as committed fails both; the
+    job's limit unread fails the job's ("not the job's limit: 141087805440"); every committed
+    page of the stack counted fails the live test's thread that touched 256 KiB (303,104 B
+    counted against 45,056 B); the TEB uncounted survives, an undercount, which only loosens
+    the limit and no test holds the count from above. platform::windows_thread's two
+    raised-priority tests failed alike on main's own vmm, which this change leaves as it is;
+    kiln's job holds its processes to a priority class (LimitFlags 0x20), a likely cause,
+    not checked.
+- **Consequence.** D181: on Windows `thread_limit` is the fewest of the address space over a
+  thread's reservation, the commit limit (`ullTotalPageFile`, or the job's where less) over
+  the commit Windows charges every thread (its stack's guard pages and initial commit, its
+  TEB), and a process's 2^24 handles: on jupiter 3,827,251 threads, 1,913,620 clients.
+  Since it counts less than Windows charges (the pages a thread's code touches, about 7 KB
+  of heap, and the kernel's 35 KB or so, which no call reports a thread), it is never under
+  what Windows starts, and over it by that (455/333, 1,820/1,380 and 7,281/5,563 in the
+  jobs).
+- **Unverified.** The pins test's 32 streams at once past the old bound on WHP (ROOT's); a
+  Windows on arm64 (no host); a job nested under one holding it to less, whose limit its
+  processes cannot read; the kernel's share on a quiet host.
+
+### M530. WHP microVMs that "stopped before the command ended": kiln's sweep had ended their daemon, and the client blamed the microVM (D185)
+
+- **Question.** On jupiter (WHP), ROOT's run-only tester of engine_ring saw two runs end with
+  status 125, "the command's microVM stopped before the command ended": the bulk test's
+  `run -d --name prov --use-api-socket` after 1.30 s, and the pins test's plain `run -d
+  --name bare --cpus 1 ... sleep` after 4.86 s, neither daemon's log saying a word of it
+  (ring-pins-v1's r16). What stopped them: WHP's exits, the VM process's job (D141), the
+  guest, vsock, the run's connection, or the daemon?
+- **Method.** jupiter (Windows 11 Pro 10.0.26200, AMD64, 32 CPUs), 2026-11-12, main
+  3103d2eab and the fix 037fe95d4, test-release; harnesses and every log in
+  [the record](measurements/whp-early-stop/README.md).
+  - The failure's own records: the tester's transcript, which kept its test output (r2), and
+    jupiter's kiln agent log over the run (r1); kiln's source at origin/main ed0c9d3bd for
+    what that log said, and sysinfo 0.39.6's process ending on Windows.
+  - The symptom looked for without kiln's sweep: 628 runs of plain, detached and fresh-home
+    first runs, 4 or 8 at a time and alone, and engine_ring three times, each a `kiln run`
+    (r3).
+  - Reproduced (R09, `harness/kill.sh`): a run's daemon ended mid-run with `taskkill /F`, as
+    the sweep ends one, in a fresh home's first `run -d` (1.5 s in, its template booting) and
+    in an attached `run --rm ... sleep 30` (2.2 s in); and, the case the words were written
+    for, the run's VM process ended instead, its daemon alive. A diagnostic build
+    (`harness/diag.patch`, not merged) said how each side of the slot ended.
+  - The fix: its unit tests, then each guard removed (`harness/unit.sh`), on Linux, macOS
+    and Windows, and the shards binary's whole unit suite; `kill.sh` again with the fix;
+    `scripts/lint` on every supported target from a Mac (`harness/lint.sh`, `lint2.sh`).
+- **Found.**
+  - kiln ended them. At 16:00:49.831Z its agent "stopping what agents' commands left running,
+    now that they're between turns" ended 48108 (the eng-ring-2 daemon, whose log's lines are
+    "shards daemon 48108"), its template VM and its network process; at 16:01:00.376Z 50456
+    (eng-pins-1-4's daemon) and 36004, its VM, whose debug lines end that test's log (r1).
+    kiln holds each agent session's processes in a job of its own and, every 10 s while the
+    agent is between turns, ends those not under its harness by their parents (harness/
+    host.rs `watch`, survivors.rs `scan`): a shards daemon outlives the client that started
+    it (D26), so it is one, and its VMs go with it. On Windows the end is `taskkill /F` at once
+    (sysinfo takes only Kill there); on Linux and macOS SIGTERM, then a kill 3 s on.
+  - Both clients had printed their microVM's ID, which the daemon says once it has made the
+    run, before its VM boots: each daemon was booting its run's template when it was ended
+    (r2).
+  - Outside an agent session, nothing stopped early: 0 of 628 runs, and in 3 engine_ring
+    rounds only the pins test's 503, the admission gap ring-pins-v1's r16 names (r3).
+  - The daemon ended mid-run reproduced the symptom exactly, 6 of 6 (3 fresh-home `run -d`,
+    3 attached): status 125, "the command's microVM stopped before the command ended", the
+    ID printed first by `run -d`, a daemon.log of its start alone. The run's VM ended instead
+    said the same words, 4 of 4 (a first pick of the newest VM ended the pool's spare, and
+    its 2 runs passed), while its daemon's log said "VM N ended before its command did".
+    The client could not tell the two apart: its slot ended with no word either way (the
+    diagnostic build: an end, not an error, read by the client) (r4).
+  - With the fix the daemon ended mid-run said "the daemon ended before the command did",
+    6 of 6 (3 and 3), and the VM ended "the command's microVM stopped before the command
+    ended", 3 of 3 (r4).
+  - The unit tests, on Linux (adacachy, x86_64), Windows (jupiter) and macOS (a Mac
+    Studio, arm64), rustc 1.98.1: green; with the relay's `UNANSWERED` a no-op, the relay's test
+    failed on each ("left: Some([12]) right: Some([12, 91])"); with the client's line for a
+    wordless end put back, the client's test failed on each (its words against "the daemon
+    ended before the command did"); the shards binary's unit suite passed in test-release:
+    730 passed and 14 ignored on Linux, 709 and 10 on Windows, 730 and 12 on macOS, none
+    failed (r5). In the dev
+    profile the suite ended at a stack overflow in
+    `build::policy::tests::the_deepest_policy_runs_on_the_policy_thread` (its `policy`
+    thread) on Linux and Windows alike, code this change leaves alone.
+  - `scripts/lint`, every supported target (r6): clean, but for both Windows targets'
+    workspace lint, stopped by another change's test (windows_process.rs:544, an unsafe
+    block whose SAFETY comment sat above its `assert_ne!`; cacbd8883, fixed on main by 63bdbf315);
+    this change's crates, shards and shards-ipc, were clean there alone.
+- **Consequence (D185).** The cause is outside shards: kiln's between-turns sweep ends a
+  shards daemon, and every microVM it holds, once the agent whose command started it is
+  between turns, whatever still uses it. For agents in kiln sessions: wait for a run that
+  needs its daemon within the turn, or run it through `kiln run` (background), whose
+  processes live until the run ends. shards' part was to name the wrong end: a slot whose
+  daemon ended read as its microVM's stop, as M188's and M331's daemons that exited under
+  their clients did. Now the slot's daemon says `UNANSWERED` where a run's, an exec's or an
+  attach's side ended without its last word (`EXIT`, `END`, `RESTART`), and a slot that ends
+  with no last word is said to be its daemon's end.
+- **Unverified.** The real-VM suites with the fix (ROOT's); the sweep's own end of a daemon
+  on Linux and macOS, by SIGTERM, for which the daemon installs no handler, so that its
+  default ends it as a kill does: held there by the unit tests alone; GitHub's windows-2025
+  failures of the same day are not this (no kiln there; M528).
+
+### M531. init's path descriptors on musl, and code mode's workers stopped in a timed wait (PM M525's two latent defects)
+
+- **Question.** M525 found init's four production opens of a path descriptor made through
+  std's `OpenOptions::custom_flags(O_PATH)`, which musl's `O_ACCMODE` (`03|O_SEARCH`, its
+  `O_SEARCH` being `O_PATH`) loses to std's mask, and a code-mode worker's filter that
+  allows futex but not `restart_syscall`. Are both real, on which architectures and libcs,
+  and does any other filter of shards' own share the second?
+- **Method.** On x86_64 (adacachy, kernel 7.2.9) natively (glibc) and in CI's pinned musl
+  image under Docker's default seccomp profile, and on arm64 (Docker Desktop's VM, kernel
+  6.12.76-linuxkit) in the same musl image and in Debian's `rust:1.98.1`, each as uid 1000:
+  init's and the code-mode server's unit tests; probes, test modules appended for one run
+  (`changes::keep`'s descriptors read back by F_GETFL and a mode-0 layer kept, fixed and as
+  main had it; the managed reaper's own loop and the network process's poller, each under
+  its filter, stopped and continued in its wait; a program's `Atomics.wait` in a worker's
+  runtime); and mutants of each guard. Harnesses, logs and sources:
+  [the record](measurements/musl-opath-v1/README.md). Revisions 883796ec1 and fc71859bc
+  (main), 2026-11-12.
+- **Found.**
+
+  | Defect | Before (main's code) | After |
+  |---|---|---|
+  | init's kept layers (`changes::keep`), musl | not `O_PATH`: `O_RDONLY \| O_DIRECTORY \| O_LARGEFILE` (x86_64 `0o300000`, arm64 `0o440000`); a mode-0 layer refused EACCES | `O_PATH \| O_DIRECTORY` (`0o10200000`, `0o10040000`); kept |
+  | the same, glibc | `O_PATH` already (glibc's `O_ACCMODE` is 3) | unchanged |
+  | a worker stopped and continued in a timed futex wait | SIGSYS on x86_64 and arm64, glibc and musl (`restart_syscall` refused) | exits 0 on each |
+  | the helper stopped in its poll (M525's fix kept) | lives; with `restart_syscall` in neither filter, SIGSYS on x86_64, lives on arm64 (ppoll restarts as itself) | lives on each |
+  | the managed reaper, the network process (x86_64) | live through the stop: no call they allow resumes through `restart_syscall` (ppoll and wait4 restart as themselves; epoll_wait returns EINTR, which the poller takes as no events) | unchanged |
+  | a program's timed `Atomics.wait` in a worker | throws "cannot block in this thread" (QuickJS-NG blocks only where `JS_SetCanBlock` allows; rquickjs never sets it) | unchanged |
+
+- **Mutants**, on each of the four: a call site put back on std's `OpenOptions` (killed by
+  the test that no source of init's asks std for `O_PATH`, on glibc too); the helper given
+  std's flags (killed on musl, "not O_PATH: 0o300000"; survives on glibc, which keeps
+  `O_PATH`: the source test is the guard there); the filters as main had them (the worker's
+  test killed, SIGSYS); `restart_syscall` in neither (the helper's test killed on x86_64
+  alone).
+- **Reading.** Both defects were real and latent. init, musl alone, made read-only opens
+  where it meant path descriptors: each its directory's file system's open and release,
+  fsnotify's events, a read permission asked, and a descriptor able to read the directory;
+  init runs them as root, so none failed in a guest. The worker's filter allowed a timed
+  futex wait and killed its resumption after a stop, a cgroup's freeze (init's pause and
+  commit) or a debugger, on both architectures; no worker path is known to make one today.
+  The fix: `opath::open` (open(2) itself, `O_PATH | O_CLOEXEC`) for init's five opens, and
+  `restart_syscall` in the worker's list, which the helper's extends (D136). What would
+  falsify it: a path descriptor of init's whose F_GETFL lacks `O_PATH` on musl, or a
+  filtered worker or helper ended by SIGSYS after a stop.
+- **Unverified.** The guest paths that hold these descriptors on real microVMs (diff,
+  commit, export and size of runs and joiners, D190's go-over) and code mode under init's
+  pause and commit (ROOT's); scripts/lint's whole workspace and its macOS and Windows
+  targets, which compile none of this change (clippy of init, server and net ran clean on
+  the four Linux targets, and `cargo fmt --all --check`, at 1464cdb88).
+
+### M532. A storm's memory grows with its vCPUs: 256 MiB to 64, then 4 MiB a vCPU, which holds the kernel's thread limit
+
+- **Question.** Both storm tests (`snapshot.rs`, `storm::`) failed on windows-2025 (CI run
+  43251385669, job 131297794363, 2556e892f; job 131325553441, c01aeb941). The guest
+  kernel panicked at boot: `workqueue: Failed to create a worker thread: -EAGAIN`, then
+  `Kernel panic - not syncing: Cannot create quota_unbound_wq` in `dquot_init`. Since
+  9933b02bf and d77ef9948 (NR_CPUS 255 on x86-64, read by `kernel_nr_cpus`), `storm_cpus`
+  asks for the host's most vCPUs: 240 under WHP, on GitHub's runners and on jupiter. The
+  storm still had 256 MiB. Why does that guest not boot, and how much memory does a storm
+  of N vCPUs need?
+- **Method.** jupiter (Windows 11 10.0.26200, AMD Ryzen AI Max+ 395, WHP: `shards: 4096
+  vCPUs requested; this host supports 240`), 2026-11-12, raw output in
+  `measurements/storm-memory/results/`:
+  - `measurements/storm-memory/probe.sh`: the test guest's `limits` mode booted without
+    `quiet`, 3 times at each size. It reads the kernel's `Memory:` line,
+    `kernel.threads-max`, and the tasks there as init starts (`/proc/loadavg`, a line this
+    change adds to `limits`).
+  - The storm tests as CI runs them (2, 8 and 240 vCPUs) on four trees, and at
+    `SHARDS_STORM_CPUS=64` 5 times. The red: 256 MiB at 240 vCPUs, on 451672250 and on
+    34215b23e.
+- **Found.** Each size's 3 boots agreed to within 0.2% of available memory and 5 tasks:
+
+  | vCPUs, MiB | available at boot | reserved | `threads-max` | tasks at init | boots |
+  |---|---|---|---|---|---|
+  | 1, 256 | 226,232K | 33,468K | 1,787 | 52-55 | yes |
+  | 2, 256 | 225,712K | 33,648K | 1,786 | 58-63 | yes |
+  | 8, 256 | 222,248-222,360K | 34,728K | 1,778 | 96-97 | yes |
+  | 64, 256 | 192,984-193,160K | 47,140K | 1,681 | 435-440 | yes |
+  | 128, 256 | 159,540-159,724K | 61,000K | 1,572 | 824-826 | yes |
+  | 128, 512 | 417,316-417,380K | 65,480K | 3,585 | 825-826 | yes |
+  | 240, 256 | 108,924-109,012K | 85,824K | none read | none | no: `-EAGAIN` |
+  | 240, 960 | 808,320-808,500K | 99,264K | 6,905 | 1,503-1,506 | yes |
+
+  - The kernel caps its threads at the memory free at boot over 8 × THREAD_SIZE, 128 KiB a
+    thread at x86-64's and arm64's 16 KiB stacks, neither config with KASAN (kernel/fork.c
+    `set_max_threads`). `copy_process` refuses a thread past the cap with `-EAGAIN`, its
+    own kernel threads included.
+  - Each vCPU adds 6.0 to 6.1 tasks at init (the kernel's per-CPU threads), about 220 KiB
+    reserved and 480 to 520 KiB less available, and takes 1.7 from the cap at a fixed size.
+    Each MiB more adds 7.9 to the cap (128 vCPUs: 1,572 at 256 MiB, 3,585 at 512).
+  - So at 240 vCPUs in 256 MiB the kernel's own 1,500 threads pass its cap, which is about
+    1,380 by the 1.7 a vCPU from 128 vCPUs. That is why it panics; it is not read, since the
+    guest never reaches init.
+  - The storm adds two threads a vCPU (its pairs' turns and its clock's readers) and 10 of
+    its own (the timer, reader and writer, the echo's two, four watchers and main).
+  - Storms: at 64 vCPUs in 256 MiB, both tests passed 5 of 5 (10 to 38 s, with jupiter's
+    32 CPUs busy at the time). At 240 vCPUs in `storm_mib`'s 960 MiB, both passed on all
+    four trees. In 256 MiB they failed with CI's panic on both red trees.
+- **Derivation (R03).** What binds is the kernel's thread cap, by which a guest of N vCPUs
+  needs `threads-max ≥ 52 + 6.1·N` (its own threads) `+ 2·N + 10` (the storm's). Both
+  sides grow linearly: the cap by 7.9 a MiB, less 1.7 a vCPU; the need by 8.1 a vCPU.
+  - 256 MiB holds a 64-vCPU storm with 2.9 times its threads to spare (1,681 against 578).
+  - Past 64, `storm_mib` gives each vCPU the 4 MiB a 64-vCPU storm has (256 × N / 64,
+    rounded up), which keeps that headroom at every size: 3.3 times at 128 (3,585 against
+    1,092), 3.5 at 240 (6,905 against 1,996). Since need and cap are both linear, the
+    headroom stays at least the anchor's for every N from 64 to the kernel's 255.
+  - At 128 vCPUs, 256 MiB alone would leave 1.44 times; at 240, none.
+  - Memory itself is not what binds: 808 MB available at 240 against a storm that touches a
+    few MiB of stacks and buffers.
+  - Cold start: the bound is a formula of the vCPU count alone and learns nothing, so a
+    host's first storm has it.
+  - Overflow: `cpus.saturating_mul(256)` stays within u32. Past 16,777,215 vCPUs it would
+    ask for 64 TiB, which no host gives and the run refuses. In practice N is at most
+    NR_CPUS (255 on x86-64: 1,020 MiB; 123 on arm64: 492 MiB).
+- **Reading.** The fault was the test's: it asked for a machine that cannot boot. A user's
+  `run --kernel --cpus 240 --memory 256` meets the same panic. That is the user's memory
+  to choose and is not changed here. What would falsify the fix: a storm of N vCPUs in
+  `storm_mib(N)` whose kernel or storm cannot start a thread.
+- **Held to 4 CPUs.** On 4 of jupiter's CPUs (`start /affinity F`, as CI's 4-CPU runners
+  have; jupiter's other work shares those CPUs), the 240-vCPU restore storm alone passed
+  (124.5 s). Run beside the resuming storm, and once with all of snapshot.rs, a guest
+  said nothing past its `PCI:` line for 3 minutes, and the harness's fixed 120 s, plus its
+  60 s of quiet, gave up on it. That patience is the harness's, and is its own landing.
+- **Unverified.**
+  - CI's windows-2025 run, whose 4 CPUs may meet the harness's patience above.
+  - Linux KVM x86-64 (255 vCPUs: 1,020 MiB), which CI's x86_64 Linux job has not reached
+    since NR_CPUS rose (its `api_image` hangs first).
+  - arm64 on KVM (the nested L1) and WHP: its tasks a vCPU and its costs a vCPU, unmeasured.
+  - macOS, whose storm runs at HVF's most vCPUs.
+
+### M533. A second GPU report of one scope on Windows, refused ERROR_PIPE_BUSY (D232, D233)
+
+- **Question.** shards-api's `physical::report` tests failed on Windows when run side by
+  side and passed one at a time (step 9's report, at a7dbf1446). Did the client's own pipe
+  code fail, would it under clients of its own, and what does Windows say?
+- **Method.** `docs/research/measurements/api-flakes/` (its README has the harness, every
+  revision and binary): the library tests built at `test-release` and run again and again
+  on jupiter (Windows x86_64, 32 CPUs, rustc 1.98.1; a kiln runner beside CI's jobs),
+  2026-11-12: `physical::report` side by side as libtest runs them, and one at a time; a
+  new test, two reports of one scope at once and one beside an earlier report's writer, on
+  main's code and on the fix's.
+- **Found.**
+
+  | build | args | runs failed |
+  |---|---|---|
+  | main ad600dd52 | `physical::report` | 40 of 40 |
+  | main ad600dd52 | `physical::report --test-threads=1` | 0 of 40 |
+  | main c2c4547c1 | `physical::report` | 40 of 40 |
+  | main c2c4547c1 and the new test | the new test alone | 20 of 20 |
+  | the fix | `physical::report` | 0 of 200 |
+  | main c2c4547c1, runs interleaved with the fix's | the whole library | 11 of 40 |
+  | the fix, runs interleaved with main's | the whole library | 4 of 40 |
+
+  Every failure was `CreateNamedPipeW`'s, `ManagedIo { operation: "GPU report pipe", code:
+  Some(231) }`: ERROR_PIPE_BUSY. The pipe's name was the report's scope
+  (`\\.\pipe\shards-api-gpu-<scope>`), one instance, FILE_FLAG_FIRST_PIPE_INSTANCE; the
+  six tests' fixtures share one scope, so any two at once met; and the new test met it
+  alone, twice over: a second report of the scope while the first lived, and one beside
+  an earlier report's writer, whose instance outlives its receiver. In the whole library,
+  main's 11 failed runs were 8 of these and 3 that hung; the fix's 4 all hung, in
+  `client::borrowed_tests::exact_bytes_clone_and_half_close`, past 120 s, a fault of its
+  own that main has too, measured apart.
+- **Reading.**
+  - The fault was the client's, not its tests': a scope names a report's frame
+    (`GpuReport::parse` checks it) and nothing makes it unique to one report at a time, so
+    a client that boots two guests in one native scope, or one again while a VM process
+    still holds the last one's writer, was refused on Windows alone (its Unix pipe has no
+    name). An instance "is always deleted when the last handle to the instance of the named
+    pipe is closed", and the pipe's name is "the unique pipe name"
+    ([CreateNamedPipeW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipea)).
+  - Windows names the second instance's refusal ERROR_PIPE_BUSY here, not the
+    ERROR_ACCESS_DENIED the same page gives FILE_FLAG_FIRST_PIPE_INSTANCE: the instance
+    count is checked first.
+  - Not a client to make wait: a named pipe client that meets ERROR_PIPE_BUSY "uses the
+    WaitNamedPipe function to wait for an instance of the named pipe to become available"
+    ([Named Pipe Client](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-client)),
+    but this pipe's one client is the report's own writer, opened by the same call that
+    made the pipe; an instance another holds is no report's, and refused.
+  - The fix names the pipe as Windows names its own anonymous ones ("implemented using a
+    named pipe with a unique name",
+    [Anonymous Pipe Operations](https://learn.microsoft.com/en-us/windows/win32/ipc/anonymous-pipe-operations),
+    which also says they take no overlapped reads, so this one stays named): the client
+    process's nonce and counter (`client::private_name`, which its socket directories
+    already used), `\\.\pipe\shards-api-gpu-<nonce>-<n>`. The scope stays in the frame.
+    FILE_FLAG_FIRST_PIPE_INSTANCE and the writer's process check stay: a name another took
+    first is refused, never joined.
+  - What would show this wrong: a refusal of a report's pipe with no other of this
+    process's alive, or a frame of one report read by another.

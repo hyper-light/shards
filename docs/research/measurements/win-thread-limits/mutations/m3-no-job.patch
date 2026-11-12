@@ -1,0 +1,11 @@
+--- a/crates/vmm/src/platform/windows_process.rs
++++ b/crates/vmm/src/platform/windows_process.rs
+@@ -259,7 +259,7 @@
+         }
+         Some(Room {
+             space: status.ullTotalVirtual,
+-            commit: job_commit().map_or(status.ullTotalPageFile, |job| job.min(status.ullTotalPageFile)),
++            commit: status.ullTotalPageFile,
+         })
+     }
+ 

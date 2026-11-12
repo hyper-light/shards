@@ -25,8 +25,8 @@ mod session;
 pub mod wire;
 
 pub use wire::{
-    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, Proto, Publish, Ready, Receiving, RunEnd,
-    Secret, Stats, StatsScope,
+    Bound, Channel, Keep, MemberInfo, MemberKind, Narrowing, PlugRefusal, Proto, Publish, Ready, Receiving,
+    RunEnd, Secret, Stats, StatsScope,
 };
 
 /// A member, as the image's Agentfile names it.
@@ -69,6 +69,10 @@ pub struct MemberSpec {
     /// Variables over its image's, each `(KEY, VALUE)`; `SHARDS_DOMAIN` is init's.
     pub env: Vec<(String, Secret)>,
     pub files: Vec<MemberFile>,
+    /// Its working directory, absolute and plain: the project path it works in, which must be
+    /// there as it starts (D231); none for its image's (its config's `run.workdir`, in its
+    /// directory).
+    pub workdir: Option<String>,
     /// Its stdin, a pipe the orchestrator writes ([`ImageGuest::take_input`]); else
     /// `/dev/null`, as every member's is today.
     pub stdin: bool,
@@ -155,6 +159,8 @@ pub enum ImageRefusal {
         what: &'static str,
         kind: std::io::ErrorKind,
     },
+    /// A plug or an unplug its run's host refused (D235), by what refused it.
+    Plug(PlugRefusal, String),
 }
 
 impl std::fmt::Display for ImageRefusal {
@@ -168,6 +174,7 @@ impl std::fmt::Display for ImageRefusal {
             Self::Ended(end) => write!(f, "the run has ended: {end:?}"),
             Self::Host(why) => write!(f, "the run's host: {why}"),
             Self::Os { what, kind } => write!(f, "{what}: {kind:?}"),
+            Self::Plug(cause, why) => write!(f, "the plug: {cause:?}: {why}"),
         }
     }
 }
@@ -210,6 +217,23 @@ pub trait ImageGuest: Send + Sync {
     /// where it stays. Refused for a run whose spec does not ask for the grant, and once the
     /// run has ended with nothing newer ([`ImageRefusal::Ended`]).
     fn wait_ready(&self, seen: Option<Ready>, timeout: Duration) -> Result<Option<Ready>, ImageRefusal>;
+    /// Host directory `host` plugged into running member `member` as the run goes (D235),
+    /// at `at`: absolute, strictly beneath one of the run's plug roots, which its host names
+    /// as it starts (its OS's own, and the top-level directory of each of its shares), so
+    /// that a project is plugged at its host path. The host's files there are the member's,
+    /// read-only where asked; the plug grants nothing beyond its own path. Waits at most
+    /// `patience`; refused as [`ImageRefusal::Plug`], by what refused it.
+    fn plug(
+        &self,
+        member: &MemberName,
+        host: &std::path::Path,
+        at: &str,
+        read_only: bool,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal>;
+    /// What is plugged in at `at` let go of: unmounted in its member, refused while anything
+    /// there uses it ([`PlugRefusal::Busy`]), then taken off the microVM.
+    fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal>;
     /// Ends it at once: its VM's process is killed, and [`wait_for`](Self::wait_for) then
     /// returns [`RunEnd::Stopped`]. Never refused, as a VM left running is a leak. Returns
     /// once the run's end is told, its VM gone; its host then reaps what it started and
@@ -301,11 +325,20 @@ fn request(spec: &ImageSpec) -> Result<wire::Request, ImageRefusal> {
                 bytes: f.bytes.clone(),
             });
         }
+        if let Some(w) = &m.workdir
+            && !shards_abi::run::members::workdir_ok(w.as_bytes())
+        {
+            return Err(ImageRefusal::Spec {
+                what: "a member's working directory",
+                why: format!("{w:?}: {}", shards_abi::run::members::Error::Workdir),
+            });
+        }
         members.push(wire::MemberStage {
             kind: m.member.kind,
             name: m.member.name.clone(),
             env,
             files,
+            workdir: m.workdir.clone(),
         });
     }
     let mut shares = Vec::with_capacity(spec.shares.len());
@@ -382,6 +415,7 @@ mod tests {
                     mode: 0o600,
                     bytes: Secret::from("{}"),
                 }],
+                workdir: Some("/Users/ada/proj".into()),
                 stdin: false,
                 terminal: false,
             }],
@@ -405,6 +439,7 @@ mod tests {
         let r = request(&spec()).unwrap();
         assert_eq!(r.members[0].env, vec![Secret::from("OPENAI_API_KEY=sk-1")]);
         assert_eq!(r.members[0].files[0].mode, 0o600);
+        assert_eq!(r.members[0].workdir.as_deref(), Some("/Users/ada/proj"));
         assert!(r.shares[0].read_only);
         assert_eq!((r.nesting, r.ready_by), (false, None));
         assert_eq!(wire::Request::decode(&r.encode().unwrap()).unwrap(), r);
@@ -474,6 +509,21 @@ mod tests {
         let mut s = spec();
         s.shares[0].at = "work".into();
         assert_eq!(refused(s), "a share");
+        for relative_or_escaping in [
+            "proj",
+            "./proj",
+            "/Users/ada/../../etc",
+            "/Users//ada",
+            "/Users/ada/",
+        ] {
+            let mut s = spec();
+            s.members[0].workdir = Some(relative_or_escaping.into());
+            assert_eq!(
+                refused(s),
+                "a member's working directory",
+                "{relative_or_escaping}"
+            );
+        }
         let mut s = spec();
         s.members[0].terminal = true;
         assert_eq!(refused(s), "a member's terminal");

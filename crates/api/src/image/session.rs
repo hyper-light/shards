@@ -51,6 +51,8 @@ struct State {
     flows: HashMap<(u32, Channel), Flow>,
     ends: HashMap<u32, u32>,
     stats: HashMap<u32, Result<Stats, String>>,
+    /// Each plug's or unplug's answer, by its ask's id (D235).
+    plugs: HashMap<u32, Result<(), (wire::PlugRefusal, String)>>,
     next_ask: u32,
     /// The run's own command's readiness under the nesting grant (D234), as its init last
     /// said it: init owns it, and moves it by D234's table.
@@ -388,6 +390,49 @@ impl Session {
         Ok(())
     }
 
+    /// Asks its host a plug or an unplug (`kind`, D235), its payload made of the ask's id,
+    /// and waits at most `patience` for its answer.
+    fn plug_ask(
+        &self,
+        kind: u8,
+        patience: Duration,
+        payload: impl FnOnce(u32) -> Result<Vec<u8>, wire::WireError>,
+    ) -> Result<(), ImageRefusal> {
+        let id = {
+            let mut state = lock(&self.shared.state);
+            if let Some(end) = &state.end {
+                return Err(ImageRefusal::Ended(end.clone()));
+            }
+            state.next_ask = state.next_ask.wrapping_add(1);
+            state.next_ask
+        };
+        let payload = payload(id).map_err(|e| ImageRefusal::Spec {
+            what: "a plug",
+            why: e.to_string(),
+        })?;
+        self.shared.send(kind, &payload).map_err(|e| ImageRefusal::Os {
+            what: "the run host's plug",
+            kind: e.kind(),
+        })?;
+        let answer = self.shared.wait(patience, |s| {
+            if let Some(answer) = s.plugs.remove(&id) {
+                return Some(answer.map_err(|(cause, why)| ImageRefusal::Plug(cause, why)));
+            }
+            if let Some(end) = &s.end {
+                return Some(Err(ImageRefusal::Ended(end.clone())));
+            }
+            s.gone()
+                .then(|| Err(ImageRefusal::Host("it exited without answering".into())))
+        });
+        answer.unwrap_or_else(|| {
+            lock(&self.shared.state).plugs.remove(&id);
+            Err(ImageRefusal::Unsupported {
+                what: "a plug",
+                why: format!("no answer within {patience:?}"),
+            })
+        })
+    }
+
     fn index(&self, member: &MemberName) -> Result<&MemberInfo, ImageRefusal> {
         self.members
             .iter()
@@ -502,6 +547,10 @@ fn take(shared: &Shared, kind: u8, payload: &[u8]) -> Result<bool, String> {
         k::STATS => {
             let answer = wire::StatsAnswer::decode(payload).map_err(bad)?;
             state.stats.insert(answer.id, answer.result);
+        }
+        k::PLUGGED => {
+            let answer = wire::PlugAnswer::decode(payload).map_err(bad)?;
+            state.plugs.insert(answer.id, answer.result);
         }
         k::READY => state.ready = Some(wire::ready(payload).map_err(bad)?),
         k::ENDED => {
@@ -655,6 +704,44 @@ impl ImageGuest for Session {
                 what: "stats",
                 why: format!("no answer within {patience:?}"),
             })
+        })
+    }
+
+    fn plug(
+        &self,
+        member: &MemberName,
+        host: &std::path::Path,
+        at: &str,
+        read_only: bool,
+        patience: Duration,
+    ) -> Result<(), ImageRefusal> {
+        let info = self.index(member)?;
+        if !info.runs {
+            return Err(ImageRefusal::Plug(
+                wire::PlugRefusal::Member,
+                format!("{member:?} is files alone, and runs nothing"),
+            ));
+        }
+        let host = host.to_str().ok_or_else(|| ImageRefusal::Spec {
+            what: "a plug's host directory",
+            why: format!("{}: not UTF-8", host.display()),
+        })?;
+        let member = info.index;
+        self.plug_ask(wire::to_host::PLUG, patience, |id| {
+            wire::PlugAsk {
+                id,
+                member,
+                host: host.into(),
+                at: at.into(),
+                read_only,
+            }
+            .encode()
+        })
+    }
+
+    fn unplug(&self, at: &str, patience: Duration) -> Result<(), ImageRefusal> {
+        self.plug_ask(wire::to_host::UNPLUG, patience, |id| {
+            wire::UnplugAsk { id, at: at.into() }.encode()
         })
     }
 

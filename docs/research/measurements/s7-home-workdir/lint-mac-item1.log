@@ -1,0 +1,37 @@
+host adas-mac-studio.local-2 (Darwin arm64), lint-mac.sh at 6243ca378 (item 1 on main 41e5a0943)
+== 6243ca37 Merge origin/main (41e5a0943) into p/s7-part2-v1: item 4 landed, item 1 on it 2026-11-12T22:25:12Z
+== zig 0.16.0 at /Users/adalundhe/g121-tmp/s7p2/zig-aarch64-macos-0.16.0
+== lint exit 101
+== format
+== aarch64-apple-darwin
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== x86_64-unknown-linux-gnu
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== aarch64-unknown-linux-gnu
+warning: shards-vmm@0.1.0: the gpu feature links the renderer from SHARDS_GPU_LIBS, which is not set
+== x86_64-pc-windows-msvc
+error: unsafe block missing a safety comment
+error: could not compile `shards-vmm` (lib test) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+== test shards-abi exit 0
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test shards-agentfile exit 0
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 64.65s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test shards-api exit 0
+test result: ok. 85 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.45s
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 16 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 1.25s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+== test shards:agentfile:: api_run:: exit 0
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 725 filtered out; finished in 0.03s
+== done 2026-11-12T22:29:40Z lint 101 tests 0
+The x86_64-pc-windows-msvc error is main's own (crates/vmm/src/platform/windows_process.rs:544,
+a lib test of cacbd8883, PM M526), outside this change; scripts/lint stops there, so the per-crate
+lint below covers the targets after it.
