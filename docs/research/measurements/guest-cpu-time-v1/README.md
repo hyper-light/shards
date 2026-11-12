@@ -153,9 +153,15 @@ keyed by vCPU index, not a fixed array; a departed vCPU stays in a monotone tota
 - **`shards stats`.** Its piped text is Docker's table, byte for byte (`shards_cmdline::format::stats`, held to
   docker/cli's goldens), and has no column for this.
 - **`shards top`.** It lists the guest's processes, and vCPU time is not one of them.
-- **`shards run --kernel` VMs** (the API crate's guests). They have no daemon link. `vm_run::guest_times()` is what
-  the other implementer's stats operation (crates/api image-boot module) can serve over its own channel. Clients
-  that do not link `shards_vmm` can read the text form.
+- **`shards run --kernel` VMs, and the image-boot API's runs.**
+  - A `run --kernel` guest has no daemon link. `vm_run::guest_times()` is what any channel to its VM process can
+    serve, and clients that do not link `shards_vmm` can read the text form.
+  - The image-boot API's runs (D231, on main as this merged) are hosted by `shards api-run`
+    (`crates/shards/src/api_run.rs`), which plays the daemon's side of the VM's link. Its `stats()` answers
+    `shards_api::image::wire::StatsAsk` with init's in-guest STATS lines. To carry guest time too, it can ask
+    `GUEST_TIME` on the same link, which `warm.rs` answers on any daemon-side link. Its wire `Stats` would then
+    need a field. That wire belongs to its owner, so this branch does not change it: it is a follow-up for that
+    lane.
 
 ## Rules (R01-R16)
 
@@ -212,7 +218,11 @@ keyed by vCPU index, not a fixed array; a departed vCPU stays in a monotone tota
 
 ## Light tests and gates (implementer)
 
-See [gates.md](gates.md) for each command, runner, revision and result.
+See [gates.md](gates.md) for each command, runner, revision and result. On the merged tree (9c2a671cb):
+- the unit tests relevant here pass on Linux x86_64;
+- clippy `-D warnings` is clean for every target the change compiles for: x86_64 and aarch64 Linux (gnu, and
+  musl for the test guest); x86_64 and aarch64 Windows (WHP, shards-vmm); aarch64-apple-darwin (HVF,
+  shards-vmm, type-checked from Linux).
 
 ## Owed to ROOT
 
@@ -246,9 +256,15 @@ See [gates.md](gates.md) for each command, runner, revision and result.
      exercises;
    - that `Total - Hypervisor` tracks the guest's spin;
    - the call's cost;
-   - a compile/clippy of both Windows targets (no Windows runner was reachable).
+   - (compile and clippy of both Windows targets: done from Linux, gates.md.)
 5. **Hot-path cost** on an exit-heavy workload (HVF), before and after: n, p50/p90/p99/max (R14).
-6. **Start and teardown.**
+6. **macOS natively.** Run the unit tests (`mach_ns`'s test; `guest_time` and the stat parser run there too) and
+   a native clippy of shards-vmm, shards and shards-vm-process. The HVF backend was type-checked and linted from
+   Linux, with its C shim stood in for. The Mac Studio runner was reachable only through kiln, whose server kept
+   timing out.
+7. **Main's own clippy failure.** `spec::has_vm_flag` is dead in shards-vm-process's binary (Hex GPU patches;
+   gates.md). It is not this branch's.
+8. **Start and teardown.**
    - Start: a vCPU joins the registry with an Arc clone and an uncontended lock before it reports set up, and
      opens nothing.
    - Teardown: each vCPU makes one final read under the registry's lock, serialized as vCPUs leave together.
