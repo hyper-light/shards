@@ -2024,6 +2024,13 @@ mod tests {
             (0..n).map(|_| self.byte().expect("bytes")).collect()
         }
 
+        /// A swap's offer, after its byte: its fixed part, then as much as that says.
+        fn offer(&mut self) -> Offer {
+            let head: [u8; abi::OFFER_HEADER] = self.take(abi::OFFER_HEADER).try_into().unwrap();
+            let rest = abi::offer_len(&head).unwrap() - abi::OFFER_HEADER;
+            Offer::parse(&[head.to_vec(), self.take(rest)].concat()).unwrap()
+        }
+
         fn say(&self, bytes: &[u8]) {
             write_all(self.socket.as_raw_fd(), bytes).unwrap();
         }
@@ -2125,6 +2132,13 @@ mod tests {
                         Some(abi::DOORBELL) => {}
                         Some(abi::END) => saw.ended = true,
                         Some(abi::DETACH) => break,
+                        // A swap crossing the device's DETACH: refused, the host having
+                        // ended, as the device refuses it (`Refusal::Ended`); plain after.
+                        Some(abi::SWAP) => {
+                            let _ = wire.offer();
+                            wire.say(&Reply::Refused(Refusal::Ended).encode());
+                            break;
+                        }
                         other => panic!("the relay said {other:?} after the device's DETACH"),
                     }
                 }
@@ -2151,14 +2165,8 @@ mod tests {
                         return saw;
                     }
                     abi::SWAP => {
-                        let mut head = [0u8; abi::OFFER_HEADER];
-                        for b in &mut head {
-                            *b = wire.byte().unwrap();
-                        }
-                        let rest = abi::offer_len(&head).unwrap() - abi::OFFER_HEADER;
-                        let offer = [head.to_vec(), wire.take(rest)].concat();
+                        let offer = wire.offer();
                         wire.say(&[abi::DETACH]);
-                        let offer = Offer::parse(&offer).unwrap();
                         saw.rings.push(offer.ring);
                         slot = Mapped::of(&offer);
                         (taken, given) = (0, 0);
@@ -2723,6 +2731,70 @@ mod tests {
         let mut rest = [0u8; 2];
         (&guest).read_exact(&mut rest).unwrap();
         assert_eq!(&rest, b"pl");
+    }
+
+    /// This process's pinned memory, in kB, as its kernel counts it (`VmPin`).
+    fn vm_pin() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .unwrap()
+            .lines()
+            .find_map(|l| l.strip_prefix("VmPin:"))
+            .and_then(|v| v.split_whitespace().next()?.parse().ok())
+            .unwrap()
+    }
+
+    /// A slot's pages pinned as a fixed buffer of an io_uring instance count as pinned to
+    /// the instance's maker (`VmPin`, as init's count for its relay's slots), and stop as
+    /// its entry is emptied, no request holding it: the calls the relay pins and frees its
+    /// slots by, on this host's kernel. Where it gives this process no io_uring, or no
+    /// sparse table, nothing is checked.
+    #[test]
+    fn a_slots_pins_count_to_the_instances_maker_and_go_with_its_entry() {
+        let Some(instance) = pinner() else {
+            eprintln!("SKIP: no io_uring for this process here");
+            return;
+        };
+        let fd = instance.as_raw_fd();
+        let mut p = Pool::new(Some(instance));
+        let Some(index) = p.entry(fd) else {
+            eprintln!("SKIP: no fixed-buffer table here: {:?}", p.broken);
+            return;
+        };
+        let len = usize::try_from(abi::slot_len(abi::MIN_RING)).unwrap();
+        let page = usize::try_from(page().unwrap()).unwrap();
+        // SAFETY: memfd_create(2) of a NUL-terminated name.
+        let memory = unsafe { libc::memfd_create(c"ring-pin-test".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(memory >= 0);
+        // SAFETY: a descriptor just made, which nothing else owns.
+        let memory = unsafe { OwnedFd::from_raw_fd(memory) };
+        // SAFETY: ftruncate(2) of the test's own memory file.
+        assert_eq!(
+            unsafe { libc::ftruncate(memory.as_raw_fd(), len as libc::off_t) },
+            0
+        );
+        // SAFETY: a shared, populated mapping of the whole file, unmapped below.
+        let at = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_POPULATE,
+                memory.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(at, libc::MAP_FAILED);
+        let before = vm_pin();
+        pin(fd, index, at, len).unwrap();
+        assert_eq!(
+            vm_pin(),
+            before + (len.div_ceil(page) * page / 1024) as u64,
+            "pinned"
+        );
+        unregister(fd, index).unwrap();
+        assert_eq!(vm_pin(), before, "its pins kept after its entry emptied");
+        // SAFETY: the mapping made above, unmapped once.
+        unsafe { libc::munmap(at, len) };
     }
 
     #[test]
