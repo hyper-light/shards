@@ -14,7 +14,9 @@ package oracle
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -232,6 +234,21 @@ type numberCase struct {
 	Neg   bool   `json:"neg,omitempty"`
 }
 
+// A number OPA writes too long to keep whole: its length, its first and last 64 bytes, and
+// its SHA-256.
+type textDigest struct {
+	S      string `json:"s"`
+	Len    int    `json:"len"`
+	Head   string `json:"head"`
+	Tail   string `json:"tail"`
+	SHA256 string `json:"sha256"`
+}
+
+func digest(s, t string) textDigest {
+	sum := sha256.Sum256([]byte(t))
+	return textDigest{S: s, Len: len(t), Head: t[:min(64, len(t))], Tail: t[max(0, len(t)-64):], SHA256: hex.EncodeToString(sum[:])}
+}
+
 type pairCase struct {
 	A       string `json:"a"`
 	B       string `json:"b"`
@@ -252,6 +269,8 @@ func TestShardsNumbers(t *testing.T) {
 		Numbers []string    `json:"numbers"`
 		Pairs   [][2]string `json:"pairs"`
 		Quote   []string    `json:"quote"`
+		Texts   []string    `json:"texts"`
+		Abs     []string    `json:"abs"`
 	}
 	if err := json.Unmarshal(dt, &in); err != nil {
 		t.Fatal(err)
@@ -260,6 +279,8 @@ func TestShardsNumbers(t *testing.T) {
 		Numbers []numberCase `json:"numbers"`
 		Pairs   []pairCase   `json:"pairs"`
 		Quote   [][2]string  `json:"quote"`
+		Texts   []textDigest `json:"texts"`
+		Abs     []textDigest `json:"abs"`
 	}
 	for _, s := range in.Numbers {
 		c := numberCase{S: s}
@@ -291,6 +312,37 @@ func TestShardsNumbers(t *testing.T) {
 	}
 	for _, q := range in.Quote {
 		out.Quote = append(out.Quote, [2]string{q, strconv.Quote(q)})
+	}
+	// Numbers whose text runs long: what FloatToNumber writes of each as read.
+	for _, s := range in.Texts {
+		f := opabuiltins.NumberToFloat(ast.Number(s))
+		out.Texts = append(out.Texts, digest(s, string(opabuiltins.FloatToNumber(f))))
+	}
+	// abs of a number read from JSON (OPA's parser refuses such a literal, "number too
+	// big"), as fuzz/fuzz_targets/rego-builtins.rs calls it: its operands' JSON read by
+	// ast.ValueFromReader, topdown's builtin called on them.
+	for _, s := range in.Abs {
+		v, err := ast.ValueFromReader(strings.NewReader("[\r" + s + "]\t"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		args, ok := v.(*ast.Array)
+		if !ok || args.Len() != 1 {
+			t.Fatalf("abs(%s): operands %v", s, v)
+		}
+		var got *ast.Term
+		err = topdown.GetBuiltin("abs")(topdown.BuiltinContext{Context: context.Background()}, []*ast.Term{args.Elem(0)}, func(t *ast.Term) error {
+			got = t
+			return nil
+		})
+		if err != nil || got == nil {
+			t.Fatalf("abs(%s): %v", s, err)
+		}
+		n, ok := got.Value.(ast.Number)
+		if !ok {
+			t.Fatalf("abs(%s): %T", s, got.Value)
+		}
+		out.Abs = append(out.Abs, digest(s, string(n)))
 	}
 	res, err := json.MarshalIndent(out, "", " ")
 	if err != nil {
